@@ -4,6 +4,8 @@
 
 AI-powered WCAG 2.1 AA compliance for higher education. Scans and auto-remediates PDFs, Word documents, PowerPoints, Excel spreadsheets, LaTeX equations, websites, video/audio, and source code. Built for the April 2026 ADA Title II deadline.
 
+> **AELIRA** — **A**ccessibility, **E**quity, **L**earning, **I**nclusion, **R**emediation, **A**utomation.
+
 ## Self-Hosting Quick Start
 
 **Prerequisites:** Docker and Docker Compose, 4GB+ RAM
