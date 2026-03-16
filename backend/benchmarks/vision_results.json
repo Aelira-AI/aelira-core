@@ -1,0 +1,108 @@
+{
+  "moondream": [
+    {
+      "model": "moondream",
+      "test_id": "pineapple",
+      "category": "photo",
+      "success": true,
+      "inference_time_ms": 11376.575874979608,
+      "keywords_found": 0,
+      "keywords_total": 4,
+      "keyword_accuracy": 0.0,
+      "response_length": 29,
+      "response_preview": "iced tea is in the background",
+      "error": null
+    },
+    {
+      "model": "moondream",
+      "test_id": "cat-photo",
+      "category": "photo",
+      "success": false,
+      "inference_time_ms": 0,
+      "keywords_found": 0,
+      "keywords_total": 5,
+      "keyword_accuracy": 0.0,
+      "response_length": 0,
+      "response_preview": "",
+      "error": "Test image not found"
+    },
+    {
+      "model": "moondream",
+      "test_id": "warning-sign",
+      "category": "icon",
+      "success": true,
+      "inference_time_ms": 11459.03124997858,
+      "keywords_found": 3,
+      "keywords_total": 6,
+      "keyword_accuracy": 0.5,
+      "response_length": 87,
+      "response_preview": "!!! Danger sign with a black exclamation mark in the middle of a yellow triangle shape.",
+      "error": null
+    },
+    {
+      "model": "moondream",
+      "test_id": "user-icon",
+      "category": "icon",
+      "success": true,
+      "inference_time_ms": 10951.42004196532,
+      "keywords_found": 0,
+      "keywords_total": 7,
+      "keyword_accuracy": 0.0,
+      "response_length": 18,
+      "response_preview": "urn with no handle",
+      "error": null
+    },
+    {
+      "model": "moondream",
+      "test_id": "checkmark",
+      "category": "icon",
+      "success": true,
+      "inference_time_ms": 11228.54191600345,
+      "keywords_found": 0,
+      "keywords_total": 7,
+      "keyword_accuracy": 0.0,
+      "response_length": 13,
+      "response_preview": "!!! Good job!",
+      "error": null
+    },
+    {
+      "model": "moondream",
+      "test_id": "document",
+      "category": "icon",
+      "success": true,
+      "inference_time_ms": 10857.669041957706,
+      "keywords_found": 0,
+      "keywords_total": 6,
+      "keyword_accuracy": 0.0,
+      "response_length": 0,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "model": "moondream",
+      "test_id": "accessibility",
+      "category": "icon",
+      "success": true,
+      "inference_time_ms": 11453.16737506073,
+      "keywords_found": 0,
+      "keywords_total": 6,
+      "keyword_accuracy": 0.0,
+      "response_length": 65,
+      "response_preview": "ers of green toothpaste and a yellow container with water inside.",
+      "error": null
+    },
+    {
+      "model": "moondream",
+      "test_id": "email-icon",
+      "category": "icon",
+      "success": true,
+      "inference_time_ms": 10861.824334017001,
+      "keywords_found": 0,
+      "keywords_total": 5,
+      "keyword_accuracy": 0.0,
+      "response_length": 0,
+      "response_preview": "",
+      "error": null
+    }
+  ]
+}

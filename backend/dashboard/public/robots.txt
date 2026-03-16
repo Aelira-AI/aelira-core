@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /signup
+Allow: /login
+Disallow: /
+
+# Allow public auth pages (signup, login)
+# Block authenticated dashboard content

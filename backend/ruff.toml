@@ -1,0 +1,16 @@
+# Ruff configuration for Aelira backend
+# https://docs.astral.sh/ruff/configuration/
+
+[lint]
+# Ignore E711/E712 for SQLAlchemy filter conditions
+# SQLAlchemy requires `== None` and `== False` due to operator overloading
+ignore = ["E711", "E712"]
+
+# Also ignore E402 for module imports (FastAPI patterns sometimes require late imports)
+extend-ignore = ["E402"]
+
+[lint.per-file-ignores]
+# Allow unused imports in __init__.py files
+"__init__.py" = ["F401"]
+# Tests may have unused variables for setup
+"tests/*" = ["F841"]

@@ -1,0 +1,370 @@
+{
+  "gemini-2.0-flash": [
+    {
+      "model": "gemini-2.0-flash",
+      "test_id": "missing-alt-critical",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 1679.7178339911625,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Critical\",\n  \"explanation\": \"The `<img>` tag is missing an `alt` attribute. This means that users who are blind or visually impaired will not be able to understand the purpose",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash",
+      "test_id": "missing-alt-decorative",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 1782.8785000601783,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Low\",\n  \"explanation\": \"The image appears to be decorative, but lacks an empty `alt` attribute (alt=\\\"\\\") to explicitly signal this to assistive technologies. This can lead to",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash",
+      "test_id": "color-contrast-text",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 1813.6256251018494,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"High\",\n  \"explanation\": \"The contrast ratio between the text color (#999) and the background color (#fff) is insufficient to meet WCAG 2.1 Level AA requirements for normal tex",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash",
+      "test_id": "missing-label",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 2266.741874977015,
+      "accuracy": 0.0,
+      "response_preview": "```json\n{\n  \"severity\": \"High\",\n  \"explanation\": \"The email input field lacks a proper label. Relying solely on a placeholder is insufficient for accessibility as placeholders disappear when the user ",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash",
+      "test_id": "empty-link",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 2309.9897080101073,
+      "accuracy": 0.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Critical\",\n  \"explanation\": \"The link contains only an icon and has no text alternative. Screen reader users will not understand the purpose of the link, violating WCAG 2.4.4 ",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash",
+      "test_id": "fix-image-alt",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 1443.8886670395732,
+      "accuracy": 1.0,
+      "response_preview": "```html\n<img src=\"product.jpg\" class=\"product-image\" alt=\"Laptop\">\n```",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash",
+      "test_id": "fix-form-label",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 1086.7989169200882,
+      "accuracy": 1.0,
+      "response_preview": "```html\n<label for=\"search\">Search</label><input type=\"text\" id=\"search\" placeholder=\"Search...\">\n```",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash",
+      "test_id": "fix-button-name",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 1086.767667089589,
+      "accuracy": 1.0,
+      "response_preview": "```html\n<button onclick=\"submit()\" aria-label=\"Submit\"><i class=\"fa-check\"></i></button>\n```",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash",
+      "test_id": "scan-summary",
+      "task_type": "summary",
+      "success": true,
+      "inference_time_ms": 2733.231958001852,
+      "accuracy": 1.0,
+      "response_preview": "Here's a summary of the accessibility scan for example.com, tailored for a business executive:\n\nOur website currently has 15 accessibility issues, indicating it's not fully compliant with accessibilit",
+      "error": null
+    }
+  ],
+  "gemini-2.0-flash-lite": [
+    {
+      "model": "gemini-2.0-flash-lite",
+      "test_id": "missing-alt-critical",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 1388.223999994807,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Critical\",\n  \"explanation\": \"The image lacks alternative text. Without alt text, screen reader users will not know the purpose of the checkout button, preventing them from com",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash-lite",
+      "test_id": "missing-alt-decorative",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 1886.6625420050696,
+      "accuracy": 0.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Medium\",\n  \"explanation\": \"The image lacks alternative text (alt text). Since the image is decorative, it should have an empty alt attribute (alt=\\\"\\\"). Without this, screen r",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash-lite",
+      "test_id": "color-contrast-text",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 1960.6142500415444,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"High\",\n  \"explanation\": \"The text 'Important info' has a color contrast ratio that fails WCAG 2.1 AA guidelines for normal text. The text color (#999) against the background c",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash-lite",
+      "test_id": "missing-label",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 1678.0652080196887,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Critical\",\n  \"explanation\": \"The input field lacks a proper label. Placeholder text is not a substitute for a label. Without a label, screen reader users and other assistive t",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash-lite",
+      "test_id": "empty-link",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 1613.4117499459535,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"High\",\n  \"explanation\": \"The link text is missing or not descriptive. The <a> tag contains only an icon, providing no text alternative for screen reader users. This makes it d",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash-lite",
+      "test_id": "fix-image-alt",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 937.4002920230851,
+      "accuracy": 1.0,
+      "response_preview": "```html\n<img src=\"product.jpg\" alt=\"Laptop\" class=\"product-image\">\n```\n",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash-lite",
+      "test_id": "fix-form-label",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 1096.9120000954717,
+      "accuracy": 1.0,
+      "response_preview": "```html\n<label for=\"search\">Search</label>\n<input type=\"text\" id=\"search\" placeholder=\"Search...\">\n```\n",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash-lite",
+      "test_id": "fix-button-name",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 970.3009160002694,
+      "accuracy": 1.0,
+      "response_preview": "```html\n<button onclick=\"submit()\" aria-label=\"Submit\"><i class=\"fa-check\"></i></button>\n```\n",
+      "error": null
+    },
+    {
+      "model": "gemini-2.0-flash-lite",
+      "test_id": "scan-summary",
+      "task_type": "summary",
+      "success": true,
+      "inference_time_ms": 2742.7006660727784,
+      "accuracy": 1.0,
+      "response_preview": "Here's a summary of the accessibility scan, tailored for a business executive:\n\nOur website, example.com, has been assessed for accessibility compliance. The scan identified 15 issues, with a concerni",
+      "error": null
+    }
+  ],
+  "gemini-2.5-flash": [
+    {
+      "model": "gemini-2.5-flash",
+      "test_id": "missing-alt-critical",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 4555.073000025004,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Critical\",\n  \"explanation\": \"The interactive image, which functions as a 'checkout' button, is missing an `alt` attribute. Screen reader users will not be able to understand i",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "test_id": "missing-alt-decorative",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 6229.717541951686,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Low\",\n  \"explanation\": \"The image appears to be purely decorative based on its filename ('decorative-border.png'). For decorative images, the `alt` attribute should be empty (",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "test_id": "color-contrast-text",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 6458.4307910408825,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"High\",\n  \"explanation\": \"The text 'Important info' has a contrast ratio of 3.1:1 (#999 on #fff). For normal-sized text, WCAG 2.1 AA requires a minimum contrast ratio of 4.5:1.",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "test_id": "missing-label",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 6192.782208090648,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Critical\",\n  \"explanation\": \"The input field lacks a programmatic label (e.g., using `<label for='...'` or `aria-label`/`aria-labelledby`). A `placeholder` attribute is not a ",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "test_id": "empty-link",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 7840.623833006248,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"High\",\n  \"explanation\": \"The link is an icon-only element without an accessible name (e.g., visible text, aria-label, or title attribute). Screen reader users will not underst",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "test_id": "fix-image-alt",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 2224.9143340159208,
+      "accuracy": 1.0,
+      "response_preview": "<img src=\"product.jpg\" class=\"product-image\" alt=\"Laptop\">",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "test_id": "fix-form-label",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 9010.17291599419,
+      "accuracy": 0.3333333333333333,
+      "response_preview": "<input type=\"text\" id=\"search\" placeholder=\"Search...\" aria-label=\"Search\">",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "test_id": "fix-button-name",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 5067.92745902203,
+      "accuracy": 1.0,
+      "response_preview": "<button onclick=\"submit()\" aria-label=\"Submit\"><i class=\"fa-check\" aria-hidden=\"true\"></i></button>",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "test_id": "scan-summary",
+      "task_type": "summary",
+      "success": true,
+      "inference_time_ms": 9338.127707946114,
+      "accuracy": 0.8,
+      "response_preview": "Subject: Accessibility Scan Summary for example.com\n\nAn initial accessibility scan of example.com reveals a moderate level of compliance risk. With a total of 15 identified issues, including 3 critica",
+      "error": null
+    }
+  ],
+  "gemini-2.5-pro": [
+    {
+      "model": "gemini-2.5-pro",
+      "test_id": "missing-alt-critical",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 12030.10420803912,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Critical\",\n  \"explanation\": \"This image functions as a 'Checkout' button but lacks an alt attribute. Screen reader users will not know its purpose, completely blocking them fr",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "test_id": "missing-alt-decorative",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 12812.780499923974,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Low\",\n  \"explanation\": \"This decorative image is missing an alt attribute. As a result, screen readers may announce the filename, creating unnecessary noise for the user. Deco",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "test_id": "color-contrast-text",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 14012.852999963798,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"High\",\n  \"explanation\": \"The text color (#999) has a contrast ratio of 2.32:1 against the white background, which fails the WCAG AA minimum requirement of 4.5:1. This makes th",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "test_id": "missing-label",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 11771.910708048381,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"Critical\",\n  \"explanation\": \"The input field lacks a programmatic label. Screen readers cannot identify the purpose of the field, preventing users from knowing what informatio",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "test_id": "empty-link",
+      "task_type": "classification",
+      "success": true,
+      "inference_time_ms": 13743.47291700542,
+      "accuracy": 1.0,
+      "response_preview": "```json\n{\n  \"severity\": \"High\",\n  \"explanation\": \"This link contains only a visual icon and lacks a text label. Screen reader users will not know its purpose (e.g., 'Go to cart'), preventing them from",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "test_id": "fix-image-alt",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 14304.655499989167,
+      "accuracy": 1.0,
+      "response_preview": "```html\n<img src=\"product.jpg\" class=\"product-image\" alt=\"A laptop, open and angled to show the screen and keyboard.\">\n```",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "test_id": "fix-form-label",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 11350.848624948412,
+      "accuracy": 1.0,
+      "response_preview": "<label for=\"search\">Search</label>\n<input type=\"text\" id=\"search\" placeholder=\"Search...\">",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "test_id": "fix-button-name",
+      "task_type": "code_fix",
+      "success": true,
+      "inference_time_ms": 13718.727083061822,
+      "accuracy": 1.0,
+      "response_preview": "```html\n<button onclick=\"submit()\" aria-label=\"Submit\"><i class=\"fa-check\" aria-hidden=\"true\"></i></button>\n```",
+      "error": null
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "test_id": "scan-summary",
+      "task_type": "summary",
+      "success": true,
+      "inference_time_ms": 19101.703459047712,
+      "accuracy": 0.8,
+      "response_preview": "Of course. Here is a summary of the accessibility scan for a business executive.\n\n***\n\n**To:** Executive Team\n**From:** Digital Strategy\n**Subject:** Summary of Recent Website Accessibility Scan (exam",
+      "error": null
+    }
+  ]
+}

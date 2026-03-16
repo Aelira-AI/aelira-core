@@ -1,0 +1,138 @@
+services:
+  # Ollama - AI models for accessibility analysis
+  # Optional: only starts with --profile ollama
+  ollama:
+    image: ollama/ollama:latest
+    container_name: aelira-ollama-dev
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 16G  # Reserve for both models (Llama 3B + Qwen 7B)
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - aelira-network
+
+  # PostgreSQL with pgvector - Database for scan results, users, WCAG knowledge base
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg16  # PostgreSQL 16.12 with pgvector (patched CVE-2026-2004/2005/2006)
+    container_name: aelira-postgres-dev
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: aelira_dev
+      POSTGRES_USER: aelira
+      # Simple password for local dev (not blocked by validation)
+      POSTGRES_PASSWORD: localdev123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aelira -d aelira_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aelira-network
+
+  # Redis - Cache for scan results, rate limiting
+  redis:
+    image: redis:7.4-alpine
+    container_name: aelira-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aelira-network
+
+  # veraPDF - PDF/UA validation via REST API
+  # Optional: only starts with --profile verapdf
+  # Usage: docker compose --profile verapdf up -d
+  verapdf:
+    image: ghcr.io/verapdf/rest:latest
+    container_name: aelira-verapdf-dev
+    profiles: ["verapdf"]
+    ports:
+      - "8180:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - aelira-network
+
+  # FastAPI Backend - Main API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: aelira-api-dev
+    ports:
+      - "8000:8000"
+    environment:
+      # Database - update password to match postgres service above
+      DATABASE_URL: postgresql://aelira:localdev123@postgres:5432/aelira_dev
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      # LLM fallback: set to "none" to skip Ollama when not using --profile ollama
+      LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-none}
+      OLLAMA_HOST: http://ollama:11434
+      # Gemini API (primary cloud provider for speed and accuracy)
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      USE_GEMINI: "true"
+      GEMINI_TEXT_MODEL: gemini-2.0-flash
+      GEMINI_CODE_MODEL: gemini-2.0-flash
+      GEMINI_VISION_MODEL: gemini-2.5-flash-image
+      # OAuth Token Encryption (loaded from .env - never commit!)
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
+      # Google/Microsoft OAuth credentials (loaded from .env)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      # veraPDF (opt-in via --profile verapdf)
+      VERAPDF_ENABLED: ${VERAPDF_ENABLED:-false}
+      VERAPDF_URL: http://verapdf:8080
+      # Environment
+      ENV: development
+      ALLOW_MOCK_AUTH: "true"
+      DEBUG: "true"
+      LOG_LEVEL: debug
+    volumes:
+      - ./src:/app/src  # Hot reload for development
+      - ./tests:/app/tests
+      - ./alembic:/app/alembic  # Hot reload for migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - aelira-network
+
+volumes:
+  ollama_data:
+  postgres_data:
+  redis_data:
+
+networks:
+  aelira-network:
+    driver: bridge

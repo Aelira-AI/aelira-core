@@ -1,0 +1,808 @@
+"""Gemini API client for text and code generation with Ollama fallback.
+
+Enhanced with RAG (Retrieval-Augmented Generation) for grounding
+severity classifications in canonical WCAG guidelines.
+"""
+
+import time
+import httpx
+import logging
+from typing import Dict, Any, Optional
+
+from src.config.settings import get_settings
+from .wcag_knowledge_base import WCAGKnowledgeBase
+
+logger = logging.getLogger(__name__)
+
+
+class GeminiClient:
+    """Unified client for Gemini API calls with Ollama fallback."""
+
+    # Models that use thinking mode and need higher token limits
+    THINKING_MODELS = ["gemini-2.5", "gemini-3"]
+
+    def __init__(self, enable_rag: bool = True):
+        """Initialize Gemini client with settings.
+
+        Args:
+            enable_rag: Enable RAG for grounding classifications in WCAG knowledge base
+        """
+        self.settings = get_settings()
+        self.api_key = self.settings.gemini_api_key
+        self.api_base = self.settings.gemini_api_base
+        self.text_model = self.settings.gemini_text_model
+        self.code_model = self.settings.gemini_code_model
+        self.use_gemini = self.settings.use_gemini and bool(self.api_key)
+        self.ollama_host = self.settings.ollama_host
+        self.ollama_fallback = self.settings.ollama_fallback_text
+
+        # RAG knowledge base for grounding classifications
+        self.enable_rag = enable_rag
+        self.kb: Optional[WCAGKnowledgeBase] = None
+        self._kb_initialized = False
+
+        if enable_rag:
+            try:
+                self.kb = WCAGKnowledgeBase(ollama_host=self.ollama_host)
+                logger.info("RAG knowledge base configured for Gemini client")
+            except Exception as e:
+                logger.warning(f"RAG knowledge base not available: {e}")
+                self.enable_rag = False
+
+    async def initialize_rag(self) -> bool:
+        """Initialize RAG knowledge base connection (call once at startup)."""
+        if not self.enable_rag or not self.kb:
+            return False
+
+        if self._kb_initialized:
+            return True
+
+        try:
+            await self.kb.initialize()
+            self._kb_initialized = True
+            logger.info("RAG knowledge base initialized successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize RAG knowledge base: {e}")
+            self.enable_rag = False
+            return False
+
+    async def close_rag(self):
+        """Close RAG knowledge base connection."""
+        if self.kb and self._kb_initialized:
+            try:
+                await self.kb.close()
+                self._kb_initialized = False
+            except Exception as e:
+                logger.error(f"Error closing RAG knowledge base: {e}")
+
+    def _is_thinking_model(self, model: str) -> bool:
+        """Check if model uses thinking mode (needs higher token limits)."""
+        return any(t in model for t in self.THINKING_MODELS)
+
+    async def _call_gemini(
+        self,
+        prompt: str,
+        model: str,
+        max_tokens: int = 500,
+        temperature: float = 0.3,
+        system_prompt: Optional[str] = None,
+    ) -> tuple[str, float]:
+        """Make async call to Gemini API."""
+        # Thinking models need higher token limits
+        if self._is_thinking_model(model):
+            max_tokens = max(max_tokens, 2000)
+
+        start_time = time.perf_counter()
+
+        # Build messages
+        contents = []
+        if system_prompt:
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [{"text": f"System instructions: {system_prompt}"}],
+                }
+            )
+            contents.append(
+                {
+                    "role": "model",
+                    "parts": [
+                        {"text": "Understood. I will follow these instructions."}
+                    ],
+                }
+            )
+
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+
+        try:
+            timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{self.api_base}/models/{model}:generateContent",
+                    params={"key": self.api_key},
+                    json={
+                        "contents": contents,
+                        "generationConfig": {
+                            "temperature": temperature,
+                            "maxOutputTokens": max_tokens,
+                        },
+                    },
+                )
+
+            elapsed = time.perf_counter() - start_time
+
+            if response.status_code != 200:
+                error_detail = response.text[:500]
+                logger.warning(
+                    f"Gemini API error: {response.status_code} - {error_detail}"
+                )
+                return f"ERROR: {response.status_code} - {error_detail}", elapsed
+
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    content = parts[0].get("text", "")
+                    return content.strip(), elapsed
+
+            return "ERROR: No content in response", elapsed
+
+        except Exception as e:
+            elapsed = time.perf_counter() - start_time
+            logger.error(f"Gemini API exception: {e}")
+            return f"ERROR: {e}", elapsed
+
+    def _call_gemini_sync(
+        self,
+        prompt: str,
+        model: str,
+        max_tokens: int = 500,
+        temperature: float = 0.3,
+        system_prompt: Optional[str] = None,
+    ) -> tuple[str, float]:
+        """Make sync call to Gemini API."""
+        if self._is_thinking_model(model):
+            max_tokens = max(max_tokens, 2000)
+
+        start_time = time.perf_counter()
+
+        contents = []
+        if system_prompt:
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [{"text": f"System instructions: {system_prompt}"}],
+                }
+            )
+            contents.append(
+                {
+                    "role": "model",
+                    "parts": [
+                        {"text": "Understood. I will follow these instructions."}
+                    ],
+                }
+            )
+
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+
+        try:
+            timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)
+            response = httpx.post(
+                f"{self.api_base}/models/{model}:generateContent",
+                params={"key": self.api_key},
+                json={
+                    "contents": contents,
+                    "generationConfig": {
+                        "temperature": temperature,
+                        "maxOutputTokens": max_tokens,
+                    },
+                },
+                timeout=timeout,
+            )
+
+            elapsed = time.perf_counter() - start_time
+
+            if response.status_code != 200:
+                error_detail = response.text[:500]
+                logger.warning(
+                    f"Gemini API error: {response.status_code} - {error_detail}"
+                )
+                return f"ERROR: {response.status_code} - {error_detail}", elapsed
+
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    content = parts[0].get("text", "")
+                    return content.strip(), elapsed
+
+            return "ERROR: No content in response", elapsed
+
+        except Exception as e:
+            elapsed = time.perf_counter() - start_time
+            logger.error(f"Gemini API exception: {e}")
+            return f"ERROR: {e}", elapsed
+
+    def _call_ollama(
+        self,
+        prompt: str,
+        model: str,
+        max_tokens: int = 500,
+        temperature: float = 0.3,
+        system_prompt: Optional[str] = None,
+    ) -> tuple[str, float]:
+        """Make call to Ollama as fallback."""
+        start_time = time.perf_counter()
+
+        try:
+            import ollama
+
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+            response = ollama.chat(
+                model=model,
+                messages=messages,
+                options={
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                },
+            )
+
+            elapsed = time.perf_counter() - start_time
+            content = response["message"]["content"].strip()
+            return content, elapsed
+
+        except Exception as e:
+            elapsed = time.perf_counter() - start_time
+            logger.error(f"Ollama fallback error: {e}")
+            return f"ERROR: {e}", elapsed
+
+    async def generate_text(
+        self,
+        prompt: str,
+        max_tokens: int = 500,
+        temperature: float = 0.3,
+        system_prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generate text using Gemini (or Ollama fallback).
+
+        Args:
+            prompt: The input prompt
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            system_prompt: Optional system instructions
+
+        Returns:
+            Dict with content, inference_time, provider, model
+        """
+        provider = "gemini"
+        model = self.text_model
+
+        if self.use_gemini:
+            content, elapsed = await self._call_gemini(
+                prompt, model, max_tokens, temperature, system_prompt
+            )
+
+            if content.startswith("ERROR:"):
+                logger.warning(f"Gemini failed, trying Ollama: {content}")
+                provider = "ollama"
+                model = self.ollama_fallback
+                content, elapsed = self._call_ollama(
+                    prompt, model, max_tokens, temperature, system_prompt
+                )
+        else:
+            provider = "ollama"
+            model = self.ollama_fallback
+            content, elapsed = self._call_ollama(
+                prompt, model, max_tokens, temperature, system_prompt
+            )
+
+        if content.startswith("ERROR:"):
+            return {
+                "success": False,
+                "error": content,
+                "inference_time": elapsed,
+                "provider": provider,
+                "model": model,
+            }
+
+        return {
+            "success": True,
+            "content": content,
+            "inference_time": elapsed,
+            "provider": provider,
+            "model": model,
+        }
+
+    def generate_text_sync(
+        self,
+        prompt: str,
+        max_tokens: int = 500,
+        temperature: float = 0.3,
+        system_prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Synchronous version of generate_text."""
+        provider = "gemini"
+        model = self.text_model
+
+        if self.use_gemini:
+            content, elapsed = self._call_gemini_sync(
+                prompt, model, max_tokens, temperature, system_prompt
+            )
+
+            if content.startswith("ERROR:"):
+                logger.warning(f"Gemini failed, trying Ollama: {content}")
+                provider = "ollama"
+                model = self.ollama_fallback
+                content, elapsed = self._call_ollama(
+                    prompt, model, max_tokens, temperature, system_prompt
+                )
+        else:
+            provider = "ollama"
+            model = self.ollama_fallback
+            content, elapsed = self._call_ollama(
+                prompt, model, max_tokens, temperature, system_prompt
+            )
+
+        if content.startswith("ERROR:"):
+            return {
+                "success": False,
+                "error": content,
+                "inference_time": elapsed,
+                "provider": provider,
+                "model": model,
+            }
+
+        return {
+            "success": True,
+            "content": content,
+            "inference_time": elapsed,
+            "provider": provider,
+            "model": model,
+        }
+
+    async def generate_code_fix(
+        self,
+        html_snippet: str,
+        rule_id: str,
+        issue_description: str,
+        context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generate WCAG-compliant code fix.
+
+        Args:
+            html_snippet: The HTML code with accessibility issues
+            rule_id: WCAG rule ID (e.g., 'image-alt', 'color-contrast')
+            issue_description: Description of the accessibility issue
+            context: Optional context about the page/component
+
+        Returns:
+            Dict with fixed_code, explanation, inference_time
+        """
+        context_info = f"\nContext: {context}" if context else ""
+
+        prompt = f"""Fix this WCAG accessibility violation.
+
+Rule: {rule_id}
+Issue: {issue_description}
+{context_info}
+
+Current HTML:
+```html
+{html_snippet}
+```
+
+Provide:
+1. The fixed HTML code that resolves the accessibility issue
+2. A brief explanation of what was changed and why
+
+Format your response as:
+FIXED CODE:
+```html
+[your fixed code here]
+```
+
+EXPLANATION:
+[your explanation here]
+"""
+
+        provider = "gemini"
+        model = self.code_model
+
+        if self.use_gemini:
+            content, elapsed = await self._call_gemini(
+                prompt, model, max_tokens=1000, temperature=0.2
+            )
+
+            if content.startswith("ERROR:"):
+                logger.warning(f"Gemini failed for code fix, trying Ollama: {content}")
+                provider = "ollama"
+                model = self.ollama_fallback
+                content, elapsed = self._call_ollama(
+                    prompt, model, max_tokens=1000, temperature=0.2
+                )
+        else:
+            provider = "ollama"
+            model = self.ollama_fallback
+            content, elapsed = self._call_ollama(
+                prompt, model, max_tokens=1000, temperature=0.2
+            )
+
+        if content.startswith("ERROR:"):
+            return {
+                "success": False,
+                "error": content,
+                "inference_time": elapsed,
+                "provider": provider,
+                "model": model,
+            }
+
+        # Parse the response
+        fixed_code = ""
+        explanation = ""
+
+        if "FIXED CODE:" in content:
+            parts = content.split("FIXED CODE:", 1)
+            if len(parts) > 1:
+                code_part = parts[1]
+                if "EXPLANATION:" in code_part:
+                    code_part, explanation = code_part.split("EXPLANATION:", 1)
+                    explanation = explanation.strip()
+
+                # Extract code from markdown code block
+                if "```html" in code_part:
+                    code_part = code_part.split("```html", 1)[1]
+                    if "```" in code_part:
+                        code_part = code_part.split("```", 1)[0]
+                elif "```" in code_part:
+                    code_part = code_part.split("```", 1)[1]
+                    if "```" in code_part:
+                        code_part = code_part.split("```", 1)[0]
+
+                fixed_code = code_part.strip()
+        else:
+            # Try to find any code block
+            if "```" in content:
+                parts = content.split("```")
+                for i, part in enumerate(parts):
+                    if i % 2 == 1:  # Odd indices are code blocks
+                        if part.startswith("html"):
+                            part = part[4:]
+                        fixed_code = part.strip()
+                        break
+
+        return {
+            "success": True,
+            "fixed_code": fixed_code or content,
+            "explanation": explanation or "Code fix generated",
+            "inference_time": elapsed,
+            "provider": provider,
+            "model": model,
+        }
+
+    async def classify_severity(
+        self, rule_id: str, impact: str, html_snippet: str, selector: str
+    ) -> Dict[str, Any]:
+        """Classify accessibility issue severity.
+
+        Args:
+            rule_id: WCAG rule ID
+            impact: axe-core impact level
+            html_snippet: The problematic HTML
+            selector: CSS selector
+
+        Returns:
+            Dict with severity, explanation, business_impact
+        """
+        prompt = f"""You are an accessibility expert. Classify the severity of this WCAG violation.
+
+Rule: {rule_id}
+Impact: {impact}
+HTML: {html_snippet}
+Selector: {selector}
+
+Respond ONLY with valid JSON:
+{{
+  "severity": "Critical|High|Medium|Low",
+  "explanation": "Brief explanation",
+  "business_impact": "Legal/business risk"
+}}"""
+
+        provider = "gemini"
+        model = self.text_model
+
+        if self.use_gemini:
+            content, elapsed = await self._call_gemini(
+                prompt, model, max_tokens=300, temperature=0.3
+            )
+
+            if content.startswith("ERROR:"):
+                logger.warning(f"Gemini failed for classification: {content}")
+                provider = "ollama"
+                model = self.ollama_fallback
+                content, elapsed = self._call_ollama(
+                    prompt, model, max_tokens=300, temperature=0.3
+                )
+        else:
+            provider = "ollama"
+            model = self.ollama_fallback
+            content, elapsed = self._call_ollama(
+                prompt, model, max_tokens=300, temperature=0.3
+            )
+
+        if content.startswith("ERROR:"):
+            return {
+                "success": False,
+                "error": content,
+                "inference_time": elapsed,
+                "provider": provider,
+                "model": model,
+            }
+
+        # Try to parse JSON response
+        import json
+
+        try:
+            # Find JSON in response
+            if "{" in content and "}" in content:
+                start = content.index("{")
+                end = content.rindex("}") + 1
+                json_str = content[start:end]
+                data = json.loads(json_str)
+
+                return {
+                    "success": True,
+                    "severity": data.get("severity", "Medium"),
+                    "explanation": data.get("explanation", ""),
+                    "business_impact": data.get("business_impact", ""),
+                    "inference_time": elapsed,
+                    "provider": provider,
+                    "model": model,
+                }
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Fallback: try to extract severity from text
+        severity = "Medium"
+        for level in ["Critical", "High", "Medium", "Low"]:
+            if level.lower() in content.lower():
+                severity = level
+                break
+
+        return {
+            "success": True,
+            "severity": severity,
+            "explanation": content[:200],
+            "business_impact": "",
+            "inference_time": elapsed,
+            "provider": provider,
+            "model": model,
+        }
+
+    async def classify_severity_with_rag(
+        self,
+        rule_id: str,
+        impact: str,
+        html_snippet: str,
+        selector: str,
+        violation_description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Classify accessibility issue severity with RAG-enhanced context.
+
+        Uses WCAG knowledge base to retrieve relevant guidelines and severity
+        criteria, then sends to Gemini with grounded context for more
+        consistent classifications.
+
+        Args:
+            rule_id: WCAG rule ID (e.g., "button-name")
+            impact: axe-core impact level
+            html_snippet: The problematic HTML
+            selector: CSS selector
+            violation_description: Optional description of the violation
+
+        Returns:
+            Dict with severity, explanation, business_impact, rag_guidelines
+        """
+        import json as json_module
+
+        # Initialize RAG if not already done
+        if self.enable_rag and not self._kb_initialized:
+            await self.initialize_rag()
+
+        # If RAG is not available, fall back to standard classification
+        if not self.enable_rag or not self.kb or not self._kb_initialized:
+            logger.debug("RAG not available, using standard classification")
+            return await self.classify_severity(rule_id, impact, html_snippet, selector)
+
+        start_time = time.perf_counter()
+
+        try:
+            # Create search query from violation context
+            search_query = (
+                f"{rule_id} {violation_description or ''} {html_snippet[:100]}"
+            )
+
+            # Retrieve relevant WCAG guidelines via semantic search
+            guidelines = await self.kb.search(search_query, top_k=2, min_similarity=0.4)
+
+            if not guidelines:
+                logger.debug(
+                    f"No relevant guidelines found for {rule_id}, using standard classification"
+                )
+                return await self.classify_severity(
+                    rule_id, impact, html_snippet, selector
+                )
+
+            # Format guidelines for LLM context
+            wcag_context = self.kb.format_guidelines_for_prompt(
+                guidelines, include_examples=False
+            )
+
+            # Enhanced prompt with RAG context
+            prompt = f"""You are an accessibility expert analyzing WCAG 2.2 violations.
+
+{wcag_context}
+
+Now classify this specific violation:
+
+Rule: {rule_id}
+Impact: {impact}
+HTML: {html_snippet[:500]}
+Selector: {selector}
+{f'Description: {violation_description}' if violation_description else ''}
+
+IMPORTANT: Use the severity criteria from the WCAG guidelines above to determine the correct severity level. Match the violation details to the criteria, not subjective interpretation.
+
+Respond ONLY with valid JSON:
+{{
+  "severity": "Critical|High|Medium|Low",
+  "explanation": "Brief explanation referencing the WCAG criteria",
+  "business_impact": "Legal/business risk based on WCAG level"
+}}"""
+
+            provider = "gemini"
+            model = self.text_model
+
+            if self.use_gemini:
+                content, elapsed = await self._call_gemini(
+                    prompt, model, max_tokens=400, temperature=0.2
+                )
+
+                if content.startswith("ERROR:"):
+                    logger.warning(f"Gemini failed for RAG classification: {content}")
+                    provider = "ollama"
+                    model = self.ollama_fallback
+                    content, elapsed = self._call_ollama(
+                        prompt, model, max_tokens=400, temperature=0.2
+                    )
+            else:
+                provider = "ollama"
+                model = self.ollama_fallback
+                content, elapsed = self._call_ollama(
+                    prompt, model, max_tokens=400, temperature=0.2
+                )
+
+            total_time = time.perf_counter() - start_time
+
+            if content.startswith("ERROR:"):
+                return {
+                    "success": False,
+                    "error": content,
+                    "inference_time": total_time,
+                    "provider": provider,
+                    "model": model,
+                    "rag_enabled": True,
+                    "rag_guidelines": [g["rule_id"] for g in guidelines],
+                }
+
+            # Parse JSON response
+            try:
+                if "{" in content and "}" in content:
+                    start = content.index("{")
+                    end = content.rindex("}") + 1
+                    json_str = content[start:end]
+                    data = json_module.loads(json_str)
+
+                    return {
+                        "success": True,
+                        "severity": data.get("severity", "Medium"),
+                        "explanation": data.get("explanation", ""),
+                        "business_impact": data.get("business_impact", ""),
+                        "inference_time": total_time,
+                        "provider": provider,
+                        "model": model,
+                        "rag_enabled": True,
+                        "rag_guidelines": [
+                            {
+                                "rule_id": g["rule_id"],
+                                "wcag_criterion": g["wcag_criterion"],
+                                "wcag_level": g["wcag_level"],
+                                "similarity": g.get("similarity", 0),
+                            }
+                            for g in guidelines
+                        ],
+                    }
+            except (json_module.JSONDecodeError, ValueError):
+                pass
+
+            # Fallback: try to extract severity from text
+            severity = "Medium"
+            for level in ["Critical", "High", "Medium", "Low"]:
+                if level.lower() in content.lower():
+                    severity = level
+                    break
+
+            return {
+                "success": True,
+                "severity": severity,
+                "explanation": content[:200],
+                "business_impact": "",
+                "inference_time": total_time,
+                "provider": provider,
+                "model": model,
+                "rag_enabled": True,
+                "rag_guidelines": [g["rule_id"] for g in guidelines],
+            }
+
+        except Exception as e:
+            logger.error(f"RAG classification failed: {e}")
+            # Fall back to standard classification on any error
+            return await self.classify_severity(rule_id, impact, html_snippet, selector)
+
+    def health_check(self) -> Dict[str, Any]:
+        """Check if AI services are available."""
+        health = {
+            "status": "healthy",
+            "gemini_configured": bool(self.api_key),
+            "gemini_text_model": self.text_model,
+            "gemini_code_model": self.code_model,
+            "use_gemini": self.use_gemini,
+            "ollama_fallback": self.ollama_fallback,
+            "ollama_host": self.ollama_host,
+            "rag_enabled": self.enable_rag,
+            "rag_initialized": self._kb_initialized,
+        }
+
+        if not self.use_gemini:
+            # Check Ollama availability
+            try:
+                import ollama
+
+                models_response = ollama.list()
+                if hasattr(models_response, "models"):
+                    available = [m.model for m in models_response.models]
+                elif isinstance(models_response, dict) and "models" in models_response:
+                    available = [m["name"] for m in models_response["models"]]
+                else:
+                    available = []
+
+                fallback_available = any(
+                    self.ollama_fallback in name for name in available
+                )
+                health["ollama_available"] = fallback_available
+                if not fallback_available:
+                    health["status"] = "degraded"
+                    health["warning"] = f"Ollama model {self.ollama_fallback} not found"
+            except Exception as e:
+                health["status"] = "degraded"
+                health["ollama_error"] = str(e)
+
+        return health
+
+
+# Global instance for convenience
+_gemini_client: Optional[GeminiClient] = None
+
+
+def get_gemini_client() -> GeminiClient:
+    """Get global Gemini client instance (singleton)."""
+    global _gemini_client
+    if _gemini_client is None:
+        _gemini_client = GeminiClient()
+    return _gemini_client

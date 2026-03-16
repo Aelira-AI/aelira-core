@@ -1,0 +1,92 @@
+% Comprehensive LaTeX Equations Test Suite
+% 20 diverse equation types for testing LaTeX/MathML conversion
+
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{physics}
+\usepackage{siunitx}
+
+\begin{document}
+
+\section{Basic Algebra}
+
+% 1. Quadratic Formula
+The quadratic formula is given by:
+$$x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$$
+
+% 2. Simple Fraction
+A simple fraction: $\frac{a}{b}$
+
+% 3. Square Root
+Square root expression: $\sqrt{x^2 + y^2}$
+
+\section{Calculus}
+
+% 4. Definite Integral
+$$\int_{0}^{\infty} e^{-x} \, dx = 1$$
+
+% 5. Limit
+$$\lim_{x \to 0} \frac{\sin x}{x} = 1$$
+
+% 6. Partial Derivative
+$$\frac{\partial u}{\partial t} = \alpha \frac{\partial^2 u}{\partial x^2}$$
+
+% 7. Multiple Integral
+$$\iint_D f(x,y) \, dA = \int_a^b \int_c^d f(x,y) \, dy \, dx$$
+
+\section{Linear Algebra}
+
+% 8. Matrix
+$$A = \begin{bmatrix}
+a_{11} & a_{12} & a_{13} \\
+a_{21} & a_{22} & a_{23} \\
+a_{31} & a_{32} & a_{33}
+\end{bmatrix}$$
+
+% 9. Determinant
+$$\det(A) = \begin{vmatrix}
+a & b \\
+c & d
+\end{vmatrix} = ad - bc$$
+
+% 10. Vector Dot Product
+$$\vec{a} \cdot \vec{b} = |\vec{a}||\vec{b}|\cos\theta$$
+
+\section{Summations and Products}
+
+% 11. Summation
+$$\sum_{i=1}^{n} i^2 = \frac{n(n+1)(2n+1)}{6}$$
+
+% 12. Product
+$$\prod_{i=1}^{n} i = n!$$
+
+% 13. Binomial Coefficient
+$$\binom{n}{k} = \frac{n!}{k!(n-k)!}$$
+
+\section{Advanced Topics}
+
+% 14. Einstein's Field Equations (Physics)
+$$R_{\mu\nu} - \frac{1}{2}Rg_{\mu\nu} + \Lambda g_{\mu\nu} = \frac{8\pi G}{c^4}T_{\mu\nu}$$
+
+% 15. Schrödinger Equation (Quantum Mechanics)
+$$i\hbar\frac{\partial}{\partial t}\Psi(\vec{r},t) = \hat{H}\Psi(\vec{r},t)$$
+
+% 16. Maxwell's Equations (Electromagnet ism)
+$$\nabla \times \vec{E} = -\frac{\partial \vec{B}}{\partial t}$$
+
+% 17. Navier-Stokes Equation (Fluid Dynamics)
+$$\rho\left(\frac{\partial \vec{v}}{\partial t} + \vec{v} \cdot \nabla\vec{v}\right) = -\nabla p + \mu\nabla^2\vec{v} + \vec{f}$$
+
+\section{Statistical Notation}
+
+% 18. Normal Distribution PDF
+$$f(x) = \frac{1}{\sigma\sqrt{2\pi}}e^{-\frac{(x-\mu)^2}{2\sigma^2}}$$
+
+% 19. Expected Value
+$$E[X] = \sum_{i=1}^{n} x_i p(x_i)$$
+
+% 20. Conditional Probability (Bayes' Theorem)
+$$P(A|B) = \frac{P(B|A)P(A)}{P(B)}$$
+
+\end{document}
