@@ -1,50 +1,160 @@
 # Contributing to Aelira Core
 
-Thank you for your interest in contributing to Aelira! This guide will help you get started.
+Thank you for your interest in contributing to Aelira! We're building an open-source accessibility compliance platform to help organizations meet WCAG 2.1 standards, and we welcome contributions from the community.
 
-## Reporting Bugs
+## Code of Conduct
 
-Open a [GitHub Issue](https://github.com/Aelira-AI/aelira-core/issues) with:
-- Steps to reproduce
-- Expected vs actual behavior
-- Environment details (OS, Docker version, Python version)
+This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to conduct@aelira.ai.
 
-## Suggesting Features
+## Getting Started
 
-Open a [GitHub Issue](https://github.com/Aelira-AI/aelira-core/issues) with the `feature` label. Describe the use case and how it would help accessibility compliance.
+### Prerequisites
 
-## Development Setup
+- **Python 3.11+** — Backend API
+- **Node.js 18+** — Dashboard frontend
+- **Docker** — For running services locally
+- **PostgreSQL 16** — Database (or use Docker)
+- **Redis** — Cache and session store (or use Docker)
+
+### Development Setup
 
 ```bash
-# Clone and start dev environment
+# Clone the repo
 git clone https://github.com/Aelira-AI/aelira-core.git
 cd aelira-core
-cp backend/.env.example backend/.env
-docker compose -f backend/docker-compose.dev.yml up -d --build
 
-# Run tests
-docker exec aelira-api-dev pytest
+# Copy environment file
+cp .env.example .env
+# Edit .env with your configuration
+
+# Option 1: Docker (recommended)
+docker compose -f docker-compose.dev.yml up -d
+
+# Option 2: Local Python
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
+
+### Running the API
+
+```bash
+# With Docker
+docker compose -f docker-compose.dev.yml up -d
+
+# Without Docker
+source venv/bin/activate
+uvicorn src.api.main:app --reload --port 8000
+```
+
+### Running the Dashboard
+
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+## Project Structure
+
+```
+aelira-core/
+├── src/                     # FastAPI backend
+│   ├── api/                 # API route handlers
+│   ├── auth/                # Authentication (magic links, OAuth, JWT)
+│   ├── config/              # Settings and configuration
+│   ├── db/                  # Database models and migrations
+│   ├── education/           # Document processors and remediators
+│   ├── integrations/        # LMS integrations (Canvas, Blackboard, etc.)
+│   ├── ai/                  # AI provider abstraction
+│   ├── mailer/              # Email service
+│   └── middleware/          # Rate limiting, quotas, CORS
+├── dashboard/               # React + Vite admin UI
+│   └── src/                 # TypeScript source
+├── tests/                   # Backend test suite
+├── alembic/                 # Database migrations
+├── Dockerfile               # Production container
+└── docker-compose.dev.yml   # Local development stack
+```
+
+## Making Contributions
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feat/my-feature`)
+3. Make your changes
+4. Run tests to ensure nothing is broken
+5. Commit your changes (see commit message format below)
+6. Push to your fork and submit a Pull Request
 
 ## Code Style
 
-- **Python:** [Ruff](https://docs.astral.sh/ruff/) for linting, [Black](https://black.readthedocs.io/) for formatting
-- **TypeScript (Dashboard):** ESLint
-- **Commits:** `type(scope): description` (e.g. `feat(pdf): add OCR support`)
+### Python
+
+- Type hints on all function signatures
+- Pydantic models for API request/response schemas
+- Structured logging with contextual fields
+- Follow existing patterns in the codebase
+- Lint with `ruff check .` and format with `ruff format .`
+
+### TypeScript (Dashboard)
+
+- Strict mode enabled
+- Explicit types (avoid `any`)
+- Error boundaries on page components
+- Loading states on async operations
+
+## Testing
+
+### Backend Tests
 
 ```bash
-# Check formatting
-cd backend && python3 -m ruff check src/ && python3 -m black --check src/
+# Run all tests
+pytest
+
+# Run specific test file
+pytest tests/test_scanner.py -v
+
+# Run with coverage
+pytest --cov=src
 ```
+
+### Dashboard Tests
+
+```bash
+cd dashboard
+npm run test:unit    # Unit tests
+npm run test         # Playwright e2e tests
+```
+
+## Commit Messages
+
+We follow the [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```
+type(scope): description
+
+# Examples:
+feat(pdf): add table structure detection
+fix(scanner): handle empty alt text correctly
+docs(readme): update development setup
+test(auth): add magic link expiry tests
+refactor(api): simplify quota middleware
+```
+
+Types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`
 
 ## Pull Request Process
 
-1. Fork the repository
-2. Create a feature branch from `main`
-3. Write tests for new functionality
-4. Ensure all tests pass
-5. Submit a PR with a clear description
+1. Update documentation if you changed public APIs
+2. Add tests for new functionality
+3. Ensure all tests pass
+4. Keep PRs focused — one feature or fix per PR
+5. Write a clear description of what changed and why
 
-## License
+## Getting Help
 
-By contributing, you agree that your contributions will be licensed under the [AGPL-3.0 License](LICENSE).
+- **Bug reports:** Open a [GitHub Issue](https://github.com/Aelira-AI/aelira-core/issues/new)
+- **Feature requests:** Open a [GitHub Issue](https://github.com/Aelira-AI/aelira-core/issues/new)
+- **General questions:** Open a [GitHub Discussion](https://github.com/Aelira-AI/aelira-core/discussions)
+
+Look for issues labeled [`good first issue`](https://github.com/Aelira-AI/aelira-core/labels/good%20first%20issue) — these are great for new contributors!

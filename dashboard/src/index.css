@@ -1,0 +1,801 @@
+@import "tailwindcss";
+
+/* ============================================================================
+   AELIRA DASHBOARD - "Warm & Human" Academic Aesthetic
+   Mirrors main website design system (website/app/globals.css)
+
+   Philosophy:
+   - Semantic naming (purpose, not appearance)
+   - Guaranteed WCAG AA contrast in both modes
+   - Mode-agnostic components (no theme checks, only tokens)
+   - Single source of truth for all color decisions
+   - WARM colors (ivory, parchment, cream) - NOT cool slate grays
+   - Academic/scholarly feel with purposeful imperfection
+
+   Typography:
+   - Lora for headings (warm balanced serif, contemporary classic, readable)
+   - Source Sans 3 for body text (modern humanist sans, warm, excellent readability)
+
+   Accent Color Semantic Roles (WCAG AA compliant on ivory #FDFBF7):
+   - Purple (#7C3AED): Primary brand, CTAs, links (4.77:1)
+   - Sage (#5E7550): Success, compliant, approved (4.91:1)
+   - Terracotta (#A35540): Urgency, deadlines, warnings (5.17:1)
+   - Gold (#7D6628): Premium, achievements, highlights (5.34:1)
+
+   Usage:
+   - NEVER use raw Tailwind colors (bg-purple-600) in components
+   - ALWAYS use semantic tokens (bg-[var(--surface-accent)])
+   - Icons inherit from parent via currentColor
+
+   Typography Scale (Tailwind classes):
+   - text-xs (12px): Badges, labels, category headers, tiny captions
+   - text-sm (14px): Footer links, menu items, supporting/hint text
+   - text-base (16px): STANDARD BODY TEXT - descriptions, card content, paragraphs
+   - text-lg (18px): Lead paragraphs, emphasized body, subheadings
+   - text-xl (20px): Card titles, section subheads
+   - text-2xl (24px): Component headers
+   - text-3xl (30px): Section headers (mobile)
+   - text-4xl (36px): Section headers (desktop)
+============================================================================ */
+
+@theme {
+  /* Typography - Custom font families (Warm & Human) */
+  --font-heading: 'Lora', Georgia, 'Times New Roman', serif;
+  --font-body: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* Logo-matched Brand Colors */
+  --color-aelira-purple: #B794F6;
+  --color-aelira-navy: #2E2858;
+  --color-aelira-deep: #3D3166;
+  --color-aelira-light: #C7B0F7;
+
+  /* Purple color scale */
+  --color-primary-50: #f5f3ff;
+  --color-primary-100: #ede9fe;
+  --color-primary-200: #ddd6fe;
+  --color-primary-300: #c4b5fd;
+  --color-primary-400: #a78bfa;
+  --color-primary-500: #8b5cf6;
+  --color-primary-600: #7c3aed;
+  --color-primary-700: #6d28d9;
+  --color-primary-800: #5b21b6;
+  --color-primary-900: #4c1d95;
+
+  /* Gradients */
+  --bg-gradient-primary: linear-gradient(135deg, #7C5CD0 0%, #6B4CC0 50%, #2E2858 100%);
+  --bg-gradient-subtle: linear-gradient(180deg, rgba(183, 148, 246, 0.03) 0%, transparent 100%);
+  --bg-gradient-glow: radial-gradient(circle at 50% 50%, rgba(183, 148, 246, 0.08), transparent 70%);
+
+  /* Animations */
+  --animate-fade-in: fade-in 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-slide-up: slide-up 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-scale-in: scale-in 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slide-up {
+    from { transform: translateY(30px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+
+  @keyframes scale-in {
+    from { transform: scale(0.95); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+
+  @keyframes shimmer {
+    0% { background-position: -1000px 0; }
+    100% { background-position: 1000px 0; }
+  }
+}
+
+/* ============================================================================
+   LIGHT MODE - Semantic Tokens (WARM ACADEMIC PALETTE)
+============================================================================ */
+
+:root {
+  /* Surface Tokens (Backgrounds) - WARM ACADEMIC PALETTE */
+  --surface-primary: #FDFBF7;             /* Warm ivory (was #FFFFFF) */
+  --surface-secondary: #F7F3ED;           /* Parchment (was #F8FAFC) */
+  --surface-tertiary: #EDE8DF;            /* Textbook cream (was #F1F5F9) */
+  --surface-dark: #2D2A26;                /* Charcoal brown (was #1E293B) */
+  --surface-accent-subtle: #F5F3FF;       /* Very light purple wash */
+  --surface-accent: #E9D5FF;              /* Light purple bg (purple-200) */
+  --surface-accent-strong: #A78BFA;       /* Medium purple bg (purple-400) */
+  --surface-success-subtle: #F0FDF4;      /* Light green */
+  --surface-info-subtle: #F7F3ED;         /* Parchment - stay on brand */
+  --surface-warning-subtle: #FEF3E2;      /* Warm amber tint for urgency */
+  --surface-error-subtle: #FEF2F2;        /* Light red for errors */
+
+  /* Content Tokens (Text & Icons) - WARM TONES */
+  --content-primary: #1F1D1A;             /* Warm black - 16.27:1 contrast */
+  --content-secondary: #5C564D;           /* Warm gray - 7.02:1 contrast */
+  --content-tertiary: #706B63;            /* Muted warm - 5.12:1 contrast (WCAG AA) */
+  --content-inverse: #FDFBF7;             /* Ivory text on dark backgrounds */
+  --content-accent: #7C3AED;              /* Purple text - 5.51:1 contrast */
+  --content-accent-strong: #5B21B6;       /* Dark purple text (purple-700) */
+  --content-success: #15803D;             /* Green text (green-700) */
+  --content-info: #1D4ED8;                /* Blue text (blue-700) */
+  --content-warning: #A35540;             /* Terracotta for warnings */
+  --content-error: #DC2626;               /* Red text for errors */
+
+  /* Semantic Accent Colors - WCAG AA compliant (4.5:1+ on ivory) */
+  --accent-sage: #5E7550;                 /* SUCCESS: 4.91:1 contrast - compliant, approved */
+  --accent-sage-light: #E8EDE4;           /* Light sage for backgrounds */
+  --accent-terracotta: #A35540;           /* URGENCY: 5.17:1 contrast - deadlines, warnings */
+  --accent-terracotta-light: #F8EBE7;     /* Light terracotta for backgrounds */
+  --accent-gold: #7D6628;                 /* PREMIUM: 5.34:1 contrast - highlights, achievements */
+  --accent-gold-light: #FBF6E8;           /* Light gold for backgrounds */
+
+  /* Icon Tokens (for icon containers) */
+  --icon-color: #1F1D1A;                  /* Warm black */
+  --icon-bg-accent: #E9D5FF;              /* Light purple icon bg (purple-200) */
+  --icon-fg-accent: #5B21B6;              /* Dark purple icon (purple-700) */
+  --icon-bg-success: #DCFCE7;             /* Light green icon bg (green-100) */
+  --icon-fg-success: #15803D;             /* Dark green icon (green-700) */
+  --icon-bg-info: #DBEAFE;                /* Light blue icon bg (blue-100) */
+  --icon-fg-info: #1D4ED8;                /* Dark blue icon (blue-700) */
+
+  /* Feature Card Icon Tokens - SIMPLIFIED TO PURPLE/SLATE/GREEN */
+  --feature-primary-surface: #F3E8FF;     /* Purple-100 - Primary features */
+  --feature-primary-content: #7C3AED;     /* Purple-600 */
+  --feature-secondary-surface: #F1F5F9;   /* Slate-100 - Stay on brand */
+  --feature-secondary-content: #64748B;   /* Slate-500 */
+  --feature-success-surface: #DCFCE7;     /* Green-100 - Success/completed features */
+  --feature-success-content: #166534;     /* Green-800 - WCAG AA compliant */
+  --feature-success-border: #4ADE80;      /* Green-400 - Border for success badges */
+  --feature-warning-surface: #FEF3E2;     /* Warm amber - urgency */
+  --feature-warning-content: #A35540;     /* Terracotta */
+  --feature-warning-border: #F59E0B;      /* Amber-500 - For progress indicators */
+  --feature-info-surface: #DBEAFE;        /* Blue-100 */
+  --feature-info-content: #1D4ED8;        /* Blue-700 */
+  --feature-danger-surface: #FEE2E2;      /* Red-100 */
+  --feature-danger-content: #DC2626;      /* Red-600 */
+  --feature-danger-border: #EF4444;       /* Red-500 - For critical indicators */
+  --feature-special-surface: #F3E8FF;     /* Purple-100 */
+  --feature-special-content: #7C3AED;     /* Purple-600 */
+  --feature-media-surface: #CCFBF1;       /* Teal-100 */
+  --feature-media-content: #0D9488;       /* Teal-600 */
+  --feature-highlight-surface: #F3E8FF;   /* Purple-100 */
+  --feature-highlight-content: #7C3AED;   /* Purple-600 */
+  --feature-advanced-surface: #DCFCE7;    /* Green-100 */
+  --feature-advanced-content: #16A34A;    /* Green-600 */
+  --feature-code-surface: #F1F5F9;        /* Slate-100 */
+  --feature-code-content: #64748B;        /* Slate-500 */
+  --feature-analytics-surface: #F3E8FF;   /* Purple-100 */
+  --feature-analytics-content: #7C3AED;   /* Purple-600 */
+
+  /* Border Tokens */
+  --border-primary: rgba(31, 29, 26, 0.12);  /* Warm border */
+  --border-accent: #A78BFA;               /* Purple border (purple-400) */
+  --border-subtle: rgba(31, 29, 26, 0.06);
+  --border-color: rgba(31, 29, 26, 0.12); /* Legacy support */
+
+  /* Interactive Tokens (Buttons, Links) */
+  --interactive-primary-bg: #7C3AED;      /* Purple button (purple-600) */
+  --interactive-primary-fg: #FFFFFF;      /* White text on purple */
+  --interactive-primary-hover: #6D28D9;   /* Darker purple hover (purple-700) */
+  --interactive-primary-border: rgba(255, 255, 255, 0.2);
+  --interactive-secondary-bg: transparent;
+  --interactive-secondary-fg: #7C3AED;
+  --interactive-secondary-border: #7C3AED;
+  --interactive-secondary-hover-bg: #F5F3FF;
+  --interactive-inverse-bg: #FFFFFF;
+  --interactive-inverse-fg: #7C3AED;
+  --interactive-inverse-hover: rgba(255, 255, 255, 0.9);
+  --interactive-accent-bg: var(--accent-sage);
+  --interactive-accent-fg: #FFFFFF;
+  --interactive-accent-hover: #4D6342;
+
+  /* Accent shorthand (used broadly for focus rings, progress bars, icons) */
+  --accent-primary: #7C3AED;              /* Purple-600 */
+
+  /* Shadow Tokens - WARM TONES (using warm black rgba(31, 29, 26, ...)) */
+  --shadow-xs: 0 1px 2px 0 rgba(31, 29, 26, 0.03);
+  --shadow-sm: 0 1px 3px 0 rgba(31, 29, 26, 0.05), 0 1px 2px -1px rgba(31, 29, 26, 0.03);
+  --shadow-md: 0 4px 6px -1px rgba(31, 29, 26, 0.07), 0 2px 4px -2px rgba(31, 29, 26, 0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(31, 29, 26, 0.08), 0 4px 6px -4px rgba(31, 29, 26, 0.04);
+  --shadow-xl: 0 20px 25px -5px rgba(31, 29, 26, 0.08), 0 8px 10px -6px rgba(31, 29, 26, 0.04);
+  --shadow-2xl: 0 25px 50px -12px rgba(31, 29, 26, 0.15);
+
+  /* Colored glow shadows */
+  --glow-accent: 0 0 40px -8px rgba(124, 58, 237, 0.35);
+  --glow-success: 0 0 40px -8px rgba(22, 163, 74, 0.35);
+  --glow-warning: 0 0 40px -8px rgba(163, 85, 64, 0.35);
+  --glow-danger: 0 0 40px -8px rgba(220, 38, 38, 0.35);
+
+  /* Inset shadow for recessed elements */
+  --shadow-inset: inset 0 2px 4px 0 rgba(31, 29, 26, 0.05);
+  --shadow-colored: 0 8px 20px -4px rgba(124, 58, 237, 0.25);
+
+  /* Paper/Card Tokens (replaces glassmorphism) */
+  --card-bg: var(--surface-primary);
+  --card-bg-hover: var(--surface-secondary);
+  --card-border: rgba(31, 29, 26, 0.1);
+  --card-border-hover: rgba(31, 29, 26, 0.15);
+  --card-shadow: 0 2px 8px rgba(31, 29, 26, 0.06), 0 1px 2px rgba(31, 29, 26, 0.04);
+  --card-shadow-hover: 0 8px 24px rgba(31, 29, 26, 0.08), 0 2px 6px rgba(31, 29, 26, 0.04);
+
+  /* Paper texture (subtle noise) */
+  --paper-texture: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+
+  /* Header Tokens (solid, no glass) */
+  --header-bg: rgba(253, 251, 247, 0.95);
+  --header-shadow: 0 1px 3px rgba(31, 29, 26, 0.06);
+
+  /* Dropdown Tokens (solid, no glass) */
+  --dropdown-bg: var(--surface-primary);
+  --dropdown-shadow: 0 4px 16px rgba(31, 29, 26, 0.1), 0 2px 4px rgba(31, 29, 26, 0.06);
+  --dropdown-border: rgba(31, 29, 26, 0.08);
+
+  /* Legacy glass tokens (mapped to paper for backwards compatibility) */
+  --glass-bg: var(--card-bg);
+  --glass-bg-hover: var(--card-bg-hover);
+  --glass-bg-strong: var(--surface-secondary);
+  --glass-border: var(--card-border);
+  --glass-border-hover: var(--card-border-hover);
+  --glass-shadow: var(--card-shadow);
+  --glass-shadow-hover: var(--card-shadow-hover);
+  --glass-inner-glow: none;
+  --glass-inner-glow-hover: none;
+  --glass-blur: 0;
+  --glass-blur-strong: 0;
+
+  /* Legacy compatibility (deprecated - use semantic tokens) */
+  --text-primary: var(--content-primary);
+  --text-secondary: var(--content-secondary);
+  --text-tertiary: var(--content-tertiary);
+  --text-muted: var(--content-tertiary);
+  --bg-primary: var(--surface-primary);
+  --bg-secondary: var(--surface-secondary);
+  --bg-tertiary: var(--surface-tertiary);
+}
+
+/* ============================================================================
+   DARK MODE - Semantic Tokens (WARM DARK PALETTE)
+============================================================================ */
+
+.dark {
+  /* Surface Tokens (Backgrounds) - WARM DARK PALETTE */
+  --surface-primary: #1A1816;             /* Warm dark (was #0F172A) */
+  --surface-secondary: #252320;           /* Leather brown (was #1E293B) */
+  --surface-tertiary: #353230;            /* Warm slate (was #334155) */
+  --surface-dark: #1A1816;                /* Same as primary in dark mode */
+  --surface-accent-subtle: #1E1B4B;       /* Very dark purple (indigo-950) */
+  --surface-accent: #4C1D95;              /* Dark purple (purple-900) */
+  --surface-accent-strong: #6D28D9;       /* Medium purple (purple-700) */
+  --surface-success-subtle: #14532D;      /* Dark green */
+  --surface-info-subtle: #1E3A8A;         /* Dark blue */
+  --surface-warning-subtle: #2D2520;      /* Warm amber dark */
+  --surface-error-subtle: #450A0A;        /* Dark red */
+
+  /* Content Tokens (Text & Icons) - WARM TONES */
+  --content-primary: #F5F2ED;             /* Cream white (was #F8FAFC) */
+  --content-secondary: #B5AFA5;           /* Warm light gray (was #94A3B8) */
+  --content-tertiary: #918982;            /* Muted warm (4.92:1 contrast on dark) */
+  --content-inverse: #F5F2ED;             /* Cream text */
+  --content-accent: #C4B5FD;              /* Light purple (purple-300) */
+  --content-accent-strong: #A78BFA;       /* Medium purple (purple-400) */
+  --content-success: #86EFAC;             /* Light green (green-300) */
+  --content-info: #93C5FD;                /* Light blue (blue-300) */
+  --content-warning: #D4917C;             /* Light terracotta */
+  --content-error: #FCA5A5;               /* Light red (red-300) */
+
+  /* Dark mode accent colors */
+  --accent-sage: #9BB08D;                 /* Lighter sage for dark mode */
+  --accent-sage-light: #2A3228;           /* Dark sage background */
+  --accent-terracotta: #D4917C;           /* Lighter terracotta for dark mode */
+  --accent-terracotta-light: #2D2320;     /* Dark terracotta background */
+  --accent-gold: #D9C07A;                 /* Lighter gold for dark mode */
+  --accent-gold-light: #2D2A20;           /* Dark gold background */
+
+  /* Icon Tokens (for icon containers) */
+  --icon-color: #F5F2ED;                        /* Cream icon color in dark mode */
+  --icon-bg-accent: rgba(109, 40, 217, 0.3);   /* Dark purple with opacity */
+  --icon-fg-accent: #C4B5FD;                    /* Light purple (purple-300) */
+  --icon-bg-success: rgba(22, 163, 74, 0.3);   /* Dark green with opacity */
+  --icon-fg-success: #86EFAC;                   /* Light green (green-300) */
+  --icon-bg-info: rgba(29, 78, 216, 0.3);      /* Dark blue with opacity */
+  --icon-fg-info: #93C5FD;                      /* Light blue (blue-300) */
+
+  /* Feature Card Icon Tokens - Dark mode */
+  --feature-primary-surface: #581C87;          /* Purple-900 */
+  --feature-primary-content: #C4B5FD;          /* Purple-300 */
+  --feature-secondary-surface: #1E293B;        /* Slate-800 */
+  --feature-secondary-content: #94A3B8;        /* Slate-400 */
+  --feature-success-surface: #14532D;          /* Green-900 */
+  --feature-success-content: #86EFAC;          /* Green-300 */
+  --feature-success-border: #22C55E;           /* Green-500 */
+  --feature-warning-surface: #2D2520;          /* Warm amber dark */
+  --feature-warning-content: #D4917C;          /* Light terracotta */
+  --feature-warning-border: #FBBF24;           /* Amber-400 - For progress indicators */
+  --feature-info-surface: #1E3A8A;             /* Blue-900 */
+  --feature-info-content: #93C5FD;             /* Blue-300 */
+  --feature-danger-surface: #450A0A;           /* Red-950 */
+  --feature-danger-content: #FCA5A5;           /* Red-300 */
+  --feature-danger-border: #F87171;            /* Red-400 - For critical indicators */
+  --feature-special-surface: #581C87;          /* Purple-900 */
+  --feature-special-content: #C4B5FD;          /* Purple-300 */
+  --feature-media-surface: #134E4A;            /* Teal-900 */
+  --feature-media-content: #5EEAD4;            /* Teal-300 */
+  --feature-highlight-surface: #581C87;        /* Purple-900 */
+  --feature-highlight-content: #C4B5FD;        /* Purple-300 */
+  --feature-advanced-surface: #14532D;         /* Green-900 */
+  --feature-advanced-content: #86EFAC;         /* Green-300 */
+  --feature-code-surface: #1E293B;             /* Slate-800 */
+  --feature-code-content: #94A3B8;             /* Slate-400 */
+  --feature-analytics-surface: #581C87;        /* Purple-900 */
+  --feature-analytics-content: #C4B5FD;        /* Purple-300 */
+
+  /* Border Tokens */
+  --border-primary: rgba(245, 242, 237, 0.1);  /* Warm light border */
+  --border-accent: #6D28D9;               /* Medium purple (purple-700) */
+  --border-subtle: rgba(245, 242, 237, 0.05);
+  --border-color: rgba(245, 242, 237, 0.1); /* Legacy support */
+
+  /* Interactive Tokens (Buttons, Links) */
+  --interactive-primary-bg: #6D28D9;      /* Purple button (purple-700) */
+  --interactive-primary-fg: #FFFFFF;      /* White text */
+  --interactive-primary-hover: #7C3AED;   /* Lighter purple hover (purple-600) */
+  --interactive-primary-border: rgba(255, 255, 255, 0.1);
+  --interactive-secondary-bg: transparent;
+  --interactive-secondary-fg: #C4B5FD;
+  --interactive-secondary-border: #6D28D9;
+  --interactive-secondary-hover-bg: rgba(109, 40, 217, 0.1);
+  --interactive-inverse-bg: #FFFFFF;
+  --interactive-inverse-fg: #6D28D9;
+  --interactive-inverse-hover: rgba(255, 255, 255, 0.85);
+  --interactive-accent-bg: #6B8560;       /* Lighter sage for dark mode */
+  --interactive-accent-fg: #FFFFFF;
+  --interactive-accent-hover: #5E7550;
+
+  /* Accent shorthand (used broadly for focus rings, progress bars, icons) */
+  --accent-primary: #8B5CF6;              /* Purple-500 - brighter for dark bg */
+
+  /* Shadow Tokens - darker for dark mode */
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.15);
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.25), 0 1px 2px -1px rgba(0, 0, 0, 0.15);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.35), 0 2px 4px -2px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.45), 0 4px 6px -4px rgba(0, 0, 0, 0.35);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.4);
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+
+  /* Colored glow shadows (brighter for dark mode) */
+  --glow-accent: 0 0 40px -8px rgba(124, 58, 237, 0.5);
+  --glow-success: 0 0 40px -8px rgba(22, 163, 74, 0.5);
+  --glow-warning: 0 0 40px -8px rgba(163, 85, 64, 0.5);
+  --glow-danger: 0 0 40px -8px rgba(220, 38, 38, 0.5);
+
+  /* Inset shadow for recessed elements */
+  --shadow-inset: inset 0 2px 4px 0 rgba(0, 0, 0, 0.2);
+  --shadow-colored: 0 8px 20px -4px rgba(124, 58, 237, 0.4);
+
+  /* Paper/Card Tokens - Dark Mode */
+  --card-bg: var(--surface-primary);
+  --card-bg-hover: var(--surface-secondary);
+  --card-border: rgba(245, 242, 237, 0.08);
+  --card-border-hover: rgba(245, 242, 237, 0.12);
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.15);
+  --card-shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.2);
+
+  /* Paper texture - darker for dark mode */
+  --paper-texture: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.02'/%3E%3C/svg%3E");
+
+  /* Header Tokens - Dark Mode (solid, no glass) */
+  --header-bg: rgba(26, 24, 22, 0.95);
+  --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+
+  /* Dropdown Tokens - Dark Mode (solid, no glass) */
+  --dropdown-bg: var(--surface-secondary);
+  --dropdown-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2);
+  --dropdown-border: rgba(245, 242, 237, 0.06);
+
+  /* Legacy glass tokens - Dark Mode (mapped to paper) */
+  --glass-bg: var(--card-bg);
+  --glass-bg-hover: var(--card-bg-hover);
+  --glass-bg-strong: var(--surface-secondary);
+  --glass-border: var(--card-border);
+  --glass-border-hover: var(--card-border-hover);
+  --glass-shadow: var(--card-shadow);
+  --glass-shadow-hover: var(--card-shadow-hover);
+  --glass-inner-glow: none;
+  --glass-inner-glow-hover: none;
+  --glass-blur: 0;
+  --glass-blur-strong: 0;
+
+  /* Legacy compatibility (deprecated - use semantic tokens) */
+  --text-primary: var(--content-primary);
+  --text-secondary: var(--content-secondary);
+  --text-tertiary: var(--content-tertiary);
+  --text-muted: var(--content-tertiary);
+  --bg-primary: var(--surface-primary);
+  --bg-secondary: var(--surface-secondary);
+  --bg-tertiary: var(--surface-tertiary);
+}
+
+/* ============================================================================
+   Base Styles
+============================================================================ */
+
+@layer base {
+  body {
+    background-color: var(--surface-primary);
+    color: var(--content-primary);
+    font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.011em;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+  }
+
+  /* Typography - Warm & Human */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  h1 { font-size: clamp(2rem, 4vw, 3rem); }
+  h2 { font-size: clamp(1.5rem, 3vw, 2.25rem); }
+  h3 { font-size: clamp(1.25rem, 2.5vw, 1.75rem); }
+
+  p {
+    font-family: var(--font-body);
+    line-height: 1.7;
+  }
+
+  /* Font utility classes */
+  .font-heading {
+    font-family: var(--font-heading);
+  }
+
+  .font-body {
+    font-family: var(--font-body);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@layer components {
+  /* Button Components */
+  .btn-primary {
+    background-color: var(--interactive-primary-bg);
+    color: var(--interactive-primary-fg);
+    padding: 0.5rem 1rem;
+    border-radius: 0.75rem;
+    font-weight: 500;
+    transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    box-shadow: 0 3px 0 0 rgba(109, 40, 217, 0.4);
+  }
+
+  .btn-primary:hover {
+    background-color: var(--interactive-primary-hover);
+    transform: translateY(-1px);
+  }
+
+  .btn-primary:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+  }
+
+  .btn-primary:active {
+    transform: translateY(2px);
+    box-shadow: none;
+  }
+
+  .btn-secondary {
+    background-color: var(--interactive-secondary-bg);
+    color: var(--interactive-secondary-fg);
+    border: 1px solid var(--interactive-secondary-border);
+    padding: 0.5rem 1rem;
+    border-radius: 0.75rem;
+    font-weight: 500;
+    transition: all 0.2s ease;
+  }
+
+  .btn-secondary:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+  }
+
+  .btn-secondary:hover {
+    background-color: var(--interactive-secondary-hover-bg);
+  }
+
+  /* Card Component */
+  .card {
+    background-color: var(--card-bg);
+    border-radius: 14px;
+    box-shadow: var(--card-shadow);
+    padding: 1.5rem;
+    border: 1px solid var(--card-border);
+    transition: box-shadow 0.15s ease, border-color 0.15s ease;
+  }
+
+  .card:hover {
+    box-shadow: var(--card-shadow-hover);
+    border-color: var(--card-border-hover);
+  }
+
+  /* Input Component */
+  .input {
+    background-color: var(--surface-primary);
+    color: var(--content-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 0.75rem;
+    padding: 0.5rem 1rem;
+    width: 100%;
+    transition: all 0.2s ease;
+  }
+
+  .input:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+    border-color: var(--border-accent);
+    box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.25);
+  }
+
+  .input::placeholder {
+    color: var(--content-tertiary);
+  }
+
+  /* Select Component */
+  select.input {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%23706B63' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.5em 1.5em;
+    padding-right: 2.5rem;
+  }
+
+  /* Table Styles */
+  thead {
+    background-color: var(--surface-tertiary);
+    border-bottom: 1px solid var(--border-primary);
+  }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border-subtle);
+    transition: background-color 0.15s ease;
+  }
+
+  tbody tr:hover {
+    background-color: var(--surface-tertiary);
+  }
+
+  /* Text Utilities */
+  .text-primary {
+    color: var(--content-primary);
+  }
+
+  .text-secondary {
+    color: var(--content-secondary);
+  }
+
+  .text-tertiary {
+    color: var(--content-tertiary);
+  }
+
+  .text-accent {
+    color: var(--content-accent);
+  }
+
+  /* Background Utilities */
+  .bg-surface-primary {
+    background-color: var(--surface-primary);
+  }
+
+  .bg-surface-secondary {
+    background-color: var(--surface-secondary);
+  }
+
+  .bg-surface-tertiary {
+    background-color: var(--surface-tertiary);
+  }
+
+  /* Border Utilities */
+  .border-primary {
+    border-color: var(--border-primary);
+  }
+
+  .border-subtle {
+    border-color: var(--border-subtle);
+  }
+
+  /* Feature Card Utilities */
+  .feature-card-primary {
+    background-color: var(--feature-primary-surface);
+    color: var(--feature-primary-content);
+  }
+
+  .feature-card-success {
+    background-color: var(--feature-success-surface);
+    color: var(--feature-success-content);
+  }
+
+  .feature-card-info {
+    background-color: var(--feature-info-surface);
+    color: var(--feature-info-content);
+  }
+
+  .feature-card-warning {
+    background-color: var(--feature-warning-surface);
+    color: var(--feature-warning-content);
+  }
+
+  .feature-card-danger {
+    background-color: var(--feature-danger-surface);
+    color: var(--feature-danger-content);
+  }
+
+  /* Recharts legend text - ensure proper contrast in dark mode */
+  .recharts-legend-item-text {
+    fill: var(--content-secondary) !important;
+    color: var(--content-secondary) !important;
+  }
+
+  /* Recharts tooltip - use semantic tokens */
+  .recharts-tooltip-wrapper {
+    color: var(--content-primary);
+  }
+
+  /* Paper/Card Utilities (replaces glassmorphism) */
+  .paper {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+    border-radius: 14px;
+  }
+
+  .paper:hover {
+    border-color: var(--card-border-hover);
+    box-shadow: var(--card-shadow-hover);
+  }
+
+  /* Legacy glass utilities - mapped to paper for backwards compatibility */
+  .glass {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+  }
+
+  .glass:hover {
+    background: var(--card-bg-hover);
+    border-color: var(--card-border-hover);
+    box-shadow: var(--card-shadow-hover);
+  }
+
+  .glass-subtle {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-subtle);
+  }
+
+  .glass-strong {
+    background: var(--surface-secondary);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+  }
+
+  .glass-strong:hover {
+    box-shadow: var(--card-shadow-hover);
+  }
+
+  /* Glass card variant - mapped to paper */
+  .card-glass {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+    border-radius: 14px;
+    padding: 1.5rem;
+    transition: box-shadow 0.15s ease, border-color 0.15s ease;
+  }
+
+  .card-glass:hover {
+    box-shadow: var(--card-shadow-hover);
+  }
+}
+
+/* ============================================================================
+   ENHANCED ANIMATION SYSTEM - Warm & Human
+============================================================================ */
+
+/* Staggered entrance animation */
+@keyframes slide-up-fade {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Paper entrance - slight rotation for organic feel */
+@keyframes paper-entrance {
+  from {
+    opacity: 0;
+    transform: translateY(20px) rotate(0.5deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(0);
+  }
+}
+
+/* Count up animation for numbers */
+@keyframes count-up {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+
+/* Progress circle fill animation */
+@keyframes progress-fill {
+  from {
+    stroke-dashoffset: var(--circumference, 377);
+  }
+  to {
+    stroke-dashoffset: var(--offset, 0);
+  }
+}
+
+/* Staggered children animation */
+.stagger-children > * {
+  animation: slide-up-fade 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 0;
+}
+
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 50ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 100ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 150ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 200ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 250ms; }
+
+
+/* Tabular numbers for score displays */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  html {
+    scroll-behavior: auto;
+  }
+}

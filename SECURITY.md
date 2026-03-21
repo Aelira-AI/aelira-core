@@ -1,33 +1,116 @@
 # Security Policy
 
+## Supported Versions
+
+We release patches for security vulnerabilities in the following versions:
+
+| Version | Supported          |
+| ------- | ------------------ |
+| 0.x.x   | :white_check_mark: |
+
+As an actively developed project, we support the current version and one prior minor version with security updates.
+
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in Aelira Core, please report it responsibly.
+**Please do not report security vulnerabilities through public GitHub issues.**
 
-**Email:** security@aelira.ai
+Instead, please report security vulnerabilities by emailing:
 
-**Do NOT** open a public GitHub issue for security vulnerabilities.
+**security@aelira.ai**
 
-## Response Timeline
+You should receive a response within 48 hours. If you don't hear back, please follow up to ensure we received your original message.
 
-- **Acknowledgment:** Within 48 hours
-- **Assessment:** Within 1 week
-- **Fix:** Depends on severity, typically within 2 weeks for critical issues
+### What to Include
 
-## Scope
+Please include the following information in your report:
 
-- Backend API (`backend/src/`)
-- Dashboard (`backend/dashboard/`)
-- Authentication and authorization
-- Document processing pipeline
-- Platform integrations
+- **Type of vulnerability** (e.g., SQL injection, XSS, authentication bypass)
+- **Location** - Full paths of source file(s) related to the issue
+- **Configuration** - Any special configuration required to reproduce
+- **Steps to reproduce** - Step-by-step instructions
+- **Proof of concept** - Code or screenshots if possible
+- **Impact** - How an attacker could exploit this vulnerability
+- **Suggested fix** (optional) - If you have ideas on how to fix it
 
-## Out of Scope
+### What to Expect
 
-- Issues in third-party dependencies (report to the upstream project)
-- Issues that require physical access to the server
-- Social engineering attacks
+1. **Acknowledgment** - We'll acknowledge receipt within 48 hours
+2. **Assessment** - We'll assess the severity and impact within 7 days
+3. **Updates** - We'll keep you informed of our progress
+4. **Resolution** - We aim to resolve critical issues within 30 days
+5. **Credit** - We'll credit you in our release notes (unless you prefer anonymity)
 
-## Disclosure
+## Disclosure Timeline
 
-We follow coordinated disclosure. We will work with you to understand and address the issue before any public disclosure.
+- **Critical vulnerabilities:** Patched within 7 days, disclosure after 30 days
+- **High severity:** Patched within 14 days, disclosure after 60 days
+- **Medium/Low severity:** Patched within 30 days, disclosure after 90 days
+
+We follow responsible disclosure practices. Please do not publicly disclose the vulnerability until we've had a chance to address it.
+
+## Security Measures
+
+### What We Do
+
+- **Dependency scanning** - Automated via Dependabot
+- **Code scanning** - GitHub CodeQL analysis on all PRs
+- **Secret scanning** - Gitleaks prevents credential commits
+- **Input validation** - Pydantic models validate all API inputs
+- **SQL injection prevention** - SQLAlchemy ORM (no raw queries)
+- **Authentication** - API keys with bcrypt hashing
+- **Rate limiting** - Redis-based per-key limits
+
+### Self-Hosted Security
+
+If you self-host Aelira, please ensure:
+
+1. **Use HTTPS** - Never expose the API over plain HTTP
+2. **Firewall rules** - Restrict access to necessary ports only
+3. **Database security** - Use strong passwords, restrict network access
+4. **Keep updated** - Apply security patches promptly
+5. **Monitor logs** - Watch for unusual activity
+
+### Data Handling
+
+- **No external AI calls** - All AI processing uses local Ollama
+- **No user tracking** - We don't collect analytics on self-hosted instances
+- **Minimal data storage** - Scan results are stored only for your access
+- **No credential storage** - We never store your passwords (bcrypt hashes only)
+
+## Known Security Considerations
+
+### Document Processing
+
+- **PDF processing** - Uses Tesseract OCR; ensure PDFs are from trusted sources
+- **PowerPoint processing** - Uses python-pptx; macro execution is disabled
+- **File uploads** - Size limits enforced; validate file types before processing
+
+### AI Models
+
+- **Local execution** - All AI inference runs locally via Ollama
+- **Model integrity** - Download models only from official Ollama sources
+- **Prompt injection** - Input sanitization applied to AI prompts
+
+## Bug Bounty
+
+We don't currently have a formal bug bounty program, but we deeply appreciate security researchers who help us improve. Depending on the severity and impact of the vulnerability, we may offer:
+
+- Public acknowledgment (with your permission)
+- Aelira swag/merchandise
+- Extended trial of premium features
+
+## Contact
+
+- **Security issues:** security@aelira.ai
+- **General questions:** hello@aelira.ai
+- **Code of Conduct:** conduct@aelira.ai
+
+## Attribution
+
+Thank you to all security researchers who have helped improve Aelira's security:
+
+*No vulnerabilities have been reported yet.*
+
+---
+
+Last updated: November 2025
