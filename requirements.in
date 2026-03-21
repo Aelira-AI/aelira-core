@@ -17,7 +17,7 @@ sqlalchemy==2.0.44  # Updated for latest features
 alembic==1.17.1  # Updated for sqlalchemy 2.0.44
 
 # PDF Generation & Processing
-reportlab==4.4.3  # Updated for svglib 1.6.0 compatibility
+reportlab==4.4.10  # Updated for svglib 1.6.0 compatibility
 svglib==1.6.0  # For SVG support in reportlab
 # OR
 # weasyprint==60.1
