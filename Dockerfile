@@ -2,7 +2,7 @@
 # Multi-stage build for smaller image size
 
 # Stage 1: Builder
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 # Install system dependencies for building Python packages
 RUN apt-get update && apt-get install -y \
@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir piper-tts
 
 # Stage 2: Runtime
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Install runtime dependencies + Playwright system dependencies + LaTeXML stack + Node.js for Pa11y
 RUN apt-get update && apt-get install -y \
