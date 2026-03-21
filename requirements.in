@@ -74,7 +74,7 @@ google-api-python-client==2.163.0  # Google API client library
 msal==1.28.0  # Microsoft Authentication Library for OAuth 2.0
 
 # Monitoring & Error Tracking
-sentry-sdk[fastapi]==2.24.1  # Error tracking and performance monitoring
+sentry-sdk[fastapi]==2.55.0  # Error tracking and performance monitoring
 
 # Testing
 pytest==8.3.4  # Compatible with pytest-asyncio 1.2.0 (requires pytest<9 and >=8.2)
