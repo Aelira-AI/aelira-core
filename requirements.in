@@ -84,7 +84,7 @@ httpx==0.28.1
 locust==2.32.6  # Load testing (simulate 500 concurrent users)
 
 # Database - Async PostgreSQL driver for RAG
-asyncpg==0.29.0
+asyncpg==0.31.0
 
 # Progress bars
 tqdm==4.67.1  # Security: Fix CLI arguments injection attack
