@@ -99,7 +99,7 @@ ollama==0.6.0
 # Code Scanning (HTML/CSS/JS analysis)
 beautifulsoup4==4.12.2
 cssutils==2.11.1
-requests==2.32.4  # Security: Fix .netrc credentials leak and verify=False persistence CVEs
+requests==2.32.5  # Security: Fix .netrc credentials leak and verify=False persistence CVEs
 
 # Document Security Analysis
 oletools==0.60.2  # VBA macro detection in Office documents
