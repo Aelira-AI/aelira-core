@@ -22,7 +22,7 @@
     "lucide-react": "^0.561.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "react-dropzone": "^14.3.8",
+    "react-dropzone": "^15.0.0",
     "react-router-dom": "^7.9.5",
     "recharts": "^3.5.1",
     "tailwindcss": "^4.1.17"
