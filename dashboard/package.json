@@ -23,7 +23,7 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-dropzone": "^14.3.8",
-    "react-router-dom": "^7.9.5",
+    "react-router-dom": "^7.13.2",
     "recharts": "^3.5.1",
     "tailwindcss": "^4.1.17"
   },
