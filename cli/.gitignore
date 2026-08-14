@@ -1,0 +1,17 @@
+*-debug.log
+*-error.log
+**/.DS_Store
+/.idea
+/dist
+/tmp
+/node_modules
+oclif.manifest.json
+*.tsbuildinfo
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+yarn.lock
+pnpm-lock.yaml

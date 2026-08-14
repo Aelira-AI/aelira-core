@@ -1,0 +1,47 @@
+<!-- Partial Success Icon -->
+<div style="text-align: center; margin-bottom: 16px;">
+    <div style="width: 64px; height: 64px; background-color: #fef9c3; border-radius: 50%;
+                display: inline-flex; align-items: center; justify-content: center; margin: 0 auto;">
+        <span style="font-size: 32px;">&#9888;</span>
+    </div>
+</div>
+
+<h2 style="color: #1a1a2e; text-align: center; margin: 0 0 24px 0;">{{title}}</h2>
+
+<!-- File Info -->
+<div style="background-color: #fefce8; padding: 16px; border-radius: 8px; margin-bottom: 24px; border-left: 4px solid #eab308;">
+    <p style="margin: 0; color: #854d0e; font-weight: 600;">{{file_name}}</p>
+    <p style="margin: 8px 0 0 0; color: #a16207; font-size: 14px;">
+        {{fixed_count}} issues fixed automatically, {{failed_count}} could not be fixed
+    </p>
+</div>
+
+<!-- Fixed Issues -->
+<div style="margin-bottom: 24px;">
+    <h3 style="color: #16a34a; font-size: 16px; margin-bottom: 12px;">Fixed ({{fixed_count}}):</h3>
+    {{fixed_issues_html}}
+</div>
+
+<!-- Failed Issues -->
+<div style="margin-bottom: 24px;">
+    <h3 style="color: #dc2626; font-size: 16px; margin-bottom: 12px;">Needs Manual Attention ({{failed_count}}):</h3>
+    {{failed_issues_html}}
+</div>
+
+<!-- Next Steps -->
+<div style="background-color: #fffbeb; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+    <p style="margin: 0; color: #9a3412; font-size: 14px;">
+        <strong>What you can do:</strong> Review the items above manually, then re-run
+        remediation if you'd like another automated pass at the remaining issues.
+    </p>
+</div>
+
+<!-- Action Button -->
+<div style="text-align: center; margin-top: 24px;">
+    <a href="{{action_url}}"
+       style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: white; padding: 14px 28px;
+              text-decoration: none; border-radius: 8px; display: inline-block;
+              font-weight: 600; font-size: 16px;">
+        {{action_text}}
+    </a>
+</div>

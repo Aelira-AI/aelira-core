@@ -1,0 +1,165 @@
+# Aelira Core
+
+**Accessibility remediation for course content. It returns fixed files, not a list of problems.**
+
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Python 3.14](https://img.shields.io/badge/Python-3.14-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
+[![React 19](https://img.shields.io/badge/Dashboard-React_19-61DAFB.svg)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6.svg)](https://www.typescriptlang.org/)
+[![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-336791.svg)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/Deploy-Docker_Compose-2496ED.svg)](docker-compose.quickstart.yml)
+
+> **Status: 0.9.0 beta.** The engine — scanning, deterministic scoring, remediation, LMS integrations — is complete and tested (1,500+ backend tests). Pre-1.0 means we're still hardening operational edges: long-running scans are not yet durable across API restarts, and multi-worker job processing is not yet supported (single worker is the default and the safe configuration). Known work is tracked openly in the issues.
+
+Most accessibility tools tell you a PDF has no tags, an image has no alt text, and a table has no headers. Someone still has to open the file and fix it. Aelira does the fixing: you give it a document, it gives you back a remediated one, with a report of what changed and why.
+
+It is built for institutions working toward WCAG 2.1 AA, including US public entities under the DOJ ADA Title II rule (**26 April 2027** for jurisdictions of 50,000+, **26 April 2028** for smaller entities).
+
+---
+
+## Try it in one command
+
+```bash
+git clone https://github.com/Aelira-AI/aelira-core.git
+cd aelira-core
+docker compose -f docker-compose.quickstart.yml up -d
+```
+
+No `.env` file, no configuration. When it comes up:
+
+- API and interactive docs: <http://localhost:8000/docs>
+- Health check: <http://localhost:8000/health>
+
+That gets you scanning immediately. AI-generated fixes need a model, which is the one thing you have to choose — and it is genuinely your choice: bring your own key for Gemini, OpenAI, Anthropic, or xAI, point the OpenAI provider at any OpenAI-compatible endpoint, or run models locally with `--profile ollama` and keep every document on your own hardware. Nothing is sent anywhere you did not configure.
+
+## What it handles
+
+| Content | What it does |
+|---|---|
+| **PDF** | Tags structure, fixes reading order, adds alt text, OCRs scans, repairs tables |
+| **Word, PowerPoint, Excel** | Heading structure, alt text, contrast, table headers, slide reading order |
+| **LaTeX** | Converts equations to MathML so screen readers can read the maths |
+| **Web pages** | axe-core and Pa11y detection, with generated code fixes |
+| **Video and audio** | Transcription and WebVTT captions |
+| **Images** | Context-aware alt text, not filename echoes |
+
+It reads course content directly from **Canvas, Blackboard, Moodle and Brightspace** over LTI 1.3 and their APIs, and from **Google Drive** and **Microsoft 365**, so faculty do not have to download and re-upload anything.
+
+## Severity is computed, not generated
+
+Aelira uses AI to write explanations. It does **not** use AI to decide how serious a violation is. Severity comes from [`src/ai/severity_rules.py`](src/ai/severity_rules.py), a plain function of the rule that fired and the scanner's impact rating. It performs no I/O, holds no state, and calls no model.
+
+That means the same file produces the same severities on every run, including when your AI provider is rate-limiting or down. Language models sample, so anything that asks one to rate severity will disagree with itself eventually; setting `temperature=0` does not fix that.
+
+If your compliance reports have to be reproducible, that distinction matters more than any feature list. There is a test that fails if a single severity varies across repeated runs:
+
+```bash
+pytest tests/test_severity_determinism.py
+```
+
+Explanations are grounded too. A knowledge base of 112 WCAG guidelines is retrieved against, so a cited criterion is one that was looked up rather than recalled:
+
+```bash
+python scripts/seed_wcag_guidelines.py
+python scripts/generate_wcag_embeddings.py
+```
+
+## Self-hosting
+
+Aelira Core is designed to run entirely on your own infrastructure. It needs PostgreSQL, Redis, and optionally Ollama for local inference.
+
+Two settings point the system at your deployment, and everything user-facing derives from them:
+
+```bash
+PUBLIC_API_URL=https://accessibility-api.your-university.edu
+PUBLIC_DASHBOARD_URL=https://accessibility.your-university.edu
+CORS_ORIGINS=https://accessibility.your-university.edu
+```
+
+Full configuration is documented in [`.env.example`](.env.example), and the deployment guide is in [`docs/`](docs/).
+
+**A note on data.** With Ollama, documents never leave your servers: no cloud API, no third-party processing, nothing to put through a vendor review — the right deployment for anything covered by FERPA.
+
+**A note on analytics.** The dashboard ships with an optional, off-by-default [Umami](https://umami.is/) integration (Umami is open-source, self-hostable web analytics). It only activates if you set `VITE_UMAMI_WEBSITE_ID` and `VITE_UMAMI_URL` to point at **your own** Umami instance, and even then it loads only after the user accepts the analytics cookie consent. Nothing is hardcoded, and no usage data is ever sent to the Aelira project — there is no telemetry or phone-home anywhere in this codebase.
+
+## Architecture
+
+```
+src/
+  education/     document processors: PDF, Office, LaTeX, web, multimedia
+  ai/            provider abstraction, WCAG knowledge base, severity rules
+  integrations/  Canvas, Blackboard, Moodle, Brightspace, Google, Microsoft
+  api/           FastAPI routes (335 endpoints)
+  auth/          magic link, OAuth, API keys, sessions
+dashboard/       React 19 + Vite admin interface
+cli/             oclif command-line client (TypeScript, Node 20+)
+alembic/         database migrations
+tests/           pytest suite
+```
+
+| Layer | Stack |
+|---|---|
+| API | FastAPI, Python 3.14, SQLAlchemy 2.0 |
+| Storage | PostgreSQL 16, Redis |
+| Dashboard | React 19, Vite, TypeScript, Tailwind |
+| CLI | oclif, TypeScript, Node 20+ |
+| AI | Bring your own: Gemini, OpenAI, Anthropic, xAI, any OpenAI-compatible endpoint, or fully local via Ollama |
+| PDF | pikepdf, PyMuPDF, pdfplumber, OCRmyPDF |
+| Office | python-docx, python-pptx, openpyxl |
+| Web | Playwright, axe-core, Pa11y |
+| Media | faster-whisper, PySceneDetect, FFmpeg |
+| OCR & print | Tesseract (via OCRmyPDF), Ghostscript, qpdf |
+| LaTeX & conversion | TeX Live (pdflatex/LuaTeX), LaTeXML, Pandoc |
+
+The full annotated dependency inventory — every major dependency and what it does — is in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md); the pinned set is [requirements.txt](requirements.txt). Local AI model recommendations and hardware tiers are in [docs/deployment/local-ai-models.md](docs/deployment/local-ai-models.md).
+
+## Development
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+docker compose exec api alembic upgrade head
+docker compose exec api pytest
+```
+
+The dashboard runs separately with `cd dashboard && npm install && npm run dev`.
+
+## Command line
+
+`aelira` scans and remediates content from the terminal against any Aelira Core API — the quickstart above, a self-hosted deployment, or your own. It lives in [`cli/`](cli/); `@aelira/cli` on npm is coming but not published yet, so run it from source:
+
+```bash
+cd cli
+npm ci
+npm run build
+./bin/run.js --help
+```
+
+Every API-backed command takes `--api-url` (default `http://localhost:8000`, matching the quickstart), or set it once with `aelira config set api-url <url>`:
+
+```bash
+./bin/run.js report analytics --api-url http://localhost:8000
+```
+
+## What is not here
+
+Not in this repository:
+
+- **Billing, CRM, campaign and helpdesk integrations.** They run the commercial service and have nothing to do with remediation.
+- **Hosted infrastructure and support** are the commercial offering. The engine is here and complete; what you buy is somebody else running it.
+
+If you self-host and never pay us anything, the tool still works. That is the point of the licence.
+
+## Built on
+
+Aelira Core stands on excellent open-source tools, and it is worth naming the ones doing the heavy lifting: [axe-core](https://github.com/dequelabs/axe-core) and [Pa11y](https://pa11y.org/) for web accessibility rules, [Tesseract](https://github.com/tesseract-ocr/tesseract) and [OCRmyPDF](https://github.com/ocrmypdf/OCRmyPDF) for OCR, [pikepdf](https://github.com/pikepdf/pikepdf)/[PyMuPDF](https://github.com/pymupdf/PyMuPDF)/qpdf/Ghostscript for PDF surgery, [LaTeXML](https://math.nist.gov/~BMiller/LaTeXML/) and TeX Live for maths accessibility, [Pandoc](https://pandoc.org/) for format conversion, [FFmpeg](https://ffmpeg.org/) and [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for captioning, and [Playwright](https://playwright.dev/) for browser automation. Their licences ship with their packages; this project would not exist without them.
+
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for expectations. Security reports go to the process in [SECURITY.md](SECURITY.md), not to the public issue tracker.
+
+## Licence and branding
+
+[AGPL-3.0](LICENSE). You can run it, modify it, and self-host it, including inside an institution. If you offer it to others as a network service, your modifications have to be published under the same licence.
+
+The code is AGPL. The **name and logos are not** — see [BRANDING.md](BRANDING.md). You can also replace the branding entirely with environment variables rather than forking, which is the supported path for an institution that wants this under its own name.

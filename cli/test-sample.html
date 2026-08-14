@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Page for Accessibility</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .low-contrast { color: #999; background: #fff; }
+    </style>
+</head>
+<body>
+    <h1>Test Accessibility Page</h1>
+
+    <!-- Missing alt text -->
+    <img src="logo.png">
+
+    <!-- Low contrast text -->
+    <p class="low-contrast">This text has low contrast and may be hard to read.</p>
+
+    <!-- Form without label -->
+    <form>
+        <input type="text" name="username" placeholder="Username">
+        <button type="submit">Submit</button>
+    </form>
+
+    <!-- Link without descriptive text -->
+    <a href="#">Click here</a>
+
+    <!-- Empty heading -->
+    <h2></h2>
+
+    <p>This is a test page with several accessibility issues for testing the Aelira CLI.</p>
+</body>
+</html>

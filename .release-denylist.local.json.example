@@ -1,0 +1,7 @@
+{
+  "_comment": "Example local denylist. Copy to .release-denylist.local.json (gitignored) and replace with the real people/organisations your audits found.",
+  "patterns": [
+    "someone@example\\.edu",
+    "example\\s+organisation"
+  ]
+}

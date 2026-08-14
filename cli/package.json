@@ -1,0 +1,97 @@
+{
+  "name": "@aelira/cli",
+  "description": "AI-powered accessibility testing CLI for WCAG compliance - Higher Education Edition",
+  "version": "0.9.0",
+  "author": "Reg Crampton",
+  "bin": {
+    "aelira": "./bin/run.js"
+  },
+  "bugs": "https://github.com/Aelira-AI/aelira-core/issues",
+  "dependencies": {
+    "@axe-core/playwright": "^4.11.1",
+    "@clack/prompts": "^1.1.0",
+    "@oclif/core": "^4.9.0",
+    "@oclif/plugin-help": "^6.2.38",
+    "axe-core": "^4.11.1",
+    "form-data": "^4.0.5",
+    "open": "^11.0.0",
+    "picocolors": "^1.1.1",
+    "playwright": "^1.58.2"
+  },
+  "devDependencies": {
+    "@eslint/compat": "2.0.1",
+    "@oclif/prettier-config": "^0.2.1",
+    "@oclif/test": "^4.1.16",
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10",
+    "@types/node": "^25.5.0",
+    "@types/open": "^6.1.0",
+    "@types/sinon": "^21.0.0",
+    "chai": "^6.2.2",
+    "eslint": "9.39.5",
+    "eslint-config-oclif": "6.0.179",
+    "eslint-config-prettier": "10.1.8",
+    "mocha": "^11.8.0",
+    "oclif": "^4.22.92",
+    "shx": "^0.4.0",
+    "sinon": "^21.0.2",
+    "ts-node": "^10",
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "./bin",
+    "./dist",
+    "./oclif.manifest.json"
+  ],
+  "homepage": "https://github.com/Aelira-AI/aelira-core/tree/main/cli",
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "wcag",
+    "axe-core",
+    "ada",
+    "compliance",
+    "testing",
+    "cli"
+  ],
+  "license": "MIT",
+  "main": "dist/index.js",
+  "type": "module",
+  "oclif": {
+    "bin": "aelira",
+    "dirname": "aelira",
+    "commands": "./dist/commands",
+    "default": ".",
+    "plugins": [
+      "@oclif/plugin-help"
+    ],
+    "topicSeparator": " ",
+    "topics": {
+      "canvas": {
+        "description": "Scan and remediate Canvas course content from the terminal"
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aelira-AI/aelira-core.git",
+    "directory": "cli"
+  },
+  "scripts": {
+    "build": "shx rm -rf dist && tsc -b",
+    "lint": "eslint",
+    "postpack": "shx rm -f oclif.manifest.json",
+    "posttest": "npm run lint",
+    "prepack": "oclif manifest && oclif readme",
+    "test": "mocha --forbid-only \"test/**/*.test.ts\"",
+    "version": "oclif readme && git add README.md"
+  },
+  "types": "dist/index.d.ts",
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "diff": "^8.0.3"
+  }
+}

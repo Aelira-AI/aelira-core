@@ -1,0 +1,58 @@
+% AMS Math Package Test Suite
+% Testing various amsmath environments
+
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\begin{document}
+
+\section{AMS Math Environments}
+
+% align environment
+\begin{align}
+f(x) &= x^2 + 2x + 1 \\
+     &= (x + 1)^2
+\end{align}
+
+% gather environment (centered equations)
+\begin{gather}
+a + b = c \\
+x^2 + y^2 = z^2
+\end{gather}
+
+% multline environment (split long equation)
+\begin{multline}
+p(x) = x^8 + x^7 + x^6 + x^5 + \\
+       x^4 + x^3 + x^2 + x + 1
+\end{multline}
+
+% split environment (within equation)
+\begin{equation}
+\begin{split}
+(a + b)^3 &= (a + b)(a + b)^2 \\
+          &= (a + b)(a^2 + 2ab + b^2) \\
+          &= a^3 + 3a^2b + 3ab^2 + b^3
+\end{split}
+\end{equation}
+
+% cases environment (piecewise functions)
+\begin{equation}
+f(x) = \begin{cases}
+x^2 & \text{if } x \geq 0 \\
+-x^2 & \text{if } x < 0
+\end{cases}
+\end{equation}
+
+% aligned sub-environments
+\begin{equation}
+\left.
+\begin{aligned}
+x &= r\cos\theta \\
+y &= r\sin\theta
+\end{aligned}
+\right\}
+\quad \text{polar coordinates}
+\end{equation}
+
+\end{document}
