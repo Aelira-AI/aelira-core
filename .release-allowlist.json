@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Findings the release safety gate should not block on.",
+    "Every entry needs a reason. The gate prints what it suppressed on every run,",
+    "so an allowlist entry is a documented decision, never an invisible one.",
+    "Suppress a specific path and check. Never suppress a check globally."
+  ],
+  "allow": [
+    {
+      "path": "tests/test_blackboard_lti.py",
+      "check": "private-key",
+      "reason": "Test fixture. The value is the literal string 'test-private-key' wrapped in PEM markers, not key material. Verified 2026-08-14."
+    },
+    {
+      "path": "tests/test_canvas_lti_e2e.py",
+      "check": "generic-secret",
+      "reason": "Test fixture. Placeholder OAuth values ('encrypted-canvas-token', 'encrypted-canvas-refresh') asserting the token-storage path, not real credentials. Verified 2026-08-14."
+    },
+    {
+      "path": "tests/test_moodle_oauth_e2e.py",
+      "check": "generic-secret",
+      "reason": "Test fixture. Same placeholder pattern as the Canvas OAuth end-to-end test. Verified 2026-08-14."
+    },
+    {
+      "path": "tests/test_url_credential_redaction.py",
+      "check": "generic-secret",
+      "reason": "Test fixture, and deliberately so: the constant is the literal string 'not-a-real-password-placeholder'. This test exists because an earlier version used a fragment of a real Redis password. Verified 2026-08-14."
+    },
+    {
+      "path": "tests/test_settings_validation.py",
+      "check": "generic-secret",
+      "reason": "Test fixture. The literal string 'a-genuinely-random-secret-value' asserts that a non-placeholder JWT secret does not trigger the placeholder warning. Not key material. Verified 2026-08-15."
+    },
+    {
+      "path": "CODE_OF_CONDUCT.md",
+      "check": "vendor-contact",
+      "reason": "Correct and intended. Community and security policy documents must carry a real maintainer address: a code of conduct with no reporting address and a security policy with no disclosure address are useless. This is the project's own contact, not a vendor address baked into mail a self-hoster sends to their users. Verified 2026-08-15."
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "check": "vendor-contact",
+      "reason": "Correct and intended. Community and security policy documents must carry a real maintainer address: a code of conduct with no reporting address and a security policy with no disclosure address are useless. This is the project's own contact, not a vendor address baked into mail a self-hoster sends to their users. Verified 2026-08-15."
+    },
+    {
+      "path": "SECURITY.md",
+      "check": "vendor-contact",
+      "reason": "Correct and intended. Community and security policy documents must carry a real maintainer address: a code of conduct with no reporting address and a security policy with no disclosure address are useless. This is the project's own contact, not a vendor address baked into mail a self-hoster sends to their users. Verified 2026-08-15."
+    },
+    {
+      "path": "BRANDING.md",
+      "check": "vendor-contact",
+      "reason": "Correct and intended. A trademark policy without a permission-request address is unusable, and this is the project's own contact rather than something a self-hoster inherits. Verified 2026-08-15."
+    }
+  ]
+}

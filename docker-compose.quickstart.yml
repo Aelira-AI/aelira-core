@@ -1,0 +1,105 @@
+# Aelira Core — Zero-Config Quickstart
+#
+# Get running in under 2 minutes with no .env file needed:
+#
+#   docker compose -f docker-compose.quickstart.yml up -d
+#
+# Then visit:
+#   API:       http://localhost:8000/docs
+#   Dashboard: http://localhost:5173
+#
+# To add AI remediation (optional, requires 8GB+ RAM):
+#   docker compose -f docker-compose.quickstart.yml --profile ollama up -d
+#   docker exec aelira-ollama ollama pull gemma3:4b
+#
+# WARNING: This config uses insecure defaults. Do NOT use in production.
+# For production, use docker-compose.dev.yml with a configured .env file.
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg16
+    container_name: aelira-postgres
+    environment:
+      POSTGRES_DB: aelira
+      POSTGRES_USER: aelira
+      POSTGRES_PASSWORD: aelira
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aelira -d aelira"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aelira-network
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: aelira-redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aelira-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: aelira-ollama
+    profiles: ["ollama"]
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - aelira-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: aelira-api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://aelira:aelira@postgres:5432/aelira
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: quickstart-insecure-change-me
+      ENV: development
+      ALLOW_MOCK_AUTH: "true"
+      DEBUG: "true"
+      LOG_LEVEL: info
+      LLM_FALLBACK_PROVIDER: none
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ./src:/app/src
+      - ./alembic:/app/alembic
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload"
+    networks:
+      - aelira-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_data:
+
+networks:
+  aelira-network:
+    driver: bridge

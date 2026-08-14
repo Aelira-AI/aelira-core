@@ -1,0 +1,122 @@
+# Aelira Backend - ADA Compliance Scanner
+# Python 3.11+
+
+# Web Framework
+fastapi==0.121.1  # Updated for pydantic 2.12+ compatibility
+uvicorn[standard]==0.38.0  # Updated for latest features
+python-multipart==0.0.18  # Security: Fix CVE-2024-XXXX (ReDoS) and CVE-2024-YYYY (DoS)
+urllib3==2.6.3  # Security: Fix CVE-2025-66418, CVE-2025-66471, CVE-2026-21441 (Jan 2026)
+
+# Browser Automation & Testing
+playwright==1.56.0
+axe-playwright-python==0.1.4
+
+# Database
+psycopg2-binary==2.9.11
+sqlalchemy==2.0.44  # Updated for latest features
+alembic==1.17.1  # Updated for sqlalchemy 2.0.44
+
+# PDF Generation & Processing
+reportlab==4.4.3  # Updated for svglib 1.6.0 compatibility
+svglib==1.6.0  # For SVG support in reportlab
+# OR
+# weasyprint==60.1
+
+# PDF OCR & Processing (Higher Ed features)
+pytesseract==0.3.13
+Pillow==12.0.0
+pdf2image==1.17.0
+pypdf==6.1.3  # Migrated from PyPDF2 - latest with security fixes (RAM exhaustion, infinite loops)
+pdfminer.six==20251230  # Security: Fix GHSA-f83h-ghpp-7wcc (Jan 2026)
+PyMuPDF==1.26.6  # For PDF image extraction
+ocrmypdf==16.11.1  # Enhanced PDF OCR with structure preservation
+
+# PowerPoint Processing (Higher Ed features)
+python-pptx==0.6.23
+
+# Word Document Processing (Higher Ed features)
+python-docx==1.1.2
+
+# Excel Spreadsheet Processing (Higher Ed features)
+openpyxl==3.1.5
+
+# Multimedia Processing (Video/Audio Transcription)
+faster-whisper==1.2.1  # Fast Whisper speech-to-text
+ffmpeg-python==0.2.0  # FFmpeg wrapper for audio extraction
+
+# LaTeX to MathML Conversion (Higher Ed features)
+latex2mathml==3.78.1
+
+# Templating
+jinja2==3.1.6
+
+# Validation
+pydantic==2.12.4  # Updated for fastapi 0.121+ and ollama 0.6+ compatibility
+pydantic-settings==2.11.0  # Updated for pydantic 2.12+
+email-validator==2.3.0
+
+# Authentication
+python-jose[cryptography]==3.4.0  # Security: Fix CRITICAL algorithm confusion CVE and DoS CVE
+passlib[bcrypt]==1.7.4
+bcrypt==4.1.1  # Direct import in auth_service.py for API key hashing
+python-dotenv==1.0.0
+
+# Canvas LTI 1.3 Integration (Phase 4.5)
+PyLTI1p3==2.0.0
+
+# Google Workspace OAuth (Phase 5)
+google-auth==2.37.0  # Google authentication library
+google-auth-oauthlib==1.2.1  # Google OAuth 2.0 helpers
+google-auth-httplib2==0.2.0  # HTTP library integration
+google-api-python-client==2.163.0  # Google API client library
+
+# Microsoft 365 OAuth (Phase 5)
+msal==1.28.0  # Microsoft Authentication Library for OAuth 2.0
+
+# Monitoring & Error Tracking
+sentry-sdk[fastapi]==2.24.1  # Error tracking and performance monitoring
+
+# Testing
+pytest==8.3.4  # Compatible with pytest-asyncio 1.2.0 (requires pytest<9 and >=8.2)
+pytest-asyncio==1.2.0
+pytest-cov==7.0.0
+httpx==0.28.1
+locust==2.32.6  # Load testing (simulate 500 concurrent users)
+
+# Database - Async PostgreSQL driver for RAG
+asyncpg==0.29.0
+
+# Progress bars
+tqdm==4.67.1  # Security: Fix CLI arguments injection attack
+
+# Utilities
+python-dateutil==2.8.2
+numpy==2.3.5  # For color blindness simulation matrix transformations
+
+# AI Models (Ollama)
+ollama==0.6.0
+
+# Code Scanning (HTML/CSS/JS analysis)
+beautifulsoup4==4.12.2
+cssutils==2.11.1
+requests==2.32.4  # Security: Fix .netrc credentials leak and verify=False persistence CVEs
+
+# Document Security Analysis
+oletools==0.60.2  # VBA macro detection in Office documents
+defusedxml==0.7.1  # Safe XML parsing (XXE prevention)
+yara-python>=4.5.0  # Optional: Custom malware signature matching
+
+# Redis
+redis==5.0.1  # For rate limiting and caching
+
+# AWS (SES for marketing emails)
+boto3==1.38.0  # AWS SDK for SES marketing email sending
+
+# Payment Processing
+stripe==11.6.0  # Stripe SDK for subscription billing and tier upgrades
+
+# Text-to-Speech (Accessibility)
+piper-tts>=1.2.0  # Fast neural TTS for audio descriptions
+
+# Monitoring & Metrics
+prometheus-client==0.21.0  # Prometheus metrics for /metrics endpoint

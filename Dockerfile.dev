@@ -1,0 +1,93 @@
+FROM python:3.14-slim
+
+# Install system dependencies + LaTeXML stack + Node.js for Pa11y
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    pkg-config \
+    libcairo2-dev \
+    curl \
+    git \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    poppler-utils \
+    ffmpeg \
+    libnss3 \
+    libnspr4 \
+    libdbus-1-3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libatspi2.0-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libxshmfence1 \
+    # LaTeX/MathML conversion stack (Higher Ed STEM support)
+    # Full accessible PDF pipeline: LaTeXML + accessibility packages
+    latexml \
+    libxml2-utils \
+    libxslt1.1 \
+    imagemagick \
+    ghostscript \
+    texlive-base \
+    texlive-latex-base \
+    texlive-latex-recommended \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
+    texlive-science \
+    # Pandoc for LaTeX to HTML conversion
+    pandoc \
+    # Node.js for Pa11y accessibility scanner
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Pa11y globally for multi-engine accessibility scanning
+RUN npm install -g pa11y
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install development dependencies
+RUN pip install --no-cache-dir \
+    pytest \
+    pytest-asyncio \
+    pytest-cov \
+    black \
+    ruff \
+    httpx \
+    ollama
+
+# Install Piper TTS for accessibility audio generation
+RUN pip install --no-cache-dir piper-tts
+
+# Install Playwright browsers
+RUN playwright install chromium
+
+# Download Piper voice model for TTS
+RUN mkdir -p /app/data/piper-voices && \
+    curl -L -o /app/data/piper-voices/en_US-lessac-medium.onnx \
+    "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx?download=true" && \
+    curl -L -o /app/data/piper-voices/en_US-lessac-medium.onnx.json \
+    "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json?download=true"
+
+# Copy source code
+COPY . .
+
+# Expose port
+EXPOSE 8000
+
+# Development command (overridden in docker-compose)
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

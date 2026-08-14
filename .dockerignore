@@ -1,0 +1,61 @@
+# Aelira Backend - Docker Ignore File
+# Exclude files from Docker build context
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Development
+.env
+.env.local
+.env.development
+.env.production
+*.sqlite
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile.dev
+docker-compose.dev.yml
+docker-compose*.yml
+
+# Documentation
+*.md
+docs/
+
+# Test files
+test_*.py
+tests/
+
+# Uploads (temporary files)
+uploads/
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

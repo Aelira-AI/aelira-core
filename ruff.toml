@@ -1,0 +1,25 @@
+# Ruff configuration for Aelira backend
+# https://docs.astral.sh/ruff/configuration/
+
+[lint]
+# Explicit select pinning the gate to the rule families it was authored
+# against (ruff's old defaults). Newer ruff releases widened their defaults
+# (UP/BLE/B/I/...), which turned an unpinned gate into ~6k findings of pure
+# rule churn (measured 2026-08-15). Widen deliberately, not by upgrade.
+select = ["E4", "E7", "E9", "F"]
+
+# Ignore E711/E712 for SQLAlchemy filter conditions
+# SQLAlchemy requires `== None` and `== False` due to operator overloading
+ignore = ["E711", "E712"]
+
+# Also ignore E402 for module imports (FastAPI patterns sometimes require late imports)
+extend-ignore = ["E402"]
+
+[lint.per-file-ignores]
+# Allow unused imports in __init__.py files
+"__init__.py" = ["F401"]
+# Alembic's migration template imports op/sa unconditionally; generated
+# migrations that don't use both are expected, not defects.
+"alembic/versions/*" = ["F401"]
+# Tests may have unused variables for setup
+"tests/*" = ["F841"]
