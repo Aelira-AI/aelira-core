@@ -94,7 +94,7 @@ python-dateutil==2.8.2
 numpy==2.3.5  # For color blindness simulation matrix transformations
 
 # AI Models (Ollama)
-ollama==0.6.0
+ollama==0.6.2
 
 # Code Scanning (HTML/CSS/JS analysis)
 beautifulsoup4==4.12.2
