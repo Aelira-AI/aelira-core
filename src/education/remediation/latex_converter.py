@@ -29,8 +29,8 @@ class LaTeXConverter:
         "/var/tmp",
         "/app",  # Docker container working directory
         "/app/data",
-        os.environ.get("AELIRA_UPLOAD_DIR", "/opt/aelira-backend/uploads"),
-        os.environ.get("AELIRA_REMEDIATION_DIR", "/opt/aelira-backend/remediated"),
+        os.environ.get("AELIRA_UPLOAD_DIR", "/app/uploads"),
+        os.environ.get("AELIRA_REMEDIATION_DIR", "/app/remediated"),
     ]
 
     # Accessible HTML template with MathML support

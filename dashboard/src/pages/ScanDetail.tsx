@@ -78,7 +78,6 @@ export function ScanDetail(): React.ReactElement {
             : []
         };
 
-        console.log('[SCAN DETAIL] Transformed scan:', transformedScan, 'processing:', stillProcessing);
 
         setScan(transformedScan);
         setLoading(false);

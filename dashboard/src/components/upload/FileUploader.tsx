@@ -258,7 +258,6 @@ export function FileUploader({
 
   const cancelScan = async (fileItem: FileItem): Promise<void> => {
     try {
-      console.log('[FileUploader] Cancelling scan for file:', fileItem.id);
 
       // CRITICAL: Stop the polling loop first
       if (activePolls.current[fileItem.id]) {
@@ -266,18 +265,15 @@ export function FileUploader({
           clearTimeout(activePolls.current[fileItem.id] as ReturnType<typeof setTimeout>);
         }
         delete activePolls.current[fileItem.id];
-        console.log('[FileUploader] Stopped polling for file:', fileItem.id);
       }
 
       // If scan has started, delete it from backend
       if (fileItem.scanId) {
-        console.log('[FileUploader] Deleting scan from backend:', fileItem.scanId);
         await scansApi.deleteScan(fileItem.scanId);
       }
 
       // Remove from local state
       setFiles((prev) => prev.filter((f) => f.id !== fileItem.id));
-      console.log('[FileUploader] Removed file from state:', fileItem.id);
     } catch (error) {
       console.error('[FileUploader] Failed to cancel scan:', error);
       // Still remove from local state even if delete failed
@@ -286,22 +282,17 @@ export function FileUploader({
   };
 
   const pollProgress = async (scanId: string, fileId: string): Promise<void> => {
-    console.log('[FileUploader] pollProgress called with scanId:', scanId, 'fileId:', fileId);
 
     // Check if polling was cancelled
     if (!activePolls.current[fileId]) {
-      console.log('[FileUploader] Polling cancelled for file:', fileId);
       return;
     }
 
     try {
-      console.log('[FileUploader] About to call getScanProgress...');
       const progressData = await scansApi.getScanProgress(scanId);
-      console.log('[FileUploader] Poll progress response:', progressData);
 
       // Check again if polling was cancelled during API call
       if (!activePolls.current[fileId]) {
-        console.log('[FileUploader] Polling cancelled during API call for file:', fileId);
         return;
       }
 
@@ -320,13 +311,11 @@ export function FileUploader({
 
       // If still processing, poll again
       if (progressData.status.toUpperCase() === 'PROCESSING' && progressData.progress < 100) {
-        console.log('[FileUploader] Still processing, scheduling next poll in 1s...');
         const timeoutId = setTimeout(() => pollProgress(scanId, fileId), 1000);
         activePolls.current[fileId] = timeoutId;
       } else if (progressData.status.toUpperCase() === 'COMPLETED') {
         // Clear timeout tracking
         delete activePolls.current[fileId];
-        console.log('[FileUploader] Scan completed!');
 
         // Fetch full scan details and unwrap API response
         const scanDetails = await scansApi.getScan(scanId);
@@ -379,7 +368,6 @@ export function FileUploader({
         // Auto-remediate if enabled
         if (autoRemediate) {
           try {
-            console.log('[FileUploader] Auto-remediating scan:', scanId);
             setFiles((prev) =>
               prev.map((f) =>
                 f.id === fileId ? { ...f, isRemediating: true, progressMessage: 'Remediating...' } : f
@@ -396,7 +384,6 @@ export function FileUploader({
               remediateOptions.latex_formats = latexOutputFormats;
             }
             await scansApi.remediateScan(scanId, remediateOptions);
-            console.log('[FileUploader] Auto-remediation complete:', scanId);
             setCompletedScans((prev) =>
               prev.map((s) =>
                 s.scanId === scanId ? { ...s, isRemediating: false, isRemediated: true } : s
@@ -445,12 +432,10 @@ export function FileUploader({
 
       // Check if polling was cancelled before retrying
       if (!activePolls.current[fileId]) {
-        console.log('[FileUploader] Polling cancelled, not retrying for file:', fileId);
         return;
       }
 
       // Retry on error
-      console.log('[FileUploader] Retrying in 2s due to error...');
       const timeoutId = setTimeout(() => pollProgress(scanId, fileId), 2000);
       activePolls.current[fileId] = timeoutId;
     }
@@ -521,13 +506,9 @@ export function FileUploader({
         const result = await scansApi.uploadFile(fileItem.file, config.apiType, options);
 
         // DEBUG: Log upload result
-        console.log('[FileUploader] Upload result:', result);
-        console.log('[FileUploader] result.status:', result.status);
-        console.log('[FileUploader] result.scan_id:', result.scan_id);
 
         // Check if backend returns scan_id and status=PROCESSING (async mode)
         if (result.status && result.status.toUpperCase() === 'PROCESSING' && result.scan_id) {
-          console.log('[FileUploader] ASYNC MODE DETECTED - Starting polling!');
 
           // Update with scan_id and start polling
           setFiles((prev) =>
@@ -550,7 +531,6 @@ export function FileUploader({
           // Start polling for progress
           pollProgress(result.scan_id, fileItem.id);
         } else {
-          console.log('[FileUploader] SYNC MODE - Not polling');
 
           // Synchronous response (old behavior) - mark as complete immediately
           setFiles((prev) =>
@@ -590,20 +570,12 @@ export function FileUploader({
           // Auto-remediate if enabled (sync mode)
           if (autoRemediate && (result.scan_id || result.id)) {
             try {
-              console.log(
-                '[FileUploader] Auto-remediating scan (sync):',
-                result.scan_id || result.id
-              );
               const remediateOptions: { use_ai: boolean; latex_formats?: string[] } = { use_ai: true };
               // Pass LaTeX output formats if applicable
               if (config.apiType === 'latex' && latexOutputFormats.length > 0) {
                 remediateOptions.latex_formats = latexOutputFormats;
               }
               await scansApi.remediateScan(result.scan_id || result.id || '', remediateOptions);
-              console.log(
-                '[FileUploader] Auto-remediation complete (sync):',
-                result.scan_id || result.id
-              );
             } catch (remError) {
               console.error('[FileUploader] Auto-remediation failed (sync):', remError);
               // Don't fail the entire upload if remediation fails

@@ -381,8 +381,7 @@ export function DocumentReviewPage(): React.ReactElement {
               <div className="p-4">
                 <TableStructureEditor
                   structure={demoTableStructure}
-                  onChange={(updated: TableStructure) => {
-                    console.log('Table structure updated:', updated);
+                  onChange={(_updated: TableStructure) => {
                     toast.success('Table structure saved', 'Table Editor');
                   }}
                 />
@@ -393,8 +392,7 @@ export function DocumentReviewPage(): React.ReactElement {
               <div className="p-4">
                 <ReadingOrderOverlay
                   data={demoReadingOrderData}
-                  onChange={(newOrder: number[]) => {
-                    console.log('Reading order updated:', newOrder);
+                  onChange={(_newOrder: number[]) => {
                     toast.success('Reading order saved', 'Reading Order');
                   }}
                 />
