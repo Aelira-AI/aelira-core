@@ -4,7 +4,7 @@ AI-powered accessibility testing CLI for WCAG 2.1 AA compliance, optimized for H
 
 > **AELIRA** — **A**ccessibility, **E**quity, **L**earning, **I**nclusion, **R**emediation, **A**utomation.
 
-**Version:** v0.4.0
+**Version:** 0.9.0
 
 ## Installation
 
@@ -66,7 +66,7 @@ aelira scan pdf document.pdf --skip-ocr
 
 ---
 
-### `aelira scan docx` - Word Document Scanner (NEW in v0.3.0)
+### `aelira scan docx` - Word Document Scanner
 
 Scan Word documents (.docx) for accessibility issues.
 
@@ -87,7 +87,7 @@ aelira scan docx report.docx --format json
 
 ---
 
-### `aelira scan xlsx` - Excel Spreadsheet Scanner (NEW in v0.3.0)
+### `aelira scan xlsx` - Excel Spreadsheet Scanner
 
 Scan Excel spreadsheets (.xlsx) for accessibility issues.
 
@@ -128,11 +128,11 @@ aelira scan ppt ./presentations/
 
 ---
 
-### `aelira scan latex` - LaTeX to MathML Converter (Enhanced in v0.3.0)
+### `aelira scan latex` - LaTeX to MathML Converter
 
 Convert LaTeX equations to accessible MathML with ARIA labels.
 
-**Phase 4.1 Enhancements:**
+**Advanced LaTeX support:**
 - ChemFig chemical structure support
 - mhchem chemistry notation
 - Physics package (bra-ket, vectors, tensors)
@@ -159,7 +159,7 @@ aelira scan latex ./math-dept/
 
 ---
 
-### `aelira scan watch` - Watch Directory for Changes (NEW in v0.4.0)
+### `aelira scan watch` - Watch Directory for Changes
 
 Watch a directory for file changes and automatically scan new or modified files.
 
@@ -253,7 +253,7 @@ aelira scan <URL or HTML file>
 
 ---
 
-### `aelira scan web` - Advanced Web Scanner (NEW in v0.3.0)
+### `aelira scan web` - Advanced Web Scanner
 
 Advanced web scanning with batch and sitemap support.
 
@@ -312,7 +312,7 @@ aelira scan code <file or directory>
 
 ---
 
-### CSV Output Format (NEW in v0.4.0)
+### CSV Output Format
 
 All issue-based scan commands support `--format csv` for easy spreadsheet import:
 
@@ -454,7 +454,7 @@ aelira canvas remediate 101 555 --no-ai
 
 ## Remediation Commands
 
-### `aelira remediate` - Auto-Remediation Engine (NEW in v0.3.0)
+### `aelira remediate` - Auto-Remediation Engine
 
 Auto-remediate accessibility issues from a previous scan.
 
@@ -505,7 +505,7 @@ aelira report compliance dept-123 --pdf report.pdf
 
 ---
 
-### `aelira report certificate` - Compliance Certificate (NEW in v0.3.0)
+### `aelira report certificate` - Compliance Certificate
 
 Generate a professional compliance certificate (Bronze/Silver/Gold/Platinum).
 
@@ -537,7 +537,7 @@ aelira report certificate dept-123 --output certificate.pdf
 
 ---
 
-### `aelira report analytics` - Historical Trends (NEW in v0.3.0)
+### `aelira report analytics` - Historical Trends
 
 View historical compliance trends and deadline projections.
 
@@ -567,7 +567,7 @@ aelira report analytics --format json --output analytics.json
 
 ## Issue Management Commands
 
-### `aelira issues` - Issue Tracker (NEW in v0.3.0)
+### `aelira issues` - Issue Tracker
 
 Manage and track accessibility issues for team collaboration.
 
@@ -617,7 +617,7 @@ aelira issues list --severity critical --status open
 
 ## Cloud Integration Commands
 
-### `aelira integrations` - Cloud Integration Status (NEW in v0.3.0)
+### `aelira integrations` - Cloud Integration Status
 
 View connection status for Google Workspace, Microsoft 365, Canvas LMS, Blackboard Learn, Moodle LMS, and D2L Brightspace integrations.
 
@@ -649,7 +649,7 @@ aelira integrations --api-url http://localhost:8000 --api-key your-api-key
 
 ---
 
-### `aelira integrations connect` - Connect Cloud Providers (NEW in v0.3.0)
+### `aelira integrations connect` - Connect Cloud Providers
 
 Connect Google Workspace, Microsoft 365, Canvas LMS, or Blackboard Learn accounts via OAuth 2.0.
 
@@ -705,7 +705,7 @@ aelira integrations connect brightspace --instance-url https://university.bright
 
 ---
 
-### `aelira integrations folders` - Manage Folder Selection (NEW in v0.3.0)
+### `aelira integrations folders` - Manage Folder Selection
 
 **PRIVACY-CRITICAL:** Select which folders to sync from Google Drive or OneDrive. This prevents Aelira from scanning your entire cloud storage.
 
@@ -747,7 +747,7 @@ aelira integrations folders --provider microsoft
 
 ---
 
-### `aelira integrations sync` - Trigger File Sync (NEW in v0.3.0)
+### `aelira integrations sync` - Trigger File Sync
 
 Manually trigger background sync jobs for connected cloud providers. Sync jobs discover new files, detect changes, and queue accessibility scans.
 
@@ -790,7 +790,7 @@ aelira integrations sync --api-url http://localhost:8000 --api-key your-api-key
 
 ## Accessibility Analysis Commands
 
-### `aelira focus` - Focus Order Analysis (NEW)
+### `aelira focus` - Focus Order Analysis
 
 Analyze keyboard focus order for WCAG 2.4.3 compliance. Detects focus traps, invisible elements, and illogical tab order.
 
@@ -811,7 +811,7 @@ aelira focus ./index.html --format json --output focus-report.json
 
 ---
 
-### `aelira cvd` - Color Vision Deficiency Analysis (NEW)
+### `aelira cvd` - Color Vision Deficiency Analysis
 
 Simulate how your site appears to color-blind users (8% of males affected).
 
@@ -846,7 +846,7 @@ aelira cvd ./index.html --all-types --format json
 
 ## Bulk Operations
 
-### `aelira bulk` - Bulk Directory Operations (NEW)
+### `aelira bulk` - Bulk Directory Operations
 
 Scan entire directories with parallel processing, progress tracking, and resume support.
 
@@ -886,7 +886,7 @@ aelira bulk export ./scan-results.json --format csv --output results.csv
 
 ## Comparison & History
 
-### `aelira diff` - Compare Scan Results (NEW)
+### `aelira diff` - Compare Scan Results
 
 Compare two scan results to track accessibility changes over time.
 
@@ -908,7 +908,7 @@ aelira diff old.json new.json --show-fixed
 
 ---
 
-### `aelira history` - Scan History (NEW)
+### `aelira history` - Scan History
 
 View and manage your scan history.
 
@@ -935,7 +935,7 @@ aelira history --export history.json
 
 ## Configuration
 
-### `aelira config` - Configuration Management (NEW)
+### `aelira config` - Configuration Management
 
 Manage CLI configuration with support for multiple profiles.
 
@@ -963,7 +963,7 @@ Valid `config set` keys: `api-url`, `api-key`, `department`.
 
 ---
 
-### `aelira auth login` - Authenticate CLI (NEW in v0.4.0)
+### `aelira auth login` - Authenticate CLI
 
 Authenticate the CLI with the Aelira backend. Three methods are supported:
 
@@ -986,7 +986,7 @@ aelira auth login
 
 ---
 
-### `aelira auth logout` - Remove Authentication (NEW in v0.4.0)
+### `aelira auth logout` - Remove Authentication
 
 Remove the stored API key from local config.
 
@@ -996,7 +996,7 @@ aelira auth logout
 
 ---
 
-### `aelira export` - Export Scan History (NEW in v0.4.0)
+### `aelira export` - Export Scan History
 
 Export scan history to CSV or JSON.
 
@@ -1064,7 +1064,7 @@ This makes the CLI resilient to transient network issues and backend restarts.
 
 ## CI/CD Integration
 
-### `aelira ci` - CI/CD Command (NEW)
+### `aelira ci` - CI/CD Command
 
 Dedicated command for CI/CD pipelines with proper exit codes, JUnit XML output, and badge generation.
 
@@ -1177,88 +1177,19 @@ The API will be available at `http://localhost:8000` (see the root `README.md` f
 
 ---
 
-## What's New in v0.4.0
+## Feature highlights
 
-### Authentication
+**Scanning** — PDF (with OCR), Word, PowerPoint, Excel, LaTeX→MathML, images (AI alt text), video/audio (transcription), source code, and websites (single, batch, or from a sitemap). Watch a directory to auto-scan on change.
 
-- **`aelira auth login`** - Authenticate via email magic link, browser, or API key
-- **`aelira auth logout`** - Remove stored API key from config
+**Remediation** — `aelira remediate` fixes issues and downloads the corrected file; `aelira diff` tracks regressions between scans.
 
-### Export
+**LMS & cloud** — Canvas course scanning and per-file remediation; cloud integration status, OAuth connect, folder selection, and background sync for Google, Microsoft, Blackboard.
 
-- **`aelira export`** - Export scan history to CSV or JSON
+**Reporting** — department compliance reports, historical trend analytics with deadline projection, and Bronze/Silver/Gold/Platinum compliance certificates.
 
-### Directory Watching
+**Team & CI** — issue tracker with assignments and filters; `aelira ci` emits exit codes, JUnit XML, and badges for pipelines; CSV/JSON export of scan history.
 
-- **`aelira scan watch`** - Watch a directory for file changes and auto-scan
-
-### CSV Output
-
-- `--format csv` now available on all issue-based scan commands (`scan pdf`, `scan docx`, `scan ppt`, `scan xlsx`, `scan latex`, `scan code`, `scan web`)
-
-### Progress & Reliability
-
-- **Real-time progress tracking** - Scan commands show percentage and current operation during backend processing
-- **Automatic retry** - Failed API requests are retried 3 times with exponential backoff (429/502/503/504 and network errors)
-
-### Environment Variables
-
-- `AELIRA_CONFIG_DIR` - Override config directory for CI/testing isolation
-
----
-
-## What's New in v0.3.0
-
-### New CLI Commands (Latest)
-
-- **`aelira integrations`** - Cloud integration status for Google, Microsoft, Canvas, Blackboard
-- **`aelira integrations connect`** - Connect cloud providers via OAuth 2.0
-- **`aelira integrations folders`** - Privacy-first folder selection for cloud sync
-- **`aelira integrations sync`** - Trigger background file sync jobs
-- **`aelira config`** - Configuration management with multiple profiles
-- **`aelira focus`** - WCAG 2.4.3 focus order analysis (detects focus traps)
-- **`aelira cvd`** - Color vision deficiency simulation (8 CVD types)
-- **`aelira ci`** - CI/CD integration with exit codes, JUnit XML, badges
-- **`aelira bulk`** - Bulk directory scanning with parallel processing
-- **`aelira diff`** - Compare scan results, track regressions over time
-- **`aelira history`** - Scan history management
-
-### New Document Scanners
-
-- **Word Document Scanner** (`scan docx`) - Full .docx accessibility analysis
-- **Excel Spreadsheet Scanner** (`scan xlsx`) - Spreadsheet accessibility checks
-
-### New Web Features
-
-- **Advanced Web Scanner** (`scan web`) - Batch scanning and sitemap support
-- **Sitemap Scanning** - Automatically scan all URLs from sitemap.xml
-
-### Auto-Remediation
-
-- **Remediate Command** (`remediate`) - Automatically fix accessibility issues
-- Download remediated files directly from CLI
-
-### Analytics & Reporting
-
-- **Historical Trends** (`report analytics`) - Track compliance over time
-- **Deadline Projection** - April 2027 ADA Title II compliance forecasting
-- **Compliance Certificates** (`report certificate`) - Bronze/Silver/Gold/Platinum certificates
-
-### Team Collaboration
-
-- **Issue Tracker** (`issues`) - Manage and assign accessibility issues
-- Status updates, assignments, and notes
-- Filter by severity and status
-
-### Enhanced LaTeX (Phase 4.1)
-
-- ChemFig chemical structure support
-- mhchem chemistry notation
-- Physics package (bra-ket, vectors, tensors)
-- TikZ diagram descriptions
-- Custom macro expansion
-
----
+**Authentication** — magic-link, browser, or API-key login with multi-profile config, and automatic retry with backoff on transient API errors.
 
 ## Compliance context
 
