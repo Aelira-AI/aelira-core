@@ -4,7 +4,7 @@
 # Web Framework
 fastapi==0.121.1  # Updated for pydantic 2.12+ compatibility
 uvicorn[standard]==0.38.0  # Updated for latest features
-python-multipart==0.0.18  # Security: Fix CVE-2024-XXXX (ReDoS) and CVE-2024-YYYY (DoS)
+python-multipart==0.0.32  # Security: Fix CVE-2024-XXXX (ReDoS) and CVE-2024-YYYY (DoS)
 urllib3==2.6.3  # Security: Fix CVE-2025-66418, CVE-2025-66471, CVE-2026-21441 (Jan 2026)
 
 # Browser Automation & Testing
