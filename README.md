@@ -126,14 +126,14 @@ The dashboard runs separately with `cd dashboard && npm install && npm run dev`.
 
 ## Command line
 
-`aelira` scans and remediates content from the terminal against any Aelira Core API — the quickstart above, a self-hosted deployment, or your own. It lives in [`cli/`](cli/); `@aelira/cli` on npm is coming but not published yet, so run it from source:
+`aelira` scans and remediates content from the terminal against any Aelira Core API — the quickstart above, a self-hosted deployment, or your own.
 
 ```bash
-cd cli
-npm ci
-npm run build
-./bin/run.js --help
+npm install -g @aelira/cli
+aelira --help
 ```
+
+It lives in [`cli/`](cli/) if you prefer to run it from source (`npm ci && npm run build && ./bin/run.js`).
 
 Every API-backed command takes `--api-url` (default `http://localhost:8000`, matching the quickstart), or set it once with `aelira config set api-url <url>`:
 

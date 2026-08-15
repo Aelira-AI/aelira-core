@@ -36,6 +36,10 @@ jobs:
           cache-dependency-path: cli/package-lock.json
           registry-url: "https://registry.npmjs.org"
 
+      # OIDC trusted publishing needs npm >= 11.5; Node 20 ships npm 10
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         run: npm ci
 
@@ -57,7 +61,7 @@ jobs:
             exit 1
           fi
 
+      # Credential-free: npm authenticates via the workflow's OIDC identity
+      # (trusted publisher configured on the package). Provenance is automatic.
       - name: Publish
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
