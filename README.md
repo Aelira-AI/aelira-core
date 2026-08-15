@@ -162,4 +162,6 @@ Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for
 
 [AGPL-3.0](LICENSE). You can run it, modify it, and self-host it, including inside an institution. If you offer it to others as a network service, your modifications have to be published under the same licence.
 
+One deliberate exception: the command-line client in [`cli/`](cli/) is [MIT-licensed](cli/LICENSE), so institutions and vendors can embed or script against it without AGPL obligations. The engine the CLI talks to remains AGPL.
+
 The code is AGPL. The **name and logos are not** — see [BRANDING.md](BRANDING.md). You can also replace the branding entirely with environment variables rather than forking, which is the supported path for an institution that wants this under its own name.

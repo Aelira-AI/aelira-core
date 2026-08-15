@@ -1,0 +1,63 @@
+name: Publish CLI to npm
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # npm provenance attestation
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      # Mechanically unavoidable gate: nothing publishes unless the tagged
+      # tree passes the safety scan.
+      - name: Release safety gate
+        working-directory: .
+        run: python scripts/verify_release_safety.py
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: cli/package-lock.json
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Verify tag matches package version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ] && [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
