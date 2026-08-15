@@ -1,0 +1,115 @@
+# Aelira Core — production self-hosting
+#
+#   cp .env.example .env    # set the REQUIRED section at minimum
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# With fully local AI (documents never leave this host):
+#   docker compose -f docker-compose.prod.yml --profile ollama up -d
+#   docker exec aelira-ollama ollama pull qwen2.5vl:3b gemma3:4b qwen2.5-coder:7b nomic-embed-text
+#
+# What this file deliberately does NOT do:
+#   - TLS termination. Put your reverse proxy (nginx, Traefik, Caddy) in
+#     front of api (8000) and dashboard (8080), and set PUBLIC_API_URL /
+#     PUBLIC_DASHBOARD_URL / CORS_ORIGINS in .env to the public hostnames.
+#   - Multi-worker API. UVICORN_WORKERS stays 1 until the job-claim race
+#     (tracked in public issues) is fixed. Scale scanning by hardware, not
+#     workers.
+#
+# Images are published from CI with provenance; pin a version tag rather
+# than tracking latest in real deployments. To build locally instead:
+#   docker compose -f docker-compose.prod.yml build
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg16
+    container_name: aelira-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aelira}
+      POSTGRES_USER: ${POSTGRES_USER:-aelira}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aelira} -d ${POSTGRES_DB:-aelira}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: aelira-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.0}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aelira-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-aelira}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aelira}}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Single worker until the job-claim race is fixed (see entrypoint.sh)
+      UVICORN_WORKERS: 1
+    ports:
+      - "${API_BIND:-127.0.0.1:8000}:8000"
+    volumes:
+      - upload_data:/app/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  dashboard:
+    image: ghcr.io/aelira-ai/aelira-core-dashboard:${AELIRA_VERSION:-0.9.0}
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: aelira-dashboard
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${DASHBOARD_BIND:-127.0.0.1:8080}:80"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: aelira-ollama
+    restart: unless-stopped
+    profiles: ["ollama"]
+    volumes:
+      - ollama_data:/root/.ollama
+    # Uncomment for NVIDIA GPU acceleration:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  postgres_data:
+  redis_data:
+  upload_data:
+  ollama_data:

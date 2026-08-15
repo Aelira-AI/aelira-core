@@ -2,6 +2,10 @@
 
 Aelira Core is built to run entirely on infrastructure you control:
 PostgreSQL, Redis, and either a cloud LLM provider or a local one (Ollama).
+
+The fastest production path is the full-stack compose file at the repo root:
+`docker-compose.prod.yml` — published images, healthchecks, persistent
+volumes, localhost-bound ports for your reverse proxy to front.
 There is no dependency on a hosted Aelira service.
 
 This guide covers a production-style deployment with Docker Compose. It does

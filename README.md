@@ -77,7 +77,14 @@ PUBLIC_DASHBOARD_URL=https://accessibility.your-university.edu
 CORS_ORIGINS=https://accessibility.your-university.edu
 ```
 
-Full configuration is documented in [`.env.example`](.env.example), and the deployment guide is in [`docs/`](docs/).
+The production compose file runs the full stack (API, dashboard, PostgreSQL, Redis, optional Ollama) from the published images:
+
+```bash
+cp .env.example .env   # set the REQUIRED section
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Full configuration is documented in [`.env.example`](.env.example) — reconciled against every variable the code reads — and the deployment guide is in [`docs/`](docs/).
 
 **A note on data.** With Ollama, documents never leave your servers: no cloud API, no third-party processing, nothing to put through a vendor review — the right deployment for anything covered by FERPA.
 
