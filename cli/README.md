@@ -666,10 +666,12 @@ aelira integrations connect [provider]
 
 - `google` - Google Workspace (Drive, Docs, Slides, Sheets)
 - `microsoft` - Microsoft 365 (OneDrive, Word, PowerPoint, Excel)
-- `canvas` - Canvas LMS
-- `blackboard` - Blackboard Learn
-- `moodle` - Moodle LMS (World's most-used LMS)
-- `brightspace` - D2L Brightspace (Community college favorite)
+- `canvas` - Canvas LMS — **production-verified**
+- `blackboard` - Blackboard Learn — **experimental** (implemented, not yet tested end to end)
+- `moodle` - Moodle LMS — **experimental** (implemented, not yet tested end to end)
+- `brightspace` - D2L Brightspace — **beta** (tested against a D2L developer instance, not recently re-verified)
+
+> LMS connector maturity varies. See the [integration status table](../README.md#lms-integration-status) in the main README before relying on a connector in production.
 
 **Examples:**
 ```bash

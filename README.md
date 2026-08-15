@@ -10,7 +10,7 @@
 [![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-336791.svg)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Deploy-Docker_Compose-2496ED.svg)](docker-compose.quickstart.yml)
 
-> **Status: 0.9.0 beta.** The engine — scanning, deterministic scoring, remediation, LMS integrations — is complete and tested (1,500+ backend tests). Pre-1.0 means we're still hardening operational edges: long-running scans are not yet durable across API restarts, and multi-worker job processing is not yet supported (single worker is the default and the safe configuration). Known work is tracked openly in the issues.
+> **Status: 0.9.0 beta.** The engine — scanning, deterministic scoring, remediation — is complete and tested (1,500+ backend tests). LMS integration maturity varies by platform: Canvas is production-verified, the others range from beta to untested (see the [integration status table](#lms-integration-status) below). Pre-1.0 means we're still hardening operational edges: long-running scans are not yet durable across API restarts, and multi-worker job processing is not yet supported (single worker is the default and the safe configuration). Known work is tracked openly in the issues.
 
 Most accessibility tools tell you a PDF has no tags, an image has no alt text, and a table has no headers. Someone still has to open the file and fix it. Aelira does the fixing: you give it a document, it gives you back a remediated one, with a report of what changed and why.
 
@@ -44,7 +44,20 @@ That gets you scanning immediately. AI-generated fixes need a model, which is th
 | **Video and audio** | Transcription and WebVTT captions |
 | **Images** | Context-aware alt text, not filename echoes |
 
-It reads course content directly from **Canvas, Blackboard and Brightspace** over LTI 1.3 and their APIs, and from **Moodle** over its API, and from **Google Drive** and **Microsoft 365**, so faculty do not have to download and re-upload anything.
+It reads course content directly from your LMS, plus **Google Drive** and **Microsoft 365**, so faculty do not have to download and re-upload anything.
+
+### LMS integration status
+
+Connectors are at different stages of verification. We label them honestly rather than imply parity — check your platform before you depend on it:
+
+| LMS | Connection | Status |
+|---|---|---|
+| **Canvas** | LTI 1.3 + REST API | **Production-verified** — tested end to end |
+| **Brightspace (D2L)** | LTI 1.3 + API | **Beta** — built and tested against a D2L developer instance, not recently re-verified |
+| **Blackboard** | LTI 1.3 + API | **Experimental** — implemented, not yet tested end to end |
+| **Moodle** | REST API | **Experimental** — implemented, not yet tested end to end |
+
+If you run one of the experimental integrations, we would value the feedback — open an issue with what you find.
 
 ## Severity is computed, not generated
 
