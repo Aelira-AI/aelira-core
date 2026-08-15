@@ -958,7 +958,7 @@ def test_lti_config_generation():
     print("Canvas LTI Developer Key Configuration")
     print("=" * 60)
     print(json.dumps(config, indent=2))
-    print("\n✓ Copy this JSON into Canvas Developer Keys > Configure > Paste JSON")
+    print("\nCopy this JSON into Canvas Developer Keys > Configure > Paste JSON")
 
 
 if __name__ == "__main__":

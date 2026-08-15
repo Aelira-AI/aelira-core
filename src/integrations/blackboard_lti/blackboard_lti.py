@@ -707,7 +707,7 @@ def test_lti_config_generation():
     print("Blackboard LTI Registration Configuration")
     print("=" * 60)
     print(json.dumps(config, indent=2))
-    print("\n✓ Use this configuration when registering in Blackboard Admin")
+    print("\nUse this configuration when registering in Blackboard Admin")
 
 
 if __name__ == "__main__":

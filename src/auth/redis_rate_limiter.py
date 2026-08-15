@@ -49,7 +49,7 @@ def get_redis_client() -> Optional[redis.Redis]:
             _redis_client.ping()
             # Redacted: the URL carries the password inline, and logging it
             # verbatim wrote the credential to stdout, Loki and Sentry.
-            logger.info(f"✅ Connected to Redis at {redact_url_credentials(redis_url)}")
+            logger.info(f"Connected to Redis at {redact_url_credentials(redis_url)}")
         except redis.ConnectionError as e:
             logger.warning(
                 f"Failed to connect to Redis: {e}. Rate limiting will use in-memory fallback."

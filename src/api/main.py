@@ -244,10 +244,10 @@ async def startup_event():
     logger.info("Initializing RAG knowledge base...")
     try:
         await ollama_client.initialize()
-        logger.info("✅ RAG knowledge base initialized successfully")
+        logger.info("RAG knowledge base initialized successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize RAG knowledge base: {e}")
-        logger.warning("⚠️  API will fall back to non-RAG classification")
+        logger.error(f"Failed to initialize RAG knowledge base: {e}")
+        logger.warning("API will fall back to non-RAG classification")
 
     # Initialize the new LLM provider system
     logger.info("Initializing LLM provider manager...")
@@ -258,16 +258,16 @@ async def startup_event():
             f"✅ LLM provider manager initialized (primary: {manager.primary_type.value})"
         )
     except Exception as e:
-        logger.error(f"❌ Failed to initialize LLM provider manager: {e}")
+        logger.error(f"Failed to initialize LLM provider manager: {e}")
 
     # Start scan timeout monitor (auto-fails stuck scans)
     try:
         from src.jobs.scan_timeout import start_scan_timeout_loop
 
         asyncio.create_task(start_scan_timeout_loop())
-        logger.info("✅ Scan timeout monitor started")
+        logger.info("Scan timeout monitor started")
     except Exception as e:
-        logger.error(f"❌ Failed to start scan timeout monitor: {e}")
+        logger.error(f"Failed to start scan timeout monitor: {e}")
 
 
 @app.on_event("shutdown")
@@ -276,7 +276,7 @@ async def shutdown_event():
     logger.info("Closing RAG knowledge base...")
     try:
         await ollama_client.close()
-        logger.info("✅ RAG knowledge base closed successfully")
+        logger.info("RAG knowledge base closed successfully")
     except Exception as e:
         logger.error(f"Error closing RAG knowledge base: {e}")
 
@@ -284,7 +284,7 @@ async def shutdown_event():
     logger.info("Closing LLM provider manager...")
     try:
         await close_provider_manager()
-        logger.info("✅ LLM provider manager closed successfully")
+        logger.info("LLM provider manager closed successfully")
     except Exception as e:
         logger.error(f"Error closing LLM provider manager: {e}")
 
@@ -307,7 +307,7 @@ if settings.enable_security_headers:
         enable_hsts=settings.enable_hsts and settings.env == "production",
         hsts_max_age=settings.hsts_max_age,
     )
-    logger.info("✅ Security headers middleware enabled")
+    logger.info("Security headers middleware enabled")
 
 # CSRF Protection middleware
 if settings.enable_csrf:
@@ -321,7 +321,7 @@ if settings.enable_csrf:
         cookie_httponly=False,
         enabled=settings.env == "production",  # Only enforce in production
     )
-    logger.info("✅ CSRF protection middleware enabled")
+    logger.info("CSRF protection middleware enabled")
 
 
 # Prometheus metrics middleware for request tracking
@@ -959,8 +959,7 @@ async def analyze_violation(
 <img src="{src}" alt="{ai_alt_text}">
 ```
 
-## AI-Generated Alt Text ⭐
-The vision model analyzed the image and generated: "{ai_alt_text}"
+## AI-Generated Alt Text The vision model analyzed the image and generated: "{ai_alt_text}"
 
 ## Implementation Steps
 1. Add the alt attribute with the AI-generated description
@@ -1089,8 +1088,7 @@ async def batch_analyze_violations(
 <img src="{src}" alt="{ai_alt_text}">
 ```
 
-## AI-Generated Alt Text ⭐
-The vision model analyzed the image and generated: "{ai_alt_text}"
+## AI-Generated Alt Text The vision model analyzed the image and generated: "{ai_alt_text}"
 
 ## Implementation Steps
 1. Add the alt attribute with the AI-generated description
