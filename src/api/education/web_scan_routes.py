@@ -1423,7 +1423,7 @@ async def scan_code(
     """
     Scan uploaded website code (HTML/CSS/JS) for accessibility issues
 
-    NEW ENDPOINT - Static code analysis for web accessibility
+    Static code analysis for web accessibility
     REQUIRES API KEY IN PRODUCTION
     REQUIRES: website feature (tier-gated via TIER_QUOTAS; enabled on all core tiers)
 

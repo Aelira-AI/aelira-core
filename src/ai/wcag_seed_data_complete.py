@@ -961,8 +961,8 @@ ADDITIONAL_WCAG_RULES = [
 # Combine all rules
 ALL_WCAG_GUIDELINES = DETAILED_RULES + EXTENDED_WCAG_GUIDELINES + ADDITIONAL_WCAG_RULES
 
-# Print summary
-print(f"Total WCAG Guidelines: {len(ALL_WCAG_GUIDELINES)}")
-print(f"  - Detailed rules: {len(DETAILED_RULES)}")
-print(f"  - Extended rules: {len(EXTENDED_WCAG_GUIDELINES)}")
-print(f"  - Additional rules: {len(ADDITIONAL_WCAG_RULES)}")
+if __name__ == "__main__":
+    print(f"Total WCAG Guidelines: {len(ALL_WCAG_GUIDELINES)}")
+    print(f"  - Detailed rules: {len(DETAILED_RULES)}")
+    print(f"  - Extended rules: {len(EXTENDED_WCAG_GUIDELINES)}")
+    print(f"  - Additional rules: {len(ADDITIONAL_WCAG_RULES)}")

@@ -12,11 +12,11 @@ SECURITY NOTES:
 - BYOK_ENCRYPTION_KEY env var must be set before using this feature
 - See src/utils/encryption.py for encryption/decryption utilities
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
 
 # revision identifiers, used by Alembic.
 revision: str = "2026_02_05_byok_encrypted"

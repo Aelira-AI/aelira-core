@@ -28,11 +28,10 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterable, List, Pattern
 
-# Infrastructure that must never appear in a public repo.
-VPS_IP = r"149\.28\.165\.188"
-# Any subdomain of the vendor domain. Enumerating known subdomains was the
-# earlier approach and it missed app.aelira.ai in 17 places, so match the
-# shape instead of a list.
+# Any subdomain of the vendor domain — matched by shape, not an enumerated
+# list, so a new internal subdomain can't slip through. Specific internal
+# infrastructure values (IPs, hostnames) live in the gitignored local
+# denylist alongside named entities, never in this tracked file.
 INTERNAL_HOSTS = r"[A-Za-z0-9_-]+\.aelira\.ai"
 
 # Vendor contact addresses. A self-hosted deployment that ships these tells
@@ -63,11 +62,6 @@ def _load_named_entities() -> str:
 NAMED_ENTITIES = _load_named_entities()
 
 CHECKS: List[tuple[str, Pattern[str], str]] = [
-    (
-        "vps-ip",
-        re.compile(VPS_IP),
-        "Production VPS IP address",
-    ),
     (
         "internal-host",
         re.compile(INTERNAL_HOSTS),

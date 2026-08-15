@@ -8,11 +8,11 @@ This migration adds images_this_month column to track standalone image API usage
 separately from document scan quotas. This allows a more generous image limit
 (20/month for free tier) while keeping document scans limited (10/month).
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
 
 # revision identifiers, used by Alembic.
 revision: str = "2026_01_19_image"
@@ -30,13 +30,11 @@ def upgrade() -> None:
     )
 
     # Set default values for existing rows
-    op.execute(
-        """
+    op.execute("""
         UPDATE departments
         SET images_this_month = 0
         WHERE images_this_month IS NULL
-        """
-    )
+        """)
 
     # Make column non-nullable after setting defaults
     op.alter_column(

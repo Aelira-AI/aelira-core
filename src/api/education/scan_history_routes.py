@@ -29,8 +29,8 @@ async def get_scan_history(
     """
     Get scan history for the current department
 
-    ✨ NEW ENDPOINT - View all past scans
-    REQUIRES API KEY IN PRODUCTION 🔒
+     View all past scans
+    REQUIRES API KEY IN PRODUCTION
 
     Query params:
     - scan_type: Filter by type (pdf, powerpoint, latex)
@@ -100,8 +100,8 @@ async def get_scan_details(
     """
     Get detailed results for a specific scan
 
-    ✨ NEW ENDPOINT - View full scan details
-    REQUIRES API KEY IN PRODUCTION 🔒
+     View full scan details
+    REQUIRES API KEY IN PRODUCTION
     """
     _, user_id, department_id = api_key_info
 
@@ -208,8 +208,8 @@ async def get_scan_progress(
     """
     Get real-time progress for a scan
 
-    ✨ NEW ENDPOINT - Poll for scan progress
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Poll for scan progress
+    REQUIRES API KEY IN PRODUCTION
 
     Returns:
         - status: scan status (pending, processing, completed, failed)
@@ -246,8 +246,8 @@ async def cancel_scan(
     """
     Cancel a scan in progress and delete its record
 
-    ✨ NEW ENDPOINT - Cancel running scans
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Cancel running scans
+    REQUIRES API KEY IN PRODUCTION
 
     Note: Background processing will continue until next progress check,
     but the scan will be marked as CANCELLED and results will be deleted.
@@ -289,8 +289,8 @@ async def download_scan_report(
     """
     Download a comprehensive PDF report of the accessibility scan
 
-    ✨ NEW ENDPOINT - Download scan report
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Download scan report
+    REQUIRES API KEY IN PRODUCTION
 
     Returns:
         PDF report with scan results, issues, and AI-generated fixes
@@ -389,8 +389,8 @@ async def get_scan_html(
     """
     Get the accessible HTML output for a scan (fixed/remediated code)
 
-    ✨ NEW ENDPOINT - Download fixed HTML
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Download fixed HTML
+    REQUIRES API KEY IN PRODUCTION
     """
     _, user_id, department_id = api_key_info
 
@@ -419,8 +419,8 @@ async def get_department_stats(
     """
     Get statistics for the current department
 
-    ✨ NEW ENDPOINT - Department-wide statistics
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Department-wide statistics
+    REQUIRES API KEY IN PRODUCTION
     """
     _, user_id, department_id = api_key_info
 

@@ -5,15 +5,15 @@ Revises: 2025_11_09_pa11y_multi_engine_results
 Create Date: 2025-11-12 12:00:00.000000
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-
 # revision identifiers, used by Alembic.
-revision: str = '2025_11_12_scantype'
-down_revision: Union[str, None] = '1b21aeb48f28'
+revision: str = "2025_11_12_scantype"
+down_revision: Union[str, None] = "1b21aeb48f28"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -20,8 +20,8 @@ the IP-velocity / rapid-signup heuristics in abuse_detector.py cover the rest.
 
 # Known disposable / temp-mail domains. Lowercase, no leading dot.
 DISPOSABLE_DOMAINS = {
-    # --- exploited the .edu / academic suffix loophole ---
-    "nullsto.edu.pl",  # exploited the .edu.pl academic-TLD loophole for free-tier abuse
+    # --- disposable providers using academic-looking suffixes ---
+    "nullsto.edu.pl",  # disposable provider on an openly-registrable academic ccTLD
     # --- mainstream disposable / temp-mail providers ---
     "mailinator.com",
     "guerrillamail.com",

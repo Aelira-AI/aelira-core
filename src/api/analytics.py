@@ -1434,8 +1434,8 @@ async def predict_deadline_compliance(
     """
     ML-based prediction of April 2027 deadline compliance
 
-    🔮 AI-POWERED COMPLIANCE PREDICTION
-    REQUIRES API KEY IN PRODUCTION 🔒
+     AI-POWERED COMPLIANCE PREDICTION
+    REQUIRES API KEY IN PRODUCTION
 
     Uses multiple predictive models in an ensemble approach to forecast
     whether the department will meet the April 26, 2027 WCAG compliance deadline.
@@ -1480,8 +1480,8 @@ async def get_alt_text_quality_metrics(
     """
     Get aggregate alt text quality metrics for a department
 
-    📊 ALT TEXT QUALITY ANALYTICS
-    REQUIRES API KEY IN PRODUCTION 🔒
+     ALT TEXT QUALITY ANALYTICS
+    REQUIRES API KEY IN PRODUCTION
 
     Aggregates alt text quality data from scans to provide department-wide
     quality metrics for reporting and tracking improvements over time.

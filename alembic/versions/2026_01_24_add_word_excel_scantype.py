@@ -5,14 +5,14 @@ Revises: 2026_01_24_contact
 Create Date: 2026-01-24 12:30:00
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 
-
 # revision identifiers, used by Alembic.
-revision: str = '2026_01_24_scantype'
-down_revision: Union[str, None] = '2026_01_24_contact'
+revision: str = "2026_01_24_scantype"
+down_revision: Union[str, None] = "2026_01_24_contact"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

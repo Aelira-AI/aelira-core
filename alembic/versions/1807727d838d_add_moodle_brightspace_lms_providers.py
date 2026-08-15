@@ -26,15 +26,15 @@ Combined market coverage after this addition:
 - Australian Higher Education: 40% → 85% (+45%)
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-
 # revision identifiers, used by Alembic.
-revision: str = '1807727d838d'
-down_revision: Union[str, None] = '2026_01_09_sync_folders'
+revision: str = "1807727d838d"
+down_revision: Union[str, None] = "2026_01_09_sync_folders"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

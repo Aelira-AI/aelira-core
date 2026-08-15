@@ -7,11 +7,11 @@ Create Date: 2026-01-19
 This migration creates the audit_logs table for tracking security-sensitive
 actions such as logins, logouts, API key creation, session management, etc.
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
 
 # revision identifiers, used by Alembic.
 revision: str = "2026_01_19_audit"

@@ -15,7 +15,6 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect as sa_inspect
 
-
 # revision identifiers, used by Alembic.
 revision: str = "2026_03_19_lti_auth"
 down_revision: Union[str, None] = "2026_03_19_provider_metadata"

@@ -16,7 +16,6 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect as sa_inspect
 
-
 # revision identifiers, used by Alembic.
 revision: str = "2026_03_02_review_tables"
 down_revision: Union[str, None] = "2026_02_24_magic_link_idx"
@@ -130,9 +129,7 @@ def upgrade() -> None:
         )
 
     if not index_exists("idx_matterhorn_scan_id"):
-        op.create_index(
-            "idx_matterhorn_scan_id", "matterhorn_results", ["scan_id"]
-        )
+        op.create_index("idx_matterhorn_scan_id", "matterhorn_results", ["scan_id"])
 
     # ── review_audit_log ────────────────────────────────────────────────
     if not table_exists("review_audit_log"):
@@ -145,7 +142,12 @@ def upgrade() -> None:
                 sa.ForeignKey("scans.id", ondelete="CASCADE"),
                 nullable=False,
             ),
-            sa.Column("fix_id", sa.String(36), sa.ForeignKey("scan_fixes.id", ondelete="SET NULL"), nullable=True),
+            sa.Column(
+                "fix_id",
+                sa.String(36),
+                sa.ForeignKey("scan_fixes.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
             sa.Column(
                 "user_id",
                 sa.String(36),
@@ -162,9 +164,7 @@ def upgrade() -> None:
         )
 
     if not index_exists("idx_review_audit_scan_id"):
-        op.create_index(
-            "idx_review_audit_scan_id", "review_audit_log", ["scan_id"]
-        )
+        op.create_index("idx_review_audit_scan_id", "review_audit_log", ["scan_id"])
 
 
 def downgrade() -> None:

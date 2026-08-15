@@ -7,11 +7,11 @@ Create Date: 2026-02-06
 Adds indexes on APIKey.expires_at and UserInvitation.expires_at to
 improve performance of periodic cleanup jobs that scan for expired records.
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
 
 # revision identifiers, used by Alembic.
 revision: str = "2026_02_06_expiry_indexes"

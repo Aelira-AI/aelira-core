@@ -168,22 +168,22 @@ async def scan_pdf(
     """
     Scan a single PDF file for accessibility compliance - NOW WITH REAL-TIME PROGRESS!
 
-    ✨ NEW: Asynchronous processing with real-time progress updates
+     NEW: Asynchronous processing with real-time progress updates
     - Returns scan_id immediately (no waiting!)
     - Frontend polls /scans/{scan_id}/progress for updates
     - Shows messages like "Analyzing image 3 of 23 (Page 5, ~10s per image)"
 
-    NOW STORES RESULTS IN DATABASE! ✅
-    REQUIRES API KEY IN PRODUCTION 🔒
-    ENFORCES QUOTA LIMITS FOR FREE TIER 📊
+    NOW STORES RESULTS IN DATABASE!
+    REQUIRES API KEY IN PRODUCTION
+    ENFORCES QUOTA LIMITS FOR FREE TIER
 
-    ✨ AI-powered fix descriptions using RAG + Ollama (default: enabled)
+     AI-powered fix descriptions using RAG + Ollama (default: enabled)
     - Queries WCAG knowledge base for detailed rule information
     - Uses Ollama (llama3.2) to generate human-friendly, actionable fix descriptions
     - Adds 'how_to_fix' field to each issue with clear remediation steps
     - Set enhance_descriptions=false to disable (faster processing)
 
-    ✨ OPTIONAL: AI-powered alt text generation for images
+     OPTIONAL: AI-powered alt text generation for images
     - Set generate_alt_text=true to automatically generate alt text for embedded images
     - Uses llava:7b vision model for educational context descriptions
     - Extracts images from PDF using PyMuPDF
@@ -493,16 +493,16 @@ async def scan_powerpoint(
     """
     Scan a PowerPoint file for accessibility compliance
 
-    NOW STORES RESULTS IN DATABASE! ✅
-    REQUIRES API KEY IN PRODUCTION 🔒
-    ENFORCES QUOTA LIMITS FOR FREE TIER 📊
+    NOW STORES RESULTS IN DATABASE!
+    REQUIRES API KEY IN PRODUCTION
+    ENFORCES QUOTA LIMITS FOR FREE TIER
 
-    ✨ NEW: Optional AI-powered alt text generation
+     NEW: Optional AI-powered alt text generation
     - Set generate_alt_text=true to automatically generate alt text for images
     - Uses llava:7b vision model for educational context descriptions
     - Significantly increases processing time (~10s per image)
 
-    ✨ NEW: Optional alt text validation
+     NEW: Optional alt text validation
     - Set validate_alt_text=true to verify existing alt text accuracy
     - Uses AI vision to check if alt text matches image content
     """
@@ -877,9 +877,9 @@ async def scan_word_document(
     """
     Scan a Word document (.docx) for accessibility compliance
 
-    STORES RESULTS IN DATABASE! ✅
-    REQUIRES API KEY IN PRODUCTION 🔒
-    ENFORCES QUOTA LIMITS FOR FREE TIER 📊
+    STORES RESULTS IN DATABASE!
+    REQUIRES API KEY IN PRODUCTION
+    ENFORCES QUOTA LIMITS FOR FREE TIER
 
     Checks for:
     - Heading structure (H1-H6 hierarchy)
@@ -889,7 +889,7 @@ async def scan_word_document(
     - Non-descriptive link text ("click here")
     - Language specification
 
-    ✨ Optional AI-powered alt text generation for images
+     Optional AI-powered alt text generation for images
     """
     _, user_id, department_id = api_key_info
 
@@ -1290,9 +1290,9 @@ async def scan_excel_spreadsheet(
     """
     Scan an Excel spreadsheet (.xlsx) for accessibility compliance
 
-    STORES RESULTS IN DATABASE! ✅
-    REQUIRES API KEY IN PRODUCTION 🔒
-    ENFORCES QUOTA LIMITS FOR FREE TIER 📊
+    STORES RESULTS IN DATABASE!
+    REQUIRES API KEY IN PRODUCTION
+    ENFORCES QUOTA LIMITS FOR FREE TIER
 
     Checks for:
     - Sheet names (meaningful vs "Sheet1")
@@ -1303,7 +1303,7 @@ async def scan_excel_spreadsheet(
     - Color-only information (WCAG 1.4.1)
     - Frozen panes (navigation aid)
 
-    ✨ Optional AI-powered chart descriptions and image alt text
+     Optional AI-powered chart descriptions and image alt text
     """
     _, user_id, department_id = api_key_info
 
@@ -1794,8 +1794,8 @@ async def scan_latex_document(
     - Document structure issues
     - Missing title/author metadata
 
-    NOW STORES RESULTS IN DATABASE! ✅
-    REQUIRES API KEY IN PRODUCTION 🔒
+    NOW STORES RESULTS IN DATABASE!
+    REQUIRES API KEY IN PRODUCTION
     """
     # Delegate to convert_latex_document which handles the actual processing
     return await convert_latex_document(
@@ -1811,7 +1811,7 @@ async def scan_latex_document(
 async def convert_latex_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    use_ollama: bool = True,  # ✨ NEW: Optional Ollama usage
+    use_ollama: bool = True,  #  NEW: Optional Ollama usage
     db: Session = Depends(get_db_dependency),
     api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
 ):
@@ -1822,8 +1822,8 @@ async def convert_latex_document(
     - .tex, .txt, .md files: Scans LaTeX source for accessibility issues
     - .pdf files: Scans PDF with enhanced math/equation detection (LaTeX-aware mode)
 
-    NOW STORES RESULTS IN DATABASE! ✅
-    REQUIRES API KEY IN PRODUCTION 🔒
+    NOW STORES RESULTS IN DATABASE!
+    REQUIRES API KEY IN PRODUCTION
     REQUIRES: latex feature (tier-gated via TIER_QUOTAS; enabled on all core tiers)
     """
     _, user_id, department_id = api_key_info

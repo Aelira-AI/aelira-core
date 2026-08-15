@@ -5,13 +5,13 @@ Revises: 2026_01_19_byok
 Create Date: 2026-01-19
 
 This migration adds stripe_subscription_id column to track active Stripe subscriptions
-for tier upgrades (individual_plus $29/mo, individual_pro $79/mo).
+for deployments that integrate a billing provider.
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
 
 # revision identifiers, used by Alembic.
 revision: str = "2026_01_19_stripe"

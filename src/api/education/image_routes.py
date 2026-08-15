@@ -34,8 +34,8 @@ async def generate_image_alt_text(
     """
     Generate accessible alt text for an image using llava vision model
 
-    ✨ NEW ENDPOINT - AI-powered image description generation
-    REQUIRES API KEY IN PRODUCTION 🔒
+     AI-powered image description generation
+    REQUIRES API KEY IN PRODUCTION
 
     Args:
         file: Image file (jpg, png, gif, bmp, webp)
@@ -146,8 +146,8 @@ async def batch_generate_alt_text(
     """
     Generate alt text for multiple images at once
 
-    ✨ NEW ENDPOINT - Batch image processing
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Batch image processing
+    REQUIRES API KEY IN PRODUCTION
 
     Useful for processing entire slide decks or document collections
     """
@@ -254,8 +254,8 @@ async def validate_image_alt_text(
     """
     Validate if existing alt text accurately describes an image
 
-    🔍 AI-POWERED ALT TEXT VALIDATION
-    REQUIRES API KEY IN PRODUCTION 🔒
+     AI-POWERED ALT TEXT VALIDATION
+    REQUIRES API KEY IN PRODUCTION
 
     Uses vision AI to analyze the image and compare it to the existing alt text.
     Returns:
@@ -363,8 +363,8 @@ async def score_alt_text_quality(
     """
     Score alt text quality on a 0-100 scale with detailed breakdown
 
-    📊 AI-POWERED ALT TEXT QUALITY SCORING
-    REQUIRES API KEY IN PRODUCTION 🔒
+     AI-POWERED ALT TEXT QUALITY SCORING
+    REQUIRES API KEY IN PRODUCTION
 
     Evaluates alt text on multiple WCAG-aligned criteria to provide
     a quantitative quality score for tracking and reporting.
@@ -478,8 +478,8 @@ async def batch_score_alt_text_quality(
     """
     Batch score alt text quality for multiple images
 
-    📊 BATCH ALT TEXT QUALITY SCORING
-    REQUIRES API KEY IN PRODUCTION 🔒
+     BATCH ALT TEXT QUALITY SCORING
+    REQUIRES API KEY IN PRODUCTION
 
     Score multiple image alt texts at once and get aggregate statistics
     for department-wide quality reporting.
@@ -526,8 +526,8 @@ async def detect_image_type(
     """
     Detect if an image is decorative or informative (WCAG 1.1.1)
 
-    🔍 AI-POWERED IMAGE CLASSIFICATION
-    REQUIRES API KEY IN PRODUCTION 🔒
+     AI-POWERED IMAGE CLASSIFICATION
+    REQUIRES API KEY IN PRODUCTION
 
     Uses vision AI to analyze the image and classify its purpose:
     - DECORATIVE: Visual decoration only (use alt="")
@@ -641,8 +641,8 @@ async def describe_chart_or_graph(
     """
     Generate detailed accessible descriptions for charts, graphs, and infographics
 
-    📊 AI-POWERED CHART DESCRIPTION
-    REQUIRES API KEY IN PRODUCTION 🔒
+     AI-POWERED CHART DESCRIPTION
+    REQUIRES API KEY IN PRODUCTION
 
     Uses vision AI to analyze complex visualizations and generate:
     - Short description for alt text (under 150 chars)
@@ -766,8 +766,8 @@ async def analyze_image_comprehensive(
     """
     Comprehensive image analysis - detect type, generate description, validate alt text
 
-    🔬 COMPLETE IMAGE ACCESSIBILITY ANALYSIS
-    REQUIRES API KEY IN PRODUCTION 🔒
+     COMPLETE IMAGE ACCESSIBILITY ANALYSIS
+    REQUIRES API KEY IN PRODUCTION
 
     Performs a full accessibility analysis in one request:
     1. Detects if image is decorative/informative/complex

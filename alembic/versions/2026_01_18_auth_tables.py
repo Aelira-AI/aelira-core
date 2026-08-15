@@ -5,11 +5,11 @@ Revises: 2026_01_18_unsubscribe
 Create Date: 2026-01-18
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
 
 # revision identifiers, used by Alembic.
 revision: str = "2026_01_18_auth"
@@ -21,8 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     # Create AuthProvider enum type
     auth_provider_enum = sa.Enum(
-        "magic_link", "google", "microsoft", "api_key",
-        name="authprovider"
+        "magic_link", "google", "microsoft", "api_key", name="authprovider"
     )
     auth_provider_enum.create(op.get_bind(), checkfirst=True)
 
@@ -36,17 +35,26 @@ def upgrade() -> None:
         sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("ip_address", sa.String(45), nullable=True),
         sa.Column("user_agent", sa.String(512), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now()
+        ),
     )
     op.create_index("idx_magic_links_email", "magic_links", ["email"])
-    op.create_index("idx_magic_links_token_hash", "magic_links", ["token_hash"], unique=True)
+    op.create_index(
+        "idx_magic_links_token_hash", "magic_links", ["token_hash"], unique=True
+    )
     op.create_index("idx_magic_links_expires_at", "magic_links", ["expires_at"])
 
     # Create user_sessions table
     op.create_table(
         "user_sessions",
         sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id",
+            sa.String(36),
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("refresh_token_hash", sa.String(255), unique=True, nullable=False),
         sa.Column("access_token_jti", sa.String(36), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
@@ -54,16 +62,25 @@ def upgrade() -> None:
         sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("ip_address", sa.String(45), nullable=True),
         sa.Column("user_agent", sa.String(512), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now()
+        ),
     )
     op.create_index("idx_user_sessions_user_id", "user_sessions", ["user_id"])
-    op.create_index("idx_user_sessions_refresh_token_hash", "user_sessions", ["refresh_token_hash"], unique=True)
+    op.create_index(
+        "idx_user_sessions_refresh_token_hash",
+        "user_sessions",
+        ["refresh_token_hash"],
+        unique=True,
+    )
     op.create_index("idx_user_sessions_expires_at", "user_sessions", ["expires_at"])
 
     # Add new columns to users table
     op.add_column(
         "users",
-        sa.Column("email_verified", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column(
+            "email_verified", sa.Boolean(), nullable=False, server_default="false"
+        ),
     )
     op.add_column(
         "users",
@@ -139,7 +156,6 @@ def downgrade() -> None:
 
     # Drop the enum type
     auth_provider_enum = sa.Enum(
-        "magic_link", "google", "microsoft", "api_key",
-        name="authprovider"
+        "magic_link", "google", "microsoft", "api_key", name="authprovider"
     )
     auth_provider_enum.drop(op.get_bind(), checkfirst=True)

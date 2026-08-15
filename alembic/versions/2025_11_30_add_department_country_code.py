@@ -20,10 +20,9 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-
 # revision identifiers, used by Alembic.
-revision: str = '2025_11_30_country'
-down_revision: Union[str, None] = '2025_11_30_phase4'
+revision: str = "2025_11_30_country"
+down_revision: Union[str, None] = "2025_11_30_phase4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -32,37 +31,37 @@ def upgrade() -> None:
     """Add country_code and regulatory_framework to departments."""
     # Add country_code column (ISO 3166-1 alpha-2)
     op.add_column(
-        'departments',
-        sa.Column('country_code', sa.String(2), nullable=True, default='US')
+        "departments",
+        sa.Column("country_code", sa.String(2), nullable=True, default="US"),
     )
 
     # Add regulatory_framework column (which standard applies)
     op.add_column(
-        'departments',
+        "departments",
         sa.Column(
-            'regulatory_framework',
+            "regulatory_framework",
             sa.String(50),
             nullable=True,
-            default='US_ADA_TITLE_II'
-        )
+            default="US_ADA_TITLE_II",
+        ),
     )
 
     # Add custom_deadline column (for organizations with specific deadlines)
     op.add_column(
-        'departments',
-        sa.Column('custom_deadline', sa.DateTime(timezone=True), nullable=True)
+        "departments",
+        sa.Column("custom_deadline", sa.DateTime(timezone=True), nullable=True),
     )
 
     # Add timezone column for proper date handling
     op.add_column(
-        'departments',
-        sa.Column('timezone', sa.String(50), nullable=True, default='America/New_York')
+        "departments",
+        sa.Column("timezone", sa.String(50), nullable=True, default="America/New_York"),
     )
 
 
 def downgrade() -> None:
     """Remove country and deadline columns from departments."""
-    op.drop_column('departments', 'timezone')
-    op.drop_column('departments', 'custom_deadline')
-    op.drop_column('departments', 'regulatory_framework')
-    op.drop_column('departments', 'country_code')
+    op.drop_column("departments", "timezone")
+    op.drop_column("departments", "custom_deadline")
+    op.drop_column("departments", "regulatory_framework")
+    op.drop_column("departments", "country_code")

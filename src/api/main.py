@@ -233,7 +233,7 @@ async def startup_event():
     # SECURITY: Fail fast if mock auth is misconfigured in production
     if settings.env == "production" and settings.allow_mock_auth:
         logger.critical(
-            "🚨 SECURITY CRITICAL: ALLOW_MOCK_AUTH=true in production environment! "
+            "SECURITY CRITICAL: ALLOW_MOCK_AUTH=true in production environment! "
             "This is a severe security vulnerability. Shutting down immediately. "
             "Set ALLOW_MOCK_AUTH=false or remove the environment variable."
         )
@@ -255,7 +255,7 @@ async def startup_event():
         await initialize_provider_manager()
         manager = get_provider_manager()
         logger.info(
-            f"✅ LLM provider manager initialized (primary: {manager.primary_type.value})"
+            f"LLM provider manager initialized (primary: {manager.primary_type.value})"
         )
     except Exception as e:
         logger.error(f"Failed to initialize LLM provider manager: {e}")
@@ -904,7 +904,7 @@ async def analyze_violation(
 
     Uses Gemini with RAG-enhanced WCAG context for grounded, consistent classifications.
 
-    ✨ For image-alt violations, uses vision AI to generate proper alt text!
+     For image-alt violations, uses vision AI to generate proper alt text!
     """
     try:
         # Step 1: Classify issue severity using Gemini with RAG-enhanced WCAG context

@@ -5,15 +5,15 @@ Revises: 2026_01_14_security
 Create Date: 2026-01-16
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-
 # revision identifiers, used by Alembic.
-revision: str = '2026_01_16_lti_reg'
-down_revision: Union[str, None] = '2026_01_14_security'
+revision: str = "2026_01_16_lti_reg"
+down_revision: Union[str, None] = "2026_01_14_security"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -56,23 +56,21 @@ def upgrade() -> None:
 
     # Create indexes
     op.create_index(
-        'idx_lti_registrations_lookup',
-        'lti_registrations',
-        ['platform', 'issuer', 'client_id'],
-        unique=True
+        "idx_lti_registrations_lookup",
+        "lti_registrations",
+        ["platform", "issuer", "client_id"],
+        unique=True,
     )
 
     op.create_index(
-        'idx_lti_registrations_department',
-        'lti_registrations',
-        ['department_id']
+        "idx_lti_registrations_department", "lti_registrations", ["department_id"]
     )
 
 
 def downgrade() -> None:
-    op.drop_index('idx_lti_registrations_department', table_name='lti_registrations')
-    op.drop_index('idx_lti_registrations_lookup', table_name='lti_registrations')
-    op.drop_table('lti_registrations')
+    op.drop_index("idx_lti_registrations_department", table_name="lti_registrations")
+    op.drop_index("idx_lti_registrations_lookup", table_name="lti_registrations")
+    op.drop_table("lti_registrations")
 
     # Drop enum type (only if no other tables use it)
     conn = op.get_bind()

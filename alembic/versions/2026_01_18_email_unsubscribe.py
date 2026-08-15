@@ -5,11 +5,11 @@ Revises: 2026_01_16_lti_reg
 Create Date: 2026-01-18
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
 
 # revision identifiers, used by Alembic.
 revision: str = "2026_01_18_unsubscribe"
@@ -43,7 +43,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_waitlist_signups_unsubscribe_token", table_name="waitlist_signups")
+    op.drop_index(
+        "ix_waitlist_signups_unsubscribe_token", table_name="waitlist_signups"
+    )
     op.drop_column("waitlist_signups", "unsubscribe_token")
     op.drop_column("waitlist_signups", "unsubscribed_at")
     op.drop_column("waitlist_signups", "unsubscribed")

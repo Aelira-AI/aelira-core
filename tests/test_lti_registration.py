@@ -258,7 +258,7 @@ class TestCheckLTIFeatureAccess:
 
         assert allowed is False
         assert error is not None
-        assert "not available" in error.lower()
+        assert "not enabled" in error.lower()
         assert "limited_test_tier" in error
 
     @patch("src.api.blackboard_lti_routes.check_feature_access")

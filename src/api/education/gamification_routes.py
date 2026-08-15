@@ -22,19 +22,19 @@ async def get_faculty_leaderboard(
     api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
 ):
     """
-    Get faculty compliance leaderboard
+       Get faculty compliance leaderboard
 
-    ✨ NEW ENDPOINT - Faculty engagement tracking
-    REQUIRES API KEY IN PRODUCTION 🔒
+        Faculty engagement tracking
+       REQUIRES API KEY IN PRODUCTION
 
-    Shows faculty members ranked by average compliance score.
-    Encourages friendly competition and recognizes accessibility champions.
+       Shows faculty members ranked by average compliance score.
+       Encourages friendly competition and recognizes accessibility champions.
 
-    Features:
-    - Ranked by average compliance score
-    - Includes badges ("🏆 Accessibility Champion", "⭐ Highly Compliant", etc.)
-    - Shows total scans, files, and issues fixed
-    - Great for department chair dashboards
+       Features:
+       - Ranked by average compliance score
+    - Includes badges ("Accessibility Champion", "Highly Compliant", etc.)
+       - Shows total scans, files, and issues fixed
+       - Great for department chair dashboards
     """
     _, user_id, department_id_from_token = api_key_info
     if department_id != department_id_from_token:
@@ -88,8 +88,8 @@ async def get_gamified_leaderboard(
     """
     Get enhanced faculty leaderboard with gamification
 
-    🏆 GAMIFIED LEADERBOARD
-    REQUIRES API KEY IN PRODUCTION 🔒
+     GAMIFIED LEADERBOARD
+    REQUIRES API KEY IN PRODUCTION
 
     Enhanced leaderboard with points, levels, badges, and multiple ranking types.
 
@@ -144,8 +144,8 @@ async def get_user_gamification_stats(
     """
     Get gamification stats for a specific user
 
-    🎮 USER GAMIFICATION STATS
-    REQUIRES API KEY IN PRODUCTION 🔒
+     USER GAMIFICATION STATS
+    REQUIRES API KEY IN PRODUCTION
 
     Returns comprehensive gamification data for a faculty member including:
     - Total points and current level
@@ -183,7 +183,7 @@ async def list_all_badges():
     """
     List all available achievement badges
 
-    🏅 ACHIEVEMENT BADGES
+     ACHIEVEMENT BADGES
     No authentication required.
 
     Returns all badges that faculty can earn, grouped by tier.
@@ -215,7 +215,7 @@ async def list_all_levels():
     """
     List all achievement levels
 
-    📊 ACHIEVEMENT LEVELS
+     ACHIEVEMENT LEVELS
     No authentication required.
 
     Returns all levels and point thresholds.

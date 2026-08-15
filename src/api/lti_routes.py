@@ -148,8 +148,8 @@ def check_lti_feature_access(department: Department) -> tuple[bool, str | None]:
         upgrade_suggestion = upgrade_tiers[0] if upgrade_tiers else "department"
 
         return False, (
-            f"LMS Integration is not available on your current plan ({department.tier}). "
-            f"Upgrade to {upgrade_suggestion} plan to access Canvas integration."
+            f"LMS integration is not enabled for this workspace ({department.tier}). "
+            f"Your deployment administrator can enable it in the server configuration."
         )
 
     return True, None
@@ -232,7 +232,7 @@ def _render_lti_error_page(
         </style>
     </head>
     <body>
-        <div class="error-icon">⚠️</div>
+        <div class="error-icon">⚠</div>
         <h1>{title}</h1>
         <p class="message">{message}</p>
         {upgrade_button}
@@ -316,7 +316,7 @@ async def lti_launch(
     This is where users land after Canvas authentication.
     We validate the launch and redirect to the appropriate page.
 
-    Feature Gating: Requires 'lms_integration' feature on department tier.
+    Feature Gating: Requires the 'lms_integration' feature (enabled on all core tiers).
     """
     # Get parameters from form
     params = dict(await request.form())
@@ -518,19 +518,19 @@ async def handle_deep_link_launch(
 
         <div class="scan-options">
             <button class="scan-option" onclick="selectContent('document')">
-                <div class="icon">📄</div>
+                <div class="icon"></div>
                 <div class="title">Document Scan</div>
                 <div class="description">Scan PDF, Word, PowerPoint files for accessibility</div>
             </button>
 
             <button class="scan-option" onclick="selectContent('course')">
-                <div class="icon">📚</div>
+                <div class="icon"></div>
                 <div class="title">Full Course Scan</div>
                 <div class="description">Scan all documents in the course for accessibility</div>
             </button>
 
             <button class="scan-option" onclick="selectContent('compliance')">
-                <div class="icon">✅</div>
+                <div class="icon"></div>
                 <div class="title">Compliance Dashboard</div>
                 <div class="description">Track compliance progress with reports and certificates</div>
             </button>

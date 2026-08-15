@@ -197,7 +197,7 @@ export function AccountDeletionModal({
                 <li>Your account will be deactivated immediately</li>
                 <li>All data will be permanently deleted after 30 days</li>
                 <li>You will not be able to re-register with this email</li>
-                <li>Active subscriptions will be cancelled</li>
+                <li>Any billing set up by your deployment will be ended</li>
               </ul>
             </div>
 

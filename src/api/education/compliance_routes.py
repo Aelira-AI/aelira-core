@@ -24,8 +24,8 @@ async def get_department_compliance_stats(
     """
     Get comprehensive compliance statistics for a department
 
-    ✨ NEW ENDPOINT - Department-wide compliance dashboard
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Department-wide compliance dashboard
+    REQUIRES API KEY IN PRODUCTION
 
     Provides department administrators with complete overview of:
     - Overall compliance metrics (avg score, issue counts)
@@ -126,8 +126,8 @@ async def get_priority_issues(
     """
     Get prioritized list of issues that need remediation
 
-    ✨ NEW ENDPOINT - Issue priority queue
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Issue priority queue
+    REQUIRES API KEY IN PRODUCTION
 
     Returns a prioritized list of accessibility issues across all department files,
     sorted by severity (Critical → Low) and date (newest first).
@@ -198,8 +198,8 @@ async def get_compliance_trend(
     """
     Get compliance score trends over time
 
-    ✨ NEW ENDPOINT - Trend analysis
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Trend analysis
+    REQUIRES API KEY IN PRODUCTION
 
     Shows daily compliance scores and scan activity over the specified period.
     Useful for tracking progress toward April 2027 deadline.
@@ -262,8 +262,8 @@ async def generate_compliance_pdf_report(
     """
     Generate a legal-ready PDF compliance report for the department
 
-    ✨ NEW ENDPOINT - Legal compliance PDF generation
-    REQUIRES API KEY IN PRODUCTION 🔒
+     Legal compliance PDF generation
+    REQUIRES API KEY IN PRODUCTION
 
     Generates a comprehensive PDF report suitable for:
     - DOJ audit documentation
