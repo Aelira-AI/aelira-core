@@ -104,7 +104,7 @@ requests==2.32.4  # Security: Fix .netrc credentials leak and verify=False persi
 # Document Security Analysis
 oletools==0.60.2  # VBA macro detection in Office documents
 defusedxml==0.7.1  # Safe XML parsing (XXE prevention)
-yara-python>=4.5.0  # Optional: Custom malware signature matching
+yara-python>=4.5.4  # Optional: Custom malware signature matching
 
 # Redis
 redis==5.0.1  # For rate limiting and caching
