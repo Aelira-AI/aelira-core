@@ -279,7 +279,7 @@ async def connect_microsoft(
     After authorization, Microsoft redirects to the specified redirect_uri with
     a code parameter that should be sent to /microsoft/callback.
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
     # Check feature access
     await require_feature(
@@ -305,8 +305,12 @@ async def connect_microsoft(
 
     token_manager = get_token_manager()
 
-    # Generate state with department ID for verification
-    state = f"{api_key.department_id}:{uuid.uuid4().hex[:16]}"
+    # Server-side CSRF state bound to this department, one-time use, TTL'd.
+    from ..auth.redis_rate_limiter import OAuthStateManager
+
+    state = OAuthStateManager.create_state(
+        metadata={"department_id": api_key.department_id, "provider": "microsoft"}
+    )
 
     auth_url = token_manager.get_microsoft_auth_url(
         redirect_uri=request.redirect_uri,
@@ -339,13 +343,16 @@ async def microsoft_callback_get(
             url=f"http://localhost:5173/integrations?error=oauth_failed&message={error}"
         )
 
-    # Extract department_id from state
-    try:
-        department_id = state.split(":")[0]
-    except Exception:
-        logger.error(f"Invalid state parameter: {state}")
+    # Verify + consume the server-side state (CSRF defence). department_id
+    # comes ONLY from verified metadata, never the query string.
+    from ..auth.redis_rate_limiter import OAuthStateManager
+
+    is_valid, metadata = OAuthStateManager.verify_and_consume_state(state)
+    department_id = (metadata or {}).get("department_id")
+    if not is_valid or not department_id:
+        logger.warning("Microsoft OAuth callback with invalid/expired state")
         return RedirectResponse(
-            url="http://localhost:5173/integrations?error=invalid_state"
+            url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=invalid_state"
         )
 
     token_manager = get_token_manager()
@@ -516,7 +523,7 @@ async def microsoft_status(
     """
     Get Microsoft 365 connection status.
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
     # Check feature access
     await require_feature(
@@ -559,7 +566,7 @@ async def list_drives(
     """
     List available OneDrive and SharePoint drives.
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
     # Check feature access
     await require_feature(

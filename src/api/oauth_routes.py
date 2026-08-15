@@ -61,7 +61,12 @@ def _check_oauth_tier(db: Session, email: str) -> tuple[bool, str, Department | 
     )
 
     for dept in departments:
-        if dept.contact_email and email_domain in dept.contact_email.lower():
+        if not dept.contact_email or "@" not in dept.contact_email:
+            continue
+        # Exact domain equality, not substring: "harvard.edu" must not match a
+        # department contact at "harvard.edu.attacker.com", nor "edu" match all.
+        contact_domain = dept.contact_email.rsplit("@", 1)[1].lower().rstrip(".")
+        if email_domain == contact_domain:
             return True, "OK", dept
 
     return (

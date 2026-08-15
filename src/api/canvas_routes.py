@@ -100,8 +100,8 @@ async def connect_canvas(
     """
     Initiate Canvas OAuth 2.0 flow.
 
-    🔒 REQUIRES API KEY
-    🔒 REQUIRES: lms_integration feature (department tier or higher)
+    REQUIRES API KEY
+    REQUIRES: lms_integration feature (department tier or higher)
 
     Returns authorization URL to redirect user to.
     """
@@ -280,7 +280,7 @@ async def disconnect_canvas(
     """
     Disconnect Canvas integration.
 
-    🔒 REQUIRES API KEY
+    REQUIRES API KEY
 
     Revokes OAuth tokens and removes credentials.
     """
@@ -317,7 +317,7 @@ async def canvas_connection_status(
     """
     Check Canvas connection status for a department.
 
-    🔒 REQUIRES API KEY
+    REQUIRES API KEY
     """
     _, user_id, auth_department_id = api_key_info
     dept_id = department_id or auth_department_id
@@ -358,7 +358,7 @@ async def list_canvas_courses(
     """
     List Canvas courses for connected user.
 
-    🔒 REQUIRES API KEY
+    REQUIRES API KEY
     """
     _, user_id, auth_department_id = api_key_info
     dept_id = department_id or auth_department_id
@@ -394,7 +394,7 @@ async def list_canvas_course_files(
     """
     List files in a Canvas course.
 
-    🔒 REQUIRES API KEY
+    REQUIRES API KEY
     """
     _, user_id, auth_department_id = api_key_info
     dept_id = department_id or auth_department_id
@@ -422,8 +422,8 @@ async def list_canvas_course_folders(
     """
     List folders in a Canvas course.
 
-    🔒 REQUIRES API KEY
-    🔒 REQUIRES: lms_integration feature (department tier or higher)
+    REQUIRES API KEY
+    REQUIRES: lms_integration feature (department tier or higher)
     """
     _, user_id, auth_department_id = api_key_info
     verify_department_access(department_id, auth_department_id)
@@ -469,8 +469,8 @@ async def remediate_canvas_file(
     """
     Queue remediation job for a Canvas file.
 
-    🔒 REQUIRES API KEY
-    🔒 REQUIRES: lms_integration feature (department tier or higher)
+    REQUIRES API KEY
+    REQUIRES: lms_integration feature (department tier or higher)
 
     Downloads file, scans, remediates, and optionally uploads back.
     """

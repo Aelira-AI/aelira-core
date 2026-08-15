@@ -82,7 +82,7 @@ async def connect_blackboard(
     """
     Initiate Blackboard OAuth 2.0 flow.
 
-    🔒 REQUIRES API KEY
+    REQUIRES API KEY
 
     Returns authorization URL to redirect user to.
     """
@@ -245,7 +245,7 @@ async def disconnect_blackboard(
     """
     Disconnect Blackboard integration.
 
-    🔒 REQUIRES API KEY
+    REQUIRES API KEY
 
     Deactivates the stored credentials.
     """
@@ -345,7 +345,7 @@ async def list_blackboard_courses(
     """
     List Blackboard courses for connected user.
 
-    🔒 REQUIRES API KEY
+    REQUIRES API KEY
     """
     _, user_id, auth_department_id = api_key_info
     verify_department_access(department_id, auth_department_id)
@@ -381,7 +381,7 @@ async def list_blackboard_files(
     """
     List files in a Blackboard course.
 
-    🔒 REQUIRES API KEY
+    REQUIRES API KEY
     """
     _, user_id, auth_department_id = api_key_info
     verify_department_access(department_id, auth_department_id)
@@ -424,7 +424,7 @@ async def remediate_blackboard_file(
     """
     Queue remediation job for a Blackboard file.
 
-    🔒 REQUIRES API KEY
+    REQUIRES API KEY
 
     Creates a scan job and remediation job in the job queue.
     """

@@ -244,27 +244,13 @@ async def get_google_integration(
 # ==================== Helper Functions ====================
 
 
-async def _get_optional_api_key(
-    credentials: Optional[str] = None, db: Session = Depends(get_db_dependency)
-) -> Optional[APIKey]:
-    """Optional API key dependency - returns None if not provided."""
-    if not credentials:
-        return None
-    from ..auth.auth_service import AuthService
-
-    return AuthService.validate_api_key(db, credentials)
-
-
 # ==================== OAuth Connection Endpoints ====================
 
 
 @router.post("/connect", response_model=GoogleConnectResponse)
 async def connect_google(
     request: GoogleConnectRequest,
-    department_id: Optional[str] = Query(
-        default=None, description="Department ID for development"
-    ),
-    api_key: Optional[APIKey] = Depends(_get_optional_api_key),
+    api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
     """
@@ -278,16 +264,9 @@ async def connect_google(
     - Production: Requires valid API key (uses api_key.department_id)
     - Development: Can use query parameter department_id if no API key provided
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
-    # Determine department_id: prefer API key, fallback to query param
-    if api_key:
-        dept_id = api_key.department_id
-    elif department_id:
-        dept_id = department_id
-    else:
-        # Default for local development
-        dept_id = "test-dept-001"
+    dept_id = api_key.department_id
 
     # Check feature access - Google integration requires cloud_integration feature
     await require_feature(
@@ -313,8 +292,12 @@ async def connect_google(
 
     token_manager = get_token_manager()
 
-    # Generate state with department ID for verification
-    state = f"{dept_id}:{uuid.uuid4().hex[:16]}"
+    # Server-side CSRF state bound to this department, one-time use, TTL'd.
+    from ..auth.redis_rate_limiter import OAuthStateManager
+
+    state = OAuthStateManager.create_state(
+        metadata={"department_id": dept_id, "provider": "google"}
+    )
 
     auth_url = token_manager.get_google_auth_url(
         redirect_uri=request.redirect_uri,
@@ -347,13 +330,16 @@ async def google_callback_get(
             url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=oauth_failed&message={error}"
         )
 
-    # Extract department_id from state
-    try:
-        department_id = state.split(":")[0]
-    except Exception:
-        logger.error(f"Invalid state parameter: {state}")
+    # Verify + consume the server-side state (CSRF defence). department_id
+    # comes ONLY from verified metadata, never the query string.
+    from ..auth.redis_rate_limiter import OAuthStateManager
+
+    is_valid, metadata = OAuthStateManager.verify_and_consume_state(state)
+    department_id = (metadata or {}).get("department_id")
+    if not is_valid or not department_id:
+        logger.warning("Google OAuth callback with invalid/expired state")
         return RedirectResponse(
-            url="{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=invalid_state"
+            url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=invalid_state"
         )
 
     token_manager = get_token_manager()
@@ -535,7 +521,7 @@ async def google_status(
     """
     Get Google Workspace connection status.
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
     # Check feature access
     await require_feature(
@@ -585,7 +571,7 @@ async def list_drive_files(
     Returns files that can be scanned (Docs, Slides, Sheets, Office formats, PDFs).
     Files are automatically tracked in our database for change detection.
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
     # Check feature access
     await require_feature(
@@ -699,7 +685,7 @@ async def list_google_drive_folders(
     Used for folder selection UI to choose which folders to sync.
     Returns folder hierarchy for privacy-conscious syncing.
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
     # Check feature access
     await require_feature(
@@ -775,7 +761,7 @@ async def scan_file(
     Downloads the file from Google Drive, scans with our processors,
     and stores the results. Returns immediately with job status.
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
     # Check feature access
     await require_feature(
@@ -844,7 +830,7 @@ async def scan_folder(
 
     Creates scan jobs for each file found. Returns summary of jobs created.
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
     # Check feature access
     await require_feature(
@@ -953,7 +939,7 @@ async def remediate_file(
     Downloads the file, applies accessibility fixes, and either
     replaces the original or uploads as a new file.
 
-    🔒 REQUIRES: cloud_integration feature (not available on free tier)
+    REQUIRES: cloud_integration feature
     """
     # Check feature access
     await require_feature(

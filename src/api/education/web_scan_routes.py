@@ -1014,7 +1014,7 @@ def process_sitemap_scan_background(
     """Background task to process sitemap-based web scan"""
     from ...db.database import SessionLocal
     from ...db.models import Scan, ScanStatus, ScanResult
-    import xml.etree.ElementTree as ET
+    import defusedxml.ElementTree as ET  # XXE-safe: no entity expansion/external DTDs
 
     db = SessionLocal()
 
