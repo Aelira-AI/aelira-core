@@ -8,15 +8,19 @@ The fastest production path is the full-stack compose file at the repo root:
 volumes, localhost-bound ports for your reverse proxy to front.
 There is no dependency on a hosted Aelira service.
 
-This guide covers a production-style deployment with Docker Compose. It does
-not ship a ready-made `docker-compose.prod.yml` — the repository only
-includes `docker-compose.quickstart.yml` (zero-config, explicitly marked
-**not for production**) and `docker-compose.dev.yml` (local development,
-hot-reloading the source tree from the host). For production you assemble a
-compose file from the same pieces those two use, pointed at the production
-image instead of the dev one. What follows verifies every image, service
-name, and environment variable against those two files, `src/config/settings.py`,
-and `.env.example`.
+This guide covers a production deployment with Docker Compose. The
+repository ships three compose files:
+
+- **`docker-compose.prod.yml`** — the production stack this guide is about:
+  published images, healthchecks, persistent volumes, required `.env`.
+- `docker-compose.quickstart.yml` — zero-config evaluation, explicitly
+  marked **not for production**.
+- `docker-compose.dev.yml` — local development, hot-reloading the source
+  tree from the host.
+
+What follows explains what the production file runs and verifies every
+image, service name, and environment variable against it,
+`src/config/settings.py`, and `.env.example`.
 
 ## Images
 

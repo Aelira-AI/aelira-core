@@ -13,7 +13,7 @@
 #   docker exec aelira-ollama ollama pull gemma3:4b
 #
 # WARNING: This config uses insecure defaults. Do NOT use in production.
-# For production, use docker-compose.dev.yml with a configured .env file.
+# For production, use docker-compose.prod.yml with a configured .env file.
 
 services:
   postgres:
