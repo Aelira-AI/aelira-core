@@ -149,7 +149,7 @@ uvloop==0.22.1
 watchfiles==1.1.1
 webencodings==0.5.1
 websockets==16.0
-Werkzeug==3.1.6
+Werkzeug==3.1.8
 wrapt==2.0.1
 xlsxwriter==3.2.9
 zope.event==6.1
