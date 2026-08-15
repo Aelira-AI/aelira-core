@@ -7,6 +7,12 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 10
+    groups:
+      pip-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "npm"
     directory: "/cli"
@@ -15,6 +21,13 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 10
+    groups:
+      cli-npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
   - package-ecosystem: "npm"
     directory: "/dashboard"
     schedule:
@@ -22,6 +35,12 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 10
+    groups:
+      dashboard-npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "docker"
     directory: "/"
@@ -29,6 +48,12 @@ updates:
       interval: "monthly"
     labels:
       - "dependencies"
+    groups:
+      docker-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -36,3 +61,9 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
