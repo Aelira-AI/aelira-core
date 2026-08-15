@@ -12,7 +12,7 @@ playwright==1.56.0
 axe-playwright-python==0.1.4
 
 # Database
-psycopg2-binary==2.9.11
+psycopg2-binary==2.9.12
 sqlalchemy==2.0.44  # Updated for latest features
 alembic==1.17.1  # Updated for sqlalchemy 2.0.44
 
