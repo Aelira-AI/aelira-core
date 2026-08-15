@@ -120,17 +120,6 @@ def check_lti_feature_access(department: Department) -> tuple[bool, str | None]:
         Tuple of (allowed, error_message)
     """
     if not check_feature_access(department.tier, "lms_integration"):
-        # Find what tier includes this feature
-        from src.config.settings import TIER_QUOTAS
-
-        upgrade_tiers = []
-        for tier_name, tier_config in TIER_QUOTAS.items():
-            if "lms_integration" in tier_config.get("features", []):
-                if "lms_integration" not in tier_config.get("excluded", []):
-                    upgrade_tiers.append(tier_name)
-
-        upgrade_suggestion = upgrade_tiers[0] if upgrade_tiers else "department"
-
         return False, (
             f"LMS integration is not enabled for this workspace ({department.tier}). "
             f"Your deployment administrator can enable it in the server configuration."
