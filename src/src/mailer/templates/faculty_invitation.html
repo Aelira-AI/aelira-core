@@ -1,0 +1,75 @@
+<!-- Invitation Icon -->
+<div style="text-align: center; margin-bottom: 16px;">
+    <div style="width: 64px; height: 64px; background-color: #eff6ff; border-radius: 50%;
+                display: inline-flex; align-items: center; justify-content: center; margin: 0 auto;">
+        <span style="font-size: 32px;">&#9993;</span>
+    </div>
+</div>
+
+<h2 style="color: #1a1a2e; text-align: center; margin: 0 0 24px 0;">You've Been Invited!</h2>
+
+<p style="line-height: 1.6; text-align: center; margin-bottom: 24px;">
+    <strong>{{inviter_name}}</strong> has invited you to join <strong>{{department_name}}</strong>
+    on Aelira, the accessibility compliance platform for higher education.
+</p>
+
+<!-- Role Badge -->
+<div style="text-align: center; margin-bottom: 24px;">
+    <span style="background-color: #dcfce7; color: #166534; padding: 6px 16px; border-radius: 16px; font-size: 14px; font-weight: 600;">
+        Role: {{role}}
+    </span>
+</div>
+
+<!-- What You'll Get -->
+<div style="background-color: #eff6ff; border: 1px solid #3b82f6; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+    <p style="color: #1e40af; font-weight: 600; margin: 0 0 8px 0;">
+        What You'll Get Access To:
+    </p>
+    <ul style="color: #1e3a5f; font-size: 14px; margin: 0; padding-left: 20px;">
+        <li>Scan PDFs, PowerPoint, Word, and Excel files</li>
+        <li>AI-powered accessibility remediation</li>
+        <li>LaTeX/MathML conversion for STEM content</li>
+        <li>WCAG 2.1 compliance reports</li>
+        <li>Shared department dashboard</li>
+    </ul>
+</div>
+
+<!-- Accept Button -->
+<div style="text-align: center; margin: 32px 0;">
+    <a href="{{accept_url}}"
+       style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: white; padding: 16px 32px;
+              text-decoration: none; border-radius: 8px; display: inline-block;
+              font-weight: 600; font-size: 16px;">
+        Accept Invitation
+    </a>
+</div>
+
+<!-- Expiration Notice -->
+<div style="background-color: #fffbeb; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px 16px; margin-bottom: 24px;">
+    <p style="color: #92400e; font-size: 14px; margin: 0; text-align: center;">
+        This invitation expires in <strong>7 days</strong> ({{expires_date}})
+    </p>
+</div>
+
+<!-- Link Fallback -->
+<p style="color: #666; font-size: 14px; line-height: 1.6;">
+    If the button doesn't work, copy and paste this link into your browser:
+</p>
+<p style="background: #f3f4f6; padding: 12px; border-radius: 6px; word-break: break-all;
+          font-size: 12px; color: #333;">
+    {{accept_url}}
+</p>
+
+<!-- Deadline Reminder -->
+<div style="background-color: #fef2f2; border: 1px solid #ef4444; border-radius: 8px; padding: 12px 16px; margin: 24px 0;">
+    <p style="color: #991b1b; font-size: 14px; margin: 0;">
+        <strong>Reminder:</strong> The WCAG 2.1 compliance deadline for educational institutions
+        is <strong>April 26, 2027</strong>. Join your team to ensure your course materials are accessible.
+    </p>
+</div>
+
+<p style="color: #6b7280; font-size: 12px; text-align: center; margin: 16px 0 0 0;">
+    This invitation was sent by {{inviter_name}} ({{inviter_email}}) via Aelira.
+    <br>
+    If you weren't expecting this invitation, you can safely ignore this email.
+</p>

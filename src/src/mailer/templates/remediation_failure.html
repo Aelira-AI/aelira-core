@@ -1,0 +1,39 @@
+<!-- Failure Icon -->
+<div style="text-align: center; margin-bottom: 16px;">
+    <div style="width: 64px; height: 64px; background-color: #fef2f2; border-radius: 50%;
+                display: inline-flex; align-items: center; justify-content: center; margin: 0 auto;">
+        <span style="font-size: 32px;">&#10007;</span>
+    </div>
+</div>
+
+<h2 style="color: #dc2626; text-align: center; margin: 0 0 24px 0;">{{title}}</h2>
+
+<!-- File Info -->
+<div style="background-color: #fef2f2; padding: 16px; border-radius: 8px; margin-bottom: 24px; border-left: 4px solid #dc2626;">
+    <p style="margin: 0; color: #991b1b; font-weight: 600;">{{file_name}}</p>
+    <p style="margin: 8px 0 0 0; color: #b91c1c; font-size: 14px;">Automatic remediation was unable to complete</p>
+</div>
+
+<!-- Error Details -->
+<div style="background-color: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 24px; border: 1px solid #e5e7eb;">
+    <p style="margin: 0 0 8px 0; color: #374151; font-weight: 600; font-size: 14px;">What happened:</p>
+    <p style="margin: 0; color: #6b7280; font-size: 14px;">{{error_message}}</p>
+</div>
+
+<!-- Next Steps -->
+<div style="background-color: #fffbeb; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+    <p style="margin: 0; color: #9a3412; font-size: 14px;">
+        <strong>What you can do:</strong> Review the document manually, or try running
+        automated remediation again. If the problem persists, contact support.
+    </p>
+</div>
+
+<!-- Action Button -->
+<div style="text-align: center; margin-top: 24px;">
+    <a href="{{action_url}}"
+       style="background-color: #dc2626; color: white; padding: 14px 28px;
+              text-decoration: none; border-radius: 8px; display: inline-block;
+              font-weight: 600; font-size: 16px;">
+        {{action_text}}
+    </a>
+</div>
