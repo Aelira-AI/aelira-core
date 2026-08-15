@@ -56,7 +56,7 @@ pydantic-settings==2.11.0  # Updated for pydantic 2.12+
 email-validator==2.3.0
 
 # Authentication
-python-jose[cryptography]==3.4.0  # Security: Fix CRITICAL algorithm confusion CVE and DoS CVE
+python-jose[cryptography]==3.5.0  # Security: Fix CRITICAL algorithm confusion CVE and DoS CVE
 passlib[bcrypt]==1.7.4
 bcrypt==4.1.1  # Direct import in auth_service.py for API key hashing
 python-dotenv==1.0.0
