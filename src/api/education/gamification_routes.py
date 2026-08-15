@@ -1,4 +1,10 @@
-"""Gamification endpoints — leaderboards, user stats, badges, levels."""
+"""Gamification endpoints — leaderboards, user stats, badges, levels.
+
+Opt-in: these endpoints are disabled unless GAMIFICATION_ENABLED=true. They
+rank named faculty by compliance score, which some institutions want as an
+engagement tool and others consider inappropriate for staff. Off by default
+so the choice is deliberate.
+"""
 
 import logging
 from typing import Optional, Tuple
@@ -8,10 +14,17 @@ from sqlalchemy.orm import Session
 
 from ...db.database import get_db_dependency
 from ...db.models import APIKey
+from ...config.settings import get_settings
 from ._shared import get_api_key_or_mock
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def require_gamification_enabled() -> None:
+    """404 unless the operator has opted into gamification/leaderboards."""
+    if not get_settings().gamification_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
 
 
 @router.get("/compliance/{department_id}/leaderboard")
@@ -20,21 +33,14 @@ async def get_faculty_leaderboard(
     limit: int = 20,
     db: Session = Depends(get_db_dependency),
     api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    _: None = Depends(require_gamification_enabled),
 ):
     """
-       Get faculty compliance leaderboard
+    Faculty compliance leaderboard (opt-in; GAMIFICATION_ENABLED).
 
-        Faculty engagement tracking
-       REQUIRES API KEY IN PRODUCTION
-
-       Shows faculty members ranked by average compliance score.
-       Encourages friendly competition and recognizes accessibility champions.
-
-       Features:
-       - Ranked by average compliance score
-    - Includes badges ("Accessibility Champion", "Highly Compliant", etc.)
-       - Shows total scans, files, and issues fixed
-       - Great for department chair dashboards
+    Ranks faculty by average compliance score, with badges and scan/issue
+    counts. Disabled by default — enable only where ranking named staff is
+    appropriate for the institution.
     """
     _, user_id, department_id_from_token = api_key_info
     if department_id != department_id_from_token:
@@ -84,12 +90,10 @@ async def get_gamified_leaderboard(
     limit: int = 20,
     db: Session = Depends(get_db_dependency),
     api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    _: None = Depends(require_gamification_enabled),
 ):
     """
     Get enhanced faculty leaderboard with gamification
-
-     GAMIFIED LEADERBOARD
-    REQUIRES API KEY IN PRODUCTION
 
     Enhanced leaderboard with points, levels, badges, and multiple ranking types.
 
@@ -140,12 +144,10 @@ async def get_user_gamification_stats(
     user_id: str,
     db: Session = Depends(get_db_dependency),
     api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    _: None = Depends(require_gamification_enabled),
 ):
     """
     Get gamification stats for a specific user
-
-     USER GAMIFICATION STATS
-    REQUIRES API KEY IN PRODUCTION
 
     Returns comprehensive gamification data for a faculty member including:
     - Total points and current level
@@ -179,11 +181,9 @@ async def get_user_gamification_stats(
 
 
 @router.get("/gamification/badges")
-async def list_all_badges():
+async def list_all_badges(_: None = Depends(require_gamification_enabled)):
     """
     List all available achievement badges
-
-     ACHIEVEMENT BADGES
     No authentication required.
 
     Returns all badges that faculty can earn, grouped by tier.
@@ -211,7 +211,7 @@ async def list_all_badges():
 
 
 @router.get("/gamification/levels")
-async def list_all_levels():
+async def list_all_levels(_: None = Depends(require_gamification_enabled)):
     """
     List all achievement levels
 

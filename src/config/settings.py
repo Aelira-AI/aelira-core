@@ -338,6 +338,12 @@ class Settings(BaseSettings):
     # admin) works regardless of this flag.
     open_signup: bool = os.getenv("OPEN_SIGNUP", "false").lower() == "true"
 
+    # Faculty leaderboards / gamification. Off by default: ranking named
+    # staff by compliance score is a deliberate institutional choice.
+    gamification_enabled: bool = (
+        os.getenv("GAMIFICATION_ENABLED", "false").lower() == "true"
+    )
+
     # Magic Link Authentication
     magic_link_expire_minutes: int = int(os.getenv("MAGIC_LINK_EXPIRE_MINUTES", "15"))
     magic_link_base_url: str = os.getenv(

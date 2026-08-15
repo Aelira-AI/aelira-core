@@ -224,11 +224,6 @@ Critical Issues (28 remaining):
   - 18 PDFs with missing headings
   - 10 videos without captions
 
-Faculty Leaderboard:
-  🥇 Prof. Anderson - 98/100 avg score (423 files)
-  🥈 Dr. Martinez - 95/100 avg score (389 files)
-  🥉 Prof. Kim - 92/100 avg score (356 files)
-
 Recommendations:
   1. Focus on video caption compliance (10 files)
   2. PDF heading structure needs attention (18 files)
