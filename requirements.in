@@ -29,7 +29,7 @@ pdf2image==1.17.0
 pypdf==6.1.3  # Migrated from PyPDF2 - latest with security fixes (RAM exhaustion, infinite loops)
 pdfminer.six==20251230  # Security: Fix GHSA-f83h-ghpp-7wcc (Jan 2026)
 PyMuPDF==1.26.6  # For PDF image extraction
-ocrmypdf==16.11.1  # Enhanced PDF OCR with structure preservation
+ocrmypdf==16.13.0  # Enhanced PDF OCR with structure preservation
 
 # PowerPoint Processing (Higher Ed features)
 python-pptx==0.6.23
