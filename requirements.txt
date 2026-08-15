@@ -92,7 +92,7 @@ playwright==1.56.0
 pluggy==1.6.0
 prometheus_client==0.21.0
 proto-plus==1.27.0
-protobuf==6.33.5
+protobuf==7.35.1
 psutil==7.2.1
 psycopg2-binary==2.9.11
 pyasn1==0.6.4
