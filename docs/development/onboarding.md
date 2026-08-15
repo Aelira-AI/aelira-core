@@ -161,8 +161,8 @@ cp .env.example .env
 # edit .env — at minimum GEMINI_API_KEY if you want cloud AI, or leave it
 # unset and use --profile ollama for local inference
 docker compose -f docker-compose.dev.yml up -d --build
-docker compose exec api alembic upgrade head
-docker compose exec api pytest
+docker compose -f docker-compose.dev.yml exec api alembic upgrade head
+docker compose -f docker-compose.dev.yml exec api pytest
 ```
 
 This starts Postgres (`pgvector/pgvector:0.8.1-pg16`, with the pgvector
@@ -260,7 +260,7 @@ This is the same sequence CI runs (`.github/workflows/ci.yml`), aside from
   meant as a starting point (linked from `CONTRIBUTING.md`).
 - Backend lint/format gates you'll need to pass before a PR is mergeable
   (`.github/workflows/ci.yml`): `ruff check .` and
-  `black --check src/ tests/ scripts/` (black is pinned to `26.1.0` in
+  `black --check src/ tests/ scripts/` (black is pinned to `26.3.1` in
   `requirements.txt`; ruff's lint scope is deliberately pinned to the rule
   families `E4`, `E7`, `E9`, `F` in `ruff.toml` rather than ruff's newer,
   much wider defaults — see the comment at the top of that file for why).

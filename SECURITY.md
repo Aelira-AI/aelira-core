@@ -55,7 +55,7 @@ We follow responsible disclosure practices. Please do not publicly disclose the 
 - **Dependency scanning** - Automated via Dependabot
 - **Release safety gate** - Every release is scanned for secrets, credentials, and internal identifiers before publication (`scripts/verify_release_safety.py`)
 - **Input validation** - Pydantic models validate all API inputs
-- **SQL injection prevention** - SQLAlchemy ORM (no raw queries)
+- **SQL injection prevention** - SQLAlchemy ORM; no user input is interpolated into SQL
 - **Authentication** - API keys with bcrypt hashing
 - **Rate limiting** - Redis-based per-key limits
 

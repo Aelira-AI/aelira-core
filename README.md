@@ -44,7 +44,7 @@ That gets you scanning immediately. AI-generated fixes need a model, which is th
 | **Video and audio** | Transcription and WebVTT captions |
 | **Images** | Context-aware alt text, not filename echoes |
 
-It reads course content directly from **Canvas, Blackboard, Moodle and Brightspace** over LTI 1.3 and their APIs, and from **Google Drive** and **Microsoft 365**, so faculty do not have to download and re-upload anything.
+It reads course content directly from **Canvas, Blackboard and Brightspace** over LTI 1.3 and their APIs, and from **Moodle** over its API, and from **Google Drive** and **Microsoft 365**, so faculty do not have to download and re-upload anything.
 
 ## Severity is computed, not generated
 
@@ -97,7 +97,7 @@ src/
   education/     document processors: PDF, Office, LaTeX, web, multimedia
   ai/            provider abstraction, WCAG knowledge base, severity rules
   integrations/  Canvas, Blackboard, Moodle, Brightspace, Google, Microsoft
-  api/           FastAPI routes (335 endpoints)
+  api/           FastAPI routes (~330 endpoints)
   auth/          magic link, OAuth, API keys, sessions
 dashboard/       React 19 + Vite admin interface
 cli/             oclif command-line client (TypeScript, Node 20+)
@@ -125,8 +125,8 @@ The full annotated dependency inventory — every major dependency and what it d
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d --build
-docker compose exec api alembic upgrade head
-docker compose exec api pytest
+docker compose -f docker-compose.dev.yml exec api alembic upgrade head
+docker compose -f docker-compose.dev.yml exec api pytest
 ```
 
 The dashboard runs separately with `cd dashboard && npm install && npm run dev`.

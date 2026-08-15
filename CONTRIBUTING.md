@@ -11,7 +11,7 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 ### Prerequisites
 
 - **Python 3.14** — Backend API (`.python-version`, `Dockerfile`, `Dockerfile.dev`, and CI all pin this)
-- **Node.js 20+** — Dashboard frontend (`dashboard/Dockerfile`, CI)
+- **Node.js 22+** — Dashboard frontend (`dashboard/Dockerfile`, CI)
 - **Docker** — For running services locally
 - **PostgreSQL 16** — Database (or use Docker)
 - **Redis** — Cache and session store (or use Docker)
@@ -94,7 +94,7 @@ aelira-core/
 - Pydantic models for API request/response schemas
 - Structured logging with contextual fields
 - Follow existing patterns in the codebase
-- Lint with `ruff check .` and format-check with `black --check src/ tests/ scripts/` — this is what CI runs (`.github/workflows/ci.yml`); `black` is pinned to `26.1.0`
+- Lint with `ruff check .` and format-check with `black --check src/ tests/ scripts/` — this is what CI runs (`.github/workflows/ci.yml`); `black` is pinned to `26.3.1`
 
 ### TypeScript (Dashboard)
 

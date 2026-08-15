@@ -12,7 +12,7 @@ the human-readable map; the lockfiles are the truth.
 
 | Dependency | Role |
 |---|---|
-| `fastapi` | The API server — 335 routes under `src/api/` |
+| `fastapi` | The API server (~330 routes under `src/api/`) |
 | `uvicorn` | ASGI server |
 | `pydantic` / `pydantic-settings` | Request/response models and typed settings |
 | `starlette` | ASGI toolkit underneath FastAPI (middleware, responses) |
@@ -32,7 +32,7 @@ the human-readable map; the lockfiles are the truth.
 | Dependency | Role |
 |---|---|
 | `PyJWT` / `jwcrypto` | JWT session tokens and LTI 1.3 message signing |
-| `bcrypt` | Refresh-token and confirmation-code hashing |
+| `bcrypt` | Hashing for API keys, refresh tokens, and confirmation codes |
 | `cryptography` | Fernet encryption for stored BYOK provider keys |
 | `oletools` / `msoffcrypto-tool` | Malicious-document screening on upload |
 
@@ -62,6 +62,7 @@ the human-readable map; the lockfiles are the truth.
 |---|---|
 | `playwright` / `axe-playwright-python` | Real-browser scans with the axe-core WCAG engine |
 | `beautifulsoup4` / `lxml` | HTML parsing for web remediation |
+| `defusedxml` | XXE-safe XML parsing (sitemaps) |
 | `faster-whisper` / `ctranslate2` | Speech-to-text for captions and transcripts |
 | `av` / `scenedetect` | Video decoding and flashing/scene analysis |
 | `piper-tts` | Text-to-speech generation (fully local) |
@@ -98,7 +99,6 @@ vendor SDKs to keep the dependency surface small.
 | `pytest` (+ `pytest-asyncio`, `pytest-cov`) | Test suite (`tests/`) |
 | `locust` | Load testing (`tests/load/`) |
 | `black` / `ruff` | Formatting and linting |
-| `mypy` | Static type checking |
 
 ## Dashboard (`dashboard/`, TypeScript)
 
@@ -166,7 +166,7 @@ Every remaining pin in `requirements.txt`, so nothing is unaccounted for.
 | locust (load tests) | `Flask`, `flask-cors`, `Flask-Login`, `Werkzeug`, `Jinja2`, `itsdangerous`, `blinker`, `gevent`, `geventhttpclient`, `zope.event`, `zope.interface`, `msgpack`, `pyzmq`, `ConfigArgParse` |
 | pytest / black / mypy | `iniconfig`, `pluggy`, `coverage`, `pytokens`, `pathspec`, `platformdirs`, `mypy_extensions` |
 | beautifulsoup4 / openpyxl / python-pptx / playwright | `soupsieve`, `et_xmlfile`, `XlsxWriter`, `pyee` |
-| email-validator / PyLTI1p3 / misc | `dnspython`, `Deprecated`, `wrapt`, `six`, `python-dateutil`, `more-itertools`, `defusedxml`, `setuptools`, `shellingham`, `pdfminer.six` (version managed by pdfplumber) |
+| email-validator / PyLTI1p3 / misc | `dnspython`, `Deprecated`, `wrapt`, `six`, `python-dateutil`, `more-itertools`, `setuptools`, `shellingham`, `pdfminer.six` (version managed by pdfplumber) |
 
 Pins are audited against this test and removed when nothing requires them
 any more: no reverse dependencies among the installed packages, and no

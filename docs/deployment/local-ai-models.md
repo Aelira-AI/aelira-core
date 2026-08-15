@@ -37,7 +37,7 @@ These ship as the defaults and were benchmarked against accessibility tasks
 | Embeddings | `nomic-embed-text` | ~0.3 GB | anywhere | Standard, fast, good WCAG retrieval quality |
 
 ```bash
-ollama pull qwen2.5vl:3b gemma3:4b qwen2.5-coder:7b nomic-embed-text
+ollama pull qwen2.5vl:3b && ollama pull gemma3:4b && ollama pull qwen2.5-coder:7b && ollama pull nomic-embed-text
 ```
 
 ## Hardware tiers

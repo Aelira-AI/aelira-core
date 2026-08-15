@@ -5,7 +5,7 @@
 #
 # With fully local AI (documents never leave this host):
 #   docker compose -f docker-compose.prod.yml --profile ollama up -d
-#   docker exec aelira-ollama ollama pull qwen2.5vl:3b gemma3:4b qwen2.5-coder:7b nomic-embed-text
+#   docker exec aelira-ollama ollama pull qwen2.5vl:3b && ollama pull gemma3:4b && ollama pull qwen2.5-coder:7b && ollama pull nomic-embed-text
 #
 # What this file deliberately does NOT do:
 #   - TLS termination. Put your reverse proxy (nginx, Traefik, Caddy) in
@@ -37,7 +37,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     container_name: aelira-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]

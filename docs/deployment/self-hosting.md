@@ -66,7 +66,7 @@ is `.env.example`):
 | `ENV` | `production` | Must be one of `development`, `staging`, `production`, `test` (`validate_env`) — a typo like `prod` is rejected rather than silently falling through to dev behaviour. |
 | `PUBLIC_API_URL` | Where the API is publicly reachable | Defaults to `http://localhost:8000`. Used to build absolute URLs (OAuth callbacks, links in emails) rather than hardcoding a vendor domain. |
 | `PUBLIC_DASHBOARD_URL` | Where the dashboard is publicly reachable | Defaults to `http://localhost:5173`. |
-| `CORS_ORIGINS` | Origins allowed to call the API | **Comma-separated** (`Settings` does `.split(",")` on this — do not use the JSON-array syntax shown in the `.env.example` comment for this variable; a plain list like `https://dashboard.example.org,https://scans.example.org` is what the code actually parses). With no localhost fallback outside `development`/`test`, so a production deployment that leaves this unset blocks its own dashboard. |
+| `CORS_ORIGINS` | Origins allowed to call the API | **Comma-separated** (`Settings` does `.split(",")` on this — a plain comma-separated list like `https://dashboard.example.org,https://scans.example.org`, not a JSON array). With no localhost fallback outside `development`/`test`, so a production deployment that leaves this unset blocks its own dashboard. |
 | `JWT_SECRET` | Signs session JWTs (HS256) | If unset, `JWTService` generates a random secret at process start and logs a warning — sessions won't survive a restart. Generate one with `python3 -c "import secrets; print(secrets.token_urlsafe(64))"`. (RS256 is also supported via `JWT_PRIVATE_KEY_PATH`/`JWT_PUBLIC_KEY_PATH`, recommended for production per the `validate_jwt_algorithm` warning.) |
 | `TOKEN_ENCRYPTION_KEY` | Encrypts stored OAuth tokens | Required if you enable any cloud integration (Google Workspace, Microsoft 365, Canvas OAuth). Generate with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. |
 | `ALLOW_MOCK_AUTH` | Dev-only auth bypass | Must **not** be `true` in `production`/`staging` — `Settings` raises at startup if it is (`validate_mock_auth`). Leave unset. |
@@ -124,84 +124,6 @@ container on port 8000 and the dashboard container on port 80, and that
 `PUBLIC_API_URL` / `PUBLIC_DASHBOARD_URL` / `CORS_ORIGINS` match whatever
 public hostnames you put in front of them.
 
-## Assembling a production compose file
-
-A production `docker-compose.yml` built from the pieces above — same
-service names and images as `docker-compose.dev.yml`, but using the
-production `Dockerfile` (or the published `ghcr.io/aelira-ai/aelira-core-api`
-image) instead of `Dockerfile.dev`, and no source-tree bind mounts:
-
-```yaml
-services:
-  postgres:
-    image: pgvector/pgvector:0.8.1-pg16
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-aelira}
-      POSTGRES_USER: ${POSTGRES_USER:-aelira}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a real password}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aelira}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7.4-alpine
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-
-  ollama:
-    image: ollama/ollama:latest
-    profiles: ["ollama"]
-    volumes:
-      - ollama_data:/root/.ollama
-
-  api:
-    image: ghcr.io/aelira-ai/aelira-core-api:latest   # or build: { context: ., dockerfile: Dockerfile }
-    environment:
-      ENV: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-aelira}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aelira}
-      REDIS_URL: redis://redis:6379/0
-      JWT_SECRET: ${JWT_SECRET:?generate with secrets.token_urlsafe(64)}
-      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
-      PUBLIC_API_URL: ${PUBLIC_API_URL}
-      PUBLIC_DASHBOARD_URL: ${PUBLIC_DASHBOARD_URL}
-      CORS_ORIGINS: ${CORS_ORIGINS}
-      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      OLLAMA_HOST: http://ollama:11434
-      SMTP_HOST: ${SMTP_HOST}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER}
-      SMTP_PASSWORD: ${SMTP_PASSWORD}
-      FROM_EMAIL: ${FROM_EMAIL}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  dashboard:
-    image: ghcr.io/aelira-ai/aelira-core-dashboard:latest  # or build: { context: ./dashboard }
-    depends_on:
-      - api
-
-volumes:
-  postgres_data:
-  redis_data:
-  ollama_data:
-```
-
-Put your reverse proxy (nginx/Caddy/Traefik) in front of `api` (port 8000)
-and `dashboard` (port 80), terminating TLS there. Everything referenced
-above — image names, the `--profile ollama` gate, the healthcheck shape, the
-`POSTGRES_*`/`DATABASE_URL` pattern — matches `docker-compose.dev.yml` and
-`docker-compose.quickstart.yml`; only the image source (production
-`Dockerfile` / published image, no bind-mounted source, `ENV=production`)
-differs.
 
 ## Backups
 

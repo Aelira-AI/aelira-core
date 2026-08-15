@@ -6,7 +6,6 @@
 #
 # Then visit:
 #   API:       http://localhost:8000/docs
-#   Dashboard: http://localhost:5173
 #
 # To add AI remediation (optional, requires 8GB+ RAM):
 #   docker compose -f docker-compose.quickstart.yml --profile ollama up -d

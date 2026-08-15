@@ -1,5 +1,5 @@
 """
-Complete WCAG Knowledge Base Seed Data - All 127 axe-core Rules
+Complete WCAG Knowledge Base Seed Data - All WCAG rules (112 unique rule IDs)
 
 This module contains ALL axe-core rules for comprehensive WCAG 2.2 coverage:
 - 82 WCAG 2.0 Level A & AA rules
