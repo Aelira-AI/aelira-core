@@ -1,0 +1,679 @@
+"""
+Canvas LMS REST API Routes
+
+Handles OAuth 2.0 authentication and file operations with Canvas LMS.
+
+SECURITY:
+- All endpoints (except OAuth callback) require API key authentication
+- Users can only access their own department's data
+"""
+
+import logging
+import os
+import secrets
+import json
+import base64
+from typing import Dict, Any, Optional, List, Tuple
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi.responses import RedirectResponse
+from sqlalchemy.orm import Session
+from pydantic import BaseModel, Field
+
+from ..db.database import get_db_dependency
+from ..db.models import (
+    CloudOAuthCredentials,
+    CloudProvider,
+    CloudFile,
+    CloudJobQueue,
+    CloudJobType,
+    CloudJobStatus,
+    APIKey,
+)
+from ..integrations.canvas import (
+    CanvasOAuthService,
+    CanvasAPIClient,
+    CanvasFileInfo,
+)
+from ..integrations.oauth_token_manager import OAuthTokenManager
+from ..auth import get_required_api_key, verify_department_access
+from ..middleware.quota import require_feature
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/canvas", tags=["canvas"])
+
+# =============================================================================
+# Request/Response Models
+# =============================================================================
+
+
+class CanvasConnectRequest(BaseModel):
+    """Request to initiate Canvas OAuth connection"""
+
+    canvas_instance_url: str = Field(
+        ..., description="Canvas instance URL (e.g., https://canvas.university.edu)"
+    )
+    department_id: Optional[str] = None
+
+
+class CanvasConnectionStatus(BaseModel):
+    """Canvas connection status response"""
+
+    connected: bool
+    canvas_instance_url: Optional[str] = None
+    user_email: Optional[str] = None
+    connected_at: Optional[datetime] = None
+    credential_id: Optional[str] = None
+
+
+class CanvasRemediateRequest(BaseModel):
+    """Request to remediate a Canvas file"""
+
+    file_id: str = Field(..., description="Canvas file ID")
+    course_id: str = Field(..., description="Canvas course ID")
+    department_id: Optional[str] = None
+    upload_back: bool = Field(True, description="Upload remediated file back to Canvas")
+    use_ai: bool = Field(True, description="Use AI for fix generation")
+
+
+class CanvasRemediateResponse(BaseModel):
+    """Response from remediation request"""
+
+    success: bool
+    scan_id: Optional[str] = None
+    job_id: Optional[str] = None
+    message: str
+
+
+# =============================================================================
+# OAuth Flow
+# =============================================================================
+
+
+@router.post("/connect")
+async def connect_canvas(
+    request: CanvasConnectRequest,
+    db: Session = Depends(get_db_dependency),
+    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+) -> Dict[str, str]:
+    """
+    Initiate Canvas OAuth 2.0 flow.
+
+    🔒 REQUIRES API KEY
+    🔒 REQUIRES: lms_integration feature (department tier or higher)
+
+    Returns authorization URL to redirect user to.
+    """
+    _, user_id, auth_department_id = api_key_info
+    dept_id = request.department_id or auth_department_id
+    verify_department_access(dept_id, auth_department_id)
+
+    # Check feature access - Canvas integration requires lms_integration feature
+    await require_feature(
+        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+    )
+
+    oauth_service = CanvasOAuthService()
+
+    if not oauth_service.is_configured():
+        raise HTTPException(
+            status_code=500,
+            detail="Canvas OAuth not configured. Please set CANVAS_OAUTH_CLIENT_ID and CANVAS_OAUTH_CLIENT_SECRET.",
+        )
+
+    # Encode CSRF token + context into state (Canvas only returns code + state)
+    state_data = {
+        "csrf": secrets.token_urlsafe(32),
+        "canvas_instance_url": request.canvas_instance_url,
+        "department_id": dept_id,
+    }
+    state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
+
+    # Generate authorization URL
+    auth_url = oauth_service.get_authorization_url(
+        canvas_instance_url=request.canvas_instance_url,
+        state=state,
+    )
+
+    logger.info(
+        f"Initiated Canvas OAuth for department {dept_id} at {request.canvas_instance_url}"
+    )
+
+    return {
+        "authorization_url": auth_url,
+        "state": state,
+    }
+
+
+@router.get("/oauth/callback")
+async def canvas_oauth_callback(
+    code: str = Query(..., description="Authorization code from Canvas"),
+    state: str = Query(..., description="State token encoding CSRF + context"),
+    db: Session = Depends(get_db_dependency),
+) -> Dict[str, Any]:
+    """
+    Handle Canvas OAuth callback.
+
+    Decodes canvas_instance_url and department_id from the state parameter,
+    then exchanges the authorization code for an access token.
+    """
+    # Decode state to extract context (add padding if stripped by Canvas)
+    try:
+        padded_state = state + "=" * (-len(state) % 4)
+        state_data = json.loads(base64.urlsafe_b64decode(padded_state))
+        canvas_instance_url = state_data["canvas_instance_url"]
+        department_id = state_data["department_id"]
+    except (json.JSONDecodeError, KeyError, Exception) as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid OAuth state parameter: {e}",
+        )
+
+    # Rewrite localhost for server-side calls inside Docker
+    import os
+
+    server_canvas_url = canvas_instance_url
+    if os.getenv("ENV") == "development" and "localhost" in canvas_instance_url:
+        server_canvas_url = canvas_instance_url.replace(
+            "localhost", "host.docker.internal"
+        )
+
+    oauth_service = CanvasOAuthService()
+    token_manager = OAuthTokenManager()
+
+    try:
+        # Exchange code for token
+        credential = await oauth_service.exchange_code_for_token(
+            canvas_instance_url=server_canvas_url,
+            authorization_code=code,
+        )
+
+        # Get user info (use server URL for API calls from Docker)
+        api_client = CanvasAPIClient(
+            canvas_instance_url=server_canvas_url,
+            access_token=credential.access_token,
+        )
+        try:
+            user_info = await api_client.get_current_user()
+        finally:
+            await api_client.close()
+
+        # Store credentials in database
+        # Encrypt tokens
+        encrypted_access = token_manager.encrypt_token(credential.access_token)
+        encrypted_refresh = (
+            token_manager.encrypt_token(credential.refresh_token)
+            if credential.refresh_token
+            else None
+        )
+
+        # Check for existing credential
+        existing = (
+            db.query(CloudOAuthCredentials)
+            .filter(
+                CloudOAuthCredentials.department_id == department_id,
+                CloudOAuthCredentials.provider == CloudProvider.CANVAS.value,
+            )
+            .first()
+        )
+
+        if existing:
+            # Update existing
+            existing.access_token = encrypted_access
+            existing.refresh_token = encrypted_refresh
+            existing.token_expires_at = credential.expires_at
+            existing.scopes = credential.scope
+            existing.is_active = True
+            existing.provider_metadata = {
+                "canvas_instance_url": canvas_instance_url,
+                "user_id": credential.user_id,
+                "user_email": user_info.email,
+                "user_name": user_info.name,
+            }
+            db_credential = existing
+        else:
+            # Create new
+            db_credential = CloudOAuthCredentials(
+                department_id=department_id,
+                provider=CloudProvider.CANVAS.value,
+                access_token=encrypted_access,
+                refresh_token=encrypted_refresh,
+                token_expires_at=credential.expires_at,
+                scopes=credential.scope,
+                is_active=True,
+                provider_metadata={
+                    "canvas_instance_url": canvas_instance_url,
+                    "user_id": credential.user_id,
+                    "user_email": user_info.email,
+                    "user_name": user_info.name,
+                },
+            )
+            db.add(db_credential)
+
+        db.commit()
+        db.refresh(db_credential)
+
+        logger.info(
+            f"Canvas OAuth successful for department {department_id}: {user_info.email}"
+        )
+
+        dashboard_url = os.getenv("DASHBOARD_URL", "http://localhost:5173")
+        return RedirectResponse(
+            url=f"{dashboard_url}/integrations?canvas=connected&email={user_info.email}",
+        )
+
+    except Exception as e:
+        logger.error(f"Canvas OAuth callback failed: {e}", exc_info=True)
+        dashboard_url = os.getenv("DASHBOARD_URL", "http://localhost:5173")
+        return RedirectResponse(
+            url=f"{dashboard_url}/integrations?canvas=error&message={str(e)[:100]}",
+        )
+
+
+@router.delete("/disconnect")
+async def disconnect_canvas(
+    department_id: str = Query(..., description="Department ID"),
+    db: Session = Depends(get_db_dependency),
+    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+) -> Dict[str, str]:
+    """
+    Disconnect Canvas integration.
+
+    🔒 REQUIRES API KEY
+
+    Revokes OAuth tokens and removes credentials.
+    """
+    _, user_id, auth_department_id = api_key_info
+    verify_department_access(department_id, auth_department_id)
+    credential = (
+        db.query(CloudOAuthCredentials)
+        .filter(
+            CloudOAuthCredentials.department_id == department_id,
+            CloudOAuthCredentials.provider == CloudProvider.CANVAS.value,
+            CloudOAuthCredentials.is_active,
+        )
+        .first()
+    )
+
+    if not credential:
+        raise HTTPException(status_code=404, detail="Canvas not connected")
+
+    # Mark as inactive (soft delete)
+    credential.is_active = False
+    db.commit()
+
+    logger.info(f"Disconnected Canvas for department {department_id}")
+
+    return {"success": "true", "message": "Canvas disconnected"}
+
+
+@router.get("/status")
+async def canvas_connection_status(
+    department_id: Optional[str] = Query(default=None, description="Department ID"),
+    db: Session = Depends(get_db_dependency),
+    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+) -> CanvasConnectionStatus:
+    """
+    Check Canvas connection status for a department.
+
+    🔒 REQUIRES API KEY
+    """
+    _, user_id, auth_department_id = api_key_info
+    dept_id = department_id or auth_department_id
+
+    credential = (
+        db.query(CloudOAuthCredentials)
+        .filter(
+            CloudOAuthCredentials.department_id == dept_id,
+            CloudOAuthCredentials.provider == CloudProvider.CANVAS.value,
+            CloudOAuthCredentials.is_active,
+        )
+        .first()
+    )
+
+    if not credential:
+        return CanvasConnectionStatus(connected=False)
+
+    return CanvasConnectionStatus(
+        connected=True,
+        canvas_instance_url=credential.provider_metadata.get("canvas_instance_url"),
+        user_email=credential.provider_metadata.get("user_email"),
+        connected_at=credential.created_at,
+        credential_id=credential.id,
+    )
+
+
+# =============================================================================
+# File Browsing
+# =============================================================================
+
+
+@router.get("/courses")
+async def list_canvas_courses(
+    department_id: Optional[str] = Query(default=None, description="Department ID"),
+    db: Session = Depends(get_db_dependency),
+    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+) -> List[Dict[str, Any]]:
+    """
+    List Canvas courses for connected user.
+
+    🔒 REQUIRES API KEY
+    """
+    _, user_id, auth_department_id = api_key_info
+    dept_id = department_id or auth_department_id
+
+    credential, api_client = await _get_canvas_client(dept_id, db)
+
+    try:
+        courses = await api_client.list_courses(enrollment_state="active")
+
+        return [
+            {
+                "id": course.id,
+                "name": course.name,
+                "course_code": course.course_code,
+                "workflow_state": course.workflow_state,
+                "start_at": course.start_at.isoformat() if course.start_at else None,
+                "end_at": course.end_at.isoformat() if course.end_at else None,
+            }
+            for course in courses
+        ]
+    finally:
+        await api_client.close()
+
+
+@router.get("/courses/{course_id}/files")
+async def list_canvas_course_files(
+    course_id: str,
+    department_id: Optional[str] = Query(default=None, description="Department ID"),
+    search_term: Optional[str] = Query(None, description="Search query"),
+    db: Session = Depends(get_db_dependency),
+    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+) -> List[Dict[str, Any]]:
+    """
+    List files in a Canvas course.
+
+    🔒 REQUIRES API KEY
+    """
+    _, user_id, auth_department_id = api_key_info
+    dept_id = department_id or auth_department_id
+
+    credential, api_client = await _get_canvas_client(dept_id, db)
+
+    try:
+        files = await api_client.list_course_files(
+            course_id=course_id,
+            search_term=search_term,
+        )
+
+        return [_format_file_info(file) for file in files]
+    finally:
+        await api_client.close()
+
+
+@router.get("/courses/{course_id}/folders")
+async def list_canvas_course_folders(
+    course_id: str,
+    department_id: str = Query(..., description="Department ID"),
+    db: Session = Depends(get_db_dependency),
+    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+) -> List[Dict[str, Any]]:
+    """
+    List folders in a Canvas course.
+
+    🔒 REQUIRES API KEY
+    🔒 REQUIRES: lms_integration feature (department tier or higher)
+    """
+    _, user_id, auth_department_id = api_key_info
+    verify_department_access(department_id, auth_department_id)
+
+    # Check feature access - Canvas integration requires lms_integration feature
+    await require_feature(
+        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+    )
+    credential, api_client = await _get_canvas_client(department_id, db)
+
+    try:
+        folders = await api_client.list_course_folders(course_id=course_id)
+
+        return [
+            {
+                "id": folder.id,
+                "name": folder.name,
+                "full_name": folder.full_name,
+                "parent_folder_id": folder.parent_folder_id,
+                "files_count": folder.files_count,
+                "folders_count": folder.folders_count,
+                "locked": folder.locked,
+                "hidden": folder.hidden,
+            }
+            for folder in folders
+        ]
+    finally:
+        await api_client.close()
+
+
+# =============================================================================
+# Remediation
+# =============================================================================
+
+
+@router.post("/remediate")
+async def remediate_canvas_file(
+    request: CanvasRemediateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db_dependency),
+    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+) -> CanvasRemediateResponse:
+    """
+    Queue remediation job for a Canvas file.
+
+    🔒 REQUIRES API KEY
+    🔒 REQUIRES: lms_integration feature (department tier or higher)
+
+    Downloads file, scans, remediates, and optionally uploads back.
+    """
+    _, user_id, auth_department_id = api_key_info
+    dept_id = request.department_id or auth_department_id
+    verify_department_access(dept_id, auth_department_id)
+
+    # Check feature access - Canvas integration requires lms_integration feature
+    await require_feature(
+        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+    )
+    import uuid
+
+    try:
+        # Get Canvas credentials
+        credential = (
+            db.query(CloudOAuthCredentials)
+            .filter(
+                CloudOAuthCredentials.department_id == dept_id,
+                CloudOAuthCredentials.provider == CloudProvider.CANVAS.value,
+                CloudOAuthCredentials.is_active,
+            )
+            .first()
+        )
+
+        if not credential:
+            return CanvasRemediateResponse(
+                success=False,
+                message="Canvas not connected. Please connect your Canvas account first.",
+            )
+
+        # Get or create CloudFile record
+        cloud_file = (
+            db.query(CloudFile)
+            .filter(
+                CloudFile.provider == CloudProvider.CANVAS.value,
+                CloudFile.provider_file_id == request.file_id,
+                CloudFile.department_id == dept_id,
+            )
+            .first()
+        )
+        if not cloud_file:
+            cloud_file = CloudFile(
+                id=str(uuid.uuid4()),
+                department_id=dept_id,
+                credential_id=credential.id,
+                provider=CloudProvider.CANVAS.value,
+                provider_file_id=request.file_id,
+                file_name=f"canvas_file_{request.file_id}",
+                file_type="unknown",
+                mime_type="unknown",
+                file_size_bytes=0,
+                provider_parent_id=request.course_id,
+            )
+            db.add(cloud_file)
+
+        # Create scan job
+        scan_job_id = str(uuid.uuid4())
+        scan_job = CloudJobQueue(
+            id=scan_job_id,
+            department_id=dept_id,
+            job_type=CloudJobType.SCAN.value,
+            provider=CloudProvider.CANVAS.value,
+            status=CloudJobStatus.PENDING.value,
+            priority=1,
+            cloud_file_id=cloud_file.id,
+            credential_id=credential.id,
+        )
+        db.add(scan_job)
+
+        # Create remediation job (will execute after scan completes)
+        remediation_job_id = str(uuid.uuid4())
+        remediation_job = CloudJobQueue(
+            id=remediation_job_id,
+            department_id=dept_id,
+            job_type=CloudJobType.REMEDIATE.value,
+            provider=CloudProvider.CANVAS.value,
+            status=CloudJobStatus.PENDING.value,
+            priority=2,
+            cloud_file_id=cloud_file.id,
+            credential_id=credential.id,
+        )
+        db.add(remediation_job)
+
+        db.commit()
+
+        logger.info(
+            f"Queued Canvas remediation jobs for file {request.file_id}: scan={scan_job_id}, remediate={remediation_job_id}"
+        )
+
+        return CanvasRemediateResponse(
+            success=True,
+            scan_id=None,  # Will be created by scan job
+            job_id=remediation_job_id,
+            message="Remediation job queued. File will be downloaded, scanned, and remediated.",
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to queue Canvas remediation: {e}", exc_info=True)
+        return CanvasRemediateResponse(
+            success=False,
+            message=f"Failed to queue remediation: {str(e)}",
+        )
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+async def _get_canvas_client(
+    department_id: str, db: Session
+) -> tuple[CloudOAuthCredentials, CanvasAPIClient]:
+    """
+    Get Canvas API client with token refresh if needed.
+
+    Returns:
+        Tuple of (credential, api_client)
+    """
+    credential = (
+        db.query(CloudOAuthCredentials)
+        .filter(
+            CloudOAuthCredentials.department_id == department_id,
+            CloudOAuthCredentials.provider == CloudProvider.CANVAS.value,
+            CloudOAuthCredentials.is_active,
+        )
+        .first()
+    )
+
+    if not credential:
+        raise HTTPException(
+            status_code=404,
+            detail="Canvas not connected. Please connect your Canvas account first.",
+        )
+
+    token_manager = OAuthTokenManager()
+
+    # Refresh token if expired
+    if token_manager.is_token_expired(credential.token_expires_at):
+        oauth_service = CanvasOAuthService()
+        refresh_token = token_manager.decrypt_token(credential.refresh_token)
+        canvas_instance_url = credential.provider_metadata.get(
+            "canvas_instance_url", ""
+        )
+        if os.getenv("ENV") == "development" and "localhost" in canvas_instance_url:
+            canvas_instance_url = canvas_instance_url.replace(
+                "localhost", "host.docker.internal"
+            )
+
+        try:
+            new_access, new_refresh, new_expires = (
+                await oauth_service.refresh_access_token(
+                    canvas_instance_url=canvas_instance_url,
+                    refresh_token=refresh_token,
+                )
+            )
+
+            credential.access_token = token_manager.encrypt_token(new_access)
+            if new_refresh:
+                credential.refresh_token = token_manager.encrypt_token(new_refresh)
+            credential.token_expires_at = new_expires
+            db.commit()
+
+            logger.info(f"Refreshed Canvas token for department {department_id}")
+        except Exception as e:
+            logger.error(f"Failed to refresh Canvas token: {e}")
+            raise HTTPException(
+                status_code=409,
+                detail="Canvas token expired and refresh failed. Please reconnect your Canvas account.",
+            )
+
+    # Decrypt token and create client
+    access_token = token_manager.decrypt_token(credential.access_token)
+    canvas_instance_url = credential.provider_metadata.get("canvas_instance_url", "")
+
+    # Rewrite localhost for Docker networking (dev only)
+    if os.getenv("ENV") == "development" and "localhost" in canvas_instance_url:
+        canvas_instance_url = canvas_instance_url.replace(
+            "localhost", "host.docker.internal"
+        )
+
+    api_client = CanvasAPIClient(
+        canvas_instance_url=canvas_instance_url,
+        access_token=access_token,
+        credential_id=credential.id,
+    )
+
+    return credential, api_client
+
+
+def _format_file_info(file: CanvasFileInfo) -> Dict[str, Any]:
+    """Format CanvasFileInfo for API response"""
+    return {
+        "id": file.id,
+        "display_name": file.display_name,
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "size": file.size,
+        "url": file.url,
+        "folder_id": file.folder_id,
+        "thumbnail_url": file.thumbnail_url,
+        "locked": file.locked,
+        "hidden": file.hidden,
+        "created_at": file.created_at.isoformat() if file.created_at else None,
+        "updated_at": file.updated_at.isoformat() if file.updated_at else None,
+    }

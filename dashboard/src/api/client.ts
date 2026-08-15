@@ -45,10 +45,31 @@ interface RetryableRequestConfig extends InternalAxiosRequestConfig {
 }
 
 // Add auth token to all requests (for API key auth fallback)
+const CSRF_SAFE_METHODS = new Set(['get', 'head', 'options', 'trace']);
+
+function readCookie(name: string): string | null {
+  const match = document.cookie.match(
+    new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()[\]\\/+^])/g, '\\$1') + '=([^;]*)')
+  );
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const apiKey = localStorage.getItem('apiKey');
   if (apiKey && !config.headers.Authorization) {
     config.headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  // CSRF: on cookie-authenticated (no Bearer) state-changing requests, echo
+  // the double-submit token the server set. The server enforces this on all
+  // cookie-authed dashboard mutations; Bearer/API-key requests are exempt
+  // server-side, so we skip the header when an Authorization header is set.
+  const method = (config.method || 'get').toLowerCase();
+  if (!CSRF_SAFE_METHODS.has(method) && !config.headers.Authorization) {
+    const csrfToken = readCookie('csrf_token');
+    if (csrfToken) {
+      config.headers['X-CSRF-Token'] = csrfToken;
+    }
   }
   return config;
 });
