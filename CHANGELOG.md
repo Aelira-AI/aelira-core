@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-08-17
+
+### Security
+
+- Browser-level SSRF protection for web scanning: every request Chromium makes during a scan — navigations, redirects, and subresources — is now validated against private/loopback/link-local targets, with redirect chains walked and validated hop by hop. Previously only the initial scan URL was checked.
+
+### Fixed
+
+- PDF remediation results now count the fixes performed by the content tagging pass (content marking, ParentTree, document root, PDF/UA identifier) instead of reporting them as manual work (#48)
+
+### Changed
+
+- GitHub releases, Docker images, and npm publishes now require all five CI checks to be green on the exact tagged commit before anything ships
+- Quickstart documents the optional Ollama models and WCAG knowledge-base seeding steps
+
 ## [0.9.1] - 2026-08-16
 
 ### Security
