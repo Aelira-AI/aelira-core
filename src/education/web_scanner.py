@@ -27,6 +27,7 @@ import psycopg2
 import json
 
 from src.ai.providers import get_provider_manager
+from src.security.browser_ssrf import install_browser_ssrf_guard
 from src.education.focus_order_analyzer import (
     FocusOrderAnalyzer,
     FocusOrderResult,
@@ -966,6 +967,9 @@ class WebScanner:
             logger.info("[WebScanner] Browser launched successfully")
             sys.stdout.flush()
             context = browser.new_context()
+            # The API validates the initial URL, but redirects and
+            # subresources need per-request validation inside the browser.
+            install_browser_ssrf_guard(context)
 
             try:
                 # Start crawling from root URL
