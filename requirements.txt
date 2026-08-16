@@ -98,7 +98,7 @@ psycopg2-binary==2.9.11
 pyasn1==0.6.4
 pyasn1_modules==0.4.1
 pycairo==1.29.0
-pycparser==2.23
+pycparser==3.0
 pydantic==2.12.5
 pydantic-settings==2.11.0
 pydantic_core==2.41.5
