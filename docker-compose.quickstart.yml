@@ -10,6 +10,12 @@
 # To add AI remediation (optional, requires 8GB+ RAM):
 #   docker compose -f docker-compose.quickstart.yml --profile ollama up -d
 #   docker exec aelira-ollama ollama pull gemma3:4b
+#   docker exec aelira-ollama ollama pull nomic-embed-text
+#
+# nomic-embed-text powers the WCAG knowledge-base retrieval that grounds
+# issue explanations with correct criteria citations. Severity scoring is
+# deterministic and needs no model; without the embedding model the API
+# logs a warning and explanations fall back to ungrounded text.
 #
 # WARNING: This config uses insecure defaults. Do NOT use in production.
 # For production, use docker-compose.prod.yml with a configured .env file.
