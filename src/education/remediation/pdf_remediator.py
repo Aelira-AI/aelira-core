@@ -130,6 +130,9 @@ class PdfRemediator(BaseRemediator):
             []
         )  # Bookmarks to add via pikepdf
         self._confidence = ConfidenceCalculator()
+        # Stats from ContentTaggerV2, recorded by _save_document on success;
+        # None means the tagger did not run (or fell back to v1/failed).
+        self._content_tagger_stats: Optional[Dict[str, int]] = None
 
         # WCAG criteria mapping per issue category
         self._wcag_map: Dict[IssueCategory, str] = {
@@ -402,6 +405,11 @@ class PdfRemediator(BaseRemediator):
             # 17. Save + verify
             output_path = self._save_document(document)
             self.result.output_file = output_path
+
+            # ContentTagger v2 (inside _save_document) fixes the document-
+            # level structure issues Phase 1 had to file as manual; move
+            # them to the fixed bucket based on what the tagger reported.
+            self._reconcile_content_tagger_fixes()
 
             if self.config.verify_fixes:
                 self._verify_fixes(output_path)
@@ -828,6 +836,7 @@ class PdfRemediator(BaseRemediator):
                 try:
                     tagger = ContentTaggerV2(self._pikepdf_doc, self._pdf)
                     stats = tagger.tag_all_pages()
+                    self._content_tagger_stats = stats
                     tagged = stats.get("blocks_matched", 0) + stats.get(
                         "blocks_created", 0
                     )
@@ -889,6 +898,66 @@ class PdfRemediator(BaseRemediator):
                 pass
 
         return output_path
+
+    # Issue types ContentTaggerV2 always resolves when it completes, and
+    # those it only resolves when it actually tagged content blocks
+    # (an empty tagging pass leaves the ParentTree /Nums empty).
+    _TAGGER_FIXED_ALWAYS = frozenset(
+        ["missing_document_root", "missing_pdfua_identifier"]
+    )
+    _TAGGER_FIXED_IF_TAGGED = frozenset(
+        ["missing_content_marking", "empty_parent_tree"]
+    )
+
+    def _reconcile_content_tagger_fixes(self) -> None:
+        """Move manual issues that ContentTaggerV2 actually fixed to the
+        fixed bucket (issue #48).
+
+        Phase 1 files the scanner's document-level structure findings as
+        manual because no per-issue fixer handles them, but the tagger
+        resolves exactly these during save: content marking (BDC/EMC),
+        ParentTree /Nums, /Document root, and the PDF/UA identifier.
+        Reclassification is driven by the tagger's own stats, so a v1
+        fallback or tagger failure leaves the issues manual.
+        """
+        stats = self._content_tagger_stats
+        if stats is None:
+            return
+
+        tagged = stats.get("blocks_matched", 0) + stats.get("blocks_created", 0)
+        handled = set(self._TAGGER_FIXED_ALWAYS)
+        if tagged > 0:
+            handled |= self._TAGGER_FIXED_IF_TAGGED
+
+        issues_by_id = {issue.id: issue for issue in self.issues}
+        remaining_manual = []
+        for manual in self.result.manual_issues:
+            issue_type = manual.metadata.get("issue_type", "")
+            original = issues_by_id.get(manual.issue_id)
+            if issue_type not in handled or original is None:
+                remaining_manual.append(manual)
+                continue
+
+            self.result.manual_count -= 1
+            confidence = self._confidence.calculate(FixMethod.RULE, verified=True)
+            self._add_fixed_issue(
+                original,
+                fixed_content=(
+                    "Resolved by content tagging pass: "
+                    f"{issue_type.replace('_', ' ')}"
+                ),
+                fix_method=FixMethod.RULE.value,
+                confidence=confidence,
+                needs_review=self._confidence.needs_review(confidence),
+                wcag_criteria=self._wcag_map.get(original.category),
+                page_number=original.metadata.get("page_number"),
+            )
+            logger.info(
+                "Reclassified manual issue as fixed by ContentTagger: %s (%s)",
+                manual.issue_id,
+                issue_type,
+            )
+        self.result.manual_issues = remaining_manual
 
     def _reload_pikepdf_doc(self) -> None:
         """Reload the pikepdf document handle from disk.

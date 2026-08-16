@@ -79,12 +79,6 @@ def _enrich_issues(issues):
     and not (FIXTURES / "academic_paper.pdf").exists(),
     reason="Test fixture not available",
 )
-@pytest.mark.xfail(
-    reason="Two-phase remediation misassigns verified fixes to the manual "
-    "bucket (fixed_count=0 despite verification confirming fixes) - see "
-    "issue #48. Remove this marker when fixing.",
-    strict=False,
-)
 def test_full_remediation_pipeline():
     """Scan a PDF, remediate it, re-scan, and verify improvement."""
     from src.education.pdf_processor import PDFProcessor
