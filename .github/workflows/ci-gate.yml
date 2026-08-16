@@ -1,0 +1,65 @@
+# Reusable publish gate: refuse to release anything unless all five CI
+# checks (lint, test, dashboard, cli, docker) are green on the exact SHA
+# being published.
+#
+# CI only runs on pushes to main, so a tag never re-triggers it; this gate
+# reads the check runs already recorded on the commit. Consequences:
+#   - tagging a main commit whose CI is still running waits (up to 30 min);
+#   - tagging a commit that never went through main fails with a clear
+#     message instead of publishing unvalidated code.
+#
+# The release-safety scan stays in each publish workflow; this gate is
+# about test/lint validation, not disclosure scanning.
+
+name: CI gate
+
+on:
+  workflow_call:
+
+jobs:
+  wait-for-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require green CI checks on published SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REQUIRED_CHECKS="lint test dashboard cli docker"
+          DEADLINE=$(( $(date +%s) + 1800 ))
+          echo "Gating publish on CI checks for $GITHUB_SHA"
+          while true; do
+            RUNS=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" \
+              --jq '[.check_runs[] | {name, status, conclusion, started_at}]')
+            FAILED=""
+            PENDING=""
+            for CHECK in $REQUIRED_CHECKS; do
+              # Re-runs create multiple check runs with the same name; only
+              # the most recent one is authoritative.
+              STATE=$(echo "$RUNS" | jq -r --arg n "$CHECK" '
+                [.[] | select(.name == $n)] | sort_by(.started_at) | last
+                | if . == null then "missing"
+                  elif .status != "completed" then "pending"
+                  else .conclusion end')
+              case "$STATE" in
+                success) ;;
+                missing|pending) PENDING="$PENDING $CHECK" ;;
+                *) FAILED="$FAILED $CHECK=$STATE" ;;
+              esac
+            done
+            if [ -n "$FAILED" ]; then
+              echo "Refusing to publish: required checks not green on $GITHUB_SHA:$FAILED" >&2
+              exit 1
+            fi
+            if [ -z "$PENDING" ]; then
+              echo "All required checks green on $GITHUB_SHA"
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "Timed out after 30 min waiting for:$PENDING" >&2
+              echo "If this commit never ran CI, push it to main and let CI finish before tagging." >&2
+              exit 1
+            fi
+            echo "Waiting for:$PENDING"
+            sleep 30
+          done

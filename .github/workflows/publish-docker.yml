@@ -11,7 +11,15 @@ permissions:
   packages: write
 
 jobs:
+  # No images published unless all five CI checks are green on this SHA.
+  ci-gate:
+    uses: ./.github/workflows/ci-gate.yml
+    permissions:
+      checks: read
+      contents: read
+
   publish:
+    needs: ci-gate
     runs-on: ubuntu-latest
     strategy:
       matrix:
