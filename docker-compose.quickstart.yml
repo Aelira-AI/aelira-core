@@ -11,6 +11,8 @@
 #   docker compose -f docker-compose.quickstart.yml --profile ollama up -d
 #   docker exec aelira-ollama ollama pull gemma3:4b
 #   docker exec aelira-ollama ollama pull nomic-embed-text
+#   docker exec aelira-api python scripts/seed_wcag_guidelines.py
+#   docker exec aelira-api python scripts/generate_wcag_embeddings.py
 #
 # nomic-embed-text powers the WCAG knowledge-base retrieval that grounds
 # issue explanations with correct criteria citations. Severity scoring is
