@@ -38,7 +38,7 @@ Flask-Login==0.6.3
 flatbuffers==25.12.19
 freetype-py==2.5.1
 fsspec==2026.1.0
-gevent==25.9.1
+gevent==26.8.0
 geventhttpclient==2.3.7
 google-api-core==2.29.0
 google-api-python-client==2.163.0
