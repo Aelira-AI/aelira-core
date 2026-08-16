@@ -1,0 +1,79 @@
+name: Bug Report
+description: Report a bug to help us improve Aelira
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Setup questions belong in
+        [Q&A Discussions](https://github.com/Aelira-AI/aelira-core/discussions/categories/q-a);
+        security problems go through [SECURITY.md](https://github.com/Aelira-AI/aelira-core/blob/main/SECURITY.md), never a public issue.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Aelira version
+      placeholder: e.g. v0.9.1
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Docker (quickstart compose)
+        - Docker (production compose / GHCR images)
+        - Local Python
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, OS, and browser if the bug is in the dashboard.
+      placeholder: Python 3.14, Ubuntu 24.04, Firefox 143
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Paste relevant logs or attach screenshots. Strip anything sensitive.
+      render: shell
+  - type: textarea
+    id: document
+    attributes:
+      label: Document info (scan/remediation issues only)
+      description: File type and size, and whether you can share the file — a reproducing document is the fastest path to a fix.
+      placeholder: |
+        File type: PDF / DOCX / PPTX / XLSX / HTML / other
+        File size:
+        Can you share the file?
