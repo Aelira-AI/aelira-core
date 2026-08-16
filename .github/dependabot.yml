@@ -7,10 +7,6 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 10
-    ignore:
-      # pydantic pins pydantic-core exactly; bumping it independently makes the
-      # grouped pip update unresolvable. Let pydantic govern its own core.
-      - dependency-name: "pydantic-core"
     groups:
       pip-minor-patch:
         applies-to: version-updates
