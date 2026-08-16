@@ -20,7 +20,7 @@ Versions below are read directly from [`package.json`](package.json) — check t
 
 ### Prerequisites
 
-- Node.js 20+ (matches CI, see `.github/workflows/ci.yml`)
+- Node.js 22+ (matches CI and `dashboard/Dockerfile`)
 - npm
 
 ### Setup
