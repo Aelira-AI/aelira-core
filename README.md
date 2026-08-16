@@ -176,7 +176,7 @@ Aelira Core stands on excellent open-source tools, and it is worth naming the on
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for expectations. Security reports go to the process in [SECURITY.md](SECURITY.md), not to the public issue tracker.
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for expectations. Questions, setup help, and feature ideas belong in [Discussions](https://github.com/Aelira-AI/aelira-core/discussions); reproducible bugs go to the issue tracker. Security reports go to the process in [SECURITY.md](SECURITY.md), not to the public issue tracker.
 
 ## Licence and branding
 
