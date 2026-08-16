@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-08-16
+
+### Security
+
+- Bearer token hardening: access tokens are type-gated and checked against live sessions, so refresh tokens can no longer be replayed as access credentials and revoked tokens stop working at logout
+- CSRF enforcement on cookie-authenticated dashboard mutations via a double-submit `X-CSRF-Token`; the dashboard's blanket exemptions were removed
+- OAuth callback CSRF protection: Google/Microsoft connect and callback now use server-side one-time state, and the workspace binding comes only from verified state metadata
+- `/google/connect` now requires authentication (development fallback removed)
+- OAuth login domain matching uses exact domain equality (a substring match could be bypassed by look-alike domains)
+- Sitemap XML parsing switched to `defusedxml` (XXE)
+
+### Changed
+
+- Faculty gamification and leaderboards are now opt-in and off by default
+- LMS integration maturity labeled honestly: Canvas is production-verified; others range from beta to untested
+- Documentation claims accuracy pass; SECURITY.md supported-versions table aligned; dashboard licence declared
+- Upload paths genericized and dashboard debug logging removed
+
+### Dependencies
+
+- bcrypt 5.0.0, redis 8.1.0, websockets 17.0.1, python-pptx 1.0.2, av 18.1.0, packaging 26.3, setuptools 84.0.0, click 8.3.3
+- Dashboard and CLI npm minor/patch groups; docker build actions updated
+
 ## [0.9.0] - 2026-08-15
 
 ### Added
