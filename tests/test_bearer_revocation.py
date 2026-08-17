@@ -132,3 +132,61 @@ def test_lti_launch_token_accepted_without_session(
     )
     assert user_id == "lti-u"
     fake_session.validate_session.assert_not_called()
+
+
+def _request_with_cookie(token):
+    req = MagicMock()
+    req.cookies = {"aelira_access": token}
+    return req
+
+
+def test_lti_launch_token_accepted_via_cookie(jwt_service, db_no_api_key, monkeypatch):
+    # Regression for the Canvas deep-link flash-loop: lti_routes delivers the
+    # LTI token AS the aelira_access cookie, and the cookie branch must admit
+    # it by the same positive lti_launch=True claim as the Bearer branch.
+    access, _jti, _exp = jwt_service.create_access_token(
+        user_id="lti-u",
+        department_id="d1",
+        email="u@x.edu",
+        role="faculty",
+        additional_claims={"lti_launch": True, "course_id": "c1"},
+    )
+
+    import src.auth.session_service as ss
+
+    fake_session = MagicMock()
+    fake_session.validate_session.return_value = None  # no UserSession row
+    monkeypatch.setattr(ss, "get_session_service", lambda: fake_session)
+
+    api_key, user_id, dept_id = get_required_api_key(
+        request=_request_with_cookie(access),
+        credentials=None,
+        db=db_no_api_key,
+    )
+    assert api_key is None
+    assert user_id == "lti-u"
+    assert dept_id == "d1"
+
+
+def test_stale_session_cookie_without_lti_claim_still_rejected(
+    jwt_service, db_no_api_key, monkeypatch
+):
+    # Security guard: a normal (non-LTI) access token whose session is
+    # revoked/absent must NOT be admitted via the cookie branch either.
+    access, _jti, _exp = jwt_service.create_access_token(
+        user_id="u1", department_id="d1", email="u@x.edu", role="faculty"
+    )
+
+    import src.auth.session_service as ss
+
+    fake_session = MagicMock()
+    fake_session.validate_session.return_value = None
+    monkeypatch.setattr(ss, "get_session_service", lambda: fake_session)
+
+    with pytest.raises(HTTPException) as exc:
+        get_required_api_key(
+            request=_request_with_cookie(access),
+            credentials=None,
+            db=db_no_api_key,
+        )
+    assert exc.value.status_code == 401

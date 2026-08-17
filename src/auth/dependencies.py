@@ -126,6 +126,21 @@ def get_required_api_key(
             # Return None for api_key (session-based), but provide user/department info
             return None, user.id, user.department_id
 
+        # LTI-launch tokens arrive as this same cookie (lti_routes sets
+        # aelira_access on launch) and legitimately have NO UserSession row.
+        # Accept them by the SAME positive lti_launch claim the Bearer path
+        # enforces above — never by "has no session". Without this, every
+        # Canvas deep link 401s and the dashboard flash-loops.
+        from ..auth.jwt_service import JWTService
+
+        lti_payload = JWTService().verify_access_token(access_token)
+        if lti_payload and lti_payload.get("lti_launch") is True:
+            lti_user_id = lti_payload.get("sub") or lti_payload.get("user_id")
+            lti_department_id = lti_payload.get("department_id")
+            if lti_user_id and lti_department_id:
+                logger.debug(f"LTI cookie auth for user {lti_user_id}")
+                return None, lti_user_id, lti_department_id
+
         # Session cookie exists but is invalid/expired
         logger.debug("Invalid session cookie, will fall through to other auth methods")
 
