@@ -154,6 +154,26 @@ def get_current_api_key(
         session_service = get_session_service()
         result = session_service.validate_session(db, access_token)
 
+        if result is None:
+            # LTI-launch tokens arrive as this same cookie (lti_routes sets
+            # aelira_access on launch) and legitimately have NO UserSession
+            # row. Admit them by the SAME positive lti_launch claim the
+            # Bearer path in get_required_api_key enforces, never by
+            # "has no session", then resolve the user's API key exactly
+            # like the session branch below.
+            lti_payload = get_jwt_service().verify_access_token(access_token)
+            if lti_payload and lti_payload.get("lti_launch") is True:
+                lti_user_id = lti_payload.get("sub") or lti_payload.get("user_id")
+                lti_user = (
+                    db.query(User)
+                    .filter(User.id == lti_user_id, User.is_active.is_(True))
+                    .first()
+                    if lti_user_id
+                    else None
+                )
+                if lti_user:
+                    result = (lti_user, lti_payload)
+
         if result:
             user, payload = result
 
