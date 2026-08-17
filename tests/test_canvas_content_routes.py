@@ -498,6 +498,69 @@ class TestContentDiff:
 
         assert response.status_code == 404
 
+    def test_diff_returns_real_issues_not_fabricated(
+        self, client, mock_session, override_deps
+    ):
+        """The issues list must be the real axe-core violation data from
+        the scan, not a generated description — every field traces back
+        to the raw stored violation."""
+        cf = _make_cloud_file(
+            content_body="<p>Original</p>",
+            remediated_body="<p>Fixed</p>",
+            last_scan_id="scan-1",
+        )
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        scan_result = MagicMock()
+        scan_result.issues = [
+            {
+                "id": "image-alt",
+                "impact": "critical",
+                "description": "Images must have alternate text",
+                "help": "Images must have alternative text",
+                "tags": ["wcag2a", "wcag111", "cat.text-alternatives"],
+                "nodes": [{"html": "<img src='x.png'>"}, {"html": "<img src='y.png'>"}],
+            }
+        ]
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            cf,
+            scan_result,
+        ]
+
+        response = client.get(f"/canvas/content/{cf.id}/diff")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["issues"]) == 1
+        issue = data["issues"][0]
+        assert issue["id"] == "image-alt"
+        assert issue["impact"] == "critical"
+        assert issue["description"] == "Images must have alternate text"
+        assert issue["help"] == "Images must have alternative text"
+        assert issue["wcag_tags"] == ["wcag2a", "wcag111", "cat.text-alternatives"]
+        assert issue["nodes_affected"] == 2
+        # No fabricated-pool text anywhere in the response.
+        assert "Added missing alt text" not in str(data)
+        assert "Fixed heading hierarchy" not in str(data)
+
+    def test_diff_empty_issues_when_no_scan_results(
+        self, client, mock_session, override_deps
+    ):
+        """An item with no last_scan_id (or a scan with no stored issues)
+        returns an empty issues list — never padded or invented."""
+        cf = _make_cloud_file(
+            content_body="<p>Original</p>",
+            remediated_body=None,
+            last_scan_id=None,
+        )
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        response = client.get(f"/canvas/content/{cf.id}/diff")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["issues"] == []
+
 
 # ---------------------------------------------------------------------------
 # POST /canvas/content/{cloud_file_id}/approve

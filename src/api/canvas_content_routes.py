@@ -157,6 +157,22 @@ class CourseOverviewResponse(BaseModel):
     courses: List[CourseOverviewItem]
 
 
+class ContentIssueDetail(BaseModel):
+    """A single real accessibility finding from the last scan's stored
+    axe-core violation — every field here is read straight off
+    ScanResult.issues, never generated. No per-issue fixed/remaining
+    status: that attribution isn't tracked anywhere for Canvas content
+    (see get_content_diff's comment) — issues_fixed/issues_remaining on
+    ContentDiffResponse are aggregate-only."""
+
+    id: str
+    impact: Optional[str] = None
+    description: Optional[str] = None
+    help: Optional[str] = None
+    wcag_tags: List[str] = []
+    nodes_affected: int = 0
+
+
 class ContentDiffResponse(BaseModel):
     """Original vs remediated HTML for review."""
 
@@ -167,6 +183,11 @@ class ContentDiffResponse(BaseModel):
     remediated_html: Optional[str] = None
     issues_fixed: int = 0
     issues_remaining: int = 0
+    # Real findings from the last scan (axe-core violations). NOT split
+    # into fixed/remaining — that attribution doesn't exist in the data;
+    # this is the full pre-remediation issue set. Empty for older scans
+    # that predate this field, or if the scan stored no issues.
+    issues: List[ContentIssueDetail] = []
 
 
 class BatchApproveRequest(BaseModel):
@@ -282,6 +303,22 @@ def _get_cloud_file_or_404(
     if not cloud_file:
         raise HTTPException(status_code=404, detail="Content item not found")
     return cloud_file
+
+
+def _format_scan_issue(raw: Dict[str, Any]) -> ContentIssueDetail:
+    """Convert one raw axe-core violation dict (ScanResult.issues element)
+    into a ContentIssueDetail. Every field is read directly off the raw
+    violation — nothing here is generated or guessed. `id` falls back to
+    an empty string rather than being fabricated if axe-core's own shape
+    is ever missing it (defensive only, not expected in practice)."""
+    return ContentIssueDetail(
+        id=raw.get("id", ""),
+        impact=raw.get("impact"),
+        description=raw.get("description"),
+        help=raw.get("help"),
+        wcag_tags=[t for t in raw.get("tags", []) if isinstance(t, str)],
+        nodes_affected=len(raw.get("nodes", []) or []),
+    )
 
 
 # =============================================================================
@@ -794,15 +831,23 @@ async def get_content_diff(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
 
-    # Get issue counts from latest scan
+    # Get issue counts + the real issue list from the latest scan.
+    # issues_fixed/issues_remaining stay aggregate-only (an existing
+    # optimistic heuristic — a remediated item counts as "all fixed"; no
+    # per-issue fixed/remaining attribution is tracked anywhere for
+    # Canvas content). `issues` is the real, unmodified pre-remediation
+    # violation set from the scan — every field a client renders from it
+    # must trace back to this list, never to a generated description.
     issues_fixed = 0
     issues_remaining = 0
+    issues: List[ContentIssueDetail] = []
     if cf.last_scan_id:
         scan_result = (
             db.query(ScanResult).filter(ScanResult.scan_id == cf.last_scan_id).first()
         )
         if scan_result and scan_result.issues:
             issues_remaining = len(scan_result.issues)
+            issues = [_format_scan_issue(raw) for raw in scan_result.issues]
             # If we have a remediated version, some issues may be fixed
             if cf.remediated_body:
                 issues_fixed = issues_remaining  # Optimistic: all issues addressed
@@ -816,6 +861,7 @@ async def get_content_diff(
         remediated_html=cf.remediated_body,
         issues_fixed=issues_fixed,
         issues_remaining=issues_remaining,
+        issues=issues,
     )
 
 
