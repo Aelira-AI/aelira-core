@@ -228,14 +228,19 @@ def handle_lti_launch(
 
     # Route based on placement:
     # - account_navigation → admin overview (regardless of course context)
-    # - course_navigation (or any other) → course-specific view, unless we
-    #   still don't have a course id — a bare "/lti/course/" (empty param)
-    #   doesn't match the client route and used to strand the user on the
-    #   dashboard home. Send those to the overview instead.
-    if launch_data.placement == "account_navigation" or not course_id:
+    # - course_navigation (or any other) → hop through /lti/go, which
+    #   exchanges the code (setting the aelira_access cookie) and then
+    #   hard-navigates into the main dashboard's course content page —
+    #   the real destination requested for "open in aelira" launches.
+    #   /lti/go itself falls back to /lti/overview if course_id ends up
+    #   empty, so a course-less launch still can't produce a bare,
+    #   unroutable "/lti/course/" URL.
+    if launch_data.placement == "account_navigation":
         redirect_url = f"{dashboard_url}/lti/overview?code={code}"
+    elif course_id:
+        redirect_url = f"{dashboard_url}/lti/go?code={code}&course={course_id}"
     else:
-        redirect_url = f"{dashboard_url}/lti/course/{course_id}?code={code}"
+        redirect_url = f"{dashboard_url}/lti/go?code={code}"
 
     logger.info(
         "LTI launch handled",

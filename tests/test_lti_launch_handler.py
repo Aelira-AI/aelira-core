@@ -1,12 +1,17 @@
 """
 Tests for the LTI launch handler's redirect-URL routing.
 
-Covers the empty-course-id case: a Canvas launch that doesn't carry a
-resolvable course id (no custom params, context claim not recognized as a
-course) must not produce a bare "/lti/course/?code=..." — that URL's empty
-:courseId segment doesn't match the client's React Router route and used to
-strand the user on the dashboard home. It should redirect to
-"/lti/overview?code=..." instead.
+A non-account_navigation launch hops through /lti/go, which exchanges the
+code (setting the aelira_access cookie) and then hard-navigates into the
+main dashboard's course content page — the requested destination for
+"open in aelira" launches, since that route is behind ProtectedRoute and
+doesn't itself know how to exchange a launch code. When course_id can't be
+resolved at all, /lti/go?code=... is built without a &course= param (its
+own fallback lands on /lti/overview) rather than the old bare
+"/lti/course/?code=..." — that URL's empty :courseId segment never matched
+the client's React Router route and stranded the user on the dashboard
+home. account_navigation launches are unaffected and still go straight to
+/lti/overview.
 """
 
 from unittest.mock import MagicMock
@@ -57,8 +62,8 @@ def _make_registration() -> MagicMock:
     return registration
 
 
-class TestEmptyCourseIdRouting:
-    def test_empty_course_id_redirects_to_overview_not_bare_course_url(self):
+class TestLtiGoRouting:
+    def test_empty_course_id_redirects_to_lti_go_without_course_param(self):
         launch_data = _make_launch_data(course_id="", custom_params={})
         db = _make_db_with_existing_user()
         registration = _make_registration()
@@ -67,15 +72,15 @@ class TestEmptyCourseIdRouting:
             launch_data, registration, db, platform="canvas"
         )
 
-        assert "/lti/overview?code=" in redirect_url
-        assert "/lti/course/?code=" not in redirect_url
+        assert "/lti/go?code=" in redirect_url
+        assert "course=" not in redirect_url
         assert "/lti/course/" not in redirect_url
 
     def test_course_id_from_custom_params_fallback_is_used(self):
         # extract_launch_data() didn't resolve course_id (e.g. context claim
         # type wasn't recognized as a course), but a raw custom param still
         # carries it — the handler should recover it before falling back to
-        # the overview.
+        # a course-less /lti/go.
         launch_data = _make_launch_data(
             course_id="", custom_params={"custom_course_id": "778"}
         )
@@ -86,7 +91,8 @@ class TestEmptyCourseIdRouting:
             launch_data, registration, db, platform="canvas"
         )
 
-        assert "/lti/course/778?code=" in redirect_url
+        assert "/lti/go?code=" in redirect_url
+        assert "&course=778" in redirect_url
 
     def test_unsubstituted_canvas_variable_is_ignored(self):
         # An unsubstituted Canvas variable ("$Canvas.course.id") must not be
@@ -101,12 +107,13 @@ class TestEmptyCourseIdRouting:
             launch_data, registration, db, platform="canvas"
         )
 
-        assert "/lti/overview?code=" in redirect_url
+        assert "/lti/go?code=" in redirect_url
+        assert "course=" not in redirect_url
         assert "/lti/course/" not in redirect_url
 
-    def test_present_course_id_still_routes_to_course_view(self):
+    def test_present_course_id_routes_via_lti_go_with_course_param(self):
         # Regression guard: a normal launch with a resolved course id must
-        # keep going to /lti/course/{id}, not the overview.
+        # keep hopping through /lti/go, carrying the course id along.
         launch_data = _make_launch_data(course_id="123")
         db = _make_db_with_existing_user()
         registration = _make_registration()
@@ -115,11 +122,14 @@ class TestEmptyCourseIdRouting:
             launch_data, registration, db, platform="canvas"
         )
 
-        assert "/lti/course/123?code=" in redirect_url
+        assert "/lti/go?code=" in redirect_url
+        assert "&course=123" in redirect_url
+        assert "/lti/course/" not in redirect_url
 
     def test_account_navigation_still_routes_to_overview(self):
         # Regression guard: account_navigation placements already went to
-        # /lti/overview regardless of course context — must still.
+        # /lti/overview regardless of course context — must still, and must
+        # NOT be routed through /lti/go.
         launch_data = _make_launch_data(course_id="123", placement="account_navigation")
         db = _make_db_with_existing_user()
         registration = _make_registration()
@@ -129,3 +139,4 @@ class TestEmptyCourseIdRouting:
         )
 
         assert "/lti/overview?code=" in redirect_url
+        assert "/lti/go" not in redirect_url
