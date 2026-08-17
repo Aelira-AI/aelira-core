@@ -242,13 +242,12 @@ def handle_lti_launch(
     else:
         redirect_url = f"{dashboard_url}/lti/go?code={code}"
 
+    # Placement and course_id live in the message string deliberately: the
+    # container's stdout formatter drops `extra` fields, which made launches
+    # undiagnosable from logs (cost an hour on 2026-08-18).
     logger.info(
-        "LTI launch handled",
-        extra={
-            "user_id": user.id,
-            "course_id": course_id,
-            "department_id": department_id,
-        },
+        f"LTI launch handled placement={launch_data.placement or 'NONE'} "
+        f"course_id={course_id or 'EMPTY'} user={user.id}"
     )
     return redirect_url
 
