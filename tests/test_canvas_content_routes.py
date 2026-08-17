@@ -451,6 +451,42 @@ class TestCourseContentStatus:
         assert data["course_id"] == "101"
         assert isinstance(data["items"], list)
 
+    def test_status_counts_files_with_no_content_source(
+        self, client, mock_session, override_deps
+    ):
+        """Canvas rows predating the content_source column are files, which
+        the model already documents. They used to be filtered out of this
+        query, so a course could report a clean score while its files were
+        the worst thing in it."""
+        page = _make_cloud_file(
+            content_source="page",
+            file_name="Page 1",
+            compliance_score=100.0,
+            last_scan_id="scan-1",
+        )
+        legacy_file = _make_cloud_file(
+            content_source=None,
+            file_name="handbook.pdf",
+            compliance_score=40.0,
+            last_scan_id="scan-2",
+        )
+        mock_session.query.return_value.filter.return_value.all.return_value = [
+            page,
+            legacy_file,
+        ]
+
+        response = client.get("/canvas/content/courses/101/status")
+
+        assert response.status_code == 200
+        data = response.json()
+        types = {row["content_type"] for row in data["by_type"]}
+        assert "file" in types
+        assert len(data["items"]) == 2
+        # The low-scoring file has to drag the course score down, which is
+        # the whole point of counting it.
+        assert data["overall_compliance"] is not None
+        assert data["overall_compliance"] < 100.0
+
     def test_status_empty_course(self, client, mock_session, override_deps):
         """Course with no content items returns empty items list."""
         mock_session.query.return_value.filter.return_value.all.return_value = []
