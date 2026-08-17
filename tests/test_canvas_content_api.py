@@ -45,11 +45,21 @@ class TestCanvasContentTypeEnum:
 
         assert CanvasContentType.DISCUSSION == "discussion"
 
-    def test_all_five_values_exist(self):
+    def test_all_six_values_exist(self):
+        # Six as of 2026-08-18: FILE was added so the Canvas Files section
+        # is treated as course content alongside the original five
+        # HTML-bearing types (see CanvasContentScanner.scan_course_content).
         from src.integrations.canvas.content_models import CanvasContentType
 
         values = {e.value for e in CanvasContentType}
-        assert values == {"page", "assignment", "announcement", "quiz", "discussion"}
+        assert values == {
+            "page",
+            "assignment",
+            "announcement",
+            "quiz",
+            "discussion",
+            "file",
+        }
 
 
 class TestCanvasPageInfo:

@@ -20,13 +20,21 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
 
 
 class CanvasContentType(str, Enum):
-    """Types of HTML-bearing content items in a Canvas course."""
+    """Types of course content items scanned for accessibility.
+
+    FILE differs from the other five: it's not HTML-bearing (no
+    content_body) — it's a real uploaded file (pdf/docx/pptx/...) scanned
+    via the CloudJobQueue file-download pipeline rather than the in-process
+    axe-core pipeline the other types use. See
+    CanvasContentScanner.scan_course_content().
+    """
 
     PAGE = "page"
     ASSIGNMENT = "assignment"
     ANNOUNCEMENT = "announcement"
     QUIZ = "quiz"
     DISCUSSION = "discussion"
+    FILE = "file"
 
 
 class CanvasPageInfo(BaseModel):

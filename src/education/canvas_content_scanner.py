@@ -27,6 +27,9 @@ from sqlalchemy.orm import Session
 
 from ..db.models import (
     CloudFile,
+    CloudJobQueue,
+    CloudJobStatus,
+    CloudJobType,
     ContentWritebackLog,
     Scan,
     ScanResult,
@@ -233,6 +236,9 @@ class CanvasContentScanner:
         if CanvasContentType.DISCUSSION in types_to_scan:
             coros.append(self.canvas_client.list_course_discussions(course_id))
             type_order.append("discussion")
+        if CanvasContentType.FILE in types_to_scan:
+            coros.append(self.canvas_client.list_course_files(course_id))
+            type_order.append("file")
 
         # Parallel fetch requested content types
         results = await asyncio.gather(*coros, return_exceptions=True)
@@ -252,14 +258,21 @@ class CanvasContentScanner:
         announcements = fetched.get("announcement", [])
         quizzes = fetched.get("quiz", [])
         discussions = fetched.get("discussion", [])
+        files = fetched.get("file", [])
 
         cloud_file_ids: List[str] = []
+        # Files are queued for scanning immediately (CloudJobQueue, inside
+        # this method) rather than via the caller's background_tasks loop
+        # over cloud_file_ids — see the file-processing loop below for why.
+        # Returned separately so the caller can still count/report on them.
+        file_cloud_file_ids: List[str] = []
         counts = {
             "page": 0,
             "assignment": 0,
             "announcement": 0,
             "quiz": 0,
             "discussion": 0,
+            "file": 0,
             "skipped_empty": 0,
         }
 
@@ -356,6 +369,32 @@ class CanvasContentScanner:
             cloud_file_ids.append(cf.id)
             counts["discussion"] += 1
 
+        # Process files. Unlike the HTML types above, files have no
+        # content_body to run axe-core on directly — they're real uploaded
+        # documents (pdf/docx/pptx/...) scanned by downloading and running
+        # the document scanner via the CloudJobQueue pipeline (the same one
+        # canvas_scan_routes.py's single-file scan endpoint uses). So each
+        # file gets its own CloudJobQueue SCAN row queued right here, rather
+        # than being handed back through cloud_file_ids for the caller to
+        # fire through the axe-core-only background task loop — that loop
+        # would just no-op every file ("No content body").
+        for file_info in files:
+            cf = self._upsert_file_cloud_file(course_id=course_id, file_info=file_info)
+            file_cloud_file_ids.append(cf.id)
+            counts["file"] += 1
+            self.db.add(
+                CloudJobQueue(
+                    id=str(uuid.uuid4()),
+                    department_id=self.department_id,
+                    job_type=CloudJobType.SCAN.value,
+                    provider="canvas",
+                    provider_file_id=cf.provider_file_id,
+                    cloud_file_id=cf.id,
+                    credential_id=self.credential_id,
+                    status=CloudJobStatus.PENDING.value,
+                )
+            )
+
         self.db.commit()
 
         logger.info(
@@ -370,6 +409,7 @@ class CanvasContentScanner:
         return {
             "course_id": course_id,
             "cloud_file_ids": cloud_file_ids,
+            "file_cloud_file_ids": file_cloud_file_ids,
             "counts": counts,
         }
 
@@ -868,6 +908,66 @@ class CanvasContentScanner:
             content_updated_at=content_updated_at,
             needs_rescan=True,
             provider_metadata=metadata if metadata else None,
+        )
+        self.db.add(cloud_file)
+        return cloud_file
+
+    def _upsert_file_cloud_file(self, course_id: str, file_info: Any) -> CloudFile:
+        """
+        Find an existing CloudFile for this Canvas file (by department,
+        provider, provider_file_id — deliberately NOT scoped by
+        content_source) or create a new one.
+
+        Matches the lookup canvas_scan_routes.py's single-file scan
+        endpoint uses, so a file scanned individually before a course scan
+        (or vice versa) converges on the same row instead of duplicating —
+        content_source is only ever added/refreshed here, never used to
+        gate the lookup, since older rows may predate this field.
+        """
+        existing = (
+            self.db.query(CloudFile)
+            .filter(
+                CloudFile.department_id == self.department_id,
+                CloudFile.provider == "canvas",
+                CloudFile.provider_file_id == file_info.id,
+            )
+            .first()
+        )
+
+        # Short type code (pdf, docx, ...) for the file_type column — NOT
+        # the full MIME type, which belongs in mime_type. Mirrors
+        # canvas_scan_routes.py's _get_file_type().
+        file_type = (
+            file_info.filename.rsplit(".", 1)[-1].lower()
+            if file_info.filename and "." in file_info.filename
+            else "unknown"
+        )
+
+        if existing:
+            existing.file_name = file_info.display_name or file_info.filename
+            existing.file_type = file_type
+            existing.mime_type = file_info.content_type
+            existing.file_size_bytes = file_info.size
+            existing.web_view_link = file_info.url
+            existing.provider_parent_id = course_id
+            existing.content_source = CanvasContentType.FILE.value
+            existing.needs_rescan = True
+            return existing
+
+        cloud_file = CloudFile(
+            id=str(uuid.uuid4()),
+            department_id=self.department_id,
+            credential_id=self.credential_id,
+            provider="canvas",
+            provider_file_id=file_info.id,
+            provider_parent_id=course_id,
+            file_name=file_info.display_name or file_info.filename,
+            file_type=file_type,
+            mime_type=file_info.content_type,
+            file_size_bytes=file_info.size,
+            web_view_link=file_info.url,
+            content_source=CanvasContentType.FILE.value,
+            needs_rescan=True,
         )
         self.db.add(cloud_file)
         return cloud_file

@@ -98,6 +98,7 @@ class ContentItemStatus(BaseModel):
     """Status of a single content item."""
 
     cloud_file_id: str
+    provider_file_id: Optional[str] = None
     content_type: Optional[str] = None
     title: str
     compliance_score: Optional[float] = None
@@ -321,9 +322,13 @@ async def scan_course_content(
 
             counts = result.get("counts", {})
             cloud_file_ids = result.get("cloud_file_ids", [])
+            # Files are already queued via CloudJobQueue inside the scanner
+            # (they need the file-download pipeline, not the axe-core
+            # background task below) — counted here, not re-queued.
+            file_cloud_file_ids = result.get("file_cloud_file_ids", [])
             skipped = counts.get("skipped_empty", 0)
 
-            # Queue background scan jobs for each discovered content item
+            # Queue background scan jobs for each discovered HTML content item
             for cf_id in cloud_file_ids:
                 background_tasks.add_task(
                     _content_scan_task,
@@ -334,10 +339,11 @@ async def scan_course_content(
                 )
 
             by_type = {k: v for k, v in counts.items() if k != "skipped_empty"}
+            total_items = len(cloud_file_ids) + len(file_cloud_file_ids)
 
             return CanvasContentScanResponse(
-                total_items=len(cloud_file_ids),
-                jobs_queued=len(cloud_file_ids),
+                total_items=total_items,
+                jobs_queued=total_items,
                 skipped=skipped,
                 by_type=by_type,
             )
@@ -539,6 +545,7 @@ async def get_course_content_status(
     items = [
         ContentItemStatus(
             cloud_file_id=cf.id,
+            provider_file_id=cf.provider_file_id,
             content_type=cf.content_source,
             title=cf.file_name,
             compliance_score=cf.last_compliance_score,
