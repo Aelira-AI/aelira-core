@@ -197,6 +197,11 @@ class BatchWritebackResponse(BaseModel):
     written_count: int
     failed_count: int = 0
     stale_count: int = 0
+    # Approved file-type rows (has_remediated_version, no remediated_body —
+    # there's no HTML to write back) that couldn't even be attempted: file
+    # write-back to Canvas isn't wired yet. Counted honestly here rather
+    # than silently dropped from the response.
+    skipped_count: int = 0
     errors: List[str] = []
 
 
@@ -836,7 +841,11 @@ async def approve_content(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
 
-    if not cf.remediated_body:
+    # File-type rows are remediated as FILES (has_remediated_version set by
+    # POST /education/remediate/{scan_id}) — remediated_body stays NULL for
+    # them permanently, since they're real documents, not HTML fragments.
+    # Checking remediated_body alone made every file unapprovable.
+    if not cf.remediated_body and not cf.has_remediated_version:
         raise HTTPException(status_code=400, detail="No remediated content to approve")
 
     cf.writeback_status = "approved"
@@ -931,7 +940,9 @@ async def batch_approve_content(
     errors: List[str] = []
 
     for cf in cloud_files:
-        if not cf.remediated_body:
+        # See approve_content's comment above — files carry
+        # has_remediated_version instead of remediated_body.
+        if not cf.remediated_body and not cf.has_remediated_version:
             skipped += 1
             errors.append(f"{cf.id}: no remediated content")
             continue
@@ -980,6 +991,19 @@ async def writeback_content(
     )
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+
+    # File-type rows have no working write-back-to-Canvas path yet (the
+    # only candidate mechanism, CloudJobType.UPLOAD, lives in the dormant
+    # JobProcessor queue — see c67cb9f). scanner.write_back_content()
+    # would return a technically-true but confusing "No remediated body"
+    # for a file that WAS remediated (just not as HTML) — give an honest,
+    # specific reason instead of letting that ambiguous error surface.
+    if cf.content_source == "file":
+        return WritebackResponse(
+            success=False,
+            stale=False,
+            error="File write-back to Canvas isn't wired up yet — coming soon.",
+        )
 
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)
@@ -1043,12 +1067,47 @@ async def batch_writeback_content(
         .all()
     )
 
-    if not approved_files:
+    # Approved file-type rows (has_remediated_version, remediated_body
+    # NULL) are excluded from the query above by construction — they'd
+    # otherwise vanish from this response with no acknowledgment at all,
+    # the same silent-skip the client eligibility bug produced for approve.
+    # There's no working write-back-to-Canvas path for files yet (see
+    # writeback_content's comment above), so report them honestly as
+    # skipped rather than silently dropping them.
+    approved_file_rows = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.provider == CloudProvider.CANVAS.value,
+            CloudFile.provider_parent_id == request.course_id,
+            CloudFile.department_id == auth_department_id,
+            CloudFile.writeback_status == "approved",
+            CloudFile.content_source == "file",
+        )
+        .all()
+    )
+    skip_errors = [
+        f"{cf.id}: file write-back to Canvas isn't wired up yet — coming soon"
+        for cf in approved_file_rows
+    ]
+
+    if not approved_files and not approved_file_rows:
         return BatchWritebackResponse(
             written_count=0,
             failed_count=0,
             stale_count=0,
+            skipped_count=0,
             errors=["No approved items found for this course"],
+        )
+
+    if not approved_files:
+        # Only file rows were approved — none of them can be written back
+        # yet, so there's nothing to hand to the Canvas client at all.
+        return BatchWritebackResponse(
+            written_count=0,
+            failed_count=0,
+            stale_count=0,
+            skipped_count=len(approved_file_rows),
+            errors=skip_errors,
         )
 
     try:
@@ -1064,7 +1123,7 @@ async def batch_writeback_content(
             written = 0
             failed = 0
             stale = 0
-            errors: List[str] = []
+            errors: List[str] = list(skip_errors)
 
             for cf in approved_files:
                 result = await scanner.write_back_content(cf, approved_by=user_id)
@@ -1081,6 +1140,7 @@ async def batch_writeback_content(
                 written_count=written,
                 failed_count=failed,
                 stale_count=stale,
+                skipped_count=len(approved_file_rows),
                 errors=errors,
             )
         finally:

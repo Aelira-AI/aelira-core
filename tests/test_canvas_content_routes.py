@@ -102,8 +102,16 @@ def _make_cloud_file(
     department_id="test-dept-456",
     compliance_score=None,
     last_scan_id=None,
+    has_remediated_version=None,
 ):
-    """Create a mock CloudFile object."""
+    """Create a mock CloudFile object.
+
+    has_remediated_version defaults to mirroring remediated_body's
+    presence (the historical HTML-only behavior) but can be overridden —
+    file-type rows carry has_remediated_version=True with
+    remediated_body=None (remediated as a file, not HTML; see
+    POST /education/remediate/{scan_id}).
+    """
     cf = MagicMock()
     cf.id = cloud_file_id or str(uuid.uuid4())
     cf.department_id = department_id
@@ -112,7 +120,11 @@ def _make_cloud_file(
     cf.content_body = content_body
     cf.remediated_body = remediated_body
     cf.writeback_status = writeback_status
-    cf.has_remediated_version = remediated_body is not None
+    cf.has_remediated_version = (
+        (remediated_body is not None)
+        if has_remediated_version is None
+        else has_remediated_version
+    )
     cf.last_compliance_score = compliance_score
     cf.last_scan_id = last_scan_id
     cf.last_scanned_at = datetime.now(timezone.utc) if last_scan_id else None
@@ -531,6 +543,27 @@ class TestApproveContent:
         assert response.status_code == 400
         assert "remediated" in response.json()["detail"].lower()
 
+    def test_approve_accepts_file_row_with_no_remediated_body(
+        self, client, mock_session, override_deps
+    ):
+        """A file-type row remediated as a file (has_remediated_version=True,
+        remediated_body=None — files never get an HTML body) must still be
+        approvable. Checking remediated_body alone made every file
+        unapprovable even after a successful remediation."""
+        cf = _make_cloud_file(
+            content_source="file",
+            writeback_status=None,
+            remediated_body=None,
+            has_remediated_version=True,
+        )
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        response = client.post(f"/canvas/content/{cf.id}/approve")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["writeback_status"] == "approved"
+
 
 # ---------------------------------------------------------------------------
 # POST /canvas/content/{cloud_file_id}/reject
@@ -595,6 +628,47 @@ class TestBatchApprove:
         data = response.json()
         assert data["approved_count"] == 2
 
+    def test_batch_approve_accepts_files_and_skips_unremediated(
+        self, client, mock_session, override_deps
+    ):
+        """A body-only item and a has_remediated_version-only (file) item
+        both approve; an item with neither is still skipped with the
+        existing 'no remediated content' error."""
+        html_item = _make_cloud_file(
+            writeback_status="pending_review",
+            remediated_body="<p>Fixed</p>",
+        )
+        file_item = _make_cloud_file(
+            content_source="file",
+            writeback_status=None,
+            remediated_body=None,
+            has_remediated_version=True,
+        )
+        unremediated_item = _make_cloud_file(
+            writeback_status=None,
+            remediated_body=None,
+            has_remediated_version=False,
+        )
+
+        mock_session.query.return_value.filter.return_value.all.return_value = [
+            html_item,
+            file_item,
+            unremediated_item,
+        ]
+
+        response = client.post(
+            "/canvas/content/batch-approve",
+            json={"cloud_file_ids": [html_item.id, file_item.id, unremediated_item.id]},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["approved_count"] == 2
+        assert data["skipped_count"] == 1
+        assert any("no remediated content" in e for e in data["errors"])
+        assert html_item.writeback_status == "approved"
+        assert file_item.writeback_status == "approved"
+
 
 # ---------------------------------------------------------------------------
 # POST /canvas/content/batch-writeback
@@ -618,9 +692,11 @@ class TestBatchWriteback:
             remediated_body="<p>Fixed 2</p>",
         )
 
-        mock_session.query.return_value.filter.return_value.all.return_value = [
-            cf1,
-            cf2,
+        # Two sequential .query().filter().all() calls: approved HTML rows,
+        # then approved file rows. No file rows in this scenario.
+        mock_session.query.return_value.filter.return_value.all.side_effect = [
+            [cf1, cf2],
+            [],
         ]
 
         mock_credential = MagicMock()
@@ -645,7 +721,87 @@ class TestBatchWriteback:
         data = response.json()
         assert data["written_count"] == 2
         assert data["failed_count"] == 0
+        assert data["skipped_count"] == 0
         assert scanner_instance.write_back_content.call_count == 2
+
+    def test_batch_writeback_skips_approved_file_rows_honestly(
+        self, client, mock_session, override_deps
+    ):
+        """Approved file-type rows have no working write-back-to-Canvas
+        path yet — they must be reported as skipped with an explanatory
+        error, not silently dropped from the response the way approve
+        used to drop them."""
+        file_item = _make_cloud_file(
+            content_source="file",
+            writeback_status="approved",
+            remediated_body=None,
+            has_remediated_version=True,
+        )
+
+        # No approved HTML rows; one approved file row.
+        mock_session.query.return_value.filter.return_value.all.side_effect = [
+            [],
+            [file_item],
+        ]
+
+        response = client.post(
+            "/canvas/content/batch-writeback",
+            json={"course_id": "101"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["written_count"] == 0
+        assert data["failed_count"] == 0
+        assert data["skipped_count"] == 1
+        assert any("wired up" in e for e in data["errors"])
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_batch_writeback_mixed_html_and_file_rows(
+        self, mock_get_client, client, mock_session, override_deps
+    ):
+        """A course with both an approved HTML item and an approved file
+        item writes back the HTML item and honestly skips the file item —
+        neither is silently dropped."""
+        html_item = _make_cloud_file(
+            writeback_status="approved",
+            remediated_body="<p>Fixed</p>",
+        )
+        file_item = _make_cloud_file(
+            content_source="file",
+            writeback_status="approved",
+            remediated_body=None,
+            has_remediated_version=True,
+        )
+
+        mock_session.query.return_value.filter.return_value.all.side_effect = [
+            [html_item],
+            [file_item],
+        ]
+
+        mock_credential = MagicMock()
+        mock_credential.id = "cred-1"
+        mock_canvas = AsyncMock()
+        mock_get_client.return_value = (mock_credential, mock_canvas)
+
+        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
+            scanner_instance = AsyncMock()
+            scanner_instance.write_back_content.return_value = {
+                "success": True,
+                "stale": False,
+            }
+            MockScanner.return_value = scanner_instance
+
+            response = client.post(
+                "/canvas/content/batch-writeback",
+                json={"course_id": "101"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["written_count"] == 1
+        assert data["skipped_count"] == 1
+        assert any("wired up" in e for e in data["errors"])
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_batch_writeback_no_approved_items_returns_zero_written(
@@ -709,6 +865,28 @@ class TestWriteback:
 
         response = client.post(f"/canvas/content/{uuid.uuid4()}/writeback")
         assert response.status_code == 404
+
+    def test_writeback_file_row_returns_honest_skip_not_confusing_error(
+        self, client, mock_session, override_deps
+    ):
+        """A file-type row has no working write-back-to-Canvas path yet —
+        must return an honest, specific reason rather than the ambiguous
+        'No remediated body' scanner.write_back_content() would give (the
+        file WAS remediated, just not as HTML)."""
+        cf = _make_cloud_file(
+            content_source="file",
+            writeback_status="approved",
+            remediated_body=None,
+            has_remediated_version=True,
+        )
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        response = client.post(f"/canvas/content/{cf.id}/writeback")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is False
+        assert "wired up" in data["error"]
 
 
 # ---------------------------------------------------------------------------
