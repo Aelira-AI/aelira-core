@@ -24,6 +24,8 @@ import { IntegrationsSettings } from './pages/IntegrationsSettings';
 import { CloudFiles } from './pages/CloudFiles';
 import CanvasCourses from './pages/CanvasCourses';
 import CanvasContentPage from './pages/CanvasContentPage';
+import CanvasContentDiffPage from './pages/CanvasContentDiffPage';
+import CourseOverview from './pages/CourseOverview';
 import BrightspaceContentPage from './pages/BrightspaceContentPage';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { ReviewQueuePage } from './pages/ReviewQueuePage';
@@ -33,6 +35,7 @@ import { Analytics } from './components/Analytics';
 import { LTICourseView } from './pages/LTICourseView';
 import { LTIReportView } from './pages/LTIReportView';
 import { LTIFilePicker } from './pages/LTIFilePicker';
+import { LTIGo } from './pages/LTIGo';
 
 const queryClient = new QueryClient();
 
@@ -78,6 +81,10 @@ function App(): React.ReactElement {
               <Route path="/auth/verify" element={<VerifyMagicLink />} />
               {/* LTI routes — auth via LTI token, not session cookies */}
               <Route path="/lti/course/:courseId" element={<LTICourseView />} />
+              <Route path="/lti/overview" element={<CourseOverview isLTI />} />
+              {/* Public hop that exchanges a launch code. It must not sit
+                  behind ProtectedRoute: see LTIGo.tsx for why. */}
+              <Route path="/lti/go" element={<LTIGo />} />
               <Route path="/lti/report/:scanId" element={<LTIReportView />} />
               <Route path="/lti/pick/:courseId" element={<LTIFilePicker />} />
             <Route
@@ -202,6 +209,7 @@ function App(): React.ReactElement {
             />
             <Route path="/integrations/canvas" element={<ProtectedRoute><AppLayout><CanvasCourses /></AppLayout></ProtectedRoute>} />
             <Route path="/canvas/courses/:courseId/content" element={<ProtectedRoute><AppLayout><CanvasContentPage /></AppLayout></ProtectedRoute>} />
+            <Route path="/canvas/courses/:courseId/content/:cloudFileId/review" element={<ProtectedRoute><AppLayout><CanvasContentDiffPage /></AppLayout></ProtectedRoute>} />
             <Route path="/brightspace/courses/:orgUnitId/content" element={<ProtectedRoute><AppLayout><BrightspaceContentPage /></AppLayout></ProtectedRoute>} />
             <Route
               path="/admin"

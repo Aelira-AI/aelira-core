@@ -1,5 +1,5 @@
 import React, { ReactNode } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/auth-context';
 
 // ============================================================================
@@ -16,6 +16,7 @@ interface ProtectedRouteProps {
 
 export function ProtectedRoute({ children }: ProtectedRouteProps): React.ReactElement {
   const { isAuthenticated, loading } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return (
@@ -29,7 +30,10 @@ export function ProtectedRoute({ children }: ProtectedRouteProps): React.ReactEl
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
+    // Carry the intended destination through the login bounce so the user
+    // lands back where they started instead of always on /dashboard.
+    const next = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={`/login?next=${next}`} replace />;
   }
 
   return <>{children}</>;

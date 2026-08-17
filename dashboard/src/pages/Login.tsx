@@ -6,6 +6,7 @@ import { apiClient } from '../api/client';
 import { Key, Moon, Sun, Mail, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { Logo } from '../components/Logo';
 import { trackEvent } from '../utils/analytics';
+import { resolveSafeNext } from '../utils/safeNext';
 
 interface IconProps {
   className?: string;
@@ -140,7 +141,7 @@ export function Login(): React.ReactElement {
     const result = await login(apiKey);
 
     if (result.success) {
-      navigate('/dashboard');
+      navigate(resolveSafeNext(searchParams.get('next')));
     } else {
       setError(result.error || 'Login failed');
       setLoading(false);
@@ -163,14 +164,14 @@ export function Login(): React.ReactElement {
       try {
         const response = await apiClient.get<{ user?: unknown }>('/auth/session/validate');
         if (response.data.user) {
-          navigate('/dashboard');
+          navigate(resolveSafeNext(searchParams.get('next')));
         }
       } catch {
         // No valid session, stay on login page
       }
     };
     checkSession();
-  }, [navigate]);
+  }, [navigate, searchParams]);
 
   return (
     <main

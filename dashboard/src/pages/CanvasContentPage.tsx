@@ -15,6 +15,7 @@ import {
   Filter,
   Upload,
   Eye,
+  Wrench,
 } from 'lucide-react';
 import { useToast } from '../context/toast-context';
 import { Badge } from '../components/ui/Badge';
@@ -27,6 +28,16 @@ import {
   type CourseContentStatusResponse,
 } from '../api/canvasContent';
 import { apiClient } from '../api/client';
+import {
+  mergeCourseContent,
+  groupContentByType,
+  isRemediable,
+  isApprovable,
+  contentItemState,
+  CONTENT_ITEM_STATE_COLOR,
+  type LiveCanvasFile,
+} from '../utils/mergeCourseContent';
+import { summarizeBatchOutcome } from '../utils/batchActionResult';
 
 // ============================================================================
 // Helpers
@@ -65,20 +76,6 @@ function formatDate(dateStr: string | null): string {
   });
 }
 
-function getWritebackBadge(status: string | null): {
-  label: string;
-  variant: 'neutral' | 'accent' | 'success' | 'warning' | 'danger';
-} | null {
-  if (!status) return null;
-  switch (status) {
-    case 'approved':      return { label: 'Approved',     variant: 'accent'   };
-    case 'written_back':  return { label: 'Written back', variant: 'success'  };
-    case 'stale':         return { label: 'Stale',        variant: 'warning'  };
-    case 'rolled_back':   return { label: 'Rolled back',  variant: 'neutral'  };
-    default:              return null;
-  }
-}
-
 type SortField = 'title' | 'compliance_score' | 'issue_count' | 'content_type';
 type SortDir = 'asc' | 'desc';
 
@@ -102,6 +99,10 @@ export default function CanvasContentPage(): React.ReactElement {
   const [courseName, setCourseName] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Live Canvas Files section — merged into the unified content list below.
+  // Stays `null` (not []) on fetch failure so the merge helper's
+  // graceful-degradation path (render the DB list untouched) is reachable.
+  const [liveFiles, setLiveFiles] = useState<LiveCanvasFile[] | null>(null);
 
   // Scan state
   const [scanning, setScanning] = useState(false);
@@ -110,6 +111,12 @@ export default function CanvasContentPage(): React.ReactElement {
   // Batch action states
   const [approvingAll, setApprovingAll] = useState(false);
   const [writingBackAll, setWritingBackAll] = useState(false);
+  const [remediatingAll, setRemediatingAll] = useState(false);
+  // { done, total } while Remediate All is running — drives "Remediating
+  // 2 of 4…" on the button.
+  const [remediateAllProgress, setRemediateAllProgress] = useState<{ done: number; total: number } | null>(null);
+  // Per-row remediate in-flight tracking, keyed by provider_file_id.
+  const [remediatingIds, setRemediatingIds] = useState<Set<string>>(new Set());
 
   // Table controls
   const [searchQuery, setSearchQuery] = useState('');
@@ -160,12 +167,51 @@ export default function CanvasContentPage(): React.ReactElement {
     }
   }, [courseId]);
 
-  /* eslint-disable react-hooks/set-state-in-effect -- fetch-on-mount; setState only happens after the awaited request resolves */
+  // Fetch the live Canvas Files list — merged into the unified content list.
+  // Files are course content too: this is what makes them show up here at
+  // all before they've ever been scanned (the DB-only /status endpoint has
+  // no row for a file until scan_course_content or an individual scan has
+  // upserted one).
+  const fetchLiveFiles = useCallback(async (): Promise<void> => {
+    if (!courseId) return;
+    try {
+      const res = await apiClient.get(`/canvas/courses/${courseId}/files`);
+      const filesData = res.data;
+      const filesList: LiveCanvasFile[] = Array.isArray(filesData)
+        ? filesData
+        : Array.isArray(filesData?.files)
+          ? filesData.files
+          : [];
+      setLiveFiles(filesList);
+    } catch (err) {
+      console.error('Failed to fetch live Canvas files:', err);
+      // Leave liveFiles as null — mergeCourseContent degrades to the DB
+      // list untouched rather than blanking the view.
+    }
+  }, [courseId]);
+
   useEffect(() => {
     fetchStatus();
     fetchCourseName();
-  }, [fetchStatus, fetchCourseName]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+    fetchLiveFiles();
+  }, [fetchStatus, fetchCourseName, fetchLiveFiles]);
+
+  const mergedItems = useMemo(
+    () => mergeCourseContent(data?.items ?? null, liveFiles),
+    [data, liveFiles]
+  );
+
+  // Content-by-type breakdown — derived from mergedItems (not data.by_type,
+  // which has no row for a type until something of that type has actually
+  // been scanned). Shared with LTICourseView via groupContentByType so the
+  // two views' by-type counting rules can't drift from each other.
+  const mergedByType = useMemo(() => groupContentByType(mergedItems), [mergedItems]);
+
+  // Items eligible for remediation — scanned, has issues, no remediated
+  // version yet, and a scan_id to remediate against. Same condition the
+  // per-row Remediate button uses; "Remediate All" fires this same
+  // execution path for every one of them.
+  const remediableItems = useMemo(() => mergedItems.filter(isRemediable), [mergedItems]);
 
   // --------------------------------------------------
   // Polling for scan progress
@@ -234,7 +280,7 @@ export default function CanvasContentPage(): React.ReactElement {
       const result = await scanCourseContent({ course_id: courseId });
       if (result.total_items === 0) {
         toast.info(
-          'No pages, assignments, announcements, quizzes or discussions found in this course. The Files tab scans uploaded course files.',
+          'No pages, assignments, announcements, quizzes, discussions, or files found in this course.',
           'Nothing to Scan'
         );
         setScanning(false);
@@ -256,15 +302,14 @@ export default function CanvasContentPage(): React.ReactElement {
   const handleApproveAll = async (): Promise<void> => {
     if (!data) return;
 
-    // Get all items with scores that have been scanned but not yet approved/written back
-    const eligibleIds = data.items
-      .filter(
-        (item) =>
-          item.compliance_score !== null &&
-          item.issue_count >= 0 &&
-          !item.writeback_status
-      )
-      .map((item) => item.cloud_file_id);
+    // Get all items with a remediation available that aren't already
+    // approved/written-back/rejected — see isApprovable's doc comment for
+    // why this can't just check `!item.writeback_status` (that excludes
+    // 'pending_review', the exact state approval exists to act on).
+    const eligibleIds = mergedItems
+      .filter(isApprovable)
+      .map((item) => item.cloud_file_id)
+      .filter((id): id is string => id !== null);
 
     if (eligibleIds.length === 0) {
       toast.info('No items to approve.', 'Nothing to Do');
@@ -274,10 +319,17 @@ export default function CanvasContentPage(): React.ReactElement {
     setApprovingAll(true);
     try {
       const result = await batchApproveContent({ cloud_file_ids: eligibleIds });
-      toast.success(
-        `Approved ${result.approved_count} item${result.approved_count !== 1 ? 's' : ''}.`,
-        'Batch Approve'
-      );
+      const summary = summarizeBatchOutcome({
+        verb: 'Approved',
+        succeededCount: result.approved_count,
+        buckets: [{ label: 'skipped', count: result.skipped_count ?? 0 }],
+        errors: result.errors ?? [],
+      });
+      if (summary.status === 'success') {
+        toast.success(summary.message, 'Batch Approve');
+      } else {
+        toast.warning(summary.message, 'Batch Approve');
+      }
       // Refresh data
       await fetchStatus();
     } catch (err) {
@@ -294,11 +346,20 @@ export default function CanvasContentPage(): React.ReactElement {
     setWritingBackAll(true);
     try {
       const result = await batchWriteBack({ course_id: courseId });
-      const message = `Written: ${result.written_count}, Failed: ${result.failed_count}, Stale: ${result.stale_count}`;
-      if (result.failed_count > 0) {
-        toast.warning(message, 'Write Back Complete');
+      const summary = summarizeBatchOutcome({
+        verb: 'Wrote back',
+        succeededCount: result.written_count,
+        buckets: [
+          { label: 'stale', count: result.stale_count ?? 0 },
+          { label: 'failed', count: result.failed_count ?? 0 },
+          { label: 'skipped', count: result.skipped_count ?? 0 },
+        ],
+        errors: result.errors ?? [],
+      });
+      if (summary.status === 'success') {
+        toast.success(summary.message, 'Write Back Complete');
       } else {
-        toast.success(message, 'Write Back Complete');
+        toast.warning(summary.message, 'Write Back Complete');
       }
       // Refresh data
       await fetchStatus();
@@ -308,6 +369,111 @@ export default function CanvasContentPage(): React.ReactElement {
     } finally {
       setWritingBackAll(false);
     }
+  };
+
+  // Per-row remediate — no batch endpoint exists server-side for this yet,
+  // so this fires the same synchronous POST /education/remediate/{scan_id}
+  // the LTI Files tab already uses successfully. Unlike the CloudJobQueue
+  // scan pipeline (c67cb9f), this endpoint does the remediation work
+  // in-request and returns only once it's actually done — no queue, no
+  // background task needed, and the response is trustworthy immediately.
+  const handleRemediateItem = async (scanId: string, providerFileId: string): Promise<void> => {
+    setRemediatingIds((prev) => new Set(prev).add(providerFileId));
+    try {
+      const res = await apiClient.post(`/education/remediate/${scanId}`);
+      const fixed = res.data?.fixed_count ?? 0;
+      const manual = res.data?.manual_count ?? 0;
+      if (res.data?.success === false) {
+        toast.error(res.data?.message || 'Remediation failed.', 'Remediate');
+      } else if (fixed === 0 && manual === 0) {
+        toast.info('No issues to remediate.', 'Remediate');
+      } else {
+        const fixedPart = `Fixed ${fixed} issue${fixed !== 1 ? 's' : ''}`;
+        const manualPart = manual > 0 ? `, ${manual} still need${manual !== 1 ? '' : 's'} manual review` : '';
+        toast.success(`${fixedPart}${manualPart}.`, 'Remediate');
+      }
+      await fetchStatus();
+    } catch (err) {
+      console.error('Failed to remediate item:', err);
+      toast.error('Failed to remediate item.', 'Error');
+    } finally {
+      setRemediatingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(providerFileId);
+        return next;
+      });
+    }
+  };
+
+  // Remediate All — principal-requested, client-side only: no batch
+  // endpoint exists server-side (grepped for one, there isn't), so this
+  // runs the identical per-row execution path (handleRemediateItem's POST)
+  // over every eligible row. Sequential, not fire-many-concurrently:
+  // /education/remediate/{scan_id} does real remediation work (file
+  // download, remediation engine) synchronously in-request rather than
+  // queuing a background job, so N concurrent calls would be N concurrent
+  // downloads/remediation runs against the same course rather than N
+  // cheap enqueues — sequencing keeps this from hammering Canvas or the
+  // remediation engine.
+  const handleRemediateAll = async (): Promise<void> => {
+    if (remediableItems.length === 0) return;
+
+    const scannedCount = mergedItems.filter((item) => item.compliance_score !== null).length;
+    const skippedCount = scannedCount - remediableItems.length;
+
+    const total = remediableItems.length;
+    setRemediatingAll(true);
+    setRemediateAllProgress({ done: 0, total });
+    setRemediatingIds((prev) => {
+      const next = new Set(prev);
+      remediableItems.forEach((item) => next.add(item.provider_file_id));
+      return next;
+    });
+
+    let succeeded = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    for (const [index, item] of remediableItems.entries()) {
+      try {
+        const res = await apiClient.post(`/education/remediate/${item.scan_id}`);
+        if (res.data?.success === false) {
+          failed += 1;
+          errors.push(`${item.provider_file_id}: ${res.data?.message || 'remediation failed'}`);
+        } else {
+          succeeded += 1;
+        }
+      } catch {
+        failed += 1;
+        errors.push(`${item.provider_file_id}: request failed`);
+      } finally {
+        setRemediatingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(item.provider_file_id);
+          return next;
+        });
+        setRemediateAllProgress({ done: index + 1, total });
+      }
+    }
+
+    const summary = summarizeBatchOutcome({
+      verb: 'Remediated',
+      succeededCount: succeeded,
+      buckets: [
+        { label: 'skipped', count: skippedCount },
+        { label: 'failed', count: failed },
+      ],
+      errors,
+    });
+    if (summary.status === 'success') {
+      toast.success(summary.message, 'Remediate All');
+    } else {
+      toast.warning(summary.message, 'Remediate All');
+    }
+
+    await fetchStatus();
+    setRemediatingAll(false);
+    setRemediateAllProgress(null);
   };
 
   // --------------------------------------------------
@@ -322,9 +488,7 @@ export default function CanvasContentPage(): React.ReactElement {
     }
   };
 
-  // Plain helper (not a component) so it isn't recreated every render —
-  // avoids the "component created during render" lint finding.
-  const renderSortIcon = (field: SortField): React.ReactElement => {
+  const SortIcon = ({ field }: { field: SortField }): React.ReactElement => {
     if (sortField !== field) {
       return <ArrowUpDown className="w-3 h-3 opacity-40" />;
     }
@@ -336,14 +500,16 @@ export default function CanvasContentPage(): React.ReactElement {
   };
 
   const contentTypes = useMemo(() => {
-    if (!data) return [];
-    return data.by_type.map((t) => t.content_type);
-  }, [data]);
+    // Derived from the unified list (not data.by_type) so an unscanned
+    // content type — most commonly "file" before its first course scan —
+    // still appears as a filter option instead of being invisible until
+    // something scans it.
+    const types = new Set(mergedItems.map((item) => item.content_type));
+    return Array.from(types);
+  }, [mergedItems]);
 
   const filteredAndSortedItems = useMemo(() => {
-    if (!data) return [];
-
-    let items = [...data.items];
+    let items = [...mergedItems];
 
     // Filter by type
     if (filterType !== 'all') {
@@ -380,18 +546,18 @@ export default function CanvasContentPage(): React.ReactElement {
     });
 
     return items;
-  }, [data, filterType, searchQuery, sortField, sortDir]);
+  }, [mergedItems, filterType, searchQuery, sortField, sortDir]);
 
   // --------------------------------------------------
   // Computed stats
   // --------------------------------------------------
-  const approvedCount = data?.items.filter(
+  const approvedCount = mergedItems.filter(
     (i) => i.writeback_status === 'approved'
-  ).length ?? 0;
+  ).length;
 
-  const writtenBackCount = data?.items.filter(
+  const writtenBackCount = mergedItems.filter(
     (i) => i.writeback_status === 'written_back'
-  ).length ?? 0;
+  ).length;
 
   // --------------------------------------------------
   // Loading state
@@ -430,7 +596,7 @@ export default function CanvasContentPage(): React.ReactElement {
             </Link>
             <ChevronRight className="w-4 h-4 text-[var(--content-tertiary)]" />
             <span className="text-sm font-medium text-[var(--content-secondary)]">
-              Pages & Assignments
+              Content
             </span>
           </div>
           <h1 className="text-2xl font-bold font-serif text-[var(--content-primary)]">
@@ -488,7 +654,7 @@ export default function CanvasContentPage(): React.ReactElement {
                 Total Items
               </p>
               <p className="text-xl font-bold tabular-nums text-[var(--content-primary)]">
-                {data.items.length}
+                {mergedItems.length}
               </p>
             </div>
             <div>
@@ -530,7 +696,7 @@ export default function CanvasContentPage(): React.ReactElement {
               variant="secondary"
               size="sm"
               onClick={handleApproveAll}
-              disabled={approvingAll || !data || data.items.length === 0}
+              disabled={approvingAll || mergedItems.length === 0}
               leftIcon={
                 approvingAll ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -540,6 +706,23 @@ export default function CanvasContentPage(): React.ReactElement {
               }
             >
               Approve All
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleRemediateAll}
+              disabled={remediatingAll || remediableItems.length === 0}
+              leftIcon={
+                remediatingAll ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Wrench className="w-4 h-4" />
+                )
+              }
+            >
+              {remediatingAll && remediateAllProgress
+                ? `Remediating ${remediateAllProgress.done} of ${remediateAllProgress.total}…`
+                : 'Remediate All'}
             </Button>
             <Button
               variant="primary"
@@ -561,7 +744,7 @@ export default function CanvasContentPage(): React.ReactElement {
       )}
 
       {/* Content Type Summary Table */}
-      {data && data.by_type.length > 0 && (
+      {mergedByType.length > 0 && (
         <div className="mb-6 rounded-xl overflow-hidden bg-[var(--surface-secondary)] border border-[var(--border-primary)]">
           <div className="px-6 py-4 border-b border-[var(--border-primary)]">
             <h2 className="text-lg font-semibold font-serif text-[var(--content-primary)]">
@@ -590,14 +773,14 @@ export default function CanvasContentPage(): React.ReactElement {
                 </tr>
               </thead>
               <tbody>
-                {data.by_type.map((typeStatus, idx) => {
+                {mergedByType.map((typeStatus, idx) => {
                   const badge = getComplianceBadgeVariant(typeStatus.average_compliance);
                   return (
                     <tr
                       key={typeStatus.content_type}
                       style={{
                         borderBottom:
-                          idx !== data.by_type.length - 1
+                          idx !== mergedByType.length - 1
                             ? '1px solid var(--border-primary)'
                             : 'none',
                       }}
@@ -660,9 +843,9 @@ export default function CanvasContentPage(): React.ReactElement {
           <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-primary)]">
             <h2 className="text-lg font-semibold font-serif text-[var(--content-primary)]">
               All Content Items
-              {filteredAndSortedItems.length !== data.items.length && (
+              {filteredAndSortedItems.length !== mergedItems.length && (
                 <span className="ml-2 text-sm font-normal text-[var(--content-secondary)]">
-                  ({filteredAndSortedItems.length} of {data.items.length})
+                  ({filteredAndSortedItems.length} of {mergedItems.length})
                 </span>
               )}
             </h2>
@@ -711,7 +894,7 @@ export default function CanvasContentPage(): React.ReactElement {
                   >
                     <span className="inline-flex items-center gap-1">
                       Name
-                      {renderSortIcon('title')}
+                      <SortIcon field="title" />
                     </span>
                   </th>
                   <th
@@ -720,7 +903,7 @@ export default function CanvasContentPage(): React.ReactElement {
                   >
                     <span className="inline-flex items-center gap-1">
                       Type
-                      {renderSortIcon('content_type')}
+                      <SortIcon field="content_type" />
                     </span>
                   </th>
                   <th
@@ -729,7 +912,7 @@ export default function CanvasContentPage(): React.ReactElement {
                   >
                     <span className="inline-flex items-center gap-1">
                       Score
-                      {renderSortIcon('compliance_score')}
+                      <SortIcon field="compliance_score" />
                     </span>
                   </th>
                   <th
@@ -738,7 +921,7 @@ export default function CanvasContentPage(): React.ReactElement {
                   >
                     <span className="inline-flex items-center gap-1">
                       Issues
-                      {renderSortIcon('issue_count')}
+                      <SortIcon field="issue_count" />
                     </span>
                   </th>
                   <th className="text-left px-6 py-3 text-xs font-semibold text-[var(--content-secondary)]">
@@ -758,8 +941,8 @@ export default function CanvasContentPage(): React.ReactElement {
                     <td colSpan={7} className="text-center py-12">
                       <FileText className="w-10 h-10 mx-auto mb-2 text-[var(--content-tertiary)]" />
                       <p className="text-sm text-[var(--content-secondary)]">
-                        {data.items.length === 0
-                          ? 'No pages, assignments, announcements, quizzes or discussions found. Click "Scan Content" to check again, or see the Files tab for uploaded documents.'
+                        {mergedItems.length === 0
+                          ? 'No pages, assignments, announcements, quizzes, discussions, or files found. Click "Scan Content" to check again.'
                           : 'No items match your filters.'}
                       </p>
                       {searchQuery && (
@@ -778,11 +961,11 @@ export default function CanvasContentPage(): React.ReactElement {
                 )}
                 {filteredAndSortedItems.map((item, idx) => {
                   const badge = getComplianceBadgeVariant(item.compliance_score);
-                  const wbBadge = getWritebackBadge(item.writeback_status);
+                  const state = contentItemState(item);
 
                   return (
                     <tr
-                      key={item.cloud_file_id}
+                      key={item.provider_file_id}
                       style={{
                         borderBottom:
                           idx !== filteredAndSortedItems.length - 1
@@ -836,20 +1019,19 @@ export default function CanvasContentPage(): React.ReactElement {
                         </span>
                       </td>
 
-                      {/* Status */}
+                      {/* Status — the visible state model: distinguishes
+                          "needs remediation" from "already remediated,
+                          pending review" from the final approved/written
+                          back/rejected states. Previously this column
+                          collapsed everything short of a writeback_status
+                          into a single "Scanned" badge, which is exactly
+                          why a fully-auto-remediated HTML item and a
+                          not-yet-touched file looked identical. */}
                       <td className="px-6 py-3">
-                        {wbBadge ? (
-                          <Badge variant={wbBadge.variant}>
-                            {item.writeback_status === 'written_back' && (
-                              <Check className="w-3 h-3" />
-                            )}
-                            {wbBadge.label}
-                          </Badge>
-                        ) : item.compliance_score !== null ? (
-                          <Badge variant="neutral">Scanned</Badge>
-                        ) : (
-                          <Badge variant="neutral">Pending</Badge>
-                        )}
+                        <Badge variant={CONTENT_ITEM_STATE_COLOR[state.key]}>
+                          {state.key === 'written_back' && <Check className="w-3 h-3" />}
+                          {state.label}
+                        </Badge>
                       </td>
 
                       {/* Updated */}
@@ -862,10 +1044,26 @@ export default function CanvasContentPage(): React.ReactElement {
                       {/* Actions */}
                       <td className="px-6 py-3">
                         <div className="flex items-center justify-end gap-2">
+                          {isRemediable(item) && (
+                              <button
+                                onClick={() =>
+                                  handleRemediateItem(item.scan_id as string, item.provider_file_id)
+                                }
+                                disabled={remediatingIds.has(item.provider_file_id)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 bg-[var(--interactive-accent-bg)] text-[var(--interactive-primary-fg)]"
+                              >
+                                {remediatingIds.has(item.provider_file_id) ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Wrench className="w-3 h-3" />
+                                )}
+                                Remediate
+                              </button>
+                            )}
                           {item.compliance_score !== null && item.issue_count > 0 && (
                             <button
                               onClick={() =>
-                                navigate(`/canvas/content/${item.cloud_file_id}/diff`)
+                                navigate(`/canvas/courses/${courseId}/content/${item.cloud_file_id}/review`)
                               }
                               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-[var(--surface-tertiary)] text-[var(--content-primary)]"
                             >

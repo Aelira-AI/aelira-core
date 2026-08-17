@@ -911,7 +911,7 @@ export function CanvasCourses(): React.ReactElement {
                             className="text-sm font-medium hover:underline"
                             style={{ color: 'var(--accent-primary)' }}
                           >
-                            Scan Pages &amp; Assignments →
+                            Show Course Content
                           </Link>
                         </div>
                         {/* Loading files */}

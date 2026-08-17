@@ -41,12 +41,16 @@ export interface ContentTypeStatus {
 
 export interface ContentItemStatus {
   cloud_file_id: string;
+  provider_file_id: string | null;
   title: string;
   content_type: string;
   compliance_score: number | null;
   issue_count: number;
   writeback_status: string | null;
+  has_remediated_version: boolean;
+  last_scanned_at: string | null;
   content_updated_at: string | null;
+  scan_id: string | null;
 }
 
 export interface CourseContentStatusResponse {
@@ -54,6 +58,20 @@ export interface CourseContentStatusResponse {
   overall_compliance: number | null;
   by_type: ContentTypeStatus[];
   items: ContentItemStatus[];
+}
+
+/** A single real accessibility finding from the last scan's stored
+ * axe-core violation. Every field is read straight off scan data —
+ * never generated client-side. No per-issue fixed/remaining status:
+ * that attribution isn't tracked for Canvas content — issues_fixed/
+ * issues_remaining on ContentDiffResponse are aggregate-only. */
+export interface ContentIssue {
+  id: string;
+  impact: string | null;
+  description: string | null;
+  help: string | null;
+  wcag_tags: string[];
+  nodes_affected: number;
 }
 
 export interface ContentDiffResponse {
@@ -64,6 +82,7 @@ export interface ContentDiffResponse {
   remediated_html: string;
   issues_fixed: number;
   issues_remaining: number;
+  issues: ContentIssue[];
 }
 
 export interface ContentActionResponse {
@@ -73,6 +92,8 @@ export interface ContentActionResponse {
 
 export interface BatchApproveResponse {
   approved_count: number;
+  skipped_count: number;
+  errors: string[];
 }
 
 export interface WritebackResponse {
@@ -84,6 +105,10 @@ export interface BatchWritebackResponse {
   written_count: number;
   failed_count: number;
   stale_count: number;
+  // Approved file-type rows that couldn't even be attempted — file
+  // write-back to Canvas isn't wired up yet (see backend comment).
+  skipped_count: number;
+  errors: string[];
 }
 
 export interface AuditLogEntry {
