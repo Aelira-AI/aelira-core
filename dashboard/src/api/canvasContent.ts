@@ -82,6 +82,10 @@ export interface ContentDiffResponse {
   remediated_html: string;
   issues_fixed: number;
   issues_remaining: number;
+  /** True when the two counts above come from a rescan of the remediated
+   * copy. False means no rescan was recorded and the split is unknown, so
+   * the UI must say unverified rather than show a confident zero. */
+  issues_verified_by_rescan: boolean;
   issues: ContentIssue[];
 }
 

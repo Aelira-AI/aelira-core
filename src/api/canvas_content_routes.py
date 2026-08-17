@@ -183,10 +183,14 @@ class ContentDiffResponse(BaseModel):
     remediated_html: Optional[str] = None
     issues_fixed: int = 0
     issues_remaining: int = 0
-    # Real findings from the last scan (axe-core violations). NOT split
-    # into fixed/remaining — that attribution doesn't exist in the data;
-    # this is the full pre-remediation issue set. Empty for older scans
-    # that predate this field, or if the scan stored no issues.
+    # True when the two counts above come from a rescan of the remediated
+    # copy. False means no rescan was recorded and the split is unknown,
+    # which a client must show as unverified rather than as zero fixed.
+    issues_verified_by_rescan: bool = False
+    # Real findings from the last scan (axe-core violations). This is the
+    # full pre-remediation issue set; per-issue fixed/remaining attribution
+    # is not stored. Empty for older scans that predate this field, or if
+    # the scan stored no issues.
     issues: List[ContentIssueDetail] = []
 
 
@@ -832,12 +836,17 @@ async def get_content_diff(
     cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
 
     # Get issue counts + the real issue list from the latest scan.
-    # issues_fixed/issues_remaining stay aggregate-only (an existing
-    # optimistic heuristic — a remediated item counts as "all fixed"; no
-    # per-issue fixed/remaining attribution is tracked anywhere for
-    # Canvas content). `issues` is the real, unmodified pre-remediation
-    # violation set from the scan — every field a client renders from it
-    # must trace back to this list, never to a generated description.
+    # `issues` is the real, unmodified pre-remediation violation set from
+    # the scan: every field a client renders from it must trace back to
+    # this list, never to a generated description.
+    #
+    # The fixed/remaining split comes from the rescan of the remediated
+    # copy, which is the only thing that knows whether a fix worked. Where
+    # no rescan was recorded the split is reported as unverified rather
+    # than assumed; the old behaviour counted every issue as fixed the
+    # moment a remediated body existed, which was a guess dressed as a
+    # measurement.
+    verified = cf.remediated_issues_fixed is not None
     issues_fixed = 0
     issues_remaining = 0
     issues: List[ContentIssueDetail] = []
@@ -848,10 +857,10 @@ async def get_content_diff(
         if scan_result and scan_result.issues:
             issues_remaining = len(scan_result.issues)
             issues = [_format_scan_issue(raw) for raw in scan_result.issues]
-            # If we have a remediated version, some issues may be fixed
-            if cf.remediated_body:
-                issues_fixed = issues_remaining  # Optimistic: all issues addressed
-                issues_remaining = 0
+
+    if verified:
+        issues_fixed = cf.remediated_issues_fixed or 0
+        issues_remaining = cf.remediated_issues_remaining or 0
 
     return ContentDiffResponse(
         cloud_file_id=cf.id,
@@ -861,6 +870,7 @@ async def get_content_diff(
         remediated_html=cf.remediated_body,
         issues_fixed=issues_fixed,
         issues_remaining=issues_remaining,
+        issues_verified_by_rescan=verified,
         issues=issues,
     )
 

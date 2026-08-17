@@ -103,6 +103,8 @@ def _make_cloud_file(
     compliance_score=None,
     last_scan_id=None,
     has_remediated_version=None,
+    remediated_issues_fixed=None,
+    remediated_issues_remaining=None,
 ):
     """Create a mock CloudFile object.
 
@@ -125,6 +127,11 @@ def _make_cloud_file(
         if has_remediated_version is None
         else has_remediated_version
     )
+    # Explicitly None unless a test sets them: a bare MagicMock attribute
+    # is truthy and coerces to an int, which would let the "was this
+    # verified by a rescan" check pass silently in every fixture.
+    cf.remediated_issues_fixed = remediated_issues_fixed
+    cf.remediated_issues_remaining = remediated_issues_remaining
     cf.last_compliance_score = compliance_score
     cf.last_scan_id = last_scan_id
     cf.last_scanned_at = datetime.now(timezone.utc) if last_scan_id else None
@@ -542,6 +549,64 @@ class TestContentDiff:
         # No fabricated-pool text anywhere in the response.
         assert "Added missing alt text" not in str(data)
         assert "Fixed heading hierarchy" not in str(data)
+
+    def test_diff_reports_the_verified_split_when_a_rescan_recorded_one(
+        self, client, mock_session, override_deps
+    ):
+        """The fixed/remaining split must come from the rescan of the
+        remediated copy, which is the only thing that knows whether a fix
+        worked."""
+        cf = _make_cloud_file(
+            content_body="<p>Original</p>",
+            remediated_body="<p>Fixed</p>",
+            last_scan_id="scan-1",
+            remediated_issues_fixed=3,
+            remediated_issues_remaining=1,
+        )
+        scan_result = MagicMock()
+        scan_result.issues = [
+            {"id": "image-alt", "impact": "critical", "nodes": [{}, {}, {}, {}]}
+        ]
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            cf,
+            scan_result,
+        ]
+
+        response = client.get(f"/canvas/content/{cf.id}/diff")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["issues_verified_by_rescan"] is True
+        assert data["issues_fixed"] == 3
+        assert data["issues_remaining"] == 1
+
+    def test_diff_does_not_claim_fixes_that_were_never_verified(
+        self, client, mock_session, override_deps
+    ):
+        """A remediated body with no rescan behind it used to report every
+        issue as fixed. Absent a rescan the split is unknown, and the
+        response has to say so rather than guess in our own favour."""
+        cf = _make_cloud_file(
+            content_body="<p>Original</p>",
+            remediated_body="<p>Fixed</p>",
+            last_scan_id="scan-1",
+        )
+        scan_result = MagicMock()
+        scan_result.issues = [
+            {"id": "image-alt", "impact": "critical", "nodes": [{}, {}]}
+        ]
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            cf,
+            scan_result,
+        ]
+
+        response = client.get(f"/canvas/content/{cf.id}/diff")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["issues_verified_by_rescan"] is False
+        assert data["issues_fixed"] == 0
+        assert data["issues_remaining"] == 1
 
     def test_diff_empty_issues_when_no_scan_results(
         self, client, mock_session, override_deps
