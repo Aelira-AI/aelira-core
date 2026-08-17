@@ -1048,19 +1048,6 @@ async def writeback_content(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
 
-    # File-type rows have no working write-back-to-Canvas path yet (the
-    # only candidate mechanism, CloudJobType.UPLOAD, lives in the dormant
-    # JobProcessor queue — see c67cb9f). scanner.write_back_content()
-    # would return a technically-true but confusing "No remediated body"
-    # for a file that WAS remediated (just not as HTML) — give an honest,
-    # specific reason instead of letting that ambiguous error surface.
-    if cf.content_source == "file":
-        return WritebackResponse(
-            success=False,
-            stale=False,
-            error="File write-back to Canvas isn't wired up yet — coming soon.",
-        )
-
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)
         try:
@@ -1070,7 +1057,12 @@ async def writeback_content(
                 department_id=auth_department_id,
                 credential_id=credential.id,
             )
-            result = await scanner.write_back_content(cf, approved_by=user_id)
+            # Files are uploaded alongside the original; content items are
+            # edited in place. Two mechanisms, one action to the user.
+            if cf.content_source == "file":
+                result = await scanner.write_back_file(cf, approved_by=user_id)
+            else:
+                result = await scanner.write_back_content(cf, approved_by=user_id)
 
             return WritebackResponse(
                 success=result.get("success", False),
@@ -1124,12 +1116,11 @@ async def batch_writeback_content(
     )
 
     # Approved file-type rows (has_remediated_version, remediated_body
-    # NULL) are excluded from the query above by construction — they'd
-    # otherwise vanish from this response with no acknowledgment at all,
-    # the same silent-skip the client eligibility bug produced for approve.
-    # There's no working write-back-to-Canvas path for files yet (see
-    # writeback_content's comment above), so report them honestly as
-    # skipped rather than silently dropping them.
+    # NULL) are excluded from the query above by construction, so they are
+    # fetched separately and written back through the upload path. Without
+    # this they vanish from the response with no acknowledgment at all,
+    # which is the silent-skip the client eligibility bug once produced
+    # for approve.
     approved_file_rows = (
         db.query(CloudFile)
         .filter(
@@ -1141,11 +1132,6 @@ async def batch_writeback_content(
         )
         .all()
     )
-    skip_errors = [
-        f"{cf.id}: file write-back to Canvas isn't wired up yet — coming soon"
-        for cf in approved_file_rows
-    ]
-
     if not approved_files and not approved_file_rows:
         return BatchWritebackResponse(
             written_count=0,
@@ -1153,17 +1139,6 @@ async def batch_writeback_content(
             stale_count=0,
             skipped_count=0,
             errors=["No approved items found for this course"],
-        )
-
-    if not approved_files:
-        # Only file rows were approved — none of them can be written back
-        # yet, so there's nothing to hand to the Canvas client at all.
-        return BatchWritebackResponse(
-            written_count=0,
-            failed_count=0,
-            stale_count=0,
-            skipped_count=len(approved_file_rows),
-            errors=skip_errors,
         )
 
     try:
@@ -1179,7 +1154,7 @@ async def batch_writeback_content(
             written = 0
             failed = 0
             stale = 0
-            errors: List[str] = list(skip_errors)
+            errors: List[str] = []
 
             for cf in approved_files:
                 result = await scanner.write_back_content(cf, approved_by=user_id)
@@ -1192,11 +1167,19 @@ async def batch_writeback_content(
                     failed += 1
                     errors.append(f"{cf.id}: {result.get('error', 'unknown error')}")
 
+            for cf in approved_file_rows:
+                result = await scanner.write_back_file(cf, approved_by=user_id)
+                if result.get("success"):
+                    written += 1
+                else:
+                    failed += 1
+                    errors.append(f"{cf.id}: {result.get('error', 'unknown error')}")
+
             return BatchWritebackResponse(
                 written_count=written,
                 failed_count=failed,
                 stale_count=stale,
-                skipped_count=len(approved_file_rows),
+                skipped_count=0,
                 errors=errors,
             )
         finally:
@@ -1233,6 +1216,19 @@ async def rollback_content(
     )
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+
+    # A file write-back adds a copy rather than editing anything, so there
+    # is nothing in Canvas to restore. Undoing it means deleting the copy,
+    # which is the owner's call to make in Canvas, not ours to do silently.
+    if cf.content_source == "file":
+        return RollbackResponse(
+            success=False,
+            error=(
+                "This file was written back as a new copy, so nothing was "
+                "overwritten and there is nothing to restore. Delete the "
+                "uploaded copy in Canvas if you no longer want it."
+            ),
+        )
 
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)

@@ -852,13 +852,13 @@ class TestBatchWriteback:
         assert data["skipped_count"] == 0
         assert scanner_instance.write_back_content.call_count == 2
 
-    def test_batch_writeback_skips_approved_file_rows_honestly(
-        self, client, mock_session, override_deps
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_batch_writeback_uploads_approved_file_rows(
+        self, mock_get_client, client, mock_session, override_deps
     ):
-        """Approved file-type rows have no working write-back-to-Canvas
-        path yet — they must be reported as skipped with an explanatory
-        error, not silently dropped from the response the way approve
-        used to drop them."""
+        """A course whose only approved item is a file still writes back:
+        files are uploaded alongside the original rather than edited in
+        place, and the count reflects the upload."""
         file_item = _make_cloud_file(
             content_source="file",
             writeback_status="approved",
@@ -872,24 +872,37 @@ class TestBatchWriteback:
             [file_item],
         ]
 
-        response = client.post(
-            "/canvas/content/batch-writeback",
-            json={"course_id": "101"},
-        )
+        mock_credential = MagicMock()
+        mock_credential.id = "cred-1"
+        mock_get_client.return_value = (mock_credential, AsyncMock())
+
+        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
+            scanner_instance = AsyncMock()
+            scanner_instance.write_back_file.return_value = {
+                "success": True,
+                "stale": False,
+                "canvas_file_id": "canvas-77",
+            }
+            MockScanner.return_value = scanner_instance
+
+            response = client.post(
+                "/canvas/content/batch-writeback",
+                json={"course_id": "101"},
+            )
 
         assert response.status_code == 200
         data = response.json()
-        assert data["written_count"] == 0
+        assert data["written_count"] == 1
         assert data["failed_count"] == 0
-        assert data["skipped_count"] == 1
-        assert any("wired up" in e for e in data["errors"])
+        assert data["skipped_count"] == 0
+        assert data["errors"] == []
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_batch_writeback_mixed_html_and_file_rows(
         self, mock_get_client, client, mock_session, override_deps
     ):
         """A course with both an approved HTML item and an approved file
-        item writes back the HTML item and honestly skips the file item —
+        item writes both back, through the two different mechanisms, and
         neither is silently dropped."""
         html_item = _make_cloud_file(
             writeback_status="approved",
@@ -918,6 +931,11 @@ class TestBatchWriteback:
                 "success": True,
                 "stale": False,
             }
+            scanner_instance.write_back_file.return_value = {
+                "success": True,
+                "stale": False,
+                "canvas_file_id": "canvas-77",
+            }
             MockScanner.return_value = scanner_instance
 
             response = client.post(
@@ -927,9 +945,11 @@ class TestBatchWriteback:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["written_count"] == 1
-        assert data["skipped_count"] == 1
-        assert any("wired up" in e for e in data["errors"])
+        assert data["written_count"] == 2
+        assert data["skipped_count"] == 0
+        assert data["errors"] == []
+        scanner_instance.write_back_content.assert_awaited_once()
+        scanner_instance.write_back_file.assert_awaited_once()
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_batch_writeback_no_approved_items_returns_zero_written(
@@ -994,13 +1014,13 @@ class TestWriteback:
         response = client.post(f"/canvas/content/{uuid.uuid4()}/writeback")
         assert response.status_code == 404
 
-    def test_writeback_file_row_returns_honest_skip_not_confusing_error(
-        self, client, mock_session, override_deps
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_writeback_file_row_uses_the_upload_path(
+        self, mock_get_client, client, mock_session, override_deps
     ):
-        """A file-type row has no working write-back-to-Canvas path yet —
-        must return an honest, specific reason rather than the ambiguous
-        'No remediated body' scanner.write_back_content() would give (the
-        file WAS remediated, just not as HTML)."""
+        """A file row is written back by uploading the remediated copy, not
+        by the HTML path, which would report the technically-true but
+        useless "No remediated body" for a file that was remediated."""
         cf = _make_cloud_file(
             content_source="file",
             writeback_status="approved",
@@ -1009,12 +1029,25 @@ class TestWriteback:
         )
         mock_session.query.return_value.filter.return_value.first.return_value = cf
 
-        response = client.post(f"/canvas/content/{cf.id}/writeback")
+        mock_credential = MagicMock()
+        mock_credential.id = "cred-1"
+        mock_get_client.return_value = (mock_credential, AsyncMock())
+
+        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
+            scanner_instance = AsyncMock()
+            scanner_instance.write_back_file.return_value = {
+                "success": True,
+                "stale": False,
+                "canvas_file_id": "canvas-77",
+            }
+            MockScanner.return_value = scanner_instance
+
+            response = client.post(f"/canvas/content/{cf.id}/writeback")
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is False
-        assert "wired up" in data["error"]
+        assert response.json()["success"] is True
+        scanner_instance.write_back_file.assert_awaited_once()
+        scanner_instance.write_back_content.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

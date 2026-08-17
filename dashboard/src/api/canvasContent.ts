@@ -109,8 +109,9 @@ export interface BatchWritebackResponse {
   written_count: number;
   failed_count: number;
   stale_count: number;
-  // Approved file-type rows that couldn't even be attempted — file
-  // write-back to Canvas isn't wired up yet (see backend comment).
+  // Items the server declined to attempt at all. Files are written back
+  // now, so this is normally zero; a non-zero value still has to be shown
+  // rather than folded into a success message.
   skipped_count: number;
   errors: string[];
 }

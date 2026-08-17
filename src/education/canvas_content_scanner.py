@@ -18,6 +18,7 @@ import asyncio
 import uuid
 import tempfile
 import os
+from pathlib import Path
 import re
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
@@ -797,6 +798,164 @@ class CanvasContentScanner:
             "fixed": fixed,
             "remaining": remaining,
             "introduced": introduced,
+        }
+
+    # ------------------------------------------------------------------
+    # 3c. write_back_file — upload a remediated file to the Canvas course
+    # ------------------------------------------------------------------
+
+    def _find_remediated_file_path(self, cloud_file: CloudFile) -> Optional[str]:
+        """Path to the remediated artefact a remediation job produced.
+
+        The remediator writes to disk and records the path on its job row.
+        The file is not permanent, so a caller has to cope with it being
+        gone rather than assume it is there.
+        """
+        job = (
+            self.db.query(CloudJobQueue)
+            .filter(
+                CloudJobQueue.cloud_file_id == cloud_file.id,
+                CloudJobQueue.job_type == CloudJobType.REMEDIATE.value,
+                CloudJobQueue.status == CloudJobStatus.COMPLETED.value,
+            )
+            .order_by(CloudJobQueue.completed_at.desc())
+            .first()
+        )
+        if not job or not isinstance(job.result_data, dict):
+            return None
+        path = job.result_data.get("output_file")
+        if path and os.path.exists(path):
+            return path
+        return None
+
+    async def write_back_file(
+        self,
+        cloud_file: CloudFile,
+        approved_by: str,
+    ) -> Dict[str, Any]:
+        """Upload the remediated copy of a file to its Canvas course.
+
+        Canvas files are not edited in place. The remediated copy is
+        uploaded alongside the original with an _accessible suffix, the
+        same convention the standalone upload endpoint already uses, so
+        nothing anyone authored is overwritten. That also means there is no
+        body to stale-check: what has to be checked is that the remediated
+        artefact still exists, because it is written to disk and can be
+        cleaned up before anyone approves it.
+        """
+        if cloud_file.content_source != "file":
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Not a file row; use write_back_content for content items",
+            }
+
+        if cloud_file.writeback_status != "approved":
+            return {
+                "success": False,
+                "stale": False,
+                "error": (
+                    f"Cannot write back: status is "
+                    f"'{cloud_file.writeback_status}', must be 'approved'"
+                ),
+            }
+
+        if not cloud_file.has_remediated_version:
+            return {
+                "success": False,
+                "stale": False,
+                "error": "No remediated version for this file",
+            }
+
+        course_id = cloud_file.provider_parent_id
+        if not course_id:
+            return {
+                "success": False,
+                "stale": False,
+                "error": "File has no course to upload into",
+            }
+
+        remediated_path = self._find_remediated_file_path(cloud_file)
+        if not remediated_path:
+            return {
+                "success": False,
+                "stale": False,
+                "error": (
+                    "The remediated file is no longer on disk. "
+                    "Remediate it again before writing back."
+                ),
+            }
+
+        original = Path(cloud_file.file_name)
+        accessible_name = f"{original.stem}_accessible{original.suffix}"
+
+        # For file rows these two columns hold references rather than
+        # bodies: an uploaded file has no HTML to keep, and what an auditor
+        # needs is a way to find both copies.
+        writeback_log = ContentWritebackLog(
+            id=str(uuid.uuid4()),
+            cloud_file_id=cloud_file.id,
+            original_body=(
+                f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}"
+            ),
+            remediated_body=f"local:{remediated_path}",
+            approved_by=approved_by,
+            approved_at=datetime.now(timezone.utc),
+        )
+        self.db.add(writeback_log)
+
+        try:
+            upload = await self.canvas_client.upload_file(
+                course_id=course_id,
+                local_path=remediated_path,
+                file_name=accessible_name,
+            )
+        except Exception as e:
+            self.db.rollback()
+            logger.error(
+                "Canvas file upload raised: %s",
+                e,
+                extra={"cloud_file_id": cloud_file.id},
+            )
+            return {"success": False, "stale": False, "error": f"Canvas upload: {e}"}
+
+        if not getattr(upload, "success", False):
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": f"Canvas upload failed: {getattr(upload, 'error', 'unknown')}",
+            }
+
+        now = datetime.now(timezone.utc)
+        writeback_log.written_back_at = now
+        writeback_log.canvas_revision = upload.file_id
+        writeback_log.remediated_body = (
+            f"canvas-file:{upload.file_id} {accessible_name}"
+        )
+        cloud_file.remediated_file_id = upload.file_id
+        cloud_file.writeback_status = "written_back"
+        cloud_file.writeback_at = now
+        if cloud_file.remediated_compliance_score is not None:
+            cloud_file.last_compliance_score = cloud_file.remediated_compliance_score
+        self.db.commit()
+
+        logger.info(
+            "Remediated file uploaded to Canvas",
+            extra={
+                "cloud_file_id": cloud_file.id,
+                "course_id": course_id,
+                "canvas_file_id": upload.file_id,
+                "file_name": accessible_name,
+            },
+        )
+
+        return {
+            "success": True,
+            "stale": False,
+            "canvas_file_id": upload.file_id,
+            "file_name": accessible_name,
+            "url": getattr(upload, "web_view_link", None),
         }
 
     # ------------------------------------------------------------------
