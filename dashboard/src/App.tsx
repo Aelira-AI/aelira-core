@@ -14,7 +14,6 @@ import { Dashboard } from './pages/Dashboard';
 import { Upload } from './pages/Upload';
 import { History } from './pages/History';
 import { ScanDetail } from './pages/ScanDetail';
-import { FocusOrderDetail } from './pages/FocusOrderDetail';
 import { Issues } from './pages/Issues';
 import { Remediate } from './pages/Remediate';
 import { BulkUpload } from './pages/BulkUpload';
@@ -123,16 +122,6 @@ function App(): React.ReactElement {
                 <ProtectedRoute>
                   <AppLayout>
                     <ScanDetail />
-                  </AppLayout>
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/focus-order/:id"
-              element={
-                <ProtectedRoute>
-                  <AppLayout>
-                    <FocusOrderDetail />
                   </AppLayout>
                 </ProtectedRoute>
               }

@@ -22,6 +22,7 @@ import { scansApi } from '../api/scans';
 import { useToast } from '../context/toast-context';
 import { FeatureGate } from '../components/FeatureGate';
 import { trackEvent } from '../utils/analytics';
+import { summarizeBatchOutcome } from '../utils/batchActionResult';
 
 // Type definitions
 type FileStatus = 'pending' | 'queued' | 'uploading' | 'processing' | 'complete' | 'error';
@@ -447,10 +448,20 @@ export function BulkUpload(): React.ReactElement {
     const complete = files.filter((f) => f.status === 'complete').length;
     const failed = files.filter((f) => f.status === 'error').length;
 
-    toast.success(
-      `Processed ${complete + failed} files: ${complete} successful, ${failed} failed`,
-      'Batch Complete'
-    );
+    // A batch that processed nothing successfully is not a success, and a
+    // partial batch is not either. The shared summariser is the single
+    // place that decides, so this cannot drift back to always-green.
+    const outcome = summarizeBatchOutcome({
+      verb: 'Processed',
+      succeededCount: complete,
+      buckets: [{ label: 'failed', count: failed }],
+      errors: [],
+    });
+    if (outcome.status === 'success') {
+      toast.success(outcome.message, 'Batch Complete');
+    } else {
+      toast.warning(outcome.message, 'Batch Finished');
+    }
   };
 
   const pauseProcessing = (): void => {

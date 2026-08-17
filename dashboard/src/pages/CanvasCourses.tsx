@@ -408,9 +408,15 @@ export function CanvasCourses(): React.ReactElement {
       toast.info('No files need remediation.', 'Nothing to Do');
       return;
     }
-    for (const file of toRemediate) {
-      await handleRemediateFile(file.provider_file_id, courseId);
-    }
+    // This used to loop over the files calling the single-file handler,
+    // which navigates away: the route change unmounted the page and every
+    // file after the first was silently never touched. The course content
+    // view remediates the whole course in place, so send the user there.
+    toast.info(
+      `${toRemediate.length} items need remediation. Opening the course content view.`,
+      'Remediate All'
+    );
+    navigate(`/canvas/courses/${courseId}/content`);
   };
 
   const handlePushToCanvas = async (scanId: string, courseId: string, fileId: string): Promise<void> => {
