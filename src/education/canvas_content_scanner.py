@@ -592,7 +592,51 @@ class CanvasContentScanner:
                 cloud_file.writeback_status = "pending_review"
                 cloud_file.has_remediated_version = True
 
-                # Store remediated compliance score
+                # Verify the remediation by rescanning what we produced,
+                # rather than inferring a score from how many fixers ran.
+                verification = await self._verify_remediation(
+                    cloud_file, sanitized, issues
+                )
+
+                if verification:
+                    cloud_file.remediated_compliance_score = verification["score"]
+                    cloud_file.remediated_issues_fixed = verification["fixed"]
+                    cloud_file.remediated_issues_remaining = verification["remaining"]
+                    self.db.commit()
+
+                    if verification["introduced"]:
+                        logger.warning(
+                            "Remediation introduced new issues",
+                            extra={
+                                "cloud_file_id": cloud_file.id,
+                                "introduced": verification["introduced"],
+                            },
+                        )
+
+                    logger.info(
+                        "Content remediation verified by rescan",
+                        extra={
+                            "cloud_file_id": cloud_file.id,
+                            "score": verification["score"],
+                            "fixed": verification["fixed"],
+                            "remaining": verification["remaining"],
+                            "introduced": verification["introduced"],
+                        },
+                    )
+
+                    return {
+                        "success": True,
+                        "verified": True,
+                        "fixed_count": verification["fixed"],
+                        "issues_remaining": verification["remaining"],
+                        "issues_introduced": verification["introduced"],
+                        "manual_count": result.manual_count,
+                        "remediated_score": verification["score"],
+                        "verification_scan_id": verification["scan_id"],
+                    }
+
+                # Rescan unavailable: fall back to the fixer-ratio estimate and
+                # say so, so nothing downstream reads it as a measured score.
                 remediated_score = getattr(result, "remediated_compliance_score", None)
                 if (
                     remediated_score is None
@@ -627,6 +671,7 @@ class CanvasContentScanner:
 
                 return {
                     "success": True,
+                    "verified": False,
                     "fixed_count": result.fixed_count,
                     "manual_count": result.manual_count,
                     "remediated_score": remediated_score,
@@ -657,6 +702,102 @@ class CanvasContentScanner:
                     os.unlink(temp_path)
                 except OSError:
                     pass
+
+    # ------------------------------------------------------------------
+    # 3b. _verify_remediation — rescan what remediation produced
+    # ------------------------------------------------------------------
+
+    async def _verify_remediation(
+        self,
+        cloud_file: CloudFile,
+        remediated_fragment: str,
+        original_issues: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Rescan the remediated content and report what actually changed.
+
+        Without this the remediated score is an estimate derived from how
+        many fixers ran, which cannot see a fix that did not work or a fix
+        that broke something else. The rescan is the same axe-core pass the
+        original scan used, so the two scores are comparable.
+
+        Counting is at node level, matching the original scan's issue count:
+        remaining counts nodes still failing a rule that failed before,
+        introduced counts nodes failing a rule that did not fail before, and
+        fixed is the drop in node count across the rules that failed before.
+
+        Returns None when the rescan cannot run, in which case the caller
+        keeps the estimate and marks the result unverified.
+        """
+
+        def _nodes_by_rule(violations: List[Dict[str, Any]]) -> Dict[str, int]:
+            counts: Dict[str, int] = {}
+            for v in violations or []:
+                rule_id = v.get("id")
+                if rule_id:
+                    counts[rule_id] = counts.get(rule_id, 0) + len(v.get("nodes", []))
+            return counts
+
+        try:
+            wrapped = _wrap_html_fragment(remediated_fragment)
+            axe_results = await self._run_axe_scan(wrapped)
+        except Exception as e:
+            logger.warning(
+                "Remediation rescan failed; falling back to the estimate: %s",
+                e,
+                extra={"cloud_file_id": cloud_file.id},
+            )
+            return None
+
+        violations = axe_results.get("violations", [])
+        passes = len(axe_results.get("passes", []))
+        total_rules = passes + len(violations)
+        score = round(passes / total_rules * 100, 1) if total_rules > 0 else 100.0
+
+        before = _nodes_by_rule(original_issues)
+        after = _nodes_by_rule(violations)
+        remaining = sum(count for rule, count in after.items() if rule in before)
+        introduced = sum(count for rule, count in after.items() if rule not in before)
+        fixed = max(0, sum(before.values()) - remaining)
+
+        scan = Scan(
+            id=str(uuid.uuid4()),
+            scan_type=ScanType.CANVAS_CONTENT,
+            status=ScanStatus.COMPLETED,
+            file_name=f"{cloud_file.file_name} (remediated)",
+            user_id=None,
+            department_id=self.department_id,
+            completed_at=datetime.now(timezone.utc),
+        )
+        self.db.add(scan)
+        self.db.flush()
+        self.db.add(
+            ScanResult(
+                id=str(uuid.uuid4()),
+                scan_id=scan.id,
+                compliance_score=score,
+                axe_results=axe_results,
+                issues=violations,
+                critical_issues=sum(
+                    1 for v in violations if v.get("impact") == "critical"
+                ),
+                high_issues=sum(1 for v in violations if v.get("impact") == "serious"),
+                medium_issues=sum(
+                    1 for v in violations if v.get("impact") == "moderate"
+                ),
+                low_issues=sum(1 for v in violations if v.get("impact") == "minor"),
+            )
+        )
+        # The verification scan is a record of the remediated copy, not the
+        # item's current state, so last_scan_id deliberately stays put.
+        self.db.commit()
+
+        return {
+            "scan_id": scan.id,
+            "score": score,
+            "fixed": fixed,
+            "remaining": remaining,
+            "introduced": introduced,
+        }
 
     # ------------------------------------------------------------------
     # 4. write_back_content — push remediated HTML to Canvas
