@@ -442,6 +442,15 @@ export function CanvasContentDiffPage(): React.ReactElement {
                   {diff.issues_remaining} remaining
                 </span>
               </div>
+              {/* Where the two numbers came from. A count produced by a
+                  rescan of the remediated copy is a measurement; without
+                  one the split is unknown, and saying so is the whole
+                  point of the claim we make about verified fixes. */}
+              <span className="text-xs text-[var(--content-secondary)] ml-auto">
+                {diff.issues_verified_by_rescan
+                  ? 'Verified by rescan'
+                  : 'Not verified by rescan yet'}
+              </span>
             </div>
 
             {/* Real findings from the last scan — one honest list. Every
