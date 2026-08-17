@@ -71,6 +71,14 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   };
 
   handleGoHome = (): void => {
+    // Inside an LMS iframe the main dashboard refuses to be framed, so
+    // navigating in place turns an error into a blank "refused to
+    // connect". Escaping to a new tab is the pattern the LTI views
+    // already use for the same reason.
+    if (window.top !== window.self) {
+      window.open('/dashboard', '_blank', 'noopener,noreferrer');
+      return;
+    }
     window.location.href = '/dashboard';
   };
 

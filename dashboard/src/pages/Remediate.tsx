@@ -8,7 +8,6 @@ import {
   FileText,
   Download,
   Play,
-  Pause,
   RotateCcw,
   Loader,
   Code,
@@ -344,13 +343,12 @@ export function Remediate(): React.ReactElement {
     }
   };
 
-  const pauseRemediation = (): void => {
-    setProgress((p) => ({ ...p, status: 'paused' }));
-  };
-
-  const resumeRemediation = (): void => {
-    setProgress((p) => ({ ...p, status: 'running' }));
-  };
+  // Pause and Resume used to sit here. They only flipped a local label:
+  // remediation is a single synchronous request with no cancellation, so
+  // the work carried on regardless and the completion handler overwrote
+  // whatever the user had clicked. A control that does nothing is worse
+  // than no control, so they are gone until the server can be told to
+  // stop.
 
   const downloadRemediated = async (): Promise<void> => {
     trackEvent('dash-download-fixed', { scan_type: scan?.file_name?.split('.').pop() || 'unknown' });
@@ -438,24 +436,6 @@ export function Remediate(): React.ReactElement {
                 >
                   <Play className="w-4 h-4" />
                   Start Remediation
-                </button>
-              )}
-              {progress.status === 'running' && (
-                <button
-                  onClick={pauseRemediation}
-                  className="btn-secondary flex items-center gap-2"
-                >
-                  <Pause className="w-4 h-4" />
-                  Pause
-                </button>
-              )}
-              {progress.status === 'paused' && (
-                <button
-                  onClick={resumeRemediation}
-                  className="btn-primary flex items-center gap-2"
-                >
-                  <Play className="w-4 h-4" />
-                  Resume
                 </button>
               )}
               {progress.status === 'completed' && (

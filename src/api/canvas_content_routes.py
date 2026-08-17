@@ -554,15 +554,18 @@ async def get_course_content_status(
             CloudFile.provider == CloudProvider.CANVAS.value,
             CloudFile.provider_parent_id == course_id,
             CloudFile.department_id == auth_department_id,
-            CloudFile.content_source.isnot(None),
         )
         .all()
     )
 
-    # Build per-type stats
+    # Build per-type stats. Rows with no content_source are Canvas files
+    # from before the column existed, which the model documents as files;
+    # they used to be filtered out of this query entirely, so a course
+    # could report a clean score while its files were the worst thing in
+    # it.
     type_map: Dict[str, List[CloudFile]] = {}
     for cf in cloud_files:
-        ct = cf.content_source or "unknown"
+        ct = cf.content_source or "file"
         type_map.setdefault(ct, []).append(cf)
 
     # Count issues per cloud file from scan results
@@ -661,12 +664,12 @@ async def get_course_overview(
         .filter(
             CloudFile.department_id == dept_id,
             CloudFile.provider == CloudProvider.CANVAS.value,
-            CloudFile.content_source.isnot(
-                None
-            ),  # Only content items, not uploaded files
         )
         .all()
     )
+    # Everything Canvas holds for this department counts, files included.
+    # Excluding them let an institution-wide score describe only part of
+    # what it claimed to describe.
 
     # Compute issue counts from scan results (same pattern as get_course_content_status)
     issue_counts: Dict[str, int] = {}

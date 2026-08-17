@@ -342,12 +342,21 @@ export function CloudFiles(): React.ReactElement {
                           </a>
                         )}
                         {file.needs_rescan ? (
-                          <button
-                            className="px-3 py-1.5 rounded-lg text-sm font-medium text-white transition-colors"
-                            style={{ backgroundColor: 'var(--accent-primary)' }}
+                          /* This was a Scan button with no click handler and
+                             no provider-agnostic endpoint behind it. Scans
+                             start from the integration's own page, so this
+                             states the file's condition instead of offering
+                             an action that never happened. */
+                          <span
+                            className="px-3 py-1.5 rounded-lg text-sm font-medium"
+                            style={{
+                              backgroundColor: 'var(--surface-tertiary)',
+                              color: 'var(--content-secondary)',
+                            }}
+                            title="Start a scan from this file's integration page"
                           >
-                            Scan
-                          </button>
+                            Needs rescan
+                          </span>
                         ) : file.last_scanned_at ? (
                           <Link
                             to={`/scan/${file.id}`}

@@ -368,10 +368,13 @@ function IssueCard({ issue, scanInfo, onRemediate, onStatusChange, onAddNote, is
                     onRemediate(issue);
                   }}
                   className="btn-primary text-sm py-1.5 px-3 flex items-center gap-1"
-                  aria-label={`Auto-fix issue: ${issue.description}`}
+                  aria-label={
+                    `Auto-fix the whole document containing: ${issue.description}`
+                  }
+                  title="Remediates the entire document, not this issue alone"
                 >
                   <Wrench className="w-4 h-4" aria-hidden="true" />
-                  Auto-Fix
+                  Auto-Fix Document
                 </button>
               )}
               {!showNoteInput && (
@@ -583,8 +586,14 @@ export function Issues(): React.ReactElement {
     trackEvent('dash-issue-autofix', { scope: 'single' });
     setRemediating((prev) => new Set(prev).add(issue.id));
     try {
+      // There is no per-issue remediation endpoint: this remediates the
+      // whole document. Saying otherwise told people a single issue had
+      // been touched when every issue in the document may have been.
       await scansApi.remediateScan(issue.scanId, { use_ai: true });
-      toast.success('Issue remediated successfully!', 'Auto-Fix Complete');
+      toast.success(
+        'Document remediated. Every issue in it may have been changed, not just this one.',
+        'Auto-Fix Complete'
+      );
       // Refresh the scan data
       const details = await scansApi.getScan(issue.scanId);
       setScans((prev) =>
