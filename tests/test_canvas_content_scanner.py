@@ -566,11 +566,13 @@ class TestCanvasContentScannerFiles:
         canvas_client.list_course_files.assert_awaited_once_with("COURSE123")
         assert result["counts"]["file"] == 1
         assert result["counts"]["page"] == 1
-        assert len(result["file_cloud_file_ids"]) == 1
+        assert len(result["file_scan_jobs"]) == 1
         # Page still goes through the normal cloud_file_ids list — files
         # must NOT be mixed into it (that list drives the axe-core-only
         # background task loop in the route handler).
-        assert result["file_cloud_file_ids"][0] not in result["cloud_file_ids"]
+        assert (
+            result["file_scan_jobs"][0]["cloud_file_id"] not in result["cloud_file_ids"]
+        )
 
     @pytest.mark.asyncio
     async def test_new_file_upserted_with_content_source_file(self):
@@ -585,7 +587,7 @@ class TestCanvasContentScannerFiles:
         mock_query.filter.return_value.first.return_value = None
         db.query.return_value = mock_query
 
-        await scanner.scan_course_content("COURSE123")
+        result = await scanner.scan_course_content("COURSE123")
 
         # One CloudFile add + one CloudJobQueue add
         added = [call.args[0] for call in db.add.call_args_list]
@@ -599,6 +601,11 @@ class TestCanvasContentScannerFiles:
         assert len(jobs) == 1
         assert jobs[0].job_type == "scan"
         assert jobs[0].cloud_file_id == cloud_files[0].id
+        # The job's id must be the same one handed back in file_scan_jobs —
+        # that's what the route handler fires _canvas_scan_file_task with.
+        assert len(result["file_scan_jobs"]) == 1
+        assert result["file_scan_jobs"][0]["job_id"] == jobs[0].id
+        assert result["file_scan_jobs"][0]["cloud_file_id"] == cloud_files[0].id
 
     @pytest.mark.asyncio
     async def test_rescan_upserts_existing_file_row_no_duplicate(self):
@@ -630,7 +637,9 @@ class TestCanvasContentScannerFiles:
         assert existing_file.file_name == "Notes.docx"
         assert len(jobs) == 1
         assert jobs[0].cloud_file_id == "existing-cf-id"
-        assert result["file_cloud_file_ids"] == ["existing-cf-id"]
+        assert result["file_scan_jobs"] == [
+            {"job_id": jobs[0].id, "cloud_file_id": "existing-cf-id"}
+        ]
 
     @pytest.mark.asyncio
     async def test_files_scan_job_queued_via_cloud_job_queue_not_background_task(self):
@@ -650,7 +659,7 @@ class TestCanvasContentScannerFiles:
         result = await scanner.scan_course_content("COURSE123")
 
         assert result["cloud_file_ids"] == []
-        assert len(result["file_cloud_file_ids"]) == 1
+        assert len(result["file_scan_jobs"]) == 1
         jobs = [
             call.args[0]
             for call in db.add.call_args_list

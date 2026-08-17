@@ -268,6 +268,78 @@ class TestScanCourseContent:
         assert data["by_type"]["page"] == 2
         assert data["by_type"]["assignment"] == 1
 
+    @patch(
+        "src.api.canvas_content_routes._canvas_scan_file_task", new_callable=AsyncMock
+    )
+    @patch("src.api.canvas_content_routes._content_scan_task", new_callable=AsyncMock)
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_scan_fires_background_task_per_file_job(
+        self,
+        mock_get_client,
+        mock_content_task,
+        mock_file_task,
+        client,
+        mock_session,
+        override_deps,
+    ):
+        """Each file_scan_job the scanner returns must get its own
+        _canvas_scan_file_task background task fired. A CloudJobQueue row
+        the scanner created but nobody fires a task for sits PENDING
+        forever — nothing in this app polls the queue (JobProcessor is
+        never started)."""
+        mock_credential = MagicMock()
+        mock_credential.id = "cred-1"
+        mock_canvas = AsyncMock()
+        mock_get_client.return_value = (mock_credential, mock_canvas)
+
+        scan_result = {
+            "course_id": "101",
+            "cloud_file_ids": ["cf-1"],
+            "file_scan_jobs": [
+                {"job_id": "job-1", "cloud_file_id": "file-cf-1"},
+                {"job_id": "job-2", "cloud_file_id": "file-cf-2"},
+            ],
+            "counts": {
+                "page": 1,
+                "assignment": 0,
+                "announcement": 0,
+                "quiz": 0,
+                "discussion": 0,
+                "file": 2,
+                "skipped_empty": 0,
+            },
+        }
+
+        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
+            scanner_instance = AsyncMock()
+            scanner_instance.scan_course_content.return_value = scan_result
+            MockScanner.return_value = scanner_instance
+
+            response = client.post(
+                "/canvas/content/scan",
+                json={"course_id": "101"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        # 1 HTML item + 2 files — files must be counted, not just queued.
+        assert data["total_items"] == 3
+        assert data["jobs_queued"] == 3
+        assert data["by_type"]["file"] == 2
+
+        assert mock_file_task.await_count == 2
+        called_kwargs = [call.kwargs for call in mock_file_task.await_args_list]
+        assert {
+            "job_id": "job-1",
+            "cloud_file_id": "file-cf-1",
+            "credential_id": "cred-1",
+        } in called_kwargs
+        assert {
+            "job_id": "job-2",
+            "cloud_file_id": "file-cf-2",
+            "credential_id": "cred-1",
+        } in called_kwargs
+
 
 # ---------------------------------------------------------------------------
 # POST /canvas/content/scan/{content_type} — scan one type

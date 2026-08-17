@@ -200,10 +200,15 @@ class CanvasContentScanner:
         Args:
             course_id: Canvas course ID
             content_types: Optional list of content types to scan.
-                If None, scans all 5 types.
+                If None, scans all 6 types (5 HTML types + files).
 
         Returns:
-            Dict with counts per content type and list of cloud_file_ids
+            Dict with counts per content type; cloud_file_ids (the 5 HTML
+            types — the caller fires the axe-core background task for each);
+            and file_scan_jobs ([{job_id, cloud_file_id}, ...] — CloudJobQueue
+            rows already created for each file, still needing the caller to
+            fire _canvas_scan_file_task per job; the scanner has no
+            BackgroundTasks handle to do that itself).
         """
         # Default to all types if none specified
         types_to_scan = set(content_types or list(CanvasContentType))
@@ -261,11 +266,18 @@ class CanvasContentScanner:
         files = fetched.get("file", [])
 
         cloud_file_ids: List[str] = []
-        # Files are queued for scanning immediately (CloudJobQueue, inside
-        # this method) rather than via the caller's background_tasks loop
-        # over cloud_file_ids — see the file-processing loop below for why.
-        # Returned separately so the caller can still count/report on them.
-        file_cloud_file_ids: List[str] = []
+        # Files get their own CloudJobQueue SCAN row (created below) instead
+        # of flowing through cloud_file_ids — that list drives the caller's
+        # axe-core-only background task loop, which would no-op on a file
+        # ("No content body"). The scanner has no FastAPI BackgroundTasks
+        # handle to actually fire the file-download task itself, so it hands
+        # back (job_id, cloud_file_id) pairs for the route handler to fire
+        # _canvas_scan_file_task per job — exactly the pattern
+        # canvas_scan_routes.py's single-file scan endpoint already uses.
+        # Without that background_tasks.add_task() call the job row is
+        # inert: nothing in this app polls CloudJobQueue (JobProcessor is
+        # never started), so a queued-but-unfired row sits PENDING forever.
+        file_scan_jobs: List[Dict[str, str]] = []
         counts = {
             "page": 0,
             "assignment": 0,
@@ -373,18 +385,16 @@ class CanvasContentScanner:
         # content_body to run axe-core on directly — they're real uploaded
         # documents (pdf/docx/pptx/...) scanned by downloading and running
         # the document scanner via the CloudJobQueue pipeline (the same one
-        # canvas_scan_routes.py's single-file scan endpoint uses). So each
-        # file gets its own CloudJobQueue SCAN row queued right here, rather
-        # than being handed back through cloud_file_ids for the caller to
-        # fire through the axe-core-only background task loop — that loop
-        # would just no-op every file ("No content body").
+        # canvas_scan_routes.py's single-file scan endpoint uses). The row
+        # is created here; it's inert until the route handler actually
+        # fires the background task for it (see file_scan_jobs above).
         for file_info in files:
             cf = self._upsert_file_cloud_file(course_id=course_id, file_info=file_info)
-            file_cloud_file_ids.append(cf.id)
+            job_id = str(uuid.uuid4())
             counts["file"] += 1
             self.db.add(
                 CloudJobQueue(
-                    id=str(uuid.uuid4()),
+                    id=job_id,
                     department_id=self.department_id,
                     job_type=CloudJobType.SCAN.value,
                     provider="canvas",
@@ -394,6 +404,7 @@ class CanvasContentScanner:
                     status=CloudJobStatus.PENDING.value,
                 )
             )
+            file_scan_jobs.append({"job_id": job_id, "cloud_file_id": cf.id})
 
         self.db.commit()
 
@@ -409,7 +420,7 @@ class CanvasContentScanner:
         return {
             "course_id": course_id,
             "cloud_file_ids": cloud_file_ids,
-            "file_cloud_file_ids": file_cloud_file_ids,
+            "file_scan_jobs": file_scan_jobs,
             "counts": counts,
         }
 

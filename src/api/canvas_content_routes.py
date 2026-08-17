@@ -49,6 +49,7 @@ from ..education.canvas_content_scanner import CanvasContentScanner
 from ..integrations.canvas.content_models import CanvasContentType
 from ..middleware.quota import require_feature
 from .canvas_routes import _get_canvas_client
+from .canvas_scan_routes import _canvas_scan_file_task
 
 logger = logging.getLogger(__name__)
 
@@ -322,10 +323,14 @@ async def scan_course_content(
 
             counts = result.get("counts", {})
             cloud_file_ids = result.get("cloud_file_ids", [])
-            # Files are already queued via CloudJobQueue inside the scanner
-            # (they need the file-download pipeline, not the axe-core
-            # background task below) — counted here, not re-queued.
-            file_cloud_file_ids = result.get("file_cloud_file_ids", [])
+            # The scanner already created a CloudJobQueue row for each file
+            # (it needs the file-download pipeline, not the axe-core
+            # background task below) — but a CloudJobQueue row is a record
+            # only. Nothing in this app polls the queue (JobProcessor is
+            # never started), so the row sits PENDING forever unless a
+            # background task is actually fired for it here, exactly like
+            # canvas_scan_routes.py's single-file scan endpoint does.
+            file_scan_jobs = result.get("file_scan_jobs", [])
             skipped = counts.get("skipped_empty", 0)
 
             # Queue background scan jobs for each discovered HTML content item
@@ -338,8 +343,19 @@ async def scan_course_content(
                     scan_options=scan_options,
                 )
 
+            # Fire the actual background task for each file's CloudJobQueue
+            # row — mirrors canvas_scan_routes.py's single-file scan
+            # endpoint's call signature exactly.
+            for job in file_scan_jobs:
+                background_tasks.add_task(
+                    _canvas_scan_file_task,
+                    job_id=job["job_id"],
+                    cloud_file_id=job["cloud_file_id"],
+                    credential_id=credential.id,
+                )
+
             by_type = {k: v for k, v in counts.items() if k != "skipped_empty"}
-            total_items = len(cloud_file_ids) + len(file_cloud_file_ids)
+            total_items = len(cloud_file_ids) + len(file_scan_jobs)
 
             return CanvasContentScanResponse(
                 total_items=total_items,
