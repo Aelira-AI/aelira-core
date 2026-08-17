@@ -177,6 +177,24 @@ def handle_lti_launch(
     # --- Mint access token ---
     jwt_service = JWTService()
     course_id = launch_data.course_id or ""
+
+    # If extract_launch_data() couldn't resolve a course id (custom params
+    # not sent, or the context claim wasn't recognized as a course), try any
+    # raw custom-claim keys that carry a course/context id before giving up.
+    # Resolved here — before the token/code are minted — so the JWT claim,
+    # the stored one-time code payload, and the redirect URL all agree.
+    if not course_id:
+        for key in (
+            "canvas_course_id",
+            "custom_canvas_course_id",
+            "custom_course_id",
+            "context_id",
+        ):
+            candidate = str(launch_data.custom_params.get(key, "") or "")
+            if candidate and not candidate.startswith("$"):
+                course_id = candidate
+                break
+
     token, _jti, _exp = jwt_service.create_access_token(
         user_id=str(user.id),
         department_id=department_id,
@@ -210,8 +228,11 @@ def handle_lti_launch(
 
     # Route based on placement:
     # - account_navigation → admin overview (regardless of course context)
-    # - course_navigation (or any other) → course-specific view
-    if launch_data.placement == "account_navigation":
+    # - course_navigation (or any other) → course-specific view, unless we
+    #   still don't have a course id — a bare "/lti/course/" (empty param)
+    #   doesn't match the client route and used to strand the user on the
+    #   dashboard home. Send those to the overview instead.
+    if launch_data.placement == "account_navigation" or not course_id:
         redirect_url = f"{dashboard_url}/lti/overview?code={code}"
     else:
         redirect_url = f"{dashboard_url}/lti/course/{course_id}?code={code}"
