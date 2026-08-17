@@ -11,10 +11,13 @@ interface LTISession {
 }
 
 /**
- * Extract course ID from URL path like /lti/course/123
+ * Extract course ID from URL path like /lti/course/123 or /lti/course/abc-def.
+ * Widened from digits-only so non-numeric/opaque course ids (or a course id
+ * that failed to resolve server-side) don't silently fall through to the
+ * dashboard home — an empty/missing id is handled by the caller instead.
  */
 function getCourseIdFromPath(): string | null {
-  const match = window.location.pathname.match(/\/lti\/course\/(\d+)/);
+  const match = window.location.pathname.match(/\/lti\/course\/([^/?#]+)/);
   return match ? match[1] : null;
 }
 
@@ -55,7 +58,10 @@ export function useLTISession(enabled: boolean = true): LTISession {
         .then((res) => {
           const token = res.data.access_token;
           setAccessToken(token);
-          setCourseId(res.data.course_id);
+          // Normalize an empty course id (account-level placement, or a
+          // launch missing course custom params) to null so callers can
+          // tell "no course context" apart from a real, if unusual, id.
+          setCourseId(res.data.course_id || null);
           setCourseName(res.data.course_name || null);
           setPlatform(res.data.platform || 'canvas');
           // Store token and set on apiClient so all requests include it
