@@ -16,12 +16,25 @@ import {
   HelpCircle,
   Settings2,
   ArrowLeft,
+  Wrench,
 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { LTILayout } from '../components/LTILayout';
 import { useLTISession } from '../hooks/useLTISession';
 import { apiClient } from '../api/client';
 import type { AxiosInstance } from 'axios';
+import {
+  mergeCourseContent,
+  groupContentByType,
+  isRemediable,
+  isApprovable,
+  contentItemState,
+  CONTENT_ITEM_STATE_COLOR,
+  type ContentItemStateKey,
+} from '../utils/mergeCourseContent';
+import { summarizeBatchOutcome } from '../utils/batchActionResult';
+import { useToast } from '../context/toast-context';
+import type { BatchApproveResponse, BatchWritebackResponse } from '../api/canvasContent';
 
 // ============================================================================
 // Type Definitions
@@ -70,12 +83,16 @@ interface ContentTypeStatus {
 
 interface ContentItemStatus {
   cloud_file_id: string;
+  provider_file_id: string | null;
   title: string;
   content_type: string;
   compliance_score: number | null;
   issue_count: number;
   writeback_status: string | null;
+  has_remediated_version: boolean;
+  last_scanned_at: string | null;
   content_updated_at: string | null;
+  scan_id: string | null;
 }
 
 interface CourseContentStatusResponse {
@@ -165,21 +182,23 @@ function getContentTypeBadgeColor(contentType: string): { bg: string; text: stri
   return colors[contentType.toLowerCase()] || { bg: 'var(--surface-primary)', text: 'var(--content-secondary)' };
 }
 
-function getWritebackBadge(status: string | null): { label: string; bg: string; color: string } {
-  if (!status) return { label: 'Pending', bg: 'transparent', color: 'var(--content-secondary)' };
-  switch (status.toLowerCase()) {
-    case 'approved':
-      return { label: 'Approved', bg: 'var(--surface-accent-subtle)', color: 'var(--content-accent)' };
-    case 'written_back':
-    case 'writtenback':
-      return { label: 'Written Back', bg: 'var(--surface-success-subtle)', color: 'var(--content-success)' };
-    case 'failed':
-      return { label: 'Failed', bg: 'var(--surface-error-subtle)', color: 'var(--content-error)' };
-    case 'writing':
-      return { label: 'Writing...', bg: 'var(--surface-warning-subtle)', color: 'var(--content-warning)' };
-    default:
-      return { label: status, bg: 'transparent', color: 'var(--content-secondary)' };
-  }
+// Maps contentItemState()'s shared color-intent record onto this view's
+// own inline {bg, color} idiom (matching getContentTypeBadgeColor's token
+// pairs above) — CanvasContentPage uses its shared <Badge> component
+// instead, since the two views have no shared badge component today and
+// neither needed a new one introduced just for this. Which states share a
+// color tier still comes from the one shared source, CONTENT_ITEM_STATE_COLOR
+// — only the CSS token expression is local.
+const VARIANT_STYLE: Record<'neutral' | 'accent' | 'success' | 'warning' | 'danger', { bg: string; color: string }> = {
+  neutral: { bg: 'var(--surface-secondary)', color: 'var(--content-secondary)' },
+  accent: { bg: 'var(--surface-accent-subtle)', color: 'var(--content-accent)' },
+  success: { bg: 'var(--surface-success-subtle)', color: 'var(--content-success)' },
+  warning: { bg: 'var(--surface-warning-subtle)', color: 'var(--content-warning)' },
+  danger: { bg: 'var(--surface-error-subtle)', color: 'var(--content-error)' },
+};
+
+function contentItemStateStyle(key: ContentItemStateKey): { bg: string; color: string } {
+  return VARIANT_STYLE[CONTENT_ITEM_STATE_COLOR[key]];
 }
 
 // ============================================================================
@@ -189,11 +208,23 @@ function getWritebackBadge(status: string | null): { label: string; bg: string; 
 export function LTICourseView(): React.ReactElement {
   const { accessToken, courseId: sessionCourseId, courseName: sessionCourseName, platform, loading: sessionLoading, error: sessionError } = useLTISession();
   const navigate = useNavigate();
+  const toast = useToast();
   const [searchParams] = useSearchParams();
   const fromOverview = searchParams.get('from') === 'overview';
 
   // Provider-aware API prefix for Canvas vs Brightspace
   const apiPrefix = platform === 'brightspace' ? '/brightspace' : '/canvas';
+
+  // A launch that resolved without a usable course id (e.g. an
+  // account-level placement, or a Canvas launch that didn't send course
+  // custom params) has nothing to render here. Rather than fall through to
+  // a blank/broken view, hand off to the LTI overview — the access token is
+  // already in localStorage from the exchange, so no code is needed.
+  useEffect(() => {
+    if (!sessionLoading && !sessionError && accessToken && !sessionCourseId) {
+      navigate('/lti/overview', { replace: true });
+    }
+  }, [sessionLoading, sessionError, accessToken, sessionCourseId, navigate]);
 
   // Tab state — default to content (demo focus)
   const [activeTab, setActiveTab] = useState<ActiveTab>('content');
@@ -218,6 +249,8 @@ export function LTICourseView(): React.ReactElement {
   const [contentScanning, setContentScanning] = useState(false);
   const [batchApproving, setBatchApproving] = useState(false);
   const [batchWritingBack, setBatchWritingBack] = useState(false);
+  const [remediatingAll, setRemediatingAll] = useState(false);
+  const [remediateAllProgress, setRemediateAllProgress] = useState<{ done: number; total: number } | null>(null);
   const [showScanOptions, setShowScanOptions] = useState(false);
   const [scanOptions, setScanOptions] = useState<ScanOptions>({
     generate_alt_text: true,
@@ -266,20 +299,44 @@ export function LTICourseView(): React.ReactElement {
     return { total, scanned, compliant, needsAttention };
   }, [files, scanStatusMap]);
 
-  // Content summary stats
-  const contentStats = useMemo(() => {
-    if (!contentData) return { total: 0, scanned: 0, issues: 0, writtenBack: 0 };
+  // Single source of truth for the Content tab: DB status items merged
+  // with the live Canvas files list. The table, the summary stats, the
+  // by-type breakdown, and batch-action eligibility all derive from this
+  // SAME array — computing it in more than one place is exactly how the
+  // header counters drifted from the table (files counted in the table,
+  // not in the header) in the first place.
+  const mergedItems = useMemo(
+    () => mergeCourseContent(contentData?.items, files),
+    [contentData, files]
+  );
 
-    const items = contentData.items;
-    const total = items.length;
-    const scanned = items.filter((i) => i.compliance_score !== null).length;
-    const issues = items.reduce((sum, i) => sum + (i.issue_count || 0), 0);
-    const writtenBack = items.filter(
+  // Content summary stats — unscanned merged rows (live-only files with no
+  // DB row yet) count toward `total` but must NOT count as scanned or
+  // contribute to issues/writtenBack: they carry compliance_score: null,
+  // issue_count: 0, writeback_status: null by construction, so the same
+  // filters that already excluded not-yet-scanned DB items exclude them too.
+  const contentStats = useMemo(() => {
+    const total = mergedItems.length;
+    const scanned = mergedItems.filter((i) => i.compliance_score !== null).length;
+    const issues = mergedItems.reduce((sum, i) => sum + (i.issue_count || 0), 0);
+    const writtenBack = mergedItems.filter(
       (i) => i.writeback_status === 'written_back' || i.writeback_status === 'writtenback'
     ).length;
 
     return { total, scanned, issues, writtenBack };
-  }, [contentData]);
+  }, [mergedItems]);
+
+  // Content-by-type breakdown — same rule: derived from mergedItems, not
+  // the DB-only contentData.by_type (which has no row for a type until
+  // something of that type has actually been scanned, so an unscanned
+  // "file" type would be invisible here even though files are visible in
+  // the table below it). Shared with CanvasContentPage via groupContentByType
+  // so the two views' by-type counting rules can't drift from each other.
+  const mergedByType = useMemo(() => groupContentByType(mergedItems), [mergedItems]);
+
+  // Items eligible for remediation — same rule as the per-row Remediate
+  // button and CanvasContentPage's Remediate All.
+  const remediableItems = useMemo(() => mergedItems.filter(isRemediable), [mergedItems]);
 
   // Overall compliance
   const overallCompliance = useMemo(() => {
@@ -664,19 +721,38 @@ export function LTICourseView(): React.ReactElement {
     const client = clientRef.current;
     if (!client || !contentData) return;
 
-    const pendingIds = contentData.items
-      .filter((item) => item.compliance_score !== null && item.compliance_score < 100 && (!item.writeback_status || item.writeback_status === 'pending_review'))
-      .map((item) => item.cloud_file_id);
+    // isApprovable() covers the has_remediated_version/writeback_status
+    // check (shared with CanvasContentPage — same fix applied there for
+    // the same underlying bug); the compliance_score < 100 clause is this
+    // view's own extra rule (don't bother re-approving something already
+    // perfect) and isn't part of the shared predicate.
+    const pendingIds = mergedItems
+      .filter(
+        (item) => isApprovable(item) && item.compliance_score !== null && item.compliance_score < 100
+      )
+      .map((item) => item.cloud_file_id)
+      .filter((id): id is string => id !== null);
 
     if (pendingIds.length === 0) return;
 
     setBatchApproving(true);
     try {
-      await client.post(`${apiPrefix}/content/batch-approve`, { cloud_file_ids: pendingIds });
+      const res = await client.post<BatchApproveResponse>(`${apiPrefix}/content/batch-approve`, { cloud_file_ids: pendingIds });
+      const summary = summarizeBatchOutcome({
+        verb: 'Approved',
+        succeededCount: res.data.approved_count,
+        buckets: [{ label: 'skipped', count: res.data.skipped_count ?? 0 }],
+        errors: res.data.errors ?? [],
+      });
+      if (summary.status === 'success') {
+        toast.success(summary.message, 'Batch Approve');
+      } else {
+        toast.warning(summary.message, 'Batch Approve');
+      }
       // Refresh content data to reflect approval
       await fetchContentData();
     } catch {
-      // Failed silently — user can try again
+      toast.error('Failed to approve items.', 'Error');
     } finally {
       setBatchApproving(false);
     }
@@ -688,14 +764,139 @@ export function LTICourseView(): React.ReactElement {
 
     setBatchWritingBack(true);
     try {
-      await client.post(`${apiPrefix}/content/batch-writeback`, { course_id: sessionCourseId });
+      const res = await client.post<BatchWritebackResponse>(`${apiPrefix}/content/batch-writeback`, { course_id: sessionCourseId });
+      const summary = summarizeBatchOutcome({
+        verb: 'Wrote back',
+        succeededCount: res.data.written_count,
+        buckets: [
+          { label: 'stale', count: res.data.stale_count ?? 0 },
+          { label: 'failed', count: res.data.failed_count ?? 0 },
+          { label: 'skipped', count: res.data.skipped_count ?? 0 },
+        ],
+        errors: res.data.errors ?? [],
+      });
+      if (summary.status === 'success') {
+        toast.success(summary.message, 'Write Back Complete');
+      } else {
+        toast.warning(summary.message, 'Write Back Complete');
+      }
       // Refresh content data to reflect writeback
       await fetchContentData();
     } catch {
-      // Failed silently — user can try again
+      toast.error('Failed to write back content.', 'Error');
     } finally {
       setBatchWritingBack(false);
     }
+  };
+
+  // Per-row remediate for the Content tab. The Files tab's own
+  // handleRemediateFile() posts to the same endpoint but relies on the
+  // scan-status polling loop to eventually notice completion and clear
+  // its own spinner — there's no immediate refresh, which works there
+  // because that tab's own view mostly reflects live Canvas file state
+  // anyway. The Content tab renders DB-backed compliance/remediation
+  // state (mergedItems), which the polling loop never refreshes, so this
+  // is a separate handler rather than a reuse of handleRemediateFile:
+  // POST /education/remediate/{scan_id} is synchronous (unlike the
+  // CloudJobQueue scan pipeline, c67cb9f) — it's done by the time the
+  // request resolves — so this clears its own loading state and calls
+  // fetchContentData() directly instead of waiting on polling.
+  const handleRemediateContentItem = async (scanId: string, providerFileId: string): Promise<void> => {
+    const client = clientRef.current;
+    if (!client) return;
+
+    setRemediatingFiles((prev) => new Set(prev).add(providerFileId));
+    try {
+      const res = await client.post(`/education/remediate/${scanId}`);
+      const fixed = res.data?.fixed_count ?? 0;
+      const manual = res.data?.manual_count ?? 0;
+      if (res.data?.success === false) {
+        toast.error(res.data?.message || 'Remediation failed.', 'Remediate');
+      } else if (fixed === 0 && manual === 0) {
+        toast.info('No issues to remediate.', 'Remediate');
+      } else {
+        const fixedPart = `Fixed ${fixed} issue${fixed !== 1 ? 's' : ''}`;
+        const manualPart = manual > 0 ? `, ${manual} still need${manual !== 1 ? '' : 's'} manual review` : '';
+        toast.success(`${fixedPart}${manualPart}.`, 'Remediate');
+      }
+      await fetchContentData();
+    } catch {
+      toast.error('Failed to remediate item.', 'Error');
+    } finally {
+      setRemediatingFiles((prev) => {
+        const next = new Set(prev);
+        next.delete(providerFileId);
+        return next;
+      });
+    }
+  };
+
+  // Remediate All for the Content tab — same client-side, no-batch-endpoint
+  // approach as CanvasContentPage's handleRemediateAll: sequential, since
+  // /education/remediate/{scan_id} does real remediation work synchronously
+  // in-request rather than queuing a background job. Doesn't delegate to
+  // handleRemediateContentItem (which refreshes after every single item) —
+  // fires the POST directly per item and refreshes once at the end.
+  const handleRemediateAllContent = async (): Promise<void> => {
+    const client = clientRef.current;
+    if (!client || remediableItems.length === 0) return;
+
+    const scannedCount = mergedItems.filter((item) => item.compliance_score !== null).length;
+    const skippedCount = scannedCount - remediableItems.length;
+    const total = remediableItems.length;
+
+    setRemediatingAll(true);
+    setRemediateAllProgress({ done: 0, total });
+    setRemediatingFiles((prev) => {
+      const next = new Set(prev);
+      remediableItems.forEach((item) => next.add(item.provider_file_id));
+      return next;
+    });
+
+    let succeeded = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    for (const [index, item] of remediableItems.entries()) {
+      try {
+        const res = await client.post(`/education/remediate/${item.scan_id}`);
+        if (res.data?.success === false) {
+          failed += 1;
+          errors.push(`${item.provider_file_id}: ${res.data?.message || 'remediation failed'}`);
+        } else {
+          succeeded += 1;
+        }
+      } catch {
+        failed += 1;
+        errors.push(`${item.provider_file_id}: request failed`);
+      } finally {
+        setRemediatingFiles((prev) => {
+          const next = new Set(prev);
+          next.delete(item.provider_file_id);
+          return next;
+        });
+        setRemediateAllProgress({ done: index + 1, total });
+      }
+    }
+
+    const summary = summarizeBatchOutcome({
+      verb: 'Remediated',
+      succeededCount: succeeded,
+      buckets: [
+        { label: 'skipped', count: skippedCount },
+        { label: 'failed', count: failed },
+      ],
+      errors,
+    });
+    if (summary.status === 'success') {
+      toast.success(summary.message, 'Remediate All');
+    } else {
+      toast.warning(summary.message, 'Remediate All');
+    }
+
+    await fetchContentData();
+    setRemediatingAll(false);
+    setRemediateAllProgress(null);
   };
 
   const handleOpenContentInAelira = (cloudFileId?: string): void => {
@@ -863,7 +1064,7 @@ export function LTICourseView(): React.ReactElement {
   );
 
   const renderContentTypeSummary = (): React.ReactElement | null => {
-    if (!contentData || contentData.by_type.length === 0) return null;
+    if (mergedByType.length === 0) return null;
 
     return (
       <div
@@ -896,7 +1097,7 @@ export function LTICourseView(): React.ReactElement {
             </tr>
           </thead>
           <tbody>
-            {contentData.by_type.map((typeInfo) => {
+            {mergedByType.map((typeInfo) => {
               const Icon = getContentTypeIcon(typeInfo.content_type);
               const badgeColor = getContentTypeBadgeColor(typeInfo.content_type);
               return (
@@ -945,7 +1146,7 @@ export function LTICourseView(): React.ReactElement {
   };
 
   const renderContentItemsTable = (): React.ReactElement | null => {
-    if (!contentData || contentData.items.length === 0) return null;
+    if (mergedItems.length === 0) return null;
 
     return (
       <div
@@ -968,7 +1169,7 @@ export function LTICourseView(): React.ReactElement {
                 Issues
               </th>
               <th scope="col" className="text-center px-4 py-3 text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--content-secondary)' }}>
-                Writeback
+                Status
               </th>
               <th scope="col" className="text-right px-4 py-3 text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--content-secondary)' }}>
                 Actions
@@ -976,14 +1177,15 @@ export function LTICourseView(): React.ReactElement {
             </tr>
           </thead>
           <tbody>
-            {contentData.items.map((item) => {
+            {mergedItems.map((item) => {
               const Icon = getContentTypeIcon(item.content_type);
               const badgeColor = getContentTypeBadgeColor(item.content_type);
-              const wb = getWritebackBadge(item.writeback_status);
+              const state = contentItemState(item);
+              const stateStyle = contentItemStateStyle(state.key);
 
               return (
                 <tr
-                  key={item.cloud_file_id}
+                  key={item.provider_file_id}
                   className="transition-colors"
                   style={{ borderBottom: '1px solid var(--border-primary)' }}
                 >
@@ -1041,28 +1243,55 @@ export function LTICourseView(): React.ReactElement {
                     </span>
                   </td>
 
-                  {/* Writeback status */}
+                  {/* Status — the visible state model: distinguishes
+                      "needs remediation" from "already remediated,
+                      pending review" from the final approved/written
+                      back/rejected states, instead of collapsing
+                      everything short of a writeback_status into a
+                      generic "Pending". */}
                   <td className="px-4 py-3 text-center">
                     <span
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
-                      style={{ backgroundColor: wb.bg, color: wb.color }}
+                      style={{ backgroundColor: stateStyle.bg, color: stateStyle.color }}
                     >
-                      {wb.label === 'Writing...' && <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />}
-                      {wb.label === 'Written Back' && <CheckCircle2 className="w-3 h-3" aria-hidden="true" />}
-                      {wb.label}
+                      {state.key === 'written_back' && <CheckCircle2 className="w-3 h-3" aria-hidden="true" />}
+                      {state.label}
                     </span>
                   </td>
 
                   {/* Actions */}
                   <td className="px-4 py-3">
-                    <div className="flex items-center justify-end">
-                      <button
-                        onClick={() => handleOpenContentInAelira(item.cloud_file_id)}
-                        className="px-3 py-2.5 rounded-lg text-xs font-medium transition-colors hover:opacity-90 min-h-[44px]"
-                        style={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-primary)', color: 'var(--content-primary)' }}
-                      >
-                        Open in Aelira<span className="sr-only"> (opens in new tab)</span>
-                      </button>
+                    <div className="flex items-center justify-end gap-2">
+                      {isRemediable(item) && (
+                          <button
+                            onClick={() =>
+                              handleRemediateContentItem(item.scan_id as string, item.provider_file_id)
+                            }
+                            disabled={remediatingFiles.has(item.provider_file_id)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 hover:opacity-90 min-h-[44px]"
+                            style={{ backgroundColor: 'var(--accent-primary)', color: 'white' }}
+                          >
+                            {remediatingFiles.has(item.provider_file_id) ? (
+                              <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                            ) : (
+                              <Wrench className="w-3 h-3" aria-hidden="true" />
+                            )}
+                            Remediate
+                          </button>
+                        )}
+                      {item.cloud_file_id ? (
+                        <button
+                          onClick={() => handleOpenContentInAelira(item.cloud_file_id ?? undefined)}
+                          className="px-3 py-2.5 rounded-lg text-xs font-medium transition-colors hover:opacity-90 min-h-[44px]"
+                          style={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-primary)', color: 'var(--content-primary)' }}
+                        >
+                          Open in Aelira<span className="sr-only"> (opens in new tab)</span>
+                        </button>
+                      ) : (
+                        <span className="text-xs" style={{ color: 'var(--content-secondary)' }}>
+                          Not yet scanned
+                        </span>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -1271,7 +1500,7 @@ export function LTICourseView(): React.ReactElement {
             }`}
             style={activeTab === 'content' ? { backgroundColor: 'var(--accent-primary)' } : { color: 'var(--content-secondary)' }}
           >
-            Pages & Assignments ({contentStats.total})
+            Content ({contentStats.total})
           </button>
           <button
             onClick={() => setActiveTab('files')}
@@ -1331,7 +1560,7 @@ export function LTICourseView(): React.ReactElement {
             )}
 
             {/* Content empty state */}
-            {!contentLoading && contentData && contentData.items.length === 0 && !contentError && (
+            {!contentLoading && contentData && mergedItems.length === 0 && !contentError && (
               <div
                 className="rounded-xl p-12 text-center"
                 style={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--card-border)' }}
@@ -1367,7 +1596,7 @@ export function LTICourseView(): React.ReactElement {
             )}
 
             {/* Content data */}
-            {contentData && contentData.items.length > 0 && (
+            {mergedItems.length > 0 && (
               <>
                 {/* Content summary stats */}
                 {renderContentStats()}
@@ -1386,6 +1615,21 @@ export function LTICourseView(): React.ReactElement {
                       <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
                     )}
                     Approve All
+                  </button>
+                  <button
+                    onClick={handleRemediateAllContent}
+                    disabled={remediatingAll || remediableItems.length === 0}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 min-h-[44px]"
+                    style={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-primary)', color: 'var(--content-primary)' }}
+                  >
+                    {remediatingAll ? (
+                      <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Wrench className="w-4 h-4" aria-hidden="true" />
+                    )}
+                    {remediatingAll && remediateAllProgress
+                      ? `Remediating ${remediateAllProgress.done} of ${remediateAllProgress.total}…`
+                      : 'Remediate All'}
                   </button>
                   <button
                     onClick={handleBatchWriteback}
