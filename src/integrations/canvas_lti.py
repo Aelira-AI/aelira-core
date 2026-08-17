@@ -420,23 +420,29 @@ class CanvasLTIService:
         custom_params = launch_data.get(
             "https://purl.imsglobal.org/spec/lti/claim/custom", {}
         )
-        # Prefer Canvas-specific numeric course ID from custom params.
-        # Filter out unsubstituted Canvas variables (e.g. "$Canvas.course.id"
-        # which appears in account-level launches with no course context).
-        # Only fall back to context ID when the context is actually a course
-        # — account-level launches have context type "Account" with a hash ID.
+        # The ONLY valid source for the numeric Canvas course id is the
+        # canvas_course_id custom variable (custom claim). Filter out
+        # unsubstituted Canvas variables (e.g. "$Canvas.course.id", which
+        # appears in account-level launches with no course context, or when
+        # the developer key's custom_fields haven't propagated to this
+        # placement).
+        #
+        # A prior version of this function fell back to the LTI `context`
+        # claim's `id` when canvas_course_id wasn't substituted. That's
+        # wrong: Canvas documents context.id as an OPAQUE per-deployment
+        # identifier for the launch context, NOT the numeric Canvas course
+        # id used by the Canvas REST API and by this app's own
+        # CloudFile.provider_parent_id matching (canvas_content_routes.py).
+        # Using it as course_id produced a plausible-looking but
+        # functionally wrong id — every downstream lookup against
+        # provider_parent_id then silently matches nothing, which looks
+        # indistinguishable from "no course" to the end user (diagnosed
+        # 2026-08-18 while chasing why launches still landed course-less
+        # despite the developer key's custom field being configured).
         raw_course_id = str(custom_params.get("canvas_course_id", ""))
         if raw_course_id.startswith("$"):
             raw_course_id = ""
-        context_types = context.get("type", [])
-        is_course_context = (
-            "http://purl.imsglobal.org/vocab/lis/v2/course#702CourseOffering"
-            in context_types
-            or "CourseOffering" in str(context_types)
-        )
-        course_id = raw_course_id or (
-            context.get("id", "") if is_course_context else ""
-        )
+        course_id = raw_course_id
         course_name = context.get("title", "")
 
         # Extract roles

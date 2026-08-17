@@ -478,6 +478,200 @@ class TestCanvasContentScanner:
 
 
 # ---------------------------------------------------------------------------
+# TestCanvasContentScannerFiles — Files section is course content too
+# ---------------------------------------------------------------------------
+
+
+def _make_file_info(**overrides):
+    from src.integrations.canvas import CanvasFileInfo
+
+    now = datetime.now(timezone.utc)
+    defaults = dict(
+        id="file-1",
+        display_name="Syllabus.pdf",
+        filename="Syllabus.pdf",
+        content_type="application/pdf",
+        size=123456,
+        url="https://canvas.example.edu/files/file-1/download",
+        created_at=now,
+        updated_at=now,
+    )
+    defaults.update(overrides)
+    return CanvasFileInfo(**defaults)
+
+
+class TestCanvasContentScannerFiles:
+    """Files are enumerated, upserted, and queued for scan alongside the
+    5 HTML content types — via a different pipeline (CloudJobQueue), since
+    files have no HTML content_body for axe-core to run on directly."""
+
+    def _scanner_with_empty_html_types(self, canvas_client, db, **kwargs):
+        from src.education.canvas_content_scanner import CanvasContentScanner
+
+        canvas_client.list_course_pages = AsyncMock(return_value=[])
+        canvas_client.list_course_assignments = AsyncMock(return_value=[])
+        canvas_client.list_course_announcements = AsyncMock(return_value=[])
+        canvas_client.list_course_quizzes = AsyncMock(return_value=[])
+        canvas_client.list_course_discussions = AsyncMock(return_value=[])
+
+        return CanvasContentScanner(
+            canvas_client=canvas_client,
+            db=db,
+            department_id=kwargs.get("department_id", str(uuid.uuid4())),
+            credential_id=kwargs.get("credential_id", str(uuid.uuid4())),
+        )
+
+    @pytest.mark.asyncio
+    async def test_files_enumerated_and_upserted_alongside_pages(self):
+        canvas_client = AsyncMock()
+        db = MagicMock()
+
+        page_info_mod = __import__(
+            "src.integrations.canvas.content_models", fromlist=["CanvasPageInfo"]
+        )
+        now = datetime.now(timezone.utc)
+        page = page_info_mod.CanvasPageInfo(
+            page_id="1",
+            title="Page 1",
+            url_slug="page-1",
+            body="<p>Page body</p>",
+            published=True,
+            updated_at=now,
+        )
+        canvas_client.list_course_pages = AsyncMock(return_value=[page])
+        canvas_client.get_page = AsyncMock(return_value=page)
+        canvas_client.list_course_assignments = AsyncMock(return_value=[])
+        canvas_client.list_course_announcements = AsyncMock(return_value=[])
+        canvas_client.list_course_quizzes = AsyncMock(return_value=[])
+        canvas_client.list_course_discussions = AsyncMock(return_value=[])
+        canvas_client.list_course_files = AsyncMock(
+            return_value=[_make_file_info(id="file-1", filename="Syllabus.pdf")]
+        )
+
+        mock_query = MagicMock()
+        mock_query.filter.return_value.first.return_value = None
+        db.query.return_value = mock_query
+
+        from src.education.canvas_content_scanner import CanvasContentScanner
+
+        scanner = CanvasContentScanner(
+            canvas_client=canvas_client,
+            db=db,
+            department_id=str(uuid.uuid4()),
+            credential_id=str(uuid.uuid4()),
+        )
+
+        result = await scanner.scan_course_content("COURSE123")
+
+        canvas_client.list_course_files.assert_awaited_once_with("COURSE123")
+        assert result["counts"]["file"] == 1
+        assert result["counts"]["page"] == 1
+        assert len(result["file_scan_jobs"]) == 1
+        # Page still goes through the normal cloud_file_ids list — files
+        # must NOT be mixed into it (that list drives the axe-core-only
+        # background task loop in the route handler).
+        assert (
+            result["file_scan_jobs"][0]["cloud_file_id"] not in result["cloud_file_ids"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_new_file_upserted_with_content_source_file(self):
+        canvas_client = AsyncMock()
+        db = MagicMock()
+        scanner = self._scanner_with_empty_html_types(canvas_client, db)
+        canvas_client.list_course_files = AsyncMock(
+            return_value=[_make_file_info(id="file-1", filename="Notes.docx")]
+        )
+
+        mock_query = MagicMock()
+        mock_query.filter.return_value.first.return_value = None
+        db.query.return_value = mock_query
+
+        result = await scanner.scan_course_content("COURSE123")
+
+        # One CloudFile add + one CloudJobQueue add
+        added = [call.args[0] for call in db.add.call_args_list]
+        cloud_files = [obj for obj in added if type(obj).__name__ == "CloudFile"]
+        jobs = [obj for obj in added if type(obj).__name__ == "CloudJobQueue"]
+        assert len(cloud_files) == 1
+        assert cloud_files[0].content_source == "file"
+        assert cloud_files[0].file_type == "docx"
+        assert cloud_files[0].mime_type == "application/pdf"
+        assert cloud_files[0].provider_parent_id == "COURSE123"
+        assert len(jobs) == 1
+        assert jobs[0].job_type == "scan"
+        assert jobs[0].cloud_file_id == cloud_files[0].id
+        # The job's id must be the same one handed back in file_scan_jobs —
+        # that's what the route handler fires _canvas_scan_file_task with.
+        assert len(result["file_scan_jobs"]) == 1
+        assert result["file_scan_jobs"][0]["job_id"] == jobs[0].id
+        assert result["file_scan_jobs"][0]["cloud_file_id"] == cloud_files[0].id
+
+    @pytest.mark.asyncio
+    async def test_rescan_upserts_existing_file_row_no_duplicate(self):
+        canvas_client = AsyncMock()
+        db = MagicMock()
+        scanner = self._scanner_with_empty_html_types(canvas_client, db)
+        canvas_client.list_course_files = AsyncMock(
+            return_value=[
+                _make_file_info(
+                    id="file-1", display_name="Notes.docx", filename="Notes.docx"
+                )
+            ]
+        )
+
+        existing_file = MagicMock()
+        existing_file.id = "existing-cf-id"
+        mock_query = MagicMock()
+        mock_query.filter.return_value.first.return_value = existing_file
+        db.query.return_value = mock_query
+
+        result = await scanner.scan_course_content("COURSE123")
+
+        # No new CloudFile created for the file — only the CloudJobQueue row
+        added = [call.args[0] for call in db.add.call_args_list]
+        cloud_files = [obj for obj in added if type(obj).__name__ == "CloudFile"]
+        jobs = [obj for obj in added if type(obj).__name__ == "CloudJobQueue"]
+        assert len(cloud_files) == 0
+        assert existing_file.content_source == "file"
+        assert existing_file.file_name == "Notes.docx"
+        assert len(jobs) == 1
+        assert jobs[0].cloud_file_id == "existing-cf-id"
+        assert result["file_scan_jobs"] == [
+            {"job_id": jobs[0].id, "cloud_file_id": "existing-cf-id"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_files_scan_job_queued_via_cloud_job_queue_not_background_task(self):
+        # Regression guard for the core design decision: files must NOT
+        # flow through cloud_file_ids (the axe-core background-task list) —
+        # they'd silently no-op ("No content body") in scan_content_item.
+        canvas_client = AsyncMock()
+        db = MagicMock()
+        scanner = self._scanner_with_empty_html_types(canvas_client, db)
+        canvas_client.list_course_files = AsyncMock(
+            return_value=[_make_file_info(id="file-1")]
+        )
+        mock_query = MagicMock()
+        mock_query.filter.return_value.first.return_value = None
+        db.query.return_value = mock_query
+
+        result = await scanner.scan_course_content("COURSE123")
+
+        assert result["cloud_file_ids"] == []
+        assert len(result["file_scan_jobs"]) == 1
+        jobs = [
+            call.args[0]
+            for call in db.add.call_args_list
+            if type(call.args[0]).__name__ == "CloudJobQueue"
+        ]
+        assert len(jobs) == 1
+        assert jobs[0].provider == "canvas"
+        assert jobs[0].provider_file_id == "file-1"
+        assert jobs[0].status == "pending"
+
+
+# ---------------------------------------------------------------------------
 # TestStaleDetection
 # ---------------------------------------------------------------------------
 

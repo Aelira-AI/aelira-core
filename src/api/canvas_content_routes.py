@@ -49,6 +49,7 @@ from ..education.canvas_content_scanner import CanvasContentScanner
 from ..integrations.canvas.content_models import CanvasContentType
 from ..middleware.quota import require_feature
 from .canvas_routes import _get_canvas_client
+from .canvas_scan_routes import _canvas_scan_file_task
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +99,17 @@ class ContentItemStatus(BaseModel):
     """Status of a single content item."""
 
     cloud_file_id: str
+    provider_file_id: Optional[str] = None
     content_type: Optional[str] = None
     title: str
     compliance_score: Optional[float] = None
     issue_count: int = 0
     writeback_status: Optional[str] = None
     has_remediated_version: bool = False
+    # The scan whose results are current for this item — the client needs
+    # this to call POST /education/remediate/{scan_id} for a per-item
+    # remediate action (the same endpoint the LTI Files tab already uses).
+    scan_id: Optional[str] = None
     last_scanned_at: Optional[str] = None
 
 
@@ -151,6 +157,22 @@ class CourseOverviewResponse(BaseModel):
     courses: List[CourseOverviewItem]
 
 
+class ContentIssueDetail(BaseModel):
+    """A single real accessibility finding from the last scan's stored
+    axe-core violation — every field here is read straight off
+    ScanResult.issues, never generated. No per-issue fixed/remaining
+    status: that attribution isn't tracked anywhere for Canvas content
+    (see get_content_diff's comment) — issues_fixed/issues_remaining on
+    ContentDiffResponse are aggregate-only."""
+
+    id: str
+    impact: Optional[str] = None
+    description: Optional[str] = None
+    help: Optional[str] = None
+    wcag_tags: List[str] = []
+    nodes_affected: int = 0
+
+
 class ContentDiffResponse(BaseModel):
     """Original vs remediated HTML for review."""
 
@@ -161,6 +183,11 @@ class ContentDiffResponse(BaseModel):
     remediated_html: Optional[str] = None
     issues_fixed: int = 0
     issues_remaining: int = 0
+    # Real findings from the last scan (axe-core violations). NOT split
+    # into fixed/remaining — that attribution doesn't exist in the data;
+    # this is the full pre-remediation issue set. Empty for older scans
+    # that predate this field, or if the scan stored no issues.
+    issues: List[ContentIssueDetail] = []
 
 
 class BatchApproveRequest(BaseModel):
@@ -191,6 +218,11 @@ class BatchWritebackResponse(BaseModel):
     written_count: int
     failed_count: int = 0
     stale_count: int = 0
+    # Approved file-type rows (has_remediated_version, no remediated_body —
+    # there's no HTML to write back) that couldn't even be attempted: file
+    # write-back to Canvas isn't wired yet. Counted honestly here rather
+    # than silently dropped from the response.
+    skipped_count: int = 0
     errors: List[str] = []
 
 
@@ -273,6 +305,22 @@ def _get_cloud_file_or_404(
     return cloud_file
 
 
+def _format_scan_issue(raw: Dict[str, Any]) -> ContentIssueDetail:
+    """Convert one raw axe-core violation dict (ScanResult.issues element)
+    into a ContentIssueDetail. Every field is read directly off the raw
+    violation — nothing here is generated or guessed. `id` falls back to
+    an empty string rather than being fabricated if axe-core's own shape
+    is ever missing it (defensive only, not expected in practice)."""
+    return ContentIssueDetail(
+        id=raw.get("id", ""),
+        impact=raw.get("impact"),
+        description=raw.get("description"),
+        help=raw.get("help"),
+        wcag_tags=[t for t in raw.get("tags", []) if isinstance(t, str)],
+        nodes_affected=len(raw.get("nodes", []) or []),
+    )
+
+
 # =============================================================================
 # 1. POST /canvas/content/scan — scan all content types
 # =============================================================================
@@ -321,9 +369,17 @@ async def scan_course_content(
 
             counts = result.get("counts", {})
             cloud_file_ids = result.get("cloud_file_ids", [])
+            # The scanner already created a CloudJobQueue row for each file
+            # (it needs the file-download pipeline, not the axe-core
+            # background task below) — but a CloudJobQueue row is a record
+            # only. Nothing in this app polls the queue (JobProcessor is
+            # never started), so the row sits PENDING forever unless a
+            # background task is actually fired for it here, exactly like
+            # canvas_scan_routes.py's single-file scan endpoint does.
+            file_scan_jobs = result.get("file_scan_jobs", [])
             skipped = counts.get("skipped_empty", 0)
 
-            # Queue background scan jobs for each discovered content item
+            # Queue background scan jobs for each discovered HTML content item
             for cf_id in cloud_file_ids:
                 background_tasks.add_task(
                     _content_scan_task,
@@ -333,11 +389,23 @@ async def scan_course_content(
                     scan_options=scan_options,
                 )
 
+            # Fire the actual background task for each file's CloudJobQueue
+            # row — mirrors canvas_scan_routes.py's single-file scan
+            # endpoint's call signature exactly.
+            for job in file_scan_jobs:
+                background_tasks.add_task(
+                    _canvas_scan_file_task,
+                    job_id=job["job_id"],
+                    cloud_file_id=job["cloud_file_id"],
+                    credential_id=credential.id,
+                )
+
             by_type = {k: v for k, v in counts.items() if k != "skipped_empty"}
+            total_items = len(cloud_file_ids) + len(file_scan_jobs)
 
             return CanvasContentScanResponse(
-                total_items=len(cloud_file_ids),
-                jobs_queued=len(cloud_file_ids),
+                total_items=total_items,
+                jobs_queued=total_items,
                 skipped=skipped,
                 by_type=by_type,
             )
@@ -539,6 +607,7 @@ async def get_course_content_status(
     items = [
         ContentItemStatus(
             cloud_file_id=cf.id,
+            provider_file_id=cf.provider_file_id,
             content_type=cf.content_source,
             title=cf.file_name,
             compliance_score=cf.last_compliance_score,
@@ -548,6 +617,7 @@ async def get_course_content_status(
             last_scanned_at=(
                 cf.last_scanned_at.isoformat() if cf.last_scanned_at else None
             ),
+            scan_id=cf.last_scan_id,
         )
         for cf in cloud_files
     ]
@@ -761,15 +831,23 @@ async def get_content_diff(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
 
-    # Get issue counts from latest scan
+    # Get issue counts + the real issue list from the latest scan.
+    # issues_fixed/issues_remaining stay aggregate-only (an existing
+    # optimistic heuristic — a remediated item counts as "all fixed"; no
+    # per-issue fixed/remaining attribution is tracked anywhere for
+    # Canvas content). `issues` is the real, unmodified pre-remediation
+    # violation set from the scan — every field a client renders from it
+    # must trace back to this list, never to a generated description.
     issues_fixed = 0
     issues_remaining = 0
+    issues: List[ContentIssueDetail] = []
     if cf.last_scan_id:
         scan_result = (
             db.query(ScanResult).filter(ScanResult.scan_id == cf.last_scan_id).first()
         )
         if scan_result and scan_result.issues:
             issues_remaining = len(scan_result.issues)
+            issues = [_format_scan_issue(raw) for raw in scan_result.issues]
             # If we have a remediated version, some issues may be fixed
             if cf.remediated_body:
                 issues_fixed = issues_remaining  # Optimistic: all issues addressed
@@ -783,6 +861,7 @@ async def get_content_diff(
         remediated_html=cf.remediated_body,
         issues_fixed=issues_fixed,
         issues_remaining=issues_remaining,
+        issues=issues,
     )
 
 
@@ -808,7 +887,11 @@ async def approve_content(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
 
-    if not cf.remediated_body:
+    # File-type rows are remediated as FILES (has_remediated_version set by
+    # POST /education/remediate/{scan_id}) — remediated_body stays NULL for
+    # them permanently, since they're real documents, not HTML fragments.
+    # Checking remediated_body alone made every file unapprovable.
+    if not cf.remediated_body and not cf.has_remediated_version:
         raise HTTPException(status_code=400, detail="No remediated content to approve")
 
     cf.writeback_status = "approved"
@@ -903,7 +986,9 @@ async def batch_approve_content(
     errors: List[str] = []
 
     for cf in cloud_files:
-        if not cf.remediated_body:
+        # See approve_content's comment above — files carry
+        # has_remediated_version instead of remediated_body.
+        if not cf.remediated_body and not cf.has_remediated_version:
             skipped += 1
             errors.append(f"{cf.id}: no remediated content")
             continue
@@ -952,6 +1037,19 @@ async def writeback_content(
     )
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+
+    # File-type rows have no working write-back-to-Canvas path yet (the
+    # only candidate mechanism, CloudJobType.UPLOAD, lives in the dormant
+    # JobProcessor queue — see c67cb9f). scanner.write_back_content()
+    # would return a technically-true but confusing "No remediated body"
+    # for a file that WAS remediated (just not as HTML) — give an honest,
+    # specific reason instead of letting that ambiguous error surface.
+    if cf.content_source == "file":
+        return WritebackResponse(
+            success=False,
+            stale=False,
+            error="File write-back to Canvas isn't wired up yet — coming soon.",
+        )
 
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)
@@ -1015,12 +1113,47 @@ async def batch_writeback_content(
         .all()
     )
 
-    if not approved_files:
+    # Approved file-type rows (has_remediated_version, remediated_body
+    # NULL) are excluded from the query above by construction — they'd
+    # otherwise vanish from this response with no acknowledgment at all,
+    # the same silent-skip the client eligibility bug produced for approve.
+    # There's no working write-back-to-Canvas path for files yet (see
+    # writeback_content's comment above), so report them honestly as
+    # skipped rather than silently dropping them.
+    approved_file_rows = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.provider == CloudProvider.CANVAS.value,
+            CloudFile.provider_parent_id == request.course_id,
+            CloudFile.department_id == auth_department_id,
+            CloudFile.writeback_status == "approved",
+            CloudFile.content_source == "file",
+        )
+        .all()
+    )
+    skip_errors = [
+        f"{cf.id}: file write-back to Canvas isn't wired up yet — coming soon"
+        for cf in approved_file_rows
+    ]
+
+    if not approved_files and not approved_file_rows:
         return BatchWritebackResponse(
             written_count=0,
             failed_count=0,
             stale_count=0,
+            skipped_count=0,
             errors=["No approved items found for this course"],
+        )
+
+    if not approved_files:
+        # Only file rows were approved — none of them can be written back
+        # yet, so there's nothing to hand to the Canvas client at all.
+        return BatchWritebackResponse(
+            written_count=0,
+            failed_count=0,
+            stale_count=0,
+            skipped_count=len(approved_file_rows),
+            errors=skip_errors,
         )
 
     try:
@@ -1036,7 +1169,7 @@ async def batch_writeback_content(
             written = 0
             failed = 0
             stale = 0
-            errors: List[str] = []
+            errors: List[str] = list(skip_errors)
 
             for cf in approved_files:
                 result = await scanner.write_back_content(cf, approved_by=user_id)
@@ -1053,6 +1186,7 @@ async def batch_writeback_content(
                 written_count=written,
                 failed_count=failed,
                 stale_count=stale,
+                skipped_count=len(approved_file_rows),
                 errors=errors,
             )
         finally:

@@ -177,6 +177,24 @@ def handle_lti_launch(
     # --- Mint access token ---
     jwt_service = JWTService()
     course_id = launch_data.course_id or ""
+
+    # If extract_launch_data() couldn't resolve a course id (custom params
+    # not sent, or the context claim wasn't recognized as a course), try any
+    # raw custom-claim keys that carry a course/context id before giving up.
+    # Resolved here — before the token/code are minted — so the JWT claim,
+    # the stored one-time code payload, and the redirect URL all agree.
+    if not course_id:
+        for key in (
+            "canvas_course_id",
+            "custom_canvas_course_id",
+            "custom_course_id",
+            "context_id",
+        ):
+            candidate = str(launch_data.custom_params.get(key, "") or "")
+            if candidate and not candidate.startswith("$"):
+                course_id = candidate
+                break
+
     token, _jti, _exp = jwt_service.create_access_token(
         user_id=str(user.id),
         department_id=department_id,
@@ -210,19 +228,26 @@ def handle_lti_launch(
 
     # Route based on placement:
     # - account_navigation → admin overview (regardless of course context)
-    # - course_navigation (or any other) → course-specific view
+    # - course_navigation (or any other) → hop through /lti/go, which
+    #   exchanges the code (setting the aelira_access cookie) and then
+    #   hard-navigates into the main dashboard's course content page —
+    #   the real destination requested for "open in aelira" launches.
+    #   /lti/go itself falls back to /lti/overview if course_id ends up
+    #   empty, so a course-less launch still can't produce a bare,
+    #   unroutable "/lti/course/" URL.
     if launch_data.placement == "account_navigation":
         redirect_url = f"{dashboard_url}/lti/overview?code={code}"
+    elif course_id:
+        redirect_url = f"{dashboard_url}/lti/go?code={code}&course={course_id}"
     else:
-        redirect_url = f"{dashboard_url}/lti/course/{course_id}?code={code}"
+        redirect_url = f"{dashboard_url}/lti/go?code={code}"
 
+    # Placement and course_id live in the message string deliberately: the
+    # container's stdout formatter drops `extra` fields, which made launches
+    # undiagnosable from logs (cost an hour on 2026-08-18).
     logger.info(
-        "LTI launch handled",
-        extra={
-            "user_id": user.id,
-            "course_id": course_id,
-            "department_id": department_id,
-        },
+        f"LTI launch handled placement={launch_data.placement or 'NONE'} "
+        f"course_id={course_id or 'EMPTY'} user={user.id}"
     )
     return redirect_url
 
