@@ -33,8 +33,9 @@ async def test_remediate_endpoint_fires_the_background_task():
     background_tasks = MagicMock()
     request = MagicMock(file_id="f-1", course_id="101", department_id="d1")
 
-    with patch("src.api.canvas_routes.require_feature", new=AsyncMock()), patch(
-        "src.api.canvas_routes.verify_department_access"
+    with (
+        patch("src.api.canvas_routes.require_feature", new=AsyncMock()),
+        patch("src.api.canvas_routes.verify_department_access"),
     ):
         response = await remediate_canvas_file(
             request=request,
@@ -63,9 +64,12 @@ async def test_a_failed_scan_fails_its_remediation_instead_of_stranding_it():
     def fake_db():
         yield db
 
-    with patch("src.db.database.get_db", fake_db), patch(
-        "src.jobs.cloud_scan_job.handle_scan_job",
-        new=AsyncMock(side_effect=RuntimeError("download refused")),
+    with (
+        patch("src.db.database.get_db", fake_db),
+        patch(
+            "src.jobs.cloud_scan_job.handle_scan_job",
+            new=AsyncMock(side_effect=RuntimeError("download refused")),
+        ),
     ):
         await _canvas_scan_then_remediate_task("scan-1", "rem-1")
 
