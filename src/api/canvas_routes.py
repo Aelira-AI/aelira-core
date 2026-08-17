@@ -14,7 +14,7 @@ import secrets
 import json
 import base64
 from typing import Dict, Any, Optional, List, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -459,6 +459,106 @@ async def list_canvas_course_folders(
 # =============================================================================
 
 
+async def _canvas_scan_then_remediate_task(
+    scan_job_id: str, remediation_job_id: str
+) -> None:
+    """Run the queued scan, then the queued remediation, in that order.
+
+    Job rows are records, not work: nothing polls the queue, so whoever
+    creates a row has to run it. The scan runs first because remediation
+    reads the scan's stored issues, and a failed scan fails its remediation
+    rather than leaving it pending forever.
+    """
+    from ..db.database import get_db as _get_db_ctx
+    from ..jobs.cloud_scan_job import handle_scan_job
+    from ..jobs.remediation_job import handle_remediation_job
+
+    token_manager = OAuthTokenManager()
+
+    with _get_db_ctx() as db:
+        scan_job = (
+            db.query(CloudJobQueue).filter(CloudJobQueue.id == scan_job_id).first()
+        )
+        remediation_job = (
+            db.query(CloudJobQueue)
+            .filter(CloudJobQueue.id == remediation_job_id)
+            .first()
+        )
+        if not scan_job or not remediation_job:
+            logger.error(
+                f"Canvas remediation jobs not found: scan={scan_job_id}, "
+                f"remediate={remediation_job_id}"
+            )
+            return
+
+        try:
+            scan_job.status = CloudJobStatus.PROCESSING.value
+            scan_job.started_at = datetime.now(timezone.utc)
+            scan_job.progress = 10
+            scan_job.progress_message = "Downloading file from Canvas..."
+            db.commit()
+
+            scan_result = await handle_scan_job(scan_job, db, token_manager)
+
+            scan_job.status = CloudJobStatus.COMPLETED.value
+            scan_job.progress = 100
+            scan_job.progress_message = "Scan complete"
+            scan_job.result_data = scan_result
+            scan_job.completed_at = datetime.now(timezone.utc)
+            db.commit()
+        except Exception as e:
+            logger.error(f"Canvas scan failed: job={scan_job_id}, error={e}")
+            now = datetime.now(timezone.utc)
+            scan_job.status = CloudJobStatus.FAILED.value
+            scan_job.progress = 100
+            scan_job.progress_message = f"Scan failed: {e}"
+            scan_job.error_message = str(e)
+            scan_job.completed_at = now
+            remediation_job.status = CloudJobStatus.FAILED.value
+            remediation_job.progress = 100
+            remediation_job.progress_message = "Not run: the scan it depends on failed"
+            remediation_job.error_message = str(e)
+            remediation_job.completed_at = now
+            db.commit()
+            return
+
+        try:
+            # handle_remediation_job reads the scan id off the remediation
+            # job's own result_data, so the completed scan's id goes there.
+            remediation_job.status = CloudJobStatus.PROCESSING.value
+            remediation_job.started_at = datetime.now(timezone.utc)
+            remediation_job.progress = 10
+            remediation_job.progress_message = "Remediating..."
+            remediation_job.result_data = {
+                "scan_id": (scan_result or {}).get("scan_id")
+            }
+            db.commit()
+
+            result = await handle_remediation_job(remediation_job, db, token_manager)
+
+            remediation_job.status = CloudJobStatus.COMPLETED.value
+            remediation_job.progress = 100
+            remediation_job.progress_message = "Remediation complete"
+            remediation_job.result_data = result
+            remediation_job.completed_at = datetime.now(timezone.utc)
+            db.commit()
+
+            logger.info(
+                f"Canvas remediation complete: job={remediation_job_id}, "
+                f"fixed={result.get('fixed_count')}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Canvas remediation failed: job={remediation_job_id}, error={e}"
+            )
+            remediation_job.status = CloudJobStatus.FAILED.value
+            remediation_job.progress = 100
+            remediation_job.progress_message = f"Remediation failed: {e}"
+            remediation_job.error_message = str(e)
+            remediation_job.completed_at = datetime.now(timezone.utc)
+            db.commit()
+
+
 @router.post("/remediate")
 async def remediate_canvas_file(
     request: CanvasRemediateRequest,
@@ -557,15 +657,25 @@ async def remediate_canvas_file(
 
         db.commit()
 
+        # The queue has no processor: fire the work that satisfies the rows
+        # we just wrote, or this endpoint reports success for nothing.
+        background_tasks.add_task(
+            _canvas_scan_then_remediate_task, scan_job_id, remediation_job_id
+        )
+
         logger.info(
-            f"Queued Canvas remediation jobs for file {request.file_id}: scan={scan_job_id}, remediate={remediation_job_id}"
+            f"Started Canvas remediation for file {request.file_id}: scan={scan_job_id}, remediate={remediation_job_id}"
         )
 
         return CanvasRemediateResponse(
             success=True,
             scan_id=None,  # Will be created by scan job
             job_id=remediation_job_id,
-            message="Remediation job queued. File will be downloaded, scanned, and remediated.",
+            message=(
+                "Remediation started. The file is downloaded, scanned, and "
+                "remediated; the remediated copy is not written back to "
+                "Canvas."
+            ),
         )
 
     except Exception as e:
