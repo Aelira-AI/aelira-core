@@ -106,6 +106,10 @@ class ContentItemStatus(BaseModel):
     issue_count: int = 0
     writeback_status: Optional[str] = None
     has_remediated_version: bool = False
+    # The scan whose results are current for this item — the client needs
+    # this to call POST /education/remediate/{scan_id} for a per-item
+    # remediate action (the same endpoint the LTI Files tab already uses).
+    scan_id: Optional[str] = None
     last_scanned_at: Optional[str] = None
 
 
@@ -571,6 +575,7 @@ async def get_course_content_status(
             last_scanned_at=(
                 cf.last_scanned_at.isoformat() if cf.last_scanned_at else None
             ),
+            scan_id=cf.last_scan_id,
         )
         for cf in cloud_files
     ]
