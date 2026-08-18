@@ -18,24 +18,13 @@ from sqlalchemy.orm import sessionmaker
 # here what is broken.
 KNOWN_BROKEN = {
     "tests/test_brightspace_api_auth.py::TestBrightspaceDepartmentIsolation"
-    "::test_status_uses_api_key_department": "Brightspace status route returns 404",
+    "::test_status_uses_api_key_department": "Brightspace status returns 404 to a mocked session; Brightspace is beta here and out of scope",
     "tests/test_brightspace_api_auth.py::TestBrightspaceStatusResponse"
-    "::test_status_response_format": "Brightspace status route returns 404",
+    "::test_status_response_format": "Brightspace status returns 404 to a mocked session; Brightspace is beta here and out of scope",
     "tests/test_brightspace_api_auth.py::TestQueryParamsIgnored"
-    "::test_query_param_department_id_ignored": "Brightspace status route returns 404",
-    "tests/test_canvas_lti.py::TestCanvasConnectionStatus::test_status_connected": "CanvasConnectionStatus rejects the response the route builds",
-    "tests/test_canvas_lti.py::TestCanvasOAuthCallback::test_callback_success": "OAuth callback returns 400 where the test expects 200",
+    "::test_query_param_department_id_ignored": "Brightspace status returns 404 to a mocked session; Brightspace is beta here and out of scope",
     "tests/test_image_alt_text.py::test_generate_alt_text_chart": "Alt-text generation returns no result without a configured model",
     "tests/test_image_alt_text.py::test_batch_generate_alt_text": "Alt-text generation returns no result without a configured model",
-    "tests/test_integration_status.py::TestUnifiedIntegrationStatus"
-    "::test_get_all_integration_status": "Unified integration status route returns 404",
-    "tests/test_integration_status.py::TestUnifiedIntegrationStatus"
-    "::test_integration_status_requires_auth": "Unified integration status route returns 404",
-    "tests/test_integration_status.py::TestConnectionHealthChecks"
-    "::test_health_check_all_integrations": "Health check route returns 404",
-    "tests/test_integration_status.py::TestIntegrationMetrics"
-    "::test_get_integration_metrics": "Metrics route returns 404",
-    "tests/test_integration_status.py::TestIntegrationMetrics::test_metrics_time_range": "Metrics route returns 404",
 }
 
 

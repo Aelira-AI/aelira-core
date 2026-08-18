@@ -12,6 +12,9 @@ Tests cover:
 - Disconnect flow
 """
 
+import base64
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -235,7 +238,9 @@ class TestCanvasConnectionStatus:
         """Test status when Canvas is connected."""
         # Mock database credential
         mock_credential = MagicMock()
-        mock_credential.metadata = mock_canvas_credentials["metadata"]
+        # The column is provider_metadata; this test set `metadata`, so the
+        # route read an auto-created mock and the response model rejected it.
+        mock_credential.provider_metadata = mock_canvas_credentials["metadata"]
         mock_credential.created_at = datetime.now(timezone.utc)
         mock_credential.id = mock_canvas_credentials["id"]
 
@@ -430,17 +435,33 @@ class TestCanvasOAuthCallback:
                 None
             )
 
-            response = client.get(
-                "/canvas/oauth/callback"
-                "?code=test-auth-code"
-                "&state=test-state"
-                "&canvas_instance_url=https://canvas.university.edu"
-                "&department_id=test-dept-456"
+            # The callback now carries its context inside the state
+            # parameter, base64-encoded, rather than as separate query
+            # parameters an attacker could set. Build a real one.
+            state = (
+                base64.urlsafe_b64encode(
+                    json.dumps(
+                        {
+                            "canvas_instance_url": "https://canvas.university.edu",
+                            "department_id": "test-dept-456",
+                        }
+                    ).encode()
+                )
+                .decode()
+                .rstrip("=")
             )
 
-            assert response.status_code == 200
-            data = response.json()
-            assert data["success"] is True
-            assert data["user_email"] == "instructor@university.edu"
+            response = client.get(
+                f"/canvas/oauth/callback?code=test-auth-code&state={state}",
+                follow_redirects=False,
+            )
+
+            # The callback hands the browser back to the dashboard rather
+            # than answering with JSON, so the contract under test is where
+            # it sends the user and what it tells them on arrival.
+            assert response.status_code in (302, 307)
+            location = response.headers["location"]
+            assert "/integrations?canvas=connected" in location
+            assert "instructor@university.edu" in location
         finally:
             app.dependency_overrides.pop(get_db_dependency, None)

@@ -335,10 +335,14 @@ async def canvas_connection_status(
     if not credential:
         return CanvasConnectionStatus(connected=False)
 
+    # provider_metadata is nullable, so a credential written by an older
+    # path can have none. Reading through it directly turned that into a
+    # 500 on a plain status check.
+    metadata = credential.provider_metadata or {}
     return CanvasConnectionStatus(
         connected=True,
-        canvas_instance_url=credential.provider_metadata.get("canvas_instance_url"),
-        user_email=credential.provider_metadata.get("user_email"),
+        canvas_instance_url=metadata.get("canvas_instance_url"),
+        user_email=metadata.get("user_email"),
         connected_at=credential.created_at,
         credential_id=credential.id,
     )
