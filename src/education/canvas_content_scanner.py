@@ -756,9 +756,20 @@ class CanvasContentScanner:
 
         before = _nodes_by_rule(original_issues)
         after = _nodes_by_rule(violations)
-        remaining = sum(count for rule, count in after.items() if rule in before)
-        introduced = sum(count for rule, count in after.items() if rule not in before)
-        fixed = max(0, sum(before.values()) - remaining)
+
+        # A rule that failed before and fails harder afterwards has had
+        # failures introduced as well as failures remaining. Counting the
+        # whole after-total as "remaining" would hide that: the honest
+        # split is what was already failing, and what is new on top.
+        remaining = 0
+        introduced = 0
+        fixed = 0
+        for rule, count in after.items():
+            was = before.get(rule, 0)
+            remaining += min(count, was)
+            introduced += max(0, count - was)
+        for rule, was in before.items():
+            fixed += max(0, was - after.get(rule, 0))
 
         scan = Scan(
             id=str(uuid.uuid4()),

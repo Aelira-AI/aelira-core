@@ -58,6 +58,15 @@ def _tables():
 def upgrade():
     tables = _tables()
 
+    # The scan-type enum never learned the values the models added. Without
+    # these, recording a Canvas content scan fails at insert with "invalid
+    # input value for enum scantype", so the columns above would have been
+    # necessary but not sufficient. ADD VALUE is safe inside a transaction
+    # on PostgreSQL 12 and later as long as the value is not used in the
+    # same transaction, which it is not.
+    for value in ("CANVAS_CONTENT", "MULTIMEDIA"):
+        op.execute(f"ALTER TYPE scantype ADD VALUE IF NOT EXISTS '{value}'")
+
     # Columns are added only where absent: installations that predate the
     # migrations and grew these by other means must not fail on upgrade.
     if "cloud_files" in tables:
@@ -131,6 +140,8 @@ def upgrade():
 
 
 def downgrade():
+    # Enum values are deliberately not removed: PostgreSQL cannot drop one,
+    # and rows may already reference them.
     tables = _tables()
 
     if "wcag_guidelines" in tables:

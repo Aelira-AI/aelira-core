@@ -78,3 +78,20 @@ async def test_a_failed_rescan_returns_none_so_the_caller_can_say_unverified():
         )
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_a_rule_that_fails_harder_afterwards_counts_as_introduced():
+    """A rule that failed before and fails more afterwards has had failures
+    introduced on top of the ones that remain. Counting the whole after-total
+    as remaining would hide a regression inside a rule we already knew about."""
+    scanner = _scanner()
+    before = [_violation("image-alt", 1)]
+    after = {"violations": [_violation("image-alt", 3)], "passes": [{}] * 9}
+
+    with patch.object(scanner, "_run_axe_scan", new=AsyncMock(return_value=after)):
+        result = await scanner._verify_remediation(_cloud_file(), "<p>x</p>", before)
+
+    assert result["remaining"] == 1
+    assert result["introduced"] == 2
+    assert result["fixed"] == 0
