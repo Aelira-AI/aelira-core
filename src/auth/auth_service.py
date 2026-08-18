@@ -15,7 +15,7 @@ from typing import Optional, Tuple
 from sqlalchemy.orm import Session
 import logging
 
-from ..db.models import APIKey, UsageTracking
+from ..db.models import APIKey, UsageTracking, User
 from .redis_rate_limiter import RedisRateLimiter
 
 logger = logging.getLogger(__name__)
@@ -23,9 +23,30 @@ logger = logging.getLogger(__name__)
 # For backward compatibility, alias RateLimiter
 RateLimiter = RedisRateLimiter
 
+MAX_API_KEY_BCRYPT_CANDIDATES = 5
+
 
 class AuthService:
     """Service for API key authentication and management"""
+
+    @staticmethod
+    def _has_active_tenant_consistent_owner(db: Session, api_key: APIKey) -> bool:
+        """Fail closed unless the key belongs to an active user in its tenant."""
+        owner = (
+            db.query(User)
+            .filter(
+                User.id == api_key.user_id,
+                User.is_active == True,  # noqa: E712
+                User.department_id == api_key.department_id,
+            )
+            .first()
+        )
+        return bool(
+            owner
+            and owner.is_active is True
+            and str(owner.id) == str(api_key.user_id)
+            and str(owner.department_id) == str(api_key.department_id)
+        )
 
     @staticmethod
     def generate_api_key() -> Tuple[str, str, str]:
@@ -36,7 +57,7 @@ class AuthService:
             Tuple of (full_key, key_hash, key_prefix)
             - full_key: The actual key to give to user (show once!)
             - key_hash: bcrypt hash to store in database
-            - key_prefix: First 12 chars for identification
+            - key_prefix: First 20 chars for indexed identification
         """
         # Generate secure random token (24 bytes = 48 hex chars)
         # Shorter to stay under bcrypt's 72-byte limit (12 prefix + 48 token = 60 bytes)
@@ -51,8 +72,8 @@ class AuthService:
             "utf-8"
         )
 
-        # Get prefix for identification (first 12 chars)
-        key_prefix = full_key[:12]
+        # Include 8 random hex characters so indexed lookup is selective.
+        key_prefix = full_key[:20]
 
         return full_key, key_hash, key_prefix
 
@@ -116,11 +137,15 @@ class AuthService:
         Validate an API key and return the associated APIKey object.
 
         Uses Redis to cache the mapping from raw API key → key ID after
-        the first successful bcrypt verification, so subsequent requests
-        skip the expensive bcrypt loop (all 16 keys share the same prefix).
+        the first successful bcrypt verification. Cache misses use the
+        random-bearing indexed prefix and cap bcrypt work defensively.
         """
         import hashlib
         from .redis_rate_limiter import get_redis_client
+
+        if len(api_key) < 20 or not api_key.startswith("aelira_live_"):
+            logger.warning("Malformed API key attempted")
+            return None
 
         # Fast cache lookup: SHA-256 of the raw key → API key DB id
         cache_key = None
@@ -143,6 +168,11 @@ class AuthService:
                             logger.warning(f"API key {db_key.id} has expired")
                             redis_client.delete(cache_key)
                             return None
+                        if not AuthService._has_active_tenant_consistent_owner(
+                            db, db_key
+                        ):
+                            redis_client.delete(cache_key)
+                            return None
                         db_key.last_used_at = datetime.now(timezone.utc)
                         db.commit()
                         return db_key
@@ -151,15 +181,16 @@ class AuthService:
             except Exception as e:
                 logger.debug(f"Redis cache lookup failed: {e}")
 
-        # Cache miss — fall back to bcrypt verification
-        key_prefix = api_key[:12] if len(api_key) >= 12 else api_key
+        # Cache miss — use the random-bearing indexed prefix and bound bcrypt.
+        key_prefix = api_key[:20]
 
         potential_keys = (
             db.query(APIKey)
             .filter(APIKey.key_prefix == key_prefix)
             .filter(APIKey.is_active)
+            .limit(MAX_API_KEY_BCRYPT_CANDIDATES)
             .all()
-        )
+        )[:MAX_API_KEY_BCRYPT_CANDIDATES]
 
         for db_key in potential_keys:
             try:
@@ -170,6 +201,9 @@ class AuthService:
                         timezone.utc
                     ):
                         logger.warning(f"API key {db_key.id} has expired")
+                        return None
+
+                    if not AuthService._has_active_tenant_consistent_owner(db, db_key):
                         return None
 
                     db_key.last_used_at = datetime.now(timezone.utc)

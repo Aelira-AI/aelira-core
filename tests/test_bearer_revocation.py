@@ -20,6 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from src.auth.dependencies import get_required_api_key
 from src.auth.jwt_service import JWTService
+from src.db.models import AuthProvider, User, UserRole
 
 
 def _bearer(token):
@@ -46,6 +47,20 @@ def db_no_api_key(monkeypatch):
         auth_service.AuthService, "validate_api_key", staticmethod(lambda db, t: None)
     )
     return MagicMock()
+
+
+@pytest.fixture
+def db_with_lti_user(db_no_api_key):
+    user = MagicMock(
+        spec=User,
+        id="lti-u",
+        department_id="d1",
+        auth_provider=AuthProvider.LTI,
+        role=UserRole.FACULTY,
+        is_active=True,
+    )
+    db_no_api_key.query.return_value.filter.return_value.first.return_value = user
+    return db_no_api_key
 
 
 def test_refresh_token_rejected_as_bearer(jwt_service, db_no_api_key):
@@ -107,17 +122,50 @@ def test_live_access_token_accepted_as_bearer(jwt_service, db_no_api_key, monkey
     assert dept_id == "d1"
 
 
-def test_lti_launch_token_accepted_without_session(
+def test_legacy_lti_launch_token_rejected_as_bearer(
     jwt_service, db_no_api_key, monkeypatch
 ):
-    # LTI-launch tokens have no UserSession row; the lti_launch=True claim
-    # is what admits them, and validate_session must NOT be consulted.
     access, _jti, _exp = jwt_service.create_access_token(
         user_id="lti-u",
         department_id="d1",
         email="u@x.edu",
         role="faculty",
         additional_claims={"lti_launch": True, "course_id": "c1"},
+    )
+
+    import src.auth.session_service as ss
+
+    fake_session = MagicMock()
+    monkeypatch.setattr(ss, "get_session_service", lambda: fake_session)
+
+    with pytest.raises(HTTPException) as exc:
+        get_required_api_key(
+            request=_request_without_cookie(),
+            credentials=_bearer(access),
+            db=db_no_api_key,
+        )
+
+    assert exc.value.status_code == 401
+    fake_session.validate_session.assert_not_called()
+
+
+def test_v2_lti_staff_token_accepted_as_bearer(
+    jwt_service, db_with_lti_user, monkeypatch
+):
+    access, _jti, _exp = jwt_service.create_access_token(
+        user_id="lti-u",
+        department_id="d1",
+        email="u@x.edu",
+        role="faculty",
+        additional_claims={
+            "lti_launch": True,
+            "course_id": "c1",
+            "lti_staff": True,
+            "lti_staff_role": "Instructor",
+            "lti_roles": ["Instructor"],
+            "lti_account_wide": False,
+            "lti_authz_version": 2,
+        },
     )
 
     import src.auth.session_service as ss
@@ -128,9 +176,12 @@ def test_lti_launch_token_accepted_without_session(
     api_key, user_id, dept_id = get_required_api_key(
         request=_request_without_cookie(),
         credentials=_bearer(access),
-        db=db_no_api_key,
+        db=db_with_lti_user,
     )
+
+    assert api_key is None
     assert user_id == "lti-u"
+    assert dept_id == "d1"
     fake_session.validate_session.assert_not_called()
 
 
@@ -140,10 +191,9 @@ def _request_with_cookie(token):
     return req
 
 
-def test_lti_launch_token_accepted_via_cookie(jwt_service, db_no_api_key, monkeypatch):
-    # Regression for the Canvas deep-link flash-loop: lti_routes delivers the
-    # LTI token AS the aelira_access cookie, and the cookie branch must admit
-    # it by the same positive lti_launch=True claim as the Bearer branch.
+def test_legacy_lti_launch_token_rejected_via_cookie(
+    jwt_service, db_no_api_key, monkeypatch
+):
     access, _jti, _exp = jwt_service.create_access_token(
         user_id="lti-u",
         department_id="d1",
@@ -155,13 +205,48 @@ def test_lti_launch_token_accepted_via_cookie(jwt_service, db_no_api_key, monkey
     import src.auth.session_service as ss
 
     fake_session = MagicMock()
-    fake_session.validate_session.return_value = None  # no UserSession row
+    fake_session.validate_session.return_value = None
+    monkeypatch.setattr(ss, "get_session_service", lambda: fake_session)
+
+    with pytest.raises(HTTPException) as exc:
+        get_required_api_key(
+            request=_request_with_cookie(access),
+            credentials=None,
+            db=db_no_api_key,
+        )
+
+    assert exc.value.status_code == 401
+
+
+def test_v2_lti_staff_token_accepted_via_cookie(
+    jwt_service, db_with_lti_user, monkeypatch
+):
+    access, _jti, _exp = jwt_service.create_access_token(
+        user_id="lti-u",
+        department_id="d1",
+        email="u@x.edu",
+        role="faculty",
+        additional_claims={
+            "lti_launch": True,
+            "course_id": "c1",
+            "lti_staff": True,
+            "lti_staff_role": "Instructor",
+            "lti_roles": ["Instructor"],
+            "lti_account_wide": False,
+            "lti_authz_version": 2,
+        },
+    )
+
+    import src.auth.session_service as ss
+
+    fake_session = MagicMock()
+    fake_session.validate_session.return_value = None
     monkeypatch.setattr(ss, "get_session_service", lambda: fake_session)
 
     api_key, user_id, dept_id = get_required_api_key(
         request=_request_with_cookie(access),
         credentials=None,
-        db=db_no_api_key,
+        db=db_with_lti_user,
     )
     assert api_key is None
     assert user_id == "lti-u"

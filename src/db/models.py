@@ -257,6 +257,9 @@ class User(Base):
 
     # Status
     is_active = Column(Boolean, default=True)
+    lti_reauthorization_required = Column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
 
     # Account deletion / deactivation
     deactivated_at = Column(DateTime(timezone=True), nullable=True)
@@ -290,8 +293,8 @@ class APIKey(Base):
         String(255), unique=True, nullable=False
     )  # bcrypt hash of actual key
     key_prefix = Column(
-        String(20), nullable=False
-    )  # First 8 chars for identification (e.g., "aelira_123...")
+        String(20), nullable=False, index=True
+    )  # First 20 chars: public label plus 8 random hex characters
     name = Column(String(255))  # User-friendly name (e.g., "Production API Key")
 
     # Ownership

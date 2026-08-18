@@ -14,13 +14,14 @@ home. account_navigation launches are unaffected and still go straight to
 /lti/overview.
 """
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.api import lti_launch_handler
 from src.api.lti_launch_handler import LTIStaffAccessDenied, handle_lti_launch
-from src.db.models import User, UserRole
+from src.db.models import AuthProvider, User, UserRole
 from src.integrations.canvas_lti import CanvasLaunchData
 
 
@@ -55,6 +56,15 @@ def _make_db_with_existing_user() -> MagicMock:
     user.id = "user-1"
     user.email = "instructor@example.edu"
     user.role = "student"
+    user.auth_provider = AuthProvider.LTI
+    user.lti_source = "https://canvas.instructure.com:canvas-user-1"
+    user.is_active = True
+    user.lti_reauthorization_required = False
+    user.deactivated_at = None
+    user.deletion_requested_at = None
+    user.deletion_scheduled_for = None
+    user.deletion_confirmation_code_hash = None
+    user.deletion_confirmation_expires_at = None
     db.query.return_value.filter.return_value.first.return_value = user
     return db
 
@@ -63,7 +73,7 @@ def _make_db_without_existing_user() -> MagicMock:
     """A mock session whose same- and cross-department lookups both miss."""
 
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.side_effect = [None, None]
+    db.query.return_value.filter.return_value.first.side_effect = [None, None, None]
     return db
 
 
@@ -218,6 +228,114 @@ def test_returning_users_role_is_recomputed_from_each_staff_launch(monkeypatch):
     handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
 
     assert user.role is UserRole.FACULTY
+
+
+def test_migration_marked_staff_relaunch_reactivates_existing_lti_user(monkeypatch):
+    launch_data = _make_launch_data()
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    user.is_active = False
+    user.lti_reauthorization_required = True
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    assert user.is_active is True
+    assert user.lti_reauthorization_required is False
+
+
+def test_deliberately_inactive_lti_user_is_not_reactivated(monkeypatch):
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    user.is_active = False
+    user.lti_reauthorization_required = False
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    with pytest.raises(LTIStaffAccessDenied):
+        handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    assert user.is_active is False
+
+
+def test_deletion_pending_lti_user_is_not_reactivated(monkeypatch):
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    user.is_active = False
+    user.lti_reauthorization_required = True
+    user.deletion_requested_at = datetime.now(timezone.utc)
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    with pytest.raises(LTIStaffAccessDenied):
+        handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    assert user.is_active is False
+    assert user.lti_reauthorization_required is True
+
+
+def test_same_email_non_lti_user_is_not_repurposed(monkeypatch):
+    db = MagicMock()
+    non_lti_user = MagicMock(spec=User)
+    non_lti_user.email = "instructor@example.edu"
+    non_lti_user.auth_provider = AuthProvider.GOOGLE
+    non_lti_user.is_active = True
+    query = MagicMock()
+    query.filter.return_value = query
+    query.first.side_effect = [None, None, non_lti_user]
+    db.query.return_value = query
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    created_user = next(
+        call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], User)
+    )
+    assert created_user is not non_lti_user
+    assert created_user.auth_provider is AuthProvider.LTI
+    assert created_user.email != non_lti_user.email
+    assert non_lti_user.auth_provider is AuthProvider.GOOGLE
+
+
+def test_lti_source_lookup_does_not_repurpose_non_lti_user(monkeypatch):
+    db = MagicMock()
+    non_lti_user = MagicMock(spec=User)
+    non_lti_user.email = "instructor@example.edu"
+    non_lti_user.auth_provider = AuthProvider.GOOGLE
+    non_lti_user.is_active = True
+    query = MagicMock()
+    query.filter.return_value = query
+    query.first.side_effect = [non_lti_user, None, non_lti_user]
+    db.query.return_value = query
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    created_user = next(
+        call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], User)
+    )
+    assert created_user.auth_provider is AuthProvider.LTI
+    assert non_lti_user.auth_provider is AuthProvider.GOOGLE
+
+
+def test_legacy_email_fallback_does_not_rebind_another_lti_source(monkeypatch):
+    db = MagicMock()
+    different_lti_user = MagicMock(spec=User)
+    different_lti_user.email = "instructor@example.edu"
+    different_lti_user.auth_provider = AuthProvider.LTI
+    different_lti_user.lti_source = "https://other.example.edu:other-user"
+    different_lti_user.is_active = True
+    query = MagicMock()
+    query.filter.return_value = query
+    query.first.side_effect = [None, different_lti_user, different_lti_user]
+    db.query.return_value = query
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    created_user = next(
+        call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], User)
+    )
+    assert created_user.auth_provider is AuthProvider.LTI
+    assert created_user.lti_source != different_lti_user.lti_source
 
 
 @pytest.mark.parametrize(

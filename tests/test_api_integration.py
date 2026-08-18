@@ -105,7 +105,7 @@ def test_api_key(db_session, test_user, test_department):
         api_key = APIKey(
             id=str(uuid.uuid4()),
             key_hash=key_hash,
-            key_prefix=test_key[:12],
+            key_prefix=test_key[:20],
             name="Test API Key",
             user_id=test_user.id,
             department_id=test_department.id,

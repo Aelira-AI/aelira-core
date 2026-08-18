@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..db.database import get_db_dependency
 from ..db.models import APIKey
+from ..auth.lti_authorization import validate_lti_staff_token_payload
 
 logger = logging.getLogger(__name__)
 
@@ -92,20 +93,22 @@ def get_required_api_key(
             department_id = payload.get("department_id")
             if user_id and department_id:
                 if payload.get("lti_launch") is True:
-                    logger.debug(f"LTI Bearer auth for user {user_id}")
-                    return None, user_id, department_id
-
-                # User-session access token: require a live, unrevoked
-                # session for this exact jti.
-                result = session_service.validate_session(db, token)
-                if result:
-                    user, _ = result
-                    logger.debug(f"JWT Bearer auth successful for user {user.id}")
-                    return None, user.id, user.department_id
-                logger.warning(
-                    f"Bearer access token rejected (revoked or no session) "
-                    f"for user {user_id}"
-                )
+                    lti_user = validate_lti_staff_token_payload(payload, db)
+                    if lti_user is not None:
+                        logger.debug(f"LTI Bearer auth for user {lti_user.id}")
+                        return None, str(lti_user.id), str(lti_user.department_id)
+                else:
+                    # User-session access token: require a live, unrevoked
+                    # session for this exact jti.
+                    result = session_service.validate_session(db, token)
+                    if result:
+                        user, _ = result
+                        logger.debug(f"JWT Bearer auth successful for user {user.id}")
+                        return None, user.id, user.department_id
+                    logger.warning(
+                        f"Bearer access token rejected (revoked or no session) "
+                        f"for user {user_id}"
+                    )
 
         # Both API key and JWT failed
         key_preview = token[:8] + "..." if len(token) > 8 else "***"
@@ -134,12 +137,11 @@ def get_required_api_key(
         from ..auth.jwt_service import JWTService
 
         lti_payload = JWTService().verify_access_token(access_token)
-        if lti_payload and lti_payload.get("lti_launch") is True:
-            lti_user_id = lti_payload.get("sub") or lti_payload.get("user_id")
-            lti_department_id = lti_payload.get("department_id")
-            if lti_user_id and lti_department_id:
-                logger.debug(f"LTI cookie auth for user {lti_user_id}")
-                return None, lti_user_id, lti_department_id
+        if lti_payload:
+            lti_user = validate_lti_staff_token_payload(lti_payload, db)
+            if lti_user is not None:
+                logger.debug(f"LTI cookie auth for user {lti_user.id}")
+                return None, str(lti_user.id), str(lti_user.department_id)
 
         # Session cookie exists but is invalid/expired
         logger.debug("Invalid session cookie, will fall through to other auth methods")

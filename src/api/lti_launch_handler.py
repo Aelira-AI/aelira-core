@@ -108,17 +108,49 @@ def handle_lti_launch(
         email = f"{launch_data.user_id}@{issuer_domain}"
 
     # --- Find or create user ---
+    lti_source = f"{launch_data.platform_id}:{launch_data.user_id}"
     user = (
         db.query(User)
-        .filter(User.email == email, User.department_id == department_id)
+        .filter(
+            User.lti_source == lti_source,
+            User.department_id == department_id,
+            User.auth_provider == AuthProvider.LTI,
+        )
         .first()
     )
+    if user is not None:
+        database_provider = (
+            user.auth_provider.value
+            if isinstance(user.auth_provider, AuthProvider)
+            else str(user.auth_provider)
+        )
+        if database_provider != AuthProvider.LTI.value:
+            user = None
 
     if user is None:
-        # Check whether the email exists in a *different* department
+        # Legacy LTI users predate lti_source stamping. Email fallback is limited
+        # to LTI-owned identities in this department; a same-email account from
+        # another provider must never be converted into an LTI account.
+        user = (
+            db.query(User)
+            .filter(
+                User.email == email,
+                User.department_id == department_id,
+                User.auth_provider == AuthProvider.LTI,
+                User.lti_source.is_(None),
+            )
+            .first()
+        )
+        if user is not None:
+            existing_lti_source = getattr(user, "lti_source", None)
+            if existing_lti_source not in (None, lti_source):
+                user = None
+
+    if user is None:
         existing = db.query(User).filter(User.email == email).first()
         if existing:
-            # Disambiguate by appending a department fragment
+            # User.email is globally unique. Preserve the existing identity and
+            # provision a separate, deterministic tenant-qualified LTI address.
             local, _, domain = email.partition("@")
             email = f"{local}+{department_id[:8]}@{domain}"
 
@@ -128,7 +160,9 @@ def handle_lti_launch(
             department_id=department_id,
             role=role_decision.aelira_role,
             auth_provider=AuthProvider.LTI,
+            lti_source=lti_source,
             is_active=True,
+            lti_reauthorization_required=False,
         )
         db.add(user)
         db.flush()  # get user.id without full commit
@@ -140,13 +174,37 @@ def handle_lti_launch(
                 "department_id": department_id,
             },
         )
+    else:
+        deletion_pending = any(
+            value is not None
+            for value in (
+                user.deactivated_at,
+                user.deletion_requested_at,
+                user.deletion_scheduled_for,
+                user.deletion_confirmation_code_hash,
+                user.deletion_confirmation_expires_at,
+            )
+        )
+        if deletion_pending:
+            raise LTIStaffAccessDenied
+
+        if not user.is_active:
+            if (
+                user.auth_provider != AuthProvider.LTI
+                or user.lti_reauthorization_required is not True
+            ):
+                raise LTIStaffAccessDenied
+            user.is_active = True
+
+        if user.lti_reauthorization_required is True:
+            user.lti_reauthorization_required = False
 
     # Recompute authorization-derived state on every launch. A returning user
     # must not retain broader access after their LMS role changes.
     user.role = role_decision.aelira_role
 
-    # Always stamp the LTI provenance (even for returning users)
-    user.lti_source = f"{launch_data.platform_id}:{launch_data.user_id}"
+    # Always stamp the LTI provenance (even for legacy returning LTI users)
+    user.lti_source = lti_source
     user.last_login_at = datetime.now(timezone.utc)
     db.flush()
 

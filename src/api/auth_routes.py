@@ -26,6 +26,7 @@ from ..auth.dependencies import get_required_api_key
 from ..auth.auth_service import AuthService, RateLimiter
 from ..auth.session_service import get_session_service
 from ..auth.jwt_service import get_jwt_service
+from ..auth.lti_authorization import validate_lti_staff_token_payload
 from ..middleware.quota import get_quota_status
 from ..config.settings import get_settings
 from ..mailer.email_service import get_email_service
@@ -162,16 +163,9 @@ def get_current_api_key(
             # "has no session", then resolve the user's API key exactly
             # like the session branch below.
             lti_payload = get_jwt_service().verify_access_token(access_token)
-            if lti_payload and lti_payload.get("lti_launch") is True:
-                lti_user_id = lti_payload.get("sub") or lti_payload.get("user_id")
-                lti_user = (
-                    db.query(User)
-                    .filter(User.id == lti_user_id, User.is_active.is_(True))
-                    .first()
-                    if lti_user_id
-                    else None
-                )
-                if lti_user:
+            if lti_payload:
+                lti_user = validate_lti_staff_token_payload(lti_payload, db)
+                if lti_user is not None:
                     result = (lti_user, lti_payload)
 
         if result:
