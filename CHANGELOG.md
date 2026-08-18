@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-08-18
+
+### Fixed
+
+- Canvas content review works end to end. LTI-launch tokens are admitted on both authentication paths, launches land on the course they came from, and a deep link opened while logged out returns to the page it asked for instead of the default landing page
+- Course files are treated as course content: they are scanned, listed and counted alongside pages and assignments, and they contribute to course and institution compliance scores. Previously a course could report a clean score while its files were the worst thing in it
+- Remediated files reach the course. The remediated copy is uploaded alongside the original, so nothing an author wrote is overwritten
+- The remediate endpoint runs the work it reports. It previously wrote job rows, returned success, and did nothing, because nothing polls the queue
+- Content items are remediated in place rather than being sent to the file endpoint, which tried to download a document that does not exist and reported the resulting 404 as a failed remediation
+- A refused OAuth authorisation returns to the dashboard with the reason the LMS gave, instead of a validation error about a missing query parameter
+- Migrations match the models. A database built the way a deployment builds one was missing the entire content surface: two tables, thirteen columns, and two enum values. Installing from a clean database produced an application that failed the moment it touched course content
+- Uploads default to a directory under the working directory rather than an absolute container path, so running from source no longer fails with a permission error
+
+### Changed
+
+- Remediation is verified by rescanning the result, and the measured score is the one reported. Where no rescan was recorded the fixed/remaining split is reported as unknown rather than assumed. Issues the remediation introduced are counted separately from issues that remain
+- Content is scanned in the document context an LMS renders, so findings describe the author's content rather than the wrapper. Three of five findings on a real course page were artefacts of a bare wrapper, worth 12.5 points of score
+- Alt text is generated from the image itself, fetched with the integration's own credential. Empty alt, placeholder strings, and descriptions of images that could not be retrieved are refused: an unfixed image is visible to an audit, a falsely fixed one is not
+- Vision requests retry on transient refusals. A 503 was previously treated as a final answer, leaving the image with no description at all
+- Controls that did nothing are gone: fake pause and resume, a scan button with no handler, and a per-issue auto-fix that silently remediated the whole document, which is now labelled for what it does
+- Batch results report what was skipped instead of showing success for a run that changed nothing
+- Integration tests run in CI. They were skipped whenever CI was detected, so 284 tests including every API route test were verified only on a developer's machine
+
 ## [0.9.2] - 2026-08-17
 
 ### Security
