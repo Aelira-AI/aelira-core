@@ -16,8 +16,9 @@ home. account_navigation launches are unaffected and still go straight to
 
 from unittest.mock import MagicMock
 
+from src.api import lti_launch_handler
 from src.api.lti_launch_handler import handle_lti_launch
-from src.db.models import User
+from src.db.models import User, UserRole
 from src.integrations.canvas_lti import CanvasLaunchData
 
 
@@ -53,6 +54,14 @@ def _make_db_with_existing_user() -> MagicMock:
     user.email = "student@example.edu"
     user.role = "student"
     db.query.return_value.filter.return_value.first.return_value = user
+    return db
+
+
+def _make_db_without_existing_user() -> MagicMock:
+    """A mock session whose same- and cross-department lookups both miss."""
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.side_effect = [None, None]
     return db
 
 
@@ -140,3 +149,20 @@ class TestLtiGoRouting:
 
         assert "/lti/overview?code=" in redirect_url
         assert "/lti/go" not in redirect_url
+
+
+def test_new_lti_user_role_comes_from_canonical_staff_policy(monkeypatch):
+    launch_data = _make_launch_data(
+        roles=["http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor"],
+        user_email="instructor@example.edu",
+    )
+    db = _make_db_without_existing_user()
+
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    created_user = next(
+        call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], User)
+    )
+    assert created_user.role is UserRole.FACULTY

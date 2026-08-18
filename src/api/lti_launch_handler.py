@@ -19,13 +19,14 @@ import json
 import logging
 import secrets
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.auth.jwt_service import JWTService
+from src.auth.lti_authorization import authorize_lti_roles
 from src.auth.redis_rate_limiter import get_redis_client
 from src.config.settings import get_settings
 from src.db.models import (
@@ -33,7 +34,6 @@ from src.db.models import (
     LTIAGSContext,
     LTIRegistration,
     User,
-    UserRole,
 )
 from src.integrations.canvas_lti import CanvasLaunchData
 
@@ -43,33 +43,6 @@ logger = logging.getLogger(__name__)
 # In-memory fallback when Redis is unavailable (dev only)
 # ---------------------------------------------------------------------------
 _code_store: Dict[str, str] = {}
-
-
-# ---------------------------------------------------------------------------
-# Role mapping helpers
-# ---------------------------------------------------------------------------
-
-_ADMIN_ROLE_FRAGMENTS = {"Instructor", "Administrator"}
-_FACULTY_ROLE_FRAGMENTS = {
-    "TeachingAssistant",
-    "ContentDeveloper",
-    "Mentor",
-    "Learner",
-}
-
-
-def _map_lti_roles_to_aelira(lti_roles: list[str]) -> UserRole:
-    """Return the highest Aelira role implied by the LTI role URIs."""
-    for role_uri in lti_roles:
-        for fragment in _ADMIN_ROLE_FRAGMENTS:
-            if fragment in role_uri:
-                return UserRole.ADMIN
-    for role_uri in lti_roles:
-        for fragment in _FACULTY_ROLE_FRAGMENTS:
-            if fragment in role_uri:
-                return UserRole.FACULTY
-    # Default — unknown roles still get lowest privilege
-    return UserRole.FACULTY
 
 
 def _simplify_roles(lti_roles: list[str]) -> list[str]:
@@ -84,22 +57,6 @@ def _simplify_roles(lti_roles: list[str]) -> list[str]:
         else:
             names.append(uri)
     return names
-
-
-def _is_canvas_admin(roles: List[str]) -> bool:
-    """Check if LTI roles indicate an account-level admin."""
-    admin_patterns = [
-        "Administrator",
-        "urn:lti:sysrole:ims/lis/SysAdmin",
-        "urn:lti:instrole:ims/lis/Administrator",
-        "http://purl.imsglobal.org/vocab/lis/v2/institution/person#Administrator",
-        "http://purl.imsglobal.org/vocab/lis/v2/system/person#Administrator",
-    ]
-    for role in roles:
-        for pattern in admin_patterns:
-            if pattern in role:
-                return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -149,12 +106,12 @@ def handle_lti_launch(
             local, _, domain = email.partition("@")
             email = f"{local}+{department_id[:8]}@{domain}"
 
-        aelira_role = _map_lti_roles_to_aelira(launch_data.roles)
+        role_decision = authorize_lti_roles(launch_data.roles)
         user = User(
             email=email,
             name=launch_data.user_name or email,
             department_id=department_id,
-            role=aelira_role,
+            role=role_decision.aelira_role,
             auth_provider=AuthProvider.LTI,
             is_active=True,
         )
