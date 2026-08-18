@@ -128,3 +128,42 @@ class TestSmtpHostValidation:
             Settings(**_base_kwargs(smtp_host="smtp.example.com"))
 
         assert not any("SMTP_HOST" in record.message for record in caplog.records)
+
+
+class TestCanvasOAuthAllowlistValidation:
+    @pytest.mark.parametrize("env", ["staging", "production"])
+    def test_deployed_environment_without_canvas_oauth_does_not_require_allowlist(
+        self, env, monkeypatch
+    ):
+        monkeypatch.delenv("CANVAS_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CANVAS_OAUTH_CLIENT_SECRET", raising=False)
+
+        settings = Settings(**_base_kwargs(env=env, canvas_oauth_allowed_origins=""))
+
+        assert settings.canvas_oauth_allowed_origins == ""
+
+    @pytest.mark.parametrize("env", ["staging", "production"])
+    def test_deployed_environment_with_canvas_oauth_requires_allowlist(
+        self, env, monkeypatch
+    ):
+        with monkeypatch.context() as context:
+            context.setenv("CANVAS_OAUTH_CLIENT_ID", "client-id")
+            context.setenv("CANVAS_OAUTH_CLIENT_SECRET", "client-secret")
+            with pytest.raises(ValueError, match="CANVAS_OAUTH_ALLOWED_ORIGINS"):
+                Settings(
+                    **_base_kwargs(
+                        env=env,
+                        canvas_oauth_allowed_origins="",
+                    )
+                )
+
+    @pytest.mark.parametrize("env", ["development", "test"])
+    def test_local_and_test_environments_do_not_require_canvas_allowlist(self, env):
+        settings = Settings(
+            **_base_kwargs(
+                env=env,
+                canvas_oauth_allowed_origins="",
+            )
+        )
+
+        assert settings.canvas_oauth_allowed_origins == ""

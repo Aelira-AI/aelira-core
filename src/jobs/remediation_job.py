@@ -30,6 +30,10 @@ from ..db.models import (
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
+from ..utils.security import (
+    PERSISTED_CANVAS_ORIGIN_ERROR,
+    require_persisted_canvas_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +370,8 @@ async def _download_cloud_file(
             }
 
         # Refresh token if needed (with distributed lock to prevent races)
+        if credential.provider == CloudProvider.CANVAS.value:
+            require_persisted_canvas_origin(credential)
         token_manager = OAuthTokenManager()
         access_token = await token_manager.refresh_if_expired(credential, db)
 
@@ -413,13 +419,12 @@ async def _download_cloud_file(
         elif credential.provider == CloudProvider.CANVAS.value:
             from ..integrations.canvas import CanvasAPIClient
 
-            canvas_instance_url = credential.provider_metadata.get(
-                "canvas_instance_url"
-            )
-            if not canvas_instance_url:
+            try:
+                canvas_instance_url = require_persisted_canvas_origin(credential)
+            except ValueError:
                 return {
                     "success": False,
-                    "error": "Canvas instance URL not found in credential metadata",
+                    "error": PERSISTED_CANVAS_ORIGIN_ERROR,
                 }
 
             api_client = CanvasAPIClient(

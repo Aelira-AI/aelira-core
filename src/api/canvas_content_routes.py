@@ -52,6 +52,7 @@ from ..db.models import (
 from ..education.canvas_content_scanner import CanvasContentScanner
 from ..integrations.canvas.content_models import CanvasContentType
 from ..middleware.quota import require_feature
+from ..utils.security import require_persisted_canvas_origin
 from .canvas_routes import _get_canvas_client
 from .canvas_scan_routes import _canvas_scan_file_task
 
@@ -1484,9 +1485,9 @@ async def _content_scan_task(
                 logger.error(f"Credential not found: {credential_id}")
                 return
 
+            canvas_url = require_persisted_canvas_origin(credential)
             token_manager = OAuthTokenManager()
             access_token = token_manager.decrypt_token(credential.access_token)
-            canvas_url = credential.provider_metadata.get("canvas_instance_url", "")
 
             api_client = CanvasAPIClient(
                 canvas_instance_url=canvas_url,

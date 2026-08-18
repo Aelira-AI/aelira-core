@@ -385,6 +385,10 @@ class Settings(BaseSettings):
         "https://api.example.com/auth/microsoft/callback",
     )
 
+    # Canvas OAuth network trust boundary. Staging/production validation below
+    # makes this mandatory; route-level validation canonicalizes every entry.
+    canvas_oauth_allowed_origins: str = os.getenv("CANVAS_OAUTH_ALLOWED_ORIGINS", "")
+
     # File Upload Limits (in bytes)
     max_file_size_pdf: int = 50 * 1024 * 1024  # 50MB
     max_file_size_pptx: int = 50 * 1024 * 1024  # 50MB
@@ -475,6 +479,19 @@ class Settings(BaseSettings):
                 "SMTP_HOST is not set. Outbound email (magic links, alert "
                 "notifications, remediation emails) will not work until "
                 "it is configured."
+            )
+
+        canvas_oauth_enabled = bool(
+            os.getenv("CANVAS_OAUTH_CLIENT_ID", "").strip()
+            and os.getenv("CANVAS_OAUTH_CLIENT_SECRET", "").strip()
+        )
+        if (
+            self.env.lower() in {"staging", "production"}
+            and canvas_oauth_enabled
+            and not self.canvas_oauth_allowed_origins.strip()
+        ):
+            raise ValueError(
+                "CANVAS_OAUTH_ALLOWED_ORIGINS must be set in staging and production"
             )
 
         return self

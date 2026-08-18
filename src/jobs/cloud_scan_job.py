@@ -25,6 +25,10 @@ from ..db.models import (
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
+from ..utils.security import (
+    PERSISTED_CANVAS_ORIGIN_ERROR,
+    require_persisted_canvas_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,11 +161,12 @@ class CloudScanJob:
         """Download file from Canvas LMS."""
         from ..integrations.canvas.canvas_api import CanvasAPIClient
 
-        canvas_url = self.credential.provider_metadata.get("canvas_instance_url", "")
-        if not canvas_url:
+        try:
+            canvas_url = require_persisted_canvas_origin(self.credential)
+        except ValueError:
             return {
                 "success": False,
-                "error": "Canvas instance URL not found in credential metadata",
+                "error": PERSISTED_CANVAS_ORIGIN_ERROR,
             }
 
         # Rewrite localhost for Docker networking

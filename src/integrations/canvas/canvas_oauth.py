@@ -132,7 +132,7 @@ class CanvasOAuthService:
             "code": authorization_code,
         }
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=False) as client:
             response = await client.post(token_url, data=data, timeout=30.0)
             response.raise_for_status()
             token_data = response.json()
@@ -181,7 +181,7 @@ class CanvasOAuthService:
             "refresh_token": refresh_token,
         }
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=False) as client:
             response = await client.post(token_url, data=data, timeout=30.0)
             response.raise_for_status()
             token_data = response.json()

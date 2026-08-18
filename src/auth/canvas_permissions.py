@@ -2,6 +2,7 @@
 
 from fastapi import HTTPException, status
 
+from ..db.models import UserRole
 from .dependencies import AuthenticatedPrincipal
 
 _FORBIDDEN = "Forbidden"
@@ -50,5 +51,24 @@ def require_lti_account_access(
 
     require_canvas_staff(principal)
     if principal.auth_method == "lti" and not principal.lti_account_wide:
+        _deny()
+    return principal
+
+
+def require_canvas_account_management(
+    principal: AuthenticatedPrincipal,
+) -> AuthenticatedPrincipal:
+    """Authorize account-level Canvas credential mutations.
+
+    LTI relies on its authoritative account-wide Administrator assertion.
+    Other authentication methods require an Aelira ADMIN or SUPER_ADMIN role;
+    this includes the development-only mock administrator.
+    """
+    if principal.auth_method == "lti":
+        require_lti_account_access(principal)
+        if principal.lti_staff_role != "Administrator":
+            _deny()
+        return principal
+    if principal.user_role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
         _deny()
     return principal

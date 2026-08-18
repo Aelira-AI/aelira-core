@@ -18,6 +18,7 @@ from ...db.scan_service import ScanService
 from ...education.image_alt_text import ImageAltTextGenerator
 from ...middleware.quota import require_feature
 from ...utils.sanitization import sanitize_for_postgres
+from ...utils.security import require_persisted_canvas_origin
 from ._shared import (
     APPROVED_REVIEW_STATUSES,
     RemediationOptions,
@@ -471,6 +472,9 @@ async def remediate_scan(
             )
             if credential:
                 try:
+                    canvas_url = None
+                    if credential.provider == CloudProvider.CANVAS.value:
+                        canvas_url = require_persisted_canvas_origin(credential)
                     token_manager = OAuthTokenManager()
                     access_token = await token_manager.refresh_if_expired(
                         credential, db
@@ -487,9 +491,7 @@ async def remediate_scan(
                     if credential.provider == CloudProvider.CANVAS.value:
                         from ...integrations.canvas.canvas_api import CanvasAPIClient
 
-                        canvas_url = (credential.provider_metadata or {}).get(
-                            "canvas_instance_url", ""
-                        )
+                        assert canvas_url is not None
                         if (
                             os.getenv("ENV") == "development"
                             and "localhost" in canvas_url

@@ -71,3 +71,41 @@ Before enabling the integration for users:
    deep-link, or statistics side effects.
 5. Confirm the decoded signed launch has `canvas_course_id` in the LTI custom
    claim and that its value is the expected numeric Canvas course ID.
+
+## Canvas OAuth operator trust boundary
+
+Canvas account connection installs a deployment-wide OAuth client secret at a
+specific Canvas origin. In staging and production, operators **must** set
+`CANVAS_OAUTH_ALLOWED_ORIGINS` to the Canvas instances this deployment trusts:
+
+```env
+CANVAS_OAUTH_ALLOWED_ORIGINS=https://canvas.university.edu
+```
+
+Use a comma-separated list only when the deployment intentionally serves more
+than one Canvas instance. Every entry must be a canonical HTTPS root origin
+(scheme, hostname, and optional non-default port only). A request is authorized
+only by an exact canonical-origin match. Wildcards, subdomain/suffix matching,
+paths, credentials, redirects, and HTTP origins are not accepted. Development
+and test may omit the setting for explicit localhost and test fixtures.
+
+The connect route validates the requested origin against this operator policy
+before state issuance or outbound work. The callback consumes one-time state and
+checks its stored origin against the current allowlist again, so removing an
+origin immediately prevents pending callbacks from exchanging secrets or
+writing credentials. Production and staging continue to require Redis-backed
+state; the in-memory fallback remains development/test only.
+
+This is the network trust model: operators allowlist only their institution's
+Canvas instance, and outbound HTTPS uses normal strict certificate validation
+for that exact hostname. Public DNS routability alone is not authorization.
+Exact operator authorization plus TLS hostname/certificate verification is the
+DNS-rebinding boundary; do not replace the hostname with a resolved raw IP or
+disable certificate verification.
+
+Connecting or disconnecting Canvas credentials is account management. Non-LTI
+callers must be Aelira `ADMIN` or `SUPER_ADMIN` (the development mock admin is
+also accepted). LTI callers must carry Canvas's authoritative, account-wide
+`Administrator` assertion. Faculty, course-scoped LTI staff, API keys owned by
+faculty, and faculty sessions cannot connect or disconnect. Connection status
+remains read-only for authenticated users within their department.

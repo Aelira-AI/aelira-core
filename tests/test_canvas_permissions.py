@@ -2,6 +2,7 @@ import pytest
 from fastapi import HTTPException
 
 from src.auth.canvas_permissions import (
+    require_canvas_account_management,
     require_canvas_staff,
     require_lti_account_access,
     require_lti_course_access,
@@ -78,6 +79,43 @@ def test_lti_administrator_has_account_and_any_named_course_access():
     assert require_lti_course_access(principal, "course-2") is principal
     _assert_forbidden(require_lti_course_access, principal, "")
     assert require_lti_account_access(principal) is principal
+
+
+@pytest.mark.parametrize("auth_method", ["api_key", "session"])
+def test_non_lti_faculty_cannot_manage_canvas_account_credentials(auth_method):
+    _assert_forbidden(require_canvas_account_management, _principal(auth_method))
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPER_ADMIN])
+@pytest.mark.parametrize("auth_method", ["api_key", "session"])
+def test_non_lti_admins_can_manage_canvas_account_credentials(auth_method, role):
+    principal = _principal(auth_method, user_role=role)
+
+    assert require_canvas_account_management(principal) is principal
+
+
+def test_mock_admin_can_manage_canvas_account_credentials():
+    principal = _principal("mock", user_role=UserRole.ADMIN)
+
+    assert require_canvas_account_management(principal) is principal
+
+
+def test_only_account_wide_lti_administrator_can_manage_canvas_credentials():
+    administrator = _principal(
+        "lti",
+        user_role=UserRole.ADMIN,
+        lti_staff_role="Administrator",
+        lti_account_wide=True,
+    )
+    instructor = _principal(
+        "lti",
+        lti_course_id="course-1",
+        lti_staff_role="Instructor",
+        lti_account_wide=False,
+    )
+
+    assert require_canvas_account_management(administrator) is administrator
+    _assert_forbidden(require_canvas_account_management, instructor)
 
 
 @pytest.mark.parametrize(

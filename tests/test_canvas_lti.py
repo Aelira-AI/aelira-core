@@ -12,9 +12,6 @@ Tests cover:
 - Disconnect flow
 """
 
-import base64
-import json
-
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -29,6 +26,16 @@ from src.db.models import UserRole
 
 # Mark all tests in this module as integration (skipped in CI)
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def mock_canvas_origin_validation():
+    """Keep legacy route tests isolated from DNS; security has dedicated tests."""
+    with patch(
+        "src.api.canvas_routes.require_canvas_oauth_allowed_origin",
+        side_effect=lambda url: url.rstrip("/"),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -112,7 +119,7 @@ def override_deps(mock_api_key, mock_session, patch_require_feature):
             api_key=mock_api_key,
             user_id="test-user-123",
             department_id="test-dept-456",
-            user_role=UserRole.FACULTY,
+            user_role=UserRole.ADMIN,
             auth_method="api_key",
         )
     )
@@ -441,26 +448,22 @@ class TestCanvasOAuthCallback:
                 None
             )
 
-            # The callback now carries its context inside the state
-            # parameter, base64-encoded, rather than as separate query
-            # parameters an attacker could set. Build a real one.
-            state = (
-                base64.urlsafe_b64encode(
-                    json.dumps(
-                        {
-                            "canvas_instance_url": "https://canvas.university.edu",
-                            "department_id": "test-dept-456",
-                        }
-                    ).encode()
-                )
-                .decode()
-                .rstrip("=")
-            )
+            state = "opaque-test-state"
+            state_metadata = {
+                "provider": "canvas",
+                "canvas_instance_url": "https://canvas.university.edu",
+                "department_id": "test-dept-456",
+                "initiating_user_id": "test-user-123",
+            }
 
-            response = client.get(
-                f"/canvas/oauth/callback?code=test-auth-code&state={state}",
-                follow_redirects=False,
-            )
+            with patch(
+                "src.api.canvas_routes.OAuthStateManager.verify_and_consume_state",
+                return_value=(True, state_metadata),
+            ):
+                response = client.get(
+                    f"/canvas/oauth/callback?code=test-auth-code&state={state}",
+                    follow_redirects=False,
+                )
 
             # The callback hands the browser back to the dashboard rather
             # than answering with JSON, so the contract under test is where
@@ -468,7 +471,7 @@ class TestCanvasOAuthCallback:
             assert response.status_code in (302, 307)
             location = response.headers["location"]
             assert "/integrations?canvas=connected" in location
-            assert "instructor@university.edu" in location
+            assert "instructor%40university.edu" in location
         finally:
             app.dependency_overrides.pop(get_db_dependency, None)
 
@@ -478,27 +481,27 @@ def test_callback_reports_a_refusal_instead_of_a_validation_error(client):
     error and no code. The route required a code, so the person
     connecting got a raw validation page about a missing query
     parameter rather than the reason Canvas gave."""
-    state = (
-        base64.urlsafe_b64encode(
-            json.dumps(
-                {
-                    "canvas_instance_url": "https://canvas.university.edu",
-                    "department_id": "test-dept-456",
-                }
-            ).encode()
-        )
-        .decode()
-        .rstrip("=")
-    )
+    state = "opaque-test-state"
+    state_metadata = {
+        "provider": "canvas",
+        "canvas_instance_url": "https://canvas.university.edu",
+        "department_id": "test-dept-456",
+        "initiating_user_id": "test-user-123",
+    }
 
-    response = client.get(
-        f"/canvas/oauth/callback?state={state}"
-        "&error=unauthorized_client"
-        "&error_description=Client+does+not+have+access",
-        follow_redirects=False,
-    )
+    with patch(
+        "src.api.canvas_routes.OAuthStateManager.verify_and_consume_state",
+        return_value=(True, state_metadata),
+    ):
+        response = client.get(
+            f"/canvas/oauth/callback?state={state}"
+            "&error=unauthorized_client"
+            "&error_description=Client+does+not+have+access",
+            follow_redirects=False,
+        )
 
     assert response.status_code in (302, 307)
     location = response.headers["location"]
     assert "canvas=error" in location
-    assert "Client%20does%20not%20have%20access" in location
+    assert "code=oauth_refused" in location
+    assert "message=" not in location
