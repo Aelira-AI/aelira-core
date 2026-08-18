@@ -587,10 +587,16 @@ class CanvasContentScanner:
         if not issues:
             return {"success": True, "fixed_count": 0, "message": "No issues to fix"}
 
-        # Write wrapped HTML to temp file for HtmlRemediator
-        wrapped_html = _wrap_html_fragment(
-            cloud_file.content_body, cloud_file.file_name
+        # Describe the images first, from the images themselves. The
+        # remediator cannot reach them, so anything it writes for an image is
+        # guesswork; this is the only place holding both the credential and
+        # the vision service.
+        source_html, images_described = await self._describe_images(
+            cloud_file, cloud_file.content_body
         )
+
+        # Write wrapped HTML to temp file for HtmlRemediator
+        wrapped_html = _wrap_html_fragment(source_html, cloud_file.file_name)
         temp_path = None
 
         try:
@@ -767,6 +773,92 @@ class CanvasContentScanner:
                     os.unlink(temp_path)
                 except OSError:
                     pass
+
+    # ------------------------------------------------------------------
+    # 3a. _describe_images — real alt text, from the actual image
+    # ------------------------------------------------------------------
+
+    _FILE_ID_PATTERN = re.compile(r"/files/(\d+)")
+
+    async def _describe_images(self, cloud_file: CloudFile, html: str) -> tuple:
+        """Write alt text for images that have none, from the image itself.
+
+        The remediator's own alt-text path asks a text model to invent a
+        description from an issue message and a code snippet, having never
+        seen the image. That is how a chart came back marked decorative and
+        a rubric came back described as a photograph.
+
+        Documents carry their images inside them, which is why the file
+        path has always produced real descriptions. Content stored by an LMS
+        refers to images by URL, so the image has to be fetched first, with
+        the credential, before the same vision service can look at it.
+
+        Returns the HTML and the number of images actually described.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        targets = [
+            img
+            for img in soup.find_all("img")
+            if img.get("alt") is None and img.get("role") != "presentation"
+        ]
+        if not targets:
+            return html, 0
+
+        from ..education.image_alt_text import ImageAltTextGenerator
+        from ..education.remediation.html_remediator import HtmlRemediator
+
+        generator = ImageAltTextGenerator()
+        described = 0
+
+        for img in targets:
+            source = img.get("data-api-endpoint") or img.get("src", "")
+            match = self._FILE_ID_PATTERN.search(source)
+            if not match:
+                logger.info(
+                    "Image is not an LMS file, leaving its description to a human: %s",
+                    img.get("src", ""),
+                )
+                continue
+
+            file_id = match.group(1)
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                    tmp_path = tmp.name
+                result = await self.canvas_client.download_file(file_id, tmp_path)
+                if not getattr(result, "success", False):
+                    logger.warning(
+                        "Could not fetch image %s, leaving it to a human", file_id
+                    )
+                    continue
+
+                generated = await generator.generate_alt_text(
+                    tmp_path, context=f"Image in {cloud_file.file_name}"
+                )
+                alt_text = (generated or {}).get("alt_text", "")
+                if not generated.get(
+                    "success"
+                ) or not HtmlRemediator.is_usable_alt_text(alt_text):
+                    logger.info(
+                        "No usable description for image %s, leaving it to a human",
+                        file_id,
+                    )
+                    continue
+
+                img["alt"] = alt_text.strip()
+                described += 1
+            except Exception as e:
+                logger.warning(
+                    "Alt text generation failed for image %s: %s", file_id, e
+                )
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+        return (str(soup) if described else html), described
 
     # ------------------------------------------------------------------
     # 3b. _verify_remediation — rescan what remediation produced
