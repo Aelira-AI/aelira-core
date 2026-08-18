@@ -107,7 +107,7 @@ def test_live_access_token_accepted_as_bearer(jwt_service, db_no_api_key, monkey
 
     import src.auth.session_service as ss
 
-    user = MagicMock(id="u1", department_id="d1")
+    user = MagicMock(id="u1", department_id="d1", role=UserRole.FACULTY, is_active=True)
     fake_session = MagicMock()
     fake_session.validate_session.return_value = (user, {})
     monkeypatch.setattr(ss, "get_session_service", lambda: fake_session)

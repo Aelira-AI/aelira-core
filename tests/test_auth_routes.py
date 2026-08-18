@@ -132,6 +132,16 @@ def _fake_api_key(**overrides):
     key.last_used_at = overrides.get("last_used_at", None)
     key.expires_at = overrides.get("expires_at", None)
     key.is_active = overrides.get("is_active", True)
+    key.user = overrides.get(
+        "user",
+        MagicMock(
+            spec=User,
+            id=key.user_id,
+            department_id=key.department_id,
+            role="faculty",
+            is_active=True,
+        ),
+    )
     return key
 
 
