@@ -16,8 +16,10 @@ home. account_navigation launches are unaffected and still go straight to
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.api import lti_launch_handler
-from src.api.lti_launch_handler import handle_lti_launch
+from src.api.lti_launch_handler import LTIStaffAccessDenied, handle_lti_launch
 from src.db.models import User, UserRole
 from src.integrations.canvas_lti import CanvasLaunchData
 
@@ -25,13 +27,13 @@ from src.integrations.canvas_lti import CanvasLaunchData
 def _make_launch_data(**overrides) -> CanvasLaunchData:
     defaults = dict(
         user_id="canvas-user-1",
-        user_name="Test Student",
-        user_email="student@example.edu",
+        user_name="Test Instructor",
+        user_email="instructor@example.edu",
         course_id="",
         course_name="",
-        roles=["http://purl.imsglobal.org/vocab/lis/v2/membership#Learner"],
-        is_instructor=False,
-        is_student=True,
+        roles=["http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor"],
+        is_instructor=True,
+        is_student=False,
         resource_link_id="link-1",
         deployment_id="deploy-1",
         platform_id="https://canvas.instructure.com",
@@ -51,7 +53,7 @@ def _make_db_with_existing_user() -> MagicMock:
     db = MagicMock()
     user = MagicMock(spec=User)
     user.id = "user-1"
-    user.email = "student@example.edu"
+    user.email = "instructor@example.edu"
     user.role = "student"
     db.query.return_value.filter.return_value.first.return_value = user
     return db
@@ -166,3 +168,92 @@ def test_new_lti_user_role_comes_from_canonical_staff_policy(monkeypatch):
         call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], User)
     )
     assert created_user.role is UserRole.FACULTY
+
+
+@pytest.mark.parametrize(
+    "roles",
+    [
+        ["http://purl.imsglobal.org/vocab/lis/v2/membership#Learner"],
+        ["http://purl.imsglobal.org/vocab/lis/v2/membership#Student"],
+        ["http://purl.imsglobal.org/vocab/lis/v2/membership#Mentor"],
+        ["http://purl.imsglobal.org/vocab/lis/v2/membership#Observer"],
+        [],
+        None,
+        ["http://example.edu/lti/role#Unknown"],
+    ],
+)
+def test_denied_launch_has_no_side_effects_before_rejection(monkeypatch, roles):
+    launch_data = _make_launch_data(roles=roles or [], user_email=None)
+    if roles is None:
+        object.__setattr__(launch_data, "roles", None)
+    db = MagicMock()
+
+    monkeypatch.setattr(
+        lti_launch_handler,
+        "urlparse",
+        MagicMock(side_effect=AssertionError("email resolution must not run")),
+    )
+    jwt_service = MagicMock(side_effect=AssertionError("JWT creation must not run"))
+    monkeypatch.setattr(lti_launch_handler, "JWTService", jwt_service)
+    store_code = MagicMock(side_effect=AssertionError("code storage must not run"))
+    monkeypatch.setattr(lti_launch_handler, "_store_code", store_code)
+
+    with pytest.raises(LTIStaffAccessDenied):
+        handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    assert db.mock_calls == []
+    jwt_service.assert_not_called()
+    store_code.assert_not_called()
+
+
+def test_returning_users_role_is_recomputed_from_each_staff_launch(monkeypatch):
+    launch_data = _make_launch_data(
+        roles=["http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor"]
+    )
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    user.role = UserRole.ADMIN
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    assert user.role is UserRole.FACULTY
+
+
+@pytest.mark.parametrize(
+    ("role_uri", "staff_role", "account_wide", "aelira_role"),
+    [
+        (
+            "http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor",
+            "Instructor",
+            False,
+            UserRole.FACULTY,
+        ),
+        (
+            "http://purl.imsglobal.org/vocab/lis/v2/institution/person#Administrator",
+            "Administrator",
+            True,
+            UserRole.ADMIN,
+        ),
+    ],
+)
+def test_staff_launch_mints_v2_authorization_claims(
+    monkeypatch, role_uri, staff_role, account_wide, aelira_role
+):
+    launch_data = _make_launch_data(roles=[role_uri], course_id="course-42")
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    token_service = MagicMock()
+    token_service.create_access_token.return_value = ("token", "jti", "exp")
+    monkeypatch.setattr(lti_launch_handler, "JWTService", lambda: token_service)
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    assert user.role is aelira_role
+    claims = token_service.create_access_token.call_args.kwargs["additional_claims"]
+    assert claims["lti_staff"] is True
+    assert claims["lti_staff_role"] == staff_role
+    assert claims["lti_account_wide"] is account_wide
+    assert claims["lti_authz_version"] == 2
+    assert claims["course_id"] == "course-42"

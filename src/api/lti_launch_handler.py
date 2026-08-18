@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.auth.jwt_service import JWTService
-from src.auth.lti_authorization import authorize_lti_roles
+from src.auth.lti_authorization import LTIStaffAuthorization, authorize_lti_roles
 from src.auth.redis_rate_limiter import get_redis_client
 from src.config.settings import get_settings
 from src.db.models import (
@@ -38,6 +38,20 @@ from src.db.models import (
 from src.integrations.canvas_lti import CanvasLaunchData
 
 logger = logging.getLogger(__name__)
+
+
+class LTIStaffAccessDenied(Exception):
+    """Raised when a validated LTI launch does not assert a staff role."""
+
+
+def require_lti_staff_access(launch_data: CanvasLaunchData) -> LTIStaffAuthorization:
+    """Return the canonical staff decision or deny the launch fail-closed."""
+
+    decision = authorize_lti_roles(launch_data.roles)
+    if not decision.allowed:
+        raise LTIStaffAccessDenied
+    return decision
+
 
 # ---------------------------------------------------------------------------
 # In-memory fallback when Redis is unavailable (dev only)
@@ -82,6 +96,8 @@ def handle_lti_launch(
     Returns:
         Full redirect URL including ``?code=...``.
     """
+    role_decision = require_lti_staff_access(launch_data)
+    assert role_decision.aelira_role is not None
     settings = get_settings()
     department_id = str(registration.department_id)
 
@@ -106,7 +122,6 @@ def handle_lti_launch(
             local, _, domain = email.partition("@")
             email = f"{local}+{department_id[:8]}@{domain}"
 
-        role_decision = authorize_lti_roles(launch_data.roles)
         user = User(
             email=email,
             name=launch_data.user_name or email,
@@ -125,6 +140,10 @@ def handle_lti_launch(
                 "department_id": department_id,
             },
         )
+
+    # Recompute authorization-derived state on every launch. A returning user
+    # must not retain broader access after their LMS role changes.
+    user.role = role_decision.aelira_role
 
     # Always stamp the LTI provenance (even for returning users)
     user.lti_source = f"{launch_data.platform_id}:{launch_data.user_id}"
@@ -161,6 +180,10 @@ def handle_lti_launch(
             "course_id": course_id,
             "lti_launch": True,
             "lti_roles": _simplify_roles(launch_data.roles),
+            "lti_staff": True,
+            "lti_staff_role": role_decision.staff_role,
+            "lti_account_wide": role_decision.account_wide,
+            "lti_authz_version": 2,
         },
         expires_in_minutes=settings.lti_access_token_expire_minutes,
     )

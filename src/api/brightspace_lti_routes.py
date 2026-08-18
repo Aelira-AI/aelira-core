@@ -36,8 +36,10 @@ from src.integrations.brightspace_lti import (
     FastAPICookieService,
 )
 from src.api.lti_launch_handler import (
+    LTIStaffAccessDenied,
     handle_lti_launch,
     exchange_code,
+    require_lti_staff_access,
     store_ags_context,
     create_bridge_code,
 )
@@ -332,6 +334,10 @@ async def brightspace_lti_launch(
         # Extract launch data
         launch_data = lti_service.extract_launch_data(message_launch)
 
+        # Staff authorization precedes registration lookup and all launch
+        # side effects, including deep-link, statistics, AGS, and provisioning.
+        require_lti_staff_access(launch_data)
+
         # Get issuer and client_id from the validated launch for department lookup
         issuer = lti_service.get_issuer_from_launch(message_launch)
         client_id = lti_service.get_client_id_from_launch(message_launch)
@@ -410,6 +416,9 @@ async def brightspace_lti_launch(
 
         return RedirectResponse(url=redirect_url, status_code=302)
 
+    except LTIStaffAccessDenied:
+        logger.warning("Brightspace LTI launch denied by staff-only policy")
+        return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
         logger.error(f"Brightspace LTI launch failed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=400, detail=f"LTI launch failed: {str(e)}")
@@ -445,11 +454,15 @@ async def brightspace_lti_deep_link(
         )
 
         launch_data = lti_service.extract_launch_data(message_launch)
+        require_lti_staff_access(launch_data)
 
         return await handle_brightspace_deep_link_launch(
             request, lti_service, message_launch, launch_data
         )
 
+    except LTIStaffAccessDenied:
+        logger.warning("Brightspace deep-link launch denied by staff-only policy")
+        return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
         logger.error(f"Brightspace deep link launch failed: {e}")
         raise HTTPException(status_code=400, detail=f"Deep link failed: {str(e)}")
