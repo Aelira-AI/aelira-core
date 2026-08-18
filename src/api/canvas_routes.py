@@ -14,7 +14,7 @@ import secrets
 import json
 import base64
 from urllib.parse import quote
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.responses import RedirectResponse
@@ -29,7 +29,6 @@ from ..db.models import (
     CloudJobQueue,
     CloudJobType,
     CloudJobStatus,
-    APIKey,
 )
 from ..integrations.canvas import (
     CanvasOAuthService,
@@ -37,7 +36,13 @@ from ..integrations.canvas import (
     CanvasFileInfo,
 )
 from ..integrations.oauth_token_manager import OAuthTokenManager
-from ..auth import get_required_api_key, verify_department_access
+from ..auth import verify_department_access
+from ..auth.canvas_permissions import (
+    require_canvas_staff,
+    require_lti_account_access,
+    require_lti_course_access,
+)
+from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ..middleware.quota import require_feature
 
 logger = logging.getLogger(__name__)
@@ -96,7 +101,7 @@ class CanvasRemediateResponse(BaseModel):
 async def connect_canvas(
     request: CanvasConnectRequest,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> Dict[str, str]:
     """
     Initiate Canvas OAuth 2.0 flow.
@@ -106,13 +111,13 @@ async def connect_canvas(
 
     Returns authorization URL to redirect user to.
     """
-    _, user_id, auth_department_id = api_key_info
-    dept_id = request.department_id or auth_department_id
-    verify_department_access(dept_id, auth_department_id)
+    require_lti_account_access(principal)
+    dept_id = request.department_id or principal.department_id
+    verify_department_access(dept_id, principal.department_id)
 
     # Check feature access - Canvas integration requires lms_integration feature
     await require_feature(
-        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+        db, principal.department_id, "lms_integration", "Canvas LMS Integration"
     )
 
     oauth_service = CanvasOAuthService()
@@ -304,7 +309,7 @@ async def canvas_oauth_callback(
 async def disconnect_canvas(
     department_id: str = Query(..., description="Department ID"),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> Dict[str, str]:
     """
     Disconnect Canvas integration.
@@ -313,8 +318,8 @@ async def disconnect_canvas(
 
     Revokes OAuth tokens and removes credentials.
     """
-    _, user_id, auth_department_id = api_key_info
-    verify_department_access(department_id, auth_department_id)
+    require_lti_account_access(principal)
+    verify_department_access(department_id, principal.department_id)
     credential = (
         db.query(CloudOAuthCredentials)
         .filter(
@@ -341,15 +346,16 @@ async def disconnect_canvas(
 async def canvas_connection_status(
     department_id: Optional[str] = Query(default=None, description="Department ID"),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasConnectionStatus:
     """
     Check Canvas connection status for a department.
 
     REQUIRES API KEY
     """
-    _, user_id, auth_department_id = api_key_info
-    dept_id = department_id or auth_department_id
+    require_lti_account_access(principal)
+    dept_id = department_id or principal.department_id
+    verify_department_access(dept_id, principal.department_id)
 
     credential = (
         db.query(CloudOAuthCredentials)
@@ -386,20 +392,27 @@ async def canvas_connection_status(
 async def list_canvas_courses(
     department_id: Optional[str] = Query(default=None, description="Department ID"),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> List[Dict[str, Any]]:
     """
     List Canvas courses for connected user.
 
     REQUIRES API KEY
     """
-    _, user_id, auth_department_id = api_key_info
-    dept_id = department_id or auth_department_id
+    require_canvas_staff(principal)
+    dept_id = department_id or principal.department_id
+    verify_department_access(dept_id, principal.department_id)
 
     credential, api_client = await _get_canvas_client(dept_id, db)
 
     try:
         courses = await api_client.list_courses(enrollment_state="active")
+        if principal.auth_method == "lti" and not principal.lti_account_wide:
+            courses = [
+                course
+                for course in courses
+                if str(course.id) == principal.lti_course_id
+            ]
 
         return [
             {
@@ -422,15 +435,16 @@ async def list_canvas_course_files(
     department_id: Optional[str] = Query(default=None, description="Department ID"),
     search_term: Optional[str] = Query(None, description="Search query"),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> List[Dict[str, Any]]:
     """
     List files in a Canvas course.
 
     REQUIRES API KEY
     """
-    _, user_id, auth_department_id = api_key_info
-    dept_id = department_id or auth_department_id
+    require_lti_course_access(principal, course_id)
+    dept_id = department_id or principal.department_id
+    verify_department_access(dept_id, principal.department_id)
 
     credential, api_client = await _get_canvas_client(dept_id, db)
 
@@ -450,7 +464,7 @@ async def list_canvas_course_folders(
     course_id: str,
     department_id: str = Query(..., description="Department ID"),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> List[Dict[str, Any]]:
     """
     List folders in a Canvas course.
@@ -458,12 +472,12 @@ async def list_canvas_course_folders(
     REQUIRES API KEY
     REQUIRES: lms_integration feature (department tier or higher)
     """
-    _, user_id, auth_department_id = api_key_info
-    verify_department_access(department_id, auth_department_id)
+    require_lti_course_access(principal, course_id)
+    verify_department_access(department_id, principal.department_id)
 
     # Check feature access - Canvas integration requires lms_integration feature
     await require_feature(
-        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+        db, principal.department_id, "lms_integration", "Canvas LMS Integration"
     )
     credential, api_client = await _get_canvas_client(department_id, db)
 
@@ -597,7 +611,7 @@ async def remediate_canvas_file(
     request: CanvasRemediateRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasRemediateResponse:
     """
     Queue remediation job for a Canvas file.
@@ -607,13 +621,13 @@ async def remediate_canvas_file(
 
     Downloads file, scans, remediates, and optionally uploads back.
     """
-    _, user_id, auth_department_id = api_key_info
-    dept_id = request.department_id or auth_department_id
-    verify_department_access(dept_id, auth_department_id)
+    require_lti_course_access(principal, request.course_id)
+    dept_id = request.department_id or principal.department_id
+    verify_department_access(dept_id, principal.department_id)
 
     # Check feature access - Canvas integration requires lms_integration feature
     await require_feature(
-        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+        db, principal.department_id, "lms_integration", "Canvas LMS Integration"
     )
     import uuid
 
@@ -635,12 +649,25 @@ async def remediate_canvas_file(
                 message="Canvas not connected. Please connect your Canvas account first.",
             )
 
+        # Resolve the requested ID through the course-scoped endpoint. The
+        # account-wide /files/{id} endpoint does not prove course membership.
+        _, api_client = await _get_canvas_client(dept_id, db)
+        try:
+            canvas_files = await api_client.list_course_files(request.course_id)
+            if not any(
+                str(file_info.id) == str(request.file_id) for file_info in canvas_files
+            ):
+                raise HTTPException(status_code=404, detail="Canvas file not found")
+        finally:
+            await api_client.close()
+
         # Get or create CloudFile record
         cloud_file = (
             db.query(CloudFile)
             .filter(
                 CloudFile.provider == CloudProvider.CANVAS.value,
                 CloudFile.provider_file_id == request.file_id,
+                CloudFile.provider_parent_id == request.course_id,
                 CloudFile.department_id == dept_id,
             )
             .first()
@@ -711,6 +738,8 @@ async def remediate_canvas_file(
             ),
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to queue Canvas remediation: {e}", exc_info=True)
         return CanvasRemediateResponse(

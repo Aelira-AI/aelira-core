@@ -18,17 +18,17 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..auth import verify_department_access
-from ..auth.dependencies import get_required_api_key
+from ..auth.canvas_permissions import require_lti_course_access
+from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ..db.database import get_db_dependency
 from ..db.models import (
-    APIKey,
     CloudFile,
     CloudJobQueue,
     CloudJobStatus,
@@ -223,19 +223,19 @@ async def scan_canvas_file(
     request: CanvasScanRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasScanResponse:
     """
     Queue accessibility scan for a single Canvas file.
 
     Requires API key authentication and lms_integration feature.
     """
-    _, user_id, auth_department_id = api_key_info
-    dept_id = request.department_id or auth_department_id
-    verify_department_access(dept_id, auth_department_id)
+    require_lti_course_access(principal, request.course_id)
+    dept_id = request.department_id or principal.department_id
+    verify_department_access(dept_id, principal.department_id)
 
     await require_feature(
-        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+        db, principal.department_id, "lms_integration", "Canvas LMS Integration"
     )
 
     try:
@@ -243,12 +243,25 @@ async def scan_canvas_file(
         _rewrite_localhost_for_docker(api_client)
 
         try:
-            # Check if CloudFile already exists
+            # Resolve the file through the course-scoped Canvas API before
+            # consulting cached state. Canvas file IDs are otherwise usable
+            # across courses in the same account.
+            canvas_files = await api_client.list_course_files(request.course_id)
+            file_info = next(
+                (item for item in canvas_files if str(item.id) == str(request.file_id)),
+                None,
+            )
+            if file_info is None:
+                raise HTTPException(status_code=404, detail="Canvas file not found")
+
+            # Cached Canvas files are course-scoped too. Never return or
+            # reassign a row created for another course.
             existing_cloud_file = (
                 db.query(CloudFile)
                 .filter(
                     CloudFile.provider == CloudProvider.CANVAS.value,
                     CloudFile.provider_file_id == request.file_id,
+                    CloudFile.provider_parent_id == request.course_id,
                     CloudFile.department_id == dept_id,
                 )
                 .first()
@@ -261,9 +274,6 @@ async def scan_canvas_file(
                     status="already_scanned",
                     cloud_file_id=existing_cloud_file.id,
                 )
-
-            # Get file metadata from Canvas
-            file_info = await api_client.get_file(request.file_id)
 
             file_type = _get_file_type(file_info.filename)
 
@@ -344,7 +354,7 @@ async def scan_canvas_course_files(
     request: CanvasBulkScanRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasBulkScanResponse:
     """
     Queue accessibility scans for all files in a Canvas course.
@@ -352,12 +362,12 @@ async def scan_canvas_course_files(
     Skips files that have already been scanned and don't need rescanning.
     Requires API key authentication and lms_integration feature.
     """
-    _, user_id, auth_department_id = api_key_info
-    dept_id = request.department_id or auth_department_id
-    verify_department_access(dept_id, auth_department_id)
+    require_lti_course_access(principal, request.course_id)
+    dept_id = request.department_id or principal.department_id
+    verify_department_access(dept_id, principal.department_id)
 
     await require_feature(
-        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+        db, principal.department_id, "lms_integration", "Canvas LMS Integration"
     )
 
     try:
@@ -380,10 +390,15 @@ async def scan_canvas_course_files(
                     .filter(
                         CloudFile.provider == CloudProvider.CANVAS.value,
                         CloudFile.provider_file_id == file_id,
+                        CloudFile.provider_parent_id == request.course_id,
                         CloudFile.department_id == dept_id,
                     )
                     .first()
                 )
+                if existing is not None and str(existing.provider_parent_id) != str(
+                    request.course_id
+                ):
+                    existing = None
 
                 if existing and not existing.needs_rescan:
                     skipped += 1
@@ -478,7 +493,7 @@ async def get_course_scan_status(
     course_id: str,
     file_ids: str = Query(..., description="Comma-separated Canvas file IDs"),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CourseScanStatusResponse:
     """
     Get compliance scan status for files in a Canvas course.
@@ -488,7 +503,7 @@ async def get_course_scan_status(
 
     Requires API key authentication.
     """
-    _, user_id, auth_department_id = api_key_info
+    require_lti_course_access(principal, course_id)
 
     # Parse file IDs
     requested_file_ids = [fid.strip() for fid in file_ids.split(",") if fid.strip()]
@@ -501,8 +516,9 @@ async def get_course_scan_status(
         db.query(CloudFile)
         .filter(
             CloudFile.provider == CloudProvider.CANVAS.value,
+            CloudFile.provider_parent_id == course_id,
             CloudFile.provider_file_id.in_(requested_file_ids),
-            CloudFile.department_id == auth_department_id,
+            CloudFile.department_id == principal.department_id,
         )
         .all()
     )
@@ -611,7 +627,7 @@ async def get_course_scan_status(
 async def upload_remediated_to_canvas(
     request: CanvasUploadRemediatedRequest,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasUploadRemediatedResponse:
     """
     Upload a remediated file back to Canvas.
@@ -621,17 +637,34 @@ async def upload_remediated_to_canvas(
 
     Requires API key authentication and lms_integration feature.
     """
-    _, user_id, auth_department_id = api_key_info
+    require_lti_course_access(principal, request.course_id)
 
-    # Look up the scan
-    scan = db.query(Scan).filter(Scan.id == request.scan_id).first()
+    cloud_file = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.last_scan_id == request.scan_id,
+            CloudFile.department_id == principal.department_id,
+            CloudFile.provider == CloudProvider.CANVAS.value,
+            CloudFile.provider_parent_id == request.course_id,
+        )
+        .first()
+    )
+    if not cloud_file or str(cloud_file.provider_parent_id) != str(request.course_id):
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    scan = (
+        db.query(Scan)
+        .filter(
+            Scan.id == request.scan_id,
+            Scan.department_id == principal.department_id,
+        )
+        .first()
+    )
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    verify_department_access(scan.department_id, auth_department_id)
-
     await require_feature(
-        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+        db, principal.department_id, "lms_integration", "Canvas LMS Integration"
     )
 
     # Find the remediated file path.
@@ -651,53 +684,22 @@ async def upload_remediated_to_canvas(
             if Path(candidate).exists():
                 remediated_path = candidate
 
-    # 2. Check other scans of the same file (user may have re-scanned
-    #    and remediated via the dashboard PDF scanner)
+    # 2. Check completed remediation output linked to this exact CloudFile.
     if not remediated_path:
-        other_scans = (
-            db.query(Scan)
+        remediation_job = (
+            db.query(CloudJobQueue)
             .filter(
-                Scan.department_id == scan.department_id,
-                Scan.file_name == scan.file_name,
-                Scan.storage_path.isnot(None),
-                Scan.id != scan.id,
+                CloudJobQueue.cloud_file_id == cloud_file.id,
+                CloudJobQueue.job_type == CloudJobType.REMEDIATE.value,
+                CloudJobQueue.status == CloudJobStatus.COMPLETED.value,
             )
-            .order_by(Scan.created_at.desc())
-            .limit(5)
-            .all()
-        )
-        for other in other_scans:
-            op = Path(other.storage_path)
-            if op.exists() and ("remediat" in op.name.lower()):
-                remediated_path = str(op)
-                break
-            candidate = get_remediated_file_path(other.storage_path)
-            if Path(candidate).exists():
-                remediated_path = candidate
-                break
-
-    # 3. Check CloudJobQueue result_data
-    if not remediated_path:
-        cloud_file = (
-            db.query(CloudFile)
-            .filter(CloudFile.last_scan_id == request.scan_id)
+            .order_by(CloudJobQueue.completed_at.desc())
             .first()
         )
-        if cloud_file:
-            remediation_job = (
-                db.query(CloudJobQueue)
-                .filter(
-                    CloudJobQueue.cloud_file_id == cloud_file.id,
-                    CloudJobQueue.job_type == CloudJobType.REMEDIATE.value,
-                    CloudJobQueue.status == CloudJobStatus.COMPLETED.value,
-                )
-                .order_by(CloudJobQueue.completed_at.desc())
-                .first()
-            )
-            if remediation_job and remediation_job.result_data:
-                rp = remediation_job.result_data.get("output_file")
-                if rp and Path(rp).exists():
-                    remediated_path = rp
+        if remediation_job and remediation_job.result_data:
+            rp = remediation_job.result_data.get("output_file")
+            if rp and Path(rp).exists():
+                remediated_path = rp
 
     if not remediated_path:
         raise HTTPException(
@@ -713,7 +715,7 @@ async def upload_remediated_to_canvas(
         )
 
     try:
-        credential, api_client = await _get_canvas_client(auth_department_id, db)
+        credential, api_client = await _get_canvas_client(principal.department_id, db)
         _rewrite_localhost_for_docker(api_client)
 
         try:
@@ -737,15 +739,9 @@ async def upload_remediated_to_canvas(
                 )
 
             # Update CloudFile remediation state
-            cloud_file = (
-                db.query(CloudFile)
-                .filter(CloudFile.last_scan_id == request.scan_id)
-                .first()
-            )
-            if cloud_file:
-                cloud_file.has_remediated_version = True
-                cloud_file.remediated_file_id = upload_result.file_id
-                db.commit()
+            cloud_file.has_remediated_version = True
+            cloud_file.remediated_file_id = upload_result.file_id
+            db.commit()
 
             logger.info(
                 f"Uploaded remediated file to Canvas: scan={request.scan_id}, "

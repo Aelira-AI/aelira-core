@@ -23,8 +23,9 @@ import uuid
 
 # Import app for testing
 from src.api.main import app
-from src.auth.dependencies import get_required_api_key
+from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from src.db.database import get_db_dependency
+from src.db.models import UserRole
 
 # Mark all tests in this module as integration (skipped in CI)
 pytestmark = pytest.mark.integration
@@ -105,18 +106,19 @@ def patch_require_feature():
 
 @pytest.fixture
 def override_deps(mock_api_key, mock_session, patch_require_feature):
-    """Override FastAPI dependencies for auth and DB, cleaning up after the test.
-
-    get_required_api_key returns a tuple: (api_key, user_id, department_id).
-    """
-    app.dependency_overrides[get_required_api_key] = lambda: (
-        mock_api_key,
-        "test-user-123",
-        "test-dept-456",
+    """Override FastAPI dependencies for auth and DB, cleaning up after the test."""
+    app.dependency_overrides[get_authenticated_principal] = (
+        lambda: AuthenticatedPrincipal(
+            api_key=mock_api_key,
+            user_id="test-user-123",
+            department_id="test-dept-456",
+            user_role=UserRole.FACULTY,
+            auth_method="api_key",
+        )
     )
     app.dependency_overrides[get_db_dependency] = lambda: mock_session
     yield
-    app.dependency_overrides.pop(get_required_api_key, None)
+    app.dependency_overrides.pop(get_authenticated_principal, None)
     app.dependency_overrides.pop(get_db_dependency, None)
 
 
@@ -186,10 +188,14 @@ class TestCanvasOAuthFlow:
     ):
         """Test Canvas connect with wrong department."""
         # Override with a different department to trigger 403
-        app.dependency_overrides[get_required_api_key] = lambda: (
-            mock_api_key,
-            "test-user-123",
-            "different-dept",
+        app.dependency_overrides[get_authenticated_principal] = (
+            lambda: AuthenticatedPrincipal(
+                api_key=mock_api_key,
+                user_id="test-user-123",
+                department_id="different-dept",
+                user_role=UserRole.FACULTY,
+                auth_method="api_key",
+            )
         )
         app.dependency_overrides[get_db_dependency] = lambda: mock_session
         try:
@@ -204,7 +210,7 @@ class TestCanvasOAuthFlow:
 
             assert response.status_code == 403
         finally:
-            app.dependency_overrides.pop(get_required_api_key, None)
+            app.dependency_overrides.pop(get_authenticated_principal, None)
             app.dependency_overrides.pop(get_db_dependency, None)
 
 

@@ -216,18 +216,14 @@ class CanvasAPIClient:
         Returns:
             List of file information
         """
-        client = await self._get_client()
         params = {"per_page": 100}
         if search_term:
             params["search_term"] = search_term
         if content_types:
             params["content_types[]"] = content_types
 
-        response = await client.get(
-            f"{self.api_base}/courses/{course_id}/files", params=params
-        )
-        response.raise_for_status()
-        files = response.json()
+        url = f"{self.api_base}/courses/{course_id}/files"
+        files = await self._paginate(url, params=params)
 
         return [self._parse_file_info(file) for file in files]
 
