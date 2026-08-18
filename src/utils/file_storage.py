@@ -14,8 +14,15 @@ from fastapi import UploadFile
 
 logger = logging.getLogger(__name__)
 
-# Base directory for uploaded files
-UPLOAD_BASE_DIR = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
+# Base directory for uploaded files.
+#
+# The default used to be the absolute /app/uploads, which is correct inside
+# the container and wrong everywhere else: running from source, the process
+# tried to create a directory at the filesystem root and failed with a
+# permission error. Deriving it from the working directory keeps the
+# container behaviour identical, because the container works out of /app,
+# and gives every other environment a writable path it owns.
+UPLOAD_BASE_DIR = Path(os.environ.get("UPLOAD_DIR") or Path.cwd() / "uploads")
 
 
 def get_scan_storage_dir(department_id: str, scan_id: str) -> Path:
