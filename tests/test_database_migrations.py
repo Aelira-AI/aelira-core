@@ -45,6 +45,23 @@ def alembic_config():
     return config
 
 
+@pytest.fixture(scope="module", autouse=True)
+def restore_schema_after_module(alembic_config):
+    """Leave the database at head, whatever these tests did to it.
+
+    These tests run real downgrades against the same database every other
+    test shares. A downgrade drops columns, so a test that happens to run
+    afterwards sees a schema the application no longer matches and fails
+    for a reason that has nothing to do with it. Restoring the schema is
+    the price of exercising migrations in place.
+    """
+    yield
+    try:
+        command.upgrade(alembic_config, "head")
+    except Exception:  # pragma: no cover - best effort restoration
+        pass
+
+
 @pytest.fixture(scope="module")
 def test_engine():
     """Create test database engine."""

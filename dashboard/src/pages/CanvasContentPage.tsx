@@ -36,6 +36,7 @@ import {
   contentItemState,
   CONTENT_ITEM_STATE_COLOR,
   type LiveCanvasFile,
+  type MergedContentItem,
 } from '../utils/mergeCourseContent';
 import { summarizeBatchOutcome } from '../utils/batchActionResult';
 
@@ -377,10 +378,21 @@ export default function CanvasContentPage(): React.ReactElement {
   // scan pipeline (c67cb9f), this endpoint does the remediation work
   // in-request and returns only once it's actually done — no queue, no
   // background task needed, and the response is trustworthy immediately.
-  const handleRemediateItem = async (scanId: string, providerFileId: string): Promise<void> => {
+  // Files are documents and go through the scan-based endpoint, which
+  // downloads them. Content items are markup held in our own database and
+  // are remediated in place. Sending a content item to the file endpoint
+  // makes it try to download a Canvas file that does not exist, and the
+  // 404 surfaces as "remediation failed" when nothing was ever attempted.
+  const postRemediate = (item: MergedContentItem) =>
+    item.content_type === 'file'
+      ? apiClient.post(`/education/remediate/${item.scan_id}`)
+      : apiClient.post(`/canvas/content/${item.cloud_file_id}/remediate`);
+
+  const handleRemediateItem = async (item: MergedContentItem): Promise<void> => {
+    const providerFileId = item.provider_file_id;
     setRemediatingIds((prev) => new Set(prev).add(providerFileId));
     try {
-      const res = await apiClient.post(`/education/remediate/${scanId}`);
+      const res = await postRemediate(item);
       const fixed = res.data?.fixed_count ?? 0;
       const manual = res.data?.manual_count ?? 0;
       if (res.data?.success === false) {
@@ -436,7 +448,7 @@ export default function CanvasContentPage(): React.ReactElement {
 
     for (const [index, item] of remediableItems.entries()) {
       try {
-        const res = await apiClient.post(`/education/remediate/${item.scan_id}`);
+        const res = await postRemediate(item);
         if (res.data?.success === false) {
           failed += 1;
           errors.push(`${item.provider_file_id}: ${res.data?.message || 'remediation failed'}`);
@@ -1047,7 +1059,7 @@ export default function CanvasContentPage(): React.ReactElement {
                           {isRemediable(item) && (
                               <button
                                 onClick={() =>
-                                  handleRemediateItem(item.scan_id as string, item.provider_file_id)
+                                  handleRemediateItem(item)
                                 }
                                 disabled={remediatingIds.has(item.provider_file_id)}
                                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 bg-[var(--interactive-accent-bg)] text-[var(--interactive-primary-fg)]"

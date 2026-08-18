@@ -883,6 +883,92 @@ async def get_content_diff(
 # =============================================================================
 
 
+# =============================================================================
+# 5b. POST /canvas/content/{cloud_file_id}/remediate
+# =============================================================================
+
+
+class ContentRemediateResponse(BaseModel):
+    """Result of remediating a single content item."""
+
+    success: bool
+    verified: bool = False
+    fixed_count: int = 0
+    issues_remaining: int = 0
+    issues_introduced: int = 0
+    remediated_score: Optional[float] = None
+    error: Optional[str] = None
+
+
+@router.post("/{cloud_file_id}/remediate", response_model=ContentRemediateResponse)
+async def remediate_content_item(
+    cloud_file_id: str,
+    db: Session = Depends(get_db_dependency),
+    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+) -> ContentRemediateResponse:
+    """
+    Remediate one content item and verify the result by rescanning it.
+
+    Content items are remediated in place from their stored HTML. Files go
+    through the scan-based remediation endpoint instead, because they are
+    documents rather than markup; asking this route to handle them would
+    mean downloading a file that does not exist and reporting a download
+    failure as a remediation failure, which is what used to happen when the
+    client sent every item to the file endpoint.
+    """
+    _, user_id, auth_department_id = api_key_info
+
+    await require_feature(
+        db, auth_department_id, "lms_integration", "Canvas LMS Integration"
+    )
+
+    cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+
+    if cf.content_source == "file":
+        return ContentRemediateResponse(
+            success=False,
+            error="Files are remediated through the scan-based endpoint",
+        )
+
+    if not cf.content_body:
+        return ContentRemediateResponse(
+            success=False,
+            error="This item has no content to remediate",
+        )
+
+    try:
+        credential, api_client = await _get_canvas_client(auth_department_id, db)
+        try:
+            scanner = CanvasContentScanner(
+                canvas_client=api_client,
+                db=db,
+                department_id=auth_department_id,
+                credential_id=credential.id,
+            )
+            result = await scanner.remediate_content_item(cf)
+        finally:
+            await api_client.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Content remediation failed: {e}", exc_info=True)
+        return ContentRemediateResponse(success=False, error=str(e))
+
+    if not result.get("success"):
+        return ContentRemediateResponse(
+            success=False, error=result.get("error", "Remediation failed")
+        )
+
+    return ContentRemediateResponse(
+        success=True,
+        verified=bool(result.get("verified")),
+        fixed_count=result.get("fixed_count", 0),
+        issues_remaining=result.get("issues_remaining", 0),
+        issues_introduced=result.get("issues_introduced", 0),
+        remediated_score=result.get("remediated_score"),
+    )
+
+
 @router.post("/{cloud_file_id}/approve", response_model=ApproveRejectResponse)
 async def approve_content(
     cloud_file_id: str,

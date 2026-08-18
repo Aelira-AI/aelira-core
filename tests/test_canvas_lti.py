@@ -465,3 +465,34 @@ class TestCanvasOAuthCallback:
             assert "instructor@university.edu" in location
         finally:
             app.dependency_overrides.pop(get_db_dependency, None)
+
+
+def test_callback_reports_a_refusal_instead_of_a_validation_error(client):
+    """Canvas answers a refused authorisation on this same URL, with an
+    error and no code. The route required a code, so the person
+    connecting got a raw validation page about a missing query
+    parameter rather than the reason Canvas gave."""
+    state = (
+        base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "canvas_instance_url": "https://canvas.university.edu",
+                    "department_id": "test-dept-456",
+                }
+            ).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+
+    response = client.get(
+        f"/canvas/oauth/callback?state={state}"
+        "&error=unauthorized_client"
+        "&error_description=Client+does+not+have+access",
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (302, 307)
+    location = response.headers["location"]
+    assert "canvas=error" in location
+    assert "Client%20does%20not%20have%20access" in location

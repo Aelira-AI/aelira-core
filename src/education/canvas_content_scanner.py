@@ -17,6 +17,7 @@ import logging
 import asyncio
 import uuid
 import tempfile
+from html import escape
 import os
 from pathlib import Path
 import re
@@ -49,25 +50,43 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _wrap_html_fragment(fragment: str) -> str:
-    """
-    Wrap a body-only HTML fragment in a minimal valid document skeleton.
+AELIRA_CONTENT_ID = "aelira-content"
 
-    axe-core requires a complete document (DOCTYPE, <html>, <head>, <body>)
-    to run its rule engine.  Canvas stores only body fragments, so we wrap
-    them before scanning and strip the wrapper after remediation.
+
+def _wrap_html_fragment(fragment: str, title: str = "Scan") -> str:
+    """
+    Wrap a body-only HTML fragment in the document context the LMS renders.
+
+    axe-core needs a complete document to run, and a bare skeleton is not a
+    neutral one: with no landmark and no first-level heading, axe reports
+    region, landmark-one-main and page-has-heading-one against content whose
+    author never had the chance to provide them. The LMS supplies the page
+    chrome, so those findings describe our wrapper rather than the page, and
+    an author cannot act on them.
+
+    Wrapping in a main landmark with the item's title as the heading matches
+    what the LMS actually renders, so axe judges the author's content. The
+    fragment sits in a marked container, which is what the unwrapper reads
+    back, so nothing we add here can leak into the stored content.
 
     Args:
-        fragment: HTML body content from Canvas
+        fragment: HTML body content from the LMS
+        title: The item's title, rendered as the page heading
 
     Returns:
         Full HTML document string
     """
+    safe_title = escape(title or "Untitled")
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
-        "<head><title>Scan</title></head>\n"
-        f"<body>{fragment}</body>\n"
+        f"<head><title>{safe_title}</title></head>\n"
+        "<body>\n"
+        "<main>\n"
+        f"<h1>{safe_title}</h1>\n"
+        f'<div id="{AELIRA_CONTENT_ID}">{fragment}</div>\n'
+        "</main>\n"
+        "</body>\n"
         "</html>"
     )
 
@@ -86,6 +105,12 @@ def _unwrap_html_fragment(document: str) -> str:
         Inner HTML of the <body> element
     """
     soup = BeautifulSoup(document, "html.parser")
+    # The wrapper marks the author's content, so read that back rather than
+    # the whole body: the landmark and heading we add for scanning context
+    # belong to the LMS, not to the item, and must never be written back.
+    marked = soup.find(id=AELIRA_CONTENT_ID)
+    if marked is not None:
+        return marked.decode_contents()
     body = soup.find("body")
     if body is None:
         return document
@@ -443,7 +468,9 @@ class CanvasContentScanner:
         if not cloud_file.content_body:
             return {"scan_id": None, "issues": 0, "error": "No content body"}
 
-        wrapped_html = _wrap_html_fragment(cloud_file.content_body)
+        wrapped_html = _wrap_html_fragment(
+            cloud_file.content_body, cloud_file.file_name
+        )
 
         # Create Scan record — no authenticated user for LTI-initiated scans
         scan = Scan(
@@ -561,7 +588,9 @@ class CanvasContentScanner:
             return {"success": True, "fixed_count": 0, "message": "No issues to fix"}
 
         # Write wrapped HTML to temp file for HtmlRemediator
-        wrapped_html = _wrap_html_fragment(cloud_file.content_body)
+        wrapped_html = _wrap_html_fragment(
+            cloud_file.content_body, cloud_file.file_name
+        )
         temp_path = None
 
         try:
@@ -573,9 +602,44 @@ class CanvasContentScanner:
 
             # Bridge to HtmlRemediator
             try:
+                from ..education.remediation.base import RemediationConfig
                 from ..education.remediation.html_remediator import HtmlRemediator
 
-                remediator = HtmlRemediator(temp_path, issues)
+                # Without a model the remediator can only do the mechanical
+                # fixes, so a page whose problems are alt text, contrast and
+                # table headers came back untouched: correct, and useless.
+                # The provider manager is the same one the file path uses,
+                # and it degrades to mechanical fixes on its own when no
+                # provider is configured.
+                ai_client = None
+                try:
+                    from ..ai.providers.manager import get_provider_manager
+
+                    ai_client = get_provider_manager()
+                except Exception as e:  # pragma: no cover - provider optional
+                    logger.warning(
+                        "No AI provider available for content remediation: %s", e
+                    )
+
+                config = RemediationConfig(
+                    use_ai=bool(ai_client)
+                    and self.scan_options.get("generate_alt_text", True)
+                )
+
+                # Raw axe violations carry no category, and the remediator
+                # decides what it can fix by category, so every issue was
+                # classified as needing a human and nothing was attempted.
+                # This is the same normalisation the file path performs.
+                from ..api.education.remediation_routes import (
+                    _normalize_issues_for_remediation,
+                )
+
+                remediator = HtmlRemediator(
+                    temp_path,
+                    _normalize_issues_for_remediation(issues),
+                    config=config,
+                    ai_client=ai_client,
+                )
                 result = remediator.remediate()
 
                 # Read the output file
@@ -739,7 +803,7 @@ class CanvasContentScanner:
             return counts
 
         try:
-            wrapped = _wrap_html_fragment(remediated_fragment)
+            wrapped = _wrap_html_fragment(remediated_fragment, cloud_file.file_name)
             axe_results = await self._run_axe_scan(wrapped)
         except Exception as e:
             logger.warning(

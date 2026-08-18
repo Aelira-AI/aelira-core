@@ -81,6 +81,17 @@ def upgrade():
             if column.name not in have:
                 op.add_column("email_alert_settings", column.copy())
 
+    # A scan started from an LTI launch has no authenticated user, and the
+    # model says so, but the column was created NOT NULL. Every Canvas
+    # content scan therefore failed at insert on a database built by these
+    # migrations, while passing against one built from the models.
+    if "scans" in tables:
+        scans = {c["name"]: c for c in sa.inspect(op.get_bind()).get_columns("scans")}
+        if "user_id" in scans and not scans["user_id"]["nullable"]:
+            op.alter_column(
+                "scans", "user_id", existing_type=sa.String(36), nullable=True
+            )
+
     if "content_writeback_log" not in tables:
         op.create_table(
             "content_writeback_log",
@@ -141,7 +152,9 @@ def upgrade():
 
 def downgrade():
     # Enum values are deliberately not removed: PostgreSQL cannot drop one,
-    # and rows may already reference them.
+    # and rows may already reference them. scans.user_id is left nullable
+    # for the same reason: rows written since the upgrade may hold NULL,
+    # and restoring the constraint would fail on them.
     tables = _tables()
 
     if "wcag_guidelines" in tables:

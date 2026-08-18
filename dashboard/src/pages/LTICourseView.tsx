@@ -31,6 +31,7 @@ import {
   contentItemState,
   CONTENT_ITEM_STATE_COLOR,
   type ContentItemStateKey,
+  type MergedContentItem,
 } from '../utils/mergeCourseContent';
 import { summarizeBatchOutcome } from '../utils/batchActionResult';
 import { useToast } from '../context/toast-context';
@@ -801,13 +802,24 @@ export function LTICourseView(): React.ReactElement {
   // CloudJobQueue scan pipeline, c67cb9f) — it's done by the time the
   // request resolves — so this clears its own loading state and calls
   // fetchContentData() directly instead of waiting on polling.
-  const handleRemediateContentItem = async (scanId: string, providerFileId: string): Promise<void> => {
+  // Files are documents and go through the scan-based endpoint, which
+  // downloads them. Content items are markup held in our own database and
+  // are remediated in place. Sending a content item to the file endpoint
+  // makes it try to download a file that does not exist, and the 404
+  // surfaces as "remediation failed" when nothing was ever attempted.
+  const postRemediate = (client: AxiosInstance, item: MergedContentItem) =>
+    item.content_type === 'file'
+      ? client.post(`/education/remediate/${item.scan_id}`)
+      : client.post(`/canvas/content/${item.cloud_file_id}/remediate`);
+
+  const handleRemediateContentItem = async (item: MergedContentItem): Promise<void> => {
     const client = clientRef.current;
     if (!client) return;
 
+    const providerFileId = item.provider_file_id;
     setRemediatingFiles((prev) => new Set(prev).add(providerFileId));
     try {
-      const res = await client.post(`/education/remediate/${scanId}`);
+      const res = await postRemediate(client, item);
       const fixed = res.data?.fixed_count ?? 0;
       const manual = res.data?.manual_count ?? 0;
       if (res.data?.success === false) {
@@ -859,7 +871,7 @@ export function LTICourseView(): React.ReactElement {
 
     for (const [index, item] of remediableItems.entries()) {
       try {
-        const res = await client.post(`/education/remediate/${item.scan_id}`);
+        const res = await postRemediate(client, item);
         if (res.data?.success === false) {
           failed += 1;
           errors.push(`${item.provider_file_id}: ${res.data?.message || 'remediation failed'}`);
@@ -1265,7 +1277,7 @@ export function LTICourseView(): React.ReactElement {
                       {isRemediable(item) && (
                           <button
                             onClick={() =>
-                              handleRemediateContentItem(item.scan_id as string, item.provider_file_id)
+                              handleRemediateContentItem(item)
                             }
                             disabled={remediatingFiles.has(item.provider_file_id)}
                             className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 hover:opacity-90 min-h-[44px]"

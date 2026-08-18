@@ -1051,6 +1051,58 @@ class TestWriteback:
         assert response.status_code == 404
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_remediating_a_content_item_uses_the_content_path(
+        self, mock_get_client, client, mock_session, override_deps
+    ):
+        """Content items are markup we hold, not documents to download. They
+        used to be sent to the file endpoint, which tried to fetch a Canvas
+        file that does not exist and reported the 404 as a failed
+        remediation, when nothing had been attempted."""
+        cf = _make_cloud_file(content_source="page", content_body="<p>Hi</p>")
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        mock_credential = MagicMock()
+        mock_credential.id = "cred-1"
+        mock_get_client.return_value = (mock_credential, AsyncMock())
+
+        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
+            scanner_instance = AsyncMock()
+            scanner_instance.remediate_content_item.return_value = {
+                "success": True,
+                "verified": True,
+                "fixed_count": 2,
+                "issues_remaining": 1,
+                "issues_introduced": 0,
+                "remediated_score": 91.0,
+            }
+            MockScanner.return_value = scanner_instance
+
+            response = client.post(f"/canvas/content/{cf.id}/remediate")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["verified"] is True
+        assert data["fixed_count"] == 2
+        assert data["issues_introduced"] == 0
+        scanner_instance.remediate_content_item.assert_awaited_once()
+
+    def test_remediating_a_file_row_is_refused_with_a_reason(
+        self, client, mock_session, override_deps
+    ):
+        """Files belong to the scan-based endpoint. Saying so is better than
+        attempting it and reporting a download failure."""
+        cf = _make_cloud_file(content_source="file", content_body=None)
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        response = client.post(f"/canvas/content/{cf.id}/remediate")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is False
+        assert "scan-based" in data["error"]
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_writeback_file_row_uses_the_upload_path(
         self, mock_get_client, client, mock_session, override_deps
     ):
