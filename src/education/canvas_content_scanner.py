@@ -17,6 +17,7 @@ import logging
 import asyncio
 import uuid
 import tempfile
+from html import escape
 import os
 from pathlib import Path
 import re
@@ -49,25 +50,43 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _wrap_html_fragment(fragment: str) -> str:
-    """
-    Wrap a body-only HTML fragment in a minimal valid document skeleton.
+AELIRA_CONTENT_ID = "aelira-content"
 
-    axe-core requires a complete document (DOCTYPE, <html>, <head>, <body>)
-    to run its rule engine.  Canvas stores only body fragments, so we wrap
-    them before scanning and strip the wrapper after remediation.
+
+def _wrap_html_fragment(fragment: str, title: str = "Scan") -> str:
+    """
+    Wrap a body-only HTML fragment in the document context the LMS renders.
+
+    axe-core needs a complete document to run, and a bare skeleton is not a
+    neutral one: with no landmark and no first-level heading, axe reports
+    region, landmark-one-main and page-has-heading-one against content whose
+    author never had the chance to provide them. The LMS supplies the page
+    chrome, so those findings describe our wrapper rather than the page, and
+    an author cannot act on them.
+
+    Wrapping in a main landmark with the item's title as the heading matches
+    what the LMS actually renders, so axe judges the author's content. The
+    fragment sits in a marked container, which is what the unwrapper reads
+    back, so nothing we add here can leak into the stored content.
 
     Args:
-        fragment: HTML body content from Canvas
+        fragment: HTML body content from the LMS
+        title: The item's title, rendered as the page heading
 
     Returns:
         Full HTML document string
     """
+    safe_title = escape(title or "Untitled")
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
-        "<head><title>Scan</title></head>\n"
-        f"<body>{fragment}</body>\n"
+        f"<head><title>{safe_title}</title></head>\n"
+        "<body>\n"
+        "<main>\n"
+        f"<h1>{safe_title}</h1>\n"
+        f'<div id="{AELIRA_CONTENT_ID}">{fragment}</div>\n'
+        "</main>\n"
+        "</body>\n"
         "</html>"
     )
 
@@ -86,6 +105,12 @@ def _unwrap_html_fragment(document: str) -> str:
         Inner HTML of the <body> element
     """
     soup = BeautifulSoup(document, "html.parser")
+    # The wrapper marks the author's content, so read that back rather than
+    # the whole body: the landmark and heading we add for scanning context
+    # belong to the LMS, not to the item, and must never be written back.
+    marked = soup.find(id=AELIRA_CONTENT_ID)
+    if marked is not None:
+        return marked.decode_contents()
     body = soup.find("body")
     if body is None:
         return document
@@ -443,7 +468,9 @@ class CanvasContentScanner:
         if not cloud_file.content_body:
             return {"scan_id": None, "issues": 0, "error": "No content body"}
 
-        wrapped_html = _wrap_html_fragment(cloud_file.content_body)
+        wrapped_html = _wrap_html_fragment(
+            cloud_file.content_body, cloud_file.file_name
+        )
 
         # Create Scan record — no authenticated user for LTI-initiated scans
         scan = Scan(
@@ -560,8 +587,16 @@ class CanvasContentScanner:
         if not issues:
             return {"success": True, "fixed_count": 0, "message": "No issues to fix"}
 
+        # Describe the images first, from the images themselves. The
+        # remediator cannot reach them, so anything it writes for an image is
+        # guesswork; this is the only place holding both the credential and
+        # the vision service.
+        source_html, images_described = await self._describe_images(
+            cloud_file, cloud_file.content_body
+        )
+
         # Write wrapped HTML to temp file for HtmlRemediator
-        wrapped_html = _wrap_html_fragment(cloud_file.content_body)
+        wrapped_html = _wrap_html_fragment(source_html, cloud_file.file_name)
         temp_path = None
 
         try:
@@ -573,9 +608,44 @@ class CanvasContentScanner:
 
             # Bridge to HtmlRemediator
             try:
+                from ..education.remediation.base import RemediationConfig
                 from ..education.remediation.html_remediator import HtmlRemediator
 
-                remediator = HtmlRemediator(temp_path, issues)
+                # Without a model the remediator can only do the mechanical
+                # fixes, so a page whose problems are alt text, contrast and
+                # table headers came back untouched: correct, and useless.
+                # The provider manager is the same one the file path uses,
+                # and it degrades to mechanical fixes on its own when no
+                # provider is configured.
+                ai_client = None
+                try:
+                    from ..ai.providers.manager import get_provider_manager
+
+                    ai_client = get_provider_manager()
+                except Exception as e:  # pragma: no cover - provider optional
+                    logger.warning(
+                        "No AI provider available for content remediation: %s", e
+                    )
+
+                config = RemediationConfig(
+                    use_ai=bool(ai_client)
+                    and self.scan_options.get("generate_alt_text", True)
+                )
+
+                # Raw axe violations carry no category, and the remediator
+                # decides what it can fix by category, so every issue was
+                # classified as needing a human and nothing was attempted.
+                # This is the same normalisation the file path performs.
+                from ..api.education.remediation_routes import (
+                    _normalize_issues_for_remediation,
+                )
+
+                remediator = HtmlRemediator(
+                    temp_path,
+                    _normalize_issues_for_remediation(issues),
+                    config=config,
+                    ai_client=ai_client,
+                )
                 result = remediator.remediate()
 
                 # Read the output file
@@ -705,6 +775,92 @@ class CanvasContentScanner:
                     pass
 
     # ------------------------------------------------------------------
+    # 3a. _describe_images — real alt text, from the actual image
+    # ------------------------------------------------------------------
+
+    _FILE_ID_PATTERN = re.compile(r"/files/(\d+)")
+
+    async def _describe_images(self, cloud_file: CloudFile, html: str) -> tuple:
+        """Write alt text for images that have none, from the image itself.
+
+        The remediator's own alt-text path asks a text model to invent a
+        description from an issue message and a code snippet, having never
+        seen the image. That is how a chart came back marked decorative and
+        a rubric came back described as a photograph.
+
+        Documents carry their images inside them, which is why the file
+        path has always produced real descriptions. Content stored by an LMS
+        refers to images by URL, so the image has to be fetched first, with
+        the credential, before the same vision service can look at it.
+
+        Returns the HTML and the number of images actually described.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        targets = [
+            img
+            for img in soup.find_all("img")
+            if img.get("alt") is None and img.get("role") != "presentation"
+        ]
+        if not targets:
+            return html, 0
+
+        from ..education.image_alt_text import ImageAltTextGenerator
+        from ..education.remediation.html_remediator import HtmlRemediator
+
+        generator = ImageAltTextGenerator()
+        described = 0
+
+        for img in targets:
+            source = img.get("data-api-endpoint") or img.get("src", "")
+            match = self._FILE_ID_PATTERN.search(source)
+            if not match:
+                logger.info(
+                    "Image is not an LMS file, leaving its description to a human: %s",
+                    img.get("src", ""),
+                )
+                continue
+
+            file_id = match.group(1)
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                    tmp_path = tmp.name
+                result = await self.canvas_client.download_file(file_id, tmp_path)
+                if not getattr(result, "success", False):
+                    logger.warning(
+                        "Could not fetch image %s, leaving it to a human", file_id
+                    )
+                    continue
+
+                generated = await generator.generate_alt_text(
+                    tmp_path, context=f"Image in {cloud_file.file_name}"
+                )
+                alt_text = (generated or {}).get("alt_text", "")
+                if not generated.get(
+                    "success"
+                ) or not HtmlRemediator.is_usable_alt_text(alt_text):
+                    logger.info(
+                        "No usable description for image %s, leaving it to a human",
+                        file_id,
+                    )
+                    continue
+
+                img["alt"] = alt_text.strip()
+                described += 1
+            except Exception as e:
+                logger.warning(
+                    "Alt text generation failed for image %s: %s", file_id, e
+                )
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+        return (str(soup) if described else html), described
+
+    # ------------------------------------------------------------------
     # 3b. _verify_remediation — rescan what remediation produced
     # ------------------------------------------------------------------
 
@@ -739,7 +895,7 @@ class CanvasContentScanner:
             return counts
 
         try:
-            wrapped = _wrap_html_fragment(remediated_fragment)
+            wrapped = _wrap_html_fragment(remediated_fragment, cloud_file.file_name)
             axe_results = await self._run_axe_scan(wrapped)
         except Exception as e:
             logger.warning(
@@ -756,9 +912,20 @@ class CanvasContentScanner:
 
         before = _nodes_by_rule(original_issues)
         after = _nodes_by_rule(violations)
-        remaining = sum(count for rule, count in after.items() if rule in before)
-        introduced = sum(count for rule, count in after.items() if rule not in before)
-        fixed = max(0, sum(before.values()) - remaining)
+
+        # A rule that failed before and fails harder afterwards has had
+        # failures introduced as well as failures remaining. Counting the
+        # whole after-total as "remaining" would hide that: the honest
+        # split is what was already failing, and what is new on top.
+        remaining = 0
+        introduced = 0
+        fixed = 0
+        for rule, count in after.items():
+            was = before.get(rule, 0)
+            remaining += min(count, was)
+            introduced += max(0, count - was)
+        for rule, was in before.items():
+            fixed += max(0, was - after.get(rule, 0))
 
         scan = Scan(
             id=str(uuid.uuid4()),

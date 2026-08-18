@@ -13,6 +13,7 @@ import os
 import secrets
 import json
 import base64
+from urllib.parse import quote
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
@@ -148,16 +149,45 @@ async def connect_canvas(
 
 @router.get("/oauth/callback")
 async def canvas_oauth_callback(
-    code: str = Query(..., description="Authorization code from Canvas"),
+    code: Optional[str] = Query(None, description="Authorization code from Canvas"),
     state: str = Query(..., description="State token encoding CSRF + context"),
+    error: Optional[str] = Query(None, description="Error code, if Canvas refused"),
+    error_description: Optional[str] = Query(
+        None, description="Human-readable reason, if Canvas refused"
+    ),
     db: Session = Depends(get_db_dependency),
-) -> Dict[str, Any]:
+) -> Any:
     """
     Handle Canvas OAuth callback.
 
     Decodes canvas_instance_url and department_id from the state parameter,
     then exchanges the authorization code for an access token.
+
+    Canvas answers a refused authorisation on this same URL, with an error
+    instead of a code. That is a configuration problem the person connecting
+    can fix, so it is reported to them in the dashboard rather than as a
+    validation failure about a missing query parameter.
     """
+    dashboard_url = os.getenv("DASHBOARD_URL", "http://localhost:5173")
+
+    if error:
+        reason = error_description or error
+        logger.warning(f"Canvas refused the OAuth authorisation: {error} - {reason}")
+        return RedirectResponse(
+            url=(
+                f"{dashboard_url}/integrations?canvas=error"
+                f"&message={quote(reason[:200])}"
+            ),
+        )
+
+    if not code:
+        return RedirectResponse(
+            url=(
+                f"{dashboard_url}/integrations?canvas=error"
+                f"&message={quote('Canvas returned no authorisation code.')}"
+            ),
+        )
+
     # Decode state to extract context (add padding if stripped by Canvas)
     try:
         padded_state = state + "=" * (-len(state) % 4)
@@ -171,7 +201,6 @@ async def canvas_oauth_callback(
         )
 
     # Rewrite localhost for server-side calls inside Docker
-    import os
 
     server_canvas_url = canvas_instance_url
     if os.getenv("ENV") == "development" and "localhost" in canvas_instance_url:
@@ -335,10 +364,14 @@ async def canvas_connection_status(
     if not credential:
         return CanvasConnectionStatus(connected=False)
 
+    # provider_metadata is nullable, so a credential written by an older
+    # path can have none. Reading through it directly turned that into a
+    # 500 on a plain status check.
+    metadata = credential.provider_metadata or {}
     return CanvasConnectionStatus(
         connected=True,
-        canvas_instance_url=credential.provider_metadata.get("canvas_instance_url"),
-        user_email=credential.provider_metadata.get("user_email"),
+        canvas_instance_url=metadata.get("canvas_instance_url"),
+        user_email=metadata.get("user_email"),
         connected_at=credential.created_at,
         credential_id=credential.id,
     )

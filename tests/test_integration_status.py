@@ -76,7 +76,7 @@ class TestUnifiedIntegrationStatus:
 
     def test_get_all_integration_status(self, client):
         """Test getting status of all integrations."""
-        response = client.get("/api/integrations/status")
+        response = client.get("/integrations/status")
 
         assert response.status_code in [200, 401]
         if response.status_code == 200:
@@ -86,7 +86,7 @@ class TestUnifiedIntegrationStatus:
 
     def test_integration_status_includes_connected_state(self, client):
         """Test that status includes connected state for each integration."""
-        response = client.get("/api/integrations/status")
+        response = client.get("/integrations/status")
 
         if response.status_code == 200:
             data = response.json()
@@ -100,7 +100,7 @@ class TestUnifiedIntegrationStatus:
         self, client, mock_all_integrations
     ):
         """Test that status includes account info when connected."""
-        response = client.get("/api/integrations/status")
+        response = client.get("/integrations/status")
 
         if response.status_code == 200:
             data = response.json()
@@ -111,7 +111,7 @@ class TestUnifiedIntegrationStatus:
     def test_integration_status_requires_auth(self, client):
         """Test that integration status requires authentication."""
         # Try without auth
-        response = client.get("/api/integrations/status")
+        response = client.get("/integrations/status")
 
         # Should require auth or return public status
         assert response.status_code in [200, 401]
@@ -132,7 +132,7 @@ class TestGoogleIntegrationStatus:
             )
             mock_manager.return_value = manager
 
-            response = client.get("/api/integrations/status")
+            response = client.get("/integrations/status")
 
             if response.status_code == 200:
                 data = response.json()
@@ -148,7 +148,7 @@ class TestGoogleIntegrationStatus:
             manager.get_credentials.return_value = None
             mock_manager.return_value = manager
 
-            response = client.get("/api/integrations/status")
+            response = client.get("/integrations/status")
 
             if response.status_code == 200:
                 data = response.json()
@@ -168,7 +168,7 @@ class TestGoogleIntegrationStatus:
             )
             mock_manager.return_value = manager
 
-            response = client.get("/api/integrations/status")
+            response = client.get("/integrations/status")
 
             if response.status_code == 200:
                 data = response.json()
@@ -192,7 +192,7 @@ class TestGoogleIntegrationStatus:
             )
             mock_manager.return_value = manager
 
-            response = client.get("/api/integrations/status")
+            response = client.get("/integrations/status")
 
             if response.status_code == 200:
                 data = response.json()
@@ -218,7 +218,7 @@ class TestMicrosoftIntegrationStatus:
             )
             mock_manager.return_value = manager
 
-            response = client.get("/api/integrations/status")
+            response = client.get("/integrations/status")
 
             if response.status_code == 200:
                 data = response.json()
@@ -230,7 +230,7 @@ class TestMicrosoftIntegrationStatus:
 
     def test_microsoft_status_includes_subscriptions(self, client):
         """Test that Microsoft status includes webhook subscriptions."""
-        response = client.get("/api/integrations/status")
+        response = client.get("/integrations/status")
 
         if response.status_code == 200:
             data = response.json()
@@ -248,7 +248,7 @@ class TestCanvasIntegrationStatus:
 
     def test_canvas_status_when_configured(self, client):
         """Test Canvas status when LTI is configured."""
-        response = client.get("/api/integrations/status")
+        response = client.get("/integrations/status")
 
         if response.status_code == 200:
             data = response.json()
@@ -257,7 +257,7 @@ class TestCanvasIntegrationStatus:
 
     def test_canvas_status_includes_launch_url(self, client):
         """Test that Canvas status includes LTI launch URL."""
-        response = client.get("/api/integrations/status")
+        response = client.get("/integrations/status")
 
         if response.status_code == 200:
             data = response.json()
@@ -275,7 +275,7 @@ class TestBlackboardIntegrationStatus:
 
     def test_blackboard_status_when_configured(self, client):
         """Test Blackboard status when LTI is configured."""
-        response = client.get("/api/integrations/status")
+        response = client.get("/integrations/status")
 
         if response.status_code == 200:
             data = response.json()
@@ -287,7 +287,7 @@ class TestBlackboardIntegrationStatus:
 
     def test_blackboard_status_includes_config_details(self, client):
         """Test that Blackboard status includes configuration details."""
-        response = client.get("/api/integrations/status")
+        response = client.get("/integrations/status")
 
         if response.status_code == 200:
             data = response.json()
@@ -305,7 +305,7 @@ class TestConnectionHealthChecks:
 
     def test_health_check_all_integrations(self, client):
         """Test health check for all integrations."""
-        response = client.get("/api/integrations/health")
+        response = client.get("/integrations/health")
 
         assert response.status_code in [200, 401]
         if response.status_code == 200:
@@ -320,7 +320,7 @@ class TestConnectionHealthChecks:
         ) as mock_test:
             mock_test.return_value = True
 
-            response = client.get("/api/integrations/health/google")
+            response = client.get("/integrations/health/google")
 
             assert response.status_code in [200, 401, 404, 503]
 
@@ -332,7 +332,7 @@ class TestConnectionHealthChecks:
         ) as mock_test:
             mock_test.return_value = True
 
-            response = client.get("/api/integrations/health/microsoft")
+            response = client.get("/integrations/health/microsoft")
 
             assert response.status_code in [200, 401, 404, 503]
 
@@ -344,7 +344,7 @@ class TestConnectionHealthChecks:
         ) as mock_test:
             mock_test.side_effect = Exception("Connection failed")
 
-            response = client.get("/api/integrations/health/google")
+            response = client.get("/integrations/health/google")
 
             # Should indicate unhealthy or error
             assert response.status_code in [200, 401, 503]
@@ -355,7 +355,7 @@ class TestIntegrationMetrics:
 
     def test_get_integration_metrics(self, client):
         """Test getting usage metrics for integrations."""
-        response = client.get("/api/integrations/metrics")
+        response = client.get("/integrations/metrics")
 
         assert response.status_code in [200, 401]
         if response.status_code == 200:
@@ -364,7 +364,7 @@ class TestIntegrationMetrics:
 
     def test_metrics_include_file_counts(self, client):
         """Test that metrics include file operation counts."""
-        response = client.get("/api/integrations/metrics")
+        response = client.get("/integrations/metrics")
 
         if response.status_code == 200:
             data = response.json()
@@ -377,14 +377,14 @@ class TestIntegrationMetrics:
 
     def test_metrics_by_integration(self, client):
         """Test getting metrics for specific integration."""
-        response = client.get("/api/integrations/metrics/google")
+        response = client.get("/integrations/metrics/google")
 
         assert response.status_code in [200, 401, 404]
 
     def test_metrics_time_range(self, client):
         """Test filtering metrics by time range."""
         response = client.get(
-            "/api/integrations/metrics",
+            "/integrations/metrics",
             params={
                 "start_date": "2025-01-01",
                 "end_date": "2025-01-07",
@@ -399,7 +399,7 @@ class TestIntegrationConfiguration:
 
     def test_get_google_config(self, client):
         """Test getting Google Workspace configuration."""
-        response = client.get("/api/integrations/config/google")
+        response = client.get("/integrations/config/google")
 
         assert response.status_code in [200, 401, 404]
         if response.status_code == 200:
@@ -409,13 +409,13 @@ class TestIntegrationConfiguration:
 
     def test_get_microsoft_config(self, client):
         """Test getting Microsoft 365 configuration."""
-        response = client.get("/api/integrations/config/microsoft")
+        response = client.get("/integrations/config/microsoft")
 
         assert response.status_code in [200, 401, 404]
 
     def test_get_canvas_config(self, client):
         """Test getting Canvas LTI configuration."""
-        response = client.get("/api/integrations/config/canvas")
+        response = client.get("/integrations/config/canvas")
 
         assert response.status_code in [200, 401, 404]
         if response.status_code == 200:
@@ -425,13 +425,13 @@ class TestIntegrationConfiguration:
 
     def test_get_blackboard_config(self, client):
         """Test getting Blackboard LTI configuration."""
-        response = client.get("/api/integrations/config/blackboard")
+        response = client.get("/integrations/config/blackboard")
 
         assert response.status_code in [200, 401, 404]
 
     def test_config_does_not_expose_secrets(self, client):
         """Test that configuration endpoints don't expose secrets."""
-        response = client.get("/api/integrations/config/google")
+        response = client.get("/integrations/config/google")
 
         if response.status_code == 200:
             data = response.json()
@@ -446,7 +446,7 @@ class TestWebhookSubscriptionStatus:
 
     def test_get_google_webhook_status(self, client):
         """Test getting Google webhook subscription status."""
-        response = client.get("/api/integrations/webhooks/google")
+        response = client.get("/integrations/webhooks/google")
 
         assert response.status_code in [200, 401, 404]
         if response.status_code == 200:
@@ -457,13 +457,13 @@ class TestWebhookSubscriptionStatus:
 
     def test_get_microsoft_webhook_status(self, client):
         """Test getting Microsoft webhook subscription status."""
-        response = client.get("/api/integrations/webhooks/microsoft")
+        response = client.get("/integrations/webhooks/microsoft")
 
         assert response.status_code in [200, 401, 404]
 
     def test_webhook_status_includes_expiry(self, client):
         """Test that webhook status includes expiration time."""
-        response = client.get("/api/integrations/webhooks/microsoft")
+        response = client.get("/integrations/webhooks/microsoft")
 
         if response.status_code == 200:
             data = response.json()
@@ -488,7 +488,7 @@ class TestWebhookSubscriptionStatus:
                 }
             ]
 
-            response = client.get("/api/integrations/webhooks/microsoft")
+            response = client.get("/integrations/webhooks/microsoft")
 
             if response.status_code == 200:
                 data = response.json()
@@ -502,13 +502,13 @@ class TestIntegrationDisconnect:
 
     def test_disconnect_google(self, client):
         """Test disconnecting Google Workspace."""
-        response = client.delete("/api/integrations/google")
+        response = client.delete("/integrations/google")
 
         assert response.status_code in [200, 204, 401, 404]
 
     def test_disconnect_microsoft(self, client):
         """Test disconnecting Microsoft 365."""
-        response = client.delete("/api/integrations/microsoft")
+        response = client.delete("/integrations/microsoft")
 
         assert response.status_code in [200, 204, 401, 404]
 
@@ -518,7 +518,7 @@ class TestIntegrationDisconnect:
         with patch(
             "src.integrations.oauth_token_manager.OAuthTokenManager.revoke_token"
         ):
-            response = client.delete("/api/integrations/google")
+            response = client.delete("/integrations/google")
 
             # Should attempt to revoke (if connected)
             assert response.status_code in [200, 204, 401, 404]
@@ -529,7 +529,7 @@ class TestIntegrationDisconnect:
         with patch(
             "src.integrations.webhooks.webhook_manager.delete_all_subscriptions"
         ):
-            response = client.delete("/api/integrations/google")
+            response = client.delete("/integrations/google")
 
             # Should clean up webhooks
             assert response.status_code in [200, 204, 401, 404]

@@ -199,9 +199,60 @@ class HtmlRemediator(BaseRemediator):
             logger.error(f"Failed to apply fix: {e}")
             return False
 
+    # Strings that look like alt text and describe nothing. Writing one of
+    # these satisfies the checker and misleads the reader, which is worse
+    # than leaving the issue open: an unfixed image is visible to an audit,
+    # a falsely fixed one is not.
+    PLACEHOLDER_ALT_TEXT = (
+        "image",
+        "photo",
+        "picture",
+        "graphic",
+        "img",
+        "image content not specified",
+        "no description",
+        "not specified",
+        "description unavailable",
+        "alt text",
+        "todo",
+        "n/a",
+    )
+
+    @classmethod
+    def is_usable_alt_text(cls, alt_text: Optional[str]) -> bool:
+        """Whether this string is worth writing into an image's alt.
+
+        Empty alt is a deliberate statement that an image is decorative. A
+        remediator cannot know that, so writing it silently hides content
+        from the people the fix is meant to serve.
+        """
+        if not alt_text:
+            return False
+        cleaned = alt_text.strip().strip(".").lower()
+        if len(cleaned) < 4:
+            return False
+        return cleaned not in cls.PLACEHOLDER_ALT_TEXT
+
+    @staticmethod
+    def _image_was_reachable(src: str) -> bool:
+        """Whether anything could have looked at this image.
+
+        Content stored by an LMS refers to images by relative path, which
+        nothing in this process can resolve. A description produced without
+        the image is invention, and inventing a description of course
+        material is worse than reporting that a human has to write one.
+        """
+        return src.startswith("http://") or src.startswith("https://")
+
     def _apply_alt_text_fix(self, issue: RemediationIssue, alt_text: str) -> bool:
         """Add or fix alt text for images."""
         if not self._soup:
+            return False
+
+        if not self.is_usable_alt_text(alt_text):
+            self._modifications.append(
+                "Left alt text to a human: the proposed text was empty or a placeholder"
+            )
             return False
 
         # Find the image referenced in the issue
@@ -214,12 +265,22 @@ class HtmlRemediator(BaseRemediator):
 
             # Match by src in issue metadata or location
             if issue.location and src in issue.location:
+                if not self._image_was_reachable(src):
+                    self._modifications.append(
+                        f"Left alt text to a human: image not reachable: {src}"
+                    )
+                    return False
                 img["alt"] = alt_text
                 self._modifications.append(f"Added alt text to image: {src}")
                 return True
 
             # Match images without alt
             if current_alt is None and not img.get("role") == "presentation":
+                if not self._image_was_reachable(src):
+                    self._modifications.append(
+                        f"Left alt text to a human: image not reachable: {src}"
+                    )
+                    return False
                 img["alt"] = alt_text
                 self._modifications.append(f"Added alt text to image: {src}")
                 return True
@@ -512,7 +573,8 @@ Location: {safe_location}
 Code snippet: {safe_content}
 
 Provide ONLY the alt text, no explanation. Keep it under 125 characters.
-If the image is purely decorative, respond with exactly: DECORATIVE"""
+If you cannot tell what the image shows from what you have been given,
+respond with exactly: UNKNOWN"""
 
             elif issue.category == IssueCategory.ARIA:
                 prompt = f"""Suggest an appropriate aria-label for this element.
@@ -544,8 +606,14 @@ Provide ONLY the fix content, no explanation."""
 
             if result.get("success"):
                 fix = result.get("content", "").strip()
-                if fix == "DECORATIVE":
-                    return ""  # Empty alt for decorative images
+                # The model is given the issue text and a code snippet, not
+                # the image. It used to be invited to answer DECORATIVE,
+                # which wrote alt="" and marked the image as carrying no
+                # information: a judgement nothing here is in a position to
+                # make, and one that hides a chart from the readers the fix
+                # exists for. An uncertain answer now leaves the issue open.
+                if fix.upper() == "UNKNOWN" or not self.is_usable_alt_text(fix):
+                    return None
                 return fix
 
         except Exception as e:
@@ -611,14 +679,20 @@ Provide ONLY the fix content, no explanation."""
                 fixes_applied += 1
                 logger.info("Added lang='en' to html element")
 
-            # 2. Add placeholder alt to images without alt
+            # 2. Images with no alt are left alone.
+            #
+            # This step used to write "Image: {filename} (needs description)"
+            # and count it as a fix. That satisfies the checker and tells a
+            # screen reader user the name of a file, so the issue disappears
+            # from the report while the page stays just as unusable. An
+            # unfixed image is visible to an audit; a falsely fixed one is
+            # not.
             for img in self._soup.find_all("img"):
                 if img.get("alt") is None and img.get("role") != "presentation":
-                    src = img.get("src", "image")
-                    filename = Path(src).stem if src else "image"
-                    img["alt"] = f"Image: {filename} (needs description)"
-                    fixes_applied += 1
-                    logger.info(f"Added placeholder alt to image: {src}")
+                    logger.info(
+                        "Image needs a human-written description: %s",
+                        img.get("src", "image"),
+                    )
 
             # 3. Add skip navigation if not present
             body = self._soup.find("body")

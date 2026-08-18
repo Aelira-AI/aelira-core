@@ -1,6 +1,7 @@
 """Image alt text generation using Gemini API (primary) with Ollama fallback."""
 
 import base64
+import asyncio
 import time
 import os
 import httpx
@@ -84,40 +85,61 @@ class ImageAltTextGenerator:
 
         start_time = time.perf_counter()
 
+        # The vision endpoint returns 503 under load often enough to matter:
+        # measured locally, one call in two failed while the next succeeded
+        # twenty seconds later. Without a retry a transient refusal looks
+        # exactly like an image nothing could describe, and the caller gives
+        # up on an image that was perfectly describable.
+        attempts = 3
+        backoff = 2.0
+        response = None
+
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.gemini_api_base}/models/{self.vision_model}:generateContent",
-                    # Header, not a query param: httpx logs the full request URL
-                    # at INFO, so a key in the query string is written verbatim
-                    # to stdout, Loki and any Sentry breadcrumb.
-                    headers={"x-goog-api-key": self.gemini_api_key},
-                    json={
-                        "contents": [
-                            {
-                                "parts": [
-                                    {"text": prompt},
-                                    {
-                                        "inline_data": {
-                                            "mime_type": mime_type,
-                                            "data": image_data,
-                                        }
-                                    },
-                                ]
-                            }
-                        ],
-                        "generationConfig": {
-                            "temperature": 0.3,
-                            "maxOutputTokens": max_tokens,
-                            # gemini-2.5+ thinking tokens count against
-                            # maxOutputTokens; without this the model can spend
-                            # the whole budget reasoning and return a truncated
-                            # fragment as alt text.
-                            "thinkingConfig": {"thinkingBudget": 0},
+            for attempt in range(attempts):
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.gemini_api_base}/models/{self.vision_model}:generateContent",
+                        # Header, not a query param: httpx logs the full request URL
+                        # at INFO, so a key in the query string is written verbatim
+                        # to stdout, Loki and any Sentry breadcrumb.
+                        headers={"x-goog-api-key": self.gemini_api_key},
+                        json={
+                            "contents": [
+                                {
+                                    "parts": [
+                                        {"text": prompt},
+                                        {
+                                            "inline_data": {
+                                                "mime_type": mime_type,
+                                                "data": image_data,
+                                            }
+                                        },
+                                    ]
+                                }
+                            ],
+                            "generationConfig": {
+                                "temperature": 0.3,
+                                "maxOutputTokens": max_tokens,
+                                # gemini-2.5+ thinking tokens count against
+                                # maxOutputTokens; without this the model can spend
+                                # the whole budget reasoning and return a truncated
+                                # fragment as alt text.
+                                "thinkingConfig": {"thinkingBudget": 0},
+                            },
                         },
-                    },
-                    timeout=60.0,
-                )
+                        timeout=60.0,
+                    )
+
+                if response.status_code not in (429, 500, 502, 503, 504):
+                    break
+                if attempt < attempts - 1:
+                    logger.info(
+                        "Vision API answered %s, retrying in %.0fs",
+                        response.status_code,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff *= 2
 
             elapsed = time.perf_counter() - start_time
 
