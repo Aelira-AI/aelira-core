@@ -772,6 +772,7 @@ class CanvasLTIService:
                             {
                                 "placement": "course_navigation",
                                 "enabled": True,
+                                "visibility": "admins",
                                 "message_type": "LtiResourceLinkRequest",
                                 "target_link_uri": f"{base_url}/lti/launch",
                                 "text": "Accessibility Scanner",
@@ -813,6 +814,7 @@ class CanvasLTIService:
                 "canvas_user_roles": "$Canvas.membership.roles",
                 "canvas_file_id": "$Canvas.file.id",
                 "canvas_assignment_id": "$Canvas.assignment.id",
+                "canvas_resource_link_id": "$ResourceLink.id",
             },
         }
 

@@ -99,6 +99,10 @@ docker exec <ollama-container> ollama pull gemma3:4b   # or a larger model per d
 Model selection, hardware tiers, and what each AI lane does are documented
 in [local-ai-models.md](local-ai-models.md).
 
+If you enable Canvas LTI, follow the [Canvas LTI administrator
+configuration](canvas-lti.md) checklist. It covers the staff-visible placement
+settings and required numeric Canvas course-ID custom field.
+
 Run Ollama when you want documents to never leave your own infrastructure —
 no cloud API call for remediation text at all. Without it, set `LLM_PROVIDER=gemini`
 (or `openai`/`anthropic`) and supply that provider's API key.
