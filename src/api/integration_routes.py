@@ -24,7 +24,6 @@ from ..db.models import (
     CloudProvider,
     CloudJobQueue,
     CloudJobStatus,
-    CloudJobType,
     CloudFile,
     CloudSyncFolder,
 )
@@ -327,63 +326,16 @@ async def trigger_sync(
     db: Session = Depends(get_db_dependency),
 ):
     """
-    Trigger file sync for all connected cloud providers.
+    Report that cloud provider sync execution is unavailable.
 
-    Queues sync jobs for Google Workspace and Microsoft 365 if connected.
+    Durable provider sync execution is not available in v0.9.4.
 
     Authentication: Requires valid API key
     """
-    dept_id = api_key.department_id
-
-    # Find all active credentials for this department
-    credentials = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == dept_id,
-            CloudOAuthCredentials.is_active,
-        )
-        .all()
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Cloud provider sync execution is not available in this release.",
     )
-
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No cloud providers connected. Connect Google Workspace or Microsoft 365 first.",
-        )
-
-    # Queue sync jobs for each provider
-    queued_jobs = []
-    for credential in credentials:
-        job_id = str(uuid.uuid4())
-
-        sync_job = CloudJobQueue(
-            id=job_id,
-            department_id=dept_id,
-            credential_id=credential.id,
-            job_type=CloudJobType.SYNC.value,
-            provider=credential.provider,
-            status=CloudJobStatus.PENDING.value,
-            priority=1,
-        )
-
-        db.add(sync_job)
-        queued_jobs.append(
-            {
-                "job_id": job_id,
-                "provider": credential.provider,
-                "status": "queued",
-            }
-        )
-
-    db.commit()
-
-    logger.info(f"Queued {len(queued_jobs)} sync jobs for department {dept_id}")
-
-    return {
-        "success": True,
-        "message": f"Sync started for {len(queued_jobs)} provider(s)",
-        "jobs": queued_jobs,
-    }
 
 
 @router.get("/health", response_model=HealthCheckResponse)
