@@ -64,8 +64,16 @@ jobs:
         # cairo/pkg-config: pycairo builds from source; tesseract: OCR tests;
         # ffmpeg: multimedia tests
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcairo2-dev pkg-config \
+          timeout 5m sudo apt-get \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=20 \
+            -o Acquire::https::Timeout=20 \
+            update
+          timeout 5m sudo apt-get \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=20 \
+            -o Acquire::https::Timeout=20 \
+            install -y libcairo2-dev pkg-config \
             tesseract-ocr tesseract-ocr-eng ffmpeg
       - name: Install dependencies
         run: pip install -r requirements.txt

@@ -259,6 +259,20 @@ def test_ci_builds_both_images_on_every_released_architecture_with_timeouts() ->
     assert "${{ matrix.platform }}" in text
 
 
+def test_ci_system_package_install_has_bounded_network_retries() -> None:
+    workflow = load_workflow(CI)
+    system_dependencies = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if step.get("name") == "Install system dependencies"
+    )["run"]
+
+    assert "Acquire::Retries=2" in system_dependencies
+    assert "Acquire::http::Timeout=20" in system_dependencies
+    assert "Acquire::https::Timeout=20" in system_dependencies
+    assert system_dependencies.count("timeout 5m") == 2
+
+
 def test_dashboard_failure_makes_every_publication_node_unreachable() -> None:
     release = load_workflow(RELEASE)
     docker = load_workflow(DOCKER)

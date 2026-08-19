@@ -86,3 +86,29 @@ def test_historical_and_dependency_0_9_3_references_remain_intact():
     assert "published v0.9.3 Canvas-content schema" in migration
     assert '"optionator": "^0.9.3"' in cli_lock
     assert '"optionator": "^0.9.3"' in dashboard_lock
+
+
+def test_upgrade_guide_warns_that_legacy_api_keys_require_reissue():
+    guide = (ROOT / "docs/deployment/self-hosting.md").read_text()
+
+    assert "v0.9.4 upgrade" in guide
+    assert "legacy API keys" in guide
+    assert "reissue" in guide
+    assert "401" in guide
+    assert "pre-upgrade database backup" in guide
+    assert "matching v0.9.3 images" in guide
+    assert "fails closed" in guide
+    assert "starts anyway" not in guide
+    assert (
+        "docker compose -f docker-compose.prod.yml run --rm "
+        "--entrypoint alembic api upgrade head"
+    ) in guide
+    for incomplete in (
+        "docker compose --profile",
+        "docker compose exec",
+        "docker compose build",
+        "docker compose run",
+        "docker compose up",
+        "docker compose logs",
+    ):
+        assert incomplete not in guide
