@@ -1,14 +1,14 @@
 """Backfill and constrain department weekly alert schedules.
 
-Revision ID: 2026_08_19_email_alert_weekly_schedule
-Revises: 2026_08_19_session_refresh_rotation
+Revision ID: 20260819_alert_schedule
+Revises: 20260819_session_refresh
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "2026_08_19_email_alert_weekly_schedule"
-down_revision = "2026_08_19_session_refresh_rotation"
+revision = "20260819_alert_schedule"
+down_revision = "20260819_session_refresh"
 branch_labels = None
 depends_on = None
 

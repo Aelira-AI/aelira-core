@@ -1,14 +1,14 @@
 """Add state for atomic replay-tolerant refresh rotation.
 
-Revision ID: 2026_08_19_session_refresh_rotation
-Revises: 2026_08_19_invalidate_legacy_lti_users
+Revision ID: 20260819_session_refresh
+Revises: 20260819_lti_reauth
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "2026_08_19_session_refresh_rotation"
-down_revision = "2026_08_19_invalidate_legacy_lti_users"
+revision = "20260819_session_refresh"
+down_revision = "20260819_lti_reauth"
 branch_labels = None
 depends_on = None
 

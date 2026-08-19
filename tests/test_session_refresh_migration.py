@@ -43,7 +43,7 @@ def test_migration_adds_nullable_replay_columns_and_schema_only_downgrade(monkey
         "refresh_replay_used_at",
         "refresh_replay_ciphertext",
     }
-    assert migration.down_revision == "2026_08_19_invalidate_legacy_lti_users"
+    assert migration.down_revision == "20260819_lti_reauth"
     assert {
         column.name for table, column in added if table == "user_sessions"
     } == expected

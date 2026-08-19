@@ -73,7 +73,7 @@ def test_migration_backfills_before_constraints_and_downgrade_preserves_data(
     migration.downgrade()
     downgrade_calls = list(calls)
 
-    assert migration.down_revision == "2026_08_19_session_refresh_rotation"
+    assert migration.down_revision == "20260819_session_refresh"
     assert [call[0] for call in upgrade_calls] == [
         "execute",
         "execute",

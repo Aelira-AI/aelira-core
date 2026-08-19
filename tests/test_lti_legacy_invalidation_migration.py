@@ -62,7 +62,7 @@ def test_upgrade_marks_and_deactivates_only_active_lti_users(monkeypatch):
 
     migration.upgrade()
 
-    assert migration.revision == "2026_08_19_invalidate_legacy_lti_users"
+    assert migration.revision == "20260819_lti_reauth"
     assert migration.down_revision == "2026_08_18_canvas_content"
     assert len(columns) == 1
     table, marker = columns[0]

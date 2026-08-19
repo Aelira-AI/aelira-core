@@ -4,14 +4,14 @@ Existing LTI users may have been created before staff-only authorization claims
 were required. Deactivation makes every legacy token fail closed; an approved
 staff relaunch reactivates the matching user and mints a version 2 token.
 
-Revision ID: 2026_08_19_invalidate_legacy_lti_users
+Revision ID: 20260819_lti_reauth
 Revises: 2026_08_18_canvas_content
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "2026_08_19_invalidate_legacy_lti_users"
+revision = "20260819_lti_reauth"
 down_revision = "2026_08_18_canvas_content"
 branch_labels = None
 depends_on = None
