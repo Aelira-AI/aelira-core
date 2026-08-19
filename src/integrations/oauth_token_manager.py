@@ -312,9 +312,14 @@ class OAuthTokenManager:
 
         canvas_instance_url = None
         if credential.provider == CloudProvider.CANVAS.value:
-            from ..utils.security import require_persisted_canvas_origin
+            from ..utils.security import (
+                require_persisted_canvas_origin,
+                resolve_canvas_network_origin,
+            )
 
-            canvas_instance_url = require_persisted_canvas_origin(credential)
+            canvas_instance_url = resolve_canvas_network_origin(
+                require_persisted_canvas_origin(credential)
+            )
 
         if not self.is_token_expired(credential.token_expires_at):
             return self.decrypt_token(credential.access_token)

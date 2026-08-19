@@ -14,7 +14,6 @@ SECURITY:
 """
 
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,17 +149,12 @@ def _get_file_type(file_name: str) -> str:
 
 
 def _rewrite_localhost_for_docker(api_client: CanvasAPIClient) -> None:
-    """
-    Rewrite localhost URLs for Docker networking.
+    """Compatibility hook; CanvasAPIClient now resolves its origin atomically.
 
-    When running in Docker, the Canvas instance URL stored in credentials
-    may reference localhost, which doesn't work from inside the container.
+    Mutating ``canvas_url`` or ``api_base`` after construction breaks the
+    client's origin-integrity guard, so scan routes deliberately leave the
+    already-resolved client unchanged.
     """
-    if os.getenv("ENV") == "development" and "localhost" in api_client.canvas_url:
-        api_client.canvas_url = api_client.canvas_url.replace(
-            "localhost", "host.docker.internal"
-        )
-        api_client.api_base = f"{api_client.canvas_url}/api/v1"
 
 
 # =============================================================================

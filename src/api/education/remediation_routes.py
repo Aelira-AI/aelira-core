@@ -492,14 +492,6 @@ async def remediate_scan(
                         from ...integrations.canvas.canvas_api import CanvasAPIClient
 
                         assert canvas_url is not None
-                        if (
-                            os.getenv("ENV") == "development"
-                            and "localhost" in canvas_url
-                        ):
-                            canvas_url = canvas_url.replace(
-                                "localhost", "host.docker.internal"
-                            )
-
                         client = CanvasAPIClient(
                             canvas_instance_url=canvas_url, access_token=access_token
                         )

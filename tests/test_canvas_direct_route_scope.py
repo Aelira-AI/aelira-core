@@ -25,7 +25,7 @@ OTHER_COURSE = "course-2"
 
 
 def _paginated_canvas_client(*pages):
-    canvas = CanvasAPIClient("https://canvas.test", "token")
+    canvas = CanvasAPIClient("http://localhost", "token")
     responses = []
     for index, page in enumerate(pages, start=1):
         response = MagicMock()
@@ -33,7 +33,7 @@ def _paginated_canvas_client(*pages):
         response.headers = (
             {
                 "Link": (
-                    f"<https://canvas.test/api/v1/courses/{COURSE}/files?"
+                    f"<http://localhost/api/v1/courses/{COURSE}/files?"
                     f'page={index + 1}&per_page=100>; rel="next"'
                 )
             }

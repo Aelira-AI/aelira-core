@@ -12,9 +12,13 @@ import os
 import logging
 from typing import Optional, Tuple
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 import httpx
 
+from src.utils.security import resolve_canvas_network_origin
+
 from .models import CanvasOAuthCredential
+from .safe_http import create_canvas_safe_transport
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +62,17 @@ class CanvasOAuthService:
     def is_configured(self) -> bool:
         """Check if OAuth is properly configured"""
         return bool(self.client_id and self.client_secret)
+
+    @staticmethod
+    def _token_endpoint(canvas_instance_url: str) -> tuple[str, str]:
+        """Return the network origin and token URL, mapping exact dev localhost."""
+        parsed = urlparse(canvas_instance_url)
+        network_origin = (
+            resolve_canvas_network_origin(canvas_instance_url)
+            if parsed.hostname == "localhost"
+            else canvas_instance_url.rstrip("/")
+        )
+        return network_origin, f"{network_origin}/login/oauth2/token"
 
     def get_authorization_url(
         self,
@@ -122,7 +137,7 @@ class CanvasOAuthService:
         if not self.is_configured():
             raise ValueError("Canvas OAuth not configured")
 
-        token_url = f"{canvas_instance_url}/login/oauth2/token"
+        network_origin, token_url = self._token_endpoint(canvas_instance_url)
 
         data = {
             "grant_type": "authorization_code",
@@ -132,7 +147,11 @@ class CanvasOAuthService:
             "code": authorization_code,
         }
 
-        async with httpx.AsyncClient(follow_redirects=False) as client:
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            transport=create_canvas_safe_transport(network_origin),
+            trust_env=False,
+        ) as client:
             response = await client.post(token_url, data=data, timeout=30.0)
             response.raise_for_status()
             token_data = response.json()
@@ -172,7 +191,7 @@ class CanvasOAuthService:
         if not self.is_configured():
             raise ValueError("Canvas OAuth not configured")
 
-        token_url = f"{canvas_instance_url}/login/oauth2/token"
+        network_origin, token_url = self._token_endpoint(canvas_instance_url)
 
         data = {
             "grant_type": "refresh_token",
@@ -181,7 +200,11 @@ class CanvasOAuthService:
             "refresh_token": refresh_token,
         }
 
-        async with httpx.AsyncClient(follow_redirects=False) as client:
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            transport=create_canvas_safe_transport(network_origin),
+            trust_env=False,
+        ) as client:
             response = await client.post(token_url, data=data, timeout=30.0)
             response.raise_for_status()
             token_data = response.json()

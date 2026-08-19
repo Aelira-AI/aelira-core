@@ -593,7 +593,62 @@ async def test_canvas_token_exchange_explicitly_disables_redirects():
             authorization_code="code",
         )
 
-    async_client.assert_called_once_with(follow_redirects=False)
+    kwargs = async_client.call_args.kwargs
+    assert kwargs["follow_redirects"] is False
+    assert kwargs["trust_env"] is False
+    from src.integrations.canvas.safe_http import CanvasSafeAsyncHTTPTransport
+
+    assert isinstance(kwargs["transport"], CanvasSafeAsyncHTTPTransport)
+
+
+@pytest.mark.asyncio
+async def test_canvas_token_exchange_maps_dev_localhost_to_docker_origin(monkeypatch):
+    from src.integrations.canvas.canvas_oauth import CanvasOAuthService
+
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.setenv("CANVAS_DOCKER_ORIGIN", "http://canvas-docker.internal:3999")
+    response = MagicMock()
+    response.json.return_value = {"access_token": "token", "user": {"id": "1"}}
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+    async_client = MagicMock()
+    async_client.return_value.__aenter__ = AsyncMock(return_value=client)
+    async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+    service = CanvasOAuthService(client_id="id", client_secret="secret")
+
+    with patch("src.integrations.canvas.canvas_oauth.httpx.AsyncClient", async_client):
+        await service.exchange_code_for_token("http://localhost:3000", "code")
+
+    assert client.post.await_args.args[0] == (
+        "http://canvas-docker.internal:3999/login/oauth2/token"
+    )
+
+
+@pytest.mark.asyncio
+async def test_canvas_refresh_client_uses_safe_transport(monkeypatch):
+    from src.integrations.canvas.canvas_oauth import CanvasOAuthService
+    from src.integrations.canvas.safe_http import CanvasSafeAsyncHTTPTransport
+
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.delenv("CANVAS_DOCKER_ORIGIN", raising=False)
+    response = MagicMock()
+    response.json.return_value = {"access_token": "new-token"}
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+    async_client = MagicMock()
+    async_client.return_value.__aenter__ = AsyncMock(return_value=client)
+    async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+    service = CanvasOAuthService(client_id="id", client_secret="secret")
+
+    with patch("src.integrations.canvas.canvas_oauth.httpx.AsyncClient", async_client):
+        await service.refresh_access_token("http://localhost:3000", "refresh")
+
+    kwargs = async_client.call_args.kwargs
+    assert kwargs["trust_env"] is False
+    assert isinstance(kwargs["transport"], CanvasSafeAsyncHTTPTransport)
+    assert client.post.await_args.args[0] == (
+        "http://host.docker.internal:3000/login/oauth2/token"
+    )
 
 
 @pytest.mark.asyncio

@@ -470,6 +470,16 @@ def _make_response(
     return resp
 
 
+@pytest.fixture
+def _mock_canvas_public_dns():
+    """Keep Canvas client URL checks deterministic in unit tests."""
+    with patch(
+        "src.utils.security.socket.getaddrinfo",
+        return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+    ):
+        yield
+
+
 def _make_client() -> "CanvasAPIClient":
     """Create a CanvasAPIClient for testing."""
     from src.integrations.canvas.canvas_api import CanvasAPIClient
@@ -481,6 +491,7 @@ def _make_client() -> "CanvasAPIClient":
     )
 
 
+@pytest.mark.usefixtures("_mock_canvas_public_dns")
 class TestCanvasAPIContentMethods:
     """Tests for Canvas API content methods: list, get, update for pages, assignments, etc."""
 
@@ -879,6 +890,7 @@ class TestCanvasAPIContentMethods:
         assert "include[]" in params
 
 
+@pytest.mark.usefixtures("_mock_canvas_public_dns")
 class TestCanvasAPIRateLimiting:
     """Tests for Canvas API rate limit throttling."""
 
@@ -929,6 +941,7 @@ class TestCanvasAPIRateLimiting:
             mock_sleep.assert_not_called()
 
 
+@pytest.mark.usefixtures("_mock_canvas_public_dns")
 class TestCanvasAPIPagination:
     """Tests for Canvas API Link header pagination."""
 
@@ -1069,6 +1082,7 @@ class TestCanvasAPIPagination:
         assert mock_client.get.call_count == 1
 
 
+@pytest.mark.usefixtures("_mock_canvas_public_dns")
 class TestCanvasAPIRetry:
     """Tests for retry logic on 403/429 responses."""
 

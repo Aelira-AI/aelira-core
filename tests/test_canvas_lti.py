@@ -456,9 +456,15 @@ class TestCanvasOAuthCallback:
                 "initiating_user_id": "test-user-123",
             }
 
-            with patch(
-                "src.api.canvas_routes.OAuthStateManager.verify_and_consume_state",
-                return_value=(True, state_metadata),
+            with (
+                patch(
+                    "src.api.canvas_routes.OAuthStateManager.verify_and_consume_state",
+                    return_value=(True, state_metadata),
+                ),
+                patch(
+                    "src.utils.security.socket.getaddrinfo",
+                    return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+                ),
             ):
                 response = client.get(
                     f"/canvas/oauth/callback?code=test-auth-code&state={state}",

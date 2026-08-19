@@ -18,7 +18,15 @@ import logging
 import re
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
 import httpx
+
+from src.utils.security import (
+    prepare_canvas_outbound_url,
+    resolve_canvas_network_origin,
+    validate_canvas_outbound_url,
+)
 
 from .models import (
     CanvasFileInfo,
@@ -36,6 +44,7 @@ from .content_models import (
     CanvasDiscussionInfo,
     CanvasModuleInfo,
 )
+from .safe_http import create_canvas_safe_transport
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +60,8 @@ class CanvasAPIClient:
     - Managing file metadata
     """
 
+    MAX_PAGINATION_PAGES = 1000
+
     def __init__(
         self,
         canvas_instance_url: str,
@@ -65,7 +76,8 @@ class CanvasAPIClient:
             access_token: Canvas OAuth access token
             credential_id: Optional credential ID for tracking
         """
-        self.canvas_url = canvas_instance_url.rstrip("/")
+        self.canvas_url = resolve_canvas_network_origin(canvas_instance_url)
+        self._canvas_origin = self.canvas_url
         self.access_token = access_token
         self.credential_id = credential_id
         self.api_base = f"{self.canvas_url}/api/v1"
@@ -74,6 +86,12 @@ class CanvasAPIClient:
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client"""
+        current_origin = resolve_canvas_network_origin(self.canvas_url)
+        if (
+            current_origin != self._canvas_origin
+            or self.api_base != f"{self._canvas_origin}/api/v1"
+        ):
+            raise ValueError("Canvas API origin changed after client construction")
         if self._client is None:
             self._client = httpx.AsyncClient(
                 headers={
@@ -81,6 +99,9 @@ class CanvasAPIClient:
                     "Accept": "application/json",
                 },
                 timeout=30.0,
+                follow_redirects=False,
+                transport=create_canvas_safe_transport(self._canvas_origin),
+                trust_env=False,
             )
         return self._client
 
@@ -307,37 +328,39 @@ class CanvasAPIClient:
             # Get file info first
             file_info = await self.get_file(file_id)
 
-            # Canvas file download with manual redirect + hostname rewriting.
-            # Canvas redirects /files/{id}/download through multiple hops.
-            # In Docker, redirects target localhost which is unreachable —
-            # we follow redirects manually, rewriting hostnames to match
-            # our canvas_url (e.g. host.docker.internal).
-            from urllib.parse import urlparse
-
-            # Start with access_token in URL (Canvas accepts this for file downloads)
+            # Canvas accepts access_token in the download URL. Task 8 owns
+            # changing that transport behavior; this task only constrains where
+            # each request may go.
             sep = "&" if "?" in file_info.url else "?"
             download_url = f"{file_info.url}{sep}access_token={self.access_token}"
 
-            # Rewrite initial URL hostname
-            canvas_parsed = urlparse(self.canvas_url)
+            def _prepare_url(url: str, base_url: str) -> str:
+                return prepare_canvas_outbound_url(
+                    url,
+                    base_url,
+                    development_origin=self._canvas_origin,
+                )
 
-            def _rewrite_host(url: str) -> str:
-                p = urlparse(url)
-                if p.netloc and p.netloc != canvas_parsed.netloc:
-                    return url.replace(f"{p.scheme}://{p.netloc}", self.canvas_url)
-                return url
-
-            download_url = _rewrite_host(download_url)
-
-            async with httpx.AsyncClient(timeout=60.0) as dl_client:
-                for _ in range(10):
+            download_url = _prepare_url(download_url, self.canvas_url)
+            max_redirects = 10
+            async with httpx.AsyncClient(
+                timeout=60.0,
+                follow_redirects=False,
+                transport=create_canvas_safe_transport(self._canvas_origin),
+                trust_env=False,
+            ) as dl_client:
+                for redirect_count in range(max_redirects + 1):
+                    # Re-resolve immediately before every request/hop.
+                    download_url = _prepare_url(download_url, download_url)
                     response = await dl_client.get(download_url, follow_redirects=False)
-                    if response.status_code in (301, 302, 303, 307, 308):
-                        location = response.headers.get("location", "")
-                        if location:
-                            download_url = _rewrite_host(location)
-                        continue
-                    break
+                    if response.status_code not in (301, 302, 303, 307, 308):
+                        break
+                    if redirect_count == max_redirects:
+                        raise ValueError(f"Too many redirects (>{max_redirects})")
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError("Canvas download redirect is missing Location")
+                    download_url = _prepare_url(location, download_url)
             response.raise_for_status()
 
             # Save to local file
@@ -417,7 +440,11 @@ class CanvasAPIClient:
             response.raise_for_status()
             upload_data = response.json()
 
-            upload_url = upload_data["upload_url"]
+            upload_url = prepare_canvas_outbound_url(
+                upload_data["upload_url"],
+                self.canvas_url,
+                development_origin=self._canvas_origin,
+            )
             upload_params_dict = upload_data["upload_params"]
 
             # Step 2: Upload file (don't follow redirect — the 302
@@ -433,7 +460,11 @@ class CanvasAPIClient:
 
             # Step 3: Confirm upload with auth via the redirect URL
             if upload_response.status_code in (301, 302, 303, 307, 308):
-                confirm_url = upload_response.headers["Location"]
+                confirm_url = prepare_canvas_outbound_url(
+                    upload_response.headers["Location"],
+                    upload_url,
+                    development_origin=self._canvas_origin,
+                )
                 confirm_response = await client.get(confirm_url)
                 confirm_response.raise_for_status()
                 file_info = confirm_response.json()
@@ -543,6 +574,19 @@ class CanvasAPIClient:
             except (ValueError, TypeError):
                 pass
 
+    def _validate_api_url(self, url: str, base_url: Optional[str] = None) -> str:
+        """Return a safe URL only when it remains on the Canvas API origin."""
+        validated = validate_canvas_outbound_url(
+            url,
+            base_url or f"{self.api_base}/",
+            development_origin=self._canvas_origin,
+        )
+        parsed = urlparse(validated)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if origin != self._canvas_origin:
+            raise ValueError("Canvas API URL must remain on the configured origin")
+        return validated
+
     async def _request_with_retry(
         self,
         method: str,
@@ -570,8 +614,9 @@ class CanvasAPIClient:
         client = await self._get_client()
 
         for attempt in range(retries + 1):
+            validated_url = self._validate_api_url(url)
             request_method = getattr(client, method.lower())
-            response = await request_method(url, **kwargs)
+            response = await request_method(validated_url, **kwargs)
 
             if response.status_code in (403, 429):
                 if attempt < retries:
@@ -616,11 +661,21 @@ class CanvasAPIClient:
         all_items: List[Dict[str, Any]] = []
         current_url = url
         current_params = params
+        visited_urls = set()
+        page_count = 0
 
         while current_url:
+            canonical_url = self._canonical_pagination_url(current_url, current_params)
+            if canonical_url in visited_urls:
+                raise ValueError("Canvas pagination cycle detected")
+            if page_count >= self.MAX_PAGINATION_PAGES:
+                raise ValueError("Canvas pagination page limit exceeded")
+            visited_urls.add(canonical_url)
+
             response = await self._request_with_retry(
                 "GET", current_url, params=current_params
             )
+            page_count += 1
 
             page_data = response.json()
             if isinstance(page_data, list):
@@ -628,12 +683,46 @@ class CanvasAPIClient:
             else:
                 all_items.append(page_data)
 
-            # Parse Link header for next page
-            current_url = self._parse_next_link(response)
+            # Parse and validate the Link target before the bearer-authenticated
+            # client can make another request.
+            next_link = self._parse_next_link(response)
+            next_url = (
+                self._validate_api_url(next_link, base_url=current_url)
+                if next_link
+                else None
+            )
+            if next_url:
+                if self._canonical_pagination_url(next_url) in visited_urls:
+                    raise ValueError("Canvas pagination cycle detected")
+                if page_count >= self.MAX_PAGINATION_PAGES:
+                    raise ValueError("Canvas pagination page limit exceeded")
+            current_url = next_url
             # For subsequent pages, params are embedded in the URL
             current_params = None
 
         return all_items
+
+    @staticmethod
+    def _canonical_pagination_url(
+        url: str, params: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Canonicalize a page target so query ordering cannot hide a cycle."""
+        parsed = urlparse(url)
+        query_items = (
+            parse_qsl(parsed.query, keep_blank_values=True)
+            if params is None
+            else list(httpx.QueryParams(params).multi_items())
+        )
+        return urlunparse(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                parsed.path,
+                parsed.params,
+                urlencode(sorted(query_items), doseq=True),
+                "",
+            )
+        )
 
     @staticmethod
     def _parse_next_link(response: httpx.Response) -> Optional[str]:

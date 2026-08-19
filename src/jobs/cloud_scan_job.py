@@ -169,10 +169,6 @@ class CloudScanJob:
                 "error": PERSISTED_CANVAS_ORIGIN_ERROR,
             }
 
-        # Rewrite localhost for Docker networking
-        if os.getenv("ENV") == "development" and "localhost" in canvas_url:
-            canvas_url = canvas_url.replace("localhost", "host.docker.internal")
-
         client = CanvasAPIClient(
             canvas_instance_url=canvas_url,
             access_token=access_token,

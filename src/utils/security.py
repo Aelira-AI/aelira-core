@@ -8,7 +8,7 @@ import os
 import re
 import socket
 from collections.abc import Mapping
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 # Patterns that could manipulate LLM behavior
 PROMPT_INJECTION_PATTERNS = [
@@ -30,6 +30,134 @@ _HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECAS
 PERSISTED_CANVAS_ORIGIN_ERROR = (
     "Canvas connection origin is invalid or no longer authorized; reconnect Canvas"
 )
+
+
+def _is_forbidden_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    return (
+        not address.is_global
+        or address.is_multicast
+        or address.is_unspecified
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_private
+        or address.is_reserved
+    )
+
+
+def _canonical_canvas_root_origin(url: str, *, label: str) -> str:
+    """Canonicalize an HTTP(S) root origin without resolving DNS."""
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError(f"{label} is missing")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{label} must be an HTTP(S) root origin")
+    if "\\" in parsed.netloc:
+        raise ValueError(f"{label} has an invalid authority")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{label} must not contain user information")
+    if parsed.query or parsed.fragment or parsed.params or parsed.path not in {"", "/"}:
+        raise ValueError(f"{label} must be a root origin")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"{label} must contain a valid hostname")
+    hostname = hostname.lower()
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{label} has an invalid port") from exc
+
+    try:
+        literal_ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        literal_ip = None
+    if literal_ip is None:
+        try:
+            hostname = hostname.encode("idna").decode("ascii").rstrip(".")
+        except UnicodeError as exc:
+            raise ValueError(f"{label} has an invalid hostname") from exc
+        labels = hostname.split(".")
+        if len(hostname) > 253 or any(
+            not _HOST_LABEL.fullmatch(part) for part in labels
+        ):
+            raise ValueError(f"{label} has an invalid hostname")
+
+    host_for_url = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = 443 if parsed.scheme == "https" else 80
+    port_suffix = f":{port}" if port is not None and port != default_port else ""
+    return f"{parsed.scheme}://{host_for_url}{port_suffix}"
+
+
+def resolve_canvas_network_origin(
+    url: str,
+    environment: str | None = None,
+    configured_docker_origin: str | None = None,
+) -> str:
+    """Return the exact Canvas origin server-side requests should use.
+
+    In development, and only development, an exact ``localhost`` origin maps
+    to ``CANVAS_DOCKER_ORIGIN``. When that setting is absent, the documented
+    ``host.docker.internal`` hostname is used with the original scheme and
+    port. The resulting Docker origin is the sole private-network exception.
+    """
+    env = (environment or os.getenv("ENV", "development")).lower()
+    requested = _canonical_canvas_root_origin(url, label="Canvas instance")
+    parsed = urlparse(requested)
+
+    raw_docker_origin = (
+        os.getenv("CANVAS_DOCKER_ORIGIN")
+        if configured_docker_origin is None
+        else configured_docker_origin
+    )
+    configured = (
+        _canonical_canvas_root_origin(
+            raw_docker_origin, label="Configured Canvas Docker origin"
+        )
+        if raw_docker_origin
+        else None
+    )
+
+    if env != "development":
+        if requested == configured or parsed.hostname == "host.docker.internal":
+            raise ValueError("Canvas Docker origin is allowed only in development")
+        return validate_canvas_instance_origin(requested, environment=env)
+
+    if parsed.hostname == "localhost":
+        if configured:
+            return configured
+        port = parsed.port
+        default_port = 443 if parsed.scheme == "https" else 80
+        suffix = f":{port}" if port is not None and port != default_port else ""
+        return f"{parsed.scheme}://host.docker.internal{suffix}"
+
+    if configured and requested == configured:
+        return requested
+    if not configured and parsed.hostname == "host.docker.internal":
+        return requested
+
+    return validate_canvas_instance_origin(requested, environment=env)
+
+
+def is_canvas_development_origin(origin: str, environment: str | None = None) -> bool:
+    """Return whether an origin is the sole configured development exception."""
+    env = (environment or os.getenv("ENV", "development")).lower()
+    if env != "development":
+        return False
+    try:
+        candidate = _canonical_canvas_root_origin(
+            origin, label="Canvas development origin"
+        )
+        raw_configured = os.getenv("CANVAS_DOCKER_ORIGIN")
+        if raw_configured:
+            configured = _canonical_canvas_root_origin(
+                raw_configured, label="Configured Canvas Docker origin"
+            )
+            return candidate == configured
+        return urlparse(candidate).hostname == "host.docker.internal"
+    except (TypeError, ValueError):
+        return False
 
 
 def validate_canvas_instance_origin(
@@ -74,6 +202,9 @@ def validate_canvas_instance_origin(
     except ValueError:
         literal_ip = None
 
+    if literal_ip is not None and _is_forbidden_address(literal_ip):
+        raise ValueError("Canvas instance target is not allowed")
+
     if literal_ip is None and not is_localhost:
         try:
             ascii_hostname = hostname.encode("idna").decode("ascii")
@@ -97,21 +228,169 @@ def validate_canvas_instance_origin(
             raise ValueError("Could not resolve Canvas instance hostname")
         for addr_info in addr_infos:
             address = ipaddress.ip_address(str(addr_info[4][0]).split("%", 1)[0])
-            if (
-                not address.is_global
-                or address.is_multicast
-                or address.is_unspecified
-                or address.is_loopback
-                or address.is_link_local
-                or address.is_private
-                or address.is_reserved
-            ):
+            if _is_forbidden_address(address):
                 raise ValueError("Canvas instance target is not allowed")
 
     host_for_url = f"[{hostname}]" if ":" in hostname else hostname
     default_port = 443 if parsed.scheme == "https" else 80
     port_suffix = f":{port}" if port is not None and port != default_port else ""
     return f"{parsed.scheme}://{host_for_url}{port_suffix}"
+
+
+def validate_canvas_outbound_url(
+    url: str,
+    base_url: str,
+    environment: str | None = None,
+    *,
+    development_origin: str | None = None,
+) -> str:
+    """Resolve and validate an untrusted Canvas outbound URL.
+
+    Canvas response URLs are allowed to retain paths and query strings, but
+    must not contain credentials or fragments. Every target is resolved at the
+    point of use and every resolved address must be globally routable. Only the
+    exact ``localhost`` hostname may use HTTP in development and test.
+    """
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("Canvas outbound URL is missing")
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ValueError("Canvas outbound base URL is missing")
+
+    resolved = urljoin(base_url, url)
+    parsed = urlparse(resolved)
+    env = (environment or os.getenv("ENV", "development")).lower()
+    allow_localhost = env in {"development", "test"}
+
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Canvas outbound URL must be HTTP(S)")
+    if "\\" in parsed.netloc:
+        raise ValueError("Canvas outbound URL has an invalid authority")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Canvas outbound URL must not contain user information")
+    if parsed.fragment:
+        raise ValueError("Canvas outbound URL must not contain a fragment")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Canvas outbound URL must contain a valid hostname")
+    hostname = hostname.lower()
+    is_localhost = hostname == "localhost"
+    if env != "development" and hostname == "host.docker.internal":
+        raise ValueError("Canvas Docker origin is allowed only in development")
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Canvas outbound URL has an invalid port") from exc
+
+    default_port = 443 if parsed.scheme == "https" else 80
+    port_suffix = f":{port}" if port is not None and port != default_port else ""
+    target_host_for_url = f"[{hostname}]" if ":" in hostname else hostname
+    parsed_origin = f"{parsed.scheme}://{target_host_for_url}{port_suffix}"
+    is_development_origin = False
+    if (
+        development_origin
+        and env == "development"
+        and is_canvas_development_origin(development_origin, environment=env)
+    ):
+        canonical_development_origin = _canonical_canvas_root_origin(
+            development_origin, label="Configured Canvas Docker origin"
+        )
+        is_development_origin = parsed_origin == canonical_development_origin
+
+    if parsed.scheme != "https" and not (
+        (allow_localhost and is_localhost) or is_development_origin
+    ):
+        raise ValueError("Canvas outbound URL must use HTTPS")
+
+    try:
+        literal_ip = ipaddress.ip_address(hostname.split("%", 1)[0])
+    except ValueError:
+        literal_ip = None
+
+    if (
+        literal_ip is not None
+        and _is_forbidden_address(literal_ip)
+        and not is_development_origin
+    ):
+        raise ValueError("Canvas outbound URL target is not allowed")
+
+    if literal_ip is None and not is_localhost:
+        try:
+            hostname = hostname.encode("idna").decode("ascii").rstrip(".")
+        except UnicodeError as exc:
+            raise ValueError("Canvas outbound URL has an invalid hostname") from exc
+        labels = hostname.split(".")
+        if (
+            len(hostname) > 253
+            or len(labels) < 2
+            or any(not _HOST_LABEL.fullmatch(label) for label in labels)
+        ):
+            raise ValueError("Canvas outbound URL has an invalid hostname")
+
+    if not ((allow_localhost and is_localhost) or is_development_origin):
+        try:
+            addr_infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ValueError("Could not resolve Canvas outbound hostname") from exc
+        if not addr_infos:
+            raise ValueError("Could not resolve Canvas outbound hostname")
+        for addr_info in addr_infos:
+            address = ipaddress.ip_address(str(addr_info[4][0]).split("%", 1)[0])
+            if _is_forbidden_address(address):
+                raise ValueError("Canvas outbound URL target is not allowed")
+
+    host_for_url = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = 443 if parsed.scheme == "https" else 80
+    port_suffix = f":{port}" if port is not None and port != default_port else ""
+    return urlunparse(
+        (
+            parsed.scheme,
+            f"{host_for_url}{port_suffix}",
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            "",
+        )
+    )
+
+
+def prepare_canvas_outbound_url(
+    url: str,
+    base_url: str,
+    *,
+    development_origin: str | None = None,
+) -> str:
+    """Map exact dev localhost URLs, then validate the complete outbound URL."""
+    resolved = urljoin(base_url, url)
+    parsed = urlparse(resolved)
+    if parsed.hostname == "localhost":
+        source_port = parsed.port
+        source_default = 443 if parsed.scheme == "https" else 80
+        source_suffix = (
+            f":{source_port}"
+            if source_port is not None and source_port != source_default
+            else ""
+        )
+        network_origin = resolve_canvas_network_origin(
+            f"{parsed.scheme}://localhost{source_suffix}"
+        )
+        docker = urlparse(network_origin)
+        resolved = urlunparse(
+            (
+                docker.scheme,
+                docker.netloc,
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                "",
+            )
+        )
+    return validate_canvas_outbound_url(
+        resolved,
+        base_url,
+        development_origin=development_origin,
+    )
 
 
 def require_canvas_oauth_allowed_origin(
@@ -182,6 +461,26 @@ def require_persisted_canvas_origin(persisted_value: object) -> str:
     try:
         return require_canvas_oauth_allowed_origin(origin)
     except (TypeError, ValueError) as exc:
+        if os.getenv("ENV", "development").lower() == "development":
+            try:
+                requested = _canonical_canvas_root_origin(
+                    origin, label="Canvas instance"
+                )
+                raw_docker_origin = os.getenv("CANVAS_DOCKER_ORIGIN")
+                if raw_docker_origin:
+                    docker_origin = _canonical_canvas_root_origin(
+                        raw_docker_origin,
+                        label="Configured Canvas Docker origin",
+                    )
+                    is_docker_origin = requested == docker_origin
+                else:
+                    is_docker_origin = (
+                        urlparse(requested).hostname == "host.docker.internal"
+                    )
+                if is_docker_origin:
+                    return resolve_canvas_network_origin(origin)
+            except (TypeError, ValueError):
+                pass
         raise ValueError(PERSISTED_CANVAS_ORIGIN_ERROR) from exc
 
 

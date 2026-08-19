@@ -46,6 +46,7 @@ from ..middleware.quota import require_feature
 from ..utils.security import (
     require_canvas_oauth_allowed_origin,
     require_persisted_canvas_origin,
+    resolve_canvas_network_origin,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,13 +239,9 @@ async def canvas_oauth_callback(
             url=f"{dashboard_url}/integrations?canvas=error&code=missing_code",
         )
 
-    # Rewrite localhost for server-side calls inside Docker
-
-    server_canvas_url = canvas_instance_url
-    if os.getenv("ENV") == "development" and "localhost" in canvas_instance_url:
-        server_canvas_url = canvas_instance_url.replace(
-            "localhost", "host.docker.internal"
-        )
+    # Browser-facing OAuth state keeps the persisted localhost origin, while
+    # server-side token/API calls use the centralized development mapping.
+    server_canvas_url = resolve_canvas_network_origin(canvas_instance_url)
 
     oauth_service = CanvasOAuthService()
     token_manager = OAuthTokenManager()
@@ -828,15 +825,12 @@ async def _get_canvas_client(
     if token_manager.is_token_expired(credential.token_expires_at):
         oauth_service = CanvasOAuthService()
         refresh_token = token_manager.decrypt_token(credential.refresh_token)
-        if os.getenv("ENV") == "development" and "localhost" in canvas_instance_url:
-            canvas_instance_url = canvas_instance_url.replace(
-                "localhost", "host.docker.internal"
-            )
+        canvas_network_origin = resolve_canvas_network_origin(canvas_instance_url)
 
         try:
             new_access, new_refresh, new_expires = (
                 await oauth_service.refresh_access_token(
-                    canvas_instance_url=canvas_instance_url,
+                    canvas_instance_url=canvas_network_origin,
                     refresh_token=refresh_token,
                 )
             )
@@ -858,12 +852,7 @@ async def _get_canvas_client(
     # Decrypt token and create client
     access_token = token_manager.decrypt_token(credential.access_token)
 
-    # Rewrite localhost for Docker networking (dev only)
-    if os.getenv("ENV") == "development" and "localhost" in canvas_instance_url:
-        canvas_instance_url = canvas_instance_url.replace(
-            "localhost", "host.docker.internal"
-        )
-
+    # CanvasAPIClient centralizes the development network-origin mapping.
     api_client = CanvasAPIClient(
         canvas_instance_url=canvas_instance_url,
         access_token=access_token,
