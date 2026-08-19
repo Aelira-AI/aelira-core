@@ -24,6 +24,7 @@ import httpx
 
 from src.utils.security import (
     prepare_canvas_outbound_url,
+    redact_sensitive_url,
     resolve_canvas_network_origin,
     validate_canvas_outbound_url,
 )
@@ -47,6 +48,13 @@ from .content_models import (
 from .safe_http import create_canvas_safe_transport
 
 logger = logging.getLogger(__name__)
+
+
+def _complete_origin(url: str) -> tuple[str, str, int]:
+    """Return a complete, normalized origin tuple for an already validated URL."""
+    parsed = urlparse(url)
+    default_port = 443 if parsed.scheme == "https" else 80
+    return parsed.scheme, parsed.hostname or "", parsed.port or default_port
 
 
 class CanvasAPIClient:
@@ -110,6 +118,12 @@ class CanvasAPIClient:
         if self._client:
             await self._client.aclose()
             self._client = None
+
+    def _authorization_headers(self, url: str) -> Dict[str, str]:
+        """Authorize only requests whose complete origin is the Canvas origin."""
+        if _complete_origin(url) == _complete_origin(self._canvas_origin):
+            return {"Authorization": f"Bearer {self.access_token}"}
+        return {}
 
     # =========================================================================
     # User and Course Operations
@@ -328,11 +342,7 @@ class CanvasAPIClient:
             # Get file info first
             file_info = await self.get_file(file_id)
 
-            # Canvas accepts access_token in the download URL. Task 8 owns
-            # changing that transport behavior; this task only constrains where
-            # each request may go.
-            sep = "&" if "?" in file_info.url else "?"
-            download_url = f"{file_info.url}{sep}access_token={self.access_token}"
+            download_url = file_info.url
 
             def _prepare_url(url: str, base_url: str) -> str:
                 return prepare_canvas_outbound_url(
@@ -352,7 +362,14 @@ class CanvasAPIClient:
                 for redirect_count in range(max_redirects + 1):
                     # Re-resolve immediately before every request/hop.
                     download_url = _prepare_url(download_url, download_url)
-                    response = await dl_client.get(download_url, follow_redirects=False)
+                    # Never persist cookies between hops. In particular, a
+                    # Canvas response must not seed credentials for a public CDN.
+                    dl_client.cookies.clear()
+                    response = await dl_client.get(
+                        download_url,
+                        headers=self._authorization_headers(download_url),
+                        follow_redirects=False,
+                    )
                     if response.status_code not in (301, 302, 303, 307, 308):
                         break
                     if redirect_count == max_redirects:
@@ -380,11 +397,15 @@ class CanvasAPIClient:
                 size=file_info.size,
             )
 
-        except Exception as e:
-            logger.error(f"Failed to download Canvas file {file_id}: {e}")
+        except Exception as exc:
+            logger.error(
+                "Failed to download Canvas file %s (%s)",
+                file_id,
+                type(exc).__name__,
+            )
             return CanvasDownloadResult(
                 success=False,
-                error=str(e),
+                error="Canvas file download failed",
             )
 
     async def upload_file(
@@ -447,30 +468,48 @@ class CanvasAPIClient:
             )
             upload_params_dict = upload_data["upload_params"]
 
-            # Step 2: Upload file (don't follow redirect — the 302
-            # goes to create_success and would drop the auth header)
-            with open(local_path, "rb") as f:
-                files = {"file": (file_name, f, self._guess_content_type(file_name))}
-                upload_response = await client.post(
-                    upload_url,
-                    data=upload_params_dict,
-                    files=files,
-                    follow_redirects=False,
-                )
+            # Steps 2 and 3 use an isolated transport with no default auth,
+            # cookies, or environment proxy. Bearer auth is added per request
+            # only when the complete target origin is the Canvas origin.
+            async with httpx.AsyncClient(
+                timeout=60.0,
+                follow_redirects=False,
+                transport=create_canvas_safe_transport(self._canvas_origin),
+                trust_env=False,
+            ) as upload_client:
+                upload_client.cookies.clear()
+                with open(local_path, "rb") as f:
+                    files = {
+                        "file": (file_name, f, self._guess_content_type(file_name))
+                    }
+                    upload_response = await upload_client.post(
+                        upload_url,
+                        data=upload_params_dict,
+                        files=files,
+                        headers=self._authorization_headers(upload_url),
+                        follow_redirects=False,
+                    )
 
-            # Step 3: Confirm upload with auth via the redirect URL
-            if upload_response.status_code in (301, 302, 303, 307, 308):
-                confirm_url = prepare_canvas_outbound_url(
-                    upload_response.headers["Location"],
-                    upload_url,
-                    development_origin=self._canvas_origin,
-                )
-                confirm_response = await client.get(confirm_url)
-                confirm_response.raise_for_status()
-                file_info = confirm_response.json()
-            else:
-                upload_response.raise_for_status()
-                file_info = upload_response.json()
+                if upload_response.status_code in (301, 302, 303, 307, 308):
+                    location = upload_response.headers.get("Location")
+                    if not location:
+                        raise ValueError("Canvas upload redirect is missing Location")
+                    confirm_url = prepare_canvas_outbound_url(
+                        location,
+                        upload_url,
+                        development_origin=self._canvas_origin,
+                    )
+                    upload_client.cookies.clear()
+                    confirm_response = await upload_client.get(
+                        confirm_url,
+                        headers=self._authorization_headers(confirm_url),
+                        follow_redirects=False,
+                    )
+                    confirm_response.raise_for_status()
+                    file_info = confirm_response.json()
+                else:
+                    upload_response.raise_for_status()
+                    file_info = upload_response.json()
 
             logger.info(
                 f"Uploaded file to Canvas course {course_id}: {file_name} -> {file_info.get('id')}"
@@ -483,11 +522,15 @@ class CanvasAPIClient:
                 web_view_link=file_info.get("url"),
             )
 
-        except Exception as e:
-            logger.error(f"Failed to upload file to Canvas: {e}")
+        except Exception as exc:
+            logger.error(
+                "Failed to upload file to Canvas course %s (%s)",
+                course_id,
+                type(exc).__name__,
+            )
             return CanvasUploadResult(
                 success=False,
-                error=str(e),
+                error="Canvas file upload failed",
             )
 
     # =========================================================================
@@ -625,7 +668,7 @@ class CanvasAPIClient:
                         "Canvas API %d on %s %s, retrying in %ds (attempt %d/%d)",
                         response.status_code,
                         method,
-                        url,
+                        redact_sensitive_url(validated_url),
                         backoff,
                         attempt + 1,
                         retries,

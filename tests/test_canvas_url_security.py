@@ -450,10 +450,14 @@ async def test_authenticated_client_disables_automatic_redirects():
 def _download_client(response_side_effect):
     transport = MagicMock()
     transport.get = AsyncMock(side_effect=response_side_effect)
+    return transport, _client_context(transport)
+
+
+def _client_context(client):
     context = MagicMock()
-    context.__aenter__ = AsyncMock(return_value=transport)
+    context.__aenter__ = AsyncMock(return_value=client)
     context.__aexit__ = AsyncMock(return_value=False)
-    return transport, context
+    return context
 
 
 def _file_info(url):
@@ -584,8 +588,9 @@ async def test_download_rewrites_exact_dev_localhost_to_configured_docker_origin
         result = await client.download_file("7", str(tmp_path / "report.pdf"))
 
     assert result.success is True
-    assert transport.get.await_args.args[0].startswith(
-        "http://host.docker.internal:3000/files/7/download?"
+    assert (
+        transport.get.await_args.args[0]
+        == "http://host.docker.internal:3000/files/7/download"
     )
 
 
@@ -660,7 +665,13 @@ async def test_upload_rejects_private_confirmation_redirect_before_request(tmp_p
         ]
     )
     transport.get = AsyncMock()
-    with patch("src.utils.security.socket.getaddrinfo", return_value=PUBLIC_DNS):
+    with (
+        patch("src.utils.security.socket.getaddrinfo", return_value=PUBLIC_DNS),
+        patch(
+            "src.integrations.canvas.canvas_api.httpx.AsyncClient",
+            return_value=_client_context(transport),
+        ),
+    ):
         client = CanvasAPIClient("https://canvas.example", "token")
         client._client = transport
         result = await client.upload_file("1", str(source))
@@ -700,7 +711,13 @@ async def test_upload_allows_public_https_upload_and_confirmation_urls(tmp_path)
             request=httpx.Request("GET", "https://confirm.example/files/77"),
         )
     )
-    with patch("src.utils.security.socket.getaddrinfo", return_value=PUBLIC_DNS):
+    with (
+        patch("src.utils.security.socket.getaddrinfo", return_value=PUBLIC_DNS),
+        patch(
+            "src.integrations.canvas.canvas_api.httpx.AsyncClient",
+            return_value=_client_context(transport),
+        ),
+    ):
         client = CanvasAPIClient("https://canvas.example", "token")
         client._client = transport
         result = await client.upload_file("1", str(source))
@@ -748,10 +765,13 @@ async def test_upload_maps_dev_localhost_urls_to_exact_docker_origin(
             request=httpx.Request("GET", f"{expected_origin}/confirm"),
         )
     )
-    client = CanvasAPIClient("http://localhost:3000", "token")
-    client._client = transport
-
-    result = await client.upload_file("1", str(source))
+    with patch(
+        "src.integrations.canvas.canvas_api.httpx.AsyncClient",
+        return_value=_client_context(transport),
+    ):
+        client = CanvasAPIClient("http://localhost:3000", "token")
+        client._client = transport
+        result = await client.upload_file("1", str(source))
 
     assert result.success is True
     assert transport.post.await_args_list[1].args[0] == f"{expected_origin}/upload"

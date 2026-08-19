@@ -8,7 +8,7 @@ import os
 import re
 import socket
 from collections.abc import Mapping
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 # Patterns that could manipulate LLM behavior
 PROMPT_INJECTION_PATTERNS = [
@@ -29,6 +29,14 @@ PROMPT_INJECTION_PATTERNS = [
 _HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 PERSISTED_CANVAS_ORIGIN_ERROR = (
     "Canvas connection origin is invalid or no longer authorized; reconnect Canvas"
+)
+_SENSITIVE_URL_QUERY_MARKERS = (
+    "token",
+    "signature",
+    "credential",
+    "secret",
+    "api_key",
+    "apikey",
 )
 
 
@@ -482,6 +490,42 @@ def require_persisted_canvas_origin(persisted_value: object) -> str:
             except (TypeError, ValueError):
                 pass
         raise ValueError(PERSISTED_CANVAS_ORIGIN_ERROR) from exc
+
+
+def redact_sensitive_url(url: str) -> str:
+    """Redact URL userinfo and credential-bearing query parameter values."""
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        netloc = f"***@{host}" if parsed.username is not None else host
+
+        query = []
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            normalized_key = key.lower().replace("-", "_")
+            if normalized_key == "sig" or any(
+                marker in normalized_key for marker in _SENSITIVE_URL_QUERY_MARKERS
+            ):
+                value = "***"
+            query.append((key, value))
+
+        return urlunparse(
+            (
+                parsed.scheme,
+                netloc,
+                parsed.path,
+                parsed.params,
+                urlencode(query, doseq=True),
+                "",
+            )
+        )
+    except Exception:
+        return "<unparseable url>"
 
 
 def redact_url_credentials(url: str) -> str:
