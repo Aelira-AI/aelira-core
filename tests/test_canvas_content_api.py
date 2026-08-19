@@ -470,6 +470,16 @@ def _make_response(
     return resp
 
 
+@pytest.fixture
+def _mock_canvas_public_dns():
+    """Keep Canvas client URL checks deterministic in unit tests."""
+    with patch(
+        "src.utils.security.socket.getaddrinfo",
+        return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+    ):
+        yield
+
+
 def _make_client() -> "CanvasAPIClient":
     """Create a CanvasAPIClient for testing."""
     from src.integrations.canvas.canvas_api import CanvasAPIClient
@@ -481,6 +491,7 @@ def _make_client() -> "CanvasAPIClient":
     )
 
 
+@pytest.mark.usefixtures("_mock_canvas_public_dns")
 class TestCanvasAPIContentMethods:
     """Tests for Canvas API content methods: list, get, update for pages, assignments, etc."""
 
@@ -879,6 +890,7 @@ class TestCanvasAPIContentMethods:
         assert "include[]" in params
 
 
+@pytest.mark.usefixtures("_mock_canvas_public_dns")
 class TestCanvasAPIRateLimiting:
     """Tests for Canvas API rate limit throttling."""
 
@@ -929,8 +941,71 @@ class TestCanvasAPIRateLimiting:
             mock_sleep.assert_not_called()
 
 
+@pytest.mark.usefixtures("_mock_canvas_public_dns")
 class TestCanvasAPIPagination:
     """Tests for Canvas API Link header pagination."""
+
+    @pytest.mark.asyncio
+    async def test_list_course_files_follows_links_and_preserves_first_page_filters(
+        self,
+    ):
+        client_obj = _make_client()
+        first_url = "https://canvas.example.com/api/v1/courses/101/files"
+        next_url = (
+            "https://canvas.example.com/api/v1/courses/101/files?"
+            "page=2&per_page=100&search_term=target&content_types%5B%5D=application%2Fpdf"
+        )
+
+        def file_data(file_id: int) -> dict:
+            return {
+                "id": file_id,
+                "display_name": f"File {file_id}",
+                "filename": f"file-{file_id}.pdf",
+                "content-type": "application/pdf",
+                "size": 10,
+                "url": f"https://canvas.example.com/files/{file_id}",
+                "created_at": "2026-03-01T10:00:00Z",
+                "updated_at": "2026-03-01T10:00:00Z",
+            }
+
+        first_response = _make_response(
+            json_data=[file_data(file_id) for file_id in range(1, 101)],
+            headers={"Link": f'<{next_url}>; rel="next"'},
+        )
+        second_response = _make_response(json_data=[file_data(101)])
+        client_obj._request_with_retry = AsyncMock(
+            side_effect=[first_response, second_response]
+        )
+
+        try:
+            files = await client_obj.list_course_files(
+                "101",
+                search_term="target",
+                content_types=["application/pdf"],
+            )
+        finally:
+            await client_obj.close()
+
+        assert len(files) == 101
+        assert files[-1].id == "101"
+        assert client_obj._request_with_retry.await_args_list[0].args == (
+            "GET",
+            first_url,
+        )
+        assert client_obj._request_with_retry.await_args_list[0].kwargs == {
+            "params": {
+                "per_page": 100,
+                "search_term": "target",
+                "content_types[]": ["application/pdf"],
+            }
+        }
+        assert client_obj._request_with_retry.await_args_list[1].args == (
+            "GET",
+            next_url,
+        )
+        assert client_obj._request_with_retry.await_args_list[1].kwargs == {
+            "params": None
+        }
 
     @pytest.mark.asyncio
     async def test_pagination_follows_next_link(self):
@@ -1007,6 +1082,7 @@ class TestCanvasAPIPagination:
         assert mock_client.get.call_count == 1
 
 
+@pytest.mark.usefixtures("_mock_canvas_public_dns")
 class TestCanvasAPIRetry:
     """Tests for retry logic on 403/429 responses."""
 

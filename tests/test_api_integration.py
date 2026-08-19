@@ -7,8 +7,8 @@ Tests authentication, rate limiting, file validation, and core functionality.
 import pytest
 from fastapi.testclient import TestClient
 from src.api.main import app
+from src.auth.auth_service import AuthService
 from src.config.settings import get_settings
-import bcrypt
 import uuid
 from datetime import datetime, timedelta, timezone
 import io
@@ -82,6 +82,7 @@ def test_user(db_session, test_department):
             name="Test User",
             department_id=test_department.id,
             role=UserRole.FACULTY,
+            is_active=True,
         )
         db_session.add(user)
         db_session.commit()
@@ -97,15 +98,12 @@ def test_api_key(db_session, test_user, test_department):
     if not DB_AVAILABLE:
         pytest.skip("Database not available")
     try:
-        test_key = f"aelira_test_{uuid.uuid4().hex[:16]}"
-        key_hash = bcrypt.hashpw(test_key.encode("utf-8"), bcrypt.gensalt()).decode(
-            "utf-8"
-        )
+        test_key, key_hash, key_prefix = AuthService.generate_api_key()
 
         api_key = APIKey(
             id=str(uuid.uuid4()),
             key_hash=key_hash,
-            key_prefix=test_key[:12],
+            key_prefix=key_prefix,
             name="Test API Key",
             user_id=test_user.id,
             department_id=test_department.id,

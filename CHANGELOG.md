@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.9.4] - 2026-08-19
+
+### Security
+
+- LTI is staff-only and fails closed. Canvas `Administrator` launches receive account-wide scope; `Instructor`, `TeachingAssistant`, and `ContentDeveloper` launches are course-scoped. Learner-only, missing, malformed, and unknown roles are denied before provisioning, token creation, statistics, grade-service state, deep-link work, or data access. Route authorization independently enforces tenant, course, and account scope.
+- Existing legacy API keys with the static `aelira_live_` prefix are intentionally disabled. New keys use indexed random-bearing prefixes, active tenant-consistent owners, and bounded bcrypt work.
+- Existing legacy LTI users are deactivated and marked for reauthorization. An authorized staff relaunch can reactivate only the matching migration-marked identity; deletion-pending and administratively deactivated users are never revived.
+- Canvas OAuth state is opaque, one-time, expiring, and server-side. Canvas origins require exact current operator authorization; outbound DNS is bound to the connection, redirects and pagination are validated and bounded, and OAuth tokens are never placed in download URLs or forwarded to cross-origin download/upload targets.
+- Session access requires a live database session unless it is a canonical LTI v2 token. Refresh rotation uses a stable session ID and one short encrypted replay window for legitimate concurrent requests; concurrent dashboard 401s share one refresh and terminate/logout once when recovery fails.
+- Public release scanning now requires a protected disclosure policy, scans exact Git index blobs and paths, redacts protected findings, and fails closed before the coordinated Docker, npm, and GitHub Release pipeline can publish.
+
+### Fixed
+
+- Blackboard remediation and generic cloud-provider synchronization routes that have no durable executor now return HTTP `501` and create zero job rows instead of claiming work was queued.
+- Weekly alert schedules are repaired and constrained: null or invalid legacy values become Monday at 09:00 UTC, with database and API bounds of day `0–6` and hour `0–23`.
+- Expired dashboard sessions no longer enter a refresh/validation flash loop; recovery retries each request at most once and redirects once to a clear sign-in state.
+- Canvas account management, content scans, uploads, remediation, re-downloads, write-back, and token refresh all revalidate the currently allowed persisted Canvas origin before using credentials.
+
+### Changed
+
+- Releases now run as one bounded CI → preflight → Docker → npm → GitHub Release DAG. API and dashboard images are built on native amd64/arm64 runners, verified by immutable digest, and promoted together before npm or a GitHub Release can publish.
+- Published container tags use the non-`v` forms `X.Y.Z`, `X.Y`, and `latest`; deployment documentation now recommends digest pinning for reproducibility.
+
+### Operator action required
+
+- **No downgrade:** Back up PostgreSQL before upgrading. The published Canvas-content schema migration refuses to move its revision marker backward because deeper rollback can destroy adopted production data. Credential and LTI invalidation is also intentionally irreversible. Returning to v0.9.3 requires restoring the pre-upgrade database backup together with the matching v0.9.3 images.
+- Set a stable `SESSION_REPLAY_ENCRYPTION_KEY` in staging and production before rollout. Preserve it across restarts and use the same value on every worker.
+- When Canvas OAuth is enabled, set `CANVAS_OAUTH_ALLOWED_ORIGINS` to the exact canonical institutional Canvas HTTPS root origins. Staging and production also require Redis for one-time Canvas OAuth state. Connections whose persisted origin is absent or no longer allowed must reconnect.
+- Keep `UVICORN_WORKERS=1`. Back up the database and run `alembic upgrade head` as an explicit preflight; container startup also runs migrations and fails closed if they fail.
+- Reissue replacement keys and update every client that used a legacy API key. Existing LTI users must relaunch through an authorized staff Canvas placement to complete reauthorization.
+
 ## [0.9.3] - 2026-08-18
 
 ### Fixed

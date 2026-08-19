@@ -5,23 +5,25 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from ...ai.providers import get_provider_manager
+from ...auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ...db.database import get_db_dependency
-from ...db.models import APIKey, ScanFix, ScanType
+from ...db.models import CloudFile, CloudOAuthCredentials, ScanFix, ScanType
 from ...db.scan_service import ScanService
 from ...education.image_alt_text import ImageAltTextGenerator
 from ...middleware.quota import require_feature
 from ...utils.sanitization import sanitize_for_postgres
+from ...utils.security import require_persisted_canvas_origin
 from ._shared import (
     APPROVED_REVIEW_STATUSES,
     RemediationOptions,
-    get_api_key_or_mock,
 )
+from ._scope import authorize_scan_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,6 +32,52 @@ router = APIRouter()
 def _sanitize_str(value: Optional[str]) -> Optional[str]:
     """Strip NUL (0x00) bytes that PostgreSQL text columns reject."""
     return sanitize_for_postgres(value)
+
+
+def _get_bound_fallback_cloud_file(
+    db: Session, scan_id: str, department_id: str
+) -> CloudFile | None:
+    """Return a non-LTI fallback CloudFile bound to the scan tenant."""
+    cloud_file = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.last_scan_id == scan_id,
+            CloudFile.department_id == department_id,
+        )
+        .first()
+    )
+    if (
+        not cloud_file
+        or cloud_file.last_scan_id != scan_id
+        or cloud_file.department_id != department_id
+    ):
+        return None
+    return cloud_file
+
+
+def _get_bound_cloud_credential(
+    db: Session, cloud_file: CloudFile, department_id: str
+) -> CloudOAuthCredentials | None:
+    """Return the credential bound to a CloudFile's tenant and provider."""
+    if not cloud_file.credential_id:
+        return None
+    credential = (
+        db.query(CloudOAuthCredentials)
+        .filter(
+            CloudOAuthCredentials.id == cloud_file.credential_id,
+            CloudOAuthCredentials.department_id == department_id,
+            CloudOAuthCredentials.provider == cloud_file.provider,
+        )
+        .first()
+    )
+    if (
+        not credential
+        or credential.id != cloud_file.credential_id
+        or credential.department_id != department_id
+        or credential.provider != cloud_file.provider
+    ):
+        return None
+    return credential
 
 
 # ==================== Auto-Remediation Helpers ====================
@@ -318,6 +366,24 @@ def _map_severity_string(severity_str: str):
 # ==================== Auto-Remediation Endpoints ====================
 
 
+@router.post("/remediate/batch")
+async def batch_remediate(
+    scan_ids: List[str],
+    background_tasks: BackgroundTasks,
+    use_ai: bool = True,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Validate and queue a batch without allowing partial authorization."""
+    return await _batch_remediate_impl(
+        scan_ids=scan_ids,
+        use_ai=use_ai,
+        background_tasks=background_tasks,
+        db=db,
+        principal=principal,
+    )
+
+
 @router.post("/remediate/{scan_id}")
 async def remediate_scan(
     scan_id: str,
@@ -325,7 +391,7 @@ async def remediate_scan(
     options: Optional[RemediationOptions] = None,
     use_ai: bool = True,  # Keep for backwards compatibility
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Auto-remediate accessibility issues for a completed scan.
@@ -356,7 +422,7 @@ async def remediate_scan(
     )
     from ...education.remediation.base import OutputFormat
 
-    _, user_id, department_id = api_key_info
+    _, user_id, department_id = principal.as_legacy_tuple()
 
     # Get the scan
     scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
@@ -364,8 +430,7 @@ async def remediate_scan(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    if scan.department_id != department_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    authorized_cloud_file = authorize_scan_access(db, scan, principal)
 
     if not scan.result:
         raise HTTPException(status_code=400, detail="Scan has no results to remediate")
@@ -395,20 +460,21 @@ async def remediate_scan(
 
     # Fall back: re-download from cloud provider if this was a cloud scan
     if not file_path or not os.path.exists(file_path):
-        from ...db.models import CloudFile, CloudOAuthCredentials, CloudProvider
+        from ...db.models import CloudProvider
         from ...integrations.oauth_token_manager import OAuthTokenManager
 
-        cloud_file = (
-            db.query(CloudFile).filter(CloudFile.last_scan_id == scan_id).first()
+        cloud_file = authorized_cloud_file or _get_bound_fallback_cloud_file(
+            db, scan_id, principal.department_id
         )
         if cloud_file and cloud_file.credential_id:
-            credential = (
-                db.query(CloudOAuthCredentials)
-                .filter(CloudOAuthCredentials.id == cloud_file.credential_id)
-                .first()
+            credential = _get_bound_cloud_credential(
+                db, cloud_file, principal.department_id
             )
             if credential:
                 try:
+                    canvas_url = None
+                    if credential.provider == CloudProvider.CANVAS.value:
+                        canvas_url = require_persisted_canvas_origin(credential)
                     token_manager = OAuthTokenManager()
                     access_token = await token_manager.refresh_if_expired(
                         credential, db
@@ -425,17 +491,7 @@ async def remediate_scan(
                     if credential.provider == CloudProvider.CANVAS.value:
                         from ...integrations.canvas.canvas_api import CanvasAPIClient
 
-                        canvas_url = (credential.provider_metadata or {}).get(
-                            "canvas_instance_url", ""
-                        )
-                        if (
-                            os.getenv("ENV") == "development"
-                            and "localhost" in canvas_url
-                        ):
-                            canvas_url = canvas_url.replace(
-                                "localhost", "host.docker.internal"
-                            )
-
+                        assert canvas_url is not None
                         client = CanvasAPIClient(
                             canvas_instance_url=canvas_url, access_token=access_token
                         )
@@ -726,10 +782,8 @@ async def remediate_scan(
 
         # Update CloudFile if this scan came from a cloud integration
         try:
-            from ...db.models import CloudFile
-
-            cloud_file = (
-                db.query(CloudFile).filter(CloudFile.last_scan_id == scan_id).first()
+            cloud_file = authorized_cloud_file or _get_bound_fallback_cloud_file(
+                db, scan_id, principal.department_id
             )
             if cloud_file:
                 cloud_file.has_remediated_version = True
@@ -805,7 +859,7 @@ async def remediate_scan(
 def remediate_code_scan(
     scan_id: str,
     db: Session = Depends(get_db_dependency),
-    auth_result: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Remediate a code (HTML) scan using approved ScanFix records.
@@ -819,15 +873,14 @@ def remediate_code_scan(
     from ...education.remediation.html_remediator import HtmlRemediator
     from ...education.remediation.base import RemediationConfig
 
-    _, user_id, department_id = auth_result
+    _, user_id, department_id = principal.as_legacy_tuple()
 
     # 1. Verify scan exists and belongs to user's department
     scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    if scan.department_id != department_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    authorize_scan_access(db, scan, principal)
 
     # Must be a code scan
     scan_type_value = (
@@ -975,7 +1028,7 @@ async def download_remediated_file(
     request: Request,
     format: Optional[str] = None,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Download the remediated document for a scan.
@@ -988,15 +1041,14 @@ async def download_remediated_file(
     from fastapi.responses import FileResponse
     from ...utils.file_storage import get_remediated_file_path
 
-    _, user_id, department_id = api_key_info
+    _, user_id, department_id = principal.as_legacy_tuple()
 
     scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
 
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    if scan.department_id != department_id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    authorize_scan_access(db, scan, principal)
 
     file_path = scan.storage_path
     if not file_path:
@@ -1108,22 +1160,21 @@ async def download_remediated_file(
 async def list_remediated_formats(
     scan_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     List available remediated file formats for a scan.
 
     Returns which formats are available for download.
     """
-    _, user_id, department_id = api_key_info
+    _, user_id, department_id = principal.as_legacy_tuple()
 
     scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
 
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    if scan.department_id != department_id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    authorize_scan_access(db, scan, principal)
 
     file_path = scan.storage_path
     if not file_path:
@@ -1210,13 +1261,12 @@ async def list_remediated_formats(
     }
 
 
-@router.post("/remediate/batch")
-async def batch_remediate(
+async def _batch_remediate_impl(
     scan_ids: List[str],
-    use_ai: bool = True,
-    background_tasks: BackgroundTasks = BackgroundTasks(),
-    db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    use_ai: bool,
+    background_tasks: BackgroundTasks,
+    db: Session,
+    principal: AuthenticatedPrincipal,
 ):
     """
     Batch remediate multiple scans.
@@ -1226,10 +1276,7 @@ async def batch_remediate(
     REQUIRES API KEY IN PRODUCTION.
     REQUIRES: bulk_api feature (tier-gated via TIER_QUOTAS; enabled on all core tiers)
     """
-    _, user_id, department_id = api_key_info
-
-    # Check feature access - Batch remediation requires bulk_api feature
-    await require_feature(db, department_id, "bulk_api", "Batch Remediation")
+    _, user_id, department_id = principal.as_legacy_tuple()
 
     if not scan_ids:
         raise HTTPException(status_code=400, detail="No scan IDs provided")
@@ -1239,15 +1286,22 @@ async def batch_remediate(
 
     batch_id = str(uuid.uuid4())
 
-    # Validate all scans exist and belong to user
+    # Resolve and authorize the complete request before feature checks, tasks,
+    # writes, or external clients. This makes mixed-scope batches atomic.
     valid_scans = []
     for scan_id in scan_ids:
         scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
-        if scan and scan.department_id == department_id and scan.result:
-            valid_scans.append(scan_id)
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        authorize_scan_access(db, scan, principal)
+        if not scan.result:
+            raise HTTPException(
+                status_code=400, detail="Scan has no results to remediate"
+            )
+        valid_scans.append(scan_id)
 
-    if not valid_scans:
-        raise HTTPException(status_code=400, detail="No valid scans found")
+    # Batch remediation requires bulk_api feature.
+    await require_feature(db, department_id, "bulk_api", "Batch Remediation")
 
     # Queue batch remediation in background
     # For now, return the plan - actual background processing would be added

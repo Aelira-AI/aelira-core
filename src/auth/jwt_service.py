@@ -79,6 +79,7 @@ class JWTService:
         department_id: str,
         email: str,
         role: str,
+        session_id: Optional[str] = None,
         additional_claims: Optional[Dict[str, Any]] = None,
         expires_in_minutes: Optional[int] = None,
     ) -> Tuple[str, str, datetime]:
@@ -112,6 +113,8 @@ class JWTService:
             "exp": expires_at,
         }
 
+        if session_id:
+            payload["sid"] = session_id
         if additional_claims:
             payload.update(additional_claims)
 
@@ -124,12 +127,15 @@ class JWTService:
         logger.debug(f"Created access token for user {user_id}, expires {expires_at}")
         return token, jti, expires_at
 
-    def create_refresh_token(self, user_id: str) -> Tuple[str, str, datetime]:
+    def create_refresh_token(
+        self, user_id: str, session_id: str
+    ) -> Tuple[str, str, datetime]:
         """
-        Create a new refresh token
+        Create a new refresh token bound to one database session.
 
         Args:
             user_id: User ID
+            session_id: Stable UserSession ID
 
         Returns:
             Tuple of (token, token_hash_input, expires_at)
@@ -146,6 +152,7 @@ class JWTService:
         # Create JWT wrapper (so we can include expiration in token itself)
         payload = {
             "sub": user_id,
+            "sid": session_id,
             "token": raw_token,
             "type": "refresh",
             "iat": datetime.now(timezone.utc),

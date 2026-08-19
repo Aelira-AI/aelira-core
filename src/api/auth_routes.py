@@ -22,10 +22,11 @@ from fastapi.responses import JSONResponse
 
 from ..db.database import get_db_dependency
 from ..db.models import APIKey, User, Department
-from ..auth.dependencies import get_required_api_key
+from ..auth.dependencies import get_required_api_key, resolve_access_token
 from ..auth.auth_service import AuthService, RateLimiter
 from ..auth.session_service import get_session_service
 from ..auth.jwt_service import get_jwt_service
+from ..auth.lti_authorization import validate_lti_staff_token_payload
 from ..middleware.quota import get_quota_status
 from ..config.settings import get_settings
 from ..mailer.email_service import get_email_service
@@ -162,16 +163,9 @@ def get_current_api_key(
             # "has no session", then resolve the user's API key exactly
             # like the session branch below.
             lti_payload = get_jwt_service().verify_access_token(access_token)
-            if lti_payload and lti_payload.get("lti_launch") is True:
-                lti_user_id = lti_payload.get("sub") or lti_payload.get("user_id")
-                lti_user = (
-                    db.query(User)
-                    .filter(User.id == lti_user_id, User.is_active.is_(True))
-                    .first()
-                    if lti_user_id
-                    else None
-                )
-                if lti_user:
+            if lti_payload:
+                lti_user = validate_lti_staff_token_payload(lti_payload, db)
+                if lti_user is not None:
                     result = (lti_user, lti_payload)
 
         if result:
@@ -983,6 +977,25 @@ async def verify_magic_link(
 # ==================== Session Management ====================
 
 
+def _session_cookie_settings(settings):
+    cookie_settings = {
+        "httponly": True,
+        "secure": settings.session_cookie_secure,
+        "samesite": settings.session_cookie_samesite.lower(),
+        "path": "/",
+    }
+    if settings.env == "production" and settings.session_cookie_domain:
+        cookie_settings["domain"] = settings.session_cookie_domain
+    return cookie_settings
+
+
+def _clear_session_cookies(response: JSONResponse, settings) -> JSONResponse:
+    cookie_settings = _session_cookie_settings(settings)
+    response.delete_cookie(key="aelira_access", **cookie_settings)
+    response.delete_cookie(key="aelira_refresh", **cookie_settings)
+    return response
+
+
 @router.get("/session/validate")
 async def validate_session(
     request: Request,
@@ -1010,27 +1023,19 @@ async def validate_session(
             detail="Not authenticated",
         )
 
-    # Try DB-backed session validation first (magic link sessions)
-    result = session_service.validate_session(db, access_token)
-    if result:
-        user, payload = result
-    else:
-        # Fall back to direct JWT validation (LTI launch tokens)
-        payload = jwt_service.verify_access_token(access_token)
-        if not payload:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session expired or invalid",
-            )
-        user_id = payload.get("sub")
-        user = (
-            db.query(User).filter(User.id == user_id, User.is_active.is_(True)).first()
+    resolved = resolve_access_token(
+        db,
+        access_token,
+        session_service=session_service,
+        jwt_service=jwt_service,
+    )
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired or invalid",
         )
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session expired or invalid",
-            )
+    user = resolved.user
+    payload = resolved.payload
 
     # Get department info
     department = (
@@ -1078,9 +1083,12 @@ async def refresh_session(
     # Get refresh token from cookie
     refresh_token = request.cookies.get("aelira_refresh")
     if not refresh_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token required",
+        return _clear_session_cookies(
+            JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Refresh token required"},
+            ),
+            settings,
         )
 
     # Refresh session
@@ -1091,9 +1099,14 @@ async def refresh_session(
         user_agent=user_agent,
     )
     if not result:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token. Please log in again.",
+        return _clear_session_cookies(
+            JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={
+                    "detail": "Invalid or expired refresh token. Please log in again."
+                },
+            ),
+            settings,
         )
 
     access_token, new_refresh_token, access_exp, refresh_exp = result
@@ -1101,15 +1114,7 @@ async def refresh_session(
     # Create response with new cookies
     response = JSONResponse(content={"success": True, "message": "Session refreshed"})
 
-    cookie_settings = {
-        "httponly": True,
-        "secure": settings.session_cookie_secure,
-        "samesite": settings.session_cookie_samesite.lower(),
-        "path": "/",
-    }
-
-    if settings.env == "production" and settings.session_cookie_domain:
-        cookie_settings["domain"] = settings.session_cookie_domain
+    cookie_settings = _session_cookie_settings(settings)
 
     response.set_cookie(
         key="aelira_access",
@@ -1141,38 +1146,50 @@ async def logout(
     session_service = get_session_service()
     settings = get_settings()
 
-    # Get access token from cookie
     access_token = request.cookies.get("aelira_access")
+    refresh_token = request.cookies.get("aelira_refresh")
+    jwt_service = get_jwt_service()
+    access_payload = (
+        jwt_service.decode_token(access_token, verify_exp=False)
+        if access_token
+        else None
+    )
+    refresh_payload = (
+        jwt_service.decode_token(refresh_token, verify_exp=False)
+        if refresh_token
+        else None
+    )
+    if not isinstance(access_payload, dict) or access_payload.get("type") != "access":
+        access_payload = None
+    if (
+        not isinstance(refresh_payload, dict)
+        or refresh_payload.get("type") != "refresh"
+    ):
+        refresh_payload = None
 
-    user_id = None
-    if access_token:
-        # Get user ID from token
-        jwt_service = get_jwt_service()
-        user_id = jwt_service.get_user_id_from_token(access_token)
-        if user_id:
-            # Revoke session
-            session_service.revoke_session(db, user_id, access_token)
+    access_sid = access_payload.get("sid") if access_payload else None
+    refresh_sid = refresh_payload.get("sid") if refresh_payload else None
+    if isinstance(access_sid, str) and access_sid:
+        payload = access_payload
+    elif isinstance(refresh_sid, str) and refresh_sid:
+        payload = refresh_payload
+    else:
+        payload = access_payload
 
-            # Audit log logout
+    if payload is not None:
+        user_id = payload.get("sub")
+        session_id = payload.get("sid")
+        if isinstance(user_id, str) and user_id:
+            if isinstance(session_id, str) and session_id:
+                session_service.revoke_session(db, user_id, session_id=session_id)
+            elif access_token and payload is access_payload:
+                session_service.revoke_session(db, user_id, access_token)
+
             audit = get_audit_service(db)
             audit.log_logout(user_id=user_id, request=request)
 
-    # Create response that clears cookies
     response = JSONResponse(content={"success": True, "message": "Logged out"})
-
-    cookie_settings = {
-        "httponly": True,
-        "secure": settings.session_cookie_secure,
-        "samesite": settings.session_cookie_samesite.lower(),
-        "path": "/",
-    }
-
-    if settings.env == "production" and settings.session_cookie_domain:
-        cookie_settings["domain"] = settings.session_cookie_domain
-
-    # Clear cookies by setting empty value and immediate expiration
-    response.delete_cookie(key="aelira_access", **cookie_settings)
-    response.delete_cookie(key="aelira_refresh", **cookie_settings)
+    _clear_session_cookies(response, settings)
 
     logger.info("User logged out")
     return response

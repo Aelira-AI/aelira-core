@@ -19,13 +19,14 @@ import json
 import logging
 import secrets
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.auth.jwt_service import JWTService
+from src.auth.lti_authorization import LTIStaffAuthorization, authorize_lti_roles
 from src.auth.redis_rate_limiter import get_redis_client
 from src.config.settings import get_settings
 from src.db.models import (
@@ -33,43 +34,29 @@ from src.db.models import (
     LTIAGSContext,
     LTIRegistration,
     User,
-    UserRole,
 )
 from src.integrations.canvas_lti import CanvasLaunchData
 
 logger = logging.getLogger(__name__)
 
+
+class LTIStaffAccessDenied(Exception):
+    """Raised when a validated LTI launch does not assert a staff role."""
+
+
+def require_lti_staff_access(launch_data: CanvasLaunchData) -> LTIStaffAuthorization:
+    """Return the canonical staff decision or deny the launch fail-closed."""
+
+    decision = authorize_lti_roles(launch_data.roles)
+    if not decision.allowed:
+        raise LTIStaffAccessDenied
+    return decision
+
+
 # ---------------------------------------------------------------------------
 # In-memory fallback when Redis is unavailable (dev only)
 # ---------------------------------------------------------------------------
 _code_store: Dict[str, str] = {}
-
-
-# ---------------------------------------------------------------------------
-# Role mapping helpers
-# ---------------------------------------------------------------------------
-
-_ADMIN_ROLE_FRAGMENTS = {"Instructor", "Administrator"}
-_FACULTY_ROLE_FRAGMENTS = {
-    "TeachingAssistant",
-    "ContentDeveloper",
-    "Mentor",
-    "Learner",
-}
-
-
-def _map_lti_roles_to_aelira(lti_roles: list[str]) -> UserRole:
-    """Return the highest Aelira role implied by the LTI role URIs."""
-    for role_uri in lti_roles:
-        for fragment in _ADMIN_ROLE_FRAGMENTS:
-            if fragment in role_uri:
-                return UserRole.ADMIN
-    for role_uri in lti_roles:
-        for fragment in _FACULTY_ROLE_FRAGMENTS:
-            if fragment in role_uri:
-                return UserRole.FACULTY
-    # Default — unknown roles still get lowest privilege
-    return UserRole.FACULTY
 
 
 def _simplify_roles(lti_roles: list[str]) -> list[str]:
@@ -84,22 +71,6 @@ def _simplify_roles(lti_roles: list[str]) -> list[str]:
         else:
             names.append(uri)
     return names
-
-
-def _is_canvas_admin(roles: List[str]) -> bool:
-    """Check if LTI roles indicate an account-level admin."""
-    admin_patterns = [
-        "Administrator",
-        "urn:lti:sysrole:ims/lis/SysAdmin",
-        "urn:lti:instrole:ims/lis/Administrator",
-        "http://purl.imsglobal.org/vocab/lis/v2/institution/person#Administrator",
-        "http://purl.imsglobal.org/vocab/lis/v2/system/person#Administrator",
-    ]
-    for role in roles:
-        for pattern in admin_patterns:
-            if pattern in role:
-                return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +96,8 @@ def handle_lti_launch(
     Returns:
         Full redirect URL including ``?code=...``.
     """
+    role_decision = require_lti_staff_access(launch_data)
+    assert role_decision.aelira_role is not None
     settings = get_settings()
     department_id = str(registration.department_id)
 
@@ -135,28 +108,61 @@ def handle_lti_launch(
         email = f"{launch_data.user_id}@{issuer_domain}"
 
     # --- Find or create user ---
+    lti_source = f"{launch_data.platform_id}:{launch_data.user_id}"
     user = (
         db.query(User)
-        .filter(User.email == email, User.department_id == department_id)
+        .filter(
+            User.lti_source == lti_source,
+            User.department_id == department_id,
+            User.auth_provider == AuthProvider.LTI,
+        )
         .first()
     )
+    if user is not None:
+        database_provider = (
+            user.auth_provider.value
+            if isinstance(user.auth_provider, AuthProvider)
+            else str(user.auth_provider)
+        )
+        if database_provider != AuthProvider.LTI.value:
+            user = None
 
     if user is None:
-        # Check whether the email exists in a *different* department
+        # Legacy LTI users predate lti_source stamping. Email fallback is limited
+        # to LTI-owned identities in this department; a same-email account from
+        # another provider must never be converted into an LTI account.
+        user = (
+            db.query(User)
+            .filter(
+                User.email == email,
+                User.department_id == department_id,
+                User.auth_provider == AuthProvider.LTI,
+                User.lti_source.is_(None),
+            )
+            .first()
+        )
+        if user is not None:
+            existing_lti_source = getattr(user, "lti_source", None)
+            if existing_lti_source not in (None, lti_source):
+                user = None
+
+    if user is None:
         existing = db.query(User).filter(User.email == email).first()
         if existing:
-            # Disambiguate by appending a department fragment
+            # User.email is globally unique. Preserve the existing identity and
+            # provision a separate, deterministic tenant-qualified LTI address.
             local, _, domain = email.partition("@")
             email = f"{local}+{department_id[:8]}@{domain}"
 
-        aelira_role = _map_lti_roles_to_aelira(launch_data.roles)
         user = User(
             email=email,
             name=launch_data.user_name or email,
             department_id=department_id,
-            role=aelira_role,
+            role=role_decision.aelira_role,
             auth_provider=AuthProvider.LTI,
+            lti_source=lti_source,
             is_active=True,
+            lti_reauthorization_required=False,
         )
         db.add(user)
         db.flush()  # get user.id without full commit
@@ -168,9 +174,37 @@ def handle_lti_launch(
                 "department_id": department_id,
             },
         )
+    else:
+        deletion_pending = any(
+            value is not None
+            for value in (
+                user.deactivated_at,
+                user.deletion_requested_at,
+                user.deletion_scheduled_for,
+                user.deletion_confirmation_code_hash,
+                user.deletion_confirmation_expires_at,
+            )
+        )
+        if deletion_pending:
+            raise LTIStaffAccessDenied
 
-    # Always stamp the LTI provenance (even for returning users)
-    user.lti_source = f"{launch_data.platform_id}:{launch_data.user_id}"
+        if not user.is_active:
+            if (
+                user.auth_provider != AuthProvider.LTI
+                or user.lti_reauthorization_required is not True
+            ):
+                raise LTIStaffAccessDenied
+            user.is_active = True
+
+        if user.lti_reauthorization_required is True:
+            user.lti_reauthorization_required = False
+
+    # Recompute authorization-derived state on every launch. A returning user
+    # must not retain broader access after their LMS role changes.
+    user.role = role_decision.aelira_role
+
+    # Always stamp the LTI provenance (even for legacy returning LTI users)
+    user.lti_source = lti_source
     user.last_login_at = datetime.now(timezone.utc)
     db.flush()
 
@@ -204,6 +238,10 @@ def handle_lti_launch(
             "course_id": course_id,
             "lti_launch": True,
             "lti_roles": _simplify_roles(launch_data.roles),
+            "lti_staff": True,
+            "lti_staff_role": role_decision.staff_role,
+            "lti_account_wide": role_decision.account_wide,
+            "lti_authz_version": 2,
         },
         expires_in_minutes=settings.lti_access_token_expire_minutes,
     )

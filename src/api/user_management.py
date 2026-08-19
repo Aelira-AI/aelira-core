@@ -16,7 +16,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import secrets
 import logging
 
@@ -418,8 +418,10 @@ async def remove_user(
                 status_code=403, detail="Cannot remove super admin users"
             )
 
-        # Soft delete - deactivate user
+        # Soft delete - deactivate user and prevent LTI launch reactivation.
         target_user.is_active = False
+        target_user.lti_reauthorization_required = False
+        target_user.deactivated_at = datetime.now(timezone.utc)
         db.commit()
 
         return {

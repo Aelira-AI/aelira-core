@@ -1,5 +1,5 @@
 {
-  "_comment": "Example local denylist. Copy to .release-denylist.local.json (gitignored) and replace with the real people/organisations your audits found.",
+  "_comment": "Schema example only. For local scans, copy this gitignored file and replace the example values. For trusted tag releases, store the complete JSON as the RELEASE_DENYLIST_JSON environment secret in the protected release environment; never commit or log protected values.",
   "patterns": [
     "someone@example\\.edu",
     "example\\s+organisation"

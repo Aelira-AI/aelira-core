@@ -3,16 +3,18 @@
 import json as _json
 import logging
 import traceback
-from typing import Optional, Tuple
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from ...db.database import get_db_dependency
-from ...db.models import APIKey, Scan, ScanStatus, ScanType
+from ...auth.canvas_permissions import require_lti_account_access
+from ...auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
+from ...db.models import CloudFile, CloudProvider, Scan, ScanStatus, ScanType
 from ...db.scan_service import ScanService
-from ._shared import get_api_key_or_mock
+from ._scope import authorize_scan_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -24,7 +26,7 @@ async def get_scan_history(
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get scan history for the current department
@@ -37,7 +39,7 @@ async def get_scan_history(
     - limit: Max results (default 50)
     - offset: Pagination offset
     """
-    _, user_id, department_id = api_key_info
+    _, user_id, department_id = principal.as_legacy_tuple()
     # Parse scan_type filter
     type_filter = None
     if scan_type:
@@ -49,14 +51,29 @@ async def get_scan_history(
         elif scan_type_lower in ["latex", "tex"]:
             type_filter = ScanType.LATEX
 
-    # Get scans
-    scans = ScanService.get_scan_history(
-        db=db,
-        department_id=department_id,
-        scan_type=type_filter,
-        limit=limit,
-        offset=offset,
-    )
+    # Course-scoped LTI history is constrained in SQL, not post-filtered.
+    if principal.auth_method == "lti" and not principal.lti_account_wide:
+        query = (
+            db.query(Scan)
+            .join(CloudFile, CloudFile.last_scan_id == Scan.id)
+            .filter(
+                Scan.department_id == department_id,
+                CloudFile.department_id == department_id,
+                CloudFile.provider == CloudProvider.CANVAS.value,
+                CloudFile.provider_parent_id == principal.lti_course_id,
+            )
+        )
+        if type_filter:
+            query = query.filter(Scan.scan_type == type_filter)
+        scans = query.order_by(Scan.created_at.desc()).limit(limit).offset(offset).all()
+    else:
+        scans = ScanService.get_scan_history(
+            db=db,
+            department_id=department_id,
+            scan_type=type_filter,
+            limit=limit,
+            offset=offset,
+        )
 
     return {
         "success": True,
@@ -95,7 +112,7 @@ async def get_scan_history(
 async def get_scan_details(
     scan_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get detailed results for a specific scan
@@ -103,15 +120,14 @@ async def get_scan_details(
      View full scan details
     REQUIRES API KEY IN PRODUCTION
     """
-    _, user_id, department_id = api_key_info
+    _, user_id, department_id = principal.as_legacy_tuple()
 
     scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
 
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    if scan.department_id != department_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    authorize_scan_access(db, scan, principal)
 
     # Debug logging to track issues data
     if scan.result and scan.result.issues:
@@ -203,7 +219,7 @@ async def get_scan_details(
 async def get_scan_progress(
     scan_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get real-time progress for a scan
@@ -216,15 +232,14 @@ async def get_scan_progress(
         - progress: percentage complete (0-100)
         - progress_message: current operation description
     """
-    _, user_id, department_id = api_key_info
+    _, user_id, department_id = principal.as_legacy_tuple()
 
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
 
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    if scan.department_id != department_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    authorize_scan_access(db, scan, principal)
 
     return {
         "success": True,
@@ -241,7 +256,7 @@ async def get_scan_progress(
 async def cancel_scan(
     scan_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Cancel a scan in progress and delete its record
@@ -252,15 +267,14 @@ async def cancel_scan(
     Note: Background processing will continue until next progress check,
     but the scan will be marked as CANCELLED and results will be deleted.
     """
-    _, user_id, department_id = api_key_info
+    _, user_id, department_id = principal.as_legacy_tuple()
 
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
 
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    if scan.department_id != department_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    authorize_scan_access(db, scan, principal)
 
     # Mark as cancelled (background task will check this)
     scan.status = ScanStatus.FAILED
@@ -284,7 +298,7 @@ async def cancel_scan(
 async def download_scan_report(
     scan_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Download a comprehensive PDF report of the accessibility scan
@@ -298,7 +312,7 @@ async def download_scan_report(
     logger.info(f"[REPORT] Starting report generation for scan_id: {scan_id}")
 
     try:
-        _, user_id, department_id = api_key_info
+        _, user_id, department_id = principal.as_legacy_tuple()
         logger.info(f"[REPORT] User ID: {user_id}, Department ID: {department_id}")
 
         scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
@@ -307,8 +321,7 @@ async def download_scan_report(
         if not scan:
             raise HTTPException(status_code=404, detail="Scan not found")
 
-        if scan.department_id != department_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        authorize_scan_access(db, scan, principal)
 
         logger.info(
             f"[REPORT] Scan status: {scan.status}, Has result: {scan.result is not None}"
@@ -384,7 +397,7 @@ async def download_scan_report(
 async def get_scan_html(
     scan_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get the accessible HTML output for a scan (fixed/remediated code)
@@ -392,15 +405,17 @@ async def get_scan_html(
      Download fixed HTML
     REQUIRES API KEY IN PRODUCTION
     """
-    _, user_id, department_id = api_key_info
+    _, user_id, department_id = principal.as_legacy_tuple()
 
     scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
 
-    if not scan or not scan.result or not scan.result.html_output:
-        raise HTTPException(status_code=404, detail="HTML output not found")
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
 
-    if scan.department_id != department_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    authorize_scan_access(db, scan, principal)
+
+    if not scan.result or not scan.result.html_output:
+        raise HTTPException(status_code=404, detail="HTML output not found")
 
     filename = f"fixed-{scan.file_name.replace('://', '-').replace('/', '-')[:50]}.html"
 
@@ -414,7 +429,7 @@ async def get_scan_html(
 @router.get("/stats")
 async def get_department_stats(
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get statistics for the current department
@@ -422,7 +437,8 @@ async def get_department_stats(
      Department-wide statistics
     REQUIRES API KEY IN PRODUCTION
     """
-    _, user_id, department_id = api_key_info
+    _, user_id, department_id = principal.as_legacy_tuple()
+    require_lti_account_access(principal)
 
     stats = ScanService.get_department_stats(db=db, department_id=department_id)
 

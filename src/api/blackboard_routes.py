@@ -27,10 +27,6 @@ from ..db.database import get_db_dependency
 from ..db.models import (
     CloudOAuthCredentials,
     CloudProvider,
-    CloudFile,
-    CloudJobQueue,
-    CloudJobType,
-    CloudJobStatus,
     APIKey,
 )
 from ..integrations.oauth_token_manager import OAuthTokenManager
@@ -422,85 +418,18 @@ async def remediate_blackboard_file(
     api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
 ):
     """
-    Queue remediation job for a Blackboard file.
+    Report that Blackboard remediation execution is unavailable.
 
     REQUIRES API KEY
 
-    Creates a scan job and remediation job in the job queue.
+    Durable Blackboard remediation execution is not available in v0.9.4.
     """
-    import uuid
-
-    _, user_id, auth_department_id = api_key_info
+    auth_department_id = api_key_info[2]
     verify_department_access(request.department_id, auth_department_id)
-
-    credential, api_client = await _get_blackboard_client(request.department_id, db)
-
-    try:
-        # Get content item details
-        content_item = await api_client.get_content_item(
-            course_id=request.course_id,
-            content_id=request.content_id,
-        )
-
-        # Create cloud file record
-        cloud_file = CloudFile(
-            id=str(uuid.uuid4()),
-            department_id=request.department_id,
-            credential_id=credential.id,
-            provider=CloudProvider.BLACKBOARD.value,
-            provider_file_id=request.content_id,
-            provider_parent_id=content_item.parent_id,
-            file_name=content_item.title,
-            file_type="blackboard_content",
-            metadata={
-                "course_id": request.course_id,
-                "content_handler": content_item.content_handler,
-            },
-            needs_rescan=True,
-        )
-        db.add(cloud_file)
-
-        # Create scan job
-        scan_job_id = str(uuid.uuid4())
-        scan_job = CloudJobQueue(
-            id=scan_job_id,
-            department_id=request.department_id,
-            job_type=CloudJobType.SCAN.value,
-            provider=CloudProvider.BLACKBOARD.value,
-            status=CloudJobStatus.PENDING.value,
-            priority=2,
-        )
-        db.add(scan_job)
-
-        # Create remediation job (depends on scan)
-        remediate_job_id = str(uuid.uuid4())
-        remediate_job = CloudJobQueue(
-            id=remediate_job_id,
-            department_id=request.department_id,
-            job_type=CloudJobType.REMEDIATE.value,
-            provider=CloudProvider.BLACKBOARD.value,
-            status=CloudJobStatus.PENDING.value,
-            priority=2,
-            depends_on_job_id=scan_job_id,
-        )
-        db.add(remediate_job)
-
-        db.commit()
-
-        logger.info(
-            f"Queued Blackboard remediation job for content {request.content_id} in course {request.course_id}"
-        )
-
-        return {
-            "success": True,
-            "message": "Remediation job queued",
-            "scan_job_id": scan_job_id,
-            "remediate_job_id": remediate_job_id,
-            "file_name": content_item.title,
-        }
-
-    finally:
-        await api_client.close()
+    raise HTTPException(
+        status_code=501,
+        detail="Blackboard remediation execution is not available in this release.",
+    )
 
 
 __all__ = ["router"]

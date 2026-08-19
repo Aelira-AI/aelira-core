@@ -22,24 +22,28 @@ Endpoints:
 11. GET  /canvas/content/{cloud_file_id}/audit      — writeback audit log
 
 SECURITY:
-- All endpoints require API key authentication
+- All endpoints require an authenticated principal (API key, session, LTI, or mock)
 - All endpoints require lms_integration feature gate
 - Users can only access their own department's data
+- LTI staff are constrained to their launch course; overview requires account scope
 """
 
 import logging
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..auth import verify_department_access
-from ..auth.dependencies import get_required_api_key
+from ..auth.canvas_permissions import (
+    require_lti_account_access,
+    require_lti_course_access,
+)
+from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ..db.database import get_db_dependency
 from ..db.models import (
-    APIKey,
     CloudFile,
     CloudProvider,
     ContentWritebackLog,
@@ -48,6 +52,7 @@ from ..db.models import (
 from ..education.canvas_content_scanner import CanvasContentScanner
 from ..integrations.canvas.content_models import CanvasContentType
 from ..middleware.quota import require_feature
+from ..utils.security import require_persisted_canvas_origin
 from .canvas_routes import _get_canvas_client
 from .canvas_scan_routes import _canvas_scan_file_task
 
@@ -293,19 +298,26 @@ async def _fetch_course_meta(api_client, course_id: str) -> tuple:
 
 
 def _get_cloud_file_or_404(
-    db: Session, cloud_file_id: str, department_id: str
+    db: Session, cloud_file_id: str, principal: AuthenticatedPrincipal
 ) -> CloudFile:
-    """Fetch a CloudFile by ID, verifying department ownership."""
+    """Resolve a Canvas item inside the principal's tenant and launch scope."""
     cloud_file = (
         db.query(CloudFile)
         .filter(
             CloudFile.id == cloud_file_id,
-            CloudFile.department_id == department_id,
+            CloudFile.department_id == principal.department_id,
+            CloudFile.provider == CloudProvider.CANVAS.value,
         )
         .first()
     )
-    if not cloud_file:
+    if (
+        not cloud_file
+        or cloud_file.id != cloud_file_id
+        or cloud_file.department_id != principal.department_id
+        or cloud_file.provider != CloudProvider.CANVAS.value
+    ):
         raise HTTPException(status_code=404, detail="Content item not found")
+    require_lti_course_access(principal, cloud_file.provider_parent_id)
     return cloud_file
 
 
@@ -335,7 +347,7 @@ async def scan_course_content(
     request: CanvasContentScanRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasContentScanResponse:
     """
     Scan all 5 content types in a Canvas course.
@@ -343,9 +355,10 @@ async def scan_course_content(
     Fetches pages, assignments, announcements, quizzes, and discussions,
     upserts CloudFile records, and queues scan jobs for each.
     """
-    _, user_id, auth_department_id = api_key_info
+    auth_department_id = principal.department_id
     dept_id = request.department_id or auth_department_id
     verify_department_access(dept_id, auth_department_id)
+    require_lti_course_access(principal, request.course_id)
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
@@ -447,7 +460,7 @@ async def scan_course_content_by_type(
     request: CanvasContentScanRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasContentScanResponse:
     """
     Scan a single content type in a Canvas course.
@@ -455,9 +468,10 @@ async def scan_course_content_by_type(
     Fetches only the specified content type, upserts CloudFile records,
     and queues scan jobs.
     """
-    _, user_id, auth_department_id = api_key_info
+    auth_department_id = principal.department_id
     dept_id = request.department_id or auth_department_id
     verify_department_access(dept_id, auth_department_id)
+    require_lti_course_access(principal, request.course_id)
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
@@ -535,14 +549,15 @@ async def scan_course_content_by_type(
 async def get_course_content_status(
     course_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CourseContentStatusResponse:
     """
     Get course content compliance summary from the database.
 
     No Canvas API calls — safe for frequent polling.
     """
-    _, user_id, auth_department_id = api_key_info
+    auth_department_id = principal.department_id
+    require_lti_course_access(principal, course_id)
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
@@ -645,7 +660,7 @@ async def get_course_content_status(
 @router.get("/overview", response_model=CourseOverviewResponse)
 async def get_course_overview(
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CourseOverviewResponse:
     """
     Get compliance overview across all courses for this department.
@@ -654,7 +669,8 @@ async def get_course_overview(
     Falls back to Canvas API for course names when provider_metadata is missing,
     and backfills the metadata so subsequent requests are DB-only.
     """
-    _, user_id, dept_id = api_key_info
+    dept_id = principal.department_id
+    require_lti_account_access(principal)
 
     await require_feature(db, dept_id, "lms_integration", "Canvas LMS Integration")
 
@@ -825,18 +841,18 @@ async def get_course_overview(
 async def get_content_diff(
     cloud_file_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> ContentDiffResponse:
     """
     Get the original vs remediated HTML for review.
     """
-    _, user_id, auth_department_id = api_key_info
+    auth_department_id = principal.department_id
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
     )
 
-    cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+    cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
     # Get issue counts + the real issue list from the latest scan.
     # `issues` is the real, unmodified pre-remediation violation set from
@@ -904,7 +920,7 @@ class ContentRemediateResponse(BaseModel):
 async def remediate_content_item(
     cloud_file_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> ContentRemediateResponse:
     """
     Remediate one content item and verify the result by rescanning it.
@@ -916,13 +932,13 @@ async def remediate_content_item(
     failure as a remediation failure, which is what used to happen when the
     client sent every item to the file endpoint.
     """
-    _, user_id, auth_department_id = api_key_info
+    auth_department_id = principal.department_id
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
     )
 
-    cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+    cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
     if cf.content_source == "file":
         return ContentRemediateResponse(
@@ -973,18 +989,19 @@ async def remediate_content_item(
 async def approve_content(
     cloud_file_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> ApproveRejectResponse:
     """
     Approve a remediated content item for write-back.
     """
-    _, user_id, auth_department_id = api_key_info
+    user_id = principal.user_id
+    auth_department_id = principal.department_id
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
     )
 
-    cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+    cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
     # File-type rows are remediated as FILES (has_remediated_version set by
     # POST /education/remediate/{scan_id}) — remediated_body stays NULL for
@@ -1020,18 +1037,19 @@ async def approve_content(
 async def reject_content(
     cloud_file_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> ApproveRejectResponse:
     """
     Reject a remediated content item — it will not be written back.
     """
-    _, user_id, auth_department_id = api_key_info
+    user_id = principal.user_id
+    auth_department_id = principal.department_id
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
     )
 
-    cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+    cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
     cf.writeback_status = "rejected"
     db.commit()
@@ -1060,25 +1078,48 @@ async def reject_content(
 async def batch_approve_content(
     request: BatchApproveRequest,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> BatchApproveResponse:
     """
     Approve multiple content items at once.
     """
-    _, user_id, auth_department_id = api_key_info
+    user_id = principal.user_id
+    auth_department_id = principal.department_id
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
     )
 
+    requested_ids = set(request.cloud_file_ids)
+    if not requested_ids:
+        raise HTTPException(status_code=400, detail="No content items requested")
+
     cloud_files = (
         db.query(CloudFile)
         .filter(
-            CloudFile.id.in_(request.cloud_file_ids),
+            CloudFile.id.in_(requested_ids),
             CloudFile.department_id == auth_department_id,
+            CloudFile.provider == CloudProvider.CANVAS.value,
         )
         .all()
     )
+
+    # Resolve and authorize the complete batch before touching any row. A
+    # single generic not-found response avoids revealing whether an omitted
+    # item exists in another tenant/provider/course.
+    resolved_ids = {cf.id for cf in cloud_files}
+    if (
+        resolved_ids != requested_ids
+        or any(cf.department_id != auth_department_id for cf in cloud_files)
+        or any(cf.provider != CloudProvider.CANVAS.value for cf in cloud_files)
+    ):
+        raise HTTPException(status_code=404, detail="Content items not found")
+
+    try:
+        for cf in cloud_files:
+            require_lti_course_access(principal, cf.provider_parent_id)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Content items not found") from None
 
     approved = 0
     skipped = 0
@@ -1122,20 +1163,21 @@ async def batch_approve_content(
 async def writeback_content(
     cloud_file_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> WritebackResponse:
     """
     Execute write-back of remediated content to Canvas.
 
     Content must be in 'approved' status.
     """
-    _, user_id, auth_department_id = api_key_info
+    user_id = principal.user_id
+    auth_department_id = principal.department_id
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
     )
 
-    cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+    cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)
@@ -1180,12 +1222,14 @@ async def writeback_content(
 async def batch_writeback_content(
     request: BatchWritebackRequest,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> BatchWritebackResponse:
     """
     Write back all approved content items for a course.
     """
-    _, user_id, auth_department_id = api_key_info
+    user_id = principal.user_id
+    auth_department_id = principal.department_id
+    require_lti_course_access(principal, request.course_id)
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
@@ -1293,18 +1337,18 @@ async def batch_writeback_content(
 async def rollback_content(
     cloud_file_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> RollbackResponse:
     """
     Rollback a written-back content item to its original content.
     """
-    _, user_id, auth_department_id = api_key_info
+    auth_department_id = principal.department_id
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
     )
 
-    cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+    cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
     # A file write-back adds a copy rather than editing anything, so there
     # is nothing in Canvas to restore. Undoing it means deleting the copy,
@@ -1356,18 +1400,18 @@ async def rollback_content(
 async def get_audit_log(
     cloud_file_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> AuditResponse:
     """
     Get the write-back audit log for a content item.
     """
-    _, user_id, auth_department_id = api_key_info
+    auth_department_id = principal.department_id
 
     await require_feature(
         db, auth_department_id, "lms_integration", "Canvas LMS Integration"
     )
 
-    cf = _get_cloud_file_or_404(db, cloud_file_id, auth_department_id)
+    cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
     logs = (
         db.query(ContentWritebackLog)
@@ -1441,9 +1485,9 @@ async def _content_scan_task(
                 logger.error(f"Credential not found: {credential_id}")
                 return
 
+            canvas_url = require_persisted_canvas_origin(credential)
             token_manager = OAuthTokenManager()
             access_token = token_manager.decrypt_token(credential.access_token)
-            canvas_url = credential.provider_metadata.get("canvas_instance_url", "")
 
             api_client = CanvasAPIClient(
                 canvas_instance_url=canvas_url,

@@ -308,6 +308,19 @@ class OAuthTokenManager:
         Raises:
             TokenRefreshError: If refresh fails after acquiring lock
         """
+        from ..db.models import CloudProvider
+
+        canvas_instance_url = None
+        if credential.provider == CloudProvider.CANVAS.value:
+            from ..utils.security import (
+                require_persisted_canvas_origin,
+                resolve_canvas_network_origin,
+            )
+
+            canvas_instance_url = resolve_canvas_network_origin(
+                require_persisted_canvas_origin(credential)
+            )
+
         if not self.is_token_expired(credential.token_expires_at):
             return self.decrypt_token(credential.access_token)
 
@@ -351,8 +364,6 @@ class OAuthTokenManager:
             refresh_token = self.decrypt_token(credential.refresh_token)
 
             # Dispatch based on provider
-            from ..db.models import CloudProvider
-
             if credential.provider == CloudProvider.GOOGLE.value:
                 new_access, new_refresh, new_expires = await self.refresh_google_token(
                     refresh_token
@@ -366,10 +377,8 @@ class OAuthTokenManager:
             elif credential.provider == CloudProvider.CANVAS.value:
                 from ..integrations.canvas import CanvasOAuthService
 
+                assert canvas_instance_url is not None
                 canvas_oauth = CanvasOAuthService()
-                canvas_instance_url = credential.provider_metadata.get(
-                    "canvas_instance_url"
-                )
                 new_access, new_refresh, new_expires = (
                     await canvas_oauth.refresh_access_token(
                         canvas_instance_url=canvas_instance_url,

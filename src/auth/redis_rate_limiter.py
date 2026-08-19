@@ -16,6 +16,11 @@ from ..utils.security import redact_url_credentials
 
 logger = logging.getLogger(__name__)
 
+
+class OAuthStateStorageError(RuntimeError):
+    """Raised when durable OAuth state storage is required but unavailable."""
+
+
 _settings = get_settings()
 
 # Redis client instance (lazy initialization)
@@ -249,12 +254,19 @@ class OAuthStateManager:
     _memory_states: Dict[str, Dict[str, Any]] = {}
 
     @classmethod
-    def create_state(cls, metadata: Optional[Dict[str, Any]] = None) -> str:
+    def create_state(
+        cls,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        allow_memory_fallback: bool = True,
+    ) -> str:
         """
         Generate and store a new OAuth state token.
 
         Args:
             metadata: Optional metadata to store with the state (e.g., department_id, provider)
+            allow_memory_fallback: Preserve legacy in-process storage when Redis
+                is unavailable. Set false for flows that must fail closed.
 
         Returns:
             The generated state token (32-byte URL-safe string)
@@ -275,12 +287,21 @@ class OAuthStateManager:
                     cls.STATE_TTL_SECONDS,
                     json.dumps(state_data),
                 )
-                logger.debug(f"OAuth state created in Redis: {state[:8]}...")
+                logger.debug("OAuth state created in Redis")
                 return state
-            except redis.RedisError as e:
+            except redis.RedisError:
+                if not allow_memory_fallback:
+                    logger.error(
+                        "Failed to store OAuth state in required Redis storage"
+                    )
+                    raise OAuthStateStorageError("OAuth state storage is unavailable")
                 logger.warning(
-                    f"Failed to store OAuth state in Redis: {e}, using memory fallback"
+                    "Failed to store OAuth state in Redis, using memory fallback"
                 )
+
+        if not allow_memory_fallback:
+            logger.error("Required Redis storage is unavailable for OAuth state")
+            raise OAuthStateStorageError("OAuth state storage is unavailable")
 
         # Cleanup expired states before adding new one (lazy garbage collection)
         cls.cleanup_expired_memory_states()
@@ -290,18 +311,23 @@ class OAuthStateManager:
             **state_data,
             "expires_at": datetime.utcnow() + timedelta(seconds=cls.STATE_TTL_SECONDS),
         }
-        logger.debug(f"OAuth state created in memory: {state[:8]}...")
+        logger.debug("OAuth state created in memory")
         return state
 
     @classmethod
     def verify_and_consume_state(
-        cls, state: str
+        cls,
+        state: str,
+        *,
+        allow_memory_fallback: bool = True,
     ) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """
         Verify and consume an OAuth state token (one-time use).
 
         Args:
             state: The state token to verify
+            allow_memory_fallback: Check legacy in-process state if Redis is
+                unavailable. Set false to require Redis-backed verification.
 
         Returns:
             Tuple of (is_valid, metadata)
@@ -320,32 +346,46 @@ class OAuthStateManager:
                 state_json = redis_client.getdel(redis_key)
 
                 if state_json:
-                    state_data = json.loads(state_json)
-                    logger.debug(
-                        f"OAuth state verified and consumed from Redis: {state[:8]}..."
-                    )
+                    try:
+                        state_data = json.loads(state_json)
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning("Malformed OAuth state data was consumed")
+                        return False, None
+                    if not isinstance(state_data, dict):
+                        logger.warning("Malformed OAuth state data was consumed")
+                        return False, None
+                    logger.debug("OAuth state verified and consumed from Redis")
                     return True, state_data.get("metadata")
                 else:
-                    logger.warning(f"OAuth state not found or expired: {state[:8]}...")
+                    logger.warning("OAuth state not found or expired")
                     return False, None
-            except redis.RedisError as e:
+            except redis.RedisError:
+                if not allow_memory_fallback:
+                    logger.error(
+                        "Required Redis storage failed during OAuth state verification"
+                    )
+                    return False, None
                 logger.warning(
-                    f"Redis error verifying OAuth state: {e}, checking memory fallback"
+                    "Redis error verifying OAuth state, checking memory fallback"
                 )
+
+        if not allow_memory_fallback:
+            logger.error(
+                "Required Redis storage is unavailable for OAuth state verification"
+            )
+            return False, None
 
         # Check in-memory fallback
         if state in cls._memory_states:
             state_data = cls._memory_states.pop(state)
             if datetime.utcnow() < state_data.get("expires_at", datetime.min):
-                logger.debug(
-                    f"OAuth state verified and consumed from memory: {state[:8]}..."
-                )
+                logger.debug("OAuth state verified and consumed from memory")
                 return True, state_data.get("metadata")
             else:
-                logger.warning(f"OAuth state expired in memory: {state[:8]}...")
+                logger.warning("OAuth state expired in memory")
                 return False, None
 
-        logger.warning(f"OAuth state not found: {state[:8]}...")
+        logger.warning("OAuth state not found")
         return False, None
 
     @classmethod

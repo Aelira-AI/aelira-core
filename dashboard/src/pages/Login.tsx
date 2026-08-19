@@ -18,6 +18,8 @@ interface OAuthStatus {
   microsoft_available: boolean;
 }
 
+const SESSION_EXPIRED_MESSAGE = 'Your session has expired. Please sign in again.';
+
 // Google icon component
 function GoogleIcon({ className }: IconProps): React.ReactElement {
   return (
@@ -45,7 +47,11 @@ function MicrosoftIcon({ className }: IconProps): React.ReactElement {
 export function Login(): React.ReactElement {
   const [email, setEmail] = useState<string>('');
   const [apiKey, setApiKey] = useState<string>('');
-  const [error, setError] = useState<string>('');
+  const [error, setError] = useState<string>(() =>
+    window.location.pathname === '/login' && window.location.search === '?expired=1'
+      ? SESSION_EXPIRED_MESSAGE
+      : ''
+  );
   const [success, setSuccess] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [showApiKeyLogin, setShowApiKeyLogin] = useState<boolean>(false);
@@ -56,6 +62,8 @@ export function Login(): React.ReactElement {
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const isExpiredLogin =
+    window.location.pathname === '/login' && window.location.search === '?expired=1';
 
   // Check for OAuth errors or magic link verification
   useEffect(() => {
@@ -160,6 +168,10 @@ export function Login(): React.ReactElement {
 
   // Check if user already has a session
   useEffect(() => {
+    if (isExpiredLogin) {
+      return;
+    }
+
     const checkSession = async (): Promise<void> => {
       try {
         const response = await apiClient.get<{ user?: unknown }>('/auth/session/validate');
@@ -171,7 +183,7 @@ export function Login(): React.ReactElement {
       }
     };
     checkSession();
-  }, [navigate, searchParams]);
+  }, [isExpiredLogin, navigate, searchParams]);
 
   return (
     <main

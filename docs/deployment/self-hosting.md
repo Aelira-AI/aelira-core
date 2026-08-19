@@ -32,8 +32,8 @@ Two Dockerfiles matter here:
   ffmpeg, the LaTeXML/TeX Live stack, Pandoc, Playwright's Chromium
   dependencies, Node.js for Pa11y), copies the venv, runs as a non-root
   `aelira` user, and starts via `entrypoint.sh`. `entrypoint.sh` runs
-  `alembic upgrade head` (logging a warning and continuing if it fails,
-  rather than refusing to start) and then execs
+  `alembic upgrade head` and fails closed if migration fails; only after a
+  successful migration does it exec
   `uvicorn` with `--workers "${UVICORN_WORKERS:-1}"` — one worker by
   default, deliberately: the job processor and sync Playwright use are not
   yet safe across multiple workers (the entrypoint documents why). Override
@@ -42,17 +42,24 @@ Two Dockerfiles matter here:
   build` (build args `VITE_API_URL`, `VITE_WEBSITE_URL`), then serves the
   static output from `nginx:alpine` using `dashboard/nginx.conf`.
 
-Every tagged release (`git tag v*`) is also published as a pre-built image by
-`.github/workflows/publish-docker.yml`:
+Every stable release tag (`vMAJOR.MINOR.PATCH`) publishes both pre-built images
+through the coordinated release workflow:
 
 ```
-ghcr.io/aelira-ai/aelira-core-api:latest      (or a specific vX.Y.Z / vX.Y tag)
+ghcr.io/aelira-ai/aelira-core-api:latest      (or a specific X.Y.Z / X.Y tag)
 ghcr.io/aelira-ai/aelira-core-dashboard:latest
 ```
 
-built for `linux/amd64` and `linux/arm64`. Using these skips building the
-image yourself; building from `Dockerfile` directly works the same way if
-you want to pin an exact commit or patch something locally.
+built natively for `linux/amd64` and `linux/arm64`. The release does not expose
+any of these tags until all four API/dashboard architecture builds have
+succeeded and their digests have been verified. Using the published images
+skips building them yourself; building from a Dockerfile directly works the
+same way if you want to pin an exact commit or patch something locally.
+
+For reproducible deployments, pin each image by the digest reported by your
+registry tooling instead of a mutable tag, for example
+`ghcr.io/aelira-ai/aelira-core-api@sha256:<digest>`. Keep the API and dashboard
+digests from the same release version when updating a deployment.
 
 ## Required environment
 
@@ -67,7 +74,10 @@ is `.env.example`):
 | `PUBLIC_API_URL` | Where the API is publicly reachable | Defaults to `http://localhost:8000`. Used to build absolute URLs (OAuth callbacks, links in emails) rather than hardcoding a vendor domain. |
 | `PUBLIC_DASHBOARD_URL` | Where the dashboard is publicly reachable | Defaults to `http://localhost:5173`. |
 | `CORS_ORIGINS` | Origins allowed to call the API | **Comma-separated** (`Settings` does `.split(",")` on this — a plain comma-separated list like `https://dashboard.example.org,https://scans.example.org`, not a JSON array). With no localhost fallback outside `development`/`test`, so a production deployment that leaves this unset blocks its own dashboard. |
+| `SESSION_COOKIE_DOMAIN` | Shared parent cookie domain for split dashboard/API subdomains | When the dashboard and API use sibling hosts, set a common parent such as `.example.org`. The session cookies and readable double-submit CSRF cookie use this domain. Unrelated cross-site dashboard/API cookie authentication is not supported. |
 | `JWT_SECRET` | Signs session JWTs (HS256) | If unset, `JWTService` generates a random secret at process start and logs a warning — sessions won't survive a restart. Generate one with `python3 -c "import secrets; print(secrets.token_urlsafe(64))"`. (RS256 is also supported via `JWT_PRIVATE_KEY_PATH`/`JWT_PUBLIC_KEY_PATH`, recommended for production per the `validate_jwt_algorithm` warning.) |
+| `SESSION_REPLAY_ENCRYPTION_KEY` | Encrypts the short-lived cached token pair used to tolerate one concurrent refresh replay | Required in staging and production. Generate a Fernet key with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Give every API worker the same value. |
+| `SESSION_REFRESH_GRACE_SECONDS` | Window for returning the exact cached replacement pair once | Defaults to `10`. Keep this short; increase it only to cover measured concurrent refresh latency. |
 | `TOKEN_ENCRYPTION_KEY` | Encrypts stored OAuth tokens | Required if you enable any cloud integration (Google Workspace, Microsoft 365, Canvas OAuth). Generate with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. |
 | `ALLOW_MOCK_AUTH` | Dev-only auth bypass | Must **not** be `true` in `production`/`staging` — `Settings` raises at startup if it is (`validate_mock_auth`). Leave unset. |
 | SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `FROM_EMAIL`, `FROM_NAME` | Transactional email (magic links, alerts) | Read in `src/mailer/email_service.py`. Defaults assume SendGrid (`smtp.sendgrid.net`); any SMTP provider works. If `SMTP_HOST` is set, the mailer treats it as a trusted network target for its own connection handling. |
@@ -77,6 +87,21 @@ Branding/contact fields (`BRAND_NAME`, `PUBLIC_WEBSITE_URL`, `SUPPORT_EMAIL`)
 are also read from environment variables in `settings.py` — worth setting so
 outbound email doesn't point users at somebody else's support address. See
 `BRANDING.md` for what you can and can't rename.
+
+Treat `SESSION_REPLAY_ENCRYPTION_KEY` as persistent deployment state, not as a
+value to regenerate at container startup. Store it in your secret manager and
+use the same key across every API worker and after every restart. Include the
+secret (securely and separately from the database dump) in your backup and
+disaster-recovery procedure so a restored deployment has the same operational
+configuration.
+
+Rotate this key cautiously: replacing it while workers or recently written
+refresh-replay ciphertext still use the old key can make an otherwise valid
+concurrent refresh fail. Stop or drain all API workers, wait longer than
+`SESSION_REFRESH_GRACE_SECONDS` so cached replay windows expire, update the key
+atomically for every worker, and then restart them. Keep the prior key in your
+protected secret backup until the rollout and restore verification are complete;
+never run workers with mixed old and new values.
 
 ## Postgres, Redis, and the Ollama profile
 
@@ -92,12 +117,16 @@ Ollama is optional and gated behind a Compose profile in both existing
 files (`profiles: ["ollama"]`), so it only starts when you ask for it:
 
 ```bash
-docker compose --profile ollama up -d
+docker compose -f docker-compose.prod.yml --profile ollama up -d
 docker exec <ollama-container> ollama pull gemma3:4b   # or a larger model per docker-compose.dev.yml's guidance
 ```
 
 Model selection, hardware tiers, and what each AI lane does are documented
 in [local-ai-models.md](local-ai-models.md).
+
+If you enable Canvas LTI, follow the [Canvas LTI administrator
+configuration](canvas-lti.md) checklist. It covers the staff-visible placement
+settings and required numeric Canvas course-ID custom field.
 
 Run Ollama when you want documents to never leave your own infrastructure —
 no cloud API call for remediation text at all. Without it, set `LLM_PROVIDER=gemini`
@@ -131,7 +160,7 @@ Postgres holds everything that matters — scans, users, departments, the
 WCAG knowledge base. A straightforward logical backup:
 
 ```bash
-docker compose exec postgres pg_dump -U ${POSTGRES_USER:-aelira} ${POSTGRES_DB:-aelira} > backup.sql
+docker compose -f docker-compose.prod.yml exec postgres pg_dump -U ${POSTGRES_USER:-aelira} ${POSTGRES_DB:-aelira} > backup.sql
 ```
 
 Restore with `psql -U <user> -d <db> < backup.sql` against a fresh database.
@@ -141,20 +170,35 @@ too if you're relying on local disk rather than object storage.
 
 ## Upgrade procedure
 
-1. `git pull` (or pull the new image tag).
-2. Rebuild if building locally: `docker compose build api dashboard`, or
+1. Take and verify a PostgreSQL backup before changing the application or
+   schema.
+2. `git pull` (or pull the new image tag).
+3. Rebuild if building locally: `docker compose -f docker-compose.prod.yml build api dashboard`, or
    just re-pull if using the published `ghcr.io/aelira-ai/...` images.
-3. `docker compose up -d` — the `api` container's `entrypoint.sh` runs
-   `alembic upgrade head` automatically on start. If it fails, it logs a
-   warning and starts anyway rather than blocking, so also run it
-   explicitly and check the exit code:
+4. Run the migration explicitly and check its exit code before starting the
+   application:
    ```bash
-   docker compose exec api alembic upgrade head
+   docker compose -f docker-compose.prod.yml run --rm --entrypoint alembic api upgrade head
    ```
-4. Confirm health: `GET /health` on the API, and check
-   `docker compose logs -f api` for migration or startup errors.
+   The normal API entrypoint also runs this command and fails closed rather
+   than serving against an incompatible schema.
+5. `docker compose -f docker-compose.prod.yml up -d`, then confirm `GET /health`
+   on the API and check `docker compose -f docker-compose.prod.yml logs -f api`
+   for migration or startup errors.
 
-Take a Postgres backup (above) before step 3 on anything you can't afford to
-lose — migrations in `alembic/versions/` are the same ones applied in
-development and CI, but a schema change against production data is still
-the point where a backup is worth having.
+### v0.9.4 upgrade
+
+The v0.9.4 security migration intentionally disables all legacy API keys that
+used the static `aelira_live_` prefix. This is a breaking security change, not
+an authentication outage: reissue keys after the migration and update every
+CLI, integration, or automation client before treating resulting HTTP `401`
+responses as an application failure.
+
+Existing LTI-provisioned users must relaunch from an authorized staff Canvas
+placement to complete reauthorization. Canvas OAuth credentials whose stored
+origin is no longer in `CANVAS_OAUTH_ALLOWED_ORIGINS` must reconnect.
+
+There is no supported in-place downgrade to v0.9.3. Keep the pre-upgrade database backup:
+returning to v0.9.3 requires restoring that backup together
+with the matching v0.9.3 images. Do not run newer images against the restored
+older schema, or older images against the migrated schema.

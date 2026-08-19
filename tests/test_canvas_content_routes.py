@@ -23,8 +23,9 @@ from datetime import datetime, timezone
 import uuid
 
 from src.api.main import app
-from src.auth.dependencies import get_required_api_key
+from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from src.db.database import get_db_dependency
+from src.db.models import CloudProvider, UserRole
 
 pytestmark = pytest.mark.integration
 
@@ -80,14 +81,18 @@ def patch_require_feature():
 @pytest.fixture
 def override_deps(mock_api_key, mock_session, patch_require_feature):
     """Override FastAPI dependencies for auth and DB."""
-    app.dependency_overrides[get_required_api_key] = lambda: (
-        mock_api_key,
-        "test-user-123",
-        "test-dept-456",
+    app.dependency_overrides[get_authenticated_principal] = (
+        lambda: AuthenticatedPrincipal(
+            api_key=mock_api_key,
+            user_id="test-user-123",
+            department_id="test-dept-456",
+            user_role=UserRole.FACULTY,
+            auth_method="api_key",
+        )
     )
     app.dependency_overrides[get_db_dependency] = lambda: mock_session
     yield
-    app.dependency_overrides.pop(get_required_api_key, None)
+    app.dependency_overrides.pop(get_authenticated_principal, None)
     app.dependency_overrides.pop(get_db_dependency, None)
 
 
@@ -139,7 +144,7 @@ def _make_cloud_file(
     cf.provider_file_id = "42"
     cf.content_updated_at = datetime.now(timezone.utc)
     cf.needs_rescan = False
-    cf.provider = "CANVAS"
+    cf.provider = CloudProvider.CANVAS.value
     cf.credential_id = "cred-1"
     return cf
 

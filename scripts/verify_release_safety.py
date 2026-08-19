@@ -13,6 +13,7 @@ Usage:
     python scripts/verify_release_safety.py              # scan the repo
     python scripts/verify_release_safety.py --json       # machine-readable
     python scripts/verify_release_safety.py --path DIR   # scan a staging tree
+    python scripts/verify_release_safety.py --strict-policy --denylist PATH
 
 Exit codes: 0 clean, 1 findings, 2 could not run.
 """
@@ -20,6 +21,7 @@ Exit codes: 0 clean, 1 findings, 2 could not run.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -39,29 +41,19 @@ INTERNAL_HOSTS = r"[A-Za-z0-9_-]+\.aelira\.ai"
 VENDOR_CONTACT = r"[A-Za-z0-9._%+-]+@aelira\.ai"
 
 
-# Named-entity patterns (real people/organisations that must never appear in
-# a release) live in .release-denylist.local.json, which is gitignored: the
-# gate mechanism is public, the specific names it guards are not. Maintainers
-# keep their own local denylist; see .release-denylist.local.json.example.
-def _load_named_entities() -> str:
-    denylist_path = Path(__file__).resolve().parent.parent / (
-        ".release-denylist.local.json"
-    )
-    if not denylist_path.exists():
-        print(
-            "WARNING: .release-denylist.local.json not found - the "
-            "named-entity check is running with no patterns. Maintainers "
-            "must keep a local denylist; see the .example file.",
-            file=sys.stderr,
-        )
-        return r"(?!x)x"  # matches nothing
-    entries = json.loads(denylist_path.read_text())["patterns"]
-    return "(?i)\\b(?:" + "|".join(entries) + ")"
+POLICY_ERROR = "error: disclosure policy unavailable or invalid"
+ALLOWLIST_ERROR = "error: invalid .release-allowlist.json configuration"
 
 
-NAMED_ENTITIES = _load_named_entities()
+class PolicyError(ValueError):
+    """The protected named-entity policy cannot be used safely."""
 
-CHECKS: List[tuple[str, Pattern[str], str]] = [
+
+class AllowlistError(ValueError):
+    """The tracked release allowlist cannot be used safely."""
+
+
+BASE_CHECKS: List[tuple[str, Pattern[str], str]] = [
     (
         "internal-host",
         re.compile(INTERNAL_HOSTS),
@@ -71,11 +63,6 @@ CHECKS: List[tuple[str, Pattern[str], str]] = [
         "vendor-contact",
         re.compile(VENDOR_CONTACT),
         "Vendor contact address; a self-hoster's users would be sent to it",
-    ),
-    (
-        "named-entity",
-        re.compile(NAMED_ENTITIES),
-        "Real customer, lead, or third party named in the denylist",
     ),
     (
         "private-key",
@@ -120,6 +107,64 @@ CHECKS: List[tuple[str, Pattern[str], str]] = [
     ),
 ]
 
+
+def load_named_entity_policy(
+    denylist: Path | None, strict: bool
+) -> Pattern[str] | None:
+    """Load and compile protected patterns without exposing policy contents."""
+    if denylist is None:
+        if strict:
+            raise PolicyError
+        denylist = Path(__file__).resolve().parent.parent / (
+            ".release-denylist.local.json"
+        )
+        if not denylist.exists():
+            print(
+                "WARNING: .release-denylist.local.json not found - the "
+                "named-entity check is running with no patterns. Maintainers "
+                "must keep a local denylist; see the .example file.",
+                file=sys.stderr,
+            )
+            return None
+
+    try:
+        data = json.loads(denylist.read_text(encoding="utf-8"))
+        patterns = data["patterns"] if isinstance(data, dict) else None
+        if (
+            not isinstance(patterns, list)
+            or not patterns
+            or any(not isinstance(item, str) or not item for item in patterns)
+        ):
+            raise PolicyError
+        return re.compile(r"(?i)\b(?:" + "|".join(patterns) + ")")
+    except (
+        OSError,
+        UnicodeError,
+        KeyError,
+        json.JSONDecodeError,
+        re.error,
+        PolicyError,
+        TypeError,
+    ) as exc:
+        raise PolicyError from exc
+
+
+def checks_for_policy(
+    named_entities: Pattern[str] | None,
+) -> List[tuple[str, Pattern[str], str]]:
+    checks = list(BASE_CHECKS)
+    if named_entities is not None:
+        checks.insert(
+            2,
+            (
+                "named-entity",
+                named_entities,
+                "Real customer, lead, or third party named in the denylist",
+            ),
+        )
+    return checks
+
+
 # Filenames that must never be published regardless of content.
 FORBIDDEN_PATHS = re.compile(
     r"(?i)(?:^|/)(?:"
@@ -134,27 +179,6 @@ FORBIDDEN_PATHS = re.compile(
     r")"
 )
 
-# Files whose content is not meaningfully scannable as text.
-BINARY_SUFFIXES = {
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".ico",
-    ".pdf",
-    ".zip",
-    ".gz",
-    ".woff",
-    ".woff2",
-    ".ttf",
-    ".eot",
-    ".mp4",
-    ".webm",
-    ".docx",
-    ".pptx",
-    ".xlsx",
-}
-
 
 @dataclass
 class Finding:
@@ -165,17 +189,35 @@ class Finding:
     excerpt: str
 
 
-def tracked_files(root: Path) -> Iterable[Path]:
-    """Git-tracked files only: those are what publication exposes."""
+def tracked_files(root: Path) -> Iterable[tuple[str, str, str]]:
+    """Yield tracked paths, index modes, and blob IDs, safely NUL-delimited."""
     result = subprocess.run(
-        ["git", "-C", str(root), "ls-files"],
+        ["git", "-C", str(root), "ls-files", "--stage", "-z"],
         capture_output=True,
-        text=True,
         check=True,
     )
-    for rel in result.stdout.splitlines():
-        if rel.strip():
-            yield root / rel
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3 or fields[2] != b"0":
+            raise ValueError("git index contains an invalid or unmerged entry")
+        mode = fields[0].decode("ascii")
+        if mode not in {"100644", "100755", "120000"}:
+            raise ValueError("git index contains an unsupported entry mode")
+        oid = fields[1].decode("ascii")
+        rel = raw_path.decode("utf-8", errors="surrogateescape")
+        yield rel, mode, oid
+
+
+def tracked_blob(root: Path, oid: str) -> bytes:
+    """Read an exact blob from the index object database."""
+    return subprocess.run(
+        ["git", "-C", str(root), "cat-file", "blob", oid],
+        capture_output=True,
+        check=True,
+    ).stdout
 
 
 def redact(text: str) -> str:
@@ -186,80 +228,161 @@ def redact(text: str) -> str:
     return f"{stripped[:12]}...{stripped[-6:]}"
 
 
-def load_allowlist(root: Path) -> List[dict]:
-    """Documented exceptions. Absent file means no exceptions."""
-    path = root / ".release-allowlist.json"
-    if not path.exists():
+def redacted_path(path: str) -> str:
+    """Return a stable identifier without disclosing a protected path."""
+    digest = hashlib.sha256(path.encode("utf-8", errors="surrogateescape")).hexdigest()
+    return f"<redacted-path:{digest[:16]}>"
+
+
+def human_string(value: object) -> str:
+    """Quote untrusted text so it cannot inject terminal or CI log controls."""
+    return json.dumps(str(value), ensure_ascii=True)
+
+
+def load_allowlist(root: Path, entries: Iterable[tuple[str, str, str]]) -> List[dict]:
+    """Load documented exceptions from the exact tracked index blob."""
+    entry = next(
+        (item for item in entries if item[0] == ".release-allowlist.json"), None
+    )
+    if entry is None:
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
-    entries = data.get("allow", [])
-    for entry in entries:
-        if not entry.get("reason"):
-            raise ValueError(
-                f"allowlist entry for {entry.get('path')!r} has no reason; "
-                "every suppression must be justified"
-            )
-    return entries
+    try:
+        data = json.loads(tracked_blob(root, entry[2]).decode("utf-8"))
+        if not isinstance(data, dict):
+            raise AllowlistError
+        allow_entries = data.get("allow", [])
+        if not isinstance(allow_entries, list):
+            raise AllowlistError
+        for entry in allow_entries:
+            if not isinstance(entry, dict) or any(
+                not isinstance(entry.get(field), str) or not entry[field]
+                for field in ("path", "check", "reason")
+            ):
+                raise AllowlistError
+        return allow_entries
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        AllowlistError,
+        TypeError,
+    ) as exc:
+        raise AllowlistError from exc
 
 
 def is_allowed(finding: Finding, allowlist: List[dict]) -> bool:
+    if finding.check == "named-entity":
+        return False
     return any(
         entry.get("path") == finding.path and entry.get("check") == finding.check
         for entry in allowlist
     )
 
 
-def scan(root: Path) -> List[Finding]:
+def scan(
+    root: Path,
+    checks: List[tuple[str, Pattern[str], str]],
+    entries: Iterable[tuple[str, str, str]],
+) -> tuple[List[Finding], int]:
     findings: List[Finding] = []
+    total = 0
 
-    for path in tracked_files(root):
-        rel = str(path.relative_to(root))
+    for rel, _mode, oid in entries:
+        total += 1
 
-        # The gate names the entities it looks for, so it would flag itself.
-        if rel == "scripts/verify_release_safety.py":
-            continue
+        path_matches = [
+            (name, match, description)
+            for name, pattern, description in checks
+            if (match := pattern.search(rel)) is not None
+        ]
+        protected_path = any(name == "named-entity" for name, _, _ in path_matches)
+        finding_path = redacted_path(rel) if protected_path else rel
+
+        for name, match, description in path_matches:
+            findings.append(
+                Finding(
+                    name,
+                    description,
+                    finding_path,
+                    0,
+                    (
+                        "[REDACTED]"
+                        if protected_path or name == "named-entity"
+                        else redact(match.group(0))
+                    ),
+                )
+            )
 
         if FORBIDDEN_PATHS.search(rel):
             findings.append(
-                Finding("forbidden-path", "Path must never be published", rel, 0, rel)
+                Finding(
+                    "forbidden-path",
+                    "Path must never be published",
+                    finding_path,
+                    0,
+                    "[REDACTED]" if protected_path else rel,
+                )
             )
-            continue
 
-        if path.suffix.lower() in BINARY_SUFFIXES or not path.is_file():
-            continue
-
-        try:
-            content = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
+        blob = tracked_blob(root, oid)
+        content = blob.decode("utf-8", errors="ignore")
 
         for lineno, line in enumerate(content.splitlines(), start=1):
-            for name, pattern, description in CHECKS:
-                match = pattern.search(line)
-                if match:
-                    findings.append(
-                        Finding(name, description, rel, lineno, redact(match.group(0)))
+            line_matches = [
+                (name, match, description)
+                for name, pattern, description in checks
+                if (match := pattern.search(line)) is not None
+            ]
+            protected_line = any(name == "named-entity" for name, _, _ in line_matches)
+            for name, match, description in line_matches:
+                findings.append(
+                    Finding(
+                        name,
+                        description,
+                        finding_path,
+                        lineno,
+                        "[REDACTED]" if protected_line else redact(match.group(0)),
                     )
+                )
 
-    return findings
+    return findings, total
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--path", default=".", help="repo or staging tree to scan")
     parser.add_argument("--json", action="store_true", help="emit JSON")
+    parser.add_argument(
+        "--strict-policy",
+        action="store_true",
+        help="fail closed unless an explicit valid denylist is available",
+    )
+    parser.add_argument("--denylist", help="protected named-entity policy JSON")
     args = parser.parse_args()
 
     root = Path(args.path).resolve()
+    try:
+        policy = load_named_entity_policy(
+            Path(args.denylist).resolve() if args.denylist else None,
+            args.strict_policy,
+        )
+    except PolicyError:
+        print(POLICY_ERROR, file=sys.stderr)
+        return 2
+
     if not (root / ".git").exists():
         print(f"error: {root} is not a git repository", file=sys.stderr)
         return 2
 
     try:
-        all_findings = scan(root)
-        allowlist = load_allowlist(root)
-    except subprocess.CalledProcessError as exc:
-        print(f"error: git ls-files failed: {exc}", file=sys.stderr)
+        entries = list(tracked_files(root))
+        all_findings, total = scan(root, checks_for_policy(policy), entries)
+        allowlist = load_allowlist(root, entries)
+    except subprocess.CalledProcessError:
+        print("error: unable to read tracked git data", file=sys.stderr)
+        return 2
+    except AllowlistError:
+        print(ALLOWLIST_ERROR, file=sys.stderr)
         return 2
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -271,22 +394,23 @@ def main() -> int:
     if args.json:
         print(json.dumps([asdict(f) for f in findings], indent=2))
     else:
-        total = len(list(tracked_files(root)))
         # Always report suppressions. A gate whose exceptions are invisible
         # stops being a gate.
         if suppressed:
-            print(f"suppressed {len(suppressed)} allowlisted finding(s):")
-            for entry in allowlist:
-                print(f"  {entry['path']} [{entry['check']}] - {entry['reason']}")
+            print(
+                f"suppressed {len(suppressed)} allowlisted finding(s); "
+                "see tracked .release-allowlist.json"
+            )
             print()
         if not findings:
             print(f"PASS - {total} tracked files scanned, no unsuppressed findings")
         else:
             print(f"FAIL - {len(findings)} finding(s) across {total} tracked files\n")
             for f in findings:
-                where = f"{f.path}:{f.line}" if f.line else f.path
+                path = human_string(f.path)
+                where = f"{path}:{f.line}" if f.line else path
                 print(f"  [{f.check}] {where}")
-                print(f"      {f.description}: {f.excerpt}")
+                print(f"      {f.description}: {human_string(f.excerpt)}")
 
     return 1 if findings else 0
 

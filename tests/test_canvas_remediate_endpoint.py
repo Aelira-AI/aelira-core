@@ -7,6 +7,7 @@ a BackgroundTasks parameter, and never used it.
 """
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,7 +16,8 @@ from src.api.canvas_routes import (
     _canvas_scan_then_remediate_task,
     remediate_canvas_file,
 )
-from src.db.models import CloudJobStatus
+from src.auth.dependencies import AuthenticatedPrincipal
+from src.db.models import CloudJobStatus, UserRole
 
 
 def _db_with_credential_and_file():
@@ -32,19 +34,39 @@ def _db_with_credential_and_file():
 async def test_remediate_endpoint_fires_the_background_task():
     background_tasks = MagicMock()
     request = MagicMock(file_id="f-1", course_id="101", department_id="d1")
+    canvas = AsyncMock()
+    canvas.list_course_files.return_value = [SimpleNamespace(id="f-1")]
 
+    db = _db_with_credential_and_file()
     with (
         patch("src.api.canvas_routes.require_feature", new=AsyncMock()),
         patch("src.api.canvas_routes.verify_department_access"),
+        patch(
+            "src.api.canvas_routes._get_canvas_client",
+            new=AsyncMock(return_value=(SimpleNamespace(id="cred-1"), canvas)),
+        ),
     ):
         response = await remediate_canvas_file(
             request=request,
             background_tasks=background_tasks,
-            db=_db_with_credential_and_file(),
-            api_key_info=(None, "u1", "d1"),
+            db=db,
+            principal=AuthenticatedPrincipal(
+                api_key=None,
+                user_id="u1",
+                department_id="d1",
+                user_role=UserRole.FACULTY,
+                auth_method="session",
+            ),
         )
 
     assert response.success is True
+    cloud_file_predicates = " ".join(
+        str(predicate)
+        for call in db.query.return_value.filter.call_args_list
+        for predicate in call.args
+        if "cloud_files." in str(predicate)
+    )
+    assert "cloud_files.provider_parent_id" in cloud_file_predicates
     background_tasks.add_task.assert_called_once()
     fired, *ids = background_tasks.add_task.call_args[0]
     assert fired is _canvas_scan_then_remediate_task

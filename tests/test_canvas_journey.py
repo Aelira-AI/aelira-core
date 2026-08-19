@@ -19,7 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api.main import app
-from src.auth.dependencies import get_required_api_key
+from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from src.db.database import get_db_dependency
 from src.db.models import (
     CloudFile,
@@ -27,6 +27,7 @@ from src.db.models import (
     CloudProvider,
     ContentWritebackLog,
     ScanResult,
+    UserRole,
 )
 from src.education.canvas_content_scanner import CanvasContentScanner
 from src.integrations.canvas.content_models import CanvasContentType
@@ -123,15 +124,19 @@ def seeded(db):
 
 @pytest.fixture
 def client(db):
-    app.dependency_overrides[get_required_api_key] = lambda: (
-        None,
-        USER_ID,
-        DEPARTMENT_ID,
+    app.dependency_overrides[get_authenticated_principal] = (
+        lambda: AuthenticatedPrincipal(
+            api_key=None,
+            user_id=USER_ID,
+            department_id=DEPARTMENT_ID,
+            user_role=UserRole.FACULTY,
+            auth_method="session",
+        )
     )
     app.dependency_overrides[get_db_dependency] = lambda: db
     with patch("src.api.canvas_content_routes.require_feature", new_callable=AsyncMock):
         yield TestClient(app)
-    app.dependency_overrides.pop(get_required_api_key, None)
+    app.dependency_overrides.pop(get_authenticated_principal, None)
     app.dependency_overrides.pop(get_db_dependency, None)
 
 

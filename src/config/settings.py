@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     # API Configuration
     api_title: str = "Aelira ADA Compliance API"
-    api_version: str = "0.9.3"
+    api_version: str = "0.9.4"
     api_host: str = os.getenv("API_HOST", "0.0.0.0")
 
     # Where this deployment is reachable. Everything user-facing derives from
@@ -323,6 +323,13 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = int(
         os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7")
     )
+    session_refresh_grace_seconds: int = int(
+        os.getenv("SESSION_REFRESH_GRACE_SECONDS", "10")
+    )
+    session_legacy_refresh_candidate_limit: int = int(
+        os.getenv("SESSION_LEGACY_REFRESH_CANDIDATE_LIMIT", "5")
+    )
+    session_replay_encryption_key: str = os.getenv("SESSION_REPLAY_ENCRYPTION_KEY", "")
 
     # LTI 1.3 Integration
     lti_access_token_expire_minutes: int = int(
@@ -384,6 +391,10 @@ class Settings(BaseSettings):
         "MICROSOFT_OAUTH_REDIRECT_URI",
         "https://api.example.com/auth/microsoft/callback",
     )
+
+    # Canvas OAuth network trust boundary. Staging/production validation below
+    # makes this mandatory; route-level validation canonicalizes every entry.
+    canvas_oauth_allowed_origins: str = os.getenv("CANVAS_OAUTH_ALLOWED_ORIGINS", "")
 
     # File Upload Limits (in bytes)
     max_file_size_pdf: int = 50 * 1024 * 1024  # 50MB
@@ -470,11 +481,35 @@ class Settings(BaseSettings):
                     "can forge session tokens."
                 )
 
+        if self.env.lower() in {"staging", "production"}:
+            try:
+                from cryptography.fernet import Fernet
+
+                Fernet(self.session_replay_encryption_key.encode("ascii"))
+            except Exception as exc:
+                raise ValueError(
+                    "SESSION_REPLAY_ENCRYPTION_KEY must be a valid Fernet key "
+                    "in staging and production"
+                ) from exc
+
         if not self.smtp_host:
             logger.warning(
                 "SMTP_HOST is not set. Outbound email (magic links, alert "
                 "notifications, remediation emails) will not work until "
                 "it is configured."
+            )
+
+        canvas_oauth_enabled = bool(
+            os.getenv("CANVAS_OAUTH_CLIENT_ID", "").strip()
+            and os.getenv("CANVAS_OAUTH_CLIENT_SECRET", "").strip()
+        )
+        if (
+            self.env.lower() in {"staging", "production"}
+            and canvas_oauth_enabled
+            and not self.canvas_oauth_allowed_origins.strip()
+        ):
+            raise ValueError(
+                "CANVAS_OAUTH_ALLOWED_ORIGINS must be set in staging and production"
             )
 
         return self

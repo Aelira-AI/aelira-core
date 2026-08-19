@@ -6,7 +6,7 @@ Manages department email notification preferences.
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional
 from datetime import datetime, timezone
 import uuid
@@ -29,8 +29,8 @@ class AlertSettingsRequest(BaseModel):
     alert_on_critical_issues: Optional[bool] = None
     alert_weekly_summary: Optional[bool] = None
     email_addresses: Optional[List[EmailStr]] = None
-    weekly_summary_day: Optional[int] = None  # 0=Monday, 6=Sunday
-    weekly_summary_hour: Optional[int] = None  # 0-23 UTC
+    weekly_summary_day: Optional[int] = Field(None, ge=0, le=6)  # Monday-Sunday
+    weekly_summary_hour: Optional[int] = Field(None, ge=0, le=23)  # UTC
 
 
 class AlertSettingsResponse(BaseModel):
@@ -179,8 +179,16 @@ async def get_alert_settings(
         alert_on_critical_issues=settings.alert_on_critical_issues,
         alert_weekly_summary=settings.alert_weekly_summary,
         email_addresses=settings.email_addresses or [],
-        weekly_summary_day=getattr(settings, "weekly_summary_day", 0),
-        weekly_summary_hour=getattr(settings, "weekly_summary_hour", 9),
+        weekly_summary_day=(
+            settings.weekly_summary_day
+            if getattr(settings, "weekly_summary_day", None) is not None
+            else 0
+        ),
+        weekly_summary_hour=(
+            settings.weekly_summary_hour
+            if getattr(settings, "weekly_summary_hour", None) is not None
+            else 9
+        ),
         created_at=settings.created_at,
         updated_at=getattr(settings, "updated_at", None),
     )
@@ -215,19 +223,9 @@ async def update_alert_settings(
         settings.email_addresses = emails
 
     if request.weekly_summary_day is not None:
-        if not 0 <= request.weekly_summary_day <= 6:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="weekly_summary_day must be 0-6 (Monday-Sunday)",
-            )
         settings.weekly_summary_day = request.weekly_summary_day
 
     if request.weekly_summary_hour is not None:
-        if not 0 <= request.weekly_summary_hour <= 23:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="weekly_summary_hour must be 0-23 (UTC)",
-            )
         settings.weekly_summary_hour = request.weekly_summary_hour
 
     settings.updated_at = datetime.now(timezone.utc)
@@ -241,8 +239,16 @@ async def update_alert_settings(
         alert_on_critical_issues=settings.alert_on_critical_issues,
         alert_weekly_summary=settings.alert_weekly_summary,
         email_addresses=settings.email_addresses or [],
-        weekly_summary_day=getattr(settings, "weekly_summary_day", 0),
-        weekly_summary_hour=getattr(settings, "weekly_summary_hour", 9),
+        weekly_summary_day=(
+            settings.weekly_summary_day
+            if getattr(settings, "weekly_summary_day", None) is not None
+            else 0
+        ),
+        weekly_summary_hour=(
+            settings.weekly_summary_hour
+            if getattr(settings, "weekly_summary_hour", None) is not None
+            else 9
+        ),
         created_at=settings.created_at,
         updated_at=getattr(settings, "updated_at", None),
     )
@@ -278,8 +284,16 @@ async def add_email_address(
         alert_on_critical_issues=settings.alert_on_critical_issues,
         alert_weekly_summary=settings.alert_weekly_summary,
         email_addresses=settings.email_addresses or [],
-        weekly_summary_day=getattr(settings, "weekly_summary_day", 0),
-        weekly_summary_hour=getattr(settings, "weekly_summary_hour", 9),
+        weekly_summary_day=(
+            settings.weekly_summary_day
+            if getattr(settings, "weekly_summary_day", None) is not None
+            else 0
+        ),
+        weekly_summary_hour=(
+            settings.weekly_summary_hour
+            if getattr(settings, "weekly_summary_hour", None) is not None
+            else 9
+        ),
         created_at=settings.created_at,
         updated_at=getattr(settings, "updated_at", None),
     )
@@ -312,8 +326,16 @@ async def remove_email_address(
         alert_on_critical_issues=settings.alert_on_critical_issues,
         alert_weekly_summary=settings.alert_weekly_summary,
         email_addresses=settings.email_addresses or [],
-        weekly_summary_day=getattr(settings, "weekly_summary_day", 0),
-        weekly_summary_hour=getattr(settings, "weekly_summary_hour", 9),
+        weekly_summary_day=(
+            settings.weekly_summary_day
+            if getattr(settings, "weekly_summary_day", None) is not None
+            else 0
+        ),
+        weekly_summary_hour=(
+            settings.weekly_summary_hour
+            if getattr(settings, "weekly_summary_hour", None) is not None
+            else 9
+        ),
         created_at=settings.created_at,
         updated_at=getattr(settings, "updated_at", None),
     )

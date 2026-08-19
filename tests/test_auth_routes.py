@@ -132,6 +132,16 @@ def _fake_api_key(**overrides):
     key.last_used_at = overrides.get("last_used_at", None)
     key.expires_at = overrides.get("expires_at", None)
     key.is_active = overrides.get("is_active", True)
+    key.user = overrides.get(
+        "user",
+        MagicMock(
+            spec=User,
+            id=key.user_id,
+            department_id=key.department_id,
+            role="faculty",
+            is_active=True,
+        ),
+    )
     return key
 
 
@@ -727,6 +737,78 @@ class TestSessionValidate:
         assert response.status_code == 401
         assert response.json()["detail"] == "Session expired or invalid"
 
+    def test_revoked_normal_jwt_has_no_direct_validation_fallback(
+        self, client, monkeypatch
+    ):
+        session_service = MagicMock()
+        session_service.validate_session.return_value = None
+        monkeypatch.setattr(auth_routes, "get_session_service", lambda: session_service)
+        jwt_service = MagicMock()
+        jwt_service.verify_access_token.return_value = {
+            "type": "access",
+            "sub": "user-9",
+            "department_id": "dept-1",
+            "exp": 12345,
+        }
+        monkeypatch.setattr(auth_routes, "get_jwt_service", lambda: jwt_service)
+        fake_user = MagicMock(id="user-9", department_id="dept-1", is_active=True)
+        _use_db(_db_with({User: {"first": fake_user}}))
+
+        response = client.get(
+            "/auth/session/validate", headers={"Authorization": "Bearer revoked.jwt"}
+        )
+
+        assert response.status_code == 401
+
+    def test_canonical_lti_v2_token_bypasses_session_rows(self, client, monkeypatch):
+        from src.auth.dependencies import AuthenticatedPrincipal
+        from src.db.models import UserRole
+        import src.auth.dependencies as dependencies
+
+        fake_user = MagicMock(
+            id="lti-user",
+            email=EDU_EMAIL,
+            department_id="dept-1",
+            role=UserRole.FACULTY,
+            email_verified=True,
+            is_active=True,
+        )
+        fake_user.name = "LTI Instructor"
+        principal = AuthenticatedPrincipal(
+            api_key=None,
+            user_id="lti-user",
+            department_id="dept-1",
+            user_role=UserRole.FACULTY,
+            auth_method="lti",
+            lti_course_id="course-1",
+            lti_staff_role="Instructor",
+            lti_account_wide=False,
+        )
+        monkeypatch.setattr(
+            dependencies, "_principal_from_lti_payload", lambda payload, db: principal
+        )
+        jwt_service = MagicMock()
+        jwt_service.verify_access_token.return_value = {
+            "type": "access",
+            "sub": "lti-user",
+            "lti_launch": True,
+            "lti_authz_version": 2,
+            "exp": 12345,
+        }
+        monkeypatch.setattr(auth_routes, "get_jwt_service", lambda: jwt_service)
+        session_service = MagicMock()
+        monkeypatch.setattr(auth_routes, "get_session_service", lambda: session_service)
+        dept = MagicMock(id="dept-1", tier="trial")
+        dept.name = "CS"
+        _use_db(_db_with({User: {"first": fake_user}, Department: {"first": dept}}))
+
+        response = client.get(
+            "/auth/session/validate", headers={"Authorization": "Bearer lti-v2"}
+        )
+
+        assert response.status_code == 200
+        session_service.validate_session.assert_not_called()
+
     def test_happy_path_db_backed_session(self, client, monkeypatch):
         # L1296-1300, L1318-1338: DB-backed session resolves user + department.
         fake_user = MagicMock(
@@ -740,6 +822,9 @@ class TestSessionValidate:
         session_service = MagicMock()
         session_service.validate_session.return_value = (fake_user, {"exp": 12345})
         monkeypatch.setattr(auth_routes, "get_session_service", lambda: session_service)
+        jwt_service = MagicMock()
+        jwt_service.verify_access_token.return_value = {"type": "access", "exp": 12345}
+        monkeypatch.setattr(auth_routes, "get_jwt_service", lambda: jwt_service)
         dept = MagicMock(id="dept-1", tier="trial")
         dept.name = "CS"  # name= is reserved by the Mock constructor
         _use_db(_db_with({Department: {"first": dept}}))
@@ -757,10 +842,16 @@ class TestSessionRefresh:
     """POST /auth/session/refresh (L1341-1411) — public."""
 
     def test_no_refresh_cookie_is_401(self, client, mock_db):
-        # L1361-1367: no aelira_refresh cookie -> 401.
         response = client.post("/auth/session/refresh")
         assert response.status_code == 401
         assert response.json()["detail"] == "Refresh token required"
+        cleared = "\n".join(response.headers.get_list("set-cookie")).lower()
+        assert "aelira_access=" in cleared
+        assert "aelira_refresh=" in cleared
+        assert "path=/" in cleared
+        assert "httponly" in cleared
+        assert "secure" in cleared
+        assert "samesite=lax" in cleared
 
     def test_invalid_refresh_token_is_401(self, client, mock_db, monkeypatch):
         # L1369-1380: session_service.refresh_session returning None -> 401.
@@ -803,7 +894,11 @@ class TestSessionLogout:
 
     def test_with_cookie_revokes_session(self, client, mock_db, monkeypatch):
         jwt_service = MagicMock()
-        jwt_service.get_user_id_from_token.return_value = "user-9"
+        jwt_service.decode_token.return_value = {
+            "type": "access",
+            "sub": "user-9",
+            "jti": "jti-9",
+        }
         monkeypatch.setattr(auth_routes, "get_jwt_service", lambda: jwt_service)
         session_service = MagicMock()
         session_service.revoke_session.return_value = True
@@ -814,6 +909,52 @@ class TestSessionLogout:
         # L1435-1437: revoke_session called with the token-derived user id.
         session_service.revoke_session.assert_called_once()
         assert session_service.revoke_session.call_args.args[1] == "user-9"
+
+    def test_expired_access_or_refresh_sid_revokes_exact_session(
+        self, client, mock_db, monkeypatch
+    ):
+        jwt_service = MagicMock()
+        jwt_service.decode_token.side_effect = [
+            None,
+            {"type": "refresh", "sub": "user-9", "sid": "sess-9"},
+        ]
+        monkeypatch.setattr(auth_routes, "get_jwt_service", lambda: jwt_service)
+        session_service = MagicMock()
+        monkeypatch.setattr(auth_routes, "get_session_service", lambda: session_service)
+        client.cookies.set("aelira_access", "expired-access")
+        client.cookies.set("aelira_refresh", "refresh-with-sid")
+
+        response = client.post("/auth/session/logout")
+
+        assert response.status_code == 200
+        session_service.revoke_session.assert_called_once_with(
+            mock_db, "user-9", session_id="sess-9"
+        )
+        cleared = "\n".join(response.headers.get_list("set-cookie")).lower()
+        assert "aelira_access=" in cleared
+        assert "aelira_refresh=" in cleared
+
+    def test_legacy_access_falls_back_to_refresh_sid(
+        self, client, mock_db, monkeypatch
+    ):
+        jwt_service = MagicMock()
+        jwt_service.decode_token.side_effect = [
+            {"type": "access", "sub": "user-9", "jti": "legacy-jti"},
+            {"type": "refresh", "sub": "user-9", "sid": "sess-9"},
+        ]
+        monkeypatch.setattr(auth_routes, "get_jwt_service", lambda: jwt_service)
+        session_service = MagicMock()
+        monkeypatch.setattr(auth_routes, "get_session_service", lambda: session_service)
+        client.cookies.set("aelira_access", "legacy-access")
+        client.cookies.set("aelira_refresh", "refresh-with-sid")
+
+        response = client.post("/auth/session/logout")
+
+        assert response.status_code == 200
+        assert jwt_service.decode_token.call_count == 2
+        session_service.revoke_session.assert_called_once_with(
+            mock_db, "user-9", session_id="sess-9"
+        )
 
 
 class TestListSessions:

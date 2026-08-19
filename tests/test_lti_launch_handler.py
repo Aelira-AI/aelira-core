@@ -14,23 +14,27 @@ home. account_navigation launches are unaffected and still go straight to
 /lti/overview.
 """
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from src.api.lti_launch_handler import handle_lti_launch
-from src.db.models import User
+import pytest
+
+from src.api import lti_launch_handler
+from src.api.lti_launch_handler import LTIStaffAccessDenied, handle_lti_launch
+from src.db.models import AuthProvider, User, UserRole
 from src.integrations.canvas_lti import CanvasLaunchData
 
 
 def _make_launch_data(**overrides) -> CanvasLaunchData:
     defaults = dict(
         user_id="canvas-user-1",
-        user_name="Test Student",
-        user_email="student@example.edu",
+        user_name="Test Instructor",
+        user_email="instructor@example.edu",
         course_id="",
         course_name="",
-        roles=["http://purl.imsglobal.org/vocab/lis/v2/membership#Learner"],
-        is_instructor=False,
-        is_student=True,
+        roles=["http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor"],
+        is_instructor=True,
+        is_student=False,
         resource_link_id="link-1",
         deployment_id="deploy-1",
         platform_id="https://canvas.instructure.com",
@@ -50,9 +54,26 @@ def _make_db_with_existing_user() -> MagicMock:
     db = MagicMock()
     user = MagicMock(spec=User)
     user.id = "user-1"
-    user.email = "student@example.edu"
+    user.email = "instructor@example.edu"
     user.role = "student"
+    user.auth_provider = AuthProvider.LTI
+    user.lti_source = "https://canvas.instructure.com:canvas-user-1"
+    user.is_active = True
+    user.lti_reauthorization_required = False
+    user.deactivated_at = None
+    user.deletion_requested_at = None
+    user.deletion_scheduled_for = None
+    user.deletion_confirmation_code_hash = None
+    user.deletion_confirmation_expires_at = None
     db.query.return_value.filter.return_value.first.return_value = user
+    return db
+
+
+def _make_db_without_existing_user() -> MagicMock:
+    """A mock session whose same- and cross-department lookups both miss."""
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.side_effect = [None, None, None]
     return db
 
 
@@ -140,3 +161,217 @@ class TestLtiGoRouting:
 
         assert "/lti/overview?code=" in redirect_url
         assert "/lti/go" not in redirect_url
+
+
+def test_new_lti_user_role_comes_from_canonical_staff_policy(monkeypatch):
+    launch_data = _make_launch_data(
+        roles=["http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor"],
+        user_email="instructor@example.edu",
+    )
+    db = _make_db_without_existing_user()
+
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    created_user = next(
+        call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], User)
+    )
+    assert created_user.role is UserRole.FACULTY
+
+
+@pytest.mark.parametrize(
+    "roles",
+    [
+        ["http://purl.imsglobal.org/vocab/lis/v2/membership#Learner"],
+        ["http://purl.imsglobal.org/vocab/lis/v2/membership#Student"],
+        ["http://purl.imsglobal.org/vocab/lis/v2/membership#Mentor"],
+        ["http://purl.imsglobal.org/vocab/lis/v2/membership#Observer"],
+        [],
+        None,
+        ["http://example.edu/lti/role#Unknown"],
+    ],
+)
+def test_denied_launch_has_no_side_effects_before_rejection(monkeypatch, roles):
+    launch_data = _make_launch_data(roles=roles or [], user_email=None)
+    if roles is None:
+        object.__setattr__(launch_data, "roles", None)
+    db = MagicMock()
+
+    monkeypatch.setattr(
+        lti_launch_handler,
+        "urlparse",
+        MagicMock(side_effect=AssertionError("email resolution must not run")),
+    )
+    jwt_service = MagicMock(side_effect=AssertionError("JWT creation must not run"))
+    monkeypatch.setattr(lti_launch_handler, "JWTService", jwt_service)
+    store_code = MagicMock(side_effect=AssertionError("code storage must not run"))
+    monkeypatch.setattr(lti_launch_handler, "_store_code", store_code)
+
+    with pytest.raises(LTIStaffAccessDenied):
+        handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    assert db.mock_calls == []
+    jwt_service.assert_not_called()
+    store_code.assert_not_called()
+
+
+def test_returning_users_role_is_recomputed_from_each_staff_launch(monkeypatch):
+    launch_data = _make_launch_data(
+        roles=["http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor"]
+    )
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    user.role = UserRole.ADMIN
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    assert user.role is UserRole.FACULTY
+
+
+def test_migration_marked_staff_relaunch_reactivates_existing_lti_user(monkeypatch):
+    launch_data = _make_launch_data()
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    user.is_active = False
+    user.lti_reauthorization_required = True
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    assert user.is_active is True
+    assert user.lti_reauthorization_required is False
+
+
+def test_deliberately_inactive_lti_user_is_not_reactivated(monkeypatch):
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    user.is_active = False
+    user.lti_reauthorization_required = False
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    with pytest.raises(LTIStaffAccessDenied):
+        handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    assert user.is_active is False
+
+
+def test_deletion_pending_lti_user_is_not_reactivated(monkeypatch):
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    user.is_active = False
+    user.lti_reauthorization_required = True
+    user.deletion_requested_at = datetime.now(timezone.utc)
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    with pytest.raises(LTIStaffAccessDenied):
+        handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    assert user.is_active is False
+    assert user.lti_reauthorization_required is True
+
+
+def test_same_email_non_lti_user_is_not_repurposed(monkeypatch):
+    db = MagicMock()
+    non_lti_user = MagicMock(spec=User)
+    non_lti_user.email = "instructor@example.edu"
+    non_lti_user.auth_provider = AuthProvider.GOOGLE
+    non_lti_user.is_active = True
+    query = MagicMock()
+    query.filter.return_value = query
+    query.first.side_effect = [None, None, non_lti_user]
+    db.query.return_value = query
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    created_user = next(
+        call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], User)
+    )
+    assert created_user is not non_lti_user
+    assert created_user.auth_provider is AuthProvider.LTI
+    assert created_user.email != non_lti_user.email
+    assert non_lti_user.auth_provider is AuthProvider.GOOGLE
+
+
+def test_lti_source_lookup_does_not_repurpose_non_lti_user(monkeypatch):
+    db = MagicMock()
+    non_lti_user = MagicMock(spec=User)
+    non_lti_user.email = "instructor@example.edu"
+    non_lti_user.auth_provider = AuthProvider.GOOGLE
+    non_lti_user.is_active = True
+    query = MagicMock()
+    query.filter.return_value = query
+    query.first.side_effect = [non_lti_user, None, non_lti_user]
+    db.query.return_value = query
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    created_user = next(
+        call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], User)
+    )
+    assert created_user.auth_provider is AuthProvider.LTI
+    assert non_lti_user.auth_provider is AuthProvider.GOOGLE
+
+
+def test_legacy_email_fallback_does_not_rebind_another_lti_source(monkeypatch):
+    db = MagicMock()
+    different_lti_user = MagicMock(spec=User)
+    different_lti_user.email = "instructor@example.edu"
+    different_lti_user.auth_provider = AuthProvider.LTI
+    different_lti_user.lti_source = "https://other.example.edu:other-user"
+    different_lti_user.is_active = True
+    query = MagicMock()
+    query.filter.return_value = query
+    query.first.side_effect = [None, different_lti_user, different_lti_user]
+    db.query.return_value = query
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(_make_launch_data(), _make_registration(), db)
+
+    created_user = next(
+        call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], User)
+    )
+    assert created_user.auth_provider is AuthProvider.LTI
+    assert created_user.lti_source != different_lti_user.lti_source
+
+
+@pytest.mark.parametrize(
+    ("role_uri", "staff_role", "account_wide", "aelira_role"),
+    [
+        (
+            "http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor",
+            "Instructor",
+            False,
+            UserRole.FACULTY,
+        ),
+        (
+            "http://purl.imsglobal.org/vocab/lis/v2/institution/person#Administrator",
+            "Administrator",
+            True,
+            UserRole.ADMIN,
+        ),
+    ],
+)
+def test_staff_launch_mints_v2_authorization_claims(
+    monkeypatch, role_uri, staff_role, account_wide, aelira_role
+):
+    launch_data = _make_launch_data(roles=[role_uri], course_id="course-42")
+    db = _make_db_with_existing_user()
+    user = db.query.return_value.filter.return_value.first.return_value
+    token_service = MagicMock()
+    token_service.create_access_token.return_value = ("token", "jti", "exp")
+    monkeypatch.setattr(lti_launch_handler, "JWTService", lambda: token_service)
+    monkeypatch.setattr(lti_launch_handler, "_store_code", lambda *args, **kwargs: None)
+
+    handle_lti_launch(launch_data, _make_registration(), db, platform="canvas")
+
+    assert user.role is aelira_role
+    claims = token_service.create_access_token.call_args.kwargs["additional_claims"]
+    assert claims["lti_staff"] is True
+    assert claims["lti_staff_role"] == staff_role
+    assert claims["lti_account_wide"] is account_wide
+    assert claims["lti_authz_version"] == 2
+    assert claims["course_id"] == "course-42"

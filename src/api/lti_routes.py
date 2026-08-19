@@ -36,8 +36,10 @@ from src.integrations.canvas_lti import (
     CanvasLaunchData,
 )
 from src.api.lti_launch_handler import (
+    LTIStaffAccessDenied,
     handle_lti_launch,
     exchange_code,
+    require_lti_staff_access,
     store_ags_context,
     create_bridge_code,
 )
@@ -310,38 +312,6 @@ async def lti_launch(
     # Get parameters from form
     params = dict(await request.form())
 
-    # Dev mode: handle LTI 1.1/1.3 form POST without state param
-    # by rendering the dashboard directly in the iframe
-    is_dev = os.getenv("ENV", "production") == "development"
-    if is_dev and "state" not in params:
-        logger.info("LTI dev params keys: %s", list(params.keys()))
-        # Try multiple sources for course ID
-        course_id = (
-            params.get("custom_canvas_course_id")
-            or params.get("custom_course_id")
-            or params.get("context_id")
-            or ""
-        )
-        # Fallback: extract from Referer header (Canvas URL like /courses/34/...)
-        if not course_id:
-            import re
-
-            referer = request.headers.get("referer", "")
-            m = re.search(r"/courses/(\d+)", referer)
-            if m:
-                course_id = m.group(1)
-                logger.info("Extracted course_id=%s from Referer", course_id)
-        dashboard_url = os.getenv("DASHBOARD_URL", "http://localhost:5173")
-        target_url = f"{dashboard_url}/lti/course/{course_id}"
-        logger.info("LTI dev launch → %s", target_url)
-        # Render HTML that loads the dashboard in the same frame
-        html = f"""<!DOCTYPE html>
-<html><head>
-<meta http-equiv="refresh" content="0;url={target_url}">
-<script>window.location.replace("{target_url}");</script>
-</head><body>Loading Aelira...</body></html>"""
-        return HTMLResponse(content=html)
-
     if not lti_service.is_configured():
         raise HTTPException(status_code=503, detail="LTI integration not configured")
 
@@ -358,6 +328,10 @@ async def lti_launch(
 
         # Extract launch data
         launch_data = lti_service.extract_launch_data(message_launch)
+
+        # Authorization must precede registration lookup, statistics, deep-link
+        # handling, provisioning, token minting, and every other side effect.
+        require_lti_staff_access(launch_data)
 
         # Get issuer and client_id from the validated launch for department lookup
         issuer = lti_service.get_issuer_from_launch(message_launch)
@@ -438,6 +412,9 @@ async def lti_launch(
 
         return RedirectResponse(url=redirect_url, status_code=302)
 
+    except LTIStaffAccessDenied:
+        logger.warning("Canvas LTI launch denied by staff-only policy")
+        return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
         logger.error(f"Canvas LTI launch failed: {e}")
         raise HTTPException(status_code=400, detail=f"LTI launch failed: {str(e)}")
@@ -472,11 +449,15 @@ async def lti_deep_link(
         )
 
         launch_data = lti_service.extract_launch_data(message_launch)
+        require_lti_staff_access(launch_data)
 
         return await handle_deep_link_launch(
             request, lti_service, message_launch, launch_data
         )
 
+    except LTIStaffAccessDenied:
+        logger.warning("Canvas LTI deep-link launch denied by staff-only policy")
+        return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
         logger.error(f"Deep link launch failed: {e}")
         raise HTTPException(status_code=400, detail=f"Deep link failed: {str(e)}")

@@ -25,6 +25,7 @@ from sqlalchemy import (
     Enum as SQLEnum,
     Index,
     UniqueConstraint,
+    CheckConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -257,6 +258,9 @@ class User(Base):
 
     # Status
     is_active = Column(Boolean, default=True)
+    lti_reauthorization_required = Column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
 
     # Account deletion / deactivation
     deactivated_at = Column(DateTime(timezone=True), nullable=True)
@@ -290,8 +294,8 @@ class APIKey(Base):
         String(255), unique=True, nullable=False
     )  # bcrypt hash of actual key
     key_prefix = Column(
-        String(20), nullable=False
-    )  # First 8 chars for identification (e.g., "aelira_123...")
+        String(20), nullable=False, index=True
+    )  # First 20 chars: public label plus 8 random hex characters
     name = Column(String(255))  # User-friendly name (e.g., "Production API Key")
 
     # Ownership
@@ -361,7 +365,11 @@ class UserSession(Base):
     # Token storage
     refresh_token_hash = Column(
         String(255), unique=True, nullable=False
-    )  # bcrypt hash of refresh token
+    )  # bcrypt hash of current refresh token
+    previous_refresh_token_hash = Column(String(255), nullable=True)
+    refresh_grace_expires_at = Column(DateTime(timezone=True), nullable=True)
+    refresh_replay_used_at = Column(DateTime(timezone=True), nullable=True)
+    refresh_replay_ciphertext = Column(Text, nullable=True)
     access_token_jti = Column(
         String(36), nullable=False
     )  # JWT ID of current access token
@@ -1139,6 +1147,16 @@ class EmailAlertSettings(Base):
     """Email notification preferences per department/user"""
 
     __tablename__ = "email_alert_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "weekly_summary_day BETWEEN 0 AND 6",
+            name="ck_email_alert_settings_weekly_summary_day_range",
+        ),
+        CheckConstraint(
+            "weekly_summary_hour BETWEEN 0 AND 23",
+            name="ck_email_alert_settings_weekly_summary_hour_range",
+        ),
+    )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     department_id = Column(
@@ -1164,8 +1182,12 @@ class EmailAlertSettings(Base):
     timezone = Column(String(50), default="America/New_York")
 
     # Weekly summary schedule
-    weekly_summary_day = Column(Integer, default=0)  # 0=Monday, 6=Sunday
-    weekly_summary_hour = Column(Integer, default=9)  # 0-23 UTC
+    weekly_summary_day = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )  # 0=Monday, 6=Sunday
+    weekly_summary_hour = Column(
+        Integer, nullable=False, default=9, server_default=text("9")
+    )  # 0-23 UTC
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())

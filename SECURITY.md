@@ -4,11 +4,12 @@
 
 We release patches for security vulnerabilities in the following versions:
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.9.x   | :white_check_mark: |
+| Version  | Supported          |
+| -------- | ------------------ |
+| 0.9.4    | :white_check_mark: |
+| <= 0.9.3 | :x:                |
 
-As a pre-1.0 project we support the current 0.9.x line with security updates; older 0.x releases are not maintained.
+As a pre-1.0 project, only the current security patch is supported. Earlier 0.x releases are not maintained.
 
 ## Reporting a Vulnerability
 
@@ -53,7 +54,7 @@ We follow responsible disclosure practices. Please do not publicly disclose the 
 ### What We Do
 
 - **Dependency scanning** - Automated via Dependabot
-- **Release safety gate** - Every release is scanned for secrets, credentials, and internal identifiers before publication (`scripts/verify_release_safety.py`)
+- **Release safety gate** - Every release is scanned for secrets, credentials, and internal identifiers before publication (`scripts/verify_release_safety.py`). Maintainers must create a protected GitHub environment named `release`, configure `RELEASE_DENYLIST_JSON` as an environment secret there using the schema described by `.release-denylist.local.json.example`, and enable required reviewers and deployment restrictions for the default branch. The workflow can select the environment but cannot configure these protection rules, so release setup must apply them. Tag releases fail closed when the secret is absent or invalid. Protected values must never be committed, logged, or uploaded as artifacts.
 - **Input validation** - Pydantic models validate all API inputs
 - **SQL injection prevention** - SQLAlchemy ORM; no user input is interpolated into SQL
 - **Authentication** - API keys with bcrypt hashing
