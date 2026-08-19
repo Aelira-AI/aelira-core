@@ -39,10 +39,12 @@ That gets you scanning immediately. AI-generated fixes need a model, which is th
 |---|---|
 | **PDF** | Tags structure, fixes reading order, adds alt text, OCRs scans, repairs tables |
 | **Word, PowerPoint, Excel** | Heading structure, alt text, contrast, table headers, slide reading order |
-| **LaTeX** | Converts equations to MathML so screen readers can read the maths |
+| **LaTeX** | Remediates and returns `.tex` source directly, generates context-aware figure descriptions, converts equations to accessible MathML/ARIA descriptions, and optionally produces PDF/HTML |
 | **Web pages** | axe-core and Pa11y detection, with generated code fixes |
 | **Video and audio** | Transcription and WebVTT captions |
 | **Images** | Context-aware alt text, not filename echoes |
+
+MathML is one stage of the LaTeX pipeline; the source remains first-class. Source-level remediation can improve accessibility metadata and language, figures, tables, equations, and links, depending on the issues found. With AI configured, figure descriptions use the issue, location, and original LaTeX context rather than the filename alone, with a filename-based fallback when richer context is unavailable.
 
 It reads course content directly from your LMS, plus **Google Drive** and **Microsoft 365**, so faculty do not have to download and re-upload anything.
 
