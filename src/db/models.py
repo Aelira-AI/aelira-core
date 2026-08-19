@@ -364,7 +364,11 @@ class UserSession(Base):
     # Token storage
     refresh_token_hash = Column(
         String(255), unique=True, nullable=False
-    )  # bcrypt hash of refresh token
+    )  # bcrypt hash of current refresh token
+    previous_refresh_token_hash = Column(String(255), nullable=True)
+    refresh_grace_expires_at = Column(DateTime(timezone=True), nullable=True)
+    refresh_replay_used_at = Column(DateTime(timezone=True), nullable=True)
+    refresh_replay_ciphertext = Column(Text, nullable=True)
     access_token_jti = Column(
         String(36), nullable=False
     )  # JWT ID of current access token

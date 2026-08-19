@@ -162,8 +162,6 @@ class CSRFMiddleware(BaseHTTPMiddleware):
     # middleware enforces it. Do not re-add a dashboard route to this list.
     EXEMPT_PATHS = [
         # ── Public / externally-authenticated endpoints ──
-        # Session refresh + logout (httpOnly refresh-cookie flow)
-        "/auth/session/logout",
         # Magic link endpoints (rate-limited, public)
         "/auth/magic-link/request",
         "/auth/magic-link/check",

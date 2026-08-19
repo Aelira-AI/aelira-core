@@ -104,12 +104,21 @@ def test_api_key_principal_rejects_inactive_owner(monkeypatch):
 
 
 def test_session_principal_uses_validated_user_and_validates_once(monkeypatch):
-    from src.auth import session_service
+    from src.auth import jwt_service, session_service
 
     user = _user(role=UserRole.SUPER_ADMIN)
     service = MagicMock()
     service.validate_session.return_value = (user, {"untrusted": "ignored"})
     monkeypatch.setattr(session_service, "get_session_service", lambda: service)
+    monkeypatch.setattr(
+        jwt_service.JWTService,
+        "verify_access_token",
+        lambda self, token: {
+            "sub": "user-1",
+            "jti": "live-jti",
+            "type": "access",
+        },
+    )
 
     principal = get_authenticated_principal(
         _request(cookie="session-token"), credentials=None, db=MagicMock()

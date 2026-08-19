@@ -14,12 +14,16 @@ Security:
 - Sessions can be revoked on logout or security events
 """
 
-import secrets
-import bcrypt
-import logging
 import asyncio
+import json
+import logging
+import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
+
+import bcrypt
+from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session as DBSession
 
 from ..db.models import User, UserSession, MagicLink, Department, AuthProvider
@@ -37,6 +41,36 @@ class SessionService:
     def __init__(self):
         self.settings = get_settings()
         self.jwt_service = get_jwt_service()
+        replay_key = self.settings.session_replay_encryption_key
+        if not replay_key:
+            replay_key = Fernet.generate_key().decode("ascii")
+        self._replay_cipher = Fernet(replay_key.encode("ascii"))
+
+    def _issue_token_pair(
+        self, user: User, session_id: str
+    ) -> Tuple[str, str, str, str, datetime, datetime]:
+        access_token, access_jti, access_expires_at = (
+            self.jwt_service.create_access_token(
+                user_id=user.id,
+                department_id=user.department_id,
+                email=user.email,
+                role=user.role.value if user.role else "faculty",
+                session_id=session_id,
+            )
+        )
+        refresh_token, raw_refresh, refresh_expires_at = (
+            self.jwt_service.create_refresh_token(
+                user_id=user.id, session_id=session_id
+            )
+        )
+        return (
+            access_token,
+            refresh_token,
+            raw_refresh,
+            access_jti,
+            access_expires_at,
+            refresh_expires_at,
+        )
 
     def create_session(
         self,
@@ -57,28 +91,22 @@ class SessionService:
         Returns:
             Tuple of (access_token, refresh_token, access_expires_at, refresh_expires_at)
         """
-        # Create access token
-        access_token, access_jti, access_expires_at = (
-            self.jwt_service.create_access_token(
-                user_id=user.id,
-                department_id=user.department_id,
-                email=user.email,
-                role=user.role.value if user.role else "faculty",
-            )
-        )
+        session_id = str(uuid.uuid4())
+        (
+            access_token,
+            refresh_token,
+            raw_refresh,
+            access_jti,
+            access_expires_at,
+            refresh_expires_at,
+        ) = self._issue_token_pair(user, session_id)
 
-        # Create refresh token
-        refresh_token, raw_refresh, refresh_expires_at = (
-            self.jwt_service.create_refresh_token(user_id=user.id)
-        )
-
-        # Hash refresh token for storage
         refresh_token_hash = bcrypt.hashpw(
-            raw_refresh.encode("utf-8"), bcrypt.gensalt()
+            raw_refresh.encode("utf-8"), bcrypt.gensalt(rounds=12)
         ).decode("utf-8")
 
-        # Create session record
         session = UserSession(
+            id=session_id,
             user_id=user.id,
             refresh_token_hash=refresh_token_hash,
             access_token_jti=access_jti,
@@ -153,73 +181,172 @@ class SessionService:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
     ) -> Optional[Tuple[str, str, datetime, datetime]]:
-        """
-        Refresh a session using the refresh token
-
-        Args:
-            db: Database session
-            refresh_token: JWT refresh token
-            ip_address: Client IP (for new session record)
-            user_agent: Client user agent
-
-        Returns:
-            Tuple of (new_access_token, new_refresh_token, access_expires_at, refresh_expires_at)
-            or None if invalid
-        """
-        # Verify refresh token
+        """Rotate one locked session row or replay its cached replacement once."""
         payload = self.jwt_service.verify_refresh_token(refresh_token)
         if not payload:
             return None
 
         user_id = payload.get("sub")
         raw_token = payload.get("token")
+        session_id = payload.get("sid")
+        if not isinstance(user_id, str) or not isinstance(raw_token, str):
+            return None
 
-        # Find the session with matching refresh token
-        sessions = (
-            db.query(UserSession)
-            .filter(UserSession.user_id == user_id)
-            .filter(UserSession.revoked_at.is_(None))
-            .filter(UserSession.expires_at > datetime.now(timezone.utc))
-            .all()
-        )
-
-        valid_session = None
-        for session in sessions:
-            try:
-                if bcrypt.checkpw(
-                    raw_token.encode("utf-8"),
-                    session.refresh_token_hash.encode("utf-8"),
+        now = datetime.now(timezone.utc)
+        try:
+            current_match = None
+            previous_match = None
+            if isinstance(session_id, str) and session_id:
+                session = (
+                    db.query(UserSession)
+                    .filter(
+                        UserSession.id == session_id, UserSession.user_id == user_id
+                    )
+                    .with_for_update()
+                    .first()
+                )
+                if session is not None and (
+                    str(session.id) != session_id or str(session.user_id) != user_id
                 ):
-                    valid_session = session
-                    break
-            except Exception:
-                continue
+                    session = None
+            else:
+                # Temporary compatibility for refresh JWTs issued before sid existed.
+                candidate_limit = self.settings.session_legacy_refresh_candidate_limit
+                candidates = (
+                    db.query(UserSession)
+                    .filter(UserSession.user_id == user_id)
+                    .filter(UserSession.revoked_at.is_(None))
+                    .filter(UserSession.expires_at > now)
+                    .order_by(UserSession.created_at.desc())
+                    .with_for_update()
+                    .limit(candidate_limit)
+                    .all()
+                )
+                session = None
+                raw_bytes = raw_token.encode("utf-8")
+                for candidate in candidates:
+                    candidate_current_match = bcrypt.checkpw(
+                        raw_bytes, candidate.refresh_token_hash.encode("utf-8")
+                    )
+                    candidate_previous_match = False
+                    if candidate.previous_refresh_token_hash:
+                        candidate_previous_match = bcrypt.checkpw(
+                            raw_bytes,
+                            candidate.previous_refresh_token_hash.encode("utf-8"),
+                        )
+                    if candidate_current_match or candidate_previous_match:
+                        session = candidate
+                        current_match = candidate_current_match
+                        previous_match = candidate_previous_match
+                        break
 
-        if not valid_session:
-            logger.warning(f"No valid session found for refresh token (user {user_id})")
+            if session is None:
+                return None
+            if session.revoked_at is not None or session.expires_at <= now:
+                return None
+
+            user = (
+                db.query(User)
+                .filter(User.id == user_id, User.is_active.is_(True))
+                .first()
+            )
+            if user is None or user.is_active is not True:
+                session.revoked_at = now
+                db.commit()
+                return None
+
+            raw_bytes = raw_token.encode("utf-8")
+            if current_match is None:
+                current_match = bcrypt.checkpw(
+                    raw_bytes, session.refresh_token_hash.encode("utf-8")
+                )
+                previous_match = False
+                if not current_match and session.previous_refresh_token_hash:
+                    previous_match = bcrypt.checkpw(
+                        raw_bytes, session.previous_refresh_token_hash.encode("utf-8")
+                    )
+
+            if current_match:
+                (
+                    access_token,
+                    new_refresh_token,
+                    new_raw_refresh,
+                    access_jti,
+                    access_exp,
+                    refresh_exp,
+                ) = self._issue_token_pair(user, str(session.id))
+                replay_plaintext = json.dumps(
+                    {
+                        "access_token": access_token,
+                        "refresh_token": new_refresh_token,
+                        "access_expires_at": access_exp.isoformat(),
+                        "refresh_expires_at": refresh_exp.isoformat(),
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                replay_ciphertext = self._replay_cipher.encrypt(
+                    replay_plaintext
+                ).decode("ascii")
+                new_hash = bcrypt.hashpw(
+                    new_raw_refresh.encode("utf-8"), bcrypt.gensalt(rounds=12)
+                ).decode("utf-8")
+
+                session.previous_refresh_token_hash = session.refresh_token_hash
+                session.refresh_token_hash = new_hash
+                session.refresh_grace_expires_at = now + timedelta(
+                    seconds=self.settings.session_refresh_grace_seconds
+                )
+                session.refresh_replay_used_at = None
+                session.refresh_replay_ciphertext = replay_ciphertext
+                session.access_token_jti = access_jti
+                session.expires_at = refresh_exp
+                session.last_used_at = now
+                session.ip_address = ip_address
+                session.user_agent = user_agent[:512] if user_agent else None
+                db.commit()
+                logger.info(f"Rotated session {session.id} for user {user_id}")
+                return access_token, new_refresh_token, access_exp, refresh_exp
+
+            grace_live = (
+                session.refresh_grace_expires_at is not None
+                and session.refresh_grace_expires_at >= now
+            )
+            if (
+                previous_match
+                and grace_live
+                and session.refresh_replay_used_at is None
+                and session.refresh_replay_ciphertext
+            ):
+                plaintext = self._replay_cipher.decrypt(
+                    session.refresh_replay_ciphertext.encode("ascii")
+                )
+                cached = json.loads(plaintext)
+                result = (
+                    cached["access_token"],
+                    cached["refresh_token"],
+                    datetime.fromisoformat(cached["access_expires_at"]),
+                    datetime.fromisoformat(cached["refresh_expires_at"]),
+                )
+                session.refresh_replay_used_at = now
+                db.commit()
+                return result
+
+            # A valid signed token for this sid that is stale or unknown is theft.
+            session.revoked_at = now
+            db.commit()
+            logger.warning(f"Refresh replay revoked session {session.id}")
             return None
-
-        # Get the user
-        user = (
-            db.query(User).filter(User.id == user_id, User.is_active.is_(True)).first()
-        )
-        if not user:
-            logger.warning(f"User {user_id} not found or inactive during refresh")
+        except Exception:
+            db.rollback()
+            logger.exception("Refresh rotation failed; transaction rolled back")
             return None
-
-        # Revoke old session
-        valid_session.revoked_at = datetime.now(timezone.utc)
-
-        # Create new session (token rotation)
-        access_token, refresh_token_new, access_exp, refresh_exp = self.create_session(
-            db, user, ip_address, user_agent
-        )
-
-        logger.info(f"Refreshed session for user {user_id}")
-        return access_token, refresh_token_new, access_exp, refresh_exp
 
     def revoke_session(
-        self, db: DBSession, user_id: str, access_token: Optional[str] = None
+        self,
+        db: DBSession,
+        user_id: str,
+        access_token: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> bool:
         """
         Revoke a user's session (logout)
@@ -238,7 +365,9 @@ class SessionService:
             .filter(UserSession.revoked_at.is_(None))
         )
 
-        if access_token:
+        if session_id:
+            query = query.filter(UserSession.id == session_id)
+        elif access_token:
             # Revoke specific session
             payload = self.jwt_service.decode_token(access_token, verify_exp=False)
             if payload and payload.get("jti"):

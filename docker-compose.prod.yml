@@ -67,6 +67,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-aelira}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aelira}}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SESSION_REFRESH_GRACE_SECONDS: ${SESSION_REFRESH_GRACE_SECONDS:-10}
+      SESSION_REPLAY_ENCRYPTION_KEY: ${SESSION_REPLAY_ENCRYPTION_KEY:?set SESSION_REPLAY_ENCRYPTION_KEY in .env}
       # Single worker until the job-claim race is fixed (see entrypoint.sh)
       UVICORN_WORKERS: 1
     ports:

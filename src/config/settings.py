@@ -323,6 +323,13 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = int(
         os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7")
     )
+    session_refresh_grace_seconds: int = int(
+        os.getenv("SESSION_REFRESH_GRACE_SECONDS", "10")
+    )
+    session_legacy_refresh_candidate_limit: int = int(
+        os.getenv("SESSION_LEGACY_REFRESH_CANDIDATE_LIMIT", "5")
+    )
+    session_replay_encryption_key: str = os.getenv("SESSION_REPLAY_ENCRYPTION_KEY", "")
 
     # LTI 1.3 Integration
     lti_access_token_expire_minutes: int = int(
@@ -473,6 +480,17 @@ class Settings(BaseSettings):
                     "before any real deployment — anyone with this value "
                     "can forge session tokens."
                 )
+
+        if self.env.lower() in {"staging", "production"}:
+            try:
+                from cryptography.fernet import Fernet
+
+                Fernet(self.session_replay_encryption_key.encode("ascii"))
+            except Exception as exc:
+                raise ValueError(
+                    "SESSION_REPLAY_ENCRYPTION_KEY must be a valid Fernet key "
+                    "in staging and production"
+                ) from exc
 
         if not self.smtp_host:
             logger.warning(

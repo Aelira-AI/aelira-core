@@ -12,6 +12,7 @@ runner.
 import logging
 
 import pytest
+from cryptography.fernet import Fernet
 
 from src.config.settings import Settings
 
@@ -26,6 +27,7 @@ def _base_kwargs(**overrides):
         "database_url": "postgresql://user:pass@localhost:5432/aelira",
         "jwt_secret": "a-real-secret-that-is-not-a-placeholder-12345",
         "jwt_algorithm": "HS256",
+        "session_replay_encryption_key": Fernet.generate_key().decode(),
         "smtp_host": "smtp.example.com",
     }
     kwargs.update(overrides)

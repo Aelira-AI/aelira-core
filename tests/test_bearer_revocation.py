@@ -65,7 +65,9 @@ def db_with_lti_user(db_no_api_key):
 
 def test_refresh_token_rejected_as_bearer(jwt_service, db_no_api_key):
     # A refresh token must never authenticate an API request.
-    refresh, _raw, _exp = jwt_service.create_refresh_token(user_id="u1")
+    refresh, _raw, _exp = jwt_service.create_refresh_token(
+        user_id="u1", session_id="session-1"
+    )
     with pytest.raises(HTTPException) as exc:
         get_required_api_key(
             request=_request_without_cookie(),

@@ -101,6 +101,8 @@ def _user_role(user: User) -> UserRole:
     """Normalize the database role while rejecting malformed identities."""
 
     role = user.role
+    if role is None:
+        return UserRole.FACULTY
     return role if isinstance(role, UserRole) else UserRole(role)
 
 
@@ -136,6 +138,67 @@ def _principal_from_lti_payload(
         )
     except ValueError:
         return None
+
+
+@dataclass(frozen=True)
+class ResolvedAccessToken:
+    """Canonical result shared by protected routes and session validation."""
+
+    user: User
+    payload: dict
+    principal: AuthenticatedPrincipal
+
+
+def resolve_access_token(
+    db: Session,
+    token: str,
+    *,
+    session_service=None,
+    jwt_service=None,
+) -> ResolvedAccessToken | None:
+    """Resolve a live normal session or a canonical v2 LTI access token."""
+    if jwt_service is None:
+        from ..auth.jwt_service import JWTService
+
+        jwt_service = JWTService()
+    payload = jwt_service.verify_access_token(token)
+    if not payload:
+        return None
+
+    if payload.get("lti_launch") is True:
+        principal = _principal_from_lti_payload(payload, db)
+        if principal is None:
+            return None
+        user = (
+            db.query(User)
+            .filter(User.id == principal.user_id, User.is_active.is_(True))
+            .first()
+        )
+        if user is None:
+            return None
+        return ResolvedAccessToken(user=user, payload=payload, principal=principal)
+
+    if session_service is None:
+        from ..auth.session_service import get_session_service
+
+        session_service = get_session_service()
+    result = session_service.validate_session(db, token)
+    if not result:
+        return None
+    user, validated_payload = result
+    try:
+        principal = AuthenticatedPrincipal(
+            api_key=None,
+            user_id=str(user.id),
+            department_id=str(user.department_id),
+            user_role=_user_role(user),
+            auth_method="session",
+        )
+    except ValueError:
+        return None
+    return ResolvedAccessToken(
+        user=user, payload=validated_payload, principal=principal
+    )
 
 
 def get_authenticated_principal(
@@ -175,37 +238,13 @@ def get_authenticated_principal(
                 except ValueError:
                     pass
 
-        from ..auth.jwt_service import JWTService
-
-        payload = JWTService().verify_access_token(token)
-        if payload:
-            user_id = payload.get("sub") or payload.get("user_id")
-            department_id = payload.get("department_id")
-            if user_id and department_id:
-                if payload.get("lti_launch") is True:
-                    principal = _principal_from_lti_payload(payload, db)
-                    if principal is not None:
-                        logger.debug(f"LTI Bearer auth for user {principal.user_id}")
-                        return principal
-                else:
-                    result = session_service.validate_session(db, token)
-                    if result:
-                        user, _ = result
-                        logger.debug(f"JWT Bearer auth successful for user {user.id}")
-                        try:
-                            return AuthenticatedPrincipal(
-                                api_key=None,
-                                user_id=str(user.id),
-                                department_id=str(user.department_id),
-                                user_role=_user_role(user),
-                                auth_method="session",
-                            )
-                        except ValueError:
-                            pass
-                    logger.warning(
-                        f"Bearer access token rejected (revoked or no session) "
-                        f"for user {user_id}"
-                    )
+        resolved = resolve_access_token(db, token, session_service=session_service)
+        if resolved is not None:
+            logger.debug(
+                f"{resolved.principal.auth_method} Bearer auth for user "
+                f"{resolved.principal.user_id}"
+            )
+            return resolved.principal
 
         key_preview = token[:8] + "..." if len(token) > 8 else "***"
         logger.warning(f"Invalid Bearer token attempt: {key_preview}")
@@ -218,29 +257,15 @@ def get_authenticated_principal(
     # Method 2: Check for session cookie (dashboard and LTI users)
     access_token = request.cookies.get("aelira_access")
     if access_token:
-        result = session_service.validate_session(db, access_token)
-        if result:
-            user, _ = result
-            logger.debug(f"Session auth successful for user {user.id}")
-            try:
-                return AuthenticatedPrincipal(
-                    api_key=None,
-                    user_id=str(user.id),
-                    department_id=str(user.department_id),
-                    user_role=_user_role(user),
-                    auth_method="session",
-                )
-            except ValueError:
-                pass
-
-        from ..auth.jwt_service import JWTService
-
-        lti_payload = JWTService().verify_access_token(access_token)
-        if lti_payload:
-            principal = _principal_from_lti_payload(lti_payload, db)
-            if principal is not None:
-                logger.debug(f"LTI cookie auth for user {principal.user_id}")
-                return principal
+        resolved = resolve_access_token(
+            db, access_token, session_service=session_service
+        )
+        if resolved is not None:
+            logger.debug(
+                f"{resolved.principal.auth_method} cookie auth for user "
+                f"{resolved.principal.user_id}"
+            )
+            return resolved.principal
         logger.debug("Invalid session cookie, will fall through to other auth methods")
 
     # Method 3: Mock auth (development only - strict positive checks)

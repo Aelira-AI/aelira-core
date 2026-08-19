@@ -68,6 +68,8 @@ is `.env.example`):
 | `PUBLIC_DASHBOARD_URL` | Where the dashboard is publicly reachable | Defaults to `http://localhost:5173`. |
 | `CORS_ORIGINS` | Origins allowed to call the API | **Comma-separated** (`Settings` does `.split(",")` on this — a plain comma-separated list like `https://dashboard.example.org,https://scans.example.org`, not a JSON array). With no localhost fallback outside `development`/`test`, so a production deployment that leaves this unset blocks its own dashboard. |
 | `JWT_SECRET` | Signs session JWTs (HS256) | If unset, `JWTService` generates a random secret at process start and logs a warning — sessions won't survive a restart. Generate one with `python3 -c "import secrets; print(secrets.token_urlsafe(64))"`. (RS256 is also supported via `JWT_PRIVATE_KEY_PATH`/`JWT_PUBLIC_KEY_PATH`, recommended for production per the `validate_jwt_algorithm` warning.) |
+| `SESSION_REPLAY_ENCRYPTION_KEY` | Encrypts the short-lived cached token pair used to tolerate one concurrent refresh replay | Required in staging and production. Generate a Fernet key with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Give every API worker the same value. |
+| `SESSION_REFRESH_GRACE_SECONDS` | Window for returning the exact cached replacement pair once | Defaults to `10`. Keep this short; increase it only to cover measured concurrent refresh latency. |
 | `TOKEN_ENCRYPTION_KEY` | Encrypts stored OAuth tokens | Required if you enable any cloud integration (Google Workspace, Microsoft 365, Canvas OAuth). Generate with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. |
 | `ALLOW_MOCK_AUTH` | Dev-only auth bypass | Must **not** be `true` in `production`/`staging` — `Settings` raises at startup if it is (`validate_mock_auth`). Leave unset. |
 | SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `FROM_EMAIL`, `FROM_NAME` | Transactional email (magic links, alerts) | Read in `src/mailer/email_service.py`. Defaults assume SendGrid (`smtp.sendgrid.net`); any SMTP provider works. If `SMTP_HOST` is set, the mailer treats it as a trusted network target for its own connection handling. |
@@ -77,6 +79,21 @@ Branding/contact fields (`BRAND_NAME`, `PUBLIC_WEBSITE_URL`, `SUPPORT_EMAIL`)
 are also read from environment variables in `settings.py` — worth setting so
 outbound email doesn't point users at somebody else's support address. See
 `BRANDING.md` for what you can and can't rename.
+
+Treat `SESSION_REPLAY_ENCRYPTION_KEY` as persistent deployment state, not as a
+value to regenerate at container startup. Store it in your secret manager and
+use the same key across every API worker and after every restart. Include the
+secret (securely and separately from the database dump) in your backup and
+disaster-recovery procedure so a restored deployment has the same operational
+configuration.
+
+Rotate this key cautiously: replacing it while workers or recently written
+refresh-replay ciphertext still use the old key can make an otherwise valid
+concurrent refresh fail. Stop or drain all API workers, wait longer than
+`SESSION_REFRESH_GRACE_SECONDS` so cached replay windows expire, update the key
+atomically for every worker, and then restart them. Keep the prior key in your
+protected secret backup until the rollout and restore verification are complete;
+never run workers with mixed old and new values.
 
 ## Postgres, Redis, and the Ollama profile
 

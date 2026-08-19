@@ -96,6 +96,25 @@ async def test_get_is_never_blocked():
 
 
 @pytest.mark.asyncio
+async def test_cookie_logout_requires_csrf_but_refresh_stays_exempt():
+    mw = _mw()
+    call_next = AsyncMock(return_value=MagicMock())
+    logout = _request(
+        "POST", "/auth/session/logout", cookies={"aelira_access": "session"}
+    )
+    response = await mw.dispatch(logout, call_next)
+    assert response.status_code == 403
+    call_next.assert_not_awaited()
+
+    refresh_next = AsyncMock(return_value=MagicMock())
+    refresh = _request(
+        "POST", "/auth/session/refresh", cookies={"aelira_refresh": "refresh"}
+    )
+    await mw.dispatch(refresh, refresh_next)
+    refresh_next.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_oauth_callback_stays_exempt():
     # External-party POSTs (OAuth callbacks) legitimately carry no CSRF token.
     mw = _mw()
