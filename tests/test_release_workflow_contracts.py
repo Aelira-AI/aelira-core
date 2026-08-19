@@ -71,6 +71,53 @@ def test_preflight_requires_stable_semver_matching_package_and_lock() -> None:
     assert "scripts/verify_release_safety.py" in text
 
 
+def test_preflight_uses_protected_environment_policy_and_cleans_it() -> None:
+    workflow = load_workflow(RELEASE)
+    preflight = workflow["jobs"]["preflight"]
+    assert preflight["environment"] == "release"
+    assert job_needs(preflight) == {"ci-gate"}
+
+    validation = next(
+        step
+        for step in preflight["steps"]
+        if step.get("name") == "Validate stable version and release safety"
+    )
+    env = validation["env"]
+    script = validation["run"]
+
+    assert env["RELEASE_DENYLIST_JSON"] == "${{ secrets.RELEASE_DENYLIST_JSON }}"
+    assert 'if [ -z "$RELEASE_DENYLIST_JSON" ]' in script
+    assert 'POLICY_PATH="$RUNNER_TEMP/' in script
+    assert "printf '%s' \"$RELEASE_DENYLIST_JSON\"" in script
+    assert 'chmod 600 "$POLICY_PATH"' in script
+    assert "unset RELEASE_DENYLIST_JSON" in script
+    assert script.index("unset RELEASE_DENYLIST_JSON") > script.index(
+        "printf '%s' \"$RELEASE_DENYLIST_JSON\""
+    )
+    assert "trap " in script
+    assert 'rm -f -- "$POLICY_PATH"' in script
+    assert "--strict-policy" in script
+    assert '--denylist "$POLICY_PATH"' in script
+    assert "python scripts/verify_release_safety.py\n" not in script
+    assert 'echo "$RELEASE_DENYLIST_JSON"' not in script
+
+
+def test_security_docs_require_protected_release_environment_configuration() -> None:
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    example = (ROOT / ".release-denylist.local.json.example").read_text(
+        encoding="utf-8"
+    )
+
+    assert "environment secret" in security
+    assert "release" in security
+    assert "required reviewers" in security
+    assert "deployment restrictions" in security
+    assert "repository secret" not in security
+    assert "environment secret" in example
+    assert "release" in example
+    assert "repository secret" not in example
+
+
 def test_docker_matrix_is_exact_native_two_by_two_with_bounded_timeouts() -> None:
     workflow = load_workflow(DOCKER)
     build = workflow["jobs"]["build"]

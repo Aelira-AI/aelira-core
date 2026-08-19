@@ -24,6 +24,7 @@ jobs:
 
   preflight:
     needs: ci-gate
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -40,8 +41,18 @@ jobs:
       - name: Validate stable version and release safety
         env:
           TAG_NAME: ${{ github.ref_name }}
+          RELEASE_DENYLIST_JSON: ${{ secrets.RELEASE_DENYLIST_JSON }}
         run: |
           set -euo pipefail
+          POLICY_PATH="$RUNNER_TEMP/release-denylist.json"
+          trap 'rm -f -- "$POLICY_PATH"' EXIT
+          if [ -z "$RELEASE_DENYLIST_JSON" ]; then
+            echo "Protected release policy is unavailable" >&2
+            exit 1
+          fi
+          printf '%s' "$RELEASE_DENYLIST_JSON" > "$POLICY_PATH"
+          chmod 600 "$POLICY_PATH"
+          unset RELEASE_DENYLIST_JSON
           if ! [[ "$TAG_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "Release tag must be strict stable semver (vMAJOR.MINOR.PATCH): $TAG_NAME" >&2
             exit 1
@@ -56,7 +67,11 @@ jobs:
             echo "Version mismatch: tag=$TAG_VERSION package=$PACKAGE_VERSION lock=$LOCK_VERSION lock-root=$LOCK_ROOT_VERSION" >&2
             exit 1
           fi
-          python scripts/verify_release_safety.py
+          python scripts/verify_release_safety.py \
+            --strict-policy \
+            --denylist "$POLICY_PATH"
+          rm -f -- "$POLICY_PATH"
+          trap - EXIT
 
   docker-publish:
     needs: preflight

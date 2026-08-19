@@ -53,7 +53,7 @@ We follow responsible disclosure practices. Please do not publicly disclose the 
 ### What We Do
 
 - **Dependency scanning** - Automated via Dependabot
-- **Release safety gate** - Every release is scanned for secrets, credentials, and internal identifiers before publication (`scripts/verify_release_safety.py`)
+- **Release safety gate** - Every release is scanned for secrets, credentials, and internal identifiers before publication (`scripts/verify_release_safety.py`). Maintainers must create a protected GitHub environment named `release`, configure `RELEASE_DENYLIST_JSON` as an environment secret there using the schema described by `.release-denylist.local.json.example`, and enable required reviewers and deployment restrictions for the default branch. The workflow can select the environment but cannot configure these protection rules, so release setup must apply them. Tag releases fail closed when the secret is absent or invalid. Protected values must never be committed, logged, or uploaded as artifacts.
 - **Input validation** - Pydantic models validate all API inputs
 - **SQL injection prevention** - SQLAlchemy ORM; no user input is interpolated into SQL
 - **Authentication** - API keys with bcrypt hashing
