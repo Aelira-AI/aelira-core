@@ -19,6 +19,8 @@ interface ValidateResponse {
 }
 
 export function AuthProvider({ children }: AuthProviderProps): React.ReactElement {
+  const isExpiredLogin =
+    window.location.pathname === '/login' && window.location.search === '?expired=1';
   // Support both session-based auth (cookies) and API key auth (localStorage)
   const [apiKey, setApiKey] = useState<string | null>(() => localStorage.getItem('apiKey'));
   const [department, setDepartment] = useState<Department | null>(null);
@@ -62,6 +64,16 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
   // Initialize auth state
   useEffect(() => {
     const initAuth = async (): Promise<void> => {
+      if (isExpiredLogin) {
+        localStorage.removeItem('apiKey');
+        setApiKey(null);
+        setDepartment(null);
+        setUser(null);
+        setAuthMethod(null);
+        setLoading(false);
+        return;
+      }
+
       // First, try session-based auth (cookies)
       const hasSession = await validateSession();
 
@@ -79,7 +91,7 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
     };
 
     initAuth();
-  }, [apiKey, validateSession, validateApiKey]);
+  }, [apiKey, isExpiredLogin, validateSession, validateApiKey]);
 
   // Login with API key (for backwards compatibility)
   const login = async (key: string): Promise<LoginResult> => {

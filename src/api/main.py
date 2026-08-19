@@ -319,6 +319,11 @@ if settings.enable_csrf:
         # the SPA must be able to read it to echo it in X-CSRF-Token. The
         # SESSION cookie stays httpOnly; only this token cookie is readable.
         cookie_httponly=False,
+        # Match the session-cookie parent domain so a dashboard/API subdomain
+        # deployment can read and echo the double-submit token.
+        cookie_domain=(
+            settings.session_cookie_domain if settings.env == "production" else None
+        ),
         enabled=settings.env == "production",  # Only enforce in production
     )
     logger.info("CSRF protection middleware enabled")

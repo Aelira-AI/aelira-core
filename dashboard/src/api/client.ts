@@ -18,30 +18,15 @@ export const apiClient: AxiosInstance = axios.create({
   withCredentials: true, // Enable cookies for session-based auth
 });
 
-// Track if we're currently refreshing to prevent multiple refresh calls
-let isRefreshing = false;
-
-interface QueuedRequest {
-  resolve: () => void;
-  reject: (error: unknown) => void;
-}
-
-let failedQueue: QueuedRequest[] = [];
-
-const processQueue = (error: unknown): void => {
-  failedQueue.forEach((prom) => {
-    if (error) {
-      prom.reject(error);
-    } else {
-      prom.resolve();
-    }
-  });
-  failedQueue = [];
-};
+let refreshPromise: Promise<void> | null = null;
+let terminalLogoutPromise: Promise<void> | null = null;
+let credentialsCleared = false;
+let terminalRedirected = false;
 
 // Extend InternalAxiosRequestConfig to include our _retry flag
 interface RetryableRequestConfig extends InternalAxiosRequestConfig {
   _retry?: boolean;
+  _apiKeyAuth?: boolean;
 }
 
 // Add auth token to all requests (for API key auth fallback)
@@ -54,10 +39,11 @@ function readCookie(name: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+apiClient.interceptors.request.use((config: RetryableRequestConfig) => {
   const apiKey = localStorage.getItem('apiKey');
   if (apiKey && !config.headers.Authorization) {
     config.headers.Authorization = `Bearer ${apiKey}`;
+    config._apiKeyAuth = true;
   }
 
   // CSRF: on cookie-authenticated (no Bearer) state-changing requests, echo
@@ -74,65 +60,112 @@ apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config;
 });
 
+const AUTH_ENDPOINTS = [
+  '/auth/session/validate',
+  '/auth/session/refresh',
+  '/auth/session/logout',
+  '/auth/validate',
+  '/auth/magic-link/request',
+  '/auth/magic-link/check',
+  '/auth/magic-link/verify',
+  '/auth/google/login',
+  '/auth/google/callback',
+  '/auth/microsoft/login',
+  '/auth/microsoft/callback',
+];
+
+function isAuthEndpoint(url: string | undefined): boolean {
+  return AUTH_ENDPOINTS.some((endpoint) => url?.includes(endpoint));
+}
+
+function terminateSession(): Promise<void> {
+  if (terminalLogoutPromise) {
+    return terminalLogoutPromise;
+  }
+
+  if (!credentialsCleared) {
+    localStorage.removeItem('apiKey');
+    credentialsCleared = true;
+  }
+
+  const csrfToken = readCookie('csrf_token');
+  terminalLogoutPromise = axios
+    .post('/auth/session/logout', undefined, {
+      baseURL: API_BASE_URL,
+      withCredentials: true,
+      timeout: 5000,
+      headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : undefined,
+    })
+    .catch(() => undefined)
+    .then(() => {
+      if (!terminalRedirected) {
+        terminalRedirected = true;
+        window.location.replace('/login?expired=1');
+      }
+    });
+
+  return terminalLogoutPromise;
+}
+
+function refreshSession(): Promise<void> {
+  if (!refreshPromise) {
+    refreshPromise = apiClient
+      .post('/auth/session/refresh')
+      .then(() => undefined)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
+}
+
 // Handle 401 errors with automatic token refresh
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as RetryableRequestConfig | undefined;
 
-    // If no config or error is not 401 or request has already been retried, reject
-    if (!originalRequest || error.response?.status !== 401 || originalRequest._retry) {
+    if (!originalRequest || error.response?.status !== 401) {
       return Promise.reject(error);
     }
 
-    // Don't try to refresh if we're on auth endpoints
-    const authEndpoints = [
-      '/auth/session/validate', // Prevent redirect loop on initial auth check
-      '/auth/session/refresh',
-      '/auth/session/logout',
-      '/auth/validate',
-      '/auth/magic-link/request',
-      '/auth/magic-link/check',
-      '/auth/magic-link/verify',
-      '/auth/google/login',
-      '/auth/google/callback',
-      '/auth/microsoft/login',
-      '/auth/microsoft/callback',
-    ];
-
-    if (authEndpoints.some((endpoint) => originalRequest.url?.includes(endpoint))) {
+    // Auth endpoints must reject directly so they cannot recursively refresh or terminate.
+    if (isAuthEndpoint(originalRequest.url)) {
       return Promise.reject(error);
     }
 
-    // If we're already refreshing, queue this request
-    if (isRefreshing) {
-      return new Promise<void>((resolve, reject) => {
-        failedQueue.push({ resolve, reject });
-      })
-        .then(() => apiClient(originalRequest))
-        .catch((err) => Promise.reject(err));
+    // A stored API key is dashboard authentication: a 401 is terminal. Other
+    // explicit Bearer tokens (for example LTI) belong to their caller and must
+    // not clear dashboard credentials or redirect the whole application.
+    if (originalRequest._apiKeyAuth) {
+      void terminateSession();
+      return Promise.reject(error);
+    }
+    if (originalRequest.headers.Authorization) {
+      return Promise.reject(error);
     }
 
+    // Once terminal logout starts, later cookie failures join that terminal
+    // path. Clearing the API key must not make them start a new refresh while
+    // the redirect is still pending.
+    if (terminalLogoutPromise) {
+      void terminateSession();
+      return Promise.reject(error);
+    }
+
+    // Set this before joining the shared refresh. Every waiter may retry once,
+    // but none can start a second refresh if that retry is also unauthorized.
+    if (originalRequest._retry) {
+      void terminateSession();
+      return Promise.reject(error);
+    }
     originalRequest._retry = true;
-    isRefreshing = true;
 
     try {
-      // Try to refresh the session
-      await apiClient.post('/auth/session/refresh');
-      processQueue(null);
-      isRefreshing = false;
-
-      // Retry the original request
+      await refreshSession();
       return apiClient(originalRequest);
     } catch (refreshError) {
-      processQueue(refreshError);
-      isRefreshing = false;
-
-      // Clear API key if present (session refresh failed)
-      localStorage.removeItem('apiKey');
-
-      // Redirect to login
-      window.location.href = '/login';
+      void terminateSession();
       return Promise.reject(refreshError);
     }
   }

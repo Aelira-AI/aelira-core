@@ -208,6 +208,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         cookie_secure: bool = True,
         cookie_httponly: bool = True,
         cookie_samesite: str = "Lax",
+        cookie_domain: str | None = None,
         token_length: int = 32,
         enabled: bool = True,
     ):
@@ -217,6 +218,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         self.cookie_secure = cookie_secure
         self.cookie_httponly = cookie_httponly
         self.cookie_samesite = cookie_samesite
+        self.cookie_domain = cookie_domain
         self.token_length = token_length
         self.enabled = enabled
 
@@ -308,6 +310,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 secure=self.cookie_secure,
                 httponly=self.cookie_httponly,
                 samesite=self.cookie_samesite,
+                domain=self.cookie_domain,
                 max_age=86400,  # 24 hours
             )
 

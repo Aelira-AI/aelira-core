@@ -12,6 +12,7 @@ exempt by auth method.
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from starlette.responses import Response
 
 from src.middleware.security import CSRFMiddleware
 
@@ -122,3 +123,37 @@ async def test_oauth_callback_stays_exempt():
     req = _request("POST", "/auth/google/callback", cookies={})
     await mw.dispatch(req, call_next)
     call_next.assert_awaited_once()
+
+
+def test_csrf_cookie_uses_configured_parent_domain_and_remains_readable():
+    mw = CSRFMiddleware(
+        app=MagicMock(),
+        enabled=True,
+        cookie_secure=True,
+        cookie_httponly=False,
+        cookie_samesite="Lax",
+        cookie_domain=".example.com",
+    )
+    response = Response()
+
+    mw._ensure_csrf_cookie(_request("GET", "/health"), response)
+
+    cookie = response.headers["set-cookie"]
+    assert "Domain=.example.com" in cookie
+    assert "Secure" in cookie
+    assert "SameSite=Lax" in cookie
+    assert "HttpOnly" not in cookie
+
+
+def test_csrf_cookie_remains_host_only_when_domain_is_unset():
+    mw = CSRFMiddleware(
+        app=MagicMock(),
+        enabled=True,
+        cookie_httponly=False,
+        cookie_domain=None,
+    )
+    response = Response()
+
+    mw._ensure_csrf_cookie(_request("GET", "/health"), response)
+
+    assert "Domain=" not in response.headers["set-cookie"]
