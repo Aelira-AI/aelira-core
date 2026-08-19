@@ -151,29 +151,17 @@ def upgrade():
 
 
 def downgrade():
-    # Enum values are deliberately not removed: PostgreSQL cannot drop one,
-    # and rows may already reference them. scans.user_id is left nullable
-    # for the same reason: rows written since the upgrade may hold NULL,
-    # and restoring the constraint would fail on them.
-    tables = _tables()
+    """Refuse to move below the published v0.9.3 Canvas-content schema.
 
-    if "wcag_guidelines" in tables:
-        op.drop_index("idx_wcag_level", table_name="wcag_guidelines")
-        op.drop_index("idx_wcag_criterion", table_name="wcag_guidelines")
-        op.drop_index("idx_wcag_rule_id", table_name="wcag_guidelines")
-        op.drop_table("wcag_guidelines")
-
-    if "content_writeback_log" in tables:
-        op.drop_table("content_writeback_log")
-
-    if "email_alert_settings" in tables:
-        have = _existing("email_alert_settings")
-        for column in ALERT_COLUMNS:
-            if column.name in have:
-                op.drop_column("email_alert_settings", column.name)
-
-    if "cloud_files" in tables:
-        have = _existing("cloud_files")
-        for column in CLOUD_FILE_COLUMNS:
-            if column.name in have:
-                op.drop_column("cloud_files", column.name)
+    Alembic cannot determine whether this revision created the additive
+    objects or adopted pre-existing production schema and data. A no-op is
+    not safe: it would let the revision marker move backwards, after which
+    older migrations in a deeper downgrade can run destructive,
+    non-idempotent operations against the still-current schema. The revision
+    marker therefore must not move. Rewriting published migration history is
+    also unsafe, so there is no supported downgrade path below this boundary.
+    """
+    raise RuntimeError(
+        "Downgrade from 2026_08_18_canvas_content is refused: "
+        "the published schema cannot be safely rolled back"
+    )
