@@ -42,17 +42,24 @@ Two Dockerfiles matter here:
   build` (build args `VITE_API_URL`, `VITE_WEBSITE_URL`), then serves the
   static output from `nginx:alpine` using `dashboard/nginx.conf`.
 
-Every tagged release (`git tag v*`) is also published as a pre-built image by
-`.github/workflows/publish-docker.yml`:
+Every stable release tag (`vMAJOR.MINOR.PATCH`) publishes both pre-built images
+through the coordinated release workflow:
 
 ```
-ghcr.io/aelira-ai/aelira-core-api:latest      (or a specific vX.Y.Z / vX.Y tag)
+ghcr.io/aelira-ai/aelira-core-api:latest      (or a specific X.Y.Z / X.Y tag)
 ghcr.io/aelira-ai/aelira-core-dashboard:latest
 ```
 
-built for `linux/amd64` and `linux/arm64`. Using these skips building the
-image yourself; building from `Dockerfile` directly works the same way if
-you want to pin an exact commit or patch something locally.
+built natively for `linux/amd64` and `linux/arm64`. The release does not expose
+any of these tags until all four API/dashboard architecture builds have
+succeeded and their digests have been verified. Using the published images
+skips building them yourself; building from a Dockerfile directly works the
+same way if you want to pin an exact commit or patch something locally.
+
+For reproducible deployments, pin each image by the digest reported by your
+registry tooling instead of a mutable tag, for example
+`ghcr.io/aelira-ai/aelira-core-api@sha256:<digest>`. Keep the API and dashboard
+digests from the same release version when updating a deployment.
 
 ## Required environment
 

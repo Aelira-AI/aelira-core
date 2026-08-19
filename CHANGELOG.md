@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Releases now run as one bounded CI → preflight → Docker → npm → GitHub Release DAG. API and dashboard images are built on native amd64/arm64 runners, verified by immutable digest, and promoted together before npm or a GitHub Release can publish.
+- Published container tags use the non-`v` forms `X.Y.Z`, `X.Y`, and `latest`; deployment documentation now recommends digest pinning for reproducibility.
+
 ## [0.9.3] - 2026-08-18
 
 ### Fixed

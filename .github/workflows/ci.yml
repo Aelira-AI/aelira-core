@@ -16,6 +16,7 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -30,6 +31,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     services:
       postgres:
         image: postgres:16
@@ -77,6 +79,7 @@ jobs:
 
   dashboard:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: dashboard
@@ -102,6 +105,7 @@ jobs:
 
   cli:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: cli
@@ -124,8 +128,20 @@ jobs:
         run: npm test
 
   docker:
-    runs-on: ubuntu-latest
+    name: Docker (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
-      - name: Build Docker image
-        run: docker build -t aelira-core:test .
+      - name: Build representative API image
+        run: docker build --platform ${{ matrix.platform }} -t aelira-core-api:test -f Dockerfile .
+      - name: Build representative dashboard image
+        run: docker build --platform ${{ matrix.platform }} -t aelira-core-dashboard:test -f dashboard/Dockerfile dashboard

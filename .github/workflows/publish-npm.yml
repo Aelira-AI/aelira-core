@@ -1,52 +1,46 @@
 name: Publish CLI to npm
 
 on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  id-token: write # npm provenance attestation
+  workflow_call:
 
 jobs:
-  # No npm publish unless all five CI checks are green on this SHA.
-  ci-gate:
-    uses: ./.github/workflows/ci-gate.yml
-    permissions:
-      checks: read
-      contents: read
-
   publish:
-    needs: ci-gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     defaults:
       run:
         working-directory: cli
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.14"
-
-      # Mechanically unavoidable gate: nothing publishes unless the tagged
-      # tree passes the safety scan.
-      - name: Release safety gate
-        working-directory: .
-        run: python scripts/verify_release_safety.py
-
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
-          cache: "npm"
+          cache: npm
           cache-dependency-path: cli/package-lock.json
-          registry-url: "https://registry.npmjs.org"
+          registry-url: https://registry.npmjs.org
 
-      # OIDC trusted publishing needs npm >= 11.5; Node 20 ships npm 10
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
+      - name: Install reviewed npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Verify exact release version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${TAG_NAME#v}"
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          LOCK_VERSION=$(node -p "require('./package-lock.json').version")
+          LOCK_ROOT_VERSION=$(node -p "require('./package-lock.json').packages[''].version")
+          if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ] || \
+             [ "$TAG_VERSION" != "$LOCK_VERSION" ] || \
+             [ "$TAG_VERSION" != "$LOCK_ROOT_VERSION" ]; then
+            echo "Version mismatch: tag=$TAG_VERSION package=$PACKAGE_VERSION lock=$LOCK_VERSION lock-root=$LOCK_ROOT_VERSION" >&2
+            exit 1
+          fi
 
       - name: Install dependencies
         run: npm ci
@@ -60,16 +54,8 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Verify tag matches package version
-        run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ] && [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match package version $PKG_VERSION" >&2
-            exit 1
-          fi
+      - name: Check package contents
+        run: npm pack --dry-run
 
-      # Credential-free: npm authenticates via the workflow's OIDC identity
-      # (trusted publisher configured on the package). Provenance is automatic.
       - name: Publish
         run: npm publish --access public

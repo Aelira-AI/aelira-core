@@ -1,47 +1,51 @@
 name: Publish Docker images
 
 on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  # No images published unless all five CI checks are green on this SHA.
-  ci-gate:
-    uses: ./.github/workflows/ci-gate.yml
-    permissions:
-      checks: read
-      contents: read
-
-  publish:
-    needs: ci-gate
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.image }} for ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - image: aelira-core-api
             context: .
             dockerfile: Dockerfile
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            timeout: 120
+            arch: amd64
+          - image: aelira-core-api
+            context: .
+            dockerfile: Dockerfile
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            timeout: 120
+            arch: arm64
           - image: aelira-core-dashboard
             context: ./dashboard
             dockerfile: ./dashboard/Dockerfile
-
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            timeout: 30
+            arch: amd64
+          - image: aelira-core-dashboard
+            context: ./dashboard
+            dockerfile: ./dashboard/Dockerfile
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            timeout: 30
+            arch: arm64
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.14"
-
-      # Mechanically unavoidable gate: images are not published unless the
-      # tagged tree passes the safety scan.
-      - name: Release safety gate
-        run: python scripts/verify_release_safety.py
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -51,27 +55,172 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          # ghcr requires a lowercase namespace; github.repository_owner is Aelira-AI
-          images: ghcr.io/aelira-ai/${{ matrix.image }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-
-      - name: Build and push
+      - name: Build and push immutable digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Receipts and promotion intentionally identify the platform manifest.
+          # Default BuildKit provenance wraps a single-platform result in an OCI
+          # index, which would make those digest/platform assertions ambiguous.
+          provenance: false
+          outputs: type=image,name=ghcr.io/aelira-ai/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+      - name: Write digest receipt
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          IMAGE: ghcr.io/aelira-ai/${{ matrix.image }}
+          PLATFORM: ${{ matrix.platform }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          RECEIPT: ${{ matrix.image }}-${{ matrix.arch }}.json
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg image "$IMAGE" \
+            --arg platform "$PLATFORM" \
+            --arg digest "$DIGEST" \
+            '{source_sha: $source_sha, image: $image, platform: $platform, digest: $digest}' \
+            > "$RECEIPT"
+
+      - name: Upload digest receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: receipt-${{ matrix.image }}-${{ matrix.arch }}
+          path: ${{ matrix.image }}-${{ matrix.arch }}.json
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: false
+
+  verify-digests:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Download all receipts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: receipt-*
+          path: receipts
+          merge-multiple: true
+
+      - name: Verify exact receipt set and immutable images
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          EXPECTED_RECEIPTS=4
+          mapfile -t RECEIPTS < <(find receipts -type f -name '*.json' -print | sort)
+          [ "${#RECEIPTS[@]}" -eq "$EXPECTED_RECEIPTS" ] || {
+            echo "Expected exactly four digest receipts, found ${#RECEIPTS[@]}" >&2
+            exit 1
+          }
+          jq -s -e --arg sha "$SOURCE_SHA" '
+            length == 4 and
+            all(.[]; .source_sha == $sha) and
+            all(.[]; .digest | test("^sha256:[0-9a-f]{64}$")) and
+            ([.[].digest] | unique | length == 4) and
+            ([.[] | [.image, .platform]] | unique | length == 4) and
+            ([.[] | select(.image == "ghcr.io/aelira-ai/aelira-core-api") | .platform] | sort == ["linux/amd64", "linux/arm64"]) and
+            ([.[] | select(.image == "ghcr.io/aelira-ai/aelira-core-dashboard") | .platform] | sort == ["linux/amd64", "linux/arm64"])
+          ' "${RECEIPTS[@]}" >/dev/null
+          for receipt in "${RECEIPTS[@]}"; do
+            image=$(jq -r .image "$receipt")
+            digest=$(jq -r .digest "$receipt")
+            docker buildx imagetools inspect "$image@$digest" >/dev/null
+          done
+
+      - name: Upload verified receipts
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-digest-receipts
+          path: receipts/*.json
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: false
+
+  promote-all-images:
+    needs: [build, verify-digests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Download verified receipts
+        uses: actions/download-artifact@v5
+        with:
+          name: verified-digest-receipts
+          path: receipts
+
+      - name: Promote both images from exact verified digests
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_NAME#v}"
+          MINOR="${VERSION%.*}"
+          for image_name in aelira-core-api aelira-core-dashboard; do
+            image="ghcr.io/aelira-ai/$image_name"
+            amd64=$(jq -r --arg image "$image" 'select(.image == $image and .platform == "linux/amd64") | .digest' receipts/*.json)
+            arm64=$(jq -r --arg image "$image" 'select(.image == $image and .platform == "linux/arm64") | .digest' receipts/*.json)
+            [ -n "$amd64" ] && [ -n "$arm64" ]
+            docker buildx imagetools create \
+              --tag "$image:${VERSION}" \
+              --tag "$image:${MINOR}" \
+              --tag "$image:latest" \
+              "$image@$amd64" "$image@$arm64"
+          done
+
+      - name: Verify promoted indexes
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_NAME#v}"
+          MINOR="${VERSION%.*}"
+          for image_name in aelira-core-api aelira-core-dashboard; do
+            image="ghcr.io/aelira-ai/$image_name"
+            expected_amd64=$(jq -r --arg image "$image" 'select(.image == $image and .platform == "linux/amd64") | .digest' receipts/*.json)
+            expected_arm64=$(jq -r --arg image "$image" 'select(.image == $image and .platform == "linux/arm64") | .digest' receipts/*.json)
+            for tag in "$VERSION" "$MINOR" latest; do
+              manifest=$(docker buildx imagetools inspect "$image:$tag" --raw)
+              jq -e \
+                --arg amd64 "$expected_amd64" \
+                --arg arm64 "$expected_arm64" '
+                  (.manifests | length == 2) and
+                  (any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64" and .digest == $amd64)) and
+                  (any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64" and .digest == $arm64))
+                ' <<<"$manifest" >/dev/null
+            done
+          done
