@@ -54,6 +54,7 @@ def test_release_dag_orders_ci_preflight_docker_npm_and_github_release() -> None
     assert job_needs(jobs["npm-publish"]) == {"docker-publish"}
     assert jobs["npm-publish"]["uses"].endswith("publish-npm.yml")
     assert job_needs(jobs["github-release"]) == {"npm-publish"}
+    assert jobs["github-release"]["environment"] == "release"
 
     assert workflow["concurrency"] == {
         "group": "release-publication",
@@ -207,6 +208,15 @@ def test_npm_is_pinned_validated_and_runs_full_publish_checklist() -> None:
         assert command in text
     assert "workflow_dispatch" not in text
     assert publish["permissions"] == {"contents": "read", "id-token": "write"}
+    assert publish["environment"] == "release"
+
+
+def test_public_docker_promotion_uses_protected_release_environment() -> None:
+    workflow = load_workflow(DOCKER)
+
+    assert workflow["jobs"]["promote-all-images"]["environment"] == "release"
+    assert "environment" not in workflow["jobs"]["build"]
+    assert "environment" not in workflow["jobs"]["verify-digests"]
 
 
 def test_release_critical_jobs_are_bounded_and_permissions_are_least_privilege() -> (

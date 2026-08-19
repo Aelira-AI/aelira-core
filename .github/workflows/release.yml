@@ -89,6 +89,7 @@ jobs:
 
   github-release:
     needs: npm-publish
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

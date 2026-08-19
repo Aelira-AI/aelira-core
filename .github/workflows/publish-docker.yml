@@ -161,6 +161,7 @@ jobs:
 
   promote-all-images:
     needs: [build, verify-digests]
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
