@@ -15,7 +15,7 @@
 #     (tracked in public issues) is fixed. Scale scanning by hardware, not
 #     workers.
 #
-# Images are published from CI with provenance; pin a version tag rather
+# Images are promoted from verified immutable platform digests; pin a version tag rather
 # than tracking latest in real deployments. To build locally instead:
 #   docker compose -f docker-compose.prod.yml build
 
@@ -50,7 +50,7 @@ services:
       retries: 5
 
   api:
-    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.3}
+    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.4}
     build:
       context: .
       dockerfile: Dockerfile
@@ -83,7 +83,7 @@ services:
       start_period: 40s
 
   dashboard:
-    image: ghcr.io/aelira-ai/aelira-core-dashboard:${AELIRA_VERSION:-0.9.3}
+    image: ghcr.io/aelira-ai/aelira-core-dashboard:${AELIRA_VERSION:-0.9.4}
     build:
       context: ./dashboard
       dockerfile: Dockerfile
