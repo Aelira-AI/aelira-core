@@ -21,7 +21,7 @@ MIGRATION_PATH = (
 ROOT = Path(__file__).parents[1]
 PRIOR_REVISION = "2026_03_19_lti_auth"
 TARGET_REVISION = "2026_08_18_canvas_content"
-EXPECTED_HEAD = "2026_08_19_session_refresh_rotation"
+EXPECTED_HEAD = "2026_08_19_email_alert_weekly_schedule"
 MIGRATION_DATABASE_URL = os.getenv("TEST_MIGRATION_DATABASE_URL")
 DOWNGRADE_REFUSAL = (
     "Downgrade from 2026_08_18_canvas_content is refused: "

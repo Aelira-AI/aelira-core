@@ -25,6 +25,7 @@ from sqlalchemy import (
     Enum as SQLEnum,
     Index,
     UniqueConstraint,
+    CheckConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -1146,6 +1147,16 @@ class EmailAlertSettings(Base):
     """Email notification preferences per department/user"""
 
     __tablename__ = "email_alert_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "weekly_summary_day BETWEEN 0 AND 6",
+            name="ck_email_alert_settings_weekly_summary_day_range",
+        ),
+        CheckConstraint(
+            "weekly_summary_hour BETWEEN 0 AND 23",
+            name="ck_email_alert_settings_weekly_summary_hour_range",
+        ),
+    )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     department_id = Column(
@@ -1171,8 +1182,12 @@ class EmailAlertSettings(Base):
     timezone = Column(String(50), default="America/New_York")
 
     # Weekly summary schedule
-    weekly_summary_day = Column(Integer, default=0)  # 0=Monday, 6=Sunday
-    weekly_summary_hour = Column(Integer, default=9)  # 0-23 UTC
+    weekly_summary_day = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )  # 0=Monday, 6=Sunday
+    weekly_summary_hour = Column(
+        Integer, nullable=False, default=9, server_default=text("9")
+    )  # 0-23 UTC
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
