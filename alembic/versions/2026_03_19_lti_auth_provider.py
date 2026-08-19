@@ -42,7 +42,8 @@ def upgrade() -> None:
     #    PostgreSQL enums cannot be altered inside a transaction that also
     #    uses the new value, so we commit first via autocommit.
     #    IF NOT EXISTS makes this idempotent (PostgreSQL 9.3+).
-    op.execute("ALTER TYPE authprovider ADD VALUE IF NOT EXISTS 'lti'")
+    with op.get_context().autocommit_block():
+        op.execute("ALTER TYPE authprovider ADD VALUE IF NOT EXISTS 'lti'")
 
     # 2. Add lti_source column to users table.
     if not column_exists("users", "lti_source"):
