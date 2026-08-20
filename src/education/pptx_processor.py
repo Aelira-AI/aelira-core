@@ -304,7 +304,9 @@ class PowerPointProcessor:
             try:
                 from .image_alt_text import ImageAltTextGenerator
 
-                self.image_generator = ImageAltTextGenerator()
+                self.image_generator = ImageAltTextGenerator(
+                    allow_legacy_transport=True
+                )
             except Exception as e:
                 print(
                     f"[PowerPointProcessor] Warning: Could not initialize ImageAltTextGenerator: {e}"

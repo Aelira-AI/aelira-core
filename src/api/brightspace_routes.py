@@ -922,7 +922,7 @@ async def _remediate_file(cloud_file: CloudFile, db):
 
             from ..education.image_alt_text import ImageAltTextGenerator
 
-            generator = ImageAltTextGenerator()
+            generator = ImageAltTextGenerator(allow_legacy_transport=True)
             result = await generator.analyze_image_comprehensive(
                 image_path=temp_path,
                 context=f"Educational course content: {cloud_file.file_name}",

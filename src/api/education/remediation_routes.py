@@ -611,7 +611,7 @@ async def remediate_scan(
     if scan_type == ScanType.IMAGE:
         from ...education.image_alt_text import ImageAltTextGenerator
 
-        generator = ImageAltTextGenerator()
+        generator = ImageAltTextGenerator(allow_legacy_transport=True)
         analysis = await generator.analyze_image_comprehensive(
             image_path=file_path,
             context=f"Educational course content: {scan.file_name}",
@@ -1319,7 +1319,7 @@ async def _batch_remediate_impl(
 async def health_check():
     """Health check endpoint"""
     # Check if llava model is available
-    generator = ImageAltTextGenerator()
+    generator = ImageAltTextGenerator(allow_legacy_transport=True)
     vision_health = generator.health_check()
 
     return {

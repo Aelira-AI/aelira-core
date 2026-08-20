@@ -97,7 +97,9 @@ class PDFProcessor:
             try:
                 from .image_alt_text import ImageAltTextGenerator
 
-                self.image_generator = ImageAltTextGenerator()
+                self.image_generator = ImageAltTextGenerator(
+                    allow_legacy_transport=True
+                )
             except Exception as e:
                 print(
                     f"[PDFProcessor] Warning: Could not initialize ImageAltTextGenerator: {e}"

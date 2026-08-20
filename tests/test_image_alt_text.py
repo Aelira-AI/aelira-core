@@ -1,5 +1,9 @@
 """Tests for image alt text generation."""
 
+import ast
+import inspect
+from unittest.mock import MagicMock, patch
+
 import pytest
 import os
 from src.education.image_alt_text import ImageAltTextGenerator
@@ -8,7 +12,138 @@ from src.education.image_alt_text import ImageAltTextGenerator
 @pytest.fixture
 def generator():
     """Create image alt text generator."""
-    return ImageAltTextGenerator()
+    return ImageAltTextGenerator(allow_legacy_transport=True)
+
+
+def _image(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "image.png"
+    Image.new("RGB", (10, 10), color="blue").save(path)
+    return str(path)
+
+
+@pytest.mark.asyncio
+async def test_safe_default_has_no_vision_transport(tmp_path):
+    generator = ImageAltTextGenerator()
+
+    with (
+        patch.object(
+            generator,
+            "_generate_with_gemini",
+            side_effect=AssertionError("legacy Gemini forbidden"),
+        ),
+        patch.object(
+            generator,
+            "_generate_with_ollama",
+            side_effect=AssertionError("legacy Ollama forbidden"),
+        ),
+    ):
+        result = await generator.generate_alt_text(_image(tmp_path))
+
+    assert result["success"] is False
+    assert result["error"] == "AI transport not authorized"
+    assert result["provider"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_injected_lms_client_is_the_only_alt_text_transport(tmp_path):
+    client = MagicMock()
+    client.provider = "gemini"
+    client.analyze_image_sync.return_value = {
+        "success": True,
+        "content": "Blue square",
+        "inference_time": 0.2,
+        "provider": "gemini",
+        "model": "vision-safe",
+    }
+    generator = ImageAltTextGenerator(lms_client=client)
+
+    with (
+        patch.object(
+            generator,
+            "_generate_with_gemini",
+            side_effect=AssertionError("legacy Gemini forbidden"),
+        ),
+        patch.object(
+            generator,
+            "_generate_with_ollama",
+            side_effect=AssertionError("legacy Ollama forbidden"),
+        ),
+    ):
+        result = await generator.generate_alt_text(_image(tmp_path))
+
+    assert result["success"] is True
+    assert result["alt_text"] == "Blue square"
+    assert result["provider"] == "gemini"
+    client.analyze_image_sync.assert_called_once()
+    assert client.analyze_image_sync.call_args.kwargs["image_data"].startswith(
+        b"\x89PNG"
+    )
+
+
+@pytest.mark.asyncio
+async def test_injected_lms_failure_never_falls_back_or_classifies(tmp_path):
+    client = MagicMock()
+    client.provider = "ollama"
+    client.analyze_image_sync.return_value = {
+        "success": False,
+        "error": "policy_denied",
+        "provider": "ollama",
+        "model": "",
+    }
+    generator = ImageAltTextGenerator(lms_client=client)
+
+    with (
+        patch.object(
+            generator,
+            "_generate_with_gemini",
+            side_effect=AssertionError("legacy Gemini forbidden"),
+        ),
+        patch.object(
+            generator,
+            "_generate_with_ollama",
+            side_effect=AssertionError("legacy Ollama forbidden"),
+        ),
+    ):
+        result = await generator.detect_image_type(_image(tmp_path))
+
+    assert result["success"] is False
+    assert result["error"] == "policy_denied"
+    assert client.analyze_image_sync.call_count == 1
+
+
+def test_lms_vision_paths_have_no_direct_legacy_transport_or_manager_acquisition():
+    guarded = [
+        ImageAltTextGenerator.generate_alt_text,
+        ImageAltTextGenerator.validate_alt_text,
+        ImageAltTextGenerator.detect_image_type,
+        ImageAltTextGenerator.describe_chart_or_graph,
+        ImageAltTextGenerator.score_alt_text_quality,
+    ]
+    forbidden = {
+        "_generate_with_gemini",
+        "_generate_with_ollama",
+        "get_provider_manager",
+    }
+    class_tree = ast.parse(inspect.getsource(ImageAltTextGenerator))
+    methods = {
+        node.name: node
+        for node in ast.walk(class_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    violations = []
+    for method in guarded:
+        tree = methods[method.__name__]
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        attrs = {
+            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+        }
+        found = forbidden & (names | attrs)
+        if found:
+            violations.append(f"{method.__name__}: {sorted(found)}")
+
+    assert violations == []
 
 
 def test_health_check(generator):

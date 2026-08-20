@@ -32,7 +32,7 @@ import logging
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -42,6 +42,7 @@ from ..auth.canvas_permissions import (
     require_lti_course_access,
 )
 from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
+from ..ai.lms_remediation_client import LMSRemediationClient
 from ..db.database import get_db_dependency
 from ..db.models import (
     CloudFile,
@@ -930,15 +931,29 @@ class ContentRemediateResponse(BaseModel):
     success: bool
     verified: bool = False
     fixed_count: int = 0
+    manual_count: int = 0
     issues_remaining: int = 0
     issues_introduced: int = 0
     remediated_score: Optional[float] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
+    ai_used: bool = False
+    external_ai_used: bool = False
+    provider: Optional[str] = None
+    purpose_decisions: Dict[str, str] = Field(default_factory=dict)
+
+
+class ContentRemediateRequest(BaseModel):
+    """Explicit AI intent for Canvas HTML remediation."""
+
+    use_ai: bool = False
+    generate_alt_text: bool = False
 
 
 @router.post("/{cloud_file_id}/remediate", response_model=ContentRemediateResponse)
 async def remediate_content_item(
     cloud_file_id: str,
+    request: Optional[ContentRemediateRequest] = Body(default=None),
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> ContentRemediateResponse:
@@ -972,6 +987,53 @@ async def remediate_content_item(
             error="This item has no content to remediate",
         )
 
+    intent = request or ContentRemediateRequest()
+    remediation_client = None
+    alt_text_client = None
+    purpose_decisions = {
+        "remediation": "not_requested",
+        "alt_text": "not_requested",
+    }
+    if intent.use_ai:
+        remediation_client = LMSRemediationClient.bind_if_allowed(
+            department_id=auth_department_id,
+            purpose="remediation",
+            actor_id=principal.user_id,
+            cloud_file_id=str(cf.id),
+        )
+        if remediation_client is None:
+            raise HTTPException(
+                status_code=403,
+                detail="LMS AI remediation is not permitted",
+            )
+        purpose_decisions["remediation"] = "allowed_not_used"
+    if intent.generate_alt_text:
+        alt_text_client = LMSRemediationClient.bind_if_allowed(
+            department_id=auth_department_id,
+            purpose="alt_text",
+            actor_id=principal.user_id,
+            cloud_file_id=str(cf.id),
+        )
+        purpose_decisions["alt_text"] = (
+            "allowed_not_used" if alt_text_client is not None else "denied_at_dispatch"
+        )
+
+    requested_purposes = {
+        purpose
+        for purpose, requested in (
+            ("remediation", intent.use_ai),
+            ("alt_text", intent.generate_alt_text),
+        )
+        if requested
+    }
+    result: Dict[str, Any] = {
+        "success": False,
+        "ai_used": False,
+        "external_ai_used": False,
+        "provider": None,
+        "purpose_decisions": purpose_decisions,
+    }
+
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)
         try:
@@ -981,27 +1043,59 @@ async def remediate_content_item(
                 department_id=auth_department_id,
                 credential_id=credential.id,
             )
-            result = await scanner.remediate_content_item(cf)
+            result = await scanner.remediate_content_item(
+                cf,
+                remediation_client=remediation_client,
+                alt_text_client=alt_text_client,
+                requested_purposes=requested_purposes,
+            )
         finally:
             await api_client.close()
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Content remediation failed: {e}", exc_info=True)
-        return ContentRemediateResponse(success=False, error=str(e))
+    except Exception as exc:
+        logger.error(
+            "Content remediation failed",
+            extra={
+                "cloud_file_id": str(cf.id),
+                "department_id": auth_department_id,
+                "error_type": type(exc).__name__,
+            },
+        )
+        return ContentRemediateResponse(
+            success=False,
+            error="Content remediation failed",
+            error_code="REMEDIATION_FAILED",
+            ai_used=bool(result.get("ai_used", False)),
+            external_ai_used=bool(result.get("external_ai_used", False)),
+            provider=result.get("provider"),
+            purpose_decisions=result.get("purpose_decisions", purpose_decisions),
+        )
 
     if not result.get("success"):
         return ContentRemediateResponse(
-            success=False, error=result.get("error", "Remediation failed")
+            success=False,
+            error="Content remediation failed",
+            error_code="REMEDIATION_FAILED",
+            manual_count=result.get("manual_count", 0),
+            ai_used=bool(result.get("ai_used", False)),
+            external_ai_used=bool(result.get("external_ai_used", False)),
+            provider=result.get("provider"),
+            purpose_decisions=result.get("purpose_decisions", purpose_decisions),
         )
 
     return ContentRemediateResponse(
         success=True,
         verified=bool(result.get("verified")),
         fixed_count=result.get("fixed_count", 0),
+        manual_count=result.get("manual_count", 0),
         issues_remaining=result.get("issues_remaining", 0),
         issues_introduced=result.get("issues_introduced", 0),
         remediated_score=result.get("remediated_score"),
+        ai_used=bool(result.get("ai_used", False)),
+        external_ai_used=bool(result.get("external_ai_used", False)),
+        provider=result.get("provider"),
+        purpose_decisions=result.get("purpose_decisions", purpose_decisions),
     )
 
 

@@ -16,17 +16,78 @@ logger = logging.getLogger(__name__)
 
 
 class ImageAltTextGenerator:
-    """Generate accessible alt text for images using Gemini vision API."""
+    """Generate accessible alt text through an explicitly selected transport."""
 
-    def __init__(self):
-        """Initialize image alt text generator with settings."""
-        self.settings = get_settings()
-        self.gemini_api_key = self.settings.gemini_api_key
-        self.gemini_api_base = self.settings.gemini_api_base
-        self.vision_model = self.settings.gemini_vision_model
-        self.use_gemini = self.settings.use_gemini and bool(self.gemini_api_key)
-        self.ollama_host = self.settings.ollama_host
-        self.ollama_fallback = self.settings.ollama_fallback_vision
+    def __init__(self, lms_client=None, *, allow_legacy_transport: bool = False):
+        """Create a generator without implicitly enabling any provider.
+
+        LMS callers inject a purpose-bound compatibility client. Legacy
+        non-LMS callers must opt in explicitly to the historical Gemini/
+        Ollama transport.
+        """
+        self.lms_client = lms_client
+        self.allow_legacy_transport = allow_legacy_transport
+        self.gemini_api_key = None
+        self.gemini_api_base = ""
+        self.vision_model = ""
+        self.use_gemini = False
+        self.ollama_host = ""
+        self.ollama_fallback = ""
+        if allow_legacy_transport:
+            self.settings = get_settings()
+            self.gemini_api_key = self.settings.gemini_api_key
+            self.gemini_api_base = self.settings.gemini_api_base
+            self.vision_model = self.settings.gemini_vision_model
+            self.use_gemini = self.settings.use_gemini and bool(self.gemini_api_key)
+            self.ollama_host = self.settings.ollama_host
+            self.ollama_fallback = self.settings.ollama_fallback_vision
+
+    async def _generate_vision(
+        self, image_path: str, prompt: str, max_tokens: int = 300
+    ) -> tuple[str, float, str, str]:
+        """Dispatch vision through the injected LMS client or explicit legacy path."""
+        if self.lms_client is not None:
+            try:
+                image_data = Path(image_path).read_bytes()
+                result = await asyncio.to_thread(
+                    self.lms_client.analyze_image_sync,
+                    image_data=image_data,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                )
+            except Exception:
+                return "ERROR: provider_call_failed", 0.0, "none", ""
+            provider = result.get("provider") or getattr(
+                self.lms_client, "provider", "none"
+            )
+            model = result.get("model", "")
+            elapsed = result.get("inference_time", 0.0)
+            if not result.get("success"):
+                return (
+                    f"ERROR: {result.get('error', 'provider_call_failed')}",
+                    elapsed,
+                    provider,
+                    model,
+                )
+            content = result.get("content")
+            if not isinstance(content, str) or not content.strip():
+                return "ERROR: invalid_provider_response", elapsed, provider, model
+            return content.strip(), elapsed, provider, model
+
+        if not self.allow_legacy_transport:
+            return "ERROR: AI transport not authorized", 0.0, "none", ""
+
+        provider = "gemini"
+        if self.use_gemini:
+            content, elapsed = await self._generate_with_gemini(
+                image_path, prompt, max_tokens=max_tokens
+            )
+            if not content.startswith("ERROR:"):
+                return content, elapsed, provider, self.vision_model
+            logger.warning("Gemini vision failed; trying explicit legacy Ollama")
+        provider = "ollama"
+        content, elapsed = await self._generate_with_ollama(image_path, prompt)
+        return content, elapsed, provider, self.ollama_fallback
 
     def _encode_image(self, image_path: str) -> str:
         """Encode image to base64 for API calls."""
@@ -241,24 +302,15 @@ Focus on what's important for understanding the educational content.{context_inf
 Be concise but accurate (1-2 sentences, under 125 characters).
 Focus on the main visual elements and purpose.{context_info}"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
-        if self.use_gemini:
-            alt_text, elapsed = await self._generate_with_gemini(image_path, prompt)
-
-            if alt_text.startswith("ERROR:"):
-                logger.warning(f"Gemini failed, trying Ollama fallback: {alt_text}")
-                provider = "ollama"
-                alt_text, elapsed = await self._generate_with_ollama(image_path, prompt)
-        else:
-            provider = "ollama"
-            alt_text, elapsed = await self._generate_with_ollama(image_path, prompt)
+        alt_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt
+        )
 
         # Check for errors
         if alt_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": alt_text,
+                "error": alt_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -282,9 +334,7 @@ Focus on the main visual elements and purpose.{context_info}"""
             "success": True,
             "inference_time": elapsed,
             "provider": provider,
-            "model": (
-                self.vision_model if provider == "gemini" else self.ollama_fallback
-            ),
+            "model": model,
             "image_metadata": {
                 "width": validation.get("width"),
                 "height": validation.get("height"),
@@ -398,32 +448,15 @@ Common issues to check for:
 - Decorative images marked as informative or vice versa
 - Alt text that's too long or too short for the image complexity"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
-        if self.use_gemini:
-            response_text, elapsed = await self._generate_with_gemini(
-                image_path, prompt, max_tokens=500
-            )
-
-            if response_text.startswith("ERROR:"):
-                logger.warning(
-                    f"Gemini failed, trying Ollama fallback: {response_text}"
-                )
-                provider = "ollama"
-                response_text, elapsed = await self._generate_with_ollama(
-                    image_path, prompt
-                )
-        else:
-            provider = "ollama"
-            response_text, elapsed = await self._generate_with_ollama(
-                image_path, prompt
-            )
+        response_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt, max_tokens=500
+        )
 
         # Check for errors
         if response_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": response_text,
+                "error": response_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -454,9 +487,7 @@ Common issues to check for:
                 "existing_alt_text": existing_alt_text,
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
         except json.JSONDecodeError as e:
@@ -476,9 +507,7 @@ Common issues to check for:
                 "existing_alt_text": existing_alt_text,
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
     async def detect_image_type(
@@ -555,32 +584,15 @@ Respond in this exact JSON format:
     "visual_elements": ["list", "of", "key", "elements", "detected"]
 }}"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
-        if self.use_gemini:
-            response_text, elapsed = await self._generate_with_gemini(
-                image_path, prompt, max_tokens=500
-            )
-
-            if response_text.startswith("ERROR:"):
-                logger.warning(
-                    f"Gemini failed, trying Ollama fallback: {response_text}"
-                )
-                provider = "ollama"
-                response_text, elapsed = await self._generate_with_ollama(
-                    image_path, prompt
-                )
-        else:
-            provider = "ollama"
-            response_text, elapsed = await self._generate_with_ollama(
-                image_path, prompt
-            )
+        response_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt, max_tokens=500
+        )
 
         # Check for errors
         if response_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": response_text,
+                "error": response_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -610,9 +622,7 @@ Respond in this exact JSON format:
                 "visual_elements": result.get("visual_elements", []),
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
         except json.JSONDecodeError as e:
@@ -628,9 +638,7 @@ Respond in this exact JSON format:
                 "visual_elements": [],
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
     async def describe_chart_or_graph(
@@ -723,34 +731,16 @@ Important guidelines:
 - For infographics, describe the logical flow and key points
 - For maps, describe regions and what data is shown"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
         max_tokens = 1500 if detail_level == "detailed" else 1000
-
-        if self.use_gemini:
-            response_text, elapsed = await self._generate_with_gemini(
-                image_path, prompt, max_tokens=max_tokens
-            )
-
-            if response_text.startswith("ERROR:"):
-                logger.warning(
-                    f"Gemini failed, trying Ollama fallback: {response_text}"
-                )
-                provider = "ollama"
-                response_text, elapsed = await self._generate_with_ollama(
-                    image_path, prompt
-                )
-        else:
-            provider = "ollama"
-            response_text, elapsed = await self._generate_with_ollama(
-                image_path, prompt
-            )
+        response_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt, max_tokens=max_tokens
+        )
 
         # Check for errors
         if response_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": response_text,
+                "error": response_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -782,9 +772,7 @@ Important guidelines:
                 "accessibility_note": result.get("accessibility_note", ""),
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
         except json.JSONDecodeError as e:
@@ -802,9 +790,7 @@ Important guidelines:
                 "accessibility_note": "Manual review recommended",
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
     async def analyze_image_comprehensive(
@@ -1130,32 +1116,15 @@ Respond in this exact JSON format:
     "best_practice_violations": ["any WCAG violations"]
 }}"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
-        if self.use_gemini:
-            response_text, elapsed = await self._generate_with_gemini(
-                image_path, prompt, max_tokens=800
-            )
-
-            if response_text.startswith("ERROR:"):
-                logger.warning(
-                    f"Gemini failed, trying Ollama fallback: {response_text}"
-                )
-                provider = "ollama"
-                response_text, elapsed = await self._generate_with_ollama(
-                    image_path, prompt
-                )
-        else:
-            provider = "ollama"
-            response_text, elapsed = await self._generate_with_ollama(
-                image_path, prompt
-            )
+        response_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt, max_tokens=800
+        )
 
         # Check for errors
         if response_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": response_text,
+                "error": response_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -1238,9 +1207,7 @@ Respond in this exact JSON format:
                 "alt_text_analyzed": alt_text,
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
         except json.JSONDecodeError as e:
@@ -1426,7 +1393,29 @@ Respond in this exact JSON format:
         }
 
     def health_check(self) -> Dict[str, Any]:
-        """Check if vision models are available."""
+        """Check the explicitly configured vision transport."""
+        if self.lms_client is not None:
+            return {
+                "status": "healthy",
+                "provider": getattr(self.lms_client, "provider", None),
+                "transport": "policy_bound_lms",
+                "features": [
+                    "generate_alt_text",
+                    "validate_alt_text",
+                    "detect_image_type",
+                    "describe_chart_or_graph",
+                    "analyze_image_comprehensive",
+                    "batch_analyze_images",
+                ],
+            }
+        if not self.allow_legacy_transport:
+            return {
+                "status": "disabled",
+                "provider": None,
+                "transport": "none",
+                "features": [],
+            }
+
         health = {
             "status": "healthy",
             "gemini_configured": bool(self.gemini_api_key),

@@ -501,7 +501,7 @@ async def generate_image_alt_text(
         try:
             from ..education.image_alt_text import ImageAltTextGenerator
 
-            generator = ImageAltTextGenerator()
+            generator = ImageAltTextGenerator(allow_legacy_transport=True)
             result = await generator.generate_alt_text(
                 image_path=tmp_path,
                 context=f"Image from website ({image_url})",

@@ -15,8 +15,10 @@ Workflow:
 
 import logging
 import asyncio
+import json
 import uuid
 import tempfile
+from dataclasses import dataclass
 from html import escape
 import os
 from pathlib import Path
@@ -173,6 +175,182 @@ def _sanitize_html(html: str) -> str:
 # ---------------------------------------------------------------------------
 # CanvasContentScanner
 # ---------------------------------------------------------------------------
+
+
+def _canonical_issue_identifier(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+
+# Keep this explicit list aligned with the ALT_TEXT aliases accepted by
+# remediation_routes._map_category_string/BaseRemediator, plus axe-core image
+# rules and the scanner-specific IDs emitted elsewhere in this repository.
+# Exact canonical matching is intentional: substring matching would misroute
+# unrelated work such as image_contrast to the alt-text purpose.
+_ALT_TEXT_ISSUE_IDENTIFIERS = {
+    "alt_text",
+    "alternative_text",
+    "area_alt",
+    "figure_alt",
+    "image",
+    "image_alt",
+    "image_alt_text",
+    "image_description",
+    "image_of_text",
+    "input_image_alt",
+    "missing_alt_text",
+    "missing_figure_caption",
+    "missing_image_description",
+    "object_alt",
+    "role_img_alt",
+    "svg_img_alt",
+}
+
+
+_ALT_TEXT_CANDIDATE_FIELDS = (
+    "category",
+    "type",
+    "issue_type",
+    "id",  # axe-core's rule identifier
+    "rule",
+    "rule_id",
+    "axe_id",
+    "axe_rule_id",
+)
+
+
+def _is_alt_text_issue(
+    raw_issue: Dict[str, Any], normalized_issue: Dict[str, Any]
+) -> bool:
+    """Recognize image-description work across raw and normalized scanner shapes."""
+
+    candidates = [
+        issue.get(field)
+        for issue in (normalized_issue, raw_issue)
+        for field in _ALT_TEXT_CANDIDATE_FIELDS
+    ]
+    return any(
+        _canonical_issue_identifier(candidate) in _ALT_TEXT_ISSUE_IDENTIFIERS
+        for candidate in candidates
+    )
+
+
+def _issue_node_count(issue: Dict[str, Any]) -> int:
+    nodes = issue.get("nodes")
+    return max(1, len(nodes)) if isinstance(nodes, list) else 1
+
+
+class _AIUsageTracker:
+    """Transparent compatibility wrapper with an aggregate purpose outcome.
+
+    Outcomes describe the whole operation, not merely its final provider call.
+    Precedence is ``used`` (any successful AI contribution), then
+    ``attempted_failed`` (any failed call attempt), ``denied_at_dispatch``
+    (any dispatch denial), and finally ``allowed_not_used``. ``not_requested``
+    is reserved for operations where no tracker is constructed.
+    """
+
+    _OUTCOME_PRECEDENCE = {
+        "allowed_not_used": 0,
+        "denied_at_dispatch": 1,
+        "attempted_failed": 2,
+        "used": 3,
+    }
+
+    def __init__(self, wrapped_client: Any, *, requested: bool):
+        self.wrapped_client = wrapped_client
+        self.ai_used = False
+        self.external_ai_used = False
+        self.provider_used: Optional[str] = None
+        self.outcome = (
+            "allowed_not_used"
+            if wrapped_client is not None
+            else ("denied_at_dispatch" if requested else "not_requested")
+        )
+
+    @property
+    def provider(self) -> Any:
+        return getattr(self.wrapped_client, "provider", None)
+
+    def __getattr__(self, name: str) -> Any:
+        target = getattr(self.wrapped_client, name)
+        if name not in {
+            "generate_text_sync",
+            "generate_code_sync",
+            "analyze_image_sync",
+        }:
+            return target
+
+        def tracked(*args: Any, **kwargs: Any) -> Any:
+            result = target(*args, **kwargs)
+            if isinstance(result, dict):
+                used = result.get("ai_used") is True
+                self.ai_used = self.ai_used or used
+                self.external_ai_used = self.external_ai_used or (
+                    result.get("external_ai_used") is True
+                )
+                provider = result.get("provider")
+                if isinstance(provider, str):
+                    self.provider_used = provider
+                reported_outcome = result.get("purpose_outcome")
+                successful_contribution = result.get("success") is True and (
+                    used
+                    or result.get("call_made") is True
+                    or reported_outcome == "used"
+                )
+                attempted_failure = result.get("success") is False and (
+                    used
+                    or result.get("call_made") is True
+                    or reported_outcome in {"used", "attempted_failed"}
+                )
+                if successful_contribution:
+                    call_outcome = "used"
+                elif attempted_failure:
+                    call_outcome = "attempted_failed"
+                elif reported_outcome == "denied_at_dispatch" or (
+                    result.get("success") is False
+                ):
+                    call_outcome = "denied_at_dispatch"
+                else:
+                    call_outcome = "allowed_not_used"
+                if (
+                    self._OUTCOME_PRECEDENCE[call_outcome]
+                    > self._OUTCOME_PRECEDENCE[self.outcome]
+                ):
+                    self.outcome = call_outcome
+            return result
+
+        return tracked
+
+
+@dataclass(frozen=True)
+class _PendingVerification:
+    """Immutable verification data held until artifact cleanup succeeds."""
+
+    scan_id: str
+    score: float
+    fixed: int
+    remaining: int
+    introduced: int
+    axe_results_json: str
+    issues_json: str
+    critical_issues: int
+    high_issues: int
+    medium_issues: int
+    low_issues: int
+
+
+@dataclass(frozen=True)
+class _PendingRemediation:
+    """Immutable remediation result held outside persistent ORM state."""
+
+    body: str
+    fixed_count: int
+    manual_count: int
+    failed_count: int
+    remediated_score: Optional[float]
+    verification: Optional[_PendingVerification]
 
 
 class CanvasContentScanner:
@@ -592,7 +770,14 @@ class CanvasContentScanner:
     # 3. remediate_content_item — bridge to HtmlRemediator
     # ------------------------------------------------------------------
 
-    async def remediate_content_item(self, cloud_file: CloudFile) -> Dict[str, Any]:
+    async def remediate_content_item(
+        self,
+        cloud_file: CloudFile,
+        *,
+        remediation_client: Any = None,
+        alt_text_client: Any = None,
+        requested_purposes: Optional[set[str]] = None,
+    ) -> Dict[str, Any]:
         """
         Load accessibility issues from the last scan, run HtmlRemediator
         on the content via a temporary file, sanitize the output, and
@@ -604,8 +789,39 @@ class CanvasContentScanner:
         Returns:
             Dict with remediation result summary
         """
+        requested_purposes = requested_purposes or set()
+        remediation_tracker = _AIUsageTracker(
+            remediation_client,
+            requested="remediation" in requested_purposes,
+        )
+        alt_text_tracker = _AIUsageTracker(
+            alt_text_client,
+            requested="alt_text" in requested_purposes,
+        )
+
+        def usage_metadata() -> Dict[str, Any]:
+            trackers = (remediation_tracker, alt_text_tracker)
+            providers = [
+                tracker.provider_used for tracker in trackers if tracker.provider_used
+            ]
+            return {
+                "ai_used": any(tracker.ai_used for tracker in trackers),
+                "external_ai_used": any(
+                    tracker.external_ai_used for tracker in trackers
+                ),
+                "provider": providers[0] if providers else None,
+                "purpose_decisions": {
+                    "remediation": remediation_tracker.outcome,
+                    "alt_text": alt_text_tracker.outcome,
+                },
+            }
+
         if not cloud_file.content_body:
-            return {"success": False, "error": "No content body"}
+            return {
+                "success": False,
+                "error": "No content body",
+                **usage_metadata(),
+            }
 
         # Load issues from last scan
         issues = []
@@ -619,202 +835,253 @@ class CanvasContentScanner:
                 issues = scan_result.issues
 
         if not issues:
-            return {"success": True, "fixed_count": 0, "message": "No issues to fix"}
+            return {
+                "success": True,
+                "fixed_count": 0,
+                "message": "No issues to fix",
+                **usage_metadata(),
+            }
 
-        # Describe the images first, from the images themselves. The
-        # remediator cannot reach them, so anything it writes for an image is
-        # guesswork; this is the only place holding both the credential and
-        # the vision service.
-        source_html, images_described = await self._describe_images(
-            cloud_file, cloud_file.content_body
+        from ..api.education.remediation_routes import (
+            _normalize_issues_for_remediation,
         )
 
-        # Write wrapped HTML to temp file for HtmlRemediator
-        wrapped_html = _wrap_html_fragment(source_html, cloud_file.file_name)
-        temp_path = None
+        normalized_issues = _normalize_issues_for_remediation(issues)
+        alt_text_issues: List[Dict[str, Any]] = []
+        remediation_issues: List[Dict[str, Any]] = []
+        for raw_issue, normalized_issue in zip(issues, normalized_issues):
+            if _is_alt_text_issue(raw_issue, normalized_issue):
+                alt_text_issues.append(raw_issue)
+            else:
+                remediation_issues.append(normalized_issue)
+
+        # Image-description issues are isolated from HtmlRemediator because its
+        # text prompts cannot inspect Canvas images. Only the vision-bound
+        # alt-text client may handle them.
+        state_fields = (
+            "remediated_body",
+            "writeback_status",
+            "has_remediated_version",
+            "remediated_compliance_score",
+            "remediated_issues_fixed",
+            "remediated_issues_remaining",
+        )
+        original_state = tuple(
+            getattr(cloud_file, field, None) for field in state_fields
+        )
+        durable_mutation_started = False
+
+        def failed_remediation() -> Dict[str, Any]:
+            return {
+                "success": False,
+                "error": "Content remediation failed",
+                "error_code": "REMEDIATION_FAILED",
+                **usage_metadata(),
+            }
 
         try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".html", delete=False, mode="w", encoding="utf-8"
-            ) as tmp:
-                tmp.write(wrapped_html)
-                temp_path = tmp.name
+            from ..education.remediation.base import RemediationConfig
+            from ..education.remediation.html_remediator import HtmlRemediator
 
-            # Bridge to HtmlRemediator
-            try:
-                from ..education.remediation.base import RemediationConfig
-                from ..education.remediation.html_remediator import HtmlRemediator
+            source_html = cloud_file.content_body
+            images_described = 0
+            if alt_text_issues and alt_text_client is not None:
+                source_html, images_described = await self._describe_images(
+                    cloud_file,
+                    source_html,
+                    alt_text_client=alt_text_tracker,
+                )
+            unresolved_alt_text = max(
+                0,
+                sum(_issue_node_count(issue) for issue in alt_text_issues)
+                - images_described,
+            )
 
-                # Without a model the remediator can only do the mechanical
-                # fixes, so a page whose problems are alt text, contrast and
-                # table headers came back untouched: correct, and useless.
-                # The provider manager is the same one the file path uses,
-                # and it degrades to mechanical fixes on its own when no
-                # provider is configured.
-                ai_client = None
-                try:
-                    from ..ai.providers.manager import get_provider_manager
-
-                    ai_client = get_provider_manager()
-                except Exception as e:  # pragma: no cover - provider optional
-                    logger.warning(
-                        "No AI provider available for content remediation: %s", e
-                    )
+            # The entire remediation, readback, sanitization, verification, and
+            # score calculation occurs while the owned directory exists. Only
+            # immutable pending values escape it. No ORM mutation or commit is
+            # permitted until TemporaryDirectory.__exit__ has succeeded.
+            wrapped_html = _wrap_html_fragment(source_html, cloud_file.file_name)
+            with tempfile.TemporaryDirectory(prefix="aelira-canvas-html-") as temp_dir:
+                artifact_root = Path(temp_dir)
+                source_path = artifact_root / "source.html"
+                source_path.write_text(wrapped_html, encoding="utf-8")
 
                 config = RemediationConfig(
-                    use_ai=bool(ai_client)
-                    and self.scan_options.get("generate_alt_text", True)
+                    use_ai=remediation_client is not None,
+                    create_backup=False,
+                    output_directory=str(artifact_root),
                 )
-
-                # Raw axe violations carry no category, and the remediator
-                # decides what it can fix by category, so every issue was
-                # classified as needing a human and nothing was attempted.
-                # This is the same normalisation the file path performs.
-                from ..api.education.remediation_routes import (
-                    _normalize_issues_for_remediation,
-                )
-
                 remediator = HtmlRemediator(
-                    temp_path,
-                    _normalize_issues_for_remediation(issues),
+                    str(source_path),
+                    remediation_issues,
                     config=config,
-                    ai_client=ai_client,
+                    ai_client=(
+                        remediation_tracker if remediation_client is not None else None
+                    ),
                 )
                 result = remediator.remediate()
+                if result.success is not True:
+                    return failed_remediation()
 
-                # Read the output file
-                output_path = result.output_file or temp_path
-                with open(output_path, "r", encoding="utf-8") as f:
-                    remediated_doc = f.read()
+                fixed_count = result.fixed_count + images_described
+                manual_count = result.manual_count + unresolved_alt_text
+                failed_count = getattr(result, "failed_count", 0)
 
-                # Strip document wrapper back to body fragment
+                output_path = Path(result.output_file or source_path).resolve()
+                if not output_path.is_relative_to(artifact_root.resolve()):
+                    return failed_remediation()
+                remediated_doc = output_path.read_text(encoding="utf-8")
                 body_fragment = _unwrap_html_fragment(remediated_doc)
-
-                # Sanitize output
                 sanitized = _sanitize_html(body_fragment)
 
-                cloud_file.remediated_body = sanitize_for_postgres(sanitized)
-                cloud_file.writeback_status = "pending_review"
-                cloud_file.has_remediated_version = True
-
-                # Verify the remediation by rescanning what we produced,
-                # rather than inferring a score from how many fixers ran.
                 verification = await self._verify_remediation(
                     cloud_file, sanitized, issues
                 )
-
-                if verification:
-                    cloud_file.remediated_compliance_score = verification["score"]
-                    cloud_file.remediated_issues_fixed = verification["fixed"]
-                    cloud_file.remediated_issues_remaining = verification["remaining"]
-                    self.db.commit()
-
-                    if verification["introduced"]:
-                        logger.warning(
-                            "Remediation introduced new issues",
-                            extra={
-                                "cloud_file_id": cloud_file.id,
-                                "introduced": verification["introduced"],
-                            },
-                        )
-
-                    logger.info(
-                        "Content remediation verified by rescan",
-                        extra={
-                            "cloud_file_id": cloud_file.id,
-                            "score": verification["score"],
-                            "fixed": verification["fixed"],
-                            "remaining": verification["remaining"],
-                            "introduced": verification["introduced"],
-                        },
-                    )
-
-                    return {
-                        "success": True,
-                        "verified": True,
-                        "fixed_count": verification["fixed"],
-                        "issues_remaining": verification["remaining"],
-                        "issues_introduced": verification["introduced"],
-                        "manual_count": result.manual_count,
-                        "remediated_score": verification["score"],
-                        "verification_scan_id": verification["scan_id"],
-                    }
-
-                # Rescan unavailable: fall back to the fixer-ratio estimate and
-                # say so, so nothing downstream reads it as a measured score.
                 remediated_score = getattr(result, "remediated_compliance_score", None)
                 if (
-                    remediated_score is None
+                    verification is None
+                    and remediated_score is None
                     and cloud_file.last_compliance_score is not None
                 ):
-                    # HtmlRemediator doesn't compute remediated_compliance_score,
-                    # so estimate from original score + fix ratio
-                    total = (
-                        result.fixed_count
-                        + result.manual_count
-                        + getattr(result, "failed_count", 0)
-                    )
+                    total = fixed_count + manual_count + failed_count
                     if total > 0:
-                        fix_ratio = result.fixed_count / total
+                        fix_ratio = fixed_count / total
                         original = cloud_file.last_compliance_score
                         remediated_score = min(
                             100.0, round(original + (100 - original) * fix_ratio, 1)
                         )
-                if remediated_score is not None:
-                    cloud_file.remediated_compliance_score = remediated_score
+                if verification is not None:
+                    remediated_score = verification.score
 
-                self.db.commit()
+                pending = _PendingRemediation(
+                    body=sanitize_for_postgres(sanitized),
+                    fixed_count=fixed_count,
+                    manual_count=manual_count,
+                    failed_count=failed_count,
+                    remediated_score=remediated_score,
+                    verification=verification,
+                )
 
+            # Cleanup has now completed successfully. Durable ORM state begins
+            # changing only after this boundary, followed by one commit.
+            durable_mutation_started = True
+            cloud_file.remediated_body = pending.body
+            cloud_file.writeback_status = "pending_review"
+            cloud_file.has_remediated_version = True
+            cloud_file.remediated_compliance_score = pending.remediated_score
+
+            verification = pending.verification
+            if verification is not None:
+                cloud_file.remediated_issues_fixed = verification.fixed
+                cloud_file.remediated_issues_remaining = verification.remaining
+                self.db.add(
+                    Scan(
+                        id=verification.scan_id,
+                        scan_type=ScanType.CANVAS_CONTENT,
+                        status=ScanStatus.COMPLETED,
+                        file_name=f"{cloud_file.file_name} (remediated)",
+                        user_id=None,
+                        department_id=self.department_id,
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                )
+                self.db.add(
+                    ScanResult(
+                        id=str(uuid.uuid4()),
+                        scan_id=verification.scan_id,
+                        compliance_score=verification.score,
+                        axe_results=json.loads(verification.axe_results_json),
+                        issues=json.loads(verification.issues_json),
+                        critical_issues=verification.critical_issues,
+                        high_issues=verification.high_issues,
+                        medium_issues=verification.medium_issues,
+                        low_issues=verification.low_issues,
+                    )
+                )
+
+            self.db.commit()
+
+            if verification is not None:
+                if verification.introduced:
+                    logger.warning(
+                        "Remediation introduced new issues",
+                        extra={
+                            "cloud_file_id": cloud_file.id,
+                            "introduced": verification.introduced,
+                        },
+                    )
                 logger.info(
-                    "Content remediation complete",
+                    "Content remediation verified by rescan",
                     extra={
                         "cloud_file_id": cloud_file.id,
-                        "fixed_count": result.fixed_count,
-                        "remediated_score": remediated_score,
+                        "score": verification.score,
+                        "fixed": verification.fixed,
+                        "remaining": verification.remaining,
+                        "introduced": verification.introduced,
                     },
                 )
-
                 return {
                     "success": True,
-                    "verified": False,
-                    "fixed_count": result.fixed_count,
-                    "manual_count": result.manual_count,
-                    "remediated_score": remediated_score,
+                    "verified": True,
+                    "fixed_count": verification.fixed,
+                    "issues_remaining": verification.remaining,
+                    "issues_introduced": verification.introduced,
+                    "manual_count": pending.manual_count,
+                    "remediated_score": verification.score,
+                    "verification_scan_id": verification.scan_id,
+                    **usage_metadata(),
                 }
 
-            except ImportError:
-                logger.warning(
-                    "HtmlRemediator not available, skipping remediation",
-                    extra={"cloud_file_id": cloud_file.id},
-                )
-                return {
-                    "success": False,
-                    "error": "HtmlRemediator not available",
-                }
-
-        except Exception as e:
-            logger.error(
-                "Content remediation failed: %s",
-                e,
-                extra={"cloud_file_id": cloud_file.id},
+            logger.info(
+                "Content remediation complete",
+                extra={
+                    "cloud_file_id": cloud_file.id,
+                    "fixed_count": pending.fixed_count,
+                    "remediated_score": pending.remediated_score,
+                },
             )
-            return {"success": False, "error": str(e)}
+            return {
+                "success": True,
+                "verified": False,
+                "fixed_count": pending.fixed_count,
+                "manual_count": pending.manual_count,
+                "issues_remaining": pending.manual_count + pending.failed_count,
+                "remediated_score": pending.remediated_score,
+                **usage_metadata(),
+            }
 
-        finally:
-            # Clean up temp files
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
+        except Exception as exc:
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            if durable_mutation_started:
+                for field, value in zip(state_fields, original_state):
+                    setattr(cloud_file, field, value)
+            logger.error(
+                "Content remediation failed",
+                extra={
+                    "cloud_file_id": str(cloud_file.id),
+                    "error_type": type(exc).__name__,
+                    "error_code": "REMEDIATION_FAILED",
+                },
+            )
+            return failed_remediation()
 
     # ------------------------------------------------------------------
     # 3a. _describe_images — real alt text, from the actual image
     # ------------------------------------------------------------------
 
-    _FILE_ID_PATTERN = re.compile(r"/files/(\d+)")
+    _FILE_ID_PATTERN = re.compile(r"/files/(\d+)(?=$|[/?#])")
 
-    async def _describe_images(self, cloud_file: CloudFile, html: str) -> tuple:
+    async def _describe_images(
+        self,
+        cloud_file: CloudFile,
+        html: str,
+        *,
+        alt_text_client: Any,
+    ) -> tuple:
         """Write alt text for images that have none, from the image itself.
 
         The remediator's own alt-text path asks a text model to invent a
@@ -827,6 +1094,12 @@ class CanvasContentScanner:
         refers to images by URL, so the image has to be fetched first, with
         the credential, before the same vision service can look at it.
 
+        Canvas' course-scoped file inventory is authoritative for this
+        remediation operation: it is fetched immediately before downloads,
+        and only IDs present in that inventory may reach the account-level
+        download API or the vision client. This deliberately does not promise
+        authorization beyond the operation's inventory snapshot.
+
         Returns the HTML and the number of images actually described.
         """
         soup = BeautifulSoup(html, "html.parser")
@@ -838,59 +1111,150 @@ class CanvasContentScanner:
         if not targets:
             return html, 0
 
-        from ..education.image_alt_text import ImageAltTextGenerator
-        from ..education.remediation.html_remediator import HtmlRemediator
-
-        generator = ImageAltTextGenerator()
-        described = 0
-
-        for img in targets:
-            source = img.get("data-api-endpoint") or img.get("src", "")
+        cloud_file_id = str(getattr(cloud_file, "id", ""))
+        candidates = []
+        for index, img in enumerate(targets):
+            raw_source = img.get("data-api-endpoint") or img.get("src", "")
+            source = raw_source if isinstance(raw_source, str) else ""
             match = self._FILE_ID_PATTERN.search(source)
             if not match:
                 logger.info(
-                    "Image is not an LMS file, leaving its description to a human: %s",
-                    img.get("src", ""),
+                    "Image source is not an LMS file; manual review required",
+                    extra={
+                        "cloud_file_id": cloud_file_id,
+                        "error_code": "IMAGE_SOURCE_NOT_LMS_FILE",
+                    },
                 )
                 continue
+            candidates.append((index, img, str(int(match.group(1)))))
 
-            file_id = match.group(1)
-            tmp_path = None
-            try:
-                with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                    tmp_path = tmp.name
-                result = await self.canvas_client.download_file(file_id, tmp_path)
-                if not getattr(result, "success", False):
-                    logger.warning(
-                        "Could not fetch image %s, leaving it to a human", file_id
-                    )
-                    continue
+        if not candidates:
+            return html, 0
 
-                generated = await generator.generate_alt_text(
-                    tmp_path, context=f"Image in {cloud_file.file_name}"
-                )
-                alt_text = (generated or {}).get("alt_text", "")
-                if not generated.get(
-                    "success"
-                ) or not HtmlRemediator.is_usable_alt_text(alt_text):
-                    logger.info(
-                        "No usable description for image %s, leaving it to a human",
-                        file_id,
-                    )
-                    continue
-
-                img["alt"] = alt_text.strip()
-                described += 1
-            except Exception as e:
+        raw_course_id = getattr(cloud_file, "provider_parent_id", None)
+        course_id = str(raw_course_id).strip() if raw_course_id is not None else ""
+        if not course_id:
+            for _, _, file_id in candidates:
                 logger.warning(
-                    "Alt text generation failed for image %s: %s", file_id, e
+                    "Canvas image course binding unavailable; manual review required",
+                    extra={
+                        "cloud_file_id": cloud_file_id,
+                        "course_id": course_id,
+                        "file_id": file_id,
+                        "error_type": "MissingCourseId",
+                        "error_code": "IMAGE_COURSE_BINDING_MISSING",
+                    },
                 )
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
+            return html, 0
+
+        try:
+            inventory = await self.canvas_client.list_course_files(course_id)
+            if not isinstance(inventory, (list, tuple)):
+                raise TypeError("invalid Canvas course file inventory")
+
+            authorized_file_ids = set()
+            for entry in inventory:
+                raw_id = (
+                    entry.get("id")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "id", None)
+                )
+                if isinstance(raw_id, bool):
+                    continue
+                normalized = str(raw_id).strip() if raw_id is not None else ""
+                if normalized.isdecimal():
+                    authorized_file_ids.add(str(int(normalized)))
+        except Exception as exc:
+            for _, _, file_id in candidates:
+                logger.warning(
+                    "Canvas course file inventory failed; manual review required",
+                    extra={
+                        "cloud_file_id": cloud_file_id,
+                        "course_id": course_id,
+                        "file_id": file_id,
+                        "error_type": type(exc).__name__,
+                        "error_code": "IMAGE_COURSE_INVENTORY_FAILED",
+                    },
+                )
+            return html, 0
+
+        from ..education.image_alt_text import ImageAltTextGenerator
+        from ..education.remediation.html_remediator import HtmlRemediator
+
+        generator = ImageAltTextGenerator(lms_client=alt_text_client)
+        described = 0
+
+        # One owned directory contains every downloaded image. Per-image
+        # failures remain manual work, but directory cleanup failure is outside
+        # their exception boundary and therefore propagates to remediation.
+        with tempfile.TemporaryDirectory(prefix="aelira-canvas-images-") as temp_dir:
+            artifact_root = Path(temp_dir)
+            for index, img, file_id in candidates:
+                # The course-scoped inventory snapshot above is authoritative
+                # at this point in the operation. Never infer membership from
+                # HTML course hints or fall back to Canvas' global get_file.
+                if file_id not in authorized_file_ids:
+                    logger.warning(
+                        "Canvas image is not in course inventory; manual review required",
+                        extra={
+                            "cloud_file_id": cloud_file_id,
+                            "course_id": course_id,
+                            "file_id": file_id,
+                            "error_type": "CourseMembershipDenied",
+                            "error_code": "IMAGE_FILE_NOT_IN_COURSE",
+                        },
+                    )
+                    continue
+                image_path = artifact_root / f"image-{index}.png"
+                try:
+                    result = await self.canvas_client.download_file(
+                        file_id, str(image_path)
+                    )
+                    if not getattr(result, "success", False):
+                        logger.warning(
+                            "Canvas image download failed; manual review required",
+                            extra={
+                                "cloud_file_id": cloud_file_id,
+                                "course_id": course_id,
+                                "file_id": file_id,
+                                "error_type": "DownloadUnsuccessful",
+                                "error_code": "IMAGE_DOWNLOAD_FAILED",
+                            },
+                        )
+                        continue
+
+                    generated = await generator.generate_alt_text(
+                        str(image_path), context=f"Image in {cloud_file.file_name}"
+                    )
+                    alt_text = (generated or {}).get("alt_text", "")
+                    if not generated.get(
+                        "success"
+                    ) or not HtmlRemediator.is_usable_alt_text(alt_text):
+                        logger.info(
+                            "No usable image description; manual review required",
+                            extra={
+                                "cloud_file_id": cloud_file_id,
+                                "course_id": course_id,
+                                "file_id": file_id,
+                                "error_type": "UnusableDescription",
+                                "error_code": "IMAGE_DESCRIPTION_UNUSABLE",
+                            },
+                        )
+                        continue
+
+                    img["alt"] = alt_text.strip()
+                    described += 1
+                except Exception as exc:
+                    logger.warning(
+                        "Canvas image description failed; manual review required",
+                        extra={
+                            "cloud_file_id": cloud_file_id,
+                            "course_id": course_id,
+                            "file_id": file_id,
+                            "error_type": type(exc).__name__,
+                            "error_code": "IMAGE_DESCRIPTION_FAILED",
+                        },
+                    )
 
         return (str(soup) if described else html), described
 
@@ -903,7 +1267,7 @@ class CanvasContentScanner:
         cloud_file: CloudFile,
         remediated_fragment: str,
         original_issues: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[_PendingVerification]:
         """Rescan the remediated content and report what actually changed.
 
         Without this the remediated score is an estimate derived from how
@@ -931,11 +1295,15 @@ class CanvasContentScanner:
         try:
             wrapped = _wrap_html_fragment(remediated_fragment, cloud_file.file_name)
             axe_results = await self._run_axe_scan(wrapped)
-        except Exception as e:
+        except Exception as exc:
             logger.warning(
-                "Remediation rescan failed; falling back to the estimate: %s",
-                e,
-                extra={"cloud_file_id": cloud_file.id},
+                "Remediation rescan failed; falling back to the estimate",
+                extra={
+                    "cloud_file_id": cloud_file.id,
+                    "scan_id": cloud_file.last_scan_id,
+                    "error_type": type(exc).__name__,
+                    "error_code": "REMEDIATION_RESCAN_FAILED",
+                },
             )
             return None
 
@@ -961,45 +1329,30 @@ class CanvasContentScanner:
         for rule, was in before.items():
             fixed += max(0, was - after.get(rule, 0))
 
-        scan = Scan(
-            id=str(uuid.uuid4()),
-            scan_type=ScanType.CANVAS_CONTENT,
-            status=ScanStatus.COMPLETED,
-            file_name=f"{cloud_file.file_name} (remediated)",
-            user_id=None,
-            department_id=self.department_id,
-            completed_at=datetime.now(timezone.utc),
+        # Keep verification entirely local until the caller's owned artifact
+        # directory has cleaned up. JSON strings make the nested provider data
+        # immutable pending values rather than live mutable dictionaries.
+        return _PendingVerification(
+            scan_id=str(uuid.uuid4()),
+            score=score,
+            fixed=fixed,
+            remaining=remaining,
+            introduced=introduced,
+            axe_results_json=json.dumps(axe_results, sort_keys=True),
+            issues_json=json.dumps(violations, sort_keys=True),
+            critical_issues=sum(
+                1 for violation in violations if violation.get("impact") == "critical"
+            ),
+            high_issues=sum(
+                1 for violation in violations if violation.get("impact") == "serious"
+            ),
+            medium_issues=sum(
+                1 for violation in violations if violation.get("impact") == "moderate"
+            ),
+            low_issues=sum(
+                1 for violation in violations if violation.get("impact") == "minor"
+            ),
         )
-        self.db.add(scan)
-        self.db.flush()
-        self.db.add(
-            ScanResult(
-                id=str(uuid.uuid4()),
-                scan_id=scan.id,
-                compliance_score=score,
-                axe_results=axe_results,
-                issues=violations,
-                critical_issues=sum(
-                    1 for v in violations if v.get("impact") == "critical"
-                ),
-                high_issues=sum(1 for v in violations if v.get("impact") == "serious"),
-                medium_issues=sum(
-                    1 for v in violations if v.get("impact") == "moderate"
-                ),
-                low_issues=sum(1 for v in violations if v.get("impact") == "minor"),
-            )
-        )
-        # The verification scan is a record of the remediated copy, not the
-        # item's current state, so last_scan_id deliberately stays put.
-        self.db.commit()
-
-        return {
-            "scan_id": scan.id,
-            "score": score,
-            "fixed": fixed,
-            "remaining": remaining,
-            "introduced": introduced,
-        }
 
     # ------------------------------------------------------------------
     # 3c. write_back_file — upload a remediated file to the Canvas course

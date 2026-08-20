@@ -120,6 +120,9 @@ def _compatible_result(response: LLMResponse, *, model: str | None) -> dict[str,
             "inference_time": response.inference_time or 0.0,
             "provider": response.provider,
             "model": model or "",
+            "ai_used": True,
+            "external_ai_used": response.provider != "ollama",
+            "purpose_outcome": "used",
         }
     return {
         "success": False,
@@ -127,6 +130,9 @@ def _compatible_result(response: LLMResponse, *, model: str | None) -> dict[str,
         "inference_time": response.inference_time or 0.0,
         "provider": response.provider,
         "model": model or "",
+        "ai_used": True,
+        "external_ai_used": response.provider != "ollama",
+        "purpose_outcome": "attempted_failed",
     }
 
 
@@ -161,6 +167,57 @@ class LMSRemediationClient:
             raise ValueError("provider must be an LMS AI provider")
         if self.purpose not in LMS_AI_PURPOSES:
             raise ValueError("purpose must be remediation or alt_text")
+
+    @classmethod
+    def bind_if_allowed(
+        cls,
+        *,
+        department_id: str,
+        purpose: str,
+        actor_id: str | None = None,
+        job_id: str | None = None,
+        scan_id: str | None = None,
+        cloud_file_id: str | None = None,
+        session_factory: SessionFactory = _default_session_factory,
+        provider_factory: ProviderFactory = _default_provider_factory,
+        decrypt_api_key: Decryptor = _default_decryptor,
+        environment: Mapping[str, str] | None = None,
+    ) -> "LMSRemediationClient | None":
+        """Fresh-resolve one purpose and return an immutable binding if allowed.
+
+        This check deliberately does not resolve credentials or construct a
+        provider. It is an early fail-closed gate only; every client operation
+        performs its own policy and credential checks again before dispatch.
+        """
+        session = None
+        try:
+            if not isinstance(department_id, str) or not department_id:
+                return None
+            session = session_factory()
+            department = session.get(Department, department_id)
+            if department is None:
+                return None
+            decision = resolve_lms_ai_policy(department, purpose)
+            if not decision.allowed or decision.provider is None:
+                return None
+            return cls(
+                department_id=department_id,
+                provider=decision.provider,
+                purpose=purpose,
+                actor_id=actor_id,
+                job_id=job_id,
+                scan_id=scan_id,
+                cloud_file_id=cloud_file_id,
+                session_factory=session_factory,
+                provider_factory=provider_factory,
+                decrypt_api_key=decrypt_api_key,
+                environment=environment,
+            )
+        except Exception:
+            return None
+        finally:
+            if session is not None:
+                session.close()
 
     def generate_text_sync(
         self,
@@ -328,9 +385,19 @@ class LMSRemediationClient:
             model=model,
         )
         if post_audit_error is not None:
-            return self._failure("post_call_audit_failed", model=model)
+            return self._failure(
+                "post_call_audit_failed",
+                model=model,
+                ai_used=call_made,
+                external_ai_used=call_made and self.provider != "ollama",
+            )
         if call_error is not None or response is None:
-            return self._failure(call_error or "provider_call_failed", model=model)
+            return self._failure(
+                call_error or "provider_call_failed",
+                model=model,
+                ai_used=call_made,
+                external_ai_used=call_made and self.provider != "ollama",
+            )
         return _compatible_result(response, model=model)
 
     async def _invoke_and_close(
@@ -540,11 +607,23 @@ class LMSRemediationClient:
             if session is not None:
                 session.close()
 
-    def _failure(self, error_code: str, *, model: str | None = None) -> dict[str, Any]:
+    def _failure(
+        self,
+        error_code: str,
+        *,
+        model: str | None = None,
+        ai_used: bool = False,
+        external_ai_used: bool = False,
+    ) -> dict[str, Any]:
         return {
             "success": False,
             "error": error_code,
             "inference_time": 0.0,
             "provider": self.provider,
             "model": model or "",
+            "ai_used": ai_used,
+            "external_ai_used": external_ai_used,
+            "purpose_outcome": (
+                "attempted_failed" if ai_used else "denied_at_dispatch"
+            ),
         }

@@ -1092,6 +1092,196 @@ class TestWriteback:
         assert data["issues_introduced"] == 0
         scanner_instance.remediate_content_item.assert_awaited_once()
 
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_content_remediation_defaults_to_deterministic_without_policy_lookup(
+        self, mock_get_client, client, mock_session, override_deps
+    ):
+        cf = _make_cloud_file(content_source="page", content_body="<p>Hi</p>")
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+        credential = MagicMock(id="cred-1")
+        mock_get_client.return_value = (credential, AsyncMock())
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                side_effect=AssertionError("policy lookup forbidden without intent"),
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            scanner = AsyncMock()
+            scanner.remediate_content_item.return_value = {
+                "success": True,
+                "fixed_count": 1,
+            }
+            scanner_cls.return_value = scanner
+            response = client.post(f"/canvas/content/{cf.id}/remediate")
+
+        assert response.status_code == 200
+        assert response.json()["ai_used"] is False
+        assert response.json()["external_ai_used"] is False
+        scanner.remediate_content_item.assert_awaited_once_with(
+            cf,
+            remediation_client=None,
+            alt_text_client=None,
+            requested_purposes=set(),
+        )
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_requested_html_ai_denied_returns_403_before_canvas_or_remediation(
+        self, mock_get_client, client, mock_session, override_deps
+    ):
+        cf = _make_cloud_file(content_source="page", content_body="<p>Hi</p>")
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                return_value=None,
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            response = client.post(
+                f"/canvas/content/{cf.id}/remediate", json={"use_ai": True}
+            )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "LMS AI remediation is not permitted"
+        mock_get_client.assert_not_awaited()
+        scanner_cls.assert_not_called()
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_alt_text_policy_is_independent_and_denial_remains_manual(
+        self, mock_get_client, client, mock_session, override_deps
+    ):
+        cf = _make_cloud_file(
+            content_source="page", content_body="<img src='/files/1'>"
+        )
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+        mock_get_client.return_value = (MagicMock(id="cred-1"), AsyncMock())
+        remediation_client = MagicMock(provider="ollama", purpose="remediation")
+
+        def bind(**kwargs):
+            return remediation_client if kwargs["purpose"] == "remediation" else None
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                side_effect=bind,
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            scanner = AsyncMock()
+            scanner.remediate_content_item.return_value = {
+                "success": True,
+                "fixed_count": 0,
+            }
+            scanner_cls.return_value = scanner
+            response = client.post(
+                f"/canvas/content/{cf.id}/remediate",
+                json={"use_ai": True, "generate_alt_text": True},
+            )
+
+        assert response.status_code == 200
+        call = scanner.remediate_content_item.await_args
+        assert call.kwargs["remediation_client"] is remediation_client
+        assert call.kwargs["alt_text_client"] is None
+        decisions = response.json()["purpose_decisions"]
+        assert decisions == {
+            "remediation": "allowed_not_used",
+            "alt_text": "denied_at_dispatch",
+        }
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_dispatch_revocation_and_canvas_close_failure_preserve_authoritative_truth(
+        self, mock_get_client, client, mock_session, override_deps, caplog
+    ):
+        cf = _make_cloud_file(content_source="page", content_body="<p>Hi</p>")
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+        remediation_client = MagicMock(provider="gemini", purpose="remediation")
+        api_client = AsyncMock()
+        api_client.close.side_effect = RuntimeError("SENSITIVE CLOSE DETAIL")
+        mock_get_client.return_value = (MagicMock(id="cred-1"), api_client)
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                return_value=remediation_client,
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            scanner = AsyncMock()
+            scanner.remediate_content_item.return_value = {
+                "success": False,
+                "error": "policy_denied",
+                "ai_used": False,
+                "external_ai_used": False,
+                "provider": None,
+                "purpose_decisions": {
+                    "remediation": "denied_at_dispatch",
+                    "alt_text": "not_requested",
+                },
+            }
+            scanner_cls.return_value = scanner
+            response = client.post(
+                f"/canvas/content/{cf.id}/remediate", json={"use_ai": True}
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is False
+        assert data["error"] == "Content remediation failed"
+        assert data["error_code"] == "REMEDIATION_FAILED"
+        assert data["ai_used"] is False
+        assert data["external_ai_used"] is False
+        assert data["purpose_decisions"]["remediation"] == "denied_at_dispatch"
+        assert "SENSITIVE" not in str(data)
+        assert "SENSITIVE CLOSE DETAIL" not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_provider_attempt_and_canvas_close_failure_preserve_usage_truth(
+        self, mock_get_client, client, mock_session, override_deps, caplog
+    ):
+        cf = _make_cloud_file(content_source="page", content_body="<p>Hi</p>")
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+        api_client = AsyncMock()
+        api_client.close.side_effect = RuntimeError("raw close secret")
+        mock_get_client.return_value = (MagicMock(id="cred-1"), api_client)
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                return_value=MagicMock(provider="gemini", purpose="remediation"),
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            scanner = AsyncMock()
+            scanner.remediate_content_item.return_value = {
+                "success": False,
+                "error": "provider_call_failed",
+                "ai_used": True,
+                "external_ai_used": True,
+                "provider": "gemini",
+                "purpose_decisions": {
+                    "remediation": "attempted_failed",
+                    "alt_text": "not_requested",
+                },
+            }
+            scanner_cls.return_value = scanner
+            response = client.post(
+                f"/canvas/content/{cf.id}/remediate", json={"use_ai": True}
+            )
+
+        data = response.json()
+        assert data["success"] is False
+        assert data["ai_used"] is True
+        assert data["external_ai_used"] is True
+        assert data["provider"] == "gemini"
+        assert data["purpose_decisions"]["remediation"] == "attempted_failed"
+        assert "secret" not in str(data).lower()
+        assert "raw close secret" not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
     def test_remediating_a_file_row_is_refused_with_a_reason(
         self, client, mock_session, override_deps
     ):

@@ -204,6 +204,63 @@ def build_dispatch_mutation_client(
     return client, sessions, created
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"lms_ai_enabled": False},
+        {"lms_ai_provider": "bogus"},
+        {"lms_ai_purposes": ["remediation", "remediation"]},
+        {"lms_ai_purposes": ["alt_text"]},
+    ],
+)
+def test_bind_if_allowed_fails_closed_without_provider_or_credentials(overrides):
+    from src.ai.lms_remediation_client import LMSRemediationClient
+
+    decrypt = MagicMock(side_effect=AssertionError("must not decrypt"))
+    provider_factory = MagicMock(side_effect=AssertionError("must not construct"))
+    session = FakeSession(department(**overrides))
+
+    client = LMSRemediationClient.bind_if_allowed(
+        department_id="dept-1",
+        purpose="remediation",
+        actor_id="user-1",
+        cloud_file_id="file-1",
+        session_factory=lambda: session,
+        provider_factory=provider_factory,
+        decrypt_api_key=decrypt,
+        environment={},
+    )
+
+    assert client is None
+    assert session.closed is True
+    decrypt.assert_not_called()
+    provider_factory.assert_not_called()
+
+
+def test_bind_if_allowed_returns_purpose_bound_client_from_fresh_policy():
+    from src.ai.lms_remediation_client import LMSRemediationClient
+
+    session = FakeSession(
+        department(lms_ai_provider="ollama", lms_ai_purposes=["alt_text"])
+    )
+    client = LMSRemediationClient.bind_if_allowed(
+        department_id="dept-1",
+        purpose="alt_text",
+        actor_id="user-1",
+        cloud_file_id="file-1",
+        session_factory=lambda: session,
+        environment={"OLLAMA_HOST": "http://127.0.0.1:11434"},
+    )
+
+    assert client is not None
+    assert client.department_id == "dept-1"
+    assert client.provider == "ollama"
+    assert client.purpose == "alt_text"
+    assert client.actor_id == "user-1"
+    assert client.cloud_file_id == "file-1"
+    assert session.closed is True
+
+
 def test_import_and_denied_execution_do_not_load_provider_implementations():
     script = """
 import sys
@@ -408,6 +465,8 @@ def test_ollama_accepts_loopback_and_passes_exact_host_to_real_config(host):
     result = client.generate_text_sync("prompt")
 
     assert result["success"] is True
+    assert result["ai_used"] is True
+    assert result["external_ai_used"] is False
     assert created[0][0] is ProviderType.OLLAMA
     expected_host = host.replace("localhost", "127.0.0.1")
     assert created[0][1].host == expected_host
@@ -522,6 +581,7 @@ def test_provider_failure_is_sanitized_closed_and_never_falls_back():
 
     assert result["success"] is False
     assert result["error"] == "provider_call_failed"
+    assert result["purpose_outcome"] == "attempted_failed"
     assert "secret" not in str(result)
     assert factory.call_count == 1
     assert provider.closed == 1
@@ -749,6 +809,9 @@ def test_second_recheck_denies_revocation_or_provider_change(changed, error_code
     result = client.generate_text_sync("prompt")
 
     assert result["error"] == error_code
+    assert result["ai_used"] is False
+    assert result["external_ai_used"] is False
+    assert result["purpose_outcome"] == "denied_at_dispatch"
     factory.assert_not_called()
     final_audit = sessions.created[-1].added[0]
     assert final_audit.details["call_made"] is False
@@ -785,6 +848,9 @@ def test_dispatch_recheck_uses_current_byok_snapshot_after_rotation():
     result = client.generate_text_sync("prompt")
 
     assert result["success"] is True
+    assert result["ai_used"] is True
+    assert result["external_ai_used"] is True
+    assert result["purpose_outcome"] == "used"
     assert created[0].api_key == "key-for-replacement"
     assert sessions.created[-1].added[0].details["credential_source"] == (
         "department_byok"
