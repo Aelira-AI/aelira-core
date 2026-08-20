@@ -134,7 +134,7 @@ tests/           pytest suite
 | OCR & print | Tesseract (via OCRmyPDF), Ghostscript, qpdf |
 | LaTeX & conversion | TeX Live (pdflatex/LuaTeX), LaTeXML, Pandoc |
 
-The full annotated dependency inventory — every major dependency and what it does — is in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md); the pinned set is [requirements.txt](requirements.txt). Local AI model recommendations and hardware tiers are in [docs/deployment/local-ai-models.md](docs/deployment/local-ai-models.md).
+The full annotated dependency inventory — every major dependency and what it does — is in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md); the pinned set is [requirements.txt](requirements.txt). Local AI model recommendations and hardware tiers are in [docs/deployment/local-ai-models.md](docs/deployment/local-ai-models.md). Administrators should also read the [LMS AI policy, readiness, egress, and revocation guide](docs/deployment/lms-ai-policy.md).
 
 ## Development
 

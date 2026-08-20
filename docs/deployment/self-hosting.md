@@ -1,5 +1,7 @@
 # Self-hosting
 
+> Using AI for LMS remediation is a separate account-wide authorization boundary. Read [LMS AI policy and provider readiness](lms-ai-policy.md) before enabling a cloud or Ollama lane.
+
 Aelira Core is built to run entirely on infrastructure you control:
 PostgreSQL, Redis, and either a cloud LLM provider or a local one (Ollama).
 

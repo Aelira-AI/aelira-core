@@ -471,6 +471,115 @@ def test_ollama_accepts_loopback_and_passes_exact_host_to_real_config(host):
     expected_host = host.replace("localhost", "127.0.0.1")
     assert created[0][1].host == expected_host
     assert created[0][1].api_key is None
+    assert created[0][1].timeout == 120
+
+
+@pytest.mark.parametrize("probe_ollama", [False, True])
+def test_ollama_resolver_preserves_bounded_runtime_timeout_across_probe(
+    monkeypatch, probe_ollama
+):
+    from src.ai.lms_readiness import resolve_lms_provider_config
+
+    configured = ProviderConfig.default_for_provider(ProviderType.OLLAMA)
+    configured.timeout = 37
+    monkeypatch.setattr(
+        ProviderConfig,
+        "default_for_provider",
+        classmethod(lambda _cls, _provider_type: configured),
+    )
+    observed_probe_configs = []
+
+    def probe(probe_config):
+        observed_probe_configs.append(probe_config)
+        probe_config.timeout = 2
+        return {
+            probe_config.text_model,
+            probe_config.code_model,
+            probe_config.vision_model,
+        }
+
+    runtime_config, readiness = resolve_lms_provider_config(
+        department(byok_provider=None, byok_api_key_encrypted=None),
+        "ollama",
+        environment={"OLLAMA_HOST": "http://localhost:11434"},
+        probe_ollama=probe_ollama,
+        ollama_probe=probe,
+    )
+
+    assert readiness.ready is True
+    assert runtime_config is configured
+    assert runtime_config.timeout == 37
+    if probe_ollama:
+        assert len(observed_probe_configs) == 1
+        assert observed_probe_configs[0] is not runtime_config
+    else:
+        assert observed_probe_configs == []
+
+
+@pytest.mark.parametrize(
+    "configured_timeout,expected_timeout",
+    [(0, 1), (-5, 1), (121, 120), (float("inf"), 120)],
+)
+def test_ollama_resolver_bounds_runtime_timeout(
+    monkeypatch, configured_timeout, expected_timeout
+):
+    from src.ai.lms_readiness import resolve_lms_provider_config
+
+    configured = ProviderConfig.default_for_provider(ProviderType.OLLAMA)
+    configured.timeout = configured_timeout
+    monkeypatch.setattr(
+        ProviderConfig,
+        "default_for_provider",
+        classmethod(lambda _cls, _provider_type: configured),
+    )
+
+    runtime_config, readiness = resolve_lms_provider_config(
+        department(byok_provider=None, byok_api_key_encrypted=None),
+        "ollama",
+        environment={"OLLAMA_HOST": "http://127.0.0.1:11434"},
+    )
+
+    assert readiness.ready is True
+    assert runtime_config.timeout == expected_timeout
+
+
+def test_ollama_readiness_probe_ignores_environment_proxies(monkeypatch):
+    from src.ai.lms_readiness import resolve_lms_provider_config
+
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8443")
+    required_models = ProviderConfig.default_for_provider(ProviderType.OLLAMA)
+    fake_client = MagicMock()
+    fake_client.list.return_value = {
+        "models": [
+            {"name": model}
+            for model in (
+                required_models.text_model,
+                required_models.code_model,
+                required_models.vision_model,
+            )
+        ]
+    }
+    fake_ollama = SimpleNamespace(Client=MagicMock(return_value=fake_client))
+    monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+
+    runtime_config, readiness = resolve_lms_provider_config(
+        department(byok_provider=None, byok_api_key_encrypted=None),
+        "ollama",
+        environment={"OLLAMA_HOST": "http://localhost:11434"},
+        probe_ollama=True,
+    )
+
+    assert readiness.ready is True
+    assert runtime_config.host == "http://127.0.0.1:11434"
+    assert runtime_config.timeout == 120
+    fake_ollama.Client.assert_called_once_with(
+        host="http://127.0.0.1:11434",
+        trust_env=False,
+        follow_redirects=False,
+        timeout=2,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1277,7 +1386,10 @@ def test_ollama_provider_uses_one_host_bound_client_for_full_lifecycle(monkeypat
     assert health["status"] == "healthy"
     assert available is True
     fake_ollama.Client.assert_called_once_with(
-        host=configured_host, follow_redirects=False, timeout=120
+        host=configured_host,
+        trust_env=False,
+        follow_redirects=False,
+        timeout=120,
     )
     assert provider._client is None
     fake_client.chat.assert_called_once()
@@ -1309,5 +1421,37 @@ def test_ollama_client_timeout_is_finite_and_bounded(monkeypatch, configured, ex
     provider._get_client()
 
     fake_ollama.Client.assert_called_once_with(
-        host=config.host, follow_redirects=False, timeout=expected
+        host=config.host,
+        trust_env=False,
+        follow_redirects=False,
+        timeout=expected,
+    )
+
+
+def test_slow_ollama_inference_uses_runtime_timeout_not_probe_timeout(monkeypatch):
+    from src.ai.providers import ollama_provider as provider_module
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:8080")
+    config = ProviderConfig.default_for_provider(ProviderType.OLLAMA)
+    fake_client = MagicMock()
+    fake_client.list.return_value = {"models": [{"name": config.text_model}]}
+    fake_client.chat.return_value = {"message": {"content": "slow success"}}
+    fake_ollama = SimpleNamespace(Client=MagicMock(return_value=fake_client))
+    monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+    monkeypatch.setattr(
+        provider_module.time, "perf_counter", MagicMock(side_effect=[1.0, 3.5])
+    )
+
+    provider = provider_module.OllamaProvider(config)
+    assert asyncio.run(provider.initialize()) is True
+    response = asyncio.run(provider.generate_text("prompt"))
+
+    assert response.success is True
+    assert response.content == "slow success"
+    assert response.inference_time == 2.5
+    fake_ollama.Client.assert_called_once_with(
+        host=config.host,
+        trust_env=False,
+        follow_redirects=False,
+        timeout=120,
     )

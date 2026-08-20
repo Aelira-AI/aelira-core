@@ -53,11 +53,49 @@ export interface BulkExportOptions extends ExportOptions {
   include_certificate?: boolean;
 }
 
+export type LMSAIProvider = 'ollama' | 'gemini' | 'openai' | 'anthropic' | 'xai';
+
+export interface LMSAIProviderReadiness {
+  ready: boolean;
+  reason: string;
+  locality: 'local' | 'remote';
+  credential_source: 'local' | 'department_byok' | 'platform' | null;
+}
+
+export interface LMSAIPolicy {
+  schema_version: 1;
+  policy_revision: number;
+  enabled: boolean;
+  provider: LMSAIProvider | null;
+  remediation_enabled: boolean;
+  alt_text_enabled: boolean;
+  pilot_gemini_approved: boolean;
+  provider_readiness: Record<LMSAIProvider, LMSAIProviderReadiness>;
+}
+
+export interface LMSAIPolicyUpdate {
+  enabled: boolean;
+  provider: LMSAIProvider | null;
+  remediation_enabled: boolean;
+  alt_text_enabled: boolean;
+  expected_revision: number;
+}
+
 // ============================================================================
 // API Methods
 // ============================================================================
 
 export const adminApi = {
+  getLMSAIPolicy: async (): Promise<LMSAIPolicy> => {
+    const response = await apiClient.get<LMSAIPolicy>('/llm/lms-policy');
+    return response.data;
+  },
+
+  updateLMSAIPolicy: async (policy: LMSAIPolicyUpdate): Promise<LMSAIPolicy> => {
+    const response = await apiClient.put<LMSAIPolicy>('/llm/lms-policy', policy);
+    return response.data;
+  },
+
   // ==================== User Management ====================
 
   /**

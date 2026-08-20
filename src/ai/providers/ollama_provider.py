@@ -67,7 +67,10 @@ class OllamaProvider(LLMProvider):
                 configured_timeout = 120
             timeout = max(1, min(120, configured_timeout))
             self._client = ollama.Client(
-                host=self.host, follow_redirects=False, timeout=timeout
+                host=self.host,
+                trust_env=False,
+                follow_redirects=False,
+                timeout=timeout,
             )
         return self._client
 

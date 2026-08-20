@@ -10,17 +10,21 @@ and a stable failure is returned; the outbound call cannot be undone.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
+
 import math
-import os
+
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from numbers import Real
 from typing import Any, Callable, Mapping
-from urllib.parse import urlsplit
+
 
 from src.ai.lms_policy import LMS_AI_PROVIDERS, LMS_AI_PURPOSES, resolve_lms_ai_policy
+from src.ai.lms_readiness import (
+    canonical_loopback_ollama_host,
+    resolve_lms_provider_config,
+)
 from src.ai.providers.base import LLMResponse
 from src.ai.providers.types import ProviderConfig, ProviderType
 from src.db.models import (
@@ -480,84 +484,28 @@ class LMSRemediationClient:
     def _resolve_credentials(
         self, department: _DepartmentSnapshot
     ) -> tuple[ProviderConfig | None, str | None, str | None]:
-        provider_type = ProviderType(self.provider)
-        config = ProviderConfig.default_for_provider(provider_type)
-        if provider_type is ProviderType.OLLAMA:
-            if (
-                department.byok_provider is not None
-                or department.byok_api_key_encrypted
-            ):
-                return None, None, "ollama_credentials_forbidden"
-            environment = (
-                self.environment if self.environment is not None else os.environ
-            )
-            if environment.get("OLLAMA_API_KEY") or os.environ.get("OLLAMA_API_KEY"):
-                return None, None, "ollama_credentials_forbidden"
-            host = environment.get("OLLAMA_HOST", config.host or "")
-            canonical_host = self._canonical_loopback_ollama_host(host)
-            if canonical_host is None:
-                return None, None, "ollama_host_not_local"
-            config.host = canonical_host
-            config.api_key = None
-            return config, "local", None
-
-        byok_provider = department.byok_provider
-        encrypted_key = department.byok_api_key_encrypted
-        if byok_provider is not None and byok_provider != self.provider:
-            return None, None, "credential_provider_mismatch"
-        if byok_provider == self.provider:
-            if not encrypted_key:
-                return None, None, "credentials_unavailable"
-            try:
-                decrypted_key = self.decrypt_api_key(encrypted_key)
-            except Exception:
-                return None, None, "credential_decryption_failed"
-            if not isinstance(decrypted_key, str) or not decrypted_key:
-                return None, None, "credential_decryption_failed"
-            config.api_key = decrypted_key
-            return config, "department_byok", None
-        if encrypted_key:
-            return None, None, "credential_provider_mismatch"
-
-        environment = self.environment if self.environment is not None else os.environ
-        if (
-            provider_type is ProviderType.GEMINI
-            and department.pilot_gemini_approved is True
-            and environment.get("GEMINI_API_KEY")
-        ):
-            config.api_key = environment["GEMINI_API_KEY"]
-            return config, "platform", None
-        return None, None, "credentials_unavailable"
+        config, readiness = resolve_lms_provider_config(
+            department,
+            self.provider,
+            environment=self.environment,
+            decrypt_api_key=self.decrypt_api_key,
+        )
+        if readiness.ready:
+            return config, readiness.credential_source, None
+        error_codes = {
+            "credentials_forbidden": "ollama_credentials_forbidden",
+            "ambient_key_forbidden": "ollama_credentials_forbidden",
+            "host_not_loopback": "ollama_host_not_local",
+            "credentials_missing": "credentials_unavailable",
+            "credential_invalid": "credential_decryption_failed",
+            "pilot_not_approved": "credentials_unavailable",
+            "platform_key_missing": "credentials_unavailable",
+        }
+        return None, None, error_codes.get(readiness.reason, readiness.reason)
 
     @staticmethod
     def _canonical_loopback_ollama_host(host: object) -> str | None:
-        if not isinstance(host, str) or not host:
-            return None
-        try:
-            parsed = urlsplit(host)
-            if (
-                parsed.scheme not in {"http", "https"}
-                or parsed.username is not None
-                or parsed.password is not None
-                or parsed.query
-                or parsed.fragment
-                or parsed.path not in {"", "/"}
-                or parsed.hostname is None
-            ):
-                return None
-            hostname = parsed.hostname.lower()
-            address = (
-                ipaddress.ip_address("127.0.0.1")
-                if hostname == "localhost"
-                else ipaddress.ip_address(hostname)
-            )
-            if not address.is_loopback:
-                return None
-            literal = "[::1]" if address.version == 6 else "127.0.0.1"
-            port = f":{parsed.port}" if parsed.port is not None else ""
-            return f"{parsed.scheme}://{literal}{port}"
-        except (ValueError, TypeError):
-            return None
+        return canonical_loopback_ollama_host(host)
 
     def _audit_or_error(self, **details: Any) -> str | None:
         session = None

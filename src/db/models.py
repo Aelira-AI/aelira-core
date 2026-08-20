@@ -210,6 +210,10 @@ class Department(Base):
         default=list,
         server_default=text("'[]'::jsonb"),
     )
+    # Optimistic concurrency token for the account-wide admin policy editor.
+    lms_ai_policy_revision = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
 
     __table_args__ = (
         CheckConstraint(

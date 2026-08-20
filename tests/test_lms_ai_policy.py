@@ -2,14 +2,14 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, asdict
-from threading import Event
+from threading import Barrier
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import os
-import time
 import uuid
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import create_engine, text
@@ -45,7 +45,10 @@ POLICY_TEST_DATABASE_SKIP_REASON = (
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    monkeypatch.setattr(
+        "src.api.llm_providers.decrypt_api_key", lambda _value: "test-key"
+    )
     return TestClient(app)
 
 
@@ -85,6 +88,7 @@ def department(**overrides):
         "lms_ai_enabled": False,
         "lms_ai_provider": None,
         "lms_ai_purposes": [],
+        "lms_ai_policy_revision": 0,
         "byok_provider": None,
         "byok_api_key_encrypted": None,
         "pilot_gemini_approved": False,
@@ -408,7 +412,9 @@ def test_policy_request_rejects_unknown_provider_purpose_and_extra_fields():
                 "json": {
                     "enabled": True,
                     "provider": "openai",
-                    "purposes": ["remediation"],
+                    "remediation_enabled": True,
+                    "alt_text_enabled": False,
+                    "expected_revision": 0,
                 }
             },
         ),
@@ -442,16 +448,24 @@ def test_get_policy_is_authenticated_department_scoped_and_secret_free(client):
         lms_ai_purposes=["remediation"],
         byok_api_key_encrypted="must-not-leak",
     )
-    db = override(client, actor=principal(), dept=dept)
+    db = override(client, actor=principal(role=UserRole.ADMIN), dept=dept)
 
     response = client.get("/llm/lms-policy", headers={"Authorization": "Bearer x"})
 
     assert response.status_code == 200
-    assert response.json() == {
-        "enabled": True,
-        "provider": "anthropic",
-        "purposes": ["remediation"],
-        "version": 1,
+    body = response.json()
+    assert body["schema_version"] == 1
+    assert body["policy_revision"] == 0
+    assert body["enabled"] is True
+    assert body["provider"] == "anthropic"
+    assert body["remediation_enabled"] is True
+    assert body["alt_text_enabled"] is False
+    assert set(body["provider_readiness"]) == {
+        "ollama",
+        "gemini",
+        "openai",
+        "anthropic",
+        "xai",
     }
     assert "must-not-leak" not in response.text
     queried_department_id = db.query.return_value.filter.call_args.args[0].right.value
@@ -460,7 +474,7 @@ def test_get_policy_is_authenticated_department_scoped_and_secret_free(client):
 
 
 def test_put_locks_department_row_before_reading_and_mutating_policy(client):
-    dept = department()
+    dept = department(byok_provider="openai", byok_api_key_encrypted="cipher")
     db = MagicMock()
     filtered_query = db.query.return_value.filter.return_value
     filtered_query.with_for_update.return_value.first.return_value = dept
@@ -472,7 +486,13 @@ def test_put_locks_department_row_before_reading_and_mutating_policy(client):
     response = client.put(
         "/llm/lms-policy",
         headers={"Authorization": "Bearer x", "Origin": "http://testserver"},
-        json={"enabled": True, "provider": "openai", "purposes": ["remediation"]},
+        json={
+            "enabled": True,
+            "provider": "openai",
+            "remediation_enabled": True,
+            "alt_text_enabled": False,
+            "expected_revision": 0,
+        },
     )
 
     assert response.status_code == 200
@@ -503,7 +523,13 @@ def test_put_denies_unprivileged_and_course_scoped_callers_before_mutation(
     response = client.put(
         "/llm/lms-policy",
         headers={"Authorization": "Bearer x", "Origin": "http://testserver"},
-        json={"enabled": True, "provider": "openai", "purposes": ["remediation"]},
+        json={
+            "enabled": True,
+            "provider": "openai",
+            "remediation_enabled": True,
+            "alt_text_enabled": False,
+            "expected_revision": 0,
+        },
     )
 
     assert response.status_code == 403
@@ -527,22 +553,25 @@ def test_put_denies_unprivileged_and_course_scoped_callers_before_mutation(
     ],
 )
 def test_put_allows_admins_and_writes_allowlisted_audit_transactionally(client, actor):
-    dept = department()
+    dept = department(byok_provider="xai", byok_api_key_encrypted="cipher")
     db = override(client, actor=actor, dept=dept)
 
     response = client.put(
         "/llm/lms-policy",
         headers={"Authorization": "Bearer x", "Origin": "http://testserver"},
-        json={"enabled": True, "provider": "xai", "purposes": ["alt_text"]},
+        json={
+            "enabled": True,
+            "provider": "xai",
+            "remediation_enabled": False,
+            "alt_text_enabled": True,
+            "expected_revision": 0,
+        },
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "enabled": True,
-        "provider": "xai",
-        "purposes": ["alt_text"],
-        "version": 1,
-    }
+    assert response.json()["policy_revision"] == 1
+    assert response.json()["provider"] == "xai"
+    assert response.json()["alt_text_enabled"] is True
     assert db.commit.call_count == 1
     audit = next(
         call.args[0]
@@ -553,9 +582,22 @@ def test_put_allows_admins_and_writes_allowlisted_audit_transactionally(client, 
     assert audit.department_id == "dept-1"
     assert audit.user_id == "user-1"
     assert audit.details == {
-        "old": {"enabled": False, "provider": None, "purposes": []},
-        "new": {"enabled": True, "provider": "xai", "purposes": ["alt_text"]},
-        "version": 1,
+        "old": {
+            "enabled": False,
+            "provider": None,
+            "remediation_enabled": False,
+            "alt_text_enabled": False,
+        },
+        "new": {
+            "enabled": True,
+            "provider": "xai",
+            "remediation_enabled": False,
+            "alt_text_enabled": True,
+        },
+        "old_revision": 0,
+        "new_revision": 1,
+        "schema_version": 1,
+        "outcome": "updated",
     }
     serialized = str(audit.details).lower()
     assert not any(
@@ -565,14 +607,20 @@ def test_put_allows_admins_and_writes_allowlisted_audit_transactionally(client, 
 
 
 def test_put_rolls_back_policy_when_transactional_audit_commit_fails(client):
-    dept = department()
+    dept = department(byok_provider="openai", byok_api_key_encrypted="cipher")
     db = override(client, actor=principal(role=UserRole.ADMIN), dept=dept)
     db.commit.side_effect = RuntimeError("database unavailable")
 
     response = client.put(
         "/llm/lms-policy",
         headers={"Authorization": "Bearer x", "Origin": "http://testserver"},
-        json={"enabled": True, "provider": "openai", "purposes": ["remediation"]},
+        json={
+            "enabled": True,
+            "provider": "openai",
+            "remediation_enabled": True,
+            "alt_text_enabled": False,
+            "expected_revision": 0,
+        },
     )
 
     assert response.status_code == 500
@@ -609,12 +657,29 @@ def test_policy_test_database_url_selection(environment, expected):
     POLICY_TEST_DATABASE_URL is None,
     reason=POLICY_TEST_DATABASE_SKIP_REASON,
 )
-def test_concurrent_policy_updates_serialize_audit_transitions_in_postgresql():
-    """The second transaction waits and audits the first transaction's policy."""
+def test_concurrent_policy_updates_serialize_audit_transitions_in_postgresql(
+    monkeypatch,
+):
+    """A row lock lets exactly one revision-zero policy update commit."""
 
+    from src.ai.lms_readiness import PROVIDERS, ProviderReadiness
     from src.api.llm_providers import LMSAIPolicyUpdate, update_lms_ai_policy
 
     assert POLICY_TEST_DATABASE_URL is not None
+    monkeypatch.setattr(
+        "src.api.llm_providers.resolve_lms_ai_readiness",
+        lambda *_args, **_kwargs: {
+            provider: ProviderReadiness(
+                ready=True,
+                reason="ready",
+                locality="local" if provider == "ollama" else "remote",
+                credential_source=(
+                    "local" if provider == "ollama" else "department_byok"
+                ),
+            )
+            for provider in PROVIDERS
+        },
+    )
     engine = create_engine(POLICY_TEST_DATABASE_URL)
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
@@ -633,13 +698,20 @@ def test_concurrent_policy_updates_serialize_audit_transitions_in_postgresql():
         lti_course_id=actor.lti_course_id,
     )
     update_x = LMSAIPolicyUpdate(
-        enabled=True, provider="openai", purposes=["remediation"]
+        enabled=True,
+        provider="openai",
+        remediation_enabled=True,
+        alt_text_enabled=False,
+        expected_revision=0,
     )
-    update_y = LMSAIPolicyUpdate(enabled=True, provider="xai", purposes=["alt_text"])
-    a_at_commit = Event()
-    release_a = Event()
-    b_started = Event()
-    b_pid = []
+    update_y = LMSAIPolicyUpdate(
+        enabled=True,
+        provider="xai",
+        remediation_enabled=False,
+        alt_text_enabled=True,
+        expected_revision=0,
+    )
+    start = Barrier(2)
 
     with session_factory() as setup_db:
         setup_db.add(
@@ -662,66 +734,50 @@ def test_concurrent_policy_updates_serialize_audit_transitions_in_postgresql():
         )
         setup_db.commit()
 
-    def update_a():
+    def run_update(update):
         with session_factory() as db:
-            real_commit = db.commit
-
-            def commit_after_release():
-                a_at_commit.set()
-                if not release_a.wait(timeout=10):
-                    raise TimeoutError(
-                        "timed out coordinating first policy transaction"
-                    )
-                real_commit()
-
-            db.commit = commit_after_release
-            return update_lms_ai_policy(update_x, actor, db)
-
-    def update_b():
-        with session_factory() as db:
-            b_pid.append(db.execute(text("SELECT pg_backend_pid()")).scalar_one())
             db.execute(text("SET LOCAL lock_timeout = '10s'"))
-            b_started.set()
-            return update_lms_ai_policy(update_y, actor, db)
+            db.execute(text("SET LOCAL statement_timeout = '15s'"))
+            start.wait(timeout=10)
+            try:
+                response = update_lms_ai_policy(update, actor, db)
+            except HTTPException as exc:
+                db.rollback()
+                return {"status": exc.status_code, "detail": exc.detail}
+            return {"status": 200, "body": response.model_dump()}
 
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            future_a = pool.submit(update_a)
-            assert a_at_commit.wait(timeout=10), "first update never reached commit"
-            future_b = pool.submit(update_b)
-            assert b_started.wait(timeout=10), "second update never started"
+            futures = [
+                pool.submit(run_update, update) for update in (update_x, update_y)
+            ]
+            results = [future.result(timeout=20) for future in futures]
 
-            observed_row_lock_wait = False
-            deadline = time.monotonic() + 10
-            with engine.connect() as monitor:
-                while time.monotonic() < deadline:
-                    wait_event_type = monitor.execute(
-                        text(
-                            "SELECT wait_event_type FROM pg_stat_activity WHERE pid = :pid"
-                        ),
-                        {"pid": b_pid[0]},
-                    ).scalar_one_or_none()
-                    if wait_event_type == "Lock":
-                        observed_row_lock_wait = True
-                        break
-                    if future_b.done():
-                        break
-                    time.sleep(0.02)
-
-            release_a.set()
-            future_a.result(timeout=10)
-            future_b.result(timeout=10)
-            assert (
-                observed_row_lock_wait
-            ), "second update did not block on the first update's department row lock"
+        successes = [result for result in results if result["status"] == 200]
+        conflicts = [result for result in results if result["status"] == 409]
+        assert len(successes) == 1
+        assert len(conflicts) == 1
+        winner = successes[0]["body"]
+        assert winner["policy_revision"] == 1
+        assert conflicts[0]["detail"]["code"] == "policy_revision_conflict"
+        assert conflicts[0]["detail"]["reason"] == "stale_revision"
+        assert conflicts[0]["detail"]["current"]["policy_revision"] == 1
 
         with session_factory() as verify_db:
             stored = verify_db.query(Department).filter_by(id=department_id).one()
             assert {
                 "enabled": stored.lms_ai_enabled,
                 "provider": stored.lms_ai_provider,
-                "purposes": stored.lms_ai_purposes,
-            } == {"enabled": True, "provider": "xai", "purposes": ["alt_text"]}
+                "remediation_enabled": "remediation" in stored.lms_ai_purposes,
+                "alt_text_enabled": "alt_text" in stored.lms_ai_purposes,
+                "policy_revision": stored.lms_ai_policy_revision,
+            } == {
+                "enabled": winner["enabled"],
+                "provider": winner["provider"],
+                "remediation_enabled": winner["remediation_enabled"],
+                "alt_text_enabled": winner["alt_text_enabled"],
+                "policy_revision": winner["policy_revision"],
+            }
             audits = (
                 verify_db.query(AuditLog)
                 .filter(
@@ -731,28 +787,16 @@ def test_concurrent_policy_updates_serialize_audit_transitions_in_postgresql():
                 .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
                 .all()
             )
-            assert [
-                (audit.details["old"], audit.details["new"]) for audit in audits
-            ] == [
-                (
-                    {"enabled": False, "provider": None, "purposes": []},
-                    {
-                        "enabled": True,
-                        "provider": "openai",
-                        "purposes": ["remediation"],
-                    },
-                ),
-                (
-                    {
-                        "enabled": True,
-                        "provider": "openai",
-                        "purposes": ["remediation"],
-                    },
-                    {"enabled": True, "provider": "xai", "purposes": ["alt_text"]},
-                ),
-            ]
+            assert len(audits) == 1
+            assert audits[0].details["old_revision"] == 0
+            assert audits[0].details["new_revision"] == 1
+            assert audits[0].details["new"] == {
+                "enabled": winner["enabled"],
+                "provider": winner["provider"],
+                "remediation_enabled": winner["remediation_enabled"],
+                "alt_text_enabled": winner["alt_text_enabled"],
+            }
     finally:
-        release_a.set()
         with session_factory() as cleanup_db:
             cleanup_db.query(AuditLog).filter_by(department_id=department_id).delete()
             cleanup_db.query(User).filter_by(id=user_id).delete()
