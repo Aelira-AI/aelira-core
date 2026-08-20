@@ -20,7 +20,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import fitz  # PyMuPDF - for reading/analyzing PDFs
@@ -732,8 +732,15 @@ class VisionStrategy:
     # IoU threshold for matching AI blocks to structure elements
     IOU_THRESHOLD = 0.5
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        ai_client: Any = None,
+        allow_legacy_provider_manager: bool = False,
+    ) -> None:
         self._confidence_calc = ConfidenceCalculator()
+        self._ai_client = ai_client
+        self._allow_legacy_provider_manager = allow_legacy_provider_manager
 
     def fix(self, pdf_path: str, page_num: int = 0) -> ReadingOrderFixResult:
         """Fix reading order for a single page using AI vision.
@@ -750,14 +757,18 @@ class VisionStrategy:
         if not HAS_PIKEPDF:
             return ReadingOrderFixResult(success=False, error="pikepdf required")
 
-        try:
-            from src.ai.providers import get_provider_manager
+        ai_client = self._ai_client
+        if ai_client is None and self._allow_legacy_provider_manager:
+            try:
+                from src.ai.providers import get_provider_manager
 
-            ai_client = get_provider_manager()
-        except Exception as exc:
-            return ReadingOrderFixResult(
-                success=False, error=f"AI provider unavailable: {exc}"
-            )
+                ai_client = get_provider_manager()
+            except Exception as exc:
+                return ReadingOrderFixResult(
+                    success=False, error=f"AI provider unavailable: {exc}"
+                )
+        if ai_client is None:
+            return ReadingOrderFixResult(success=False, error="AI provider unavailable")
 
         try:
             # 1. Render page to image

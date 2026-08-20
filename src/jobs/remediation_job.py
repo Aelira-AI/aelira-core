@@ -32,6 +32,11 @@ from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
 from ..ai.lms_remediation_client import LMSRemediationClient
+from ..education.remediation.base import (
+    IssueCategory,
+    classify_issue_category,
+    merge_partitioned_manual_issues,
+)
 from ..utils.security import (
     PERSISTED_CANVAS_ORIGIN_ERROR,
     require_persisted_canvas_origin,
@@ -48,15 +53,7 @@ _EXECUTION_CONTEXT_TEXT_FIELDS = {
 }
 _EXECUTION_CONTEXT_TEXT_RE = re.compile(r"^[A-Za-z0-9_./:-]+$")
 _ALLOWED_PURPOSES = ("remediation", "alt_text")
-_DOCUMENT_ALT_CATEGORIES = {
-    "alt_text",
-    "alternative_text",
-    "image",
-    "image_description",
-    "image_of_text",
-    "missing_alt_text",
-    "missing_figure_caption",
-}
+
 _LMS_PROVIDERS = {
     CloudProvider.CANVAS.value,
     CloudProvider.BLACKBOARD.value,
@@ -122,18 +119,27 @@ def sanitize_execution_context(value: Any) -> Dict[str, Any]:
 
 def _partition_authoritative_document_issues(
     issues: List[Dict[str, Any]],
+    *,
+    partition_visual: bool = True,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Keep embedded-image work out of the one-client document remediator."""
     automatic: List[Dict[str, Any]] = []
     manual: List[Dict[str, Any]] = []
     for issue in issues:
-        raw_category = (
-            issue.get("type") or issue.get("category") or issue.get("issue_type") or ""
+        classification = classify_issue_category(issue, authoritative=True)
+        target = (
+            manual
+            if (
+                (
+                    partition_visual
+                    and classification.category
+                    in {IssueCategory.ALT_TEXT, IssueCategory.CHART}
+                )
+                or classification.manual_reason is not None
+            )
+            else automatic
         )
-        normalized = (
-            str(raw_category).strip().lower().replace("-", "_").replace(" ", "_")
-        )
-        (manual if normalized in _DOCUMENT_ALT_CATEGORIES else automatic).append(issue)
+        target.append(issue)
     return automatic, manual
 
 
@@ -262,7 +268,7 @@ async def process_remediation_job(
             ScanType.IMAGE,
         ):
             issues, embedded_alt_manual = _partition_authoritative_document_issues(
-                issues
+                issues, partition_visual=alt_text_client is None
             )
         logger.info(
             "Processing remediation issues",
@@ -290,7 +296,8 @@ async def process_remediation_job(
                 "scan_id": scan_id,
             }
 
-        effective_ai_client = ai_client if lms_policy_authoritative else None
+        effective_ai_client = ai_client
+        effective_alt_text_client = alt_text_client
         effective_use_ai = (
             effective_ai_client is not None if lms_policy_authoritative else True
         )
@@ -300,8 +307,11 @@ async def process_remediation_job(
             issues=issues,
             use_ai=effective_use_ai,
             ai_client=effective_ai_client,
+            alt_text_client=effective_alt_text_client,
             allow_legacy_nested_ai=not lms_policy_authoritative,
-            allow_embedded_alt=not lms_policy_authoritative,
+            allow_embedded_alt=(
+                effective_alt_text_client is not None or not lms_policy_authoritative
+            ),
         )
 
         if not remediator:
@@ -319,8 +329,23 @@ async def process_remediation_job(
                 "error": "remediation_failed",
                 "scan_id": scan_id,
             }
+        if not hasattr(remediation_result, "total_issues"):
+            remediation_result.total_issues = sum(
+                int(getattr(remediation_result, field, 0) or 0)
+                for field in (
+                    "fixed_count",
+                    "manual_count",
+                    "failed_count",
+                    "skipped_count",
+                )
+            )
         if embedded_alt_manual:
-            remediation_result.manual_count += len(embedded_alt_manual)
+            merge_partitioned_manual_issues(
+                remediation_result,
+                embedded_alt_manual,
+                reason="alt_text_client_unavailable",
+                purpose="manual_review",
+            )
 
         # Decide the authoritative LMS outcome before any success notification,
         # fix/audit row, completed status, or remediation metadata can escape.
@@ -335,6 +360,8 @@ async def process_remediation_job(
                 "fixed_count": remediation_result.fixed_count,
                 "manual_count": remediation_result.manual_count,
                 "failed_count": remediation_result.failed_count,
+                "skipped_count": remediation_result.skipped_count,
+                "total_issues": remediation_result.total_issues,
                 "scan_id": scan_id,
             }
         if lms_policy_authoritative and (
@@ -350,6 +377,8 @@ async def process_remediation_job(
                 "fixed_count": 0,
                 "manual_count": remediation_result.manual_count,
                 "failed_count": remediation_result.failed_count,
+                "skipped_count": remediation_result.skipped_count,
+                "total_issues": remediation_result.total_issues,
                 "scan_id": scan_id,
             }
 
@@ -507,6 +536,7 @@ async def process_remediation_job(
                 "manual_count": remediation_result.manual_count,
                 "failed_count": remediation_result.failed_count,
                 "skipped_count": remediation_result.skipped_count,
+                "total_issues": remediation_result.total_issues,
                 "scan_id": scan_id,
                 "artifact_required": False,
             }
@@ -517,6 +547,7 @@ async def process_remediation_job(
             "manual_count": remediation_result.manual_count,
             "failed_count": remediation_result.failed_count,
             "skipped_count": remediation_result.skipped_count,
+            "total_issues": remediation_result.total_issues,
             "output_file": remediation_result.output_file,
             "backup_path": backup_path,
             "compliance_improvement": remediation_result.improvement,
@@ -778,6 +809,7 @@ def _get_remediator_for_scan_type(
     issues: List[Dict[str, Any]],
     use_ai: bool,
     ai_client: Any = None,
+    alt_text_client: Any = None,
     allow_legacy_nested_ai: bool = True,
     allow_embedded_alt: bool = True,
 ) -> Optional[Any]:
@@ -807,28 +839,44 @@ def _get_remediator_for_scan_type(
             from ..education.remediation.pdf_remediator import PdfRemediator
 
             return PdfRemediator(
-                file_path=file_path, issues=issues, config=config, ai_client=ai_client
+                file_path=file_path,
+                issues=issues,
+                config=config,
+                ai_client=ai_client,
+                alt_text_client=alt_text_client,
             )
 
         elif scan_type in ("WORD", "word", "DOCX", "docx"):
             from ..education.remediation.docx_remediator import DocxRemediator
 
             return DocxRemediator(
-                file_path=file_path, issues=issues, config=config, ai_client=ai_client
+                file_path=file_path,
+                issues=issues,
+                config=config,
+                ai_client=ai_client,
+                alt_text_client=alt_text_client,
             )
 
         elif scan_type in ("POWERPOINT", "powerpoint", "PPTX", "pptx"):
             from ..education.remediation.pptx_remediator import PptxRemediator
 
             return PptxRemediator(
-                file_path=file_path, issues=issues, config=config, ai_client=ai_client
+                file_path=file_path,
+                issues=issues,
+                config=config,
+                ai_client=ai_client,
+                alt_text_client=alt_text_client,
             )
 
         elif scan_type in ("EXCEL", "excel", "XLSX", "xlsx"):
             from ..education.remediation.xlsx_remediator import XlsxRemediator
 
             return XlsxRemediator(
-                file_path=file_path, issues=issues, config=config, ai_client=ai_client
+                file_path=file_path,
+                issues=issues,
+                config=config,
+                ai_client=ai_client,
+                alt_text_client=alt_text_client,
             )
 
         else:
@@ -1039,6 +1087,12 @@ async def handle_remediation_job(
                 purpose="remediation", **binding
             )
             if remediation_client is None:
+                raise RemediationJobFailed("policy_not_permitted")
+        if "alt_text" in requested:
+            alt_text_client = LMSRemediationClient.bind_if_allowed(
+                purpose="alt_text", **binding
+            )
+            if alt_text_client is None:
                 raise RemediationJobFailed("policy_not_permitted")
 
     job_data = {

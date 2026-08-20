@@ -2,17 +2,36 @@
 
 import base64
 import asyncio
+from functools import wraps
 import time
 import os
 import httpx
 import logging
 from pathlib import Path
+from types import MappingProxyType
 from typing import Dict, Any, List
 from PIL import Image
 
 from src.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _tracked_analysis(method):
+    """Reset request-local usage once and aggregate nested analysis calls."""
+
+    @wraps(method)
+    async def wrapped(self, *args, **kwargs):
+        outermost = self._analysis_depth == 0
+        if outermost:
+            self._reset_usage_metadata()
+        self._analysis_depth += 1
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            self._analysis_depth -= 1
+
+    return wrapped
 
 
 class ImageAltTextGenerator:
@@ -33,6 +52,9 @@ class ImageAltTextGenerator:
         self.use_gemini = False
         self.ollama_host = ""
         self.ollama_fallback = ""
+        self._analysis_depth = 0
+        self._usage = {}
+        self._reset_usage_metadata()
         if allow_legacy_transport:
             self.settings = get_settings()
             self.gemini_api_key = self.settings.gemini_api_key
@@ -42,11 +64,63 @@ class ImageAltTextGenerator:
             self.ollama_host = self.settings.ollama_host
             self.ollama_fallback = self.settings.ollama_fallback_vision
 
+    def _reset_usage_metadata(self) -> None:
+        self._usage = {
+            "ai_used": False,
+            "external_ai_used": False,
+            "providers_attempted": [],
+            "provider": None,
+            "model": None,
+            "outcome": "allowed_not_used",
+        }
+
+    @property
+    def usage_metadata(self):
+        """Return a bounded, immutable snapshot of the latest public analysis."""
+        return MappingProxyType(
+            {
+                **self._usage,
+                "providers_attempted": tuple(self._usage["providers_attempted"]),
+            }
+        )
+
+    def _record_attempt(self, provider: str, *, external: bool) -> None:
+        if provider not in {"gemini", "ollama", "anthropic", "openai", "xai", "local"}:
+            provider = "unknown"
+        if provider != "unknown" and provider not in self._usage["providers_attempted"]:
+            self._usage["providers_attempted"].append(provider)
+        self._usage["external_ai_used"] = self._usage["external_ai_used"] or external
+        self._usage["provider"] = provider if provider != "unknown" else None
+        self._usage["outcome"] = "attempted_failed"
+
+    def _record_result(self, *, provider: str, model: Any, success: bool) -> None:
+        self._usage["provider"] = provider if provider != "unknown" else None
+        self._usage["model"] = (
+            model
+            if isinstance(model, str)
+            and 0 < len(model) <= 200
+            and model.isprintable()
+            and "\x00" not in model
+            else None
+        )
+        if success:
+            self._usage["ai_used"] = True
+            self._usage["outcome"] = "used"
+
     async def _generate_vision(
         self, image_path: str, prompt: str, max_tokens: int = 300
     ) -> tuple[str, float, str, str]:
         """Dispatch vision through the injected LMS client or explicit legacy path."""
         if self.lms_client is not None:
+            bound_provider = getattr(self.lms_client, "provider", None)
+            provider = (
+                bound_provider.casefold()
+                if isinstance(bound_provider, str)
+                and bound_provider.casefold()
+                in {"gemini", "ollama", "anthropic", "openai", "xai", "local"}
+                else "unknown"
+            )
+            self._record_attempt(provider, external=provider not in {"ollama", "local"})
             try:
                 image_data = Path(image_path).read_bytes()
                 result = await asyncio.to_thread(
@@ -56,13 +130,49 @@ class ImageAltTextGenerator:
                     max_tokens=max_tokens,
                 )
             except Exception:
+                self._record_result(provider=provider, model=None, success=False)
                 return "ERROR: provider_call_failed", 0.0, "none", ""
-            provider = result.get("provider") or getattr(
-                self.lms_client, "provider", "none"
-            )
+            if not isinstance(result, dict):
+                self._record_result(provider=provider, model=None, success=False)
+                return "ERROR: invalid_provider_response", 0.0, provider, ""
+            if (
+                result.get("success") is False
+                and result.get("ai_used") is False
+                and result.get("external_ai_used") is False
+                and result.get("purpose_outcome") == "denied_at_dispatch"
+                and provider != "unknown"
+            ):
+                self._usage.update(
+                    {
+                        "ai_used": False,
+                        "external_ai_used": False,
+                        "providers_attempted": [],
+                        "provider": provider,
+                        "model": None,
+                        "outcome": "denied_at_dispatch",
+                    }
+                )
+                return (
+                    f"ERROR: {result.get('error', 'policy_denied')}",
+                    result.get("inference_time", 0.0),
+                    provider,
+                    "",
+                )
+            if provider == "unknown":
+                result_provider = result.get("provider")
+                if isinstance(result_provider, str) and result_provider.casefold() in {
+                    "gemini",
+                    "ollama",
+                    "anthropic",
+                    "openai",
+                    "xai",
+                    "local",
+                }:
+                    provider = result_provider.casefold()
             model = result.get("model", "")
             elapsed = result.get("inference_time", 0.0)
             if not result.get("success"):
+                self._record_result(provider=provider, model=model, success=False)
                 return (
                     f"ERROR: {result.get('error', 'provider_call_failed')}",
                     elapsed,
@@ -71,7 +181,9 @@ class ImageAltTextGenerator:
                 )
             content = result.get("content")
             if not isinstance(content, str) or not content.strip():
+                self._record_result(provider=provider, model=model, success=False)
                 return "ERROR: invalid_provider_response", elapsed, provider, model
+            self._record_result(provider=provider, model=model, success=True)
             return content.strip(), elapsed, provider, model
 
         if not self.allow_legacy_transport:
@@ -79,14 +191,24 @@ class ImageAltTextGenerator:
 
         provider = "gemini"
         if self.use_gemini:
+            self._record_attempt("gemini", external=True)
             content, elapsed = await self._generate_with_gemini(
                 image_path, prompt, max_tokens=max_tokens
             )
             if not content.startswith("ERROR:"):
+                self._record_result(
+                    provider="gemini", model=self.vision_model, success=True
+                )
                 return content, elapsed, provider, self.vision_model
             logger.warning("Gemini vision failed; trying explicit legacy Ollama")
         provider = "ollama"
+        self._record_attempt("ollama", external=False)
         content, elapsed = await self._generate_with_ollama(image_path, prompt)
+        self._record_result(
+            provider="ollama",
+            model=self.ollama_fallback,
+            success=not content.startswith("ERROR:"),
+        )
         return content, elapsed, provider, self.ollama_fallback
 
     def _encode_image(self, image_path: str) -> str:
@@ -266,6 +388,7 @@ class ImageAltTextGenerator:
             logger.error(f"Ollama fallback error: {e}")
             return f"ERROR: {e}", elapsed
 
+    @_tracked_analysis
     async def generate_alt_text(
         self, image_path: str, context: str = None, educational_context: bool = True
     ) -> Dict[str, Any]:
@@ -343,6 +466,7 @@ Focus on the main visual elements and purpose.{context_info}"""
             },
         }
 
+    @_tracked_analysis
     async def batch_generate_alt_text(
         self,
         image_paths: List[str],
@@ -390,6 +514,7 @@ Focus on the main visual elements and purpose.{context_info}"""
             "results": results,
         }
 
+    @_tracked_analysis
     async def validate_alt_text(
         self, image_path: str, existing_alt_text: str, context: str = None
     ) -> Dict[str, Any]:
@@ -510,6 +635,7 @@ Common issues to check for:
                 "model": model,
             }
 
+    @_tracked_analysis
     async def detect_image_type(
         self, image_path: str, context: str = None
     ) -> Dict[str, Any]:
@@ -641,6 +767,7 @@ Respond in this exact JSON format:
                 "model": model,
             }
 
+    @_tracked_analysis
     async def describe_chart_or_graph(
         self, image_path: str, context: str = None, detail_level: str = "standard"
     ) -> Dict[str, Any]:
@@ -793,6 +920,7 @@ Important guidelines:
                 "model": model,
             }
 
+    @_tracked_analysis
     async def analyze_image_comprehensive(
         self, image_path: str, context: str = None, existing_alt_text: str = None
     ) -> Dict[str, Any]:
@@ -895,6 +1023,7 @@ Important guidelines:
         result["total_inference_time"] = time.perf_counter() - start_time
         return result
 
+    @_tracked_analysis
     async def batch_analyze_images(
         self,
         image_paths: List[str],
@@ -972,6 +1101,7 @@ Important guidelines:
             "results": results,
         }
 
+    @_tracked_analysis
     async def score_alt_text_quality(
         self, image_path: str, alt_text: str, context: str = None
     ) -> Dict[str, Any]:
@@ -1310,6 +1440,7 @@ Respond in this exact JSON format:
             "note": "Scored using heuristics (AI response parsing failed)",
         }
 
+    @_tracked_analysis
     async def batch_score_alt_text_quality(
         self,
         items: List[Dict[str, str]],

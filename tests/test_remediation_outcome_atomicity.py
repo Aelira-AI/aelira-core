@@ -2,6 +2,7 @@
 
 import importlib.util
 import os
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,7 +12,9 @@ from fastapi import HTTPException
 from sqlalchemy import inspect
 
 from src.auth.dependencies import AuthenticatedPrincipal
+from src.api.education._shared import RemediationOptions
 from src.db.models import (
+    AuditLog,
     CloudFile,
     CloudProvider,
     RemediationOutcome,
@@ -165,6 +168,9 @@ class _TransactionDB:
         self.rollbacks += 1
         self.pending.clear()
 
+    def refresh(self, value):
+        return None
+
 
 def _principal():
     return AuthenticatedPrincipal(
@@ -200,6 +206,7 @@ def _scan(path, scan_type=ScanType.WORD):
         file_name=path.name,
         status=ScanStatus.PROCESSING,
         remediation_outcome=None,
+        completed_at=None,
         result=SimpleNamespace(issues=[{"description": "heading"}]),
     )
 
@@ -373,6 +380,255 @@ async def test_generic_success_commits_fixes_audit_status_and_cloud_once(tmp_pat
     assert cloud_file.has_remediated_version is True
 
 
+def test_issue_normalization_copies_valid_persisted_input_without_mutating_it():
+    from src.api.education.remediation_routes import _normalize_issues_for_remediation
+
+    raw_metadata = {"preserved": ["value"]}
+    raw_issue = {"id": "issue-1", "category": "heading", "metadata": raw_metadata}
+
+    normalized = _normalize_issues_for_remediation([raw_issue])
+
+    assert raw_issue == {
+        "id": "issue-1",
+        "category": "heading",
+        "metadata": {"preserved": ["value"]},
+    }
+    assert normalized[0] is not raw_issue
+    assert normalized[0]["metadata"] is not raw_metadata
+    assert normalized[0]["metadata"]["preserved"] is not raw_metadata["preserved"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed_issues",
+    [
+        pytest.param({"unexpected": "SENSITIVE content"}, id="wrapper-missing-details"),
+        pytest.param({"details": None}, id="wrapper-details-none"),
+        pytest.param({"details": {"SENSITIVE": "content"}}, id="wrapper-details-dict"),
+        pytest.param({"details": "SENSITIVE content"}, id="wrapper-details-string"),
+        pytest.param("SENSITIVE container", id="container-string"),
+        pytest.param(17, id="container-number"),
+        pytest.param([{"metadata": "SENSITIVE metadata"}], id="metadata-string"),
+        pytest.param([{"metadata": ["SENSITIVE metadata"]}], id="metadata-list"),
+        pytest.param([{"metadata": None}], id="metadata-none"),
+        pytest.param(["SENSITIVE issue"], id="issue-not-dict"),
+        pytest.param(
+            [{"metadata": {}, "nodes": {"SENSITIVE": "node"}}],
+            id="nodes-not-list",
+        ),
+        pytest.param(
+            [{"metadata": {}, "nodes": ["SENSITIVE node"]}],
+            id="node-not-dict",
+        ),
+    ],
+)
+async def test_malformed_persisted_issues_fail_once_without_provider_or_raw_leakage(
+    tmp_path, malformed_issues, caplog
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _scan(path)
+    scan.result.issues = malformed_issues
+    db = _TransactionDB(None)
+    audit = MagicMock()
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch("src.education.remediation.DocxRemediator") as remediator,
+        patch("src.security.audit_service.AuditService", return_value=audit),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(scan.id, MagicMock(), db=db, principal=_principal())
+
+    assert caught.value.status_code == 500
+    assert caught.value.detail == "Remediation failed. Please try again."
+    assert db.commits == 0
+    assert db.rollbacks == 1
+    assert scan.status == ScanStatus.PROCESSING
+    assert scan.remediation_outcome is None
+    manager.assert_not_called()
+    remediator.assert_not_called()
+    audit.log_remediation_complete.assert_not_called()
+    audit.log_remediation_failed.assert_called_once()
+    failure = audit.log_remediation_failed.call_args.kwargs
+    assert failure["error"] == "invalid_scan_result"
+    assert "SENSITIVE" not in str(failure)
+    assert "SENSITIVE" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_response_construction_failure_precedes_success_audit_and_commit(
+    tmp_path,
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _scan(path)
+    db = _TransactionDB(None)
+    result = _result(path, fixed_count=0, manual_count=1)
+
+    class ExplodingCategory:
+        @property
+        def value(self):
+            raise RuntimeError("SENSITIVE response construction failure")
+
+    result.manual_issues = [
+        SimpleNamespace(
+            issue_id="manual-1",
+            category=ExplodingCategory(),
+            severity=SimpleNamespace(value="high"),
+            description="manual issue",
+            reason="manual",
+            recommendation="review",
+        )
+    ]
+    remediator = MagicMock()
+    remediator.remediate.return_value = result
+    audit = MagicMock()
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch("src.education.remediation.DocxRemediator", return_value=remediator),
+        patch(
+            "src.api.education.remediation_routes.get_provider_manager",
+            return_value=object(),
+        ),
+        patch("src.security.audit_service.AuditService", return_value=audit),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(scan.id, MagicMock(), db=db, principal=_principal())
+
+    assert caught.value.status_code == 500
+    assert db.commits == 0
+    assert db.rollbacks == 1
+    assert scan.status == ScanStatus.PROCESSING
+    audit.log_remediation_complete.assert_not_called()
+    audit.log_remediation_failed.assert_called_once()
+    assert (
+        audit.log_remediation_failed.call_args.kwargs["error"]
+        == "remediation_exception"
+    )
+
+
+@pytest.mark.asyncio
+async def test_lone_surrogate_response_fails_before_success_audit_commit_or_state(
+    tmp_path,
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _scan(path)
+    db = _TransactionDB(None)
+    result = _result(path)
+    result.warnings = ["SENSITIVE lone surrogate: \ud800"]
+    remediator = MagicMock()
+    remediator.remediate.return_value = result
+    audit = MagicMock()
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch("src.education.remediation.DocxRemediator", return_value=remediator),
+        patch(
+            "src.api.education.remediation_routes.get_provider_manager",
+            return_value=object(),
+        ),
+        patch("src.security.audit_service.AuditService", return_value=audit),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(scan.id, MagicMock(), db=db, principal=_principal())
+
+    assert caught.value.status_code == 500
+    assert caught.value.detail == "Remediation failed. Please try again."
+    assert db.commits == 0
+    assert db.rollbacks == 1
+    assert db.pending == []
+    assert db.persisted == []
+    assert scan.status == ScanStatus.PROCESSING
+    assert scan.remediation_outcome is None
+    audit.log_remediation_complete.assert_not_called()
+    audit.log_remediation_failed.assert_called_once()
+    failure = audit.log_remediation_failed.call_args.kwargs
+    assert failure["error"] == "remediation_exception"
+    assert "SENSITIVE" not in str(failure)
+    assert "surrogate" not in str(failure)
+
+
+@pytest.mark.asyncio
+async def test_normal_unicode_response_succeeds_before_commit(tmp_path):
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _scan(path)
+    db = _TransactionDB(None)
+    result = _result(path)
+    result.warnings = ["Résumé ready 😀"]
+
+    response = await _run_document_route(
+        path,
+        scan,
+        db,
+        lambda **kwargs: None,
+        result=result,
+    )
+
+    assert response["warnings"] == ["Résumé ready 😀"]
+    assert db.commits == 1
+    assert db.rollbacks == 0
+    assert scan.status == ScanStatus.COMPLETED
+    assert scan.remediation_outcome == RemediationOutcome.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_postcommit_serialization_failure_cannot_add_second_terminal_audit(
+    tmp_path,
+):
+    import json
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _scan(path)
+    db = _TransactionDB(None)
+    audit = MagicMock()
+    result = _result(path)
+
+    response = await _run_document_route(
+        path,
+        scan,
+        db,
+        lambda **kwargs: audit.log_remediation_complete(**kwargs),
+        result=result,
+    )
+
+    assert db.commits == 1
+    assert db.rollbacks == 0
+    audit.log_remediation_complete.assert_called_once()
+    audit.log_remediation_failed.assert_not_called()
+
+    assert json.dumps(response)
+
+    with patch("json.dumps", side_effect=RuntimeError("serialization failed")):
+        with pytest.raises(RuntimeError, match="serialization failed"):
+            json.dumps(response)
+
+    assert db.commits == 1
+    assert db.rollbacks == 0
+    audit.log_remediation_complete.assert_called_once()
+    audit.log_remediation_failed.assert_not_called()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("fixed_count", "manual_count", "failed_count", "prior", "expected"),
@@ -445,7 +701,48 @@ async def test_generic_artifact_promotion_requires_explicit_successful_verificat
 
 
 @pytest.mark.asyncio
-async def test_generic_zero_issue_scan_persists_honest_noop_without_artifact():
+@pytest.mark.parametrize(
+    "persisted_issues",
+    [
+        pytest.param([], id="list"),
+        pytest.param({"details": []}, id="documented-details-wrapper"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("options", "expected_requested", "expected_outcomes"),
+    [
+        pytest.param(
+            None,
+            (True, True),
+            {
+                "remediation": "allowed_not_used",
+                "alt_text": "allowed_not_used",
+            },
+            id="legacy-defaults-request-both",
+        ),
+        pytest.param(
+            RemediationOptions(use_ai=False),
+            (False, True),
+            {"remediation": "not_requested", "alt_text": "allowed_not_used"},
+            id="explicit-remediation-false",
+        ),
+        pytest.param(
+            RemediationOptions(generate_alt_text=False),
+            (True, False),
+            {"remediation": "allowed_not_used", "alt_text": "not_requested"},
+            id="explicit-alt-text-false",
+        ),
+        pytest.param(
+            RemediationOptions(use_ai=False, generate_alt_text=False),
+            (False, False),
+            {"remediation": "not_requested", "alt_text": "not_requested"},
+            id="explicit-both-false",
+        ),
+    ],
+)
+async def test_generic_zero_issue_scan_audits_honest_atomic_noop(
+    options, expected_requested, expected_outcomes, persisted_issues
+):
     from src.api.education.remediation_routes import remediate_scan
 
     scan = Scan(
@@ -455,19 +752,31 @@ async def test_generic_zero_issue_scan_persists_honest_noop_without_artifact():
         status=ScanStatus.PROCESSING,
         file_name="empty.docx",
     )
-    scan.result = ScanResult(id="result-zero", scan_id=scan.id, issues=[])
-    cloud_file = _cloud_file()
-    cloud_file.last_scan_id = scan.id
-    db = _TransactionDB(cloud_file)
+    scan.result = ScanResult(id="result-zero", scan_id=scan.id, issues=persisted_issues)
+    db = _TransactionDB(None)
+    audit = MagicMock()
 
-    with patch(
-        "src.api.education.remediation_routes.ScanService.get_scan_with_result",
-        return_value=scan,
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
+        ) as bind,
+        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch("src.security.audit_service.AuditService", return_value=audit),
     ):
         result = await remediate_scan(
-            scan.id, MagicMock(), db=db, principal=_principal()
+            scan.id,
+            MagicMock(),
+            options=options,
+            db=db,
+            principal=_principal(),
         )
 
+    bind.assert_not_called()
+    manager.assert_not_called()
     assert result == {
         "success": True,
         "message": "No issues to remediate",
@@ -479,7 +788,69 @@ async def test_generic_zero_issue_scan_persists_honest_noop_without_artifact():
     assert db.commits == 1
     assert scan.status == ScanStatus.COMPLETED
     assert scan.remediation_outcome == RemediationOutcome.NO_OP.value
-    assert cloud_file.has_remediated_version is False
+    audit.log_remediation_complete.assert_called_once()
+    audit.log_remediation_failed.assert_not_called()
+    details = audit.log_remediation_complete.call_args.kwargs
+    assert details["commit"] is False
+    assert (
+        details["remediation_ai_requested"],
+        details["alt_text_requested"],
+    ) == expected_requested
+    assert details["purpose_outcomes"] == expected_outcomes
+    assert details["remediation_ai_attempted"] is False
+    assert details["alt_text_attempted"] is False
+    assert details["remediation_ai_used"] is False
+    assert details["alt_text_used"] is False
+    assert details["remediation_external_ai_used"] is False
+    assert details["alt_text_external_ai_used"] is False
+    assert details["external_ai_used"] is False
+    assert details["providers"] == {}
+    assert details["use_ai"] is False
+    assert details["total_issues"] == 0
+    assert details["fixed_count"] == 0
+    assert details["manual_count"] == 0
+    assert details["failed_count"] == 0
+    assert details["skipped_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_generic_zero_issue_audit_failure_restores_scan_without_commit():
+    from src.api.education.remediation_routes import remediate_scan
+
+    scan = Scan(
+        id="scan-zero-audit-fail",
+        department_id="dept-1",
+        scan_type=ScanType.WORD,
+        status=ScanStatus.PROCESSING,
+        file_name="empty.docx",
+    )
+    scan.result = ScanResult(id="result-zero-audit-fail", scan_id=scan.id, issues=[])
+    original_completed_at = scan.completed_at
+    db = _TransactionDB(None)
+    audit = MagicMock()
+    audit.log_remediation_complete.side_effect = RuntimeError("audit failed")
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch("src.security.audit_service.AuditService", return_value=audit),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(scan.id, MagicMock(), db=db, principal=_principal())
+
+    assert caught.value.status_code == 500
+    assert caught.value.detail == "Remediation failed. Please try again."
+    assert db.commits == 0
+    assert db.rollbacks == 1
+    assert db.pending == []
+    assert db.persisted == []
+    assert scan.status == ScanStatus.PROCESSING
+    assert scan.remediation_outcome is None
+    assert scan.completed_at == original_completed_at
+    audit.log_remediation_complete.assert_called_once()
+    audit.log_remediation_failed.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -495,20 +866,339 @@ async def test_generic_zero_issue_commit_failure_rolls_back_and_restores_scan():
     )
     scan.result = ScanResult(id="result-zero-fail", scan_id=scan.id, issues=[])
     db = _TransactionDB(None, fail_commit=True)
+    audit = MagicMock()
 
     with (
         patch(
             "src.api.education.remediation_routes.ScanService.get_scan_with_result",
             return_value=scan,
         ),
+        patch("src.security.audit_service.AuditService", return_value=audit),
         pytest.raises(HTTPException) as caught,
     ):
         await remediate_scan(scan.id, MagicMock(), db=db, principal=_principal())
 
     assert caught.value.status_code == 500
+    assert caught.value.detail == "Remediation failed. Please try again."
     assert db.rollbacks == 1
     assert scan.status == ScanStatus.PROCESSING
     assert scan.remediation_outcome is None
+    audit.log_remediation_complete.assert_called_once()
+    audit.log_remediation_failed.assert_called_once()
+    failure = audit.log_remediation_failed.call_args.kwargs
+    assert failure["error"] == "remediation_exception"
+    assert failure["commit"] is True
+    assert failure["total_issues"] == 0
+
+
+@pytest.mark.asyncio
+async def test_generic_zero_issue_failure_audit_outage_preserves_stable_response():
+    from src.api.education.remediation_routes import remediate_scan
+
+    scan = Scan(
+        id="scan-zero-audit-outage",
+        department_id="dept-1",
+        scan_type=ScanType.WORD,
+        status=ScanStatus.PROCESSING,
+        file_name="empty.docx",
+    )
+    scan.result = ScanResult(id="result-zero-audit-outage", scan_id=scan.id, issues=[])
+    db = _TransactionDB(None, fail_commit=True)
+    audit = MagicMock()
+    audit.log_remediation_failed.side_effect = RuntimeError("SENSITIVE audit outage")
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch("src.security.audit_service.AuditService", return_value=audit),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(scan.id, MagicMock(), db=db, principal=_principal())
+
+    assert caught.value.status_code == 500
+    assert caught.value.detail == "Remediation failed. Please try again."
+    assert scan.status == ScanStatus.PROCESSING
+    assert scan.remediation_outcome is None
+    audit.log_remediation_failed.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "analysis",
+    [
+        pytest.param("SENSITIVE analysis", id="analysis-not-dict"),
+        pytest.param(
+            {
+                "description": "SENSITIVE description",
+                "type_detection": {"is_decorative": False},
+            },
+            id="description-not-dict",
+        ),
+        pytest.param(
+            {"description": {}, "type_detection": "SENSITIVE type detection"},
+            id="type-detection-not-dict",
+        ),
+        pytest.param(
+            {
+                "description": {"alt_text": ["SENSITIVE alt"]},
+                "type_detection": {"is_decorative": False},
+            },
+            id="alt-text-not-string",
+        ),
+        pytest.param(
+            {
+                "description": {},
+                "type_detection": {"is_decorative": "SENSITIVE bool"},
+            },
+            id="decorative-not-bool",
+        ),
+        pytest.param(
+            {"description": {}, "type_detection": {}},
+            id="decorative-missing",
+        ),
+    ],
+)
+async def test_malformed_image_analysis_fails_once_with_tracked_provider_and_no_leakage(
+    tmp_path, analysis, caplog
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "image.png"
+    path.write_bytes(b"image")
+    scan = _scan(path, scan_type=ScanType.IMAGE)
+    cloud_file = _cloud_file()
+    db = _TransactionDB(cloud_file)
+    audit = MagicMock()
+    client = MagicMock(provider="openai", model="bounded-model")
+    client.analyze_image_sync.return_value = {
+        "success": True,
+        "provider": "openai",
+        "model": "bounded-model",
+    }
+
+    class Generator:
+        def __init__(self, *, lms_client, **kwargs):
+            self.client = lms_client
+
+        async def analyze_image_comprehensive(self, **kwargs):
+            self.client.analyze_image_sync("bounded-image-reference")
+            return analysis
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
+            return_value=client,
+        ),
+        patch("src.api.education.remediation_routes.ImageAltTextGenerator", Generator),
+        patch("src.security.audit_service.AuditService", return_value=audit),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(
+            scan.id,
+            MagicMock(),
+            use_ai=True,
+            db=db,
+            principal=_principal(),
+        )
+
+    assert caught.value.status_code == 500
+    assert caught.value.detail == "Remediation failed. Please try again."
+    assert db.rollbacks == 1
+    assert scan.status == ScanStatus.PROCESSING
+    assert scan.remediation_outcome is None
+    client.analyze_image_sync.assert_called_once()
+    audit.log_remediation_complete.assert_not_called()
+    audit.log_remediation_failed.assert_called_once()
+    failure = audit.log_remediation_failed.call_args.kwargs
+    assert failure["error"] == "invalid_provider_response"
+    assert failure["alt_text_attempted"] is True
+    assert failure["alt_text_external_ai_used"] is True
+    assert failure["providers"] == {"alt_text": "openai"}
+    assert "SENSITIVE" not in str(failure)
+    assert "SENSITIVE" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_image_analysis_missing_optional_alt_text_is_manual_required(tmp_path):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "image.png"
+    path.write_bytes(b"image")
+    scan = _scan(path, scan_type=ScanType.IMAGE)
+    db = _TransactionDB(None)
+    generator = MagicMock()
+    generator.analyze_image_comprehensive = AsyncMock(
+        return_value={
+            "description": {},
+            "type_detection": {"is_decorative": False},
+        }
+    )
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.ImageAltTextGenerator",
+            return_value=generator,
+        ),
+    ):
+        result = await remediate_scan(
+            scan.id, MagicMock(), use_ai=True, db=db, principal=_principal()
+        )
+
+    assert result["success"] is False
+    assert result["message"] == "manual_required"
+    assert result["remediated_alt_text"] == ""
+    assert result["is_decorative"] is False
+    assert scan.status == ScanStatus.FAILED
+    assert scan.remediation_outcome == RemediationOutcome.MANUAL_REQUIRED.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "use_gemini",
+        "gemini_result",
+        "ollama_result",
+        "expected_attempts",
+        "expected_external",
+        "expected_provider",
+        "expected_success",
+    ),
+    [
+        (
+            True,
+            ('{"is_decorative": true, "image_purpose": "decorative"}', 0.1),
+            None,
+            ("gemini",),
+            True,
+            "gemini",
+            True,
+        ),
+        (
+            False,
+            None,
+            ('{"is_decorative": true, "image_purpose": "decorative"}', 0.1),
+            ("ollama",),
+            False,
+            "ollama",
+            True,
+        ),
+        (
+            True,
+            ("ERROR: SENSITIVE gemini failure", 0.1),
+            ('{"is_decorative": true, "image_purpose": "decorative"}', 0.1),
+            ("gemini", "ollama"),
+            True,
+            "ollama",
+            True,
+        ),
+        (
+            True,
+            ("ERROR: SENSITIVE gemini failure", 0.1),
+            ("ERROR: SENSITIVE ollama failure", 0.1),
+            ("gemini", "ollama"),
+            True,
+            "ollama",
+            False,
+        ),
+    ],
+)
+async def test_legacy_image_terminal_audit_uses_generator_transport_metadata(
+    tmp_path,
+    caplog,
+    use_gemini,
+    gemini_result,
+    ollama_result,
+    expected_attempts,
+    expected_external,
+    expected_provider,
+    expected_success,
+):
+    from PIL import Image
+
+    from src.api.education.remediation_routes import remediate_scan
+    from src.education.image_alt_text import ImageAltTextGenerator
+
+    path = tmp_path / "image.png"
+    Image.new("RGB", (10, 10), color="blue").save(path)
+    scan = _scan(path, scan_type=ScanType.IMAGE)
+    db = _TransactionDB(None)
+    audit = MagicMock()
+    settings = SimpleNamespace(
+        gemini_api_key="safe-key" if use_gemini else None,
+        gemini_api_base="https://safe.invalid",
+        gemini_vision_model="gemini-safe",
+        use_gemini=use_gemini,
+        ollama_host="http://localhost:11434",
+        ollama_fallback_vision="llava-safe",
+    )
+
+    patches = [
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch("src.education.image_alt_text.get_settings", return_value=settings),
+        patch("src.security.audit_service.AuditService", return_value=audit),
+    ]
+    if gemini_result is not None:
+        patches.append(
+            patch.object(
+                ImageAltTextGenerator,
+                "_generate_with_gemini",
+                new=AsyncMock(return_value=gemini_result),
+            )
+        )
+    if ollama_result is not None:
+        patches.append(
+            patch.object(
+                ImageAltTextGenerator,
+                "_generate_with_ollama",
+                new=AsyncMock(return_value=ollama_result),
+            )
+        )
+
+    with ExitStack() as stack:
+        for active_patch in patches:
+            stack.enter_context(active_patch)
+        if expected_success:
+            result = await remediate_scan(
+                scan.id, MagicMock(), use_ai=True, db=db, principal=_principal()
+            )
+        else:
+            with pytest.raises(HTTPException) as caught:
+                await remediate_scan(
+                    scan.id, MagicMock(), use_ai=True, db=db, principal=_principal()
+                )
+            assert caught.value.status_code == 500
+            result = {"success": False}
+
+    assert result["success"] is expected_success
+    if expected_success:
+        assert result["remediated_alt_text"] == ""
+        assert result["is_decorative"] is True
+        terminal = audit.log_remediation_complete.call_args.kwargs
+    else:
+        terminal = audit.log_remediation_failed.call_args.kwargs
+    assert terminal["alt_text_attempted"] is True
+    assert terminal["alt_text_used"] is expected_success
+    assert terminal["alt_text_external_ai_used"] is expected_external
+    assert terminal["providers"] == {"alt_text": expected_provider}
+    assert terminal["providers_attempted"] == {"alt_text": expected_attempts}
+    assert terminal["purpose_outcomes"]["alt_text"] == (
+        "used" if expected_success else "attempted_failed"
+    )
+    assert "SENSITIVE" not in str(terminal)
+    assert "SENSITIVE" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -552,7 +1242,320 @@ async def test_image_commit_failure_rolls_back_and_restores_outcome(tmp_path):
 
     assert caught.value.status_code == 500
     assert caught.value.detail == "Remediation failed. Please try again."
-    assert db.commits == 1
-    assert db.rollbacks == 1
+    # The failed atomic transaction is rolled back, then a sanitized terminal
+    # failure audit is attempted in a fresh best-effort transaction.
+    assert db.commits == 2
+    assert db.rollbacks == 2
     assert scan.status == ScanStatus.PROCESSING
     assert scan.remediation_outcome is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_case", "expected_error", "expected_total"),
+    [
+        pytest.param("missing_result", "missing_scan_result", 0),
+        pytest.param("missing_source", "source_file_unavailable", 1),
+        pytest.param("unsupported_type", "unsupported_scan_type", 1),
+    ],
+)
+@pytest.mark.parametrize(
+    ("options", "expected_requested", "expected_outcomes"),
+    [
+        pytest.param(
+            None,
+            (True, True),
+            {"remediation": "allowed_not_used", "alt_text": "allowed_not_used"},
+            id="legacy-both-requested",
+        ),
+        pytest.param(
+            RemediationOptions(use_ai=False),
+            (False, True),
+            {"remediation": "not_requested", "alt_text": "allowed_not_used"},
+            id="remediation-not-requested",
+        ),
+        pytest.param(
+            RemediationOptions(generate_alt_text=False),
+            (True, False),
+            {"remediation": "allowed_not_used", "alt_text": "not_requested"},
+            id="alt-text-not-requested",
+        ),
+        pytest.param(
+            RemediationOptions(use_ai=False, generate_alt_text=False),
+            (False, False),
+            {"remediation": "not_requested", "alt_text": "not_requested"},
+            id="neither-requested",
+        ),
+    ],
+)
+async def test_generic_post_intent_validation_exit_persists_one_bounded_failure_audit(
+    tmp_path,
+    terminal_case,
+    expected_error,
+    expected_total,
+    options,
+    expected_requested,
+    expected_outcomes,
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "source.bin"
+    path.write_bytes(b"not audit content")
+    scan = SimpleNamespace(
+        id="scan-terminal",
+        department_id="dept-1",
+        scan_type=(
+            "unsupported" if terminal_case == "unsupported_type" else ScanType.WORD
+        ),
+        storage_path=(
+            str(tmp_path / "missing.docx")
+            if terminal_case == "missing_source"
+            else str(path)
+        ),
+        file_name="SENSITIVE-original-name.docx",
+        status=ScanStatus.PROCESSING,
+        remediation_outcome=None,
+        completed_at=None,
+        result=(
+            None
+            if terminal_case == "missing_result"
+            else SimpleNamespace(issues=[{"content": "SENSITIVE issue content"}])
+        ),
+    )
+    db = _TransactionDB(None)
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(
+            scan.id,
+            None,
+            options=options,
+            db=db,
+            principal=_principal(),
+        )
+
+    assert caught.value.status_code == 400
+    manager.assert_not_called()
+    audits = [row for row in db.persisted if isinstance(row, AuditLog)]
+    assert len(audits) == 1
+    audit = audits[0]
+    assert audit.action == "remediation_failed"
+    assert audit.status == "failure"
+    assert audit.details["error"] == expected_error
+    assert (
+        audit.details["remediation_ai_requested"],
+        audit.details["alt_text_requested"],
+    ) == expected_requested
+    assert audit.details["purpose_outcomes"] == expected_outcomes
+    assert audit.details["total_issues"] == expected_total
+    assert audit.details["fixed_count"] == 0
+    assert audit.details["manual_count"] == 0
+    assert audit.details["failed_count"] == 0
+    assert audit.details["skipped_count"] == 0
+    assert audit.details["providers"] == {}
+    assert audit.details["use_ai"] is False
+    assert "SENSITIVE" not in str(audit.details)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("options", "allowed_purpose", "expected_outcomes"),
+    [
+        pytest.param(
+            RemediationOptions(use_ai=True, generate_alt_text=False),
+            None,
+            {"remediation": "denied_at_dispatch", "alt_text": "not_requested"},
+            id="remediation-denied",
+        ),
+        pytest.param(
+            RemediationOptions(use_ai=False, generate_alt_text=True),
+            None,
+            {"remediation": "not_requested", "alt_text": "denied_at_dispatch"},
+            id="alt-text-denied",
+        ),
+        pytest.param(
+            RemediationOptions(use_ai=True, generate_alt_text=True),
+            "remediation",
+            {"remediation": "allowed_not_used", "alt_text": "denied_at_dispatch"},
+            id="second-purpose-denied-after-first-allowed",
+        ),
+    ],
+)
+async def test_generic_policy_bind_denial_persists_exactly_one_dispatch_failure_audit(
+    tmp_path, options, allowed_purpose, expected_outcomes
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "source.docx"
+    path.write_bytes(b"document")
+    scan = _scan(path)
+    cloud_file = _cloud_file()
+    db = _TransactionDB(cloud_file)
+    allowed_client = MagicMock(provider="openai", model="bounded-model")
+
+    def bind(*, purpose, **kwargs):
+        return allowed_client if purpose == allowed_purpose else None
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
+            side_effect=bind,
+        ),
+        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(
+            scan.id,
+            None,
+            options=options,
+            db=db,
+            principal=_principal(),
+        )
+
+    assert caught.value.status_code == 403
+    manager.assert_not_called()
+    allowed_client.generate_text_sync.assert_not_called()
+    allowed_client.generate_code_sync.assert_not_called()
+    allowed_client.analyze_image_sync.assert_not_called()
+    audits = [row for row in db.persisted if isinstance(row, AuditLog)]
+    assert len(audits) == 1
+    audit = audits[0]
+    assert audit.action == "remediation_failed"
+    assert audit.status == "failure"
+    assert audit.details["error"] == "policy_not_permitted"
+    assert audit.details["purpose_outcomes"] == expected_outcomes
+    assert audit.details["total_issues"] == 0
+    assert audit.details["fixed_count"] == 0
+    assert audit.details["manual_count"] == 0
+    assert audit.details["failed_count"] == 0
+    assert audit.details["providers"] == {}
+    assert audit.details["use_ai"] is False
+
+
+@pytest.mark.asyncio
+async def test_generic_dispatch_audit_outage_preserves_existing_4xx_without_duplicate():
+    from src.api.education.remediation_routes import remediate_scan
+
+    scan = SimpleNamespace(
+        id="scan-no-result",
+        department_id="dept-1",
+        scan_type=ScanType.WORD,
+        storage_path=None,
+        file_name="file.docx",
+        status=ScanStatus.PROCESSING,
+        remediation_outcome=None,
+        completed_at=None,
+        result=None,
+    )
+    db = _TransactionDB(None)
+    audit = MagicMock()
+    audit.log_remediation_failed.side_effect = RuntimeError("audit unavailable")
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch("src.security.audit_service.AuditService", return_value=audit),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(
+            scan.id,
+            MagicMock(),
+            db=db,
+            principal=_principal(),
+        )
+
+    assert caught.value.status_code == 400
+    assert caught.value.detail == "Scan has no results to remediate"
+    audit.log_remediation_failed.assert_called_once()
+    audit.log_remediation_complete.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_case", "expected_error", "expected_total"),
+    [
+        pytest.param(
+            "unsupported_lms_provider",
+            "unsupported_lms_provider",
+            0,
+            id="unsupported-lms-provider",
+        ),
+        pytest.param(
+            "lms_image_without_intent",
+            "alt_text_not_requested",
+            1,
+            id="image-alt-text-not-requested",
+        ),
+    ],
+)
+async def test_generic_remaining_pre_provider_dispatch_exits_audit_exactly_once(
+    tmp_path, terminal_case, expected_error, expected_total
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    scan_type = (
+        ScanType.IMAGE if terminal_case == "lms_image_without_intent" else ScanType.WORD
+    )
+    path = tmp_path / ("image.png" if scan_type == ScanType.IMAGE else "file.docx")
+    path.write_bytes(b"source")
+    scan = _scan(path, scan_type=scan_type)
+    cloud_file = _cloud_file()
+    if terminal_case == "unsupported_lms_provider":
+        cloud_file.provider = CloudProvider.BLACKBOARD.value
+    db = _TransactionDB(cloud_file)
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed"
+        ) as bind,
+        patch(
+            "src.api.education.remediation_routes.ImageAltTextGenerator"
+        ) as generator,
+        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        pytest.raises(HTTPException) as caught,
+    ):
+        await remediate_scan(
+            scan.id,
+            None,
+            db=db,
+            principal=_principal(),
+        )
+
+    assert caught.value.status_code == 400
+    bind.assert_not_called()
+    manager.assert_not_called()
+    if terminal_case == "unsupported_lms_provider":
+        generator.assert_not_called()
+    else:
+        generator.return_value.analyze_image_comprehensive.assert_not_called()
+    audits = [row for row in db.persisted if isinstance(row, AuditLog)]
+    assert len(audits) == 1
+    audit = audits[0]
+    assert audit.action == "remediation_failed"
+    assert audit.status == "failure"
+    assert audit.details["error"] == expected_error
+    assert audit.details["purpose_outcomes"] == {
+        "remediation": "not_requested",
+        "alt_text": "not_requested",
+    }
+    assert audit.details["total_issues"] == expected_total
+    assert audit.details["fixed_count"] == 0
+    assert audit.details["manual_count"] == 0
+    assert audit.details["failed_count"] == 0
+    assert audit.details["providers"] == {}

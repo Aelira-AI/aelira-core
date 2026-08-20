@@ -692,11 +692,9 @@ class LatexRemediator(BaseRemediator):
         return templates.get(issue.category)
 
     def _get_ai_generated_fix(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Generate fix using AI."""
-        if not self.ai_client:
-            return None
 
         self.result.ai_calls_made += 1
 
@@ -735,10 +733,10 @@ Location: {safe_loc}
 Provide ONLY the fix content, no explanation."""
 
             # Use the AI client (with hasattr guard matching other remediators)
-            if not hasattr(self.ai_client, "generate_text_sync"):
+            if not hasattr(client, "generate_text_sync"):
                 logger.warning("AI client does not support generate_text_sync")
                 return None
-            result = self.ai_client.generate_text_sync(
+            result = client.generate_text_sync(
                 prompt=prompt, max_tokens=200, temperature=0.3
             )
 

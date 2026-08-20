@@ -544,11 +544,9 @@ class HtmlRemediator(BaseRemediator):
         return templates.get(issue.category)
 
     def _get_ai_generated_fix(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Generate fix using AI."""
-        if not self.ai_client:
-            return None
 
         self.result.ai_calls_made += 1
 
@@ -600,7 +598,7 @@ Code snippet: {safe_content}
 
 Provide ONLY the fix content, no explanation."""
 
-            result = self.ai_client.generate_text_sync(
+            result = client.generate_text_sync(
                 prompt=prompt, max_tokens=150, temperature=0.3
             )
 

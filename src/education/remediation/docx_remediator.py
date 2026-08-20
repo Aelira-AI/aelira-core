@@ -133,9 +133,13 @@ class DocxRemediator(BaseRemediator):
         issues: List[Dict[str, Any]],
         config: Optional[RemediationConfig] = None,
         ai_client: Optional[Any] = None,
+        *,
+        alt_text_client: Optional[Any] = None,
     ) -> None:
         """Initialize the Word document remediator."""
-        super().__init__(file_path, issues, config, ai_client)
+        super().__init__(
+            file_path, issues, config, ai_client, alt_text_client=alt_text_client
+        )
         self._document: Optional[Document] = None
 
     def _load_document(self) -> Document:
@@ -674,14 +678,14 @@ Rules:
             if issue.metadata.get("is_decorative"):
                 return ""
             # Use pre-generated alt text from the scanner if available
-            generated_alt = issue.metadata.get(
-                "suggested_alt_text"
-            ) or issue.metadata.get("generated_alt_text")
-            if generated_alt:
-                return generated_alt
-            # Use fix_suggestion if available
-            if issue.fix_suggestion:
-                return issue.fix_suggestion
+            if self.config.allow_legacy_nested_ai:
+                generated_alt = issue.metadata.get(
+                    "suggested_alt_text"
+                ) or issue.metadata.get("generated_alt_text")
+                if generated_alt:
+                    return generated_alt
+                if issue.fix_suggestion:
+                    return issue.fix_suggestion
             # Return None to let AI generation handle it in _generate_fix()
             return None
 
@@ -755,20 +759,17 @@ Rules:
             return "Visit link"
 
     def _get_ai_generated_fix(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Get an AI-generated fix for an issue."""
-        if not self.ai_client:
-            return None
-
         try:
             self.result.ai_calls_made += 1
 
             if issue.category == IssueCategory.ALT_TEXT:
-                return self._generate_alt_text_with_ai(issue, document)
+                return self._generate_alt_text_with_ai(issue, document, client=client)
 
             if issue.category == IssueCategory.LINK:
-                return self._generate_link_text_with_ai(issue)
+                return self._generate_link_text_with_ai(issue, client=client)
 
             return None
 
@@ -777,7 +778,7 @@ Rules:
             return None
 
     def _generate_alt_text_with_ai(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Generate alt text using AI."""
         # Get image context
@@ -817,7 +818,7 @@ Requirements:
 Generate only the alt text, nothing else:"""
 
         try:
-            if hasattr(self.ai_client, "analyze_image_sync"):
+            if hasattr(client, "analyze_image_sync"):
                 try:
                     import zipfile
 
@@ -832,7 +833,7 @@ Generate only the alt text, nothing else:"""
                                 zip_path = f"word/{zip_path}"
                             image_bytes = z.read(zip_path)
 
-                            result = self.ai_client.analyze_image_sync(
+                            result = client.analyze_image_sync(
                                 image_data=image_bytes,
                                 prompt=prompt,
                                 max_tokens=200,
@@ -842,8 +843,8 @@ Generate only the alt text, nothing else:"""
                 except Exception as e:
                     logger.warning(f"DOCX vision AI failed, falling back to text: {e}")
 
-            if hasattr(self.ai_client, "generate_text_sync"):
-                result = self.ai_client.generate_text_sync(
+            if hasattr(client, "generate_text_sync"):
+                result = client.generate_text_sync(
                     prompt=prompt,
                     max_tokens=200,
                     temperature=0.3,
@@ -856,7 +857,9 @@ Generate only the alt text, nothing else:"""
 
         return None
 
-    def _generate_link_text_with_ai(self, issue: RemediationIssue) -> Optional[str]:
+    def _generate_link_text_with_ai(
+        self, issue: RemediationIssue, *, client: Any
+    ) -> Optional[str]:
         """Generate descriptive link text using AI."""
         original_text = issue.original_content or "click here"
         url = issue.metadata.get("url", "")
@@ -877,8 +880,8 @@ Requirements:
 Generate only the link text, nothing else:"""
 
         try:
-            if hasattr(self.ai_client, "generate_text_sync"):
-                result = self.ai_client.generate_text_sync(
+            if hasattr(client, "generate_text_sync"):
+                result = client.generate_text_sync(
                     prompt=prompt,
                     max_tokens=100,
                     temperature=0.3,

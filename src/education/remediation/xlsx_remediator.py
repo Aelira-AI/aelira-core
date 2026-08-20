@@ -79,9 +79,13 @@ class XlsxRemediator(BaseRemediator):
         issues: List[Dict[str, Any]],
         config: Optional[RemediationConfig] = None,
         ai_client: Optional[Any] = None,
+        *,
+        alt_text_client: Optional[Any] = None,
     ):
         """Initialize the Excel remediator."""
-        super().__init__(file_path, issues, config, ai_client)
+        super().__init__(
+            file_path, issues, config, ai_client, alt_text_client=alt_text_client
+        )
         self._workbook: Optional[Any] = None
 
     def _load_document(self) -> Any:
@@ -513,14 +517,15 @@ class XlsxRemediator(BaseRemediator):
         if issue.category == IssueCategory.ALT_TEXT:
             # Use pre-generated alt text from the scanner if available
             # Scanner stores as "suggested_alt_text", check both keys
-            generated_alt = issue.metadata.get(
-                "suggested_alt_text"
-            ) or issue.metadata.get("generated_alt_text")
-            if generated_alt:
-                return generated_alt
-            # Use fix_suggestion if available
-            if issue.fix_suggestion:
-                return issue.fix_suggestion
+            if self.config.allow_legacy_nested_ai:
+                generated_alt = issue.metadata.get(
+                    "suggested_alt_text"
+                ) or issue.metadata.get("generated_alt_text")
+                if generated_alt:
+                    return generated_alt
+                # Use fix_suggestion if available
+                if issue.fix_suggestion:
+                    return issue.fix_suggestion
             # Return None to let AI generation handle it in _generate_fix()
             return None
 
@@ -540,20 +545,19 @@ class XlsxRemediator(BaseRemediator):
         return None
 
     def _get_ai_generated_fix(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Get an AI-generated fix for an issue."""
-        if not self.ai_client:
-            return None
-
         try:
             self.result.ai_calls_made += 1
 
             if issue.category == IssueCategory.SHEET:
-                return self._generate_sheet_name_with_ai(issue, document)
+                return self._generate_sheet_name_with_ai(issue, document, client=client)
 
             if issue.category == IssueCategory.CHART:
-                return self._generate_chart_description_with_ai(issue, document)
+                return self._generate_chart_description_with_ai(
+                    issue, document, client=client
+                )
 
             return None
 
@@ -562,7 +566,7 @@ class XlsxRemediator(BaseRemediator):
             return None
 
     def _generate_sheet_name_with_ai(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Generate a sheet name using AI based on content."""
         sheet_name = issue.metadata.get("sheet_name", document.active.title)
@@ -603,8 +607,8 @@ Requirements:
 Generate only the sheet name, nothing else:"""
 
         try:
-            if hasattr(self.ai_client, "generate_text_sync"):
-                result = self.ai_client.generate_text_sync(
+            if hasattr(client, "generate_text_sync"):
+                result = client.generate_text_sync(
                     prompt=prompt,
                     max_tokens=100,
                     temperature=0.3,
@@ -619,7 +623,7 @@ Generate only the sheet name, nothing else:"""
         return None
 
     def _generate_chart_description_with_ai(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Generate chart description using AI."""
         sheet_name = issue.metadata.get("sheet_name", document.active.title)
@@ -659,8 +663,8 @@ Requirements:
 Generate only the description, nothing else:"""
 
         try:
-            if hasattr(self.ai_client, "generate_text_sync"):
-                result = self.ai_client.generate_text_sync(
+            if hasattr(client, "generate_text_sync"):
+                result = client.generate_text_sync(
                     prompt=prompt,
                     max_tokens=150,
                     temperature=0.3,

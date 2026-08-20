@@ -227,6 +227,13 @@ def _route_result(path):
     )
 
 
+def _successful_route_result(path):
+    result = _route_result(path)
+    result.fixed_count = 1
+    result.manual_count = 0
+    return result
+
+
 def _principal_for(auth_method):
     if auth_method == "lti":
         return AuthenticatedPrincipal(
@@ -565,21 +572,31 @@ async def test_worker_rechecks_requested_purpose_and_uses_current_binding_only()
 
 
 @pytest.mark.asyncio
-async def test_document_alt_intent_never_binds_or_passes_alt_client():
+async def test_document_alt_intent_binds_and_passes_alt_client():
     from src.jobs.remediation_job import handle_remediation_job
 
     job, db = _job_graph(
         context={"alt_text_requested": True, "requested_purposes": ["alt_text"]}
     )
+    current_client = SimpleNamespace(provider="openai")
     process = AsyncMock(return_value={"success": True, "fixed_count": 0})
     with (
-        patch("src.jobs.remediation_job.LMSRemediationClient.bind_if_allowed") as bind,
+        patch(
+            "src.jobs.remediation_job.LMSRemediationClient.bind_if_allowed",
+            return_value=current_client,
+        ) as bind,
         patch("src.jobs.remediation_job.process_remediation_job", new=process),
     ):
         await handle_remediation_job(job, db, MagicMock())
 
-    bind.assert_not_called()
-    assert process.await_args.kwargs["alt_text_client"] is None
+    bind.assert_called_once_with(
+        department_id="dept-1",
+        purpose="alt_text",
+        job_id="job-1",
+        scan_id="scan-1",
+        cloud_file_id="cloud-1",
+    )
+    assert process.await_args.kwargs["alt_text_client"] is current_client
 
 
 @pytest.mark.asyncio
@@ -1199,8 +1216,87 @@ def test_generic_non_lms_omitted_ai_intent_preserves_legacy_true():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("options", "expected_alt"),
+    [
+        pytest.param(None, True, id="omitted-preserves-legacy-generation"),
+        pytest.param(
+            RemediationOptions(generate_alt_text=False),
+            False,
+            id="explicit-false-disables",
+        ),
+        pytest.param(
+            RemediationOptions(generate_alt_text=True),
+            True,
+            id="explicit-true-enables",
+        ),
+    ],
+)
+async def test_generic_non_lms_alt_intent_controls_remediator_config(
+    tmp_path, options, expected_alt
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _route_scan(path, issues=[{"type": "alt_text", "description": "missing"}])
+    db = CloudFileDB([])
+    remediator = MagicMock()
+    remediator.remediate.return_value = _route_result(path)
+    manager = MagicMock()
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.education.remediation.DocxRemediator", return_value=remediator
+        ) as ctor,
+        patch(
+            "src.api.education.remediation_routes.get_provider_manager",
+            return_value=manager,
+        ),
+        patch("src.security.audit_service.AuditService"),
+    ):
+        await remediate_scan(
+            "scan-1",
+            MagicMock(),
+            options=options,
+            db=db,
+            principal=_principal(),
+        )
+
+    kwargs = ctor.call_args.kwargs
+    assert kwargs["config"].fix_alt_text is expected_alt
+    assert kwargs["ai_client"].client is manager
+    if expected_alt:
+        assert kwargs["alt_text_client"].client is manager
+    else:
+        assert kwargs["alt_text_client"] is None
+
+
+def test_generic_lms_alt_text_requires_separate_explicit_body_intent():
+    from src.api.education.remediation_routes import _effective_generate_alt_text
+
+    assert _effective_generate_alt_text(None, lms_backed=True) is False
+    assert _effective_generate_alt_text(RemediationOptions(), lms_backed=True) is False
+    assert (
+        _effective_generate_alt_text(RemediationOptions(use_ai=True), lms_backed=True)
+        is False
+    )
+    assert (
+        _effective_generate_alt_text(
+            RemediationOptions(generate_alt_text=True), lms_backed=True
+        )
+        is True
+    )
+    assert _effective_generate_alt_text(None, lms_backed=False) is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("lms_backed", [False, True])
-async def test_generic_false_remediator_result_is_fatal_before_side_effects(
+async def test_generic_false_remediator_result_emits_one_atomic_terminal_failure_audit(
     tmp_path, lms_backed
 ):
     from src.api.education.remediation_routes import remediate_scan
@@ -1224,20 +1320,25 @@ async def test_generic_false_remediator_result_is_fatal_before_side_effects(
             "src.api.education.remediation_routes.get_provider_manager",
             return_value=object(),
         ),
-        patch("src.security.audit_service.AuditService") as audit,
+        patch(
+            "src.security.audit_service.AuditService", return_value=MagicMock()
+        ) as audit_cls,
     ):
         result = await remediate_scan(
             "scan-1", MagicMock(), db=db, principal=_principal()
         )
 
-    assert result == {
-        "success": False,
-        "message": "remediation_failed",
-        "scan_id": "scan-1",
-    }
-    assert db.added == []
-    assert db.commits == 0
-    audit.assert_not_called()
+    assert result["success"] is False
+    audit = audit_cls.return_value
+    audit.log_remediation_complete.assert_not_called()
+    audit.log_remediation_failed.assert_called_once()
+    details = audit.log_remediation_failed.call_args.kwargs
+    assert details["commit"] is False
+    assert details["error"] == "remediation_failed"
+    assert details["remediation_ai_requested"] is (not lms_backed)
+    assert details["alt_text_requested"] is (not lms_backed)
+    assert "SENSITIVE" not in str(details)
+    assert db.commits == 1
 
 
 @pytest.mark.asyncio
@@ -1340,10 +1441,8 @@ async def test_generic_lms_image_injects_alt_text_client_without_legacy(tmp_path
     assert scan.remediation_outcome == "completed"
     assert not hasattr(scan, "remediation_status")
     assert bind.call_args.kwargs["purpose"] == "alt_text"
-    assert generator_class.call_args.kwargs == {
-        "lms_client": client,
-        "allow_legacy_transport": False,
-    }
+    assert generator_class.call_args.kwargs["lms_client"].client is client
+    assert generator_class.call_args.kwargs["allow_legacy_transport"] is False
     manager.assert_not_called()
 
 
@@ -1441,8 +1540,780 @@ async def test_generic_lms_explicit_true_is_policy_gated_with_exact_client(tmp_p
     assert cls.call_args.kwargs["config"].fix_alt_text is False
     assert [item["id"] for item in cls.call_args.kwargs["issues"]] == ["heading"]
     assert result["manual_count"] == 1
-    assert cls.call_args.kwargs["ai_client"] is client
+    assert cls.call_args.kwargs["ai_client"].client is client
     global_manager.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_lms_partition_materializes_node_manuals_and_preserves_total(
+    tmp_path,
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    issues = [
+        {
+            "id": "duplicate",
+            "category": "heading",
+            "metadata": {"axe_rule_id": "image-alt"},
+            "nodes": [{"target": ["#one"]}, {"target": ["#two"]}],
+        },
+        {"id": "duplicate", "category": "heading"},
+    ]
+    scan = _route_scan(path, issues=issues)
+    db = CloudFileDB([_cloud_file()])
+    remediation_client = MagicMock()
+    remediator = MagicMock()
+    route_result = _route_result(path)
+    route_result.total_issues = 1
+    route_result.manual_count = 0
+    route_result.failed_count = 1
+    route_result.manual_issues = []
+    remediator.remediate.return_value = route_result
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
+            return_value=remediation_client,
+        ),
+        patch(
+            "src.education.remediation.DocxRemediator", return_value=remediator
+        ) as cls,
+        patch("src.security.audit_service.AuditService"),
+    ):
+        result = await remediate_scan(
+            "scan-1",
+            MagicMock(),
+            options=RemediationOptions(use_ai=True, generate_alt_text=False),
+            db=db,
+            principal=_principal(),
+        )
+
+    assert [item["id"] for item in cls.call_args.kwargs["issues"]] == ["duplicate"]
+    remediation_client.analyze_image_sync.assert_not_called()
+    assert result["total_issues"] == 3
+    assert result["manual_count"] == 2
+    assert [item["id"] for item in result["manual_issues"]] == [
+        "duplicate:node:0",
+        "duplicate:node:1",
+    ]
+    assert (
+        result["fixed_count"]
+        + result["manual_count"]
+        + result["failed_count"]
+        + result["skipped_count"]
+        == result["total_issues"]
+    )
+    assert route_result.total_issues == 3
+    assert (
+        route_result.fixed_count
+        + route_result.manual_count
+        + route_result.failed_count
+        + getattr(route_result, "skipped_count", 0)
+        == route_result.total_issues
+    )
+
+
+@pytest.mark.asyncio
+async def test_direct_lms_alt_only_audit_records_actual_purpose_usage(tmp_path):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _route_scan(path, issues=[{"id": "alt", "type": "image-alt"}])
+    db = CloudFileDB([_cloud_file()])
+    alt_client = MagicMock(provider="gemini")
+    alt_client.analyze_image_sync.return_value = {
+        "success": True,
+        "content": "safe result",
+        "ai_used": True,
+        "external_ai_used": True,
+        "provider": "gemini",
+        "purpose_outcome": "used",
+    }
+    route_result = _route_result(path)
+    route_result.fixed_count = 1
+    route_result.manual_count = 0
+    route_result.manual_issues = []
+    remediator = MagicMock()
+
+    def run_remediation():
+        tracked = remediator_class.call_args.kwargs["alt_text_client"]
+        tracked.analyze_image_sync(b"image")
+        return route_result
+
+    remediator.remediate.side_effect = run_remediation
+    audit = MagicMock()
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
+            return_value=alt_client,
+        ) as bind,
+        patch(
+            "src.education.remediation.DocxRemediator", return_value=remediator
+        ) as remediator_class,
+        patch("src.security.audit_service.AuditService", return_value=audit),
+    ):
+        await remediate_scan(
+            "scan-1",
+            MagicMock(),
+            options=RemediationOptions(use_ai=False, generate_alt_text=True),
+            db=db,
+            principal=_principal(),
+        )
+
+    assert [call.kwargs["purpose"] for call in bind.call_args_list] == ["alt_text"]
+    details = audit.log_remediation_complete.call_args.kwargs
+    assert details["remediation_ai_requested"] is False
+    assert details["alt_text_requested"] is True
+    assert details["remediation_ai_used"] is False
+    assert details["alt_text_used"] is True
+    assert details["use_ai"] is True
+    assert details["external_ai_used"] is True
+    assert details["providers"] == {"alt_text": "gemini"}
+    assert details["purpose_outcomes"] == {
+        "remediation": "not_requested",
+        "alt_text": "used",
+    }
+    assert details["failed_count"] == 0
+    assert details["skipped_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_direct_lms_requested_but_unused_audit_does_not_claim_ai_use(tmp_path):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _route_scan(path, issues=[{"id": "heading", "type": "heading"}])
+    db = CloudFileDB([_cloud_file()])
+    client = MagicMock(provider="ollama")
+    remediator = MagicMock()
+    remediator.remediate.return_value = _successful_route_result(path)
+    audit = MagicMock()
+
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
+            return_value=client,
+        ),
+        patch("src.education.remediation.DocxRemediator", return_value=remediator),
+        patch("src.security.audit_service.AuditService", return_value=audit),
+    ):
+        await remediate_scan(
+            "scan-1",
+            MagicMock(),
+            options=RemediationOptions(use_ai=True, generate_alt_text=False),
+            db=db,
+            principal=_principal(),
+        )
+
+    details = audit.log_remediation_complete.call_args.kwargs
+    assert details["remediation_ai_requested"] is True
+    assert details["remediation_ai_used"] is False
+    assert details["alt_text_requested"] is False
+    assert details["alt_text_used"] is False
+    assert details["use_ai"] is False
+    assert details["external_ai_used"] is False
+    assert details["providers"] == {}
+    assert details["purpose_outcomes"]["remediation"] == "allowed_not_used"
+
+
+class LegacyProviderManager:
+    """Real legacy manager shape: no LMS usage metadata in responses."""
+
+    def __init__(self, provider, *, success=True):
+        self.provider = provider
+        self.success = success
+        self.calls = []
+
+    def _result(self, method):
+        self.calls.append(method)
+        if self.success:
+            return {
+                "success": True,
+                "content": "safe generated result",
+                "provider": self.provider,
+            }
+        return {
+            "success": False,
+            "error": "provider_call_failed",
+            "provider": self.provider,
+        }
+
+    def generate_text_sync(self, *args, **kwargs):
+        return self._result("generate_text_sync")
+
+    def generate_code_sync(self, *args, **kwargs):
+        return self._result("generate_code_sync")
+
+    def analyze_image_sync(self, *args, **kwargs):
+        return self._result("analyze_image_sync")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "success", "expected_used", "expected_external", "expected_outcome"),
+    [
+        pytest.param("gemini", True, True, True, "used", id="gemini-success"),
+        pytest.param("ollama", True, True, False, "used", id="ollama-success"),
+        pytest.param(
+            "gemini", False, False, True, "attempted_failed", id="provider-failure"
+        ),
+    ],
+)
+async def test_generic_legacy_manager_call_through_audits_actual_remediation_use(
+    tmp_path,
+    provider,
+    success,
+    expected_used,
+    expected_external,
+    expected_outcome,
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _route_scan(path, issues=[{"id": "heading", "type": "heading"}])
+    db = CloudFileDB([])
+    manager = LegacyProviderManager(provider, success=success)
+    remediator = MagicMock()
+
+    def run_remediation():
+        tracked = remediator_class.call_args.kwargs["ai_client"]
+        tracked.generate_text_sync("safe prompt")
+        return _successful_route_result(path)
+
+    remediator.remediate.side_effect = run_remediation
+    audit = MagicMock()
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.get_provider_manager",
+            return_value=manager,
+        ),
+        patch(
+            "src.education.remediation.DocxRemediator", return_value=remediator
+        ) as remediator_class,
+        patch("src.security.audit_service.AuditService", return_value=audit),
+    ):
+        await remediate_scan(
+            "scan-1",
+            MagicMock(),
+            options=RemediationOptions(use_ai=True, generate_alt_text=False),
+            db=db,
+            principal=_principal(),
+        )
+
+    assert manager.calls == ["generate_text_sync"]
+    details = audit.log_remediation_complete.call_args.kwargs
+    assert details["use_ai"] is expected_used
+    assert details["remediation_ai_used"] is expected_used
+    assert details["external_ai_used"] is expected_external
+    assert details["remediation_external_ai_used"] is expected_external
+    assert details["providers"] == {"remediation": provider}
+    assert details["purpose_outcomes"]["remediation"] == expected_outcome
+
+
+@pytest.mark.asyncio
+async def test_generic_legacy_manager_alt_only_call_through_audits_alt_purpose(
+    tmp_path,
+):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _route_scan(path, issues=[{"id": "alt", "type": "image-alt"}])
+    db = CloudFileDB([])
+    manager = LegacyProviderManager("gemini")
+    remediator = MagicMock()
+
+    def run_remediation():
+        tracked = remediator_class.call_args.kwargs["alt_text_client"]
+        tracked.analyze_image_sync(b"safe image")
+        return _successful_route_result(path)
+
+    remediator.remediate.side_effect = run_remediation
+    audit = MagicMock()
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.get_provider_manager",
+            return_value=manager,
+        ),
+        patch(
+            "src.education.remediation.DocxRemediator", return_value=remediator
+        ) as remediator_class,
+        patch("src.security.audit_service.AuditService", return_value=audit),
+    ):
+        await remediate_scan(
+            "scan-1",
+            MagicMock(),
+            options=RemediationOptions(use_ai=False, generate_alt_text=True),
+            db=db,
+            principal=_principal(),
+        )
+
+    assert manager.calls == ["analyze_image_sync"]
+    details = audit.log_remediation_complete.call_args.kwargs
+    assert details["use_ai"] is True
+    assert details["remediation_ai_used"] is False
+    assert details["alt_text_used"] is True
+    assert details["external_ai_used"] is True
+    assert details["providers"] == {"alt_text": "gemini"}
+    assert details["purpose_outcomes"] == {
+        "remediation": "not_requested",
+        "alt_text": "used",
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_lms_denial_metadata_remains_authoritative_in_audit(tmp_path):
+    from src.api.education.remediation_routes import remediate_scan
+
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    scan = _route_scan(path, issues=[{"id": "heading", "type": "heading"}])
+    db = CloudFileDB([_cloud_file()])
+    client = MagicMock(provider="gemini")
+    client.generate_text_sync.return_value = {
+        "success": False,
+        "error": "policy_denied",
+        "ai_used": False,
+        "external_ai_used": False,
+        "provider": "gemini",
+        "purpose_outcome": "denied_at_dispatch",
+    }
+    remediator = MagicMock()
+
+    def run_remediation():
+        tracked = remediator_class.call_args.kwargs["ai_client"]
+        tracked.generate_text_sync("safe prompt")
+        return _successful_route_result(path)
+
+    remediator.remediate.side_effect = run_remediation
+    audit = MagicMock()
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
+            return_value=client,
+        ),
+        patch(
+            "src.education.remediation.DocxRemediator", return_value=remediator
+        ) as remediator_class,
+        patch("src.security.audit_service.AuditService", return_value=audit),
+    ):
+        await remediate_scan(
+            "scan-1",
+            MagicMock(),
+            options=RemediationOptions(use_ai=True, generate_alt_text=False),
+            db=db,
+            principal=_principal(),
+        )
+
+    details = audit.log_remediation_complete.call_args.kwargs
+    assert details["use_ai"] is False
+    assert details["remediation_ai_used"] is False
+    assert details["external_ai_used"] is False
+    assert details["providers"] == {"remediation": "gemini"}
+    assert details["purpose_outcomes"]["remediation"] == "denied_at_dispatch"
+
+
+def test_usage_tracker_records_generation_exception_then_reraises_without_payload():
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    class ExplodingManager:
+        provider = "gemini"
+
+        def generate_code_sync(self, payload):
+            raise RuntimeError(payload)
+
+    tracker = _PurposeUsageTracker(
+        ExplodingManager(), requested=True, authoritative=False
+    )
+    with pytest.raises(RuntimeError, match="SENSITIVE"):
+        tracker.generate_code_sync("SENSITIVE")
+
+    assert tracker.ai_used is False
+    assert tracker.call_attempted is True
+    assert tracker.external_ai_used is True
+    assert tracker.provider_used == "gemini"
+    assert tracker.outcome == "attempted_failed"
+
+
+@pytest.mark.parametrize(
+    (
+        "result",
+        "expected_attempted",
+        "expected_used",
+        "expected_external",
+        "expected_outcome",
+    ),
+    [
+        pytest.param(
+            {
+                "success": True,
+                "ai_used": False,
+                "external_ai_used": False,
+                "purpose_outcome": "denied_at_dispatch",
+                "provider": "ollama",
+            },
+            True,
+            True,
+            True,
+            "used",
+            id="success-cannot-understate-use",
+        ),
+        pytest.param(
+            {
+                "success": False,
+                "ai_used": True,
+                "external_ai_used": False,
+                "purpose_outcome": "used",
+                "provider": "ollama",
+            },
+            True,
+            False,
+            True,
+            "attempted_failed",
+            id="failure-cannot-claim-success-or-locality",
+        ),
+        pytest.param(
+            {
+                "success": False,
+                "ai_used": False,
+                "external_ai_used": False,
+                "purpose_outcome": "denied_at_dispatch",
+                "error": "provider_call_failed",
+            },
+            False,
+            False,
+            False,
+            "denied_at_dispatch",
+            id="trusted-stable-error-does-not-invalidate-denial",
+        ),
+    ],
+)
+def test_bound_tracker_derives_one_coherent_state_from_trusted_client(
+    result,
+    expected_attempted,
+    expected_used,
+    expected_external,
+    expected_outcome,
+):
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    client = MagicMock(provider="gemini")
+    client.generate_text_sync.return_value = result
+    tracker = _PurposeUsageTracker(
+        client,
+        requested=True,
+        authoritative=True,
+        trusted_lms_metadata=True,
+    )
+
+    tracker.generate_text_sync("safe")
+
+    assert tracker.call_attempted is expected_attempted
+    assert tracker.ai_used is expected_used
+    assert tracker.external_ai_used is expected_external
+    assert tracker.provider_used == "gemini"
+    assert tracker.outcome == expected_outcome
+
+
+def test_bound_gemini_result_cannot_spoof_ollama_provider_or_model():
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    client = MagicMock(provider="gemini")
+    client.generate_text_sync.return_value = {
+        "success": True,
+        "provider": "ollama",
+        "model": "bad\x00model",
+        "external_ai_used": False,
+    }
+    tracker = _PurposeUsageTracker(
+        client,
+        requested=True,
+        authoritative=True,
+        trusted_lms_metadata=True,
+    )
+
+    tracker.generate_text_sync("safe")
+
+    assert tracker.provider_used == "gemini"
+    assert tracker.model_used is None
+    assert tracker.external_ai_used is True
+
+
+@pytest.mark.parametrize("provider", ["unknown-vendor", "gemini\x00", ["ollama"]])
+def test_legacy_unknown_provider_is_omitted_and_external_use_is_conservative(provider):
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    client = MagicMock(spec=["generate_text_sync"])
+    client.generate_text_sync.return_value = {
+        "success": False,
+        "provider": provider,
+        "external_ai_used": False,
+    }
+    tracker = _PurposeUsageTracker(client, requested=True, authoritative=False)
+
+    tracker.generate_text_sync("safe")
+
+    assert tracker.call_attempted is True
+    assert tracker.provider_used is None
+    assert tracker.external_ai_used is True
+    assert tracker.outcome == "attempted_failed"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "credentials_unavailable",
+        "provider_changed",
+        "policy_resolution_failed",
+        "audit_write_failed",
+        "purpose_operation_mismatch",
+        "policy_not_permitted",
+        "policy_denied",
+    ],
+)
+def test_trusted_coherent_denial_tuple_is_no_call_for_any_stable_error(error):
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    client = MagicMock(provider="gemini")
+    client.generate_text_sync.return_value = {
+        "success": False,
+        "error": error,
+        "ai_used": False,
+        "external_ai_used": False,
+        # Bound-client identity is authoritative; response relabeling is ignored.
+        "provider": "ollama",
+        "purpose_outcome": "denied_at_dispatch",
+    }
+    tracker = _PurposeUsageTracker(
+        client,
+        requested=True,
+        authoritative=True,
+        trusted_lms_metadata=True,
+    )
+
+    tracker.generate_text_sync("safe")
+
+    assert tracker.call_attempted is False
+    assert tracker.ai_used is False
+    assert tracker.external_ai_used is False
+    assert tracker.provider_used == "gemini"
+    assert tracker.outcome == "denied_at_dispatch"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(
+            {
+                "success": False,
+                "ai_used": True,
+                "external_ai_used": False,
+                "purpose_outcome": "denied_at_dispatch",
+            },
+            id="ai-used-contradicts-denial",
+        ),
+        pytest.param(
+            {
+                "success": False,
+                "ai_used": False,
+                "external_ai_used": True,
+                "purpose_outcome": "denied_at_dispatch",
+            },
+            id="external-use-contradicts-denial",
+        ),
+        pytest.param(
+            {
+                "success": False,
+                "ai_used": False,
+                "external_ai_used": False,
+            },
+            id="missing-denial-outcome",
+        ),
+    ],
+)
+def test_trusted_incoherent_denial_tuple_remains_conservative(result):
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    client = MagicMock(provider="gemini")
+    client.generate_text_sync.return_value = result
+    tracker = _PurposeUsageTracker(
+        client,
+        requested=True,
+        authoritative=True,
+        trusted_lms_metadata=True,
+    )
+
+    tracker.generate_text_sync("safe")
+
+    assert tracker.call_attempted is True
+    assert tracker.ai_used is False
+    assert tracker.external_ai_used is True
+    assert tracker.provider_used == "gemini"
+    assert tracker.outcome == "attempted_failed"
+
+
+def test_trusted_denial_with_unknown_bound_provider_remains_conservative():
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    client = MagicMock(provider="unknown-vendor")
+    client.generate_text_sync.return_value = {
+        "success": False,
+        "ai_used": False,
+        "external_ai_used": False,
+        "purpose_outcome": "denied_at_dispatch",
+    }
+    tracker = _PurposeUsageTracker(
+        client,
+        requested=True,
+        authoritative=True,
+        trusted_lms_metadata=True,
+    )
+
+    tracker.generate_text_sync("safe")
+
+    assert tracker.call_attempted is True
+    assert tracker.external_ai_used is True
+    assert tracker.provider_used is None
+    assert tracker.outcome == "attempted_failed"
+
+
+def test_trusted_denial_requires_client_provider_to_remain_bound():
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    class ProviderMutatingClient:
+        provider = "gemini"
+
+        def generate_text_sync(self, _prompt):
+            self.provider = "ollama"
+            return {
+                "success": False,
+                "ai_used": False,
+                "external_ai_used": False,
+                "purpose_outcome": "denied_at_dispatch",
+            }
+
+    tracker = _PurposeUsageTracker(
+        ProviderMutatingClient(),
+        requested=True,
+        authoritative=True,
+        trusted_lms_metadata=True,
+    )
+
+    tracker.generate_text_sync("safe")
+
+    assert tracker.call_attempted is True
+    assert tracker.external_ai_used is True
+    assert tracker.outcome == "attempted_failed"
+
+
+@pytest.mark.parametrize(
+    ("authoritative", "trusted_lms_metadata"),
+    [
+        pytest.param(False, True, id="non-authoritative-tracker"),
+        pytest.param(True, False, id="legacy-untrusted-response"),
+    ],
+)
+def test_denial_tuple_requires_authoritative_trusted_tracker(
+    authoritative, trusted_lms_metadata
+):
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    client = MagicMock(provider="gemini")
+    client.generate_text_sync.return_value = {
+        "success": False,
+        "ai_used": False,
+        "external_ai_used": False,
+        "purpose_outcome": "denied_at_dispatch",
+    }
+    tracker = _PurposeUsageTracker(
+        client,
+        requested=True,
+        authoritative=authoritative,
+        trusted_lms_metadata=trusted_lms_metadata,
+    )
+
+    tracker.generate_text_sync("safe")
+
+    assert tracker.call_attempted is True
+    assert tracker.external_ai_used is True
+    assert tracker.outcome == "attempted_failed"
+
+
+@pytest.mark.parametrize(
+    ("client", "requested", "authoritative", "expected_outcome"),
+    [
+        pytest.param(
+            None,
+            True,
+            False,
+            "allowed_not_used",
+            id="legacy-absence-is-an-unused-allowance",
+        ),
+        pytest.param(
+            None,
+            True,
+            True,
+            "denied_at_dispatch",
+            id="authoritative-lms-absence-is-denial",
+        ),
+        pytest.param(
+            None,
+            False,
+            True,
+            "not_requested",
+            id="authoritative-absence-without-intent",
+        ),
+        pytest.param(
+            object(),
+            True,
+            True,
+            "allowed_not_used",
+            id="authoritative-client-allowed-but-unused",
+        ),
+    ],
+)
+def test_usage_tracker_no_call_outcome_requires_explicit_authority(
+    client, requested, authoritative, expected_outcome
+):
+    from src.api.education.remediation_routes import _PurposeUsageTracker
+
+    tracker = _PurposeUsageTracker(
+        client, requested=requested, authoritative=authoritative
+    )
+
+    assert tracker.call_attempted is False
+    assert tracker.ai_used is False
+    assert tracker.provider_used is None
+    assert tracker.outcome == expected_outcome
 
 
 @pytest.mark.asyncio
@@ -1475,7 +2346,7 @@ async def test_generic_standalone_scan_retains_legacy_global_manager(tmp_path):
 
     global_manager.assert_called_once_with()
     assert cls.call_args.kwargs["config"].use_ai is True
-    assert cls.call_args.kwargs["ai_client"] is manager
+    assert cls.call_args.kwargs["ai_client"].client is manager
 
 
 @pytest.mark.asyncio

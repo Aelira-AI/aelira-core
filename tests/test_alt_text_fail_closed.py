@@ -64,7 +64,9 @@ def test_pdf_alt_text_returns_none_when_ai_fails():
             ai_client=_FailingAIClient(),
         )
         issue = _alt_issue(page_number=1)  # no image_xref → text path
-        result = rem._generate_alt_text_with_ai(issue, doc_for_ctx)
+        result = rem._generate_alt_text_with_ai(
+            issue, doc_for_ctx, client=rem.alt_text_client
+        )
         assert result is None
     finally:
         doc_for_ctx.close()
@@ -85,7 +87,9 @@ def test_pptx_alt_text_returns_none_when_ai_fails():
             ai_client=_FailingAIClient(),
         )
         issue = _alt_issue(slide_index=0, shape_name="Picture 1")
-        result = rem._generate_alt_text_with_ai(issue, document=None)
+        result = rem._generate_alt_text_with_ai(
+            issue, document=None, client=rem.alt_text_client
+        )
         assert result is None
     finally:
         tmp.unlink(missing_ok=True)
@@ -113,7 +117,9 @@ def test_xlsx_chart_description_returns_none_when_ai_fails():
             ai_client=_FailingAIClient(),
         )
         issue = _alt_issue(sheet_name="Sheet1")
-        result = rem._generate_chart_description_with_ai(issue, _StubDoc())
+        result = rem._generate_chart_description_with_ai(
+            issue, _StubDoc(), client=rem.alt_text_client
+        )
         assert result is None
     finally:
         tmp.unlink(missing_ok=True)

@@ -60,6 +60,9 @@ class RemediationOptions(BaseModel):
     """Options for remediation request."""
 
     use_ai: bool = Field(default=True, description="Use AI for generating fixes")
+    generate_alt_text: bool = Field(
+        default=False, description="Generate image and chart descriptions with AI"
+    )
 
     # LaTeX options
     latex_formats: List[str] = Field(

@@ -83,6 +83,118 @@ async def test_injected_lms_client_is_the_only_alt_text_transport(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_legacy_gemini_success_records_bounded_external_usage(tmp_path):
+    generator = ImageAltTextGenerator(allow_legacy_transport=True)
+    generator.use_gemini = True
+    generator.vision_model = "gemini-safe"
+
+    with patch.object(
+        generator, "_generate_with_gemini", return_value=("Blue square", 0.2)
+    ):
+        result = await generator.generate_alt_text(_image(tmp_path))
+
+    assert result["success"] is True
+    assert dict(generator.usage_metadata) == {
+        "ai_used": True,
+        "external_ai_used": True,
+        "providers_attempted": ("gemini",),
+        "provider": "gemini",
+        "model": "gemini-safe",
+        "outcome": "used",
+    }
+
+
+@pytest.mark.asyncio
+async def test_direct_ollama_success_records_local_usage(tmp_path):
+    generator = ImageAltTextGenerator(allow_legacy_transport=True)
+    generator.use_gemini = False
+    generator.ollama_fallback = "llava-safe"
+
+    with patch.object(
+        generator, "_generate_with_ollama", return_value=("Blue square", 0.1)
+    ):
+        await generator.generate_alt_text(_image(tmp_path))
+
+    assert dict(generator.usage_metadata) == {
+        "ai_used": True,
+        "external_ai_used": False,
+        "providers_attempted": ("ollama",),
+        "provider": "ollama",
+        "model": "llava-safe",
+        "outcome": "used",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gemini_failure_then_ollama_success_preserves_external_attempt(tmp_path):
+    generator = ImageAltTextGenerator(allow_legacy_transport=True)
+    generator.use_gemini = True
+    generator.vision_model = "gemini-safe"
+    generator.ollama_fallback = "llava-safe"
+
+    with (
+        patch.object(
+            generator, "_generate_with_gemini", return_value=("ERROR: unavailable", 0.2)
+        ),
+        patch.object(
+            generator, "_generate_with_ollama", return_value=("Blue square", 0.1)
+        ),
+    ):
+        await generator.generate_alt_text(_image(tmp_path))
+
+    assert dict(generator.usage_metadata) == {
+        "ai_used": True,
+        "external_ai_used": True,
+        "providers_attempted": ("gemini", "ollama"),
+        "provider": "ollama",
+        "model": "llava-safe",
+        "outcome": "used",
+    }
+
+
+@pytest.mark.asyncio
+async def test_legacy_failures_remain_attempted_and_usage_resets_without_leakage(
+    tmp_path,
+):
+    generator = ImageAltTextGenerator(allow_legacy_transport=True)
+    generator.use_gemini = True
+    generator.ollama_fallback = "llava-safe"
+
+    with (
+        patch.object(
+            generator,
+            "_generate_with_gemini",
+            return_value=("ERROR: SENSITIVE gemini failure", 0.2),
+        ),
+        patch.object(
+            generator,
+            "_generate_with_ollama",
+            return_value=("ERROR: SENSITIVE ollama failure", 0.1),
+        ),
+    ):
+        result = await generator.generate_alt_text(_image(tmp_path))
+
+    usage = dict(generator.usage_metadata)
+    assert result["success"] is False
+    assert usage == {
+        "ai_used": False,
+        "external_ai_used": True,
+        "providers_attempted": ("gemini", "ollama"),
+        "provider": "ollama",
+        "model": "llava-safe",
+        "outcome": "attempted_failed",
+    }
+    assert "SENSITIVE" not in str(usage)
+
+    generator.use_gemini = False
+    with patch.object(
+        generator, "_generate_with_ollama", return_value=("Blue square", 0.1)
+    ):
+        await generator.generate_alt_text(_image(tmp_path))
+    assert generator.usage_metadata["providers_attempted"] == ("ollama",)
+
+
+@pytest.mark.asyncio
 async def test_injected_lms_failure_never_falls_back_or_classifies(tmp_path):
     client = MagicMock()
     client.provider = "ollama"
@@ -111,6 +223,36 @@ async def test_injected_lms_failure_never_falls_back_or_classifies(tmp_path):
     assert result["success"] is False
     assert result["error"] == "policy_denied"
     assert client.analyze_image_sync.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_injected_lms_coherent_dispatch_denial_records_no_transport_attempt(
+    tmp_path,
+):
+    client = MagicMock()
+    client.provider = "gemini"
+    client.analyze_image_sync.return_value = {
+        "success": False,
+        "error": "policy_denied",
+        "ai_used": False,
+        "external_ai_used": False,
+        "purpose_outcome": "denied_at_dispatch",
+        "provider": "ollama",
+        "model": "spoofed-model",
+    }
+    generator = ImageAltTextGenerator(lms_client=client)
+
+    result = await generator.generate_alt_text(_image(tmp_path))
+
+    assert result["success"] is False
+    assert dict(generator.usage_metadata) == {
+        "ai_used": False,
+        "external_ai_used": False,
+        "providers_attempted": (),
+        "provider": "gemini",
+        "model": None,
+        "outcome": "denied_at_dispatch",
+    }
 
 
 def test_lms_vision_paths_have_no_direct_legacy_transport_or_manager_acquisition():
