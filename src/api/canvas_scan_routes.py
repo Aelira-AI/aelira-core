@@ -67,6 +67,9 @@ class CanvasScanResponse(BaseModel):
     job_id: str
     status: str = "queued"
     cloud_file_id: str
+    operation_kind: str = "deterministic_scan"
+    external_ai_used: bool = False
+    ai_used: bool = False
 
 
 class CanvasBulkScanRequest(BaseModel):
@@ -90,6 +93,9 @@ class CanvasBulkScanResponse(BaseModel):
     jobs: List[BulkScanFileJob]
     total: int
     skipped: int
+    operation_kind: str = "deterministic_scan"
+    external_ai_used: bool = False
+    ai_used: bool = False
 
 
 class FileScanStatus(BaseModel):
@@ -197,12 +203,20 @@ async def _canvas_scan_file_task(job_id: str, cloud_file_id: str, credential_id:
                 f"score={result.get('compliance_score')}, "
                 f"issues={result.get('issues_found', 0)}"
             )
-        except Exception as e:
-            logger.error(f"Canvas scan failed: job={job_id}, error={e}")
+        except Exception as exc:
+            logger.error(
+                "Canvas scan background job failed",
+                extra={
+                    "job_id": job_id,
+                    "cloud_file_id": cloud_file_id,
+                    "credential_id": credential_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
             job.status = CloudJobStatus.FAILED.value
             job.progress = 100
-            job.progress_message = f"Scan failed: {e}"
-            job.error_message = str(e)
+            job.progress_message = "Scan failed"
+            job.error_message = "Accessibility scan failed"
             job.completed_at = datetime.now(timezone.utc)
             db.commit()
 
@@ -335,11 +349,20 @@ async def scan_canvas_file(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to queue Canvas scan: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Failed to queue Canvas scan",
+            extra={
+                "course_id": request.course_id,
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to queue scan: {str(e)}",
+            detail={
+                "code": "CANVAS_SCAN_QUEUE_FAILED",
+                "message": "Failed to queue Canvas scan",
+            },
         )
 
 
@@ -471,11 +494,20 @@ async def scan_canvas_course_files(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to queue Canvas bulk scan: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Failed to queue Canvas bulk scan",
+            extra={
+                "course_id": request.course_id,
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to queue bulk scan: {str(e)}",
+            detail={
+                "code": "CANVAS_BULK_SCAN_QUEUE_FAILED",
+                "message": "Failed to queue Canvas bulk scan",
+            },
         )
 
 

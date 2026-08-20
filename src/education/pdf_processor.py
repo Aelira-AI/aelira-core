@@ -83,7 +83,7 @@ class PDFProcessor:
         self.db_session = db_session
         self.progress_callback = progress_callback
         self.image_generator = None
-        self.llm_client = get_provider_manager()  # Use LLM provider for text generation
+        self.llm_client = get_provider_manager() if self.enhance_descriptions else None
         # Color vision deficiency simulation
         self.simulate_color_blindness = simulate_color_blindness
         self.cvd_simulator = (
@@ -944,7 +944,11 @@ class PDFProcessor:
         Returns:
             Enhanced fix description or None if enhancement failed
         """
-        if not self.enhance_descriptions or not self.db_session:
+        if (
+            not self.enhance_descriptions
+            or not self.db_session
+            or self.llm_client is None
+        ):
             return None
 
         # Extract criterion from rule (e.g., 'WCAG 3.1.1' -> '3.1.1')

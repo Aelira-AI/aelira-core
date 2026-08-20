@@ -41,6 +41,7 @@ from ..db.models import (
 from ..integrations.canvas.canvas_api import CanvasAPIClient
 from ..integrations.canvas.content_models import CanvasContentType
 from ..utils.sanitization import sanitize_for_postgres
+from .deterministic_axe import DeterministicScanUnavailable, run_deterministic_axe
 
 logger = logging.getLogger(__name__)
 
@@ -203,10 +204,12 @@ class CanvasContentScanner:
         self.credential_id = credential_id
         self.course_name = course_name
         self.course_code = course_code
+        # Safe fallbacks are deterministic. Explicit options are retained for
+        # separate remediation operations; scan methods never consult them.
         self.scan_options = scan_options or {
-            "generate_alt_text": True,
-            "auto_remediate": True,
-            "detect_decorative": True,
+            "generate_alt_text": False,
+            "auto_remediate": False,
+            "detect_decorative": False,
         }
 
     # ------------------------------------------------------------------
@@ -448,6 +451,9 @@ class CanvasContentScanner:
             "cloud_file_ids": cloud_file_ids,
             "file_scan_jobs": file_scan_jobs,
             "counts": counts,
+            "operation_kind": "deterministic_scan",
+            "external_ai_used": False,
+            "ai_used": False,
         }
 
     # ------------------------------------------------------------------
@@ -466,7 +472,17 @@ class CanvasContentScanner:
             Dict with scan_id and issue count
         """
         if not cloud_file.content_body:
-            return {"scan_id": None, "issues": 0, "error": "No content body"}
+            return {
+                "success": False,
+                "scan_id": None,
+                "issues": 0,
+                "compliance_score": None,
+                "error": "No content body",
+                "error_code": "EMPTY_CONTENT",
+                "operation_kind": "deterministic_scan",
+                "external_ai_used": False,
+                "ai_used": False,
+            }
 
         wrapped_html = _wrap_html_fragment(
             cloud_file.content_body, cloud_file.file_name
@@ -494,9 +510,9 @@ class CanvasContentScanner:
             # Calculate simple compliance score
             passes = len(axe_results.get("passes", []))
             total_rules = passes + len(violations)
-            compliance_score = (
-                round(passes / total_rules * 100, 1) if total_rules > 0 else 100.0
-            )
+            if total_rules <= 0:
+                raise DeterministicScanUnavailable()
+            compliance_score = round(passes / total_rules * 100, 1)
 
             # Store ScanResult
             scan_result = ScanResult(
@@ -538,21 +554,39 @@ class CanvasContentScanner:
             )
 
             return {
+                "success": True,
                 "scan_id": scan.id,
                 "issues": issue_count,
                 "compliance_score": compliance_score,
+                "operation_kind": "deterministic_scan",
+                "external_ai_used": False,
+                "ai_used": False,
             }
 
-        except Exception as e:
+        except Exception as exc:
             scan.status = ScanStatus.FAILED
-            scan.error_message = str(e)[:2000]
+            scan.error_message = "DETERMINISTIC_SCAN_UNAVAILABLE"
+            cloud_file.needs_rescan = True
             self.db.commit()
             logger.error(
-                "Content scan failed: %s",
-                e,
-                extra={"cloud_file_id": cloud_file.id},
+                "Content deterministic scan failed",
+                extra={
+                    "cloud_file_id": cloud_file.id,
+                    "error_code": "DETERMINISTIC_SCAN_UNAVAILABLE",
+                    "exception_type": type(exc).__name__,
+                },
             )
-            return {"scan_id": scan.id, "issues": 0, "error": str(e)}
+            return {
+                "success": False,
+                "scan_id": scan.id,
+                "issues": 0,
+                "compliance_score": None,
+                "error": "Deterministic accessibility scan unavailable",
+                "error_code": "DETERMINISTIC_SCAN_UNAVAILABLE",
+                "operation_kind": "deterministic_scan",
+                "external_ai_used": False,
+                "ai_used": False,
+            }
 
     # ------------------------------------------------------------------
     # 3. remediate_content_item — bridge to HtmlRemediator
@@ -1463,45 +1497,7 @@ class CanvasContentScanner:
         Returns:
             axe-core results dict with violations, passes, etc.
         """
-        try:
-            from playwright.async_api import async_playwright
-
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                try:
-                    page = await browser.new_page()
-                    await page.set_content(html)
-
-                    # Inject and run axe-core
-                    axe_script_path = os.path.join(
-                        os.path.dirname(__file__),
-                        "..",
-                        "..",
-                        "node_modules",
-                        "axe-core",
-                        "axe.min.js",
-                    )
-                    if os.path.exists(axe_script_path):
-                        with open(axe_script_path, "r") as f:
-                            axe_script = f.read()
-                        await page.evaluate(axe_script)
-                    else:
-                        # Fallback: try CDN
-                        await page.add_script_tag(
-                            url="https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.7.2/axe.min.js"
-                        )
-
-                    results = await page.evaluate("axe.run()")
-                    return results
-                finally:
-                    await browser.close()
-
-        except ImportError:
-            logger.warning("Playwright not available, returning empty results")
-            return {"violations": [], "passes": []}
-        except Exception as e:
-            logger.error("axe-core scan failed: %s", e)
-            return {"violations": [], "passes": [], "error": str(e)}
+        return await run_deterministic_axe(html)
 
     async def _get_canvas_updated_at(self, cloud_file: CloudFile) -> Optional[datetime]:
         """

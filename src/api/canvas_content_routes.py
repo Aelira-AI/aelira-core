@@ -73,21 +73,26 @@ class CanvasContentScanRequest(BaseModel):
     department_id: Optional[str] = None
     # Scan options
     generate_alt_text: bool = Field(
-        default=True, description="Generate AI alt text for images"
+        default=False,
+        description="Legacy compatibility field; scans never generate alt text",
     )
     auto_remediate: bool = Field(
-        default=True, description="Automatically fix issues after scan"
+        default=False,
+        description="Legacy compatibility field; remediation is a separate operation",
     )
     detect_decorative: bool = Field(
-        default=True, description="Detect decorative images"
+        default=False,
+        description="Legacy compatibility field; scans do not run generative image analysis",
     )
 
     def to_scan_options(self) -> Dict[str, Any]:
         """Convert scan options to dict for CanvasContentScanner."""
+        # Request data cannot expand scan execution. These fields remain in
+        # the schema only so older clients do not receive validation errors.
         return {
-            "generate_alt_text": self.generate_alt_text,
-            "auto_remediate": self.auto_remediate,
-            "detect_decorative": self.detect_decorative,
+            "generate_alt_text": False,
+            "auto_remediate": False,
+            "detect_decorative": False,
         }
 
 
@@ -98,6 +103,9 @@ class CanvasContentScanResponse(BaseModel):
     jobs_queued: int
     skipped: int
     by_type: Dict[str, int]
+    operation_kind: str = "deterministic_scan"
+    external_ai_used: bool = False
+    ai_used: bool = False
 
 
 class ContentItemStatus(BaseModel):
@@ -431,11 +439,18 @@ async def scan_course_content(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to scan course content: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Failed to scan course content",
+            extra={
+                "course_id": request.course_id,
+                "department_id": dept_id,
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to scan course content: {str(e)}",
+            detail="Failed to scan course content",
         )
 
 
@@ -526,14 +541,19 @@ async def scan_course_content_by_type(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as exc:
         logger.error(
-            f"Failed to scan course content type {content_type}: {e}",
-            exc_info=True,
+            "Failed to scan course content type",
+            extra={
+                "course_id": request.course_id,
+                "department_id": dept_id,
+                "content_type": content_type.value,
+                "error_type": type(exc).__name__,
+            },
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to scan content: {str(e)}",
+            detail="Failed to scan content",
         )
 
 
@@ -1456,9 +1476,7 @@ async def _content_scan_task(
     credential_id: str,
     scan_options: Optional[Dict[str, Any]] = None,
 ):
-    """
-    Background task to scan a single content item (axe-core + remediate).
-    """
+    """Scan a single content item with deterministic checks only."""
     from ..db.database import get_db as _get_db_ctx
 
     logger.info(
@@ -1468,8 +1486,15 @@ async def _content_scan_task(
     with _get_db_ctx() as db:
         cloud_file = db.query(CloudFile).filter(CloudFile.id == cloud_file_id).first()
         if not cloud_file:
-            logger.error(f"CloudFile not found: {cloud_file_id}")
-            return
+            logger.error("CloudFile unavailable for content scan")
+            return {
+                "success": False,
+                "error": "Content item unavailable",
+                "error_code": "CONTENT_UNAVAILABLE",
+                "operation_kind": "deterministic_scan",
+                "external_ai_used": False,
+                "ai_used": False,
+            }
 
         try:
             from ..integrations.canvas import CanvasAPIClient
@@ -1482,8 +1507,15 @@ async def _content_scan_task(
                 .first()
             )
             if not credential:
-                logger.error(f"Credential not found: {credential_id}")
-                return
+                logger.error("Credential unavailable for content scan")
+                return {
+                    "success": False,
+                    "error": "Scan credential unavailable",
+                    "error_code": "CREDENTIAL_UNAVAILABLE",
+                    "operation_kind": "deterministic_scan",
+                    "external_ai_used": False,
+                    "ai_used": False,
+                }
 
             canvas_url = require_persisted_canvas_origin(credential)
             token_manager = OAuthTokenManager()
@@ -1496,38 +1528,47 @@ async def _content_scan_task(
             )
 
             try:
+                deterministic_options = {
+                    "generate_alt_text": False,
+                    "auto_remediate": False,
+                    "detect_decorative": False,
+                }
                 scanner = CanvasContentScanner(
                     canvas_client=api_client,
                     db=db,
                     department_id=department_id,
                     credential_id=credential_id,
-                    scan_options=scan_options,
+                    scan_options=deterministic_options,
                 )
 
-                # 1. Scan
                 scan_result = await scanner.scan_content_item(cloud_file)
                 logger.info(
                     f"Content scan complete: {cloud_file_id}, "
                     f"issues={scan_result.get('issues', 0)}"
                 )
-
-                # 2. Remediate if issues found and auto_remediate is enabled
-                if scan_result.get("issues", 0) > 0 and (scan_options or {}).get(
-                    "auto_remediate", True
-                ):
-                    remediation_result = await scanner.remediate_content_item(
-                        cloud_file
-                    )
-                    logger.info(
-                        f"Content remediation complete: {cloud_file_id}, "
-                        f"fixed={remediation_result.get('fixed_count', 0)}"
-                    )
+                return {
+                    **scan_result,
+                    "operation_kind": "deterministic_scan",
+                    "external_ai_used": False,
+                    "ai_used": False,
+                }
 
             finally:
                 await api_client.close()
 
-        except Exception as e:
+        except Exception as exc:
             logger.error(
-                f"Content scan task failed: {cloud_file_id}, error={e}",
-                exc_info=True,
+                "Content scan task failed",
+                extra={
+                    "cloud_file_id": cloud_file_id,
+                    "error_type": type(exc).__name__,
+                },
             )
+            return {
+                "success": False,
+                "error": "Deterministic accessibility scan unavailable",
+                "error_code": "DETERMINISTIC_SCAN_UNAVAILABLE",
+                "operation_kind": "deterministic_scan",
+                "external_ai_used": False,
+                "ai_used": False,
+            }

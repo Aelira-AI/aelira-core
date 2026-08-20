@@ -6,10 +6,12 @@ using existing processors, and stores results.
 """
 
 import logging
+import math
 import tempfile
 import os
 from datetime import datetime, timezone
-from typing import Dict, Any
+from numbers import Real
+from typing import Dict, Any, cast
 from sqlalchemy.orm import Session
 import uuid
 
@@ -31,6 +33,52 @@ from ..utils.security import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DETERMINISTIC_SCAN_METADATA = {
+    "operation_kind": "deterministic_scan",
+    "external_ai_used": False,
+    "ai_used": False,
+}
+
+_SCAN_FAILURE_MESSAGE = "Accessibility scan failed"
+
+
+class ScanJobFailed(RuntimeError):
+    """Sanitized failure propagated to background job callers."""
+
+    def __init__(self, code: str = "SCAN_PROCESSING_FAILED") -> None:
+        self.code = code
+        super().__init__(_SCAN_FAILURE_MESSAGE)
+
+
+def _normalize_processor_result(result: Any) -> Dict[str, Any]:
+    """Convert processor output and derive success without inventing it."""
+    if isinstance(result, dict):
+        normalized = dict(result)
+    elif hasattr(result, "model_dump"):
+        normalized = result.model_dump()
+    else:
+        normalized = dict(result.__dict__)
+
+    compliance_score = normalized.get("compliance_score")
+    valid_score = False
+    if isinstance(compliance_score, Real) and not isinstance(compliance_score, bool):
+        numeric_score = cast(Any, compliance_score)
+        valid_score = 0 <= numeric_score <= 100 and math.isfinite(numeric_score)
+    success_is_explicit = "success" in normalized
+    explicit_success = normalized.get("success")
+    if success_is_explicit and type(explicit_success) is bool:
+        success = explicit_success and not normalized.get("error") and valid_score
+    elif success_is_explicit:
+        success = False
+    else:
+        success = not normalized.get("error") and valid_score
+    normalized["success"] = success
+    if not success:
+        normalized["compliance_score"] = None
+        normalized["error"] = _SCAN_FAILURE_MESSAGE
+        normalized["error_code"] = "SCAN_PROCESSING_FAILED"
+    return normalized
 
 
 class CloudScanJob:
@@ -87,13 +135,17 @@ class CloudScanJob:
                 export_result = await self._download_microsoft(access_token, local_path)
 
             if not export_result.get("success"):
-                raise Exception(f"Download failed: {export_result.get('error')}")
+                raise ScanJobFailed("DOWNLOAD_FAILED")
 
             # Get the actual downloaded file path
             actual_path = export_result.get("local_path", local_path)
 
             # Scan the file using appropriate processor
             scan_result = await self._scan_file(actual_path, db)
+            if not scan_result.get("success"):
+                raise ScanJobFailed(
+                    scan_result.get("error_code", "SCAN_PROCESSING_FAILED")
+                )
 
             return scan_result
 
@@ -104,6 +156,58 @@ class CloudScanJob:
             Decrypted access token.
         """
         return await self.token_manager.refresh_if_expired(self.credential, db)
+
+    def _persist_failed_scan(
+        self, db: Session, file_type: str, error_code: str
+    ) -> Dict[str, Any]:
+        """Persist a failed processor/runtime outcome without a false score."""
+        scan_types = {
+            "docx": ScanType.WORD,
+            "doc": ScanType.WORD,
+            "pptx": ScanType.POWERPOINT,
+            "ppt": ScanType.POWERPOINT,
+            "xlsx": ScanType.EXCEL,
+            "xls": ScanType.EXCEL,
+            "html": ScanType.CANVAS_CONTENT,
+            "htm": ScanType.CANVAS_CONTENT,
+            "mp4": ScanType.VIDEO,
+            "mp3": ScanType.VIDEO,
+            "wav": ScanType.VIDEO,
+            "pdf": ScanType.PDF,
+        }
+        dept_user = (
+            db.query(User.id)
+            .filter(
+                User.department_id == self.credential.department_id,
+                User.is_active == True,
+            )
+            .first()
+        )
+        scan = Scan(
+            id=str(uuid.uuid4()),
+            department_id=self.credential.department_id,
+            scan_type=scan_types.get(file_type, ScanType.PDF),
+            user_id=dept_user.id if dept_user else "system",
+            file_name=self.cloud_file.file_name,
+            file_size_bytes=getattr(self.cloud_file, "file_size_bytes", 0) or 0,
+            status="FAILED",
+            error_message=error_code,
+        )
+        db.add(scan)
+        db.flush()
+        self.cloud_file.needs_rescan = True
+        db.commit()
+        return {
+            "scan_id": scan.id,
+            "file_id": self.cloud_file.id,
+            "file_name": self.cloud_file.file_name,
+            "compliance_score": None,
+            "issues_found": 0,
+            "success": False,
+            "error": _SCAN_FAILURE_MESSAGE,
+            "error_code": error_code,
+            **_DETERMINISTIC_SCAN_METADATA,
+        }
 
     async def _download_google(
         self, access_token: str, local_path: str
@@ -337,30 +441,50 @@ class CloudScanJob:
             if file_type in ("docx", "doc"):
                 from ..education.docx_processor import DocxProcessor
 
-                processor = DocxProcessor()
+                processor = DocxProcessor(
+                    generate_alt_text=False,
+                    validate_alt_text=False,
+                    enhance_descriptions=False,
+                    simulate_color_blindness=False,
+                )
                 result = processor.process_docx(file_path)
 
             elif file_type in ("pptx", "ppt"):
                 from ..education.pptx_processor import PowerPointProcessor
 
-                processor = PowerPointProcessor()
+                processor = PowerPointProcessor(
+                    generate_alt_text=False,
+                    validate_alt_text=False,
+                    simulate_color_blindness=False,
+                    detect_images_of_text=False,
+                )
                 result = processor.process_pptx(file_path)
 
             elif file_type in ("xlsx", "xls"):
                 from ..education.xlsx_processor import XlsxProcessor
 
-                processor = XlsxProcessor()
+                processor = XlsxProcessor(
+                    generate_chart_descriptions=False,
+                    generate_alt_text=False,
+                    validate_alt_text=False,
+                    simulate_color_blindness=False,
+                )
                 result = processor.process_xlsx(file_path)
 
             elif file_type == "pdf":
                 from ..education.pdf_processor import PDFProcessor
 
-                processor = PDFProcessor()
+                processor = PDFProcessor(
+                    generate_alt_text=False,
+                    validate_alt_text=False,
+                    enhance_descriptions=False,
+                    simulate_color_blindness=False,
+                )
                 result = processor.process_pdf(file_path)
 
             elif file_type in ("html", "htm"):
-                # Scan HTML content using axe-core via Playwright
                 from ..education.canvas_content_scanner import _wrap_html_fragment
+                from ..education.deterministic_axe import run_deterministic_axe
 
                 with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     html_content = f.read()
@@ -373,51 +497,18 @@ class CloudScanJob:
                         "compliance_score": None,
                     }
                 else:
-                    # Wrap fragment if not a full document
                     if "<!doctype" not in html_content.lower()[:100]:
                         html_content = _wrap_html_fragment(html_content)
-
-                    # Run axe-core scan
-                    from playwright.async_api import async_playwright
-
-                    async with async_playwright() as p:
-                        browser = await p.chromium.launch(headless=True)
-                        try:
-                            page = await browser.new_page()
-                            await page.set_content(html_content)
-
-                            axe_script = os.path.join(
-                                os.path.dirname(__file__),
-                                "..",
-                                "..",
-                                "node_modules",
-                                "axe-core",
-                                "axe.min.js",
-                            )
-                            if os.path.exists(axe_script):
-                                await page.add_script_tag(path=axe_script)
-                            else:
-                                await page.add_script_tag(
-                                    url="https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.0/axe.min.js"
-                                )
-
-                            axe_results = await page.evaluate("() => axe.run()")
-                            violations = axe_results.get("violations", [])
-                            passes = len(axe_results.get("passes", []))
-                            total_rules = passes + len(violations)
-                            compliance_score = (
-                                round(passes / total_rules * 100, 1)
-                                if total_rules > 0
-                                else 100.0
-                            )
-
-                            result = {
-                                "success": True,
-                                "issues": violations,
-                                "compliance_score": compliance_score,
-                            }
-                        finally:
-                            await browser.close()
+                    axe_results = await run_deterministic_axe(html_content)
+                    violations = axe_results["violations"]
+                    passes = len(axe_results["passes"])
+                    total_rules = passes + len(violations)
+                    result = {
+                        "success": True,
+                        "issues": violations,
+                        "compliance_score": round(passes / total_rules * 100, 1),
+                        "axe_results": axe_results,
+                    }
 
             elif file_type in (
                 "mp4",
@@ -432,7 +523,7 @@ class CloudScanJob:
             ):
                 from ..education.multimedia_processor import MultimediaProcessor
 
-                processor = MultimediaProcessor()
+                processor = MultimediaProcessor(use_gemini=False)
                 result = processor.process_media(
                     file_path,
                     generate_captions=False,
@@ -453,37 +544,24 @@ class CloudScanJob:
                 "svg",
                 "tiff",
             ):
-                from ..education.image_alt_text import ImageAltTextGenerator
-
-                generator = ImageAltTextGenerator()
-                analysis = await generator.analyze_image_comprehensive(file_path)
-
-                issues = []
-                if analysis.get("success"):
-                    type_info = analysis.get("type_detection", {})
-                    is_decorative = type_info.get("is_decorative", False)
-                    if is_decorative:
-                        compliance_score = 100.0
-                    else:
-                        # Informative image without alt text = issue
-                        compliance_score = 0.0
-                        issues.append(
-                            {
-                                "severity": "critical",
-                                "impact": "critical",
-                                "description": "Image requires alt text",
-                                "suggested_alt": analysis.get("description", {}).get(
-                                    "alt_text", ""
-                                ),
-                            }
-                        )
-                else:
-                    compliance_score = None
-
+                # Standalone images have no container-level alt attribute to
+                # inspect. Record the existing missing-alt finding for manual
+                # review without classifying or describing pixels with AI.
+                issues = [
+                    {
+                        "severity": "critical",
+                        "impact": "critical",
+                        "description": "Image requires alt text",
+                        "manual_review_required": True,
+                        "operation_kind": "deterministic_scan",
+                        "external_ai_used": False,
+                        "ai_used": False,
+                    }
+                ]
                 result = {
-                    "success": analysis.get("success", False),
+                    "success": True,
                     "issues": issues,
-                    "compliance_score": compliance_score,
+                    "compliance_score": 0.0,
                 }
 
             else:
@@ -494,13 +572,7 @@ class CloudScanJob:
                     "compliance_score": None,
                 }
 
-            # Normalize result to dict (processors may return Pydantic models)
-            if not isinstance(result, dict):
-                result = (
-                    result.model_dump()
-                    if hasattr(result, "model_dump")
-                    else result.__dict__
-                )
+            result = _normalize_processor_result(result)
 
             # Map file_type to valid ScanType enum
             _file_type_to_scan_type = {
@@ -553,10 +625,26 @@ class CloudScanJob:
                 user_id=scan_user_id,
                 file_name=self.cloud_file.file_name,
                 file_size_bytes=self.cloud_file.file_size_bytes or 0,
-                status="COMPLETED" if compliance_score is not None else "FAILED",
+                status="COMPLETED" if result["success"] else "FAILED",
+                error_message=None if result["success"] else result["error_code"],
             )
             db.add(scan)
             db.flush()
+
+            if not result["success"]:
+                self.cloud_file.needs_rescan = True
+                db.commit()
+                return {
+                    "scan_id": scan.id,
+                    "file_id": self.cloud_file.id,
+                    "file_name": self.cloud_file.file_name,
+                    "compliance_score": None,
+                    "issues_found": 0,
+                    "success": False,
+                    "error": _SCAN_FAILURE_MESSAGE,
+                    "error_code": result["error_code"],
+                    **_DETERMINISTIC_SCAN_METADATA,
+                }
 
             # Create scan result with compliance data
             from ..db.models import ScanResult
@@ -564,7 +652,7 @@ class CloudScanJob:
             scan_result = ScanResult(
                 id=str(uuid.uuid4()),
                 scan_id=scan_id,
-                compliance_score=compliance_score or 0,
+                compliance_score=compliance_score,
                 critical_issues=len(
                     [
                         i
@@ -641,24 +729,33 @@ class CloudScanJob:
                 "compliance_score": result.get("compliance_score"),
                 "issues_found": len(result.get("issues", [])),
                 "success": result.get("success", False),
+                "operation_kind": "deterministic_scan",
+                "external_ai_used": False,
+                "ai_used": False,
             }
 
-        except ImportError as e:
-            logger.error(f"Processor not available for {file_type}: {e}")
-            return {
-                "success": False,
-                "error": f"Processor not available for {file_type}",
-                "file_id": self.cloud_file.id,
-            }
-        except Exception as e:
+        except ImportError as exc:
             logger.error(
-                f"Scan failed for cloud file {self.cloud_file.id} (dept={self.credential.department_id}, type={self.cloud_file.file_type}): {e}"
+                "Processor unavailable for cloud scan",
+                extra={
+                    "file_type": file_type,
+                    "error_code": "PROCESSOR_UNAVAILABLE",
+                    "exception_type": type(exc).__name__,
+                },
             )
-            return {
-                "success": False,
-                "error": str(e),
-                "file_id": self.cloud_file.id,
-            }
+            return self._persist_failed_scan(db, file_type, "PROCESSOR_UNAVAILABLE")
+        except Exception as exc:
+            logger.error(
+                "Scan processing failed for cloud file",
+                extra={
+                    "cloud_file_id": self.cloud_file.id,
+                    "department_id": self.credential.department_id,
+                    "file_type": self.cloud_file.file_type,
+                    "error_code": "SCAN_PROCESSING_FAILED",
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            return self._persist_failed_scan(db, file_type, "SCAN_PROCESSING_FAILED")
 
 
 async def handle_scan_job(
@@ -685,13 +782,13 @@ async def handle_scan_job(
     )
 
     if not credential:
-        raise ValueError(f"Credential not found: {job.credential_id}")
+        raise ScanJobFailed("CREDENTIAL_UNAVAILABLE")
 
     # Get cloud file
     cloud_file = db.query(CloudFile).filter(CloudFile.id == job.cloud_file_id).first()
 
     if not cloud_file:
-        raise ValueError(f"Cloud file not found: {job.cloud_file_id}")
+        raise ScanJobFailed("FILE_UNAVAILABLE")
 
     # Run scan
     scan_job = CloudScanJob(
@@ -699,4 +796,7 @@ async def handle_scan_job(
         cloud_file=cloud_file,
         token_manager=token_manager,
     )
-    return await scan_job.run(db)
+    result = await scan_job.run(db)
+    if not result.get("success"):
+        raise ScanJobFailed(result.get("error_code", "SCAN_PROCESSING_FAILED"))
+    return result
