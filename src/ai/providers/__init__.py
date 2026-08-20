@@ -28,14 +28,25 @@ Configuration:
     - OLLAMA_HOST: Ollama server URL (for ollama provider)
 """
 
+from importlib import import_module
+
 from .base import LLMProvider, LLMResponse, ProviderCapability
-from .types import ProviderType, ProviderConfig
-from .manager import (
-    ProviderManager,
-    get_provider_manager,
-    initialize_provider_manager,
-    close_provider_manager,
-)
+from .types import ProviderConfig, ProviderType
+
+_MANAGER_EXPORTS = {
+    "ProviderManager",
+    "get_provider_manager",
+    "initialize_provider_manager",
+    "close_provider_manager",
+}
+
+
+def __getattr__(name):
+    """Load process-wide manager APIs only when legacy callers request them."""
+    if name in _MANAGER_EXPORTS:
+        return getattr(import_module(".manager", __name__), name)
+    raise AttributeError(name)
+
 
 __all__ = [
     "LLMProvider",

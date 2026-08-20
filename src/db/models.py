@@ -1506,8 +1506,9 @@ class AuditLogAction(str, Enum):
     REMEDIATION_FAILED = "remediation_failed"
     REMEDIATION_DOWNLOAD = "remediation_download"
 
-    # LMS AI policy governance
+    # LMS AI policy governance and execution
     LMS_AI_POLICY_UPDATE = "lms_ai_policy_update"
+    LMS_AI_EXECUTION = "lms_ai_execution"
 
 
 class AuditLogStatus(str, Enum):
