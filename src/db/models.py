@@ -188,6 +188,44 @@ class Department(Base):
         Boolean, default=False
     )  # Manual override: lets a department use the platform's shared Gemini key instead of configuring BYOK
 
+    # LMS AI is a separate, explicit authorization boundary. Existing BYOK and
+    # pilot settings are configuration only and never imply permission to use AI.
+    lms_ai_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    lms_ai_provider = Column(String(50), nullable=True)
+    lms_ai_purposes = Column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "lms_ai_provider IS NULL OR lms_ai_provider IN "
+            "('ollama', 'gemini', 'openai', 'anthropic', 'xai')",
+            name="ck_departments_lms_ai_provider",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(lms_ai_purposes::jsonb) = 'array' AND "
+            'lms_ai_purposes::jsonb <@ \'["remediation", "alt_text"]\'::jsonb AND '
+            "jsonb_array_length(lms_ai_purposes::jsonb) = ("
+            "CASE WHEN lms_ai_purposes::jsonb @> "
+            "'[\"remediation\"]'::jsonb THEN 1 ELSE 0 END + "
+            "CASE WHEN lms_ai_purposes::jsonb @> "
+            "'[\"alt_text\"]'::jsonb THEN 1 ELSE 0 END)",
+            name="ck_departments_lms_ai_purposes",
+        ),
+        CheckConstraint(
+            "(NOT lms_ai_enabled AND lms_ai_provider IS NULL AND "
+            "lms_ai_purposes::jsonb = '[]'::jsonb) OR "
+            "(lms_ai_enabled AND lms_ai_provider IS NOT NULL AND "
+            "jsonb_array_length(lms_ai_purposes::jsonb) > 0)",
+            name="ck_departments_lms_ai_policy_consistency",
+        ),
+    )
+
     # Relationships
     users = relationship("User", back_populates="department")
     api_keys = relationship("APIKey", back_populates="department")
@@ -1467,6 +1505,9 @@ class AuditLogAction(str, Enum):
     REMEDIATION_COMPLETE = "remediation_complete"
     REMEDIATION_FAILED = "remediation_failed"
     REMEDIATION_DOWNLOAD = "remediation_download"
+
+    # LMS AI policy governance
+    LMS_AI_POLICY_UPDATE = "lms_ai_policy_update"
 
 
 class AuditLogStatus(str, Enum):

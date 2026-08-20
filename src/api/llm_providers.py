@@ -14,9 +14,9 @@ Users can switch models via PUT /llm/providers/gemini/models
 Users can bring their own API key via POST /llm/providers/add
 """
 
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from typing import Optional, Dict, Tuple
+from fastapi import APIRouter, HTTPException, Depends, status
+from pydantic import BaseModel, ConfigDict, model_validator
+from typing import Literal, Optional, Dict, Tuple
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 import logging
@@ -28,8 +28,13 @@ from src.ai.providers import (
 )
 from src.ai.providers.manager import get_rate_limiter
 from src.ai.cache import get_llm_cache
-from src.auth.dependencies import get_required_api_key
-from src.db.models import APIKey, Department, User, UserRole
+from src.ai.lms_policy import LMS_AI_POLICY_VERSION
+from src.auth.dependencies import (
+    AuthenticatedPrincipal,
+    get_authenticated_principal,
+    get_required_api_key,
+)
+from src.db.models import APIKey, AuditLog, AuditLogAction, Department, User, UserRole
 from src.db.database import get_db_dependency
 from src.utils.encryption import (
     encrypt_api_key,
@@ -98,6 +103,132 @@ class TestResponse(BaseModel):
     inference_time: float
     response_preview: Optional[str] = None
     error: Optional[str] = None
+
+
+class LMSAIPolicyResponse(BaseModel):
+    """Secret-free persisted policy for the authenticated department."""
+
+    enabled: bool
+    provider: Literal["ollama", "gemini", "openai", "anthropic", "xai"] | None
+    purposes: list[Literal["remediation", "alt_text"]]
+    version: int = LMS_AI_POLICY_VERSION
+
+
+class LMSAIPolicyUpdate(BaseModel):
+    """A complete replacement for a department's explicit LMS AI policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    provider: Literal["ollama", "gemini", "openai", "anthropic", "xai"] | None
+    purposes: list[Literal["remediation", "alt_text"]]
+
+    @model_validator(mode="after")
+    def validate_consistency(self):
+        if len(set(self.purposes)) != len(self.purposes):
+            raise ValueError("purposes must not contain duplicates")
+        if self.enabled and (self.provider is None or not self.purposes):
+            raise ValueError("enabled policies require a provider and purpose")
+        if not self.enabled and (self.provider is not None or self.purposes):
+            raise ValueError("disabled policies cannot configure provider or purposes")
+        return self
+
+
+def _policy_response(department: Department) -> LMSAIPolicyResponse:
+    return LMSAIPolicyResponse(
+        enabled=department.lms_ai_enabled,
+        provider=department.lms_ai_provider,
+        purposes=list(department.lms_ai_purposes),
+    )
+
+
+def _get_own_department(
+    db: Session, department_id: str, *, for_update: bool = False
+) -> Department:
+    query = db.query(Department).filter(Department.id == department_id)
+    if for_update:
+        query = query.with_for_update()
+    department = query.first()
+    if department is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return department
+
+
+def _require_policy_admin(principal: AuthenticatedPrincipal) -> None:
+    # LTI authority comes only from the validated, immutable principal. Course
+    # roles cannot be promoted by a request body or a database role alone.
+    if principal.auth_method == "lti":
+        if not (
+            principal.lti_staff_role == "Administrator"
+            and principal.lti_account_wide is True
+            and principal.user_role is UserRole.ADMIN
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
+            )
+        return
+    if principal.user_role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+
+@router.get("/lms-policy", response_model=LMSAIPolicyResponse)
+def get_lms_ai_policy(
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
+):
+    """Return only the authenticated principal's department policy."""
+
+    return _policy_response(_get_own_department(db, principal.department_id))
+
+
+@router.put("/lms-policy", response_model=LMSAIPolicyResponse)
+def update_lms_ai_policy(
+    update: LMSAIPolicyUpdate,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
+):
+    """Replace the caller's department policy and audit it in one transaction."""
+
+    _require_policy_admin(principal)
+    department = _get_own_department(db, principal.department_id, for_update=True)
+    old_policy = {
+        "enabled": department.lms_ai_enabled,
+        "provider": department.lms_ai_provider,
+        "purposes": list(department.lms_ai_purposes),
+    }
+    new_policy = {
+        "enabled": update.enabled,
+        "provider": update.provider,
+        "purposes": list(update.purposes),
+    }
+
+    department.lms_ai_enabled = update.enabled
+    department.lms_ai_provider = update.provider
+    department.lms_ai_purposes = list(update.purposes)
+    db.add(
+        AuditLog(
+            user_id=principal.user_id,
+            department_id=principal.department_id,
+            action=AuditLogAction.LMS_AI_POLICY_UPDATE.value,
+            resource_type="department",
+            resource_id=principal.department_id,
+            details={
+                "old": old_policy,
+                "new": new_policy,
+                "version": LMS_AI_POLICY_VERSION,
+            },
+            status="success",
+        )
+    )
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Policy update failed",
+        ) from exc
+    return _policy_response(department)
 
 
 @router.get("/providers", response_model=ProviderListResponse)
