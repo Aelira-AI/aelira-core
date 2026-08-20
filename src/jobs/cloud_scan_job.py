@@ -28,7 +28,9 @@ from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
 from ..utils.security import (
+    PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
     PERSISTED_CANVAS_ORIGIN_ERROR,
+    require_persisted_brightspace_origin,
     require_persisted_canvas_origin,
 )
 
@@ -116,6 +118,15 @@ class CloudScanJob:
         Returns:
             Scan results
         """
+        brightspace_origin = None
+        if self.credential.provider == CloudProvider.BRIGHTSPACE.value:
+            try:
+                brightspace_origin = require_persisted_brightspace_origin(
+                    self.credential
+                )
+            except ValueError as exc:
+                raise ScanJobFailed("BRIGHTSPACE_CONNECTION_ORIGIN_INVALID") from exc
+
         # Refresh token if needed (with distributed lock) and get access token
         access_token = await self._refresh_token_if_needed(db)
 
@@ -129,7 +140,7 @@ class CloudScanJob:
                 export_result = await self._download_canvas(access_token, local_path)
             elif self.credential.provider == CloudProvider.BRIGHTSPACE.value:
                 export_result = await self._download_brightspace(
-                    access_token, local_path
+                    access_token, local_path, instance_url=brightspace_origin
                 )
             else:
                 export_result = await self._download_microsoft(access_token, local_path)
@@ -295,16 +306,23 @@ class CloudScanJob:
             await client.close()
 
     async def _download_brightspace(
-        self, access_token: str, local_path: str
+        self,
+        access_token: str,
+        local_path: str,
+        *,
+        instance_url: str | None = None,
     ) -> Dict[str, Any]:
         """Download file from Brightspace LMS."""
         from src.integrations.brightspace.brightspace_api import BrightspaceAPIClient
 
-        instance_url = (self.credential.provider_metadata or {}).get(
-            "brightspace_instance_url", ""
-        )
-        if not instance_url:
-            return {"success": False, "error": "Brightspace instance URL not found"}
+        if instance_url is None:
+            try:
+                instance_url = require_persisted_brightspace_origin(self.credential)
+            except ValueError:
+                return {
+                    "success": False,
+                    "error": PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
+                }
 
         metadata = self.cloud_file.provider_metadata or {}
         org_unit_id = metadata.get("org_unit_id")

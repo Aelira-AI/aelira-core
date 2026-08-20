@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.education.canvas_content_scanner import CanvasContentScanner
+from src.education.remediation.base import RemediationConfig
+from src.education.remediation.html_remediator import HtmlRemediator
 
 
 def _scanner():
@@ -29,6 +31,147 @@ def _violation(rule_id, nodes, impact="serious"):
 
 def _cloud_file():
     return MagicMock(id="cf-1", file_name="Welcome Page")
+
+
+def test_html_remediator_marks_a_deterministic_fix_verified(tmp_path):
+    source = tmp_path / "page.html"
+    source.write_text("<html><body><p>Course content</p></body></html>")
+    remediator = HtmlRemediator(
+        str(source),
+        [
+            {
+                "id": "language",
+                "category": "language",
+                "severity": "high",
+                "description": "Document language is missing",
+            }
+        ],
+        RemediationConfig(create_backup=False, use_ai=False, verify_fixes=True),
+    )
+
+    result = remediator.remediate()
+
+    assert result.fixed_count == 1
+    assert result.verification_passed is True
+    assert result.verification_result is not None
+    assert result.verification_result.passed is True
+
+
+def test_html_remediator_keeps_verification_false_when_issues_remain(tmp_path):
+    source = tmp_path / "page.html"
+    source.write_text(
+        '<html><body><img src="unresolved.png"><p>Course content</p></body></html>'
+    )
+    remediator = HtmlRemediator(
+        str(source),
+        [
+            {
+                "id": "language",
+                "category": "language",
+                "severity": "high",
+                "description": "Document language is missing",
+            }
+        ],
+        RemediationConfig(create_backup=False, use_ai=False, verify_fixes=True),
+    )
+
+    result = remediator.remediate()
+
+    assert result.fixed_count == 1
+    assert result.verification_passed is False
+    assert result.verification_result is not None
+    assert result.verification_result.passed is False
+    assert result.verification_result.issues_after == 1
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["aria", "heading", "form", "navigation", "link", "contrast"],
+)
+def test_html_remediator_never_verifies_categories_without_implemented_verifier(
+    tmp_path, category
+):
+    source = tmp_path / "page.html"
+    source.write_text(
+        '<html lang="en"><body><main id="main">Content</main></body></html>'
+    )
+    remediator = HtmlRemediator(
+        str(source),
+        [
+            {
+                "id": f"unsupported-{category}",
+                "category": category,
+                "severity": "high",
+                "description": f"Unsupported {category} issue",
+            }
+        ],
+        RemediationConfig(create_backup=False, use_ai=False, verify_fixes=True),
+    )
+
+    result = remediator.remediate()
+
+    assert result.verification_passed is False
+    assert result.verification_result is not None
+    assert result.verification_result.passed is False
+    assert any(
+        "no implemented verifier" in issue.lower()
+        for issue in result.verification_result.issues_remaining
+    )
+
+
+def test_navigation_fix_without_a_real_target_stays_unverified(tmp_path):
+    source = tmp_path / "page.html"
+    source.write_text('<html lang="en"><body><p>Content only</p></body></html>')
+    remediator = HtmlRemediator(
+        str(source),
+        [
+            {
+                "id": "bypass",
+                "category": "navigation",
+                "severity": "high",
+                "description": "Page needs a skip navigation link",
+            }
+        ],
+        RemediationConfig(create_backup=False, use_ai=False, verify_fixes=True),
+    )
+
+    result = remediator.remediate()
+
+    assert result.fixed_count == 0
+    assert result.verification_passed is False
+
+
+def test_url_only_image_is_never_sent_to_text_ai_or_marked_inspected(tmp_path):
+    source = tmp_path / "page.html"
+    source.write_text(
+        '<html lang="en"><body><img src="https://cdn.example/chart.png"></body></html>'
+    )
+    client = MagicMock()
+    client.generate_text_sync.return_value = {
+        "success": True,
+        "content": "A fabricated chart description",
+    }
+    remediator = HtmlRemediator(
+        str(source),
+        [
+            {
+                "id": "image-alt",
+                "category": "alt_text",
+                "severity": "high",
+                "description": "Image is missing alt text",
+                "location": "https://cdn.example/chart.png",
+            }
+        ],
+        RemediationConfig(create_backup=False, use_ai=True, verify_fixes=True),
+        ai_client=client,
+    )
+
+    result = remediator.remediate()
+
+    client.generate_text_sync.assert_not_called()
+    assert result.fixed_count == 0
+    assert result.manual_count == 1
+    assert result.verification_passed is False
 
 
 @pytest.mark.asyncio

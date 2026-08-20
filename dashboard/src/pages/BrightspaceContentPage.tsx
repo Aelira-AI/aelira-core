@@ -31,6 +31,7 @@ import {
   type CourseContentStatusResponse,
   type ContentItemStatus,
 } from '../api/brightspaceContent';
+import { remediateAllInChunks } from '../utils/brightspaceRemediateAll';
 import { apiClient } from '../api/client';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -243,7 +244,7 @@ export default function BrightspaceContentPage(): React.ReactElement {
               i.compliance_score < 100 &&
               !i.writeback_status
           );
-          if (!stillRemediating) {
+          if (!stillRemediating && !remediatingRef.current) {
             stopPolling();
             setScanning(false);
             setRemediatingAll(false);
@@ -270,8 +271,9 @@ export default function BrightspaceContentPage(): React.ReactElement {
       if (Date.now() - pollStartRef.current >= SCAN_POLL_TIMEOUT_MS) {
         stopPolling();
         setScanning(false);
-        setRemediatingAll(false);
-        remediatingRef.current = false;
+        if (!remediatingRef.current) {
+          setRemediatingAll(false);
+        }
         toast.warning(
           'Scan is taking longer than expected. Results will appear when ready - refresh to check.',
           'Scan Timeout'
@@ -317,31 +319,50 @@ export default function BrightspaceContentPage(): React.ReactElement {
   };
 
   const handleRemediateAll = async (): Promise<void> => {
-    if (!orgUnitId || isNaN(orgUnitIdNum)) return;
+    if (!orgUnitId || isNaN(orgUnitIdNum) || !data) return;
+
+    const eligibleIds = data.items
+      .filter(
+        (item) =>
+          item.compliance_score !== null &&
+          item.compliance_score < 100 &&
+          !item.writeback_status
+      )
+      .map((item) => item.cloud_file_id);
+    if (eligibleIds.length === 0) {
+      toast.info('No eligible items to remediate.', 'Nothing to Do');
+      return;
+    }
 
     setRemediatingAll(true);
     remediatingRef.current = true;
     try {
-      const result = await batchRemediateContent({ org_unit_id: orgUnitIdNum });
-      const hasMedia = data?.items.some(
-        (i) =>
-          i.content_type === 'Video' ||
-          i.content_type === 'Audio' ||
-          i.content_type === 'video' ||
-          i.content_type === 'audio'
+      const summary = await remediateAllInChunks(eligibleIds, (cloudFileIds) =>
+        batchRemediateContent({
+          org_unit_id: orgUnitIdNum,
+          cloud_file_ids: cloudFileIds,
+        })
       );
-      toast.info(
-        `Queued ${result.queued} item${result.queued !== 1 ? 's' : ''} for remediation.` +
-          (hasMedia
-            ? ' Video/audio files require transcription and may take several minutes.'
-            : ''),
-        'Remediation Started'
-      );
-      // Start polling to pick up progress
-      startPolling();
+      const message =
+        `Requested: ${summary.requestedCount}, Processed: ${summary.processedCount}, ` +
+        `Completed: ${summary.completedCount}, Fixed: ${summary.fixedCount}, ` +
+        `Manual: ${summary.manualCount}, Failed: ${summary.failedCount}` +
+        (summary.chunkFailures.length > 0
+          ? `, Chunk failures: ${summary.chunkFailures
+              .slice(0, 3)
+              .map((failure) => `#${failure.chunkNumber} ${failure.message}`)
+              .join('; ')} (${summary.unreportedCount} outcomes unavailable)`
+          : '');
+      if (summary.failedCount > 0 || summary.chunkFailures.length > 0) {
+        toast.warning(message, 'Remediation Complete');
+      } else {
+        toast.success(message, 'Remediation Complete');
+      }
+      await fetchStatus();
     } catch (err) {
       console.error('Failed to batch remediate:', err);
-      toast.error('Failed to start remediation.', 'Error');
+      toast.error('Remediation failed.', 'Error');
+    } finally {
       setRemediatingAll(false);
       remediatingRef.current = false;
     }
@@ -694,7 +715,7 @@ export default function BrightspaceContentPage(): React.ReactElement {
                 )
               }
             >
-              Remediate All
+              {remediatingAll ? 'Remediating All...' : 'Remediate All'}
             </Button>
             <Button
               variant="secondary"

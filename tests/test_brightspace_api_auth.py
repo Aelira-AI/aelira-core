@@ -14,8 +14,9 @@ from datetime import datetime, timezone
 
 from src.api.main import app
 from src.api.auth_routes import get_current_api_key
+from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from src.db.database import get_db_dependency
-from src.db.models import CloudOAuthCredentials, CloudProvider, APIKey
+from src.db.models import CloudOAuthCredentials, CloudProvider, APIKey, UserRole
 
 # Mark all tests in this module as integration
 pytestmark = pytest.mark.integration
@@ -85,9 +86,19 @@ def mock_session():
 def override_deps(mock_api_key, mock_session):
     """Override FastAPI dependencies for auth and DB, cleaning up after the test."""
     app.dependency_overrides[get_current_api_key] = lambda: mock_api_key
+    app.dependency_overrides[get_authenticated_principal] = (
+        lambda: AuthenticatedPrincipal(
+            api_key=mock_api_key,
+            user_id="user-123",
+            department_id="dept-123",
+            user_role=UserRole.ADMIN,
+            auth_method="api_key",
+        )
+    )
     app.dependency_overrides[get_db_dependency] = lambda: mock_session
     yield
     app.dependency_overrides.pop(get_current_api_key, None)
+    app.dependency_overrides.pop(get_authenticated_principal, None)
     app.dependency_overrides.pop(get_db_dependency, None)
 
 

@@ -30,7 +30,11 @@ from ...education.image_alt_text import ImageAltTextGenerator
 from ...middleware.quota import require_feature
 from ...jobs.remediation_job import _partition_authoritative_document_issues
 from ...utils.sanitization import sanitize_for_postgres
-from ...utils.security import require_persisted_canvas_origin
+from ...utils.security import (
+    PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
+    require_persisted_brightspace_origin,
+    require_persisted_canvas_origin,
+)
 from ._shared import (
     APPROVED_REVIEW_STATUSES,
     RemediationOptions,
@@ -1189,6 +1193,17 @@ async def remediate_scan(
                 db, cloud_file, principal.department_id
             )
             if credential:
+                brightspace_url = None
+                if credential.provider == CloudProvider.BRIGHTSPACE.value:
+                    try:
+                        brightspace_url = require_persisted_brightspace_origin(
+                            credential
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
+                        ) from exc
                 try:
                     canvas_url = None
                     if credential.provider == CloudProvider.CANVAS.value:
@@ -1257,9 +1272,6 @@ async def remediate_scan(
                             BrightspaceAPIClient,
                         )
 
-                        instance_url = (credential.provider_metadata or {}).get(
-                            "brightspace_instance_url", ""
-                        )
                         metadata = cloud_file.provider_metadata or {}
                         org_unit_id = metadata.get("org_unit_id")
                         topic_id = int(cloud_file.provider_file_id)
@@ -1273,7 +1285,7 @@ async def remediate_scan(
                             )
 
                         bs_client = BrightspaceAPIClient(
-                            brightspace_instance_url=instance_url,
+                            brightspace_instance_url=brightspace_url,
                             access_token=access_token,
                         )
                         try:

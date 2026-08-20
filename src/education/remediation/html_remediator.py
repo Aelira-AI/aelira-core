@@ -27,6 +27,7 @@ from .base import (
     RemediationConfig,
     RemediationIssue,
     RemediationResult,
+    VerificationResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class HtmlRemediator(BaseRemediator):
         IssueCategory.LINK,
         IssueCategory.CONTRAST,
     ]
+    VERIFIED_CATEGORIES = frozenset({IssueCategory.LANGUAGE, IssueCategory.ALT_TEXT})
 
     def __init__(
         self,
@@ -130,8 +132,9 @@ class HtmlRemediator(BaseRemediator):
         """
         if issue.category in self.AUTO_FIXABLE_CATEGORIES:
             if issue.category == IssueCategory.ALT_TEXT:
-                # Can fix images with AI or placeholders
-                return self.config.use_ai or "img" in issue.description.lower()
+                # HTML only carries a source string. It does not carry inspected
+                # image bytes, so neither a text client nor a URL can fix alt text.
+                return False
 
             elif issue.category == IssueCategory.HEADING:
                 return self.is_html
@@ -235,14 +238,12 @@ class HtmlRemediator(BaseRemediator):
 
     @staticmethod
     def _image_was_reachable(src: str) -> bool:
-        """Whether anything could have looked at this image.
+        """Whether controlled local bytes were actually inspected.
 
-        Content stored by an LMS refers to images by relative path, which
-        nothing in this process can resolve. A description produced without
-        the image is invention, and inventing a description of course
-        material is worse than reporting that a human has to write one.
+        HtmlRemediator has no vision transport. URL or relative source strings
+        are references, not evidence that any image content was inspected.
         """
-        return src.startswith("http://") or src.startswith("https://")
+        return False
 
     def _apply_alt_text_fix(self, issue: RemediationIssue, alt_text: str) -> bool:
         """Add or fix alt text for images."""
@@ -475,6 +476,9 @@ class HtmlRemediator(BaseRemediator):
                 # Find body
                 body = self._soup.find("body")
                 if body:
+                    main = self._soup.find("main") or self._soup.find(role="main")
+                    if not main:
+                        return False
                     # Create skip link
                     skip_link = self._soup.new_tag("a")
                     skip_link["href"] = "#main-content"
@@ -485,9 +489,7 @@ class HtmlRemediator(BaseRemediator):
                     body.insert(0, skip_link)
 
                     # Find or create main content anchor
-                    main = self._soup.find("main") or self._soup.find(role="main")
-                    if main:
-                        main["id"] = "main-content"
+                    main["id"] = "main-content"
 
                     self._modifications.append("Added skip navigation link")
                     return True
@@ -547,6 +549,9 @@ class HtmlRemediator(BaseRemediator):
         self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Generate fix using AI."""
+
+        if issue.category == IssueCategory.ALT_TEXT:
+            return None
 
         self.result.ai_calls_made += 1
 
@@ -620,7 +625,7 @@ Provide ONLY the fix content, no explanation."""
         return None
 
     def _verify_fixes(self, output_path: str):
-        """Verify that fixes were applied and HTML is valid."""
+        """Verify the saved HTML; success means no supported issue remains."""
         try:
             with open(output_path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -629,8 +634,17 @@ Provide ONLY the fix content, no explanation."""
                 # Check for balanced tags
                 soup = BeautifulSoup(content, "html.parser")
 
-                # Check for common issues
-                issues = []
+                categories = {issue.category for issue in self.issues}
+                categories.update(issue.category for issue in self.result.fixed_issues)
+                unsupported = sorted(
+                    category.value
+                    for category in categories
+                    if category not in self.VERIFIED_CATEGORIES
+                )
+                issues = [
+                    f"No implemented verifier for HTML category: {category}"
+                    for category in unsupported
+                ]
 
                 # Check lang attribute
                 html_tag = soup.find("html")
@@ -645,8 +659,41 @@ Provide ONLY the fix content, no explanation."""
                 if issues:
                     self.result.warnings.extend(issues[:5])  # Limit warnings
 
+                passed = not issues
+                issues_before = self.result.total_issues
+                issues_after = len(issues)
+                self.result.verification_result = VerificationResult(
+                    passed=passed,
+                    issues_before=issues_before,
+                    issues_after=issues_after,
+                    issues_fixed=(
+                        [issue.issue_id for issue in self.result.fixed_issues]
+                        if passed
+                        else []
+                    ),
+                    issues_remaining=issues,
+                    verification_score=(100.0 if passed else 0.0),
+                )
+                self.result.verification_passed = passed
+            else:
+                self.result.verification_result = VerificationResult(
+                    passed=False,
+                    issues_before=self.result.total_issues,
+                    issues_after=self.result.total_issues,
+                    issues_remaining=[
+                        "HTML verification unavailable for this file type"
+                    ],
+                )
+
         except Exception as e:
             self.result.warnings.append(f"Verification failed: {e}")
+            self.result.verification_passed = False
+            self.result.verification_result = VerificationResult(
+                passed=False,
+                issues_before=self.result.total_issues,
+                issues_after=self.result.total_issues,
+                issues_remaining=["HTML verification failed"],
+            )
 
     def auto_remediate(self) -> bool:
         """

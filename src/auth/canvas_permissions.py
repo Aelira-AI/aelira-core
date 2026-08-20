@@ -55,10 +55,10 @@ def require_lti_account_access(
     return principal
 
 
-def require_canvas_account_management(
+def require_account_management(
     principal: AuthenticatedPrincipal,
 ) -> AuthenticatedPrincipal:
-    """Authorize account-level Canvas credential mutations.
+    """Authorize account-level integration credential mutations.
 
     LTI relies on its authoritative account-wide Administrator assertion.
     Other authentication methods require an Aelira ADMIN or SUPER_ADMIN role;
@@ -72,3 +72,10 @@ def require_canvas_account_management(
     if principal.user_role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
         _deny()
     return principal
+
+
+def require_canvas_account_management(
+    principal: AuthenticatedPrincipal,
+) -> AuthenticatedPrincipal:
+    """Backward-compatible Canvas name for the shared account policy."""
+    return require_account_management(principal)
