@@ -11,12 +11,21 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from ...ai.providers import get_provider_manager
+from ...ai.lms_remediation_client import LMSRemediationClient
 from ...auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ...db.database import get_db_dependency
-from ...db.models import CloudFile, CloudOAuthCredentials, ScanFix, ScanType
+from ...db.models import (
+    CloudFile,
+    CloudOAuthCredentials,
+    RemediationOutcome,
+    ScanFix,
+    ScanStatus,
+    ScanType,
+)
 from ...db.scan_service import ScanService
 from ...education.image_alt_text import ImageAltTextGenerator
 from ...middleware.quota import require_feature
+from ...jobs.remediation_job import _partition_authoritative_document_issues
 from ...utils.sanitization import sanitize_for_postgres
 from ...utils.security import require_persisted_canvas_origin
 from ._shared import (
@@ -52,6 +61,54 @@ def _get_bound_fallback_cloud_file(
         or cloud_file.department_id != department_id
     ):
         return None
+    return cloud_file
+
+
+def _resolve_bound_scan_cloud_file(
+    db: Session,
+    scan,
+    principal: AuthenticatedPrincipal,
+    authorized_cloud_file: CloudFile | None,
+) -> CloudFile | None:
+    """Resolve the scan's unique tenant-bound CloudFile after authorization.
+
+    ``authorize_scan_access`` returns the course-bound file only for scoped LTI
+    principals. Other authorized principals still need the canonical scan link
+    for LMS policy classification. Two rows are enough to detect ambiguity.
+    """
+    cloud_files = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.department_id == principal.department_id,
+            CloudFile.last_scan_id == scan.id,
+        )
+        .limit(2)
+        .all()
+    )
+
+    if len(cloud_files) > 1:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    cloud_file = cloud_files[0] if cloud_files else None
+    if cloud_file is not None and (
+        cloud_file.department_id != principal.department_id
+        or cloud_file.last_scan_id != scan.id
+    ):
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    course_scoped_lti = (
+        principal.auth_method == "lti" and not principal.lti_account_wide
+    )
+    if course_scoped_lti:
+        if authorized_cloud_file is None or cloud_file is None:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if str(authorized_cloud_file.id) != str(cloud_file.id):
+            raise HTTPException(status_code=404, detail="Scan not found")
+    elif authorized_cloud_file is not None and (
+        cloud_file is None or str(authorized_cloud_file.id) != str(cloud_file.id)
+    ):
+        raise HTTPException(status_code=404, detail="Scan not found")
+
     return cloud_file
 
 
@@ -366,6 +423,26 @@ def _map_severity_string(severity_str: str):
 # ==================== Auto-Remediation Endpoints ====================
 
 
+def _effective_remediation_use_ai(
+    options: Optional[RemediationOptions],
+    query_use_ai: Optional[bool],
+    *,
+    lms_backed: bool,
+) -> bool:
+    """Resolve AI intent without promoting a Pydantic model default to consent.
+
+    An explicitly supplied body field takes precedence over the deprecated
+    query parameter. LMS-backed scans default to mechanical remediation unless
+    either request location explicitly asks for AI. Non-LMS scans retain the
+    historical default.
+    """
+    if options is not None and "use_ai" in options.model_fields_set:
+        return bool(options.use_ai)
+    if query_use_ai is not None:
+        return bool(query_use_ai)
+    return not lms_backed
+
+
 @router.post("/remediate/batch")
 async def batch_remediate(
     scan_ids: List[str],
@@ -389,7 +466,7 @@ async def remediate_scan(
     scan_id: str,
     request: Request,
     options: Optional[RemediationOptions] = None,
-    use_ai: bool = True,  # Keep for backwards compatibility
+    use_ai: Optional[bool] = None,  # None preserves legacy only for non-LMS scans
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
@@ -431,6 +508,47 @@ async def remediate_scan(
         raise HTTPException(status_code=404, detail="Scan not found")
 
     authorized_cloud_file = authorize_scan_access(db, scan, principal)
+    resolved_cloud_file = _resolve_bound_scan_cloud_file(
+        db, scan, principal, authorized_cloud_file
+    )
+
+    lms_providers = {
+        "canvas",
+        "blackboard",
+        "moodle",
+        "brightspace",
+    }
+    lms_cloud_file = (
+        resolved_cloud_file
+        if resolved_cloud_file and resolved_cloud_file.provider in lms_providers
+        else None
+    )
+    if lms_cloud_file and lms_cloud_file.provider in {"blackboard", "moodle"}:
+        raise HTTPException(
+            status_code=400,
+            detail="LMS file remediation is not supported for this provider",
+        )
+
+    effective_use_ai = _effective_remediation_use_ai(
+        options,
+        use_ai,
+        lms_backed=lms_cloud_file is not None,
+    )
+    lms_ai_client = None
+    if lms_cloud_file and effective_use_ai:
+        purpose = "alt_text" if scan.scan_type == ScanType.IMAGE else "remediation"
+        lms_ai_client = LMSRemediationClient.bind_if_allowed(
+            department_id=principal.department_id,
+            purpose=purpose,
+            actor_id=principal.user_id,
+            scan_id=str(scan.id),
+            cloud_file_id=str(lms_cloud_file.id),
+        )
+        if lms_ai_client is None:
+            raise HTTPException(
+                status_code=403,
+                detail=f"LMS AI {purpose} is not permitted",
+            )
 
     if not scan.result:
         raise HTTPException(status_code=400, detail="Scan has no results to remediate")
@@ -444,11 +562,29 @@ async def remediate_scan(
             issues = scan.result.issues.get("details", [])
 
     if not issues:
+        original_status = scan.status
+        original_outcome = scan.remediation_outcome
+        original_completed_at = scan.completed_at
+        try:
+            scan.status = ScanStatus.COMPLETED
+            scan.remediation_outcome = RemediationOutcome.NO_OP.value
+            scan.completed_at = datetime.now(timezone.utc)
+            db.commit()
+        except Exception:
+            db.rollback()
+            scan.status = original_status
+            scan.remediation_outcome = original_outcome
+            scan.completed_at = original_completed_at
+            raise HTTPException(
+                status_code=500, detail="Remediation failed. Please try again."
+            )
         return {
             "success": True,
             "message": "No issues to remediate",
             "fixed_count": 0,
             "manual_count": 0,
+            "failed_count": 0,
+            "artifact_required": False,
         }
 
     # Check if we have a stored file path (from manual upload)
@@ -463,9 +599,7 @@ async def remediate_scan(
         from ...db.models import CloudProvider
         from ...integrations.oauth_token_manager import OAuthTokenManager
 
-        cloud_file = authorized_cloud_file or _get_bound_fallback_cloud_file(
-            db, scan_id, principal.department_id
-        )
+        cloud_file = resolved_cloud_file
         if cloud_file and cloud_file.credential_id:
             credential = _get_bound_cloud_credential(
                 db, cloud_file, principal.department_id
@@ -609,30 +743,56 @@ async def remediate_scan(
 
     # Special case: IMAGE scan — generate alt text via AI
     if scan_type == ScanType.IMAGE:
-        from ...education.image_alt_text import ImageAltTextGenerator
-
-        generator = ImageAltTextGenerator(allow_legacy_transport=True)
+        generator = ImageAltTextGenerator(
+            lms_client=lms_ai_client,
+            allow_legacy_transport=lms_cloud_file is None,
+        )
+        if lms_cloud_file and lms_ai_client is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Image alt text requires an allowed LMS AI request",
+            )
         analysis = await generator.analyze_image_comprehensive(
             image_path=file_path,
             context=f"Educational course content: {scan.file_name}",
         )
 
-        alt_text = analysis.get("description", {}).get("alt_text", "")
-        is_decorative = analysis.get("type_detection", {}).get("is_decorative", False)
+        raw_alt_text = analysis.get("description", {}).get("alt_text", "")
+        alt_text = raw_alt_text.strip() if isinstance(raw_alt_text, str) else ""
+        is_decorative = analysis.get("type_detection", {}).get("is_decorative") is True
+        success = bool(alt_text) or is_decorative
 
-        scan.status = "COMPLETED"
-        scan.remediation_status = "completed"
-        db.commit()
+        original_status = scan.status
+        original_outcome = scan.remediation_outcome
+        try:
+            scan.status = ScanStatus.COMPLETED if success else ScanStatus.FAILED
+            scan.remediation_outcome = (
+                RemediationOutcome.COMPLETED.value
+                if success
+                else RemediationOutcome.MANUAL_REQUIRED.value
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            scan.status = original_status
+            scan.remediation_outcome = original_outcome
+            raise HTTPException(
+                status_code=500, detail="Remediation failed. Please try again."
+            )
 
         return {
-            "success": True,
+            "success": success,
             "message": (
                 "Image alt text generated"
                 if alt_text
-                else "Image classified as decorative"
+                else (
+                    "Image classified as decorative"
+                    if is_decorative
+                    else "manual_required"
+                )
             ),
-            "fixed_count": 1 if alt_text or is_decorative else 0,
-            "manual_count": 0,
+            "fixed_count": 1 if success else 0,
+            "manual_count": 0 if success else 1,
             "remediated_alt_text": alt_text,
             "is_decorative": is_decorative,
         }
@@ -645,7 +805,9 @@ async def remediate_scan(
 
     # Build remediation config with options
     config = RemediationConfig(
-        use_ai=options.use_ai if options else use_ai,
+        use_ai=effective_use_ai,
+        allow_legacy_nested_ai=lms_cloud_file is None,
+        fix_alt_text=lms_cloud_file is None,
         verify_fixes=True,
         create_backup=True,
         output_directory=str(Path(file_path).parent),
@@ -663,6 +825,12 @@ async def remediate_scan(
         config.multimedia_output_format = OutputFormat(options.multimedia_format)
         config.include_original_in_zip = options.include_original_in_zip
 
+    # Authoritative LMS document remediation cannot use the remediation-purpose
+    # client for embedded image descriptions. Keep those issues manual.
+    embedded_alt_manual = []
+    if lms_cloud_file and scan_type != ScanType.IMAGE:
+        issues, embedded_alt_manual = _partition_authoritative_document_issues(issues)
+
     # Normalize issues for the remediator — populate metadata dict from
     # top-level fields so can_auto_fix() / apply_fix() work correctly.
     # Normalize raw scan issues into the remediator input shape.
@@ -671,11 +839,16 @@ async def remediate_scan(
         f"Normalized {len(normalized_issues)} issues for remediation (scan {scan_id})"
     )
 
-    effective_use_ai = options.use_ai if options else use_ai
+    original_status = scan.status
+    original_outcome = scan.remediation_outcome
+    original_cloud_remediated = (
+        resolved_cloud_file.has_remediated_version if resolved_cloud_file else None
+    )
 
     try:
-        # Get AI client for alt text generation
-        ai_client = get_provider_manager()
+        # LMS-backed scans receive only their purpose-bound current-policy
+        # client. Ordinary uploads retain the historical provider manager.
+        ai_client = lms_ai_client if lms_cloud_file else get_provider_manager()
 
         # Create remediator and run remediation
         remediator = RemediatorClass(
@@ -686,6 +859,14 @@ async def remediate_scan(
         )
 
         result = remediator.remediate()
+        if result.success is not True:
+            return {
+                "success": False,
+                "message": "remediation_failed",
+                "scan_id": scan_id,
+            }
+        if embedded_alt_manual:
+            result.manual_count += len(embedded_alt_manual)
 
         # Persist fixes to scan_fixes table for the review workflow
         import uuid as _uuid
@@ -725,7 +906,6 @@ async def remediate_scan(
                     page_number=getattr(fix, "page_number", None),
                 )
             )
-        db.commit()
 
         # Run Matterhorn validation on the remediated file
         try:
@@ -753,7 +933,6 @@ async def remediate_scan(
                             page_number=cp.page_number,
                         )
                     )
-                db.commit()
                 logger.info(
                     f"Matterhorn validation complete for {scan_id}: "
                     f"{mh_result.passed}/{mh_result.total} passed"
@@ -778,18 +957,35 @@ async def remediate_scan(
             improvement=result.improvement,
             duration_seconds=result.duration_seconds,
             request=request,
+            commit=False,
         )
 
-        # Update CloudFile if this scan came from a cloud integration
-        try:
-            cloud_file = authorized_cloud_file or _get_bound_fallback_cloud_file(
-                db, scan_id, principal.department_id
-            )
-            if cloud_file:
-                cloud_file.has_remediated_version = True
-                db.commit()
-        except Exception as cf_err:
-            logger.warning(f"Failed to update CloudFile remediation status: {cf_err}")
+        if result.failed_count > 0:
+            scan.status = ScanStatus.FAILED
+            scan.remediation_outcome = RemediationOutcome.REMEDIATION_FAILED.value
+        elif result.manual_count > 0:
+            scan.status = ScanStatus.FAILED
+            scan.remediation_outcome = RemediationOutcome.MANUAL_REQUIRED.value
+        elif result.fixed_count > 0:
+            scan.status = ScanStatus.COMPLETED
+            scan.remediation_outcome = RemediationOutcome.COMPLETED.value
+        else:
+            scan.status = ScanStatus.COMPLETED
+            scan.remediation_outcome = RemediationOutcome.NO_OP.value
+
+        durable_output_exists = bool(
+            result.output_file and Path(result.output_file).is_file()
+        )
+        if (
+            resolved_cloud_file
+            and scan.status == ScanStatus.COMPLETED
+            and result.fixed_count > 0
+            and durable_output_exists
+            and getattr(result, "verification_passed", None) is True
+        ):
+            resolved_cloud_file.has_remediated_version = True
+
+        db.commit()
 
         return {
             "success": result.success,
@@ -828,25 +1024,19 @@ async def remediate_scan(
             "warnings": result.warnings,
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
+        db.rollback()
+        scan.status = original_status
+        scan.remediation_outcome = original_outcome
+        if resolved_cloud_file is not None:
+            try:
+                resolved_cloud_file.has_remediated_version = original_cloud_remediated
+            except Exception:
+                logger.warning(
+                    "Failed to restore in-memory CloudFile remediation status",
+                    extra={"scan_id": scan_id},
+                )
         logger.error(f"Remediation failed for scan {scan_id}: {e}", exc_info=True)
-        # Log remediation failure
-        try:
-            from ...security.audit_service import AuditService
-
-            AuditService(db).log_remediation_failed(
-                user_id=user_id,
-                department_id=department_id,
-                scan_id=scan_id,
-                file_type=scan_type.value if scan_type else "unknown",
-                use_ai=effective_use_ai,
-                error=str(e),
-                request=request,
-            )
-        except Exception:
-            pass  # Audit logging should never break the main flow
         raise HTTPException(
             status_code=500, detail="Remediation failed. Please try again."
         )

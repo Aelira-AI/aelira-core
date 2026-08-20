@@ -1611,7 +1611,9 @@ class PdfRemediator(BaseRemediator):
                             e,
                         )
 
-                tagger = TableTagger(use_ai=self.config.use_ai)
+                tagger = TableTagger(
+                    use_ai=(self.config.use_ai and self.config.allow_legacy_nested_ai)
+                )
                 result = tagger.tag_tables(self.file_path)
 
                 if result.success and result.tables_tagged > 0:

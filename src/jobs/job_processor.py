@@ -112,8 +112,11 @@ class JobProcessor:
                     # No jobs found, wait before polling again
                     await asyncio.sleep(self.poll_interval)
 
-            except Exception as e:
-                logger.error(f"Job processor error: {e}")
+            except Exception as exc:
+                logger.error(
+                    "Job processor error",
+                    extra={"error_type": type(exc).__name__},
+                )
                 await asyncio.sleep(self.poll_interval)
 
     def stop(self):
@@ -202,8 +205,11 @@ class JobProcessor:
                         )
                         recovered_count += 1
 
-                except Exception as e:
-                    logger.error(f"Failed to recover stale job {job.id}: {e}")
+                except Exception as exc:
+                    logger.error(
+                        "Failed to recover stale job",
+                        extra={"job_id": job.id, "error_type": type(exc).__name__},
+                    )
 
             db.commit()
 
@@ -244,8 +250,11 @@ class JobProcessor:
                 try:
                     await self._process_job(job, db)
                     processed += 1
-                except Exception as e:
-                    logger.error(f"Failed to process job {job.id}: {e}")
+                except Exception as exc:
+                    logger.error(
+                        "Job batch item failed",
+                        extra={"job_id": job.id, "error_type": type(exc).__name__},
+                    )
 
             return processed
 
@@ -283,15 +292,43 @@ class JobProcessor:
 
             logger.info(f"Job {job.id} completed successfully")
 
-        except Exception as e:
-            logger.error(f"Job {job.id} failed: {e}")
+        except Exception as exc:
+            # A handler may leave the session in a failed transaction. Clear it
+            # before touching queue state, then reload the job when supported.
+            db.rollback()
+            try:
+                db.refresh(job)
+            except Exception as refresh_exc:
+                logger.warning(
+                    "Could not refresh job after rollback",
+                    extra={
+                        "job_id": job.id,
+                        "error_type": type(refresh_exc).__name__,
+                    },
+                )
+
+            # Import locally to avoid coupling module initialization while still
+            # recognizing the real typed terminal failure (including subclasses).
+            from .remediation_job import RemediationJobFailed
+
+            deterministic_failure = isinstance(exc, RemediationJobFailed)
+            error_code = exc.code if deterministic_failure else "job_processing_failed"
+            logger.error(
+                "Job failed",
+                extra={
+                    "job_id": job.id,
+                    "job_type": job.job_type,
+                    "error_type": type(exc).__name__,
+                    "error_code": error_code,
+                },
+            )
 
             # Update retry count
             job.retry_count += 1
-            job.error_message = str(e)
+            job.error_message = error_code
 
-            if job.retry_count >= job.max_retries:
-                # Max retries exceeded, mark as failed
+            if deterministic_failure or job.retry_count >= job.max_retries:
+                # Deterministic remediation failures cannot succeed on retry.
                 job.status = CloudJobStatus.FAILED.value
                 job.completed_at = datetime.now(timezone.utc)
                 logger.warning(f"Job {job.id} failed after {job.retry_count} retries")

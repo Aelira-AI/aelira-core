@@ -255,6 +255,8 @@ class LMSRemediationClient:
         prompt: str,
         max_tokens: int = 500,
     ) -> dict[str, Any]:
+        if self.purpose != "alt_text":
+            return self._failure("purpose_operation_mismatch")
         return self._execute(
             "vision", image_data=image_data, prompt=prompt, max_tokens=max_tokens
         )

@@ -502,14 +502,10 @@ def test_ollama_rejects_any_injected_or_ambient_api_key(monkeypatch, injected, a
     assert not created
 
 
-def test_all_compatibility_methods_use_one_fresh_provider_and_close_it():
+def test_compatibility_methods_use_one_fresh_provider_and_close_it():
     client, _, created = build_client(
         department(),
         audit_sessions=[
-            FakeSession(),
-            FakeSession(department()),
-            FakeSession(),
-            FakeSession(department()),
             FakeSession(),
             FakeSession(department()),
             FakeSession(),
@@ -522,17 +518,25 @@ def test_all_compatibility_methods_use_one_fresh_provider_and_close_it():
 
     text = client.generate_text_sync("text")
     code = client.generate_code_sync("code", language="python")
-    vision = client.analyze_image_sync(b"image bytes", "describe")
 
-    assert text["success"] and code["success"] and vision["success"]
-    assert [entry[2].operations[0][0] for entry in created] == [
-        "text",
-        "code",
-        "vision",
-    ]
+    assert text["success"] and code["success"]
+    assert [entry[2].operations[0][0] for entry in created] == ["text", "code"]
     assert all(entry[2].initialized == 1 for entry in created)
     assert all(entry[2].closed == 1 for entry in created)
-    assert len({id(entry[2]) for entry in created}) == 3
+    assert len({id(entry[2]) for entry in created}) == 2
+
+
+def test_remediation_purpose_rejects_vision_without_provider_call():
+    client, _, created = build_client(department(), purpose="remediation")
+
+    result = client.analyze_image_sync(b"image bytes", "describe")
+
+    assert result["success"] is False
+    assert result["error"] == "purpose_operation_mismatch"
+    assert result["ai_used"] is False
+    assert result["external_ai_used"] is False
+    assert result["purpose_outcome"] == "denied_at_dispatch"
+    assert created == []
 
 
 def test_provider_lifecycle_uses_one_event_loop_and_one_coroutine_runner(monkeypatch):
@@ -1095,7 +1099,8 @@ def test_audit_metadata_is_allowlisted_and_contains_no_payload_or_raw_error():
     response = LLMResponse.error_response(raw_response, "gemini", "safe-model")
     provider = RecordingProvider(response=response)
     client, sessions, _ = build_client(
-        department(),
+        department(lms_ai_purposes=["alt_text"]),
+        purpose="alt_text",
         provider_factory=lambda *_: provider,
         actor_id="actor-1",
         job_id="job-1",

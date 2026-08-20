@@ -104,7 +104,9 @@ def _db(*, scan=None, cloud_file=None, list_scans=None):
 
     cloud_query = MagicMock()
     cloud_query.filter.return_value = cloud_query
+    cloud_query.limit.return_value = cloud_query
     cloud_query.first.return_value = cloud_file
+    cloud_query.all.return_value = [cloud_file] if cloud_file is not None else []
 
     list_query = MagicMock()
     for method in ("join", "filter", "order_by", "limit", "offset"):
@@ -357,7 +359,8 @@ def test_non_lti_remediation_rejects_cross_tenant_cloud_file_before_side_effects
     result = SimpleNamespace(issues=[{"description": "Missing document title"}])
     scan = _scan(result=result)
     cloud_file = _cloud_file(department_id=OTHER_DEPT)
-    db = _db(scan=scan, cloud_file=cloud_file)
+    # The tenant-bound CloudFile query excludes this foreign row.
+    db = _db(scan=scan, cloud_file=None)
     _authenticate(client, _principal(auth_method="session"), db)
 
     with (

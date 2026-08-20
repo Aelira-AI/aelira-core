@@ -6,6 +6,7 @@ Applies automated fixes to accessibility issues.
 """
 
 import logging
+import re
 import tempfile
 import shutil
 import uuid
@@ -16,20 +17,21 @@ from sqlalchemy.orm import Session
 
 from ..db.models import (
     Scan,
+    RemediationOutcome,
+    ScanStatus,
+    ScanType,
     ScanResult,
     ScanFix,
     ReviewAuditLog,
     MatterhornResult as MatterhornResultModel,
     CloudFile,
     CloudOAuthCredentials,
-    CloudJobQueue,
-    CloudJobType,
-    CloudJobStatus,
     CloudProvider,
 )
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
+from ..ai.lms_remediation_client import LMSRemediationClient
 from ..utils.security import (
     PERSISTED_CANVAS_ORIGIN_ERROR,
     require_persisted_canvas_origin,
@@ -37,10 +39,113 @@ from ..utils.security import (
 
 logger = logging.getLogger(__name__)
 
+_EXECUTION_CONTEXT_TEXT_FIELDS = {
+    "policy_version",
+    "policy_provider",
+    "originating_route",
+    "resource_id",
+    "course_id",
+}
+_EXECUTION_CONTEXT_TEXT_RE = re.compile(r"^[A-Za-z0-9_./:-]+$")
+_ALLOWED_PURPOSES = ("remediation", "alt_text")
+_DOCUMENT_ALT_CATEGORIES = {
+    "alt_text",
+    "alternative_text",
+    "image",
+    "image_description",
+    "image_of_text",
+    "missing_alt_text",
+    "missing_figure_caption",
+}
+_LMS_PROVIDERS = {
+    CloudProvider.CANVAS.value,
+    CloudProvider.BLACKBOARD.value,
+    CloudProvider.MOODLE.value,
+    CloudProvider.BRIGHTSPACE.value,
+}
+_EXECUTABLE_QUEUED_LMS_PROVIDERS = {
+    CloudProvider.CANVAS.value,
+}
+_JOB_FAILURE_CODES = {
+    "invalid_job_scope",
+    "unsupported_lms_remediation",
+    "remediation_artifact_unavailable",
+    "manual_required",
+    "alt_text_manual_required",
+    "policy_not_permitted",
+    "download_failed",
+    "remediation_failed",
+}
+
+
+class RemediationJobFailed(RuntimeError):
+    """Sanitized worker failure consumed by queue state machines."""
+
+    def __init__(self, code: str):
+        self.code = code if code in _JOB_FAILURE_CODES else "remediation_failed"
+        super().__init__(self.code)
+
+
+def _set_remediation_outcome(scan: Scan, outcome: RemediationOutcome | str) -> None:
+    """Persist a bounded semantic outcome on its mapped column."""
+    scan.remediation_outcome = RemediationOutcome(outcome).value
+
+
+def sanitize_execution_context(value: Any) -> Dict[str, Any]:
+    """Return the small, non-sensitive request-intent schema stored on jobs."""
+    if not isinstance(value, dict):
+        return {}
+    result: Dict[str, Any] = {}
+    for field in ("ai_requested", "alt_text_requested", "upload_back"):
+        if type(value.get(field)) is bool:
+            result[field] = value[field]
+    purposes = value.get("requested_purposes")
+    if isinstance(purposes, list):
+        requested = {
+            purpose
+            for purpose in purposes[:16]
+            if isinstance(purpose, str) and purpose in _ALLOWED_PURPOSES
+        }
+        result["requested_purposes"] = [
+            purpose for purpose in _ALLOWED_PURPOSES if purpose in requested
+        ]
+    for field in _EXECUTION_CONTEXT_TEXT_FIELDS:
+        candidate = value.get(field)
+        if (
+            isinstance(candidate, str)
+            and candidate
+            and _EXECUTION_CONTEXT_TEXT_RE.fullmatch(candidate[:255])
+        ):
+            result[field] = candidate[:255]
+    return result
+
+
+def _partition_authoritative_document_issues(
+    issues: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Keep embedded-image work out of the one-client document remediator."""
+    automatic: List[Dict[str, Any]] = []
+    manual: List[Dict[str, Any]] = []
+    for issue in issues:
+        raw_category = (
+            issue.get("type") or issue.get("category") or issue.get("issue_type") or ""
+        )
+        normalized = (
+            str(raw_category).strip().lower().replace("-", "_").replace(" ", "_")
+        )
+        (manual if normalized in _DOCUMENT_ALT_CATEGORIES else automatic).append(issue)
+    return automatic, manual
+
 
 async def process_remediation_job(
     job_data: Dict[str, Any],
     db: Session,
+    *,
+    ai_client: Any = None,
+    alt_text_client: Any = None,
+    lms_policy_authoritative: bool = False,
+    credential: CloudOAuthCredentials | None = None,
+    token_manager: OAuthTokenManager | None = None,
 ) -> Dict[str, Any]:
     """
     Process a remediation job.
@@ -54,7 +159,7 @@ async def process_remediation_job(
             - cloud_file_id: Cloud file ID (optional)
             - file_path: Path to file to remediate (optional)
             - department_id: Department ID
-            - upload_to_cloud: Whether to upload back to cloud (default: False)
+            - upload_to_cloud: Ignored; automatic upload is disabled
             - provider: Cloud provider (google/microsoft)
         db: Database session
 
@@ -66,15 +171,14 @@ async def process_remediation_job(
             - failed_count: int (fixes that failed)
             - output_file: str (path to remediated file)
             - backup_path: str (path to backup)
-            - upload_job_id: str (if upload_to_cloud=True)
+            - upload_job_id: always None; automatic upload is disabled
             - error: str (if failed)
     """
     scan_id = job_data.get("scan_id")
     cloud_file_id = job_data.get("cloud_file_id")
     file_path = job_data.get("file_path")
     department_id = job_data.get("department_id")
-    upload_to_cloud = job_data.get("upload_to_cloud", False)
-    provider = job_data.get("provider")
+    temp_file_path = None
 
     try:
         logger.info(
@@ -88,19 +192,47 @@ async def process_remediation_job(
 
         # 2. Get ScanResult with detailed issues
         scan_result = db.query(ScanResult).filter(ScanResult.scan_id == scan_id).first()
-        if not scan_result or not scan_result.issues:
+        if not scan_result:
             return {
                 "success": False,
-                "error": "No issues found to remediate",
+                "error": "Scan results not found",
                 "scan_id": scan_id,
+            }
+        if not scan_result.issues:
+            original_status = scan.status
+            original_outcome = scan.remediation_outcome
+            original_completed_at = scan.completed_at
+            try:
+                scan.status = ScanStatus.COMPLETED
+                _set_remediation_outcome(scan, RemediationOutcome.NO_OP)
+                scan.completed_at = datetime.now(timezone.utc)
+                db.commit()
+            except Exception:
+                db.rollback()
+                scan.status = original_status
+                scan.remediation_outcome = original_outcome
+                scan.completed_at = original_completed_at
+                raise
+            return {
+                "success": True,
+                "fixed_count": 0,
+                "manual_count": 0,
+                "failed_count": 0,
+                "skipped_count": 0,
+                "scan_id": scan_id,
+                "artifact_required": False,
             }
 
         # 3. Determine file path (cloud, manual upload, or explicit path)
-        temp_file_path = None
         if cloud_file_id:
             # Download from cloud storage (Google Drive/OneDrive)
             download_result = await _download_cloud_file(
-                cloud_file_id, department_id, db
+                cloud_file_id,
+                department_id,
+                db,
+                credential=credential,
+                token_manager=token_manager,
+                require_exact_credential=lms_policy_authoritative,
             )
             if not download_result.get("success"):
                 return {
@@ -123,11 +255,53 @@ async def process_remediation_job(
 
         # 6. Parse issues into RemediationIssue objects
         issues = scan_result.issues or []
-        logger.info(f"Processing {len(issues)} issues from scan")
+        embedded_alt_manual = []
+        if lms_policy_authoritative and scan.scan_type not in (
+            "IMAGE",
+            "image",
+            ScanType.IMAGE,
+        ):
+            issues, embedded_alt_manual = _partition_authoritative_document_issues(
+                issues
+            )
+        logger.info(
+            "Processing remediation issues",
+            extra={
+                "scan_id": scan_id,
+                "automatic_count": len(issues),
+                "manual_embedded_alt_count": len(embedded_alt_manual),
+            },
+        )
 
-        # 7. Select and instantiate remediator
+        # 7. Select and instantiate remediator. LMS jobs may only use clients
+        # bound from current policy by the handler; ordinary jobs retain their
+        # historical mechanical behavior.
+        if lms_policy_authoritative and scan.scan_type in (
+            "IMAGE",
+            "image",
+            ScanType.IMAGE,
+        ):
+            # Queued image remediation has nowhere durable to persist the
+            # generated result until Task 16. Fail before any provider call.
+            return {
+                "success": False,
+                "error": "remediation_artifact_unavailable",
+                "manual_count": 1,
+                "scan_id": scan_id,
+            }
+
+        effective_ai_client = ai_client if lms_policy_authoritative else None
+        effective_use_ai = (
+            effective_ai_client is not None if lms_policy_authoritative else True
+        )
         remediator = _get_remediator_for_scan_type(
-            scan_type=scan.scan_type, file_path=file_path, issues=issues, use_ai=True
+            scan_type=scan.scan_type,
+            file_path=file_path,
+            issues=issues,
+            use_ai=effective_use_ai,
+            ai_client=effective_ai_client,
+            allow_legacy_nested_ai=not lms_policy_authoritative,
+            allow_embedded_alt=not lms_policy_authoritative,
         )
 
         if not remediator:
@@ -139,52 +313,78 @@ async def process_remediation_job(
         # 8. Run remediation
         logger.info(f"Starting remediation with {remediator.__class__.__name__}")
         remediation_result = remediator.remediate()
+        if remediation_result.success is not True:
+            return {
+                "success": False,
+                "error": "remediation_failed",
+                "scan_id": scan_id,
+            }
+        if embedded_alt_manual:
+            remediation_result.manual_count += len(embedded_alt_manual)
 
-        # 9. Queue upload job if requested and remediation succeeded
-        upload_job_id = None
-        if (
-            upload_to_cloud
-            and cloud_file_id
-            and remediation_result.success
-            and remediation_result.fixed_count > 0
+        # Decide the authoritative LMS outcome before any success notification,
+        # fix/audit row, completed status, or remediation metadata can escape.
+        if lms_policy_authoritative and remediation_result.fixed_count > 0:
+            scan.status = ScanStatus.FAILED
+            _set_remediation_outcome(scan, RemediationOutcome.ARTIFACT_UNAVAILABLE)
+            scan.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            return {
+                "success": False,
+                "error": "remediation_artifact_unavailable",
+                "fixed_count": remediation_result.fixed_count,
+                "manual_count": remediation_result.manual_count,
+                "failed_count": remediation_result.failed_count,
+                "scan_id": scan_id,
+            }
+        if lms_policy_authoritative and (
+            remediation_result.manual_count > 0 or remediation_result.failed_count > 0
         ):
-            upload_job_id = await _queue_upload_job(
-                file_path=remediation_result.output_file,
-                cloud_file_id=cloud_file_id,
-                department_id=department_id,
-                provider=provider,
-                db=db,
-            )
-            logger.info(f"Queued upload job: {upload_job_id}")
+            scan.status = ScanStatus.FAILED
+            _set_remediation_outcome(scan, RemediationOutcome.MANUAL_REQUIRED)
+            scan.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            return {
+                "success": False,
+                "error": "manual_required",
+                "fixed_count": 0,
+                "manual_count": remediation_result.manual_count,
+                "failed_count": remediation_result.failed_count,
+                "scan_id": scan_id,
+            }
 
-        # 10. Send email notification
-        try:
-            await _send_remediation_notification(
-                scan=scan,
-                result=remediation_result,
-                department_id=department_id,
-                db=db,
-            )
-        except Exception as e:
-            # Don't fail the remediation if email notification fails
-            logger.warning(f"Failed to send remediation notification: {e}")
+        # Automatic upload is deliberately disabled until Task 16 provides a
+        # durable artifact and approval record.
+        upload_job_id = None
 
-        # 11. Update scan record with remediation results
+        # 11. Update scan record with remediation results. Authoritative LMS
+        # output is ephemeral until Task 16, so never persist a deleted path.
         scan.completed_at = datetime.now(timezone.utc)
-        scan.status = "remediated"
+        scan.status = ScanStatus.COMPLETED
+        _set_remediation_outcome(
+            scan,
+            (
+                RemediationOutcome.COMPLETED
+                if remediation_result.fixed_count > 0
+                else RemediationOutcome.NO_OP
+            ),
+        )
 
         # Store remediation metadata
-        if not scan.metadata:
-            scan.metadata = {}
-        scan.metadata["remediation"] = {
+        metadata = dict(scan.metadata or {})
+        metadata["remediation"] = {
             "fixed_count": remediation_result.fixed_count,
             "manual_count": remediation_result.manual_count,
             "failed_count": remediation_result.failed_count,
-            "output_file": remediation_result.output_file,
-            "backup_path": backup_path,
+            "output_file": (
+                None if lms_policy_authoritative else remediation_result.output_file
+            ),
+            "backup_path": None if lms_policy_authoritative else backup_path,
+            "artifact_persisted": not lms_policy_authoritative,
             "compliance_improvement": remediation_result.improvement,
             "remediated_at": datetime.now(timezone.utc).isoformat(),
         }
+        scan.metadata = metadata
 
         # Persist individual fixes to scan_fixes table (delete existing for idempotency on retry)
         db.query(ScanFix).filter(ScanFix.scan_id == scan_id).delete()
@@ -288,13 +488,28 @@ async def process_remediation_job(
                     "pikepdf not installed - skipping Matterhorn validation",
                     extra={"scan_id": scan_id},
                 )
-            except Exception as e:
+            except Exception as exc:
                 logger.error(
                     "Matterhorn validation failed",
-                    extra={"scan_id": scan_id, "error": str(e)},
+                    extra={"scan_id": scan_id, "error_type": type(exc).__name__},
                 )
 
         db.commit()
+
+        # Queued processing cannot notify here: the caller still has to commit
+        # the CloudJobQueue completion state. A transactional outbox/caller-side
+        # notification is intentionally deferred to Task 17.
+
+        if lms_policy_authoritative:
+            return {
+                "success": True,
+                "fixed_count": 0,
+                "manual_count": remediation_result.manual_count,
+                "failed_count": remediation_result.failed_count,
+                "skipped_count": remediation_result.skipped_count,
+                "scan_id": scan_id,
+                "artifact_required": False,
+            }
 
         return {
             "success": True,
@@ -309,11 +524,15 @@ async def process_remediation_job(
             "scan_id": scan_id,
         }
 
-    except Exception as e:
-        logger.error(f"Error processing remediation job: {e}", exc_info=True)
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Error processing remediation job",
+            extra={"scan_id": scan_id, "error_type": type(exc).__name__},
+        )
         return {
             "success": False,
-            "error": str(e),
+            "error": "remediation_failed",
             "scan_id": scan_id,
         }
 
@@ -328,12 +547,21 @@ async def process_remediation_job(
                     import shutil
 
                     shutil.rmtree(parent, ignore_errors=True)
-            except Exception as e:
-                logger.warning(f"Failed to cleanup temp file {temp_file_path}: {e}")
+            except Exception as exc:
+                logger.warning(
+                    "Failed to cleanup remediation temp file",
+                    extra={"scan_id": scan_id, "error_type": type(exc).__name__},
+                )
 
 
 async def _download_cloud_file(
-    cloud_file_id: str, department_id: str, db: Session
+    cloud_file_id: str,
+    department_id: str,
+    db: Session,
+    *,
+    credential: CloudOAuthCredentials | None = None,
+    token_manager: OAuthTokenManager | None = None,
+    require_exact_credential: bool = False,
 ) -> Dict[str, Any]:
     """
     Download file from Google Drive or OneDrive to temp directory.
@@ -352,27 +580,49 @@ async def _download_cloud_file(
         if not cloud_file:
             return {"success": False, "error": f"Cloud file not found: {cloud_file_id}"}
 
-        # Get OAuth credentials
-        credential = (
-            db.query(CloudOAuthCredentials)
-            .filter(
-                CloudOAuthCredentials.department_id == department_id,
-                CloudOAuthCredentials.provider == cloud_file.provider,
-                CloudOAuthCredentials.is_active,
+        # Authoritative queued jobs supply one exact credential. Re-read that
+        # same ID immediately before token work; never substitute another
+        # active credential for the tenant/provider.
+        if credential is not None:
+            current_credential = db.get(
+                CloudOAuthCredentials,
+                credential.id,
+                populate_existing=True,
             )
-            .first()
-        )
+            if (
+                current_credential is None
+                or current_credential.id != credential.id
+                or current_credential.is_active is not True
+                or current_credential.department_id != department_id
+                or current_credential.provider != cloud_file.provider
+                or cloud_file.credential_id != current_credential.id
+            ):
+                return {"success": False, "error": "invalid_job_scope"}
+            credential = current_credential
+        elif require_exact_credential:
+            return {"success": False, "error": "invalid_job_scope"}
+        else:
+            # Historical non-authoritative cloud remediation behavior.
+            credential = (
+                db.query(CloudOAuthCredentials)
+                .filter(
+                    CloudOAuthCredentials.department_id == department_id,
+                    CloudOAuthCredentials.provider == cloud_file.provider,
+                    CloudOAuthCredentials.is_active,
+                )
+                .first()
+            )
 
         if not credential:
             return {
                 "success": False,
-                "error": f"No active OAuth credentials for provider {cloud_file.provider}",
+                "error": "oauth_credentials_unavailable",
             }
 
         # Refresh token if needed (with distributed lock to prevent races)
         if credential.provider == CloudProvider.CANVAS.value:
             require_persisted_canvas_origin(credential)
-        token_manager = OAuthTokenManager()
+        token_manager = token_manager or OAuthTokenManager()
         access_token = await token_manager.refresh_if_expired(credential, db)
 
         # Create temp directory
@@ -490,9 +740,12 @@ async def _download_cloud_file(
                 "error": f"Unsupported provider for file download: {credential.provider}",
             }
 
-    except Exception as e:
-        logger.error(f"Error downloading cloud file {cloud_file_id}: {e}")
-        return {"success": False, "error": str(e)}
+    except Exception as exc:
+        logger.error(
+            "Error downloading cloud file",
+            extra={"cloud_file_id": cloud_file_id, "error_type": type(exc).__name__},
+        )
+        return {"success": False, "error": "download_failed"}
 
 
 def _create_backup(file_path: str) -> str:
@@ -520,7 +773,13 @@ def _create_backup(file_path: str) -> str:
 
 
 def _get_remediator_for_scan_type(
-    scan_type: str, file_path: str, issues: List[Dict[str, Any]], use_ai: bool
+    scan_type: str,
+    file_path: str,
+    issues: List[Dict[str, Any]],
+    use_ai: bool,
+    ai_client: Any = None,
+    allow_legacy_nested_ai: bool = True,
+    allow_embedded_alt: bool = True,
 ) -> Optional[Any]:
     """
     Instantiate appropriate remediator based on scan type.
@@ -537,88 +796,51 @@ def _get_remediator_for_scan_type(
     try:
         from ..education.remediation.base import RemediationConfig
 
-        config = RemediationConfig(use_ai=use_ai)
+        config = RemediationConfig(
+            use_ai=use_ai,
+            allow_legacy_nested_ai=allow_legacy_nested_ai,
+            fix_alt_text=allow_embedded_alt,
+        )
 
         # Map scan types to remediator classes
         if scan_type in ("PDF", "pdf"):
             from ..education.remediation.pdf_remediator import PdfRemediator
 
             return PdfRemediator(
-                file_path=file_path, issues=issues, config=config, ai_client=None
+                file_path=file_path, issues=issues, config=config, ai_client=ai_client
             )
 
         elif scan_type in ("WORD", "word", "DOCX", "docx"):
             from ..education.remediation.docx_remediator import DocxRemediator
 
             return DocxRemediator(
-                file_path=file_path, issues=issues, config=config, ai_client=None
+                file_path=file_path, issues=issues, config=config, ai_client=ai_client
             )
 
         elif scan_type in ("POWERPOINT", "powerpoint", "PPTX", "pptx"):
             from ..education.remediation.pptx_remediator import PptxRemediator
 
             return PptxRemediator(
-                file_path=file_path, issues=issues, config=config, ai_client=None
+                file_path=file_path, issues=issues, config=config, ai_client=ai_client
             )
 
         elif scan_type in ("EXCEL", "excel", "XLSX", "xlsx"):
             from ..education.remediation.xlsx_remediator import XlsxRemediator
 
             return XlsxRemediator(
-                file_path=file_path, issues=issues, config=config, ai_client=None
+                file_path=file_path, issues=issues, config=config, ai_client=ai_client
             )
 
         else:
             logger.warning(f"No remediator available for scan type: {scan_type}")
             return None
 
-    except ImportError as e:
-        logger.error(f"Failed to import remediator for {scan_type}: {e}")
+    except ImportError as exc:
+        logger.error(
+            "Failed to import remediator",
+            extra={"scan_type": scan_type, "error_type": type(exc).__name__},
+        )
         return None
-
-
-async def _queue_upload_job(
-    file_path: str,
-    cloud_file_id: str,
-    department_id: str,
-    provider: str,
-    db: Session,
-) -> str:
-    """
-    Queue upload job after successful remediation.
-
-    Args:
-        file_path: Path to remediated file
-        cloud_file_id: Cloud file ID
-        department_id: Department ID
-        provider: Cloud provider (google/microsoft)
-        db: Database session
-
-    Returns:
-        Upload job ID
-    """
-    job_id = str(uuid.uuid4())
-
-    upload_job = CloudJobQueue(
-        id=job_id,
-        department_id=department_id,
-        job_type=CloudJobType.UPLOAD.value,
-        provider=provider,
-        status=CloudJobStatus.PENDING.value,
-        priority=2,  # High priority
-        job_data={
-            "file_path": file_path,
-            "cloud_file_id": cloud_file_id,
-            "create_new_version": True,  # Per user preference
-        },
-        cloud_file_id=cloud_file_id,
-    )
-
-    db.add(upload_job)
-    db.commit()
-
-    logger.info(f"Queued upload job {job_id} for file {cloud_file_id}")
-    return job_id
 
 
 async def _send_remediation_notification(
@@ -713,8 +935,11 @@ async def _send_remediation_notification(
                 f"(failed={result.failed_count})"
             )
 
-    except Exception as e:
-        logger.error(f"Error sending remediation notification: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Error sending remediation notification",
+            extra={"scan_id": scan.id, "error_type": type(exc).__name__},
+        )
         # Don't raise - email failure shouldn't break remediation
 
 
@@ -737,16 +962,110 @@ async def handle_remediation_job(
     Returns:
         Remediation results
     """
+    cloud_file = db.get(CloudFile, job.cloud_file_id) if job.cloud_file_id else None
+    credential = (
+        db.get(
+            CloudOAuthCredentials,
+            job.credential_id,
+            populate_existing=True,
+        )
+        if job.credential_id
+        else None
+    )
+    explicit_scan_id = None
+    if job.result_data and isinstance(job.result_data, dict):
+        candidate = job.result_data.get("scan_id")
+        if isinstance(candidate, str) and candidate.strip():
+            explicit_scan_id = candidate
+    scan_id = explicit_scan_id or (
+        cloud_file.last_scan_id if cloud_file is not None else None
+    )
+    scan = db.get(Scan, scan_id) if scan_id else None
+
+    if (
+        cloud_file is None
+        or credential is None
+        or scan is None
+        or job.department_id is None
+        or cloud_file.department_id is None
+        or credential.department_id is None
+        or scan.department_id is None
+        or cloud_file.credential_id is None
+        or cloud_file.provider is None
+        or credential.provider is None
+        or job.provider is None
+        or credential.is_active is not True
+        or cloud_file.department_id != job.department_id
+        or credential.department_id != job.department_id
+        or scan.department_id != job.department_id
+        or cloud_file.last_scan_id is None
+        or str(cloud_file.last_scan_id) != str(scan.id)
+        or cloud_file.credential_id != credential.id
+        or cloud_file.provider != credential.provider
+        or job.provider != credential.provider
+    ):
+        raise RemediationJobFailed("invalid_job_scope")
+
+    provider = credential.provider
+    if provider in _LMS_PROVIDERS and provider not in _EXECUTABLE_QUEUED_LMS_PROVIDERS:
+        raise RemediationJobFailed("unsupported_lms_remediation")
+    if provider in _LMS_PROVIDERS and scan.scan_type in (
+        "IMAGE",
+        "image",
+        ScanType.IMAGE,
+    ):
+        # Task 16 owns durable artifacts. A queued image result cannot be used
+        # or persisted honestly in 3C1, so do not spend a provider call.
+        raise RemediationJobFailed("remediation_artifact_unavailable")
+
+    context = sanitize_execution_context(getattr(job, "execution_context", {}))
+    requested = set(context.get("requested_purposes", []))
+    if not context.get("ai_requested"):
+        requested.discard("remediation")
+    if not context.get("alt_text_requested"):
+        requested.discard("alt_text")
+
+    remediation_client = None
+    alt_text_client = None
+    if provider in _LMS_PROVIDERS:
+        binding = {
+            "department_id": job.department_id,
+            "job_id": str(job.id),
+            "scan_id": str(scan.id),
+            "cloud_file_id": str(cloud_file.id),
+        }
+        if "remediation" in requested:
+            remediation_client = LMSRemediationClient.bind_if_allowed(
+                purpose="remediation", **binding
+            )
+            if remediation_client is None:
+                raise RemediationJobFailed("policy_not_permitted")
+
     job_data = {
         "cloud_file_id": job.cloud_file_id,
         "department_id": job.department_id,
-        "provider": job.provider,
-        "upload_to_cloud": True,
+        "provider": provider,
+        "upload_to_cloud": False,
+        "scan_id": scan_id,
     }
-    # Extract scan_id from result_data if a prior scan was run
-    if job.result_data and isinstance(job.result_data, dict):
-        job_data["scan_id"] = job.result_data.get("scan_id")
-    return await process_remediation_job(job_data, db)
+    result = await process_remediation_job(
+        job_data,
+        db,
+        ai_client=remediation_client,
+        alt_text_client=alt_text_client,
+        lms_policy_authoritative=provider in _LMS_PROVIDERS,
+        credential=credential,
+        token_manager=token_manager,
+    )
+    if result.get("success") is not True:
+        error = result.get("error")
+        code = error if isinstance(error, str) else "remediation_failed"
+        raise RemediationJobFailed(code)
+    return result
 
 
-__all__ = ["process_remediation_job", "handle_remediation_job"]
+__all__ = [
+    "process_remediation_job",
+    "handle_remediation_job",
+    "sanitize_execution_context",
+]

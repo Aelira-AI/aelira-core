@@ -52,6 +52,7 @@ class AuditService:
         user_agent: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
         request: Optional[Request] = None,
+        commit: bool = True,
     ) -> AuditLog:
         """
         Log an audit event.
@@ -91,6 +92,10 @@ class AuditService:
             details=details,
             status=status.value if isinstance(status, AuditLogStatus) else status,
         )
+
+        if not commit:
+            self.db.add(audit_log)
+            return audit_log
 
         try:
             self.db.add(audit_log)
@@ -356,6 +361,7 @@ class AuditService:
         improvement: float,
         duration_seconds: float,
         request: Optional[Request] = None,
+        commit: bool = True,
     ) -> AuditLog:
         """Log successful document remediation."""
         return self.log_action(
@@ -378,6 +384,7 @@ class AuditService:
                 "duration_seconds": duration_seconds,
             },
             request=request,
+            commit=commit,
         )
 
     def log_remediation_failed(

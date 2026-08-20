@@ -136,6 +136,9 @@ class RemediationConfig(BaseModel):
     """Configuration options for remediation."""
 
     use_ai: bool = True  # Use AI for generating fixes
+    # Legacy nested helpers can acquire the global manager. Authoritative LMS
+    # entry points disable that path until explicit client injection lands.
+    allow_legacy_nested_ai: bool = True
     ai_model: str = "gemini"  # Which AI model to use
     verify_fixes: bool = True  # Verify fixes after applying
     create_backup: bool = True  # Backup original file

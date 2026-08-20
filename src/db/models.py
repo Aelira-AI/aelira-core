@@ -68,6 +68,16 @@ class ScanStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class RemediationOutcome(str, Enum):
+    """Durable semantic outcomes for remediation attempts."""
+
+    COMPLETED = "completed"
+    NO_OP = "no_op"
+    MANUAL_REQUIRED = "manual_required"
+    ARTIFACT_UNAVAILABLE = "artifact_unavailable"
+    REMEDIATION_FAILED = "remediation_failed"
+
+
 class IssueStatus(str, Enum):
     """Issue tracking status"""
 
@@ -440,6 +450,7 @@ class Scan(Base):
     # Scan details
     scan_type = Column(SQLEnum(ScanType), nullable=False)
     status = Column(SQLEnum(ScanStatus), default=ScanStatus.PENDING)
+    remediation_outcome = Column(String(32), nullable=True)
 
     # File information
     file_name = Column(String(512), nullable=False)
@@ -1163,7 +1174,11 @@ class CloudJobQueue(Base):
     progress = Column(Integer, default=0)
     progress_message = Column(Text, nullable=True)
 
-    # Results
+    # Results and sanitized execution intent. The context is diagnostic/request
+    # scope only; workers always resolve current policy again at execution time.
+    execution_context = Column(
+        JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     result_data = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
     retry_count = Column(Integer, default=0)
