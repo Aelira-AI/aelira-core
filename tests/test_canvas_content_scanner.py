@@ -1513,6 +1513,73 @@ async def test_canvas_html_remediation_contains_and_removes_real_output_artifact
 
 
 @pytest.mark.asyncio
+async def test_verified_response_and_persistence_use_authoritative_rescan_counts():
+    from src.education.canvas_content_scanner import (
+        CanvasContentScanner,
+        _PendingVerification,
+    )
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        issues=[{"id": "link-name", "nodes": [{}, {}, {}]}]
+    )
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        file_name="Page",
+        content_body='<a href="/course">read more</a>',
+        last_scan_id="scan-1",
+        last_compliance_score=80.0,
+        remediated_body=None,
+        writeback_status=None,
+        has_remediated_version=False,
+        remediated_compliance_score=None,
+        remediated_issues_fixed=None,
+        remediated_issues_remaining=None,
+    )
+    scanner = CanvasContentScanner(AsyncMock(), db, "dept-1", "cred-1")
+    verification = _PendingVerification(
+        scan_id="verified-scan",
+        score=70.0,
+        fixed=1,
+        remaining=2,
+        introduced=3,
+        axe_results_json='{"passes": [], "violations": []}',
+        issues_json="[]",
+        critical_issues=0,
+        high_issues=0,
+        medium_issues=0,
+        low_issues=0,
+    )
+    fake_result = SimpleNamespace(
+        success=True,
+        output_file=None,
+        fixed_count=99,
+        manual_count=99,
+        failed_count=99,
+        remediated_compliance_score=99.0,
+    )
+
+    with (
+        patch.object(
+            scanner, "_verify_remediation", AsyncMock(return_value=verification)
+        ),
+        patch("src.education.remediation.html_remediator.HtmlRemediator") as cls,
+    ):
+        cls.return_value.remediate.return_value = fake_result
+        result = await scanner.remediate_content_item(cloud_file)
+
+    assert result["verified"] is True
+    assert result["fixed_count"] == 1
+    assert result["manual_count"] == 2
+    assert result["issues_remaining"] == 2
+    assert result["issues_introduced"] == 3
+    assert result["remediated_score"] == 70.0
+    assert cloud_file.remediated_issues_fixed == 1
+    assert cloud_file.remediated_issues_remaining == 2
+    assert cloud_file.remediated_compliance_score == 70.0
+
+
+@pytest.mark.asyncio
 async def test_failed_remediator_result_is_fail_closed_sanitized_and_cleaned():
     from src.education.canvas_content_scanner import CanvasContentScanner
 
@@ -1851,17 +1918,16 @@ async def test_malformed_canvas_file_reference_never_reaches_sensitive_sinks(sou
     ],
 )
 async def test_canvas_file_boundary_variants_use_course_inventory_once(source):
-    from PIL import Image
-
     from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
 
-    async def download(_file_id, path):
-        Image.new("RGB", (10, 10), color="blue").save(path, format="PNG")
-        return SimpleNamespace(success=True)
-
+    body = _task15_image_bytes()
+    file_info = _task15_canvas_image_info(size=len(body))
     canvas = AsyncMock()
-    canvas.list_course_files.return_value = [SimpleNamespace(id="42")]
-    canvas.download_file.side_effect = download
+    canvas.list_course_files.return_value = [file_info]
+    canvas.download_course_image.return_value = CanvasImageDownloadResult(
+        success=True, data=body, content_type="image/png", suffix=".png"
+    )
     alt_text_client = MagicMock(provider="gemini")
     alt_text_client.analyze_image_sync.return_value = {
         "success": True,
@@ -1881,30 +1947,36 @@ async def test_canvas_file_boundary_variants_use_course_inventory_once(source):
     assert described == 1
     assert 'alt="Blue square"' in html
     canvas.list_course_files.assert_awaited_once_with("course-101")
-    canvas.download_file.assert_awaited_once()
-    assert canvas.download_file.await_args.args[0] == "42"
+    canvas.download_course_image.assert_awaited_once()
+    assert canvas.download_course_image.await_args.args[0] is file_info
+    canvas.download_file.assert_not_awaited()
     alt_text_client.analyze_image_sync.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_image_description_downloads_only_course_inventory_members_once():
     """Mixed embedded IDs are bound to the stored course at operation time."""
-    from PIL import Image
-
     from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
 
-    async def download(file_id, path):
-        Image.new("RGB", (10, 10), color="blue").save(path, format="PNG")
-        return SimpleNamespace(success=True, file_id=file_id)
-
+    body = _task15_image_bytes()
+    first = _task15_canvas_image_info(file_id="42", size=len(body))
+    second = _task15_canvas_image_info(file_id="0007", size=len(body))
     canvas = AsyncMock()
     canvas.list_course_files.return_value = [
-        SimpleNamespace(id=42),
-        {"id": "0007"},
+        first,
+        second,
         SimpleNamespace(id=None),
         {"name": "malformed"},
     ]
-    canvas.download_file.side_effect = download
+    canvas.download_course_image.side_effect = [
+        CanvasImageDownloadResult(
+            success=True, data=body, content_type="image/png", suffix=".png"
+        ),
+        CanvasImageDownloadResult(
+            success=True, data=body, content_type="image/png", suffix=".png"
+        ),
+    ]
     alt_text_client = MagicMock(provider="gemini")
     alt_text_client.analyze_image_sync.side_effect = [
         {"success": True, "content": "First", "provider": "gemini"},
@@ -1928,10 +2000,11 @@ async def test_image_description_downloads_only_course_inventory_members_once():
     assert described == 2
     assert html.count("alt=") == 2
     canvas.list_course_files.assert_awaited_once_with("course-101")
-    assert [call.args[0] for call in canvas.download_file.await_args_list] == [
-        "42",
-        "7",
+    assert [call.args[0] for call in canvas.download_course_image.await_args_list] == [
+        first,
+        second,
     ]
+    canvas.download_file.assert_not_awaited()
     canvas.get_file.assert_not_awaited()
     assert alt_text_client.analyze_image_sync.call_count == 2
 
@@ -2024,8 +2097,8 @@ async def test_image_download_exception_log_does_not_disclose_raw_error(caplog):
 
     marker = "DOWNLOAD-EXCEPTION-SECRET-MARKER"
     canvas = AsyncMock()
-    canvas.list_course_files.return_value = [SimpleNamespace(id="42")]
-    canvas.download_file.side_effect = RuntimeError(marker)
+    canvas.list_course_files.return_value = [_task15_canvas_image_info()]
+    canvas.download_course_image.side_effect = RuntimeError(marker)
     scanner = CanvasContentScanner(canvas, MagicMock(), "dept-1", "cred-1")
     original = '<img src="/courses/1/files/42/preview">'
 
@@ -2043,20 +2116,15 @@ async def test_image_download_exception_log_does_not_disclose_raw_error(caplog):
 
 @pytest.mark.asyncio
 async def test_image_description_uses_only_injected_alt_text_client(tmp_path):
-    from PIL import Image
-
     from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
 
-    captured = {}
-
-    async def download(_file_id, path):
-        captured["path"] = Path(path)
-        Image.new("RGB", (10, 10), color="blue").save(path, format="PNG")
-        return SimpleNamespace(success=True)
-
+    body = _task15_image_bytes()
     canvas = AsyncMock()
-    canvas.list_course_files.return_value = [SimpleNamespace(id="42")]
-    canvas.download_file.side_effect = download
+    canvas.list_course_files.return_value = [_task15_canvas_image_info(size=len(body))]
+    canvas.download_course_image.return_value = CanvasImageDownloadResult(
+        success=True, data=body, content_type="image/png", suffix=".png"
+    )
     alt_text_client = MagicMock()
     alt_text_client.provider = "gemini"
     alt_text_client.analyze_image_sync.return_value = {
@@ -2080,24 +2148,91 @@ async def test_image_description_uses_only_injected_alt_text_client(tmp_path):
     assert described == 1
     assert 'alt="Blue square"' in html
     alt_text_client.analyze_image_sync.assert_called_once()
-    assert not captured["path"].parent.exists()
+    assert alt_text_client.analyze_image_sync.call_args.kwargs["image_data"] == body
+
+
+@pytest.mark.asyncio
+async def test_control_bearing_image_description_stays_manual_and_unfixed_on_rescan():
+    from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
+
+    body = _task15_image_bytes()
+    canvas = AsyncMock()
+    canvas.list_course_files.return_value = [_task15_canvas_image_info(size=len(body))]
+    canvas.download_course_image.return_value = CanvasImageDownloadResult(
+        success=True, data=body, content_type="image/png", suffix=".png"
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        issues=[{"id": "image-alt", "nodes": [{}]}]
+    )
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        file_name="Page",
+        content_body='<img src="/courses/1/files/42/preview">',
+        last_scan_id="scan-1",
+        last_compliance_score=80.0,
+        remediated_body=None,
+        writeback_status=None,
+        has_remediated_version=False,
+        remediated_compliance_score=None,
+        remediated_issues_fixed=None,
+        remediated_issues_remaining=None,
+        provider_parent_id="course-1",
+    )
+    alt_text_client = MagicMock(provider="gemini")
+    alt_text_client.analyze_image_sync.return_value = {
+        "success": True,
+        "content": "Blue\tsquare",
+        "provider": "gemini",
+        "model": "vision-safe",
+        "inference_time": 0.1,
+    }
+    scanner = CanvasContentScanner(canvas, db, "dept-1", "cred-1")
+    fake_result = SimpleNamespace(
+        success=True,
+        output_file=None,
+        fixed_count=0,
+        manual_count=0,
+        failed_count=0,
+        remediated_compliance_score=None,
+    )
+
+    with (
+        patch.object(
+            scanner, "_verify_remediation", new_callable=AsyncMock, return_value=None
+        ) as verify,
+        patch(
+            "src.education.remediation.html_remediator.HtmlRemediator"
+        ) as remediator_cls,
+    ):
+        remediator_cls.return_value.remediate.return_value = fake_result
+        result = await scanner.remediate_content_item(
+            cloud_file,
+            alt_text_client=alt_text_client,
+            requested_purposes={"alt_text"},
+        )
+
+    assert result["success"] is True
+    assert result["fixed_count"] == 0
+    assert result["manual_count"] == 1
+    rescanned_html = verify.await_args.args[1]
+    assert "alt=" not in rescanned_html
+    assert "Blue square" not in rescanned_html
 
 
 @pytest.mark.asyncio
 async def test_image_provider_exception_log_does_not_disclose_raw_error(caplog):
-    from PIL import Image
-
     from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
 
     marker = "PROVIDER-EXCEPTION-SECRET-MARKER"
-
-    async def download(_file_id, path):
-        Image.new("RGB", (10, 10), color="blue").save(path, format="PNG")
-        return SimpleNamespace(success=True)
-
+    body = _task15_image_bytes()
     canvas = AsyncMock()
-    canvas.list_course_files.return_value = [SimpleNamespace(id="42")]
-    canvas.download_file.side_effect = download
+    canvas.list_course_files.return_value = [_task15_canvas_image_info(size=len(body))]
+    canvas.download_course_image.return_value = CanvasImageDownloadResult(
+        success=True, data=body, content_type="image/png", suffix=".png"
+    )
     alt_text_client = MagicMock(provider="gemini")
     alt_text_client.analyze_image_sync.side_effect = RuntimeError(marker)
     scanner = CanvasContentScanner(canvas, MagicMock(), "dept-1", "cred-1")
@@ -2119,10 +2254,9 @@ async def test_image_provider_exception_log_does_not_disclose_raw_error(caplog):
 async def test_image_cleanup_failure_aborts_remediation_before_mutation(tmp_path):
     import tempfile
 
-    from PIL import Image
-
     from src.education import canvas_content_scanner as scanner_module
     from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
 
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
@@ -2143,13 +2277,12 @@ async def test_image_cleanup_failure_aborts_remediation_before_mutation(tmp_path
         provider_parent_id="course-1",
     )
 
-    async def download(_file_id, path):
-        Image.new("RGB", (10, 10), color="blue").save(path, format="PNG")
-        return SimpleNamespace(success=True)
-
+    body = _task15_image_bytes()
     canvas = AsyncMock()
-    canvas.list_course_files.return_value = [SimpleNamespace(id="42")]
-    canvas.download_file.side_effect = download
+    canvas.list_course_files.return_value = [_task15_canvas_image_info(size=len(body))]
+    canvas.download_course_image.return_value = CanvasImageDownloadResult(
+        success=True, data=body, content_type="image/png", suffix=".png"
+    )
     scanner = CanvasContentScanner(canvas, db, "dept-1", "cred-1")
     alt_text_client = MagicMock(provider="gemini")
     alt_text_client.analyze_image_sync.return_value = {
@@ -2214,17 +2347,15 @@ async def test_image_cleanup_failure_aborts_remediation_before_mutation(tmp_path
 
 @pytest.mark.asyncio
 async def test_failed_injected_alt_text_leaves_image_for_manual_review(tmp_path):
-    from PIL import Image
-
     from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
 
-    async def download(_file_id, path):
-        Image.new("RGB", (10, 10), color="blue").save(path, format="PNG")
-        return SimpleNamespace(success=True)
-
+    body = _task15_image_bytes()
     canvas = AsyncMock()
-    canvas.list_course_files.return_value = [SimpleNamespace(id="42")]
-    canvas.download_file.side_effect = download
+    canvas.list_course_files.return_value = [_task15_canvas_image_info(size=len(body))]
+    canvas.download_course_image.return_value = CanvasImageDownloadResult(
+        success=True, data=body, content_type="image/png", suffix=".png"
+    )
     alt_text_client = MagicMock(provider="gemini")
     alt_text_client.analyze_image_sync.return_value = {
         "success": False,
@@ -2246,6 +2377,188 @@ async def test_failed_injected_alt_text_leaves_image_for_manual_review(tmp_path)
     assert html == original
     assert described == 0
     assert "alt=" not in html
+
+
+@pytest.mark.asyncio
+async def test_animated_inline_image_stays_manual_without_provider_call():
+    from io import BytesIO
+
+    from PIL import Image
+
+    from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
+
+    output = BytesIO()
+    frames = [Image.new("RGB", (10, 10), color) for color in ("red", "blue")]
+    frames[0].save(
+        output,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=10,
+        loop=0,
+    )
+    body = output.getvalue()
+    canvas = AsyncMock()
+    canvas.list_course_files.return_value = [
+        _task15_canvas_image_info(mime="image/gif", size=len(body))
+    ]
+    canvas.download_course_image.return_value = CanvasImageDownloadResult(
+        success=True, data=body, content_type="image/gif", suffix=".gif"
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        issues=[{"id": "image-alt", "nodes": [{}]}]
+    )
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        file_name="Page",
+        content_body='<img src="/courses/1/files/42/preview">',
+        last_scan_id="scan-1",
+        last_compliance_score=80.0,
+        remediated_body=None,
+        writeback_status=None,
+        has_remediated_version=False,
+        remediated_compliance_score=None,
+        remediated_issues_fixed=None,
+        remediated_issues_remaining=None,
+        provider_parent_id="course-1",
+    )
+    alt_text_client = MagicMock(provider="gemini")
+    scanner = CanvasContentScanner(canvas, db, "dept-1", "cred-1")
+    fake_result = SimpleNamespace(
+        success=True,
+        output_file=None,
+        fixed_count=0,
+        manual_count=0,
+        failed_count=0,
+        remediated_compliance_score=None,
+    )
+
+    with (
+        patch.object(
+            scanner, "_verify_remediation", new_callable=AsyncMock, return_value=None
+        ),
+        patch(
+            "src.education.remediation.html_remediator.HtmlRemediator"
+        ) as remediator_cls,
+    ):
+        remediator_cls.return_value.remediate.return_value = fake_result
+        result = await scanner.remediate_content_item(
+            cloud_file,
+            alt_text_client=alt_text_client,
+            requested_purposes={"alt_text"},
+        )
+
+    assert result["success"] is True
+    assert result["fixed_count"] == 0
+    assert result["manual_count"] == 1
+    assert "alt=" not in cloud_file.remediated_body
+    alt_text_client.analyze_image_sync.assert_not_called()
+
+
+def _task15_image_bytes(format_name="PNG"):
+    from io import BytesIO
+
+    from PIL import Image
+
+    output = BytesIO()
+    Image.new("RGB", (10, 10), color="blue").save(output, format=format_name)
+    return output.getvalue()
+
+
+def _task15_canvas_image_info(*, file_id="42", mime="image/png", size=None):
+    from src.integrations.canvas.models import CanvasFileInfo
+
+    now = datetime.now(timezone.utc)
+    return CanvasFileInfo(
+        id=file_id,
+        display_name="misleading.txt",
+        filename="misleading.txt",
+        content_type=mime,
+        size=(len(_task15_image_bytes()) if size is None else size),
+        url="https://files.example/download",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@pytest.mark.asyncio
+async def test_inline_image_requires_exact_complete_bounded_inventory_metadata():
+    from src.config.settings import get_settings
+    from src.education.canvas_content_scanner import CanvasContentScanner
+
+    maximum = get_settings().max_file_size_image
+    boolean_size = _task15_canvas_image_info(file_id="44")
+    boolean_size = boolean_size.model_copy(update={"size": True})
+    canvas = AsyncMock()
+    canvas.list_course_files.return_value = [
+        SimpleNamespace(id="42", content_type="image/png", size=77),
+        _task15_canvas_image_info(file_id="43", mime="text/html", size=77),
+        boolean_size,
+        _task15_canvas_image_info(file_id="45", size=maximum + 1),
+    ]
+    scanner = CanvasContentScanner(canvas, MagicMock(), "dept-1", "cred-1")
+    original = "".join(f'<img src="/files/{file_id}">' for file_id in range(42, 46))
+
+    html, described = await scanner._describe_images(
+        SimpleNamespace(id="cloud-1", file_name="Page", provider_parent_id="course-1"),
+        original,
+        alt_text_client=MagicMock(provider="gemini"),
+    )
+
+    assert (html, described) == (original, 0)
+    canvas.download_course_image.assert_not_awaited()
+    canvas.download_file.assert_not_awaited()
+    canvas.get_file.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inline_image_writes_part_then_renames_to_observed_suffix_before_vision(
+    tmp_path,
+):
+    from PIL import Image
+
+    from src.config.settings import get_settings
+    from src.education.canvas_content_scanner import CanvasContentScanner
+    from src.integrations.canvas.canvas_api import CanvasImageDownloadResult
+
+    fixture = tmp_path / "fixture.webp"
+    Image.new("RGB", (5, 4), "blue").save(fixture, format="WEBP")
+    body = fixture.read_bytes()
+    file_info = _task15_canvas_image_info(mime="image/webp", size=len(body))
+    canvas = AsyncMock()
+    canvas.list_course_files.return_value = [file_info]
+    canvas.download_course_image.return_value = CanvasImageDownloadResult(
+        success=True,
+        data=body,
+        content_type="image/webp",
+        suffix=".webp",
+    )
+    seen = {}
+    alt_text_client = MagicMock(provider="gemini")
+
+    def analyze_image_sync(*, image_data, **_kwargs):
+        seen["bytes"] = image_data
+        return {"success": True, "content": "Blue square", "provider": "gemini"}
+
+    alt_text_client.analyze_image_sync.side_effect = analyze_image_sync
+    scanner = CanvasContentScanner(canvas, MagicMock(), "dept-1", "cred-1")
+
+    html, described = await scanner._describe_images(
+        SimpleNamespace(id="cloud-1", file_name="Page", provider_parent_id="course-1"),
+        '<img src="https://untrusted.example/files/42?token=secret">',
+        alt_text_client=alt_text_client,
+    )
+
+    assert described == 1
+    assert 'alt="Blue square"' in html
+    assert seen["bytes"] == body
+    canvas.download_course_image.assert_awaited_once_with(
+        file_info, max_bytes=get_settings().max_file_size_image
+    )
+    canvas.download_file.assert_not_awaited()
+    canvas.get_file.assert_not_awaited()
 
 
 def test_canvas_lms_remediation_ast_has_no_provider_acquisition_or_legacy_fallback():

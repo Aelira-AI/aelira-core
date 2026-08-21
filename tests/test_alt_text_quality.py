@@ -68,6 +68,7 @@ def test_an_unreachable_image_is_left_for_a_human(tmp_path):
 def test_a_reachable_image_still_gets_its_description(tmp_path):
     r = _remediator('<img src="https://example.edu/chart.png">', tmp_path)
     r._load_document()
+    r._image_was_reachable = lambda _src: True
 
     applied = r._apply_alt_text_fix(
         _alt_issue("https://example.edu/chart.png"),
@@ -140,3 +141,138 @@ async def test_a_transient_refusal_is_retried_not_treated_as_an_answer(
 
     assert text == "A bar chart of weekly readings"
     assert post.await_count == 2
+
+
+"""Strict shared validation for model-generated image descriptions."""
+
+from unittest.mock import MagicMock
+
+from bs4 import BeautifulSoup
+from PIL import Image
+
+from src.education.image_alt_text import ImageAltTextGenerator
+
+
+def _image(tmp_path, suffix=".png", format_name="PNG"):
+    path = tmp_path / f"fixture{suffix}"
+    Image.new("RGB", (8, 6), "blue").save(path, format=format_name)
+    return path
+
+
+@pytest.mark.asyncio
+async def test_generator_and_html_remediator_share_normalized_alt_text(tmp_path):
+    client = MagicMock(provider="gemini")
+    client.analyze_image_sync.return_value = {
+        "success": True,
+        "content": "Alt Text:  Blå square 🟦  ",
+        "provider": "gemini",
+    }
+    generator = ImageAltTextGenerator(lms_client=client)
+
+    result = await generator.generate_alt_text(str(_image(tmp_path)))
+
+    assert result["success"] is True
+    assert result["alt_text"] == "Blå square 🟦"
+    assert (
+        HtmlRemediator.normalize_usable_alt_text("Alt Text:  Blå square 🟦  ")
+        == "Blå square 🟦"
+    )
+
+
+@pytest.mark.parametrize(
+    "model_text",
+    [
+        "Blue\x00square",
+        "Blue\tsquare",
+        "Blue\nsquare",
+        "Blue\x1bsquare",
+        "Blue\x85square",
+        "Blue\u202esquare",
+        "Blue\u200bsquare",
+        "Blue\ud800square",
+    ],
+)
+def test_control_bearing_alt_text_is_rejected_without_repair(model_text):
+    assert HtmlRemediator.normalize_usable_alt_text(model_text) is None
+
+
+def test_ordinary_spaces_non_ascii_letters_and_emoji_are_accepted():
+    assert (
+        HtmlRemediator.normalize_usable_alt_text("Blå square beside café 🟦")
+        == "Blå square beside café 🟦"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_text",
+    [
+        "UNKNOWN",
+        "Error: provider failed",
+        "Unable to describe image",
+        "Cannot determine contents",
+        "image",
+        "A blue square...",
+        "A blue square…",
+        "x" * 501,
+        "Blue\x00square",
+        "Blue\tsquare",
+        "Blue\nsquare",
+        "Blue\x1bsquare",
+        "Blue\x85square",
+        "Blue\u202esquare",
+        "Blue\u200bsquare",
+        "Blue\ud800square",
+    ],
+)
+async def test_bad_or_apparently_truncated_alt_text_never_reaches_html(
+    tmp_path, model_text
+):
+    client = MagicMock(provider="gemini")
+    client.analyze_image_sync.return_value = {
+        "success": True,
+        "content": model_text,
+        "provider": "gemini",
+    }
+    generator = ImageAltTextGenerator(lms_client=client)
+
+    result = await generator.generate_alt_text(str(_image(tmp_path)))
+
+    assert result["success"] is False
+    assert HtmlRemediator.is_usable_alt_text(model_text) is False
+
+
+def test_beautifulsoup_alt_insertion_escapes_attribute_content(tmp_path):
+    source = tmp_path / "page.html"
+    source.write_text('<html><body><img src="chart.png"></body></html>')
+    remediator = HtmlRemediator(str(source), [])
+    remediator._load_document()
+    issue = RemediationIssue(
+        issue_id="image-alt",
+        category=IssueCategory.ALT_TEXT,
+        severity="high",
+        description="missing alt",
+        location="chart.png",
+    )
+    remediator._image_was_reachable = lambda _src: True
+
+    assert remediator._apply_alt_text_fix(issue, 'Chart "A" < 5 & rising') is True
+    rendered = str(remediator._soup)
+    parsed = BeautifulSoup(rendered, "html.parser")
+    assert parsed.img["alt"] == 'Chart "A" < 5 & rising'
+    assert "&lt; 5 &amp; rising" in rendered
+    assert "< 5 & rising" not in rendered
+
+
+def test_html_remediator_leaves_control_bearing_alt_text_for_manual_fix(tmp_path):
+    source = tmp_path / "page.html"
+    source.write_text('<html><body><img src="chart.png"></body></html>')
+    remediator = HtmlRemediator(str(source), [])
+    remediator._load_document()
+    remediator._image_was_reachable = lambda _src: True
+
+    applied = remediator._apply_alt_text_fix(_alt_issue("chart.png"), "Blue\tsquare")
+
+    assert applied is False
+    assert remediator._soup.find("img").get("alt") is None
+    assert "Left alt text to a human" in " ".join(remediator._modifications)

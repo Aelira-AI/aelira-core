@@ -400,6 +400,7 @@ class Settings(BaseSettings):
     max_file_size_pdf: int = 50 * 1024 * 1024  # 50MB
     max_file_size_pptx: int = 50 * 1024 * 1024  # 50MB
     max_file_size_image: int = 10 * 1024 * 1024  # 10MB
+    max_image_pixels: int = 40_000_000
     max_file_size_video: int = 500 * 1024 * 1024  # 500MB
     max_file_size_code: int = 10 * 1024 * 1024  # 10MB
 

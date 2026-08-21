@@ -41,6 +41,8 @@ from ..db.models import (
     ScanStatus,
 )
 from ..integrations.canvas.canvas_api import CanvasAPIClient
+from ..integrations.canvas.models import CanvasFileInfo
+from ..config.settings import get_settings
 from ..integrations.canvas.content_models import CanvasContentType
 from ..utils.sanitization import sanitize_for_postgres
 from .deterministic_axe import DeterministicScanUnavailable, run_deterministic_axe
@@ -1027,7 +1029,7 @@ class CanvasContentScanner:
                     "fixed_count": verification.fixed,
                     "issues_remaining": verification.remaining,
                     "issues_introduced": verification.introduced,
-                    "manual_count": pending.manual_count,
+                    "manual_count": verification.remaining,
                     "remediated_score": verification.score,
                     "verification_scan_id": verification.scan_id,
                     **usage_metadata(),
@@ -1152,18 +1154,34 @@ class CanvasContentScanner:
             if not isinstance(inventory, (list, tuple)):
                 raise TypeError("invalid Canvas course file inventory")
 
-            authorized_file_ids = set()
+            inventory_by_id: Dict[str, CanvasFileInfo] = {}
+            allowed_image_mimes = {
+                "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/webp",
+                "image/bmp",
+            }
+            max_image_bytes = get_settings().max_file_size_image
             for entry in inventory:
-                raw_id = (
-                    entry.get("id")
-                    if isinstance(entry, dict)
-                    else getattr(entry, "id", None)
-                )
+                if type(entry) is not CanvasFileInfo:
+                    continue
+                raw_id = entry.id
                 if isinstance(raw_id, bool):
                     continue
                 normalized = str(raw_id).strip() if raw_id is not None else ""
-                if normalized.isdecimal():
-                    authorized_file_ids.add(str(int(normalized)))
+                if not normalized.isdecimal():
+                    continue
+                if (
+                    not isinstance(entry.content_type, str)
+                    or entry.content_type.casefold() not in allowed_image_mimes
+                    or isinstance(entry.size, bool)
+                    or not isinstance(entry.size, int)
+                    or entry.size <= 0
+                    or entry.size > max_image_bytes
+                ):
+                    continue
+                inventory_by_id[str(int(normalized))] = entry
         except Exception as exc:
             for _, _, file_id in candidates:
                 logger.warning(
@@ -1193,7 +1211,8 @@ class CanvasContentScanner:
                 # The course-scoped inventory snapshot above is authoritative
                 # at this point in the operation. Never infer membership from
                 # HTML course hints or fall back to Canvas' global get_file.
-                if file_id not in authorized_file_ids:
+                file_info = inventory_by_id.get(file_id)
+                if file_info is None:
                     logger.warning(
                         "Canvas image is not in course inventory; manual review required",
                         extra={
@@ -1205,12 +1224,22 @@ class CanvasContentScanner:
                         },
                     )
                     continue
-                image_path = artifact_root / f"image-{index}.png"
                 try:
-                    result = await self.canvas_client.download_file(
-                        file_id, str(image_path)
+                    result = await self.canvas_client.download_course_image(
+                        file_info,
+                        max_bytes=max_image_bytes,
                     )
-                    if not getattr(result, "success", False):
+                    image_data = getattr(result, "data", None)
+                    observed_mime = getattr(result, "content_type", None)
+                    observed_suffix = getattr(result, "suffix", None)
+                    if (
+                        not getattr(result, "success", False)
+                        or not isinstance(image_data, bytes)
+                        or not image_data
+                        or observed_mime != file_info.content_type.casefold()
+                        or observed_suffix
+                        not in {".png", ".jpg", ".gif", ".webp", ".bmp"}
+                    ):
                         logger.warning(
                             "Canvas image download failed; manual review required",
                             extra={
@@ -1223,8 +1252,23 @@ class CanvasContentScanner:
                         )
                         continue
 
+                    partial_path = (artifact_root / f"image-{index}.part").resolve()
+                    image_path = (
+                        artifact_root / f"image-{index}{observed_suffix}"
+                    ).resolve()
+                    resolved_root = artifact_root.resolve()
+                    if not partial_path.is_relative_to(
+                        resolved_root
+                    ) or not image_path.is_relative_to(resolved_root):
+                        raise ValueError("Canvas image artifact escaped containment")
+                    partial_path.write_bytes(image_data)
+                    os.replace(partial_path, image_path)
+
                     generated = await generator.generate_alt_text(
-                        str(image_path), context=f"Image in {cloud_file.file_name}"
+                        str(image_path),
+                        context=f"Image in {cloud_file.file_name}",
+                        trusted_mime_type=observed_mime,
+                        trusted_suffix=observed_suffix,
                     )
                     alt_text = (generated or {}).get("alt_text", "")
                     if not generated.get(

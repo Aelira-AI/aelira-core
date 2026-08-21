@@ -14,6 +14,7 @@ Canvas API Documentation:
 """
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import re
 from typing import Optional, List, Dict, Any
@@ -48,6 +49,32 @@ from .content_models import (
 from .safe_http import create_canvas_safe_transport
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CanvasImageDownloadResult:
+    """Observed bytes and type from a bounded course image download."""
+
+    success: bool
+    data: Optional[bytes] = None
+    content_type: Optional[str] = None
+    suffix: Optional[str] = None
+    error: Optional[str] = None
+
+
+def _sniff_image_type(data: bytes) -> Optional[tuple[str, str]]:
+    """Recognize only the image formats accepted by the vision pipeline."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ".jpg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif", ".gif"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp", ".webp"
+    if data.startswith(b"BM"):
+        return "image/bmp", ".bmp"
+    return None
 
 
 def _complete_origin(url: str) -> tuple[str, str, int]:
@@ -407,6 +434,117 @@ class CanvasAPIClient:
                 success=False,
                 error="Canvas file download failed",
             )
+
+    async def download_course_image(
+        self,
+        file_info: CanvasFileInfo,
+        *,
+        max_bytes: int,
+    ) -> CanvasImageDownloadResult:
+        """Download trusted course inventory image metadata with hard bounds.
+
+        Unlike ``download_file``, this method never performs an account-level
+        metadata lookup. The caller supplies the exact ``CanvasFileInfo`` from
+        a just-fetched course inventory, and the response bytes must prove the
+        same supported image MIME before they can reach vision.
+        """
+        allowed_mimes = {
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+        }
+        if (
+            type(file_info) is not CanvasFileInfo
+            or isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or max_bytes <= 0
+            or not isinstance(file_info.content_type, str)
+            or not isinstance(file_info.url, str)
+            or not file_info.url
+            or isinstance(file_info.size, bool)
+            or not isinstance(file_info.size, int)
+            or file_info.size <= 0
+            or file_info.size > max_bytes
+            or file_info.content_type.casefold() not in allowed_mimes
+        ):
+            return CanvasImageDownloadResult(
+                success=False, error="Invalid course image metadata"
+            )
+
+        def _prepare(url: str, base: str) -> str:
+            return prepare_canvas_outbound_url(
+                url,
+                base,
+                development_origin=self._canvas_origin,
+            )
+
+        try:
+            download_url = _prepare(file_info.url, self.canvas_url)
+            max_redirects = 10
+            async with httpx.AsyncClient(
+                timeout=60.0,
+                follow_redirects=False,
+                transport=create_canvas_safe_transport(self._canvas_origin),
+                trust_env=False,
+            ) as image_client:
+                for redirect_count in range(max_redirects + 1):
+                    download_url = _prepare(download_url, download_url)
+                    image_client.cookies.clear()
+                    async with image_client.stream(
+                        "GET",
+                        download_url,
+                        headers=self._authorization_headers(download_url),
+                        follow_redirects=False,
+                    ) as response:
+                        if response.status_code in (301, 302, 303, 307, 308):
+                            if redirect_count == max_redirects:
+                                raise ValueError("Too many Canvas image redirects")
+                            location = response.headers.get("location")
+                            if not location:
+                                raise ValueError(
+                                    "Canvas image redirect missing Location"
+                                )
+                            download_url = _prepare(location, download_url)
+                            continue
+
+                        response.raise_for_status()
+                        content_length = response.headers.get("content-length")
+                        if content_length is not None:
+                            try:
+                                declared_size = int(content_length)
+                            except ValueError as exc:
+                                raise ValueError("Invalid Content-Length") from exc
+                            if declared_size < 0 or declared_size > max_bytes:
+                                raise ValueError("Canvas image exceeds size limit")
+
+                        chunks = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(chunks) + len(chunk) > max_bytes:
+                                raise ValueError("Canvas image exceeds size limit")
+                            chunks.extend(chunk)
+                        data = bytes(chunks)
+                        observed = _sniff_image_type(data)
+                        if observed is None:
+                            raise ValueError("Unsupported Canvas image bytes")
+                        observed_mime, suffix = observed
+                        if observed_mime != file_info.content_type.casefold():
+                            raise ValueError("Canvas image MIME mismatch")
+                        return CanvasImageDownloadResult(
+                            success=True,
+                            data=data,
+                            content_type=observed_mime,
+                            suffix=suffix,
+                        )
+        except Exception:
+            return CanvasImageDownloadResult(
+                success=False, error="Canvas course image download failed"
+            )
+
+        return CanvasImageDownloadResult(
+            success=False, error="Canvas course image download failed"
+        )
 
     async def upload_file(
         self,

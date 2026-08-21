@@ -9,10 +9,11 @@ import httpx
 import logging
 from pathlib import Path
 from types import MappingProxyType
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from PIL import Image
 
 from src.config.settings import get_settings
+from src.education.alt_text_quality import normalize_usable_alt_text
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class ImageAltTextGenerator:
         Ollama transport.
         """
         self.lms_client = lms_client
+        self.settings = get_settings()
         self.allow_legacy_transport = allow_legacy_transport
         self.gemini_api_key = None
         self.gemini_api_base = ""
@@ -56,7 +58,6 @@ class ImageAltTextGenerator:
         self._usage = {}
         self._reset_usage_metadata()
         if allow_legacy_transport:
-            self.settings = get_settings()
             self.gemini_api_key = self.settings.gemini_api_key
             self.gemini_api_base = self.settings.gemini_api_base
             self.vision_model = self.settings.gemini_vision_model
@@ -227,34 +228,83 @@ class ImageAltTextGenerator:
             ".webp": "image/webp",
             ".bmp": "image/bmp",
         }
-        return mime_types.get(ext, "image/png")
+        if ext not in mime_types:
+            raise ValueError("Unsupported image suffix")
+        return mime_types[ext]
 
-    def _validate_image(self, image_path: str) -> Dict[str, Any]:
+    def _validate_image(
+        self,
+        image_path: str,
+        *,
+        trusted_mime_type: Optional[str] = None,
+        trusted_suffix: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Validate image file and get metadata."""
         try:
             if not os.path.exists(image_path):
                 return {"valid": False, "error": "File not found"}
 
-            valid_extensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]
             ext = Path(image_path).suffix.lower()
-            if ext not in valid_extensions:
+            format_info = {
+                "PNG": ("image/png", {".png"}, ".png"),
+                "JPEG": ("image/jpeg", {".jpg", ".jpeg"}, ".jpg"),
+                "GIF": ("image/gif", {".gif"}, ".gif"),
+                "WEBP": ("image/webp", {".webp"}, ".webp"),
+                "BMP": ("image/bmp", {".bmp"}, ".bmp"),
+            }
+            supported_suffixes = {
+                suffix for _, suffixes, _ in format_info.values() for suffix in suffixes
+            }
+            if not ext:
+                return {"valid": False, "error": "Unsupported format: suffixless"}
+            if ext not in supported_suffixes:
                 return {"valid": False, "error": f"Unsupported format: {ext}"}
 
+            file_size = os.path.getsize(image_path)
+            max_file_size = getattr(
+                self.settings, "max_file_size_image", 10 * 1024 * 1024
+            )
+            if file_size > max_file_size:
+                return {"valid": False, "error": "Image too large"}
+
             with Image.open(image_path) as img:
-                width, height = img.size
                 format_name = img.format
+                img.verify()
 
-                file_size = os.path.getsize(image_path)
-                if file_size > 10 * 1024 * 1024:
-                    return {"valid": False, "error": "Image too large (max 10MB)"}
-
+            if format_name not in format_info:
+                return {"valid": False, "error": "Unsupported detected image format"}
+            detected_mime, allowed_suffixes, canonical_suffix = format_info[format_name]
+            if ext not in allowed_suffixes:
+                return {"valid": False, "error": "Image suffix does not match content"}
+            if trusted_suffix and trusted_suffix.lower() not in allowed_suffixes:
                 return {
-                    "valid": True,
-                    "width": width,
-                    "height": height,
-                    "format": format_name,
-                    "size_bytes": file_size,
+                    "valid": False,
+                    "error": "Trusted suffix does not match content",
                 }
+            if trusted_mime_type and trusted_mime_type.casefold() != detected_mime:
+                return {"valid": False, "error": "Trusted MIME does not match content"}
+
+            with Image.open(image_path) as img:
+                frame_count = getattr(img, "n_frames", 1)
+                if type(frame_count) is not int or frame_count != 1:
+                    return {
+                        "valid": False,
+                        "error": "Animated or multi-frame images are not supported",
+                    }
+                width, height = img.size
+            max_pixels = getattr(self.settings, "max_image_pixels", 40_000_000)
+            if width <= 0 or height <= 0 or width * height > max_pixels:
+                return {"valid": False, "error": "Image pixel limit exceeded"}
+
+            return {
+                "valid": True,
+                "width": width,
+                "height": height,
+                "format": format_name,
+                "size_bytes": file_size,
+                "content_type": detected_mime,
+                "suffix": canonical_suffix,
+            }
 
         except Exception as e:
             return {"valid": False, "error": f"Image validation failed: {str(e)}"}
@@ -390,7 +440,13 @@ class ImageAltTextGenerator:
 
     @_tracked_analysis
     async def generate_alt_text(
-        self, image_path: str, context: str = None, educational_context: bool = True
+        self,
+        image_path: str,
+        context: str = None,
+        educational_context: bool = True,
+        *,
+        trusted_mime_type: Optional[str] = None,
+        trusted_suffix: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate accessible alt text for an image.
 
@@ -403,7 +459,11 @@ class ImageAltTextGenerator:
             Dict with alt_text, description, inference_time, and metadata
         """
         # Validate image
-        validation = self._validate_image(image_path)
+        validation = self._validate_image(
+            image_path,
+            trusted_mime_type=trusted_mime_type,
+            trusted_suffix=trusted_suffix,
+        )
         if not validation["valid"]:
             return {
                 "success": False,
@@ -438,14 +498,14 @@ Focus on the main visual elements and purpose.{context_info}"""
                 "provider": provider,
             }
 
-        # Clean up response
-        for prefix in ["Alt text:", "Description:", "Alt Text:", "Image description:"]:
-            if alt_text.startswith(prefix):
-                alt_text = alt_text[len(prefix) :].strip()
-
-        # Truncate if too long
-        if len(alt_text) > 500:
-            alt_text = alt_text[:497] + "..."
+        alt_text = normalize_usable_alt_text(alt_text)
+        if alt_text is None:
+            return {
+                "success": False,
+                "error": "Unusable or incomplete alt text response",
+                "inference_time": elapsed,
+                "provider": provider,
+            }
 
         return {
             "alt_text": alt_text,

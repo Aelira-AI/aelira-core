@@ -21,6 +21,11 @@ from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup
 
+from ..alt_text_quality import (
+    is_usable_alt_text as shared_is_usable_alt_text,
+    normalize_usable_alt_text,
+)
+
 from .base import (
     BaseRemediator,
     IssueCategory,
@@ -229,12 +234,9 @@ class HtmlRemediator(BaseRemediator):
         remediator cannot know that, so writing it silently hides content
         from the people the fix is meant to serve.
         """
-        if not alt_text:
-            return False
-        cleaned = alt_text.strip().strip(".").lower()
-        if len(cleaned) < 4:
-            return False
-        return cleaned not in cls.PLACEHOLDER_ALT_TEXT
+        return shared_is_usable_alt_text(alt_text)
+
+    normalize_usable_alt_text = staticmethod(normalize_usable_alt_text)
 
     @staticmethod
     def _image_was_reachable(src: str) -> bool:
@@ -250,11 +252,13 @@ class HtmlRemediator(BaseRemediator):
         if not self._soup:
             return False
 
-        if not self.is_usable_alt_text(alt_text):
+        normalized_alt_text = self.normalize_usable_alt_text(alt_text)
+        if normalized_alt_text is None:
             self._modifications.append(
-                "Left alt text to a human: the proposed text was empty or a placeholder"
+                "Left alt text to a human: the proposed text was unusable or incomplete"
             )
             return False
+        alt_text = normalized_alt_text
 
         # Find the image referenced in the issue
         images = self._soup.find_all("img")

@@ -434,6 +434,182 @@ def test_validate_image_valid(generator, tmp_path):
     assert result["size_bytes"] > 0
 
 
+@pytest.mark.parametrize(
+    ("suffix", "format_name", "mime"),
+    [
+        (".png", "PNG", "image/png"),
+        (".jpg", "JPEG", "image/jpeg"),
+        (".gif", "GIF", "image/gif"),
+        (".webp", "WEBP", "image/webp"),
+        (".bmp", "BMP", "image/bmp"),
+    ],
+)
+def test_validate_image_accepts_verified_supported_formats(
+    generator, tmp_path, suffix, format_name, mime
+):
+    from PIL import Image
+
+    path = tmp_path / f"fixture{suffix}"
+    Image.new("RGB", (7, 5), "blue").save(path, format=format_name)
+
+    result = generator._validate_image(
+        str(path), trusted_mime_type=mime, trusted_suffix=suffix
+    )
+
+    assert result["valid"] is True
+    assert result["content_type"] == mime
+    assert result["suffix"] == suffix
+
+
+@pytest.mark.asyncio
+async def test_animated_gif_fails_before_ai(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "animated.gif"
+    frames = [Image.new("RGB", (7, 5), color) for color in ("red", "blue", "green")]
+    frames[0].save(
+        path,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=10,
+        loop=0,
+    )
+    client = MagicMock(provider="gemini")
+    generator = ImageAltTextGenerator(lms_client=client)
+
+    result = await generator.generate_alt_text(str(path))
+
+    assert result["success"] is False
+    assert result["error"] == "Animated or multi-frame images are not supported"
+    client.analyze_image_sync.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("suffix", "format_name"), [(".gif", "GIF"), (".webp", "WEBP")]
+)
+def test_static_single_frame_formats_remain_supported(
+    generator, tmp_path, suffix, format_name
+):
+    from PIL import Image
+
+    path = tmp_path / f"static{suffix}"
+    Image.new("RGB", (7, 5), "blue").save(path, format=format_name)
+
+    result = generator._validate_image(str(path))
+
+    assert result["valid"] is True
+    assert result["format"] == format_name
+
+
+@pytest.mark.asyncio
+async def test_animated_webp_fails_before_ai_when_encoder_is_available(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "animated.webp"
+    frames = [Image.new("RGB", (7, 5), color) for color in ("red", "blue")]
+    try:
+        frames[0].save(
+            path,
+            format="WEBP",
+            save_all=True,
+            append_images=frames[1:],
+            duration=10,
+            loop=0,
+        )
+    except (KeyError, OSError, ValueError) as error:
+        pytest.skip(f"Animated WebP encoder unavailable: {error}")
+    with Image.open(path) as image:
+        if getattr(image, "n_frames", 1) <= 1:
+            pytest.skip("Pillow WebP encoder did not preserve animation")
+
+    client = MagicMock(provider="gemini")
+    generator = ImageAltTextGenerator(lms_client=client)
+
+    result = await generator.generate_alt_text(str(path))
+
+    assert result["success"] is False
+    assert result["error"] == "Animated or multi-frame images are not supported"
+    client.analyze_image_sync.assert_not_called()
+
+
+@pytest.mark.parametrize("frame_count", [None, True, 1.0, "1"])
+def test_validate_image_rejects_malformed_or_non_integer_frame_counts(
+    generator, tmp_path, frame_count
+):
+    path = tmp_path / "fixture.png"
+    path.write_bytes(b"validated by mocked Pillow")
+    verified = MagicMock()
+    verified.__enter__.return_value.format = "PNG"
+    reopened = MagicMock()
+    reopened.__enter__.return_value.n_frames = frame_count
+    reopened.__enter__.return_value.size = (7, 5)
+
+    with patch(
+        "src.education.image_alt_text.Image.open",
+        side_effect=[verified, reopened],
+    ):
+        result = generator._validate_image(str(path))
+
+    assert result == {
+        "valid": False,
+        "error": "Animated or multi-frame images are not supported",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("suffix", "format_name", "trusted_mime"),
+    [
+        ("", "PNG", "image/png"),
+        (".jpg", "PNG", "image/png"),
+        (".png", "PNG", "image/jpeg"),
+    ],
+)
+async def test_suffixless_or_type_mismatched_image_fails_before_ai(
+    tmp_path, suffix, format_name, trusted_mime
+):
+    from PIL import Image
+
+    path = tmp_path / f"fixture{suffix}"
+    Image.new("RGB", (7, 5), "blue").save(path, format=format_name)
+    client = MagicMock(provider="gemini")
+    generator = ImageAltTextGenerator(lms_client=client)
+
+    result = await generator.generate_alt_text(
+        str(path), trusted_mime_type=trusted_mime, trusted_suffix=suffix or None
+    )
+
+    assert result["success"] is False
+    client.analyze_image_sync.assert_not_called()
+
+
+def test_validate_image_checks_size_before_pillow_open(generator, tmp_path):
+    path = tmp_path / "oversized.png"
+    path.write_bytes(b"x" * 101)
+    generator.settings.max_file_size_image = 100
+
+    with patch("src.education.image_alt_text.Image.open") as image_open:
+        result = generator._validate_image(str(path))
+
+    assert result["valid"] is False
+    assert "too large" in result["error"].lower()
+    image_open.assert_not_called()
+
+
+def test_validate_image_rejects_decompression_pixel_bound(generator, tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "large.png"
+    Image.new("RGB", (11, 10), "blue").save(path)
+    generator.settings.max_image_pixels = 100
+
+    result = generator._validate_image(str(path))
+
+    assert result["valid"] is False
+    assert "pixel" in result["error"].lower()
+
+
 if __name__ == "__main__":
     # Run tests manually for debugging
     gen = ImageAltTextGenerator()
