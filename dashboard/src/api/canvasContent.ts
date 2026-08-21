@@ -42,6 +42,8 @@ export interface ContentTypeStatus {
 export interface ContentItemStatus {
   cloud_file_id: string;
   provider_file_id: string | null;
+  provider: string;
+  provider_parent_id: string;
   title: string;
   content_type: string;
   compliance_score: number | null;

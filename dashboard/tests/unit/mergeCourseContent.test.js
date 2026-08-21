@@ -1,6 +1,6 @@
 /**
  * Unit tests for the course-content merge helper — DB status rows + live
- * Canvas files, unified into one list keyed by provider_file_id.
+ * Canvas files, unified into one list keyed by composite Canvas identity.
  * Uses Node.js native test runner (same pattern as featureAccess.test.js).
  */
 
@@ -42,6 +42,94 @@ function liveFile(overrides = {}) {
 }
 
 describe('mergeCourseContent', () => {
+  it('keeps page, assignment, and file with the same native id distinct', () => {
+    const result = mergeCourseContent(
+      [
+        statusItem({
+          cloud_file_id: 'cf-page',
+          provider_file_id: '7',
+          content_type: 'page',
+        }),
+        statusItem({
+          cloud_file_id: 'cf-assignment',
+          provider_file_id: '7',
+          content_type: 'assignment',
+        }),
+      ],
+      [liveFile({ id: '7' })],
+      { provider: 'canvas', parentId: 'course-1' }
+    );
+
+    assert.equal(result.length, 3);
+    assert.deepEqual(
+      result.map((item) => item.content_type).sort(),
+      ['assignment', 'file', 'page']
+    );
+  });
+
+  it('keeps the same native id in different courses distinct', () => {
+    const result = mergeCourseContent(
+      [
+        statusItem({
+          cloud_file_id: 'cf-course-1',
+          provider_file_id: '7',
+          provider: 'canvas',
+          provider_parent_id: 'course-1',
+          content_type: 'page',
+        }),
+        statusItem({
+          cloud_file_id: 'cf-course-2',
+          provider_file_id: '7',
+          provider: 'canvas',
+          provider_parent_id: 'course-2',
+          content_type: 'page',
+        }),
+      ],
+      [],
+      { provider: 'canvas', parentId: 'course-1' }
+    );
+
+    assert.equal(result.length, 2);
+    assert.notEqual(result[0].identity_key, result[1].identity_key);
+  });
+
+  it('dedupes a matching live and DB file by composite identity', () => {
+    const result = mergeCourseContent(
+      [
+        statusItem({
+          provider_file_id: '7',
+          provider: 'canvas',
+          provider_parent_id: 'course-1',
+          content_type: 'file',
+          title: 'DB title',
+        }),
+      ],
+      [liveFile({ id: '7', display_name: 'Live title' })],
+      { provider: 'canvas', parentId: 'course-1' }
+    );
+
+    assert.equal(result.length, 1);
+    assert.equal(result[0].title, 'DB title');
+  });
+
+  it('treats a legacy null content source as file for safe dedupe', () => {
+    const result = mergeCourseContent(
+      [
+        statusItem({
+          provider_file_id: '7',
+          provider: 'canvas',
+          provider_parent_id: 'course-1',
+          content_type: null,
+        }),
+      ],
+      [liveFile({ id: '7' })],
+      { provider: 'canvas', parentId: 'course-1' }
+    );
+
+    assert.equal(result.length, 1);
+    assert.equal(result[0].content_type, 'file');
+  });
+
   it('passes DB-only items through unchanged, scan_status scanned', () => {
     const result = mergeCourseContent([statusItem()], []);
     assert.equal(result.length, 1);
@@ -73,7 +161,7 @@ describe('mergeCourseContent', () => {
 
   it('dedupes — a matched item never produces two rows', () => {
     const result = mergeCourseContent(
-      [statusItem({ provider_file_id: 'canvas-1' })],
+      [statusItem({ provider_file_id: 'canvas-1', content_type: 'file' })],
       [liveFile({ id: 'canvas-1' }), liveFile({ id: 'canvas-2' })]
     );
     assert.equal(result.length, 2);

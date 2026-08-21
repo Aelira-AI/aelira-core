@@ -13,7 +13,8 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import make_url
 
 ROOT = Path(__file__).parents[1]
-HEAD = "20260822_upload_effect_fence"
+HEAD = "20260822_task18_identity"
+TASK17_HEAD = "20260822_upload_effect_fence"
 RECONCILE = "20260821_task17b_reconcile"
 ORPHAN = "20260821_task17b_orphan"
 TASK17A = "20260821_task17a_jobs"
@@ -24,7 +25,8 @@ def test_task17b_migrations_are_one_linear_reversible_head():
     scripts = ScriptDirectory.from_config(config)
 
     assert scripts.get_heads() == [HEAD]
-    assert scripts.get_revision(HEAD).down_revision == RECONCILE
+    assert scripts.get_revision(HEAD).down_revision == TASK17_HEAD
+    assert scripts.get_revision(TASK17_HEAD).down_revision == RECONCILE
     assert scripts.get_revision(RECONCILE).down_revision == ORPHAN
     assert scripts.get_revision(ORPHAN).down_revision == TASK17A
 

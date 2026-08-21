@@ -116,7 +116,7 @@ export default function CanvasContentPage(): React.ReactElement {
   // { done, total } while Remediate All is running — drives "Remediating
   // 2 of 4…" on the button.
   const [remediateAllProgress, setRemediateAllProgress] = useState<{ done: number; total: number } | null>(null);
-  // Per-row remediate in-flight tracking, keyed by provider_file_id.
+  // Per-row remediate in-flight tracking, keyed by composite content identity.
   const [remediatingIds, setRemediatingIds] = useState<Set<string>>(new Set());
 
   // Table controls
@@ -198,8 +198,12 @@ export default function CanvasContentPage(): React.ReactElement {
   }, [fetchStatus, fetchCourseName, fetchLiveFiles]);
 
   const mergedItems = useMemo(
-    () => mergeCourseContent(data?.items ?? null, liveFiles),
-    [data, liveFiles]
+    () =>
+      mergeCourseContent(data?.items ?? null, liveFiles, {
+        provider: 'canvas',
+        parentId: courseId ?? '',
+      }),
+    [courseId, data, liveFiles]
   );
 
   // Content-by-type breakdown — derived from mergedItems (not data.by_type,
@@ -389,8 +393,7 @@ export default function CanvasContentPage(): React.ReactElement {
       : apiClient.post(`/canvas/content/${item.cloud_file_id}/remediate`);
 
   const handleRemediateItem = async (item: MergedContentItem): Promise<void> => {
-    const providerFileId = item.provider_file_id;
-    setRemediatingIds((prev) => new Set(prev).add(providerFileId));
+    setRemediatingIds((prev) => new Set(prev).add(item.identity_key));
     try {
       const res = await postRemediate(item);
       const fixed = res.data?.fixed_count ?? 0;
@@ -411,7 +414,7 @@ export default function CanvasContentPage(): React.ReactElement {
     } finally {
       setRemediatingIds((prev) => {
         const next = new Set(prev);
-        next.delete(providerFileId);
+        next.delete(item.identity_key);
         return next;
       });
     }
@@ -438,7 +441,7 @@ export default function CanvasContentPage(): React.ReactElement {
     setRemediateAllProgress({ done: 0, total });
     setRemediatingIds((prev) => {
       const next = new Set(prev);
-      remediableItems.forEach((item) => next.add(item.provider_file_id));
+      remediableItems.forEach((item) => next.add(item.identity_key));
       return next;
     });
 
@@ -461,7 +464,7 @@ export default function CanvasContentPage(): React.ReactElement {
       } finally {
         setRemediatingIds((prev) => {
           const next = new Set(prev);
-          next.delete(item.provider_file_id);
+          next.delete(item.identity_key);
           return next;
         });
         setRemediateAllProgress({ done: index + 1, total });
@@ -977,7 +980,7 @@ export default function CanvasContentPage(): React.ReactElement {
 
                   return (
                     <tr
-                      key={item.provider_file_id}
+                      key={item.identity_key}
                       style={{
                         borderBottom:
                           idx !== filteredAndSortedItems.length - 1
@@ -1061,10 +1064,10 @@ export default function CanvasContentPage(): React.ReactElement {
                                 onClick={() =>
                                   handleRemediateItem(item)
                                 }
-                                disabled={remediatingIds.has(item.provider_file_id)}
+                                disabled={remediatingIds.has(item.identity_key)}
                                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 bg-[var(--interactive-accent-bg)] text-[var(--interactive-primary-fg)]"
                               >
-                                {remediatingIds.has(item.provider_file_id) ? (
+                                {remediatingIds.has(item.identity_key) ? (
                                   <Loader2 className="w-3 h-3 animate-spin" />
                                 ) : (
                                   <Wrench className="w-3 h-3" />

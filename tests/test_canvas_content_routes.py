@@ -100,7 +100,7 @@ def override_deps(mock_api_key, mock_session, patch_require_feature):
 def _make_cloud_file(
     *,
     cloud_file_id=None,
-    content_source="page",
+    content_source: str | None = "page",
     file_name="Test Page",
     content_body="<p>Hello</p>",
     remediated_body=None,
@@ -455,6 +455,11 @@ class TestCourseContentStatus:
         data = response.json()
         assert data["course_id"] == "101"
         assert isinstance(data["items"], list)
+        assert data["items"][0]["provider"] == "canvas"
+        assert data["items"][0]["provider_parent_id"] == "course-101"
+        assert (
+            data["items"][0]["content_updated_at"] == cf1.content_updated_at.isoformat()
+        )
 
     def test_status_counts_files_with_no_content_source(
         self, client, mock_session, override_deps
@@ -712,6 +717,22 @@ class TestApproveContent:
         assert response.status_code == 400
         assert "remediated" in response.json()["detail"].lower()
 
+    def test_approve_rejects_source_that_requires_rescan(
+        self, client, mock_session, override_deps
+    ):
+        cf = _make_cloud_file(
+            writeback_status="pending_review",
+            remediated_body="<p>Old remediation</p>",
+        )
+        cf.needs_rescan = True
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        response = client.post(f"/canvas/content/{cf.id}/approve")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Source changed; re-scan required"
+        mock_session.commit.assert_not_called()
+
     def test_approve_rejects_legacy_file_flag_without_managed_artifact(
         self, client, mock_session, override_deps
     ):
@@ -884,12 +905,10 @@ class TestBatchWriteback:
         assert scanner_instance.write_back_content.call_count == 2
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_batch_writeback_uploads_approved_file_rows(
+    def test_batch_writeback_counts_stale_file_rows(
         self, mock_get_client, client, mock_session, override_deps
     ):
-        """A course whose only approved item is a file still writes back:
-        files are uploaded alongside the original rather than edited in
-        place, and the count reflects the upload."""
+        """A stale managed file is reported as stale rather than failed."""
         file_item = _make_cloud_file(
             content_source="file",
             writeback_status="approved",
@@ -910,9 +929,9 @@ class TestBatchWriteback:
         with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
             scanner_instance = AsyncMock()
             scanner_instance.write_back_file.return_value = {
-                "success": True,
-                "stale": False,
-                "canvas_file_id": "canvas-77",
+                "success": False,
+                "stale": True,
+                "error": "Canvas file changed since the scan",
             }
             MockScanner.return_value = scanner_instance
 
@@ -923,10 +942,11 @@ class TestBatchWriteback:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["written_count"] == 1
+        assert data["written_count"] == 0
         assert data["failed_count"] == 0
+        assert data["stale_count"] == 1
         assert data["skipped_count"] == 0
-        assert data["errors"] == []
+        assert data["errors"] == [f"{file_item.id}: content is stale"]
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_batch_writeback_mixed_html_and_file_rows(
@@ -1288,14 +1308,14 @@ class TestWriteback:
         assert "scan-based" in data["error"]
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_writeback_file_row_uses_the_upload_path(
+    def test_writeback_legacy_null_file_row_uses_the_upload_path(
         self, mock_get_client, client, mock_session, override_deps
     ):
         """A file row is written back by uploading the remediated copy, not
         by the HTML path, which would report the technically-true but
         useless "No remediated body" for a file that was remediated."""
         cf = _make_cloud_file(
-            content_source="file",
+            content_source=None,
             writeback_status="approved",
             remediated_body=None,
             has_remediated_version=True,

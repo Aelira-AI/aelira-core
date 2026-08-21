@@ -93,8 +93,8 @@ def _file_graph(payload=b"%PDF-1.7\n"):
         mime_type="application/pdf",
         provider_file_id="9001",
         provider_parent_id="101",
-        provider_version="v1",
-        provider_modified_at=None,
+        provider_version="2026-03-01T10:00:00+00:00",
+        provider_modified_at=datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc),
         writeback_status="approved",
         has_remediated_version=True,
         remediated_compliance_score=96.0,
@@ -128,6 +128,12 @@ def _persisted_canvas_authority(db, cloud):
     return credential
 
 
+def _set_current_canvas_file(client, cloud):
+    client.get_file = AsyncMock(
+        return_value=SimpleNamespace(updated_at=cloud.provider_modified_at)
+    )
+
+
 def test_local_current_pointer_and_reconciliation_constraints_match_contract():
     pointer = Scan.__table__.c.current_remediation_artifact_id
     assert pointer.nullable is True
@@ -144,10 +150,72 @@ def test_local_current_pointer_and_reconciliation_constraints_match_contract():
 
 
 @pytest.mark.asyncio
-async def test_canvas_writeback_consumes_verified_descriptor_and_records_artifact():
+async def test_canvas_file_writeback_fails_closed_without_version_baseline():
     cloud, scan, artifact = _file_graph()
+    cloud.provider_modified_at = None
     service = _ArtifactService(b"%PDF-1.7\n")
     client = MagicMock()
+    _set_current_canvas_file(client, cloud)
+    client.upload_file_stream = AsyncMock(
+        return_value=SimpleNamespace(success=True, file_id="77")
+    )
+    scanner = CanvasContentScanner(
+        canvas_client=client,
+        db=MagicMock(),
+        department_id=cloud.department_id,
+        credential_id=cloud.credential_id,
+        artifact_service=service,
+    )
+    scanner._lock_file_writeback_graph = MagicMock(return_value=(cloud, scan, artifact))
+
+    result = await scanner.write_back_file(cloud, approved_by="user-1")
+
+    assert result["success"] is False
+    assert result["stale"] is True
+    assert result["error_code"] == "source_version_unavailable"
+    client.upload_file_stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_canvas_file_writeback_rechecks_freshness_after_lock():
+    requested, _scan, _artifact = _file_graph()
+    requested.needs_rescan = False
+    locked, scan, artifact = _file_graph()
+    locked.needs_rescan = True
+    service = _ArtifactService(b"%PDF-1.7\n")
+    client = MagicMock()
+    _set_current_canvas_file(client, locked)
+    client.upload_file_stream = AsyncMock(
+        return_value=SimpleNamespace(success=True, file_id="77")
+    )
+    scanner = CanvasContentScanner(
+        canvas_client=client,
+        db=MagicMock(),
+        department_id=requested.department_id,
+        credential_id=requested.credential_id,
+        artifact_service=service,
+    )
+    scanner._lock_file_writeback_graph = MagicMock(
+        return_value=(locked, scan, artifact)
+    )
+
+    result = await scanner.write_back_file(requested, approved_by="user-1")
+
+    assert result["success"] is False
+    assert result["stale"] is True
+    assert result["error_code"] == "source_rescan_required"
+    assert service.opened is False
+    client.get_file.assert_not_awaited()
+    client.upload_file_stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_canvas_file_writeback_consumes_verified_descriptor_and_records_artifact():
+    cloud, scan, artifact = _file_graph()
+    cloud.content_source = None
+    service = _ArtifactService(b"%PDF-1.7\n")
+    client = MagicMock()
+    _set_current_canvas_file(client, cloud)
     client.upload_file_stream = AsyncMock(
         return_value=SimpleNamespace(
             success=True, file_id="77", web_view_link="https://canvas/files/77"
@@ -192,6 +260,7 @@ async def test_canvas_integrity_failure_makes_zero_outbound_calls():
 
     service.open_verified = fail
     client = MagicMock()
+    _set_current_canvas_file(client, cloud)
     client.upload_file_stream = AsyncMock()
     scanner = CanvasContentScanner(
         canvas_client=client,
@@ -214,6 +283,7 @@ async def test_canvas_indeterminate_upload_persists_durable_reconciliation_log()
     cloud, scan, artifact = _file_graph()
     service = _ArtifactService(b"%PDF-1.7\n")
     client = MagicMock()
+    _set_current_canvas_file(client, cloud)
     client.upload_file_stream = AsyncMock(
         return_value=SimpleNamespace(
             success=False,
@@ -259,6 +329,7 @@ async def test_canvas_definite_rejection_does_not_create_reconciliation_log():
     cloud, scan, artifact = _file_graph()
     service = _ArtifactService(b"%PDF-1.7\n")
     client = MagicMock()
+    _set_current_canvas_file(client, cloud)
     client.upload_file_stream = AsyncMock(
         return_value=SimpleNamespace(
             success=False,
@@ -299,6 +370,7 @@ async def test_canvas_success_then_database_failure_persists_reconciliation_sepa
     cloud, scan, artifact = _file_graph()
     service = _ArtifactService(b"%PDF-1.7\n")
     client = MagicMock()
+    _set_current_canvas_file(client, cloud)
     client.upload_file_stream = AsyncMock(
         return_value=SimpleNamespace(
             success=True,

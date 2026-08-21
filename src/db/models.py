@@ -1052,6 +1052,18 @@ class CloudFile(Base):
             "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
             name="ck_cloud_files_artifact_cleanup_fence",
         ),
+        Index(
+            "uq_cloud_files_canvas_content_identity",
+            "department_id",
+            "provider",
+            "provider_parent_id",
+            text("COALESCE(content_source, 'file')"),
+            "provider_file_id",
+            unique=True,
+            postgresql_where=text(
+                "provider = 'canvas' AND provider_parent_id IS NOT NULL"
+            ),
+        ),
     )
 
     # Provider-specific IDs

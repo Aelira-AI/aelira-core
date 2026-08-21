@@ -44,6 +44,11 @@ from ..middleware.quota import require_feature
 from ..ai.lms_remediation_client import LMSRemediationClient
 from ..jobs.remediation_job import sanitize_execution_context
 from ..services.job_enqueue_service import enqueue_cloud_job
+from ..services.canvas_identity_service import (
+    add_or_get_canvas_cloud_file,
+    invalidate_canvas_derived_state,
+    load_canvas_file,
+)
 from ..utils.security import (
     require_canvas_oauth_allowed_origin,
     require_persisted_canvas_origin,
@@ -592,12 +597,19 @@ async def remediate_canvas_file(
         _, api_client = await _get_canvas_client(dept_id, db)
         try:
             canvas_files = await api_client.list_course_files(request.course_id)
-            if not any(
-                str(file_info.id) == str(request.file_id) for file_info in canvas_files
-            ):
+            file_info = next(
+                (item for item in canvas_files if str(item.id) == str(request.file_id)),
+                None,
+            )
+            if file_info is None:
                 raise HTTPException(status_code=404, detail="Canvas file not found")
         finally:
             await api_client.close()
+
+        provider_modified_at = getattr(file_info, "updated_at", None)
+        provider_version = (
+            provider_modified_at.isoformat() if provider_modified_at else None
+        )
 
         if request.upload_back is True:
             raise HTTPException(
@@ -628,17 +640,19 @@ async def remediate_canvas_file(
             policy_provider = policy_client.provider
 
         # Get or create CloudFile record
-        cloud_file = (
-            db.query(CloudFile)
-            .filter(
-                CloudFile.provider == CloudProvider.CANVAS.value,
-                CloudFile.provider_file_id == request.file_id,
-                CloudFile.provider_parent_id == request.course_id,
-                CloudFile.department_id == dept_id,
-            )
-            .first()
+        cloud_file = load_canvas_file(
+            db,
+            department_id=dept_id,
+            course_id=request.course_id,
+            provider_file_id=request.file_id,
         )
-        if not cloud_file:
+        if cloud_file:
+            if cloud_file.provider_version != provider_version:
+                invalidate_canvas_derived_state(cloud_file)
+            cloud_file.provider_modified_at = provider_modified_at
+            cloud_file.provider_version = provider_version
+            cloud_file.content_source = "file"
+        else:
             cloud_file = CloudFile(
                 id=str(uuid.uuid4()),
                 department_id=dept_id,
@@ -649,9 +663,21 @@ async def remediate_canvas_file(
                 file_type="unknown",
                 mime_type="unknown",
                 file_size_bytes=0,
+                provider_modified_at=provider_modified_at,
+                provider_version=provider_version,
                 provider_parent_id=request.course_id,
+                content_source="file",
             )
-            db.add(cloud_file)
+            cloud_file = add_or_get_canvas_cloud_file(
+                db,
+                cloud_file,
+                lambda: load_canvas_file(
+                    db,
+                    department_id=dept_id,
+                    course_id=request.course_id,
+                    provider_file_id=request.file_id,
+                ),
+            )
 
         db.flush()
         scan_payload = {
@@ -666,7 +692,10 @@ async def remediate_canvas_file(
             department_id=dept_id,
             job_type=CloudJobType.SCAN.value,
             payload=scan_payload,
-            dedupe_key=f"scan:canvas:{request.course_id}:{request.file_id}:current",
+            dedupe_key=(
+                f"scan:canvas:{request.course_id}:file:{request.file_id}:"
+                f"{provider_version or 'current'}"
+            ),
             provider=CloudProvider.CANVAS.value,
             priority=1,
             cloud_file_id=cloud_file.id,
@@ -697,8 +726,9 @@ async def remediate_canvas_file(
             job_type=CloudJobType.REMEDIATE.value,
             payload=remediation_payload,
             dedupe_key=(
-                f"remediate:canvas:{request.course_id}:{request.file_id}:"
-                f"version=current:ai={str(ai_requested).lower()}:"
+                f"remediate:canvas:{request.course_id}:file:{request.file_id}:"
+                f"version={provider_version or 'current'}:"
+                f"ai={str(ai_requested).lower()}:"
                 f"alt={str(alt_text_requested).lower()}"
             ),
             depends_on_job_id=scan_job.id,

@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..auth import verify_department_access
@@ -67,6 +68,16 @@ from .canvas_routes import _get_canvas_client
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/canvas/content", tags=["canvas-content"])
+
+
+def _is_canvas_file(cloud_file: CloudFile) -> bool:
+    """Normalize legacy NULL content sources to the documented file type."""
+    return cloud_file.content_source in (None, CanvasContentType.FILE.value)
+
+
+def _require_fresh_canvas_source(cloud_file: CloudFile) -> None:
+    if cloud_file.needs_rescan:
+        raise HTTPException(status_code=409, detail="Source changed; re-scan required")
 
 
 # =============================================================================
@@ -124,6 +135,8 @@ class ContentItemStatus(BaseModel):
 
     cloud_file_id: str
     provider_file_id: Optional[str] = None
+    provider: str
+    provider_parent_id: str
     content_type: Optional[str] = None
     title: str
     compliance_score: Optional[float] = None
@@ -136,6 +149,7 @@ class ContentItemStatus(BaseModel):
     # remediate action (the same endpoint the LTI Files tab already uses).
     scan_id: Optional[str] = None
     last_scanned_at: Optional[str] = None
+    content_updated_at: Optional[str] = None
 
 
 class ContentTypeStatus(BaseModel):
@@ -640,6 +654,8 @@ async def get_course_content_status(
         ContentItemStatus(
             cloud_file_id=cf.id,
             provider_file_id=cf.provider_file_id,
+            provider=cf.provider,
+            provider_parent_id=cf.provider_parent_id,
             content_type=cf.content_source,
             title=cf.file_name,
             compliance_score=cf.last_compliance_score,
@@ -653,6 +669,9 @@ async def get_course_content_status(
             ),
             last_scanned_at=(
                 cf.last_scanned_at.isoformat() if cf.last_scanned_at else None
+            ),
+            content_updated_at=(
+                cf.content_updated_at.isoformat() if cf.content_updated_at else None
             ),
             scan_id=cf.last_scan_id,
         )
@@ -969,7 +988,7 @@ async def remediate_content_item(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
-    if cf.content_source == "file":
+    if _is_canvas_file(cf):
         return ContentRemediateResponse(
             success=False,
             error="Files are remediated through the scan-based endpoint",
@@ -1110,8 +1129,9 @@ async def approve_content(
     )
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
+    _require_fresh_canvas_source(cf)
 
-    if cf.content_source == "file":
+    if _is_canvas_file(cf):
         if not cf.current_remediation_artifact_id:
             raise HTTPException(status_code=400, detail="Managed artifact required")
         try:
@@ -1178,7 +1198,7 @@ async def reject_content(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
-    if cf.content_source == "file":
+    if _is_canvas_file(cf):
         if not cf.current_remediation_artifact_id:
             raise HTTPException(status_code=400, detail="Managed artifact required")
         try:
@@ -1268,8 +1288,9 @@ async def batch_approve_content(
     invalid = [
         cf.id
         for cf in cloud_files
-        if (cf.content_source == "file" and not cf.current_remediation_artifact_id)
-        or (cf.content_source != "file" and not cf.remediated_body)
+        if cf.needs_rescan
+        or (_is_canvas_file(cf) and not cf.current_remediation_artifact_id)
+        or (not _is_canvas_file(cf) and not cf.remediated_body)
     ]
     if invalid:
         raise HTTPException(
@@ -1278,7 +1299,7 @@ async def batch_approve_content(
 
     try:
         for cf in cloud_files:
-            if cf.content_source == "file":
+            if _is_canvas_file(cf):
                 RemediationArtifactService.from_settings().approve(
                     db,
                     artifact_id=str(cf.current_remediation_artifact_id),
@@ -1337,6 +1358,7 @@ async def writeback_content(
     )
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
+    _require_fresh_canvas_source(cf)
 
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)
@@ -1349,7 +1371,7 @@ async def writeback_content(
             )
             # Files are uploaded alongside the original; content items are
             # edited in place. Two mechanisms, one action to the user.
-            if cf.content_source == "file":
+            if _is_canvas_file(cf):
                 result = await scanner.write_back_file(cf, approved_by=user_id)
             else:
                 result = await scanner.write_back_content(cf, approved_by=user_id)
@@ -1403,6 +1425,7 @@ async def batch_writeback_content(
             CloudFile.department_id == auth_department_id,
             CloudFile.writeback_status == "approved",
             CloudFile.remediated_body.isnot(None),
+            CloudFile.needs_rescan.is_(False),
         )
         .all()
     )
@@ -1420,7 +1443,11 @@ async def batch_writeback_content(
             CloudFile.provider_parent_id == request.course_id,
             CloudFile.department_id == auth_department_id,
             CloudFile.writeback_status == "approved",
-            CloudFile.content_source == "file",
+            CloudFile.needs_rescan.is_(False),
+            or_(
+                CloudFile.content_source == CanvasContentType.FILE.value,
+                CloudFile.content_source.is_(None),
+            ),
         )
         .all()
     )
@@ -1463,6 +1490,9 @@ async def batch_writeback_content(
                 result = await scanner.write_back_file(cf, approved_by=user_id)
                 if result.get("success"):
                     written += 1
+                elif result.get("stale"):
+                    stale += 1
+                    errors.append(f"{cf.id}: content is stale")
                 else:
                     failed += 1
                     errors.append(f"{cf.id}: {result.get('error', 'unknown error')}")
@@ -1512,7 +1542,7 @@ async def rollback_content(
     # A file write-back adds a copy rather than editing anything, so there
     # is nothing in Canvas to restore. Undoing it means deleting the copy,
     # which is the owner's call to make in Canvas, not ours to do silently.
-    if cf.content_source == "file":
+    if _is_canvas_file(cf):
         return RollbackResponse(
             success=False,
             error=(

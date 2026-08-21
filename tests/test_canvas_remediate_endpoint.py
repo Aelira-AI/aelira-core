@@ -1,5 +1,6 @@
 """Durable-queue contract for the Canvas remediation endpoint."""
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -24,11 +25,13 @@ def _db_with_credential_and_file():
     db = MagicMock()
     chain = MagicMock()
     chain.filter.return_value = chain
+    cloud_file = SimpleNamespace(id="cloud-file-1", provider_version=None)
     chain.first.side_effect = [
         SimpleNamespace(id="cred-1"),
-        SimpleNamespace(id="cloud-file-1"),
+        cloud_file,
     ]
     db.query.return_value = chain
+    db.cloud_file = cloud_file
     return db
 
 
@@ -43,7 +46,10 @@ async def test_remediate_endpoint_enqueues_exact_durable_scan_and_remediation():
         generate_alt_text=False,
     )
     canvas = AsyncMock()
-    canvas.list_course_files.return_value = [SimpleNamespace(id="f-1")]
+    updated_at = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
+    canvas.list_course_files.return_value = [
+        SimpleNamespace(id="f-1", updated_at=updated_at)
+    ]
     db = _db_with_credential_and_file()
     enqueue = MagicMock(
         side_effect=[SimpleNamespace(id="scan-1"), SimpleNamespace(id="rem-1")]
@@ -78,7 +84,7 @@ async def test_remediate_endpoint_enqueues_exact_durable_scan_and_remediation():
                 "provider_file_id": "f-1",
                 "course_id": "101",
             },
-            dedupe_key="scan:canvas:101:f-1:current",
+            dedupe_key="scan:canvas:101:file:f-1:2026-03-01T10:00:00+00:00",
             provider="canvas",
             priority=1,
             cloud_file_id="cloud-file-1",
@@ -104,7 +110,10 @@ async def test_remediate_endpoint_enqueues_exact_durable_scan_and_remediation():
                 "alt_text_requested": False,
                 "upload_back": False,
             },
-            dedupe_key=("remediate:canvas:101:f-1:version=current:ai=false:alt=false"),
+            dedupe_key=(
+                "remediate:canvas:101:file:f-1:"
+                "version=2026-03-01T10:00:00+00:00:ai=false:alt=false"
+            ),
             depends_on_job_id="scan-1",
             provider="canvas",
             priority=2,
@@ -121,6 +130,8 @@ async def test_remediate_endpoint_enqueues_exact_durable_scan_and_remediation():
             },
         ),
     ]
+    assert db.cloud_file.provider_version == "2026-03-01T10:00:00+00:00"
+    assert db.cloud_file.provider_modified_at == updated_at
     db.commit.assert_called_once_with()
 
 

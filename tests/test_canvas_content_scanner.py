@@ -15,9 +15,15 @@ from pathlib import Path
 
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import uuid
+
+
+class _ConstraintError(Exception):
+    def __init__(self, message: str, constraint_name: str):
+        super().__init__(message)
+        self.diag = SimpleNamespace(constraint_name=constraint_name)
 
 
 def _enumeration_enqueue(db):
@@ -405,7 +411,7 @@ class TestCanvasContentScanner:
             credential_id=credential_id,
         )
 
-        with _enumeration_enqueue(db):
+        with _enumeration_enqueue(db) as enqueue:
             result = await scanner.scan_course_content("COURSE123")
 
         # All 5 list methods should have been called
@@ -417,6 +423,11 @@ class TestCanvasContentScanner:
 
         # Should have created 5 CloudFile records (one per content item)
         assert db.add.call_count >= 5
+        for call in enqueue.call_args_list:
+            if call.kwargs["payload"]["scan_kind"] != "canvas_content":
+                continue
+            content_source = call.kwargs["payload"]["content_source"]
+            assert f":COURSE123:{content_source}:" in call.kwargs["dedupe_key"]
 
     @pytest.mark.asyncio
     async def test_scan_course_content_skips_empty_body(self):
@@ -494,7 +505,15 @@ class TestCanvasContentScanner:
 
         # Mock existing CloudFile found in DB
         existing_file = MagicMock()
+        existing_file.id = "existing-page"
         existing_file.content_body = "<p>Old body</p>"
+        existing_file.content_updated_at = now - timedelta(days=1)
+        existing_file.remediated_body = "<p>Old remediation</p>"
+        existing_file.has_remediated_version = True
+        existing_file.current_remediation_artifact_id = "artifact-old"
+        existing_file.writeback_status = "written_back"
+        existing_file.writeback_at = now - timedelta(hours=1)
+        existing_file.needs_rescan = False
         mock_query = MagicMock()
         mock_query.filter.return_value.first.return_value = existing_file
         db.query.return_value = mock_query
@@ -511,6 +530,12 @@ class TestCanvasContentScanner:
 
         # Should update existing record, not add new one
         assert existing_file.content_body == "<p>Updated body</p>"
+        assert existing_file.remediated_body is None
+        assert existing_file.has_remediated_version is False
+        assert existing_file.current_remediation_artifact_id is None
+        assert existing_file.writeback_status is None
+        assert existing_file.writeback_at is None
+        assert existing_file.needs_rescan is True
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +581,65 @@ class TestCanvasContentScannerFiles:
             department_id=kwargs.get("department_id", str(uuid.uuid4())),
             credential_id=kwargs.get("credential_id", str(uuid.uuid4())),
         )
+
+    def test_file_upsert_lookup_uses_course_and_normalized_file_source(self):
+        canvas_client = AsyncMock()
+        db = MagicMock()
+        scanner = self._scanner_with_empty_html_types(canvas_client, db)
+        query = MagicMock()
+        query.filter.return_value = query
+        query.first.return_value = None
+        db.query.return_value = query
+
+        file_info = _make_file_info(id="7")
+        result = scanner._upsert_file_cloud_file("COURSE123", file_info)
+
+        predicates = " ".join(str(arg) for arg in query.filter.call_args.args)
+        assert "cloud_files.provider_parent_id" in predicates
+        assert "cloud_files.content_source" in predicates
+        assert result.provider_version == file_info.updated_at.isoformat()
+        assert result.provider_modified_at == file_info.updated_at
+
+    def test_file_upsert_recovers_the_concurrent_composite_identity_winner(self):
+        from sqlalchemy.exc import IntegrityError
+
+        canvas_client = AsyncMock()
+        db = MagicMock()
+        scanner = self._scanner_with_empty_html_types(canvas_client, db)
+        winner = MagicMock(id="winner")
+        query = MagicMock()
+        query.filter.return_value = query
+        query.first.side_effect = [None, winner]
+        db.query.return_value = query
+        original = _ConstraintError(
+            "duplicate identity", "uq_cloud_files_canvas_content_identity"
+        )
+        db.flush.side_effect = IntegrityError("duplicate identity", {}, original)
+
+        result = scanner._upsert_file_cloud_file("COURSE123", _make_file_info(id="7"))
+
+        assert result is winner
+        db.begin_nested.return_value.rollback.assert_called_once_with()
+
+    def test_file_upsert_rethrows_unrelated_integrity_error_even_with_identity_winner(
+        self,
+    ):
+        from sqlalchemy.exc import IntegrityError
+
+        canvas_client = AsyncMock()
+        db = MagicMock()
+        scanner = self._scanner_with_empty_html_types(canvas_client, db)
+        query = MagicMock()
+        query.filter.return_value = query
+        query.first.side_effect = [None, MagicMock(id="winner")]
+        db.query.return_value = query
+        original = _ConstraintError("foreign key failure", "fk_cloud_files_department")
+        db.flush.side_effect = IntegrityError("foreign key failure", {}, original)
+
+        with pytest.raises(IntegrityError, match="foreign key failure"):
+            scanner._upsert_file_cloud_file("COURSE123", _make_file_info(id="7"))
+
+        db.begin_nested.return_value.rollback.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_files_enumerated_and_upserted_alongside_pages(self):
@@ -707,6 +791,7 @@ class TestCanvasContentScannerFiles:
         assert jobs[0].provider == "canvas"
         assert jobs[0].provider_file_id == "file-1"
         assert jobs[0].status == "pending"
+        assert ":COURSE123:file:file-1:" in jobs[0].dedupe_key
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +801,42 @@ class TestCanvasContentScannerFiles:
 
 class TestStaleDetection:
     """Test stale content detection during write-back."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("missing_side", ["stored", "current"])
+    async def test_write_back_fails_closed_when_version_baseline_is_missing(
+        self, missing_side
+    ):
+        from src.education.canvas_content_scanner import CanvasContentScanner
+
+        baseline = datetime(2026, 3, 20, 10, 0, 0, tzinfo=timezone.utc)
+        cloud_file = MagicMock()
+        cloud_file.id = "cloud-1"
+        cloud_file.content_source = "page"
+        cloud_file.content_slug = "test-page"
+        cloud_file.provider_parent_id = "COURSE123"
+        cloud_file.content_updated_at = None if missing_side == "stored" else baseline
+        cloud_file.remediated_body = "<p>Fixed content</p>"
+        cloud_file.writeback_status = "approved"
+        cloud_file.needs_rescan = False
+        canvas_client = AsyncMock()
+        db = MagicMock()
+        scanner = CanvasContentScanner(
+            canvas_client=canvas_client,
+            db=db,
+            department_id="dept-1",
+            credential_id="cred-1",
+        )
+        scanner._get_canvas_updated_at = AsyncMock(
+            return_value=None if missing_side == "current" else baseline
+        )
+
+        result = await scanner.write_back_content(cloud_file, approved_by="user-1")
+
+        assert result["success"] is False
+        assert result["stale"] is True
+        assert "re-scan" in result["error"].lower()
+        canvas_client.update_page.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_write_back_returns_stale_error_when_canvas_updated(self):
@@ -739,6 +860,7 @@ class TestStaleDetection:
         cloud_file.content_updated_at = scan_time
         cloud_file.remediated_body = "<p>Fixed content</p>"
         cloud_file.writeback_status = "approved"
+        cloud_file.needs_rescan = False
 
         # Canvas now has a newer updated_at
         canvas_client.get_page = AsyncMock(
@@ -791,6 +913,7 @@ class TestStaleDetection:
         cloud_file.content_updated_at = scan_time
         cloud_file.remediated_body = "<p>Fixed content</p>"
         cloud_file.writeback_status = "approved"
+        cloud_file.needs_rescan = False
 
         # Canvas still has the same updated_at
         canvas_client.get_page = AsyncMock(
@@ -852,6 +975,7 @@ class TestStaleDetection:
         cloud_file.content_updated_at = scan_time
         cloud_file.remediated_body = "<p>Fixed desc</p>"
         cloud_file.writeback_status = "approved"
+        cloud_file.needs_rescan = False
 
         canvas_client.get_assignment = AsyncMock(
             return_value=CanvasAssignmentInfo(

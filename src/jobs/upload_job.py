@@ -34,10 +34,6 @@ from ..services.remediation_artifact_service import (
     ArtifactError,
     RemediationArtifactService,
 )
-from ..utils.security import (
-    PERSISTED_CANVAS_ORIGIN_ERROR,
-    require_persisted_canvas_origin,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +238,6 @@ async def _process_upload_path(
         provider_map = {
             "google": CloudProvider.GOOGLE,
             "microsoft": CloudProvider.MICROSOFT,
-            "canvas": CloudProvider.CANVAS,
             "blackboard": CloudProvider.BLACKBOARD,
         }
         provider_enum = provider_map.get(provider)
@@ -273,8 +268,6 @@ async def _process_upload_path(
             }
 
         # Refresh token if needed (with distributed lock to prevent races)
-        if provider == "canvas":
-            require_persisted_canvas_origin(credential)
         token_manager = OAuthTokenManager()
         access_token = await token_manager.refresh_if_expired(credential, db)
 
@@ -308,15 +301,6 @@ async def _process_upload_path(
                 parent_folder_id=cloud_file.provider_parent_id,
                 file_name=new_file_name,
                 department_id=department_id,
-                external_effect_token=external_effect_token,
-            )
-        elif provider == "canvas":
-            result = await _upload_to_canvas(
-                file_path=file_path,
-                access_token=access_token,
-                credential=credential,
-                cloud_file=cloud_file,
-                file_name=new_file_name,
                 external_effect_token=external_effect_token,
             )
         elif provider == "blackboard":
@@ -468,81 +452,6 @@ async def _upload_to_microsoft(
 
     except Exception as exc:
         return classify_upload_exception(exc, provider="microsoft")
-
-
-async def _upload_to_canvas(
-    file_path: str,
-    access_token: str,
-    credential: Any,  # CloudOAuthCredentials
-    cloud_file: Any,  # CloudFile
-    file_name: str = None,
-    external_effect_token: str | None = None,
-) -> Dict[str, Any] | JobFailure:
-    """
-    Upload file to Canvas LMS.
-
-    Args:
-        file_path: Local file path
-        access_token: Canvas OAuth access token
-        credential: Canvas OAuth credential (contains canvas_instance_url)
-        cloud_file: CloudFile record (contains course_id in metadata)
-        file_name: Name for uploaded file
-
-    Returns:
-        Dict with upload results
-    """
-    try:
-        from ..integrations.canvas import CanvasAPIClient
-
-        try:
-            canvas_instance_url = require_persisted_canvas_origin(credential)
-        except ValueError:
-            return {
-                "success": False,
-                "uploaded": False,
-                "error": PERSISTED_CANVAS_ORIGIN_ERROR,
-            }
-
-        # Get course_id from cloud file metadata
-        course_id = cloud_file.metadata.get("course_id")
-        if not course_id:
-            return {
-                "success": False,
-                "uploaded": False,
-                "error": "Canvas course ID not found in file metadata",
-            }
-
-        api_client = CanvasAPIClient(
-            canvas_instance_url=canvas_instance_url,
-            access_token=access_token,
-            credential_id=credential.id,
-        )
-
-        try:
-            # Upload file to Canvas course (creates new file with _remediated suffix)
-            result = await api_client.upload_file(
-                course_id=course_id,
-                local_path=file_path,
-                folder_id=cloud_file.provider_parent_id,
-                file_name=file_name,
-            )
-
-            if result.success:
-                return {
-                    "success": True,
-                    "uploaded": True,
-                    "new_file_id": result.file_id,
-                    "new_file_name": result.file_name,
-                    "web_view_link": result.web_view_link,
-                    "provider": "canvas",
-                }
-            return _failure_from_provider_result(result, provider="canvas")
-
-        finally:
-            await api_client.close()
-
-    except Exception as exc:
-        return classify_upload_exception(exc, provider="canvas")
 
 
 async def _upload_to_blackboard(

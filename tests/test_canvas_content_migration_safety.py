@@ -21,7 +21,7 @@ MIGRATION_PATH = (
 ROOT = Path(__file__).parents[1]
 PRIOR_REVISION = "2026_03_19_lti_auth"
 TARGET_REVISION = "2026_08_18_canvas_content"
-EXPECTED_HEAD = "20260822_upload_effect_fence"
+EXPECTED_HEAD = "20260822_task18_identity"
 MIGRATION_DATABASE_URL = os.getenv("TEST_MIGRATION_DATABASE_URL")
 DOWNGRADE_REFUSAL = (
     "Downgrade from 2026_08_18_canvas_content is refused: "

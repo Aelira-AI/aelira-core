@@ -4,12 +4,11 @@
  * (from GET /canvas/courses/{id}/files) into ONE list — files are course
  * content too, not a separate class of thing.
  *
- * Keyed by provider_file_id (every CloudFile row carries the Canvas item's
- * native id — page id, assignment id, file id, ... — regardless of type),
- * with the DB row winning whenever both sources describe the same item: it
- * carries scan state the live Canvas API doesn't know about. A live file
- * with no matching DB row (never scanned yet) is included as an
- * `unscanned` entry so it still shows up in the unified list.
+ * Keyed by provider + course/parent + content source + native id, with the
+ * DB row winning whenever both sources describe the same item: it carries
+ * scan state the live Canvas API doesn't know about. A live file with no
+ * matching DB row (never scanned yet) is included as an `unscanned` entry
+ * so it still shows up in the unified list.
  *
  * Pure function — no I/O, no React. Both callers (CanvasContentPage,
  * LTICourseView) fetch the two sources themselves and pass them in.
@@ -18,6 +17,8 @@
 export interface StatusContentItem {
   cloud_file_id: string;
   provider_file_id: string | null;
+  provider?: string | null;
+  provider_parent_id?: string | null;
   content_type: string | null;
   title: string;
   compliance_score: number | null;
@@ -44,7 +45,11 @@ export interface LiveCanvasFile {
 export type ScanStatus = 'scanned' | 'unscanned';
 
 export interface MergedContentItem {
-  /** Canvas's native id for this item — the merge key. */
+  /** Stable composite identity used for dedupe and UI state. */
+  identity_key: string;
+  provider: string;
+  provider_parent_id: string;
+  /** Canvas's native id for this item. */
   provider_file_id: string;
   /** null when the item has never been scanned (live-only, no DB row). */
   cloud_file_id: string | null;
@@ -61,12 +66,36 @@ export interface MergedContentItem {
   scan_status: ScanStatus;
 }
 
-function fromStatusItem(item: StatusContentItem): MergedContentItem {
+export interface CourseContentIdentityContext {
+  provider: string;
+  parentId: string;
+}
+
+function contentIdentity(
+  provider: string,
+  parentId: string,
+  contentSource: string,
+  nativeId: string
+): string {
+  return JSON.stringify([provider, parentId, contentSource, nativeId]);
+}
+
+function fromStatusItem(
+  item: StatusContentItem,
+  context: CourseContentIdentityContext
+): MergedContentItem {
+  const provider = item.provider ?? context.provider;
+  const providerParentId = item.provider_parent_id ?? context.parentId;
+  const contentType = item.content_type ?? 'file';
+  const providerFileId = item.provider_file_id ?? item.cloud_file_id;
   return {
-    provider_file_id: item.provider_file_id ?? item.cloud_file_id,
+    identity_key: contentIdentity(provider, providerParentId, contentType, providerFileId),
+    provider,
+    provider_parent_id: providerParentId,
+    provider_file_id: providerFileId,
     cloud_file_id: item.cloud_file_id,
     title: item.title,
-    content_type: item.content_type ?? 'unknown',
+    content_type: contentType,
     compliance_score: item.compliance_score,
     issue_count: item.issue_count,
     writeback_status: item.writeback_status,
@@ -78,8 +107,14 @@ function fromStatusItem(item: StatusContentItem): MergedContentItem {
   };
 }
 
-function fromLiveFile(file: LiveCanvasFile): MergedContentItem {
+function fromLiveFile(
+  file: LiveCanvasFile,
+  context: CourseContentIdentityContext
+): MergedContentItem {
   return {
+    identity_key: contentIdentity(context.provider, context.parentId, 'file', file.id),
+    provider: context.provider,
+    provider_parent_id: context.parentId,
     provider_file_id: file.id,
     cloud_file_id: null,
     title: file.display_name || file.filename,
@@ -97,13 +132,14 @@ function fromLiveFile(file: LiveCanvasFile): MergedContentItem {
 
 /**
  * Merge DB status items with the live files list into one deduped,
- * provider_file_id-keyed list. Degrades gracefully: if the live files call
+ * composite-identity-keyed list. Degrades gracefully: if the live files call
  * failed (pass `null` or `undefined`), the DB list is returned untouched —
  * never blank the view because Canvas's live API had a bad moment.
  */
 export function mergeCourseContent(
   statusItems: StatusContentItem[] | null | undefined,
-  liveFiles: LiveCanvasFile[] | null | undefined
+  liveFiles: LiveCanvasFile[] | null | undefined,
+  context: CourseContentIdentityContext = { provider: 'canvas', parentId: '' }
 ): MergedContentItem[] {
   const items = statusItems ?? [];
   const files = liveFiles ?? [];
@@ -111,14 +147,15 @@ export function mergeCourseContent(
   const merged = new Map<string, MergedContentItem>();
 
   for (const item of items) {
-    const converted = fromStatusItem(item);
-    merged.set(converted.provider_file_id, converted);
+    const converted = fromStatusItem(item, context);
+    merged.set(converted.identity_key, converted);
   }
 
   for (const file of files) {
     if (!file || !file.id) continue;
-    if (merged.has(file.id)) continue; // DB row wins — already has scan state
-    merged.set(file.id, fromLiveFile(file));
+    const converted = fromLiveFile(file, context);
+    if (merged.has(converted.identity_key)) continue; // DB row wins — already has scan state
+    merged.set(converted.identity_key, converted);
   }
 
   return Array.from(merged.values());

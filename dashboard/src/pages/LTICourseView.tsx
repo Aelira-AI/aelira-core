@@ -85,6 +85,8 @@ interface ContentTypeStatus {
 interface ContentItemStatus {
   cloud_file_id: string;
   provider_file_id: string | null;
+  provider: string;
+  provider_parent_id: string;
   title: string;
   content_type: string;
   compliance_score: number | null;
@@ -241,6 +243,7 @@ export function LTICourseView(): React.ReactElement {
   // Files action states
   const [scanningFiles, setScanningFiles] = useState<Set<string>>(new Set());
   const [remediatingFiles, setRemediatingFiles] = useState<Set<string>>(new Set());
+  const [remediatingContentIds, setRemediatingContentIds] = useState<Set<string>>(new Set());
   const [openingAelira, setOpeningAelira] = useState(false);
 
   // Content tab state
@@ -307,8 +310,12 @@ export function LTICourseView(): React.ReactElement {
   // header counters drifted from the table (files counted in the table,
   // not in the header) in the first place.
   const mergedItems = useMemo(
-    () => mergeCourseContent(contentData?.items, files),
-    [contentData, files]
+    () =>
+      mergeCourseContent(contentData?.items, files, {
+        provider: 'canvas',
+        parentId: sessionCourseId ?? '',
+      }),
+    [contentData, files, sessionCourseId]
   );
 
   // Content summary stats — unscanned merged rows (live-only files with no
@@ -816,8 +823,7 @@ export function LTICourseView(): React.ReactElement {
     const client = clientRef.current;
     if (!client) return;
 
-    const providerFileId = item.provider_file_id;
-    setRemediatingFiles((prev) => new Set(prev).add(providerFileId));
+    setRemediatingContentIds((prev) => new Set(prev).add(item.identity_key));
     try {
       const res = await postRemediate(client, item);
       const fixed = res.data?.fixed_count ?? 0;
@@ -835,9 +841,9 @@ export function LTICourseView(): React.ReactElement {
     } catch {
       toast.error('Failed to remediate item.', 'Error');
     } finally {
-      setRemediatingFiles((prev) => {
+      setRemediatingContentIds((prev) => {
         const next = new Set(prev);
-        next.delete(providerFileId);
+        next.delete(item.identity_key);
         return next;
       });
     }
@@ -859,9 +865,9 @@ export function LTICourseView(): React.ReactElement {
 
     setRemediatingAll(true);
     setRemediateAllProgress({ done: 0, total });
-    setRemediatingFiles((prev) => {
+    setRemediatingContentIds((prev) => {
       const next = new Set(prev);
-      remediableItems.forEach((item) => next.add(item.provider_file_id));
+      remediableItems.forEach((item) => next.add(item.identity_key));
       return next;
     });
 
@@ -882,9 +888,9 @@ export function LTICourseView(): React.ReactElement {
         failed += 1;
         errors.push(`${item.provider_file_id}: request failed`);
       } finally {
-        setRemediatingFiles((prev) => {
+        setRemediatingContentIds((prev) => {
           const next = new Set(prev);
-          next.delete(item.provider_file_id);
+          next.delete(item.identity_key);
           return next;
         });
         setRemediateAllProgress({ done: index + 1, total });
@@ -1197,7 +1203,7 @@ export function LTICourseView(): React.ReactElement {
 
               return (
                 <tr
-                  key={item.provider_file_id}
+                  key={item.identity_key}
                   className="transition-colors"
                   style={{ borderBottom: '1px solid var(--border-primary)' }}
                 >
@@ -1279,11 +1285,11 @@ export function LTICourseView(): React.ReactElement {
                             onClick={() =>
                               handleRemediateContentItem(item)
                             }
-                            disabled={remediatingFiles.has(item.provider_file_id)}
+                            disabled={remediatingContentIds.has(item.identity_key)}
                             className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 hover:opacity-90 min-h-[44px]"
                             style={{ backgroundColor: 'var(--accent-primary)', color: 'white' }}
                           >
-                            {remediatingFiles.has(item.provider_file_id) ? (
+                            {remediatingContentIds.has(item.identity_key) ? (
                               <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
                             ) : (
                               <Wrench className="w-3 h-3" aria-hidden="true" />

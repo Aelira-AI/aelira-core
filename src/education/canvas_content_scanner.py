@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from bs4 import BeautifulSoup
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..db.models import (
@@ -50,6 +51,10 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
+from ..services.canvas_identity_service import (
+    add_or_get_canvas_cloud_file,
+    invalidate_canvas_derived_state,
+)
 from ..utils.security import require_persisted_canvas_origin
 from .deterministic_axe import DeterministicScanUnavailable, run_deterministic_axe
 
@@ -624,7 +629,8 @@ class CanvasContentScanner:
                 },
                 dedupe_key=(
                     f"canvas-file-scan:{self.credential_id}:"
-                    f"{cf.provider_file_id}:{cf.provider_version or 'current'}"
+                    f"{course_id}:file:{cf.provider_file_id}:"
+                    f"{cf.provider_version or 'current'}"
                 ),
                 provider="canvas",
                 credential_id=self.credential_id,
@@ -658,6 +664,7 @@ class CanvasContentScanner:
                 },
                 dedupe_key=(
                     f"canvas-content-scan:{self.credential_id}:"
+                    f"{course_id}:{cloud_file.content_source}:"
                     f"{cloud_file.provider_file_id}:{content_version}"
                 ),
                 provider="canvas",
@@ -1547,11 +1554,18 @@ class CanvasContentScanner:
         approved_by: str,
     ) -> Dict[str, Any]:
         """Upload the exact current approved artifact from its verified descriptor."""
-        if cloud_file.content_source != "file":
+        if cloud_file.content_source not in (None, CanvasContentType.FILE.value):
             return {
                 "success": False,
                 "stale": False,
                 "error": "Not a file row; use write_back_content for content items",
+            }
+        if cloud_file.needs_rescan:
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Source changed — re-scan required before write-back",
+                "error_code": "source_rescan_required",
             }
         try:
             cloud_file, _scan, artifact = self._lock_file_writeback_graph(cloud_file)
@@ -1562,6 +1576,14 @@ class CanvasContentScanner:
                 "stale": False,
                 "error": "Managed remediation artifact is unavailable",
                 "error_code": "artifact_unavailable",
+            }
+        if cloud_file.needs_rescan:
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Source changed — re-scan required before write-back",
+                "error_code": "source_rescan_required",
             }
         unresolved = (
             self.db.query(ContentWritebackLog)
@@ -1588,6 +1610,14 @@ class CanvasContentScanner:
                 "error": "Artifact is not approved",
                 "error_code": "artifact_not_approved",
             }
+        if cloud_file.provider_modified_at is None:
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Canvas file version is unavailable; re-scan required",
+                "error_code": "source_version_unavailable",
+            }
         course_id = cloud_file.provider_parent_id
         if not course_id:
             self.db.rollback()
@@ -1606,18 +1636,18 @@ class CanvasContentScanner:
                 require_approved=True,
                 approval_checksum=str(artifact.sha256),
             ) as stream:
-                if cloud_file.provider_modified_at is not None:
-                    current_file = await self.canvas_client.get_file(
-                        str(cloud_file.provider_file_id)
-                    )
-                    if current_file.updated_at > cloud_file.provider_modified_at:
-                        self.db.rollback()
-                        return {
-                            "success": False,
-                            "stale": True,
-                            "error": "Canvas file changed since the scan",
-                            "error_code": "canvas_file_stale",
-                        }
+                current_file = await self.canvas_client.get_file(
+                    str(cloud_file.provider_file_id)
+                )
+                current_updated_at = getattr(current_file, "updated_at", None)
+                if current_updated_at != cloud_file.provider_modified_at:
+                    self.db.rollback()
+                    return {
+                        "success": False,
+                        "stale": True,
+                        "error": "Canvas file changed since the scan",
+                        "error_code": "canvas_file_stale",
+                    }
                 upload = await self.canvas_client.upload_file_stream(
                     course_id=str(course_id),
                     stream=stream,
@@ -1778,6 +1808,13 @@ class CanvasContentScanner:
                 "error": f"Cannot write back: status is '{cloud_file.writeback_status}', must be 'approved'",
             }
 
+        if cloud_file.needs_rescan:
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Source changed — re-scan required before write-back",
+            }
+
         content_source = cloud_file.content_source
 
         # Fetch current Canvas state for stale check
@@ -1790,12 +1827,18 @@ class CanvasContentScanner:
                 "error": f"Failed to check Canvas state: {e}",
             }
 
-        # Stale check — Canvas content was modified since our scan
-        if (
-            cloud_file.content_updated_at
-            and current_updated_at
-            and current_updated_at > cloud_file.content_updated_at
-        ):
+        if cloud_file.content_updated_at is None or current_updated_at is None:
+            return {
+                "success": False,
+                "stale": True,
+                "error": (
+                    "Content version cannot be verified — re-scan required "
+                    "before write-back."
+                ),
+            }
+
+        # Stale check — Canvas content changed since the exact scanned version.
+        if current_updated_at != cloud_file.content_updated_at:
             logger.warning(
                 "Stale content detected — Canvas modified since scan",
                 extra={
@@ -1950,20 +1993,26 @@ class CanvasContentScanner:
 
         Returns the CloudFile (new or updated).
         """
-        existing = (
-            self.db.query(CloudFile)
-            .filter(
-                CloudFile.department_id == self.department_id,
-                CloudFile.provider == "canvas",
-                CloudFile.provider_file_id == provider_file_id,
-                CloudFile.content_source == content_source.value,
-                CloudFile.provider_parent_id == course_id,
+
+        def load_existing() -> CloudFile | None:
+            return (
+                self.db.query(CloudFile)
+                .filter(
+                    CloudFile.department_id == self.department_id,
+                    CloudFile.provider == "canvas",
+                    CloudFile.provider_file_id == provider_file_id,
+                    CloudFile.content_source == content_source.value,
+                    CloudFile.provider_parent_id == course_id,
+                )
+                .first()
             )
-            .first()
-        )
+
+        existing = load_existing()
 
         if existing:
             # Update existing record
+            if existing.content_updated_at != content_updated_at:
+                invalidate_canvas_derived_state(existing)
             existing.file_name = file_name
             existing.content_body = sanitize_for_postgres(content_body)
             existing.content_slug = content_slug
@@ -2006,30 +2055,37 @@ class CanvasContentScanner:
             needs_rescan=True,
             provider_metadata=metadata if metadata else None,
         )
-        self.db.add(cloud_file)
-        return cloud_file
+        return add_or_get_canvas_cloud_file(self.db, cloud_file, load_existing)
 
     def _upsert_file_cloud_file(self, course_id: str, file_info: Any) -> CloudFile:
         """
-        Find an existing CloudFile for this Canvas file (by department,
-        provider, provider_file_id — deliberately NOT scoped by
-        content_source) or create a new one.
+        Find an existing CloudFile for this Canvas file by its composite
+        provider/course/source/native identity or create a new one.
 
         Matches the lookup canvas_scan_routes.py's single-file scan
         endpoint uses, so a file scanned individually before a course scan
         (or vice versa) converges on the same row instead of duplicating —
-        content_source is only ever added/refreshed here, never used to
-        gate the lookup, since older rows may predate this field.
+        legacy rows with a NULL content_source are normalized to file for
+        this lookup.
         """
-        existing = (
-            self.db.query(CloudFile)
-            .filter(
-                CloudFile.department_id == self.department_id,
-                CloudFile.provider == "canvas",
-                CloudFile.provider_file_id == file_info.id,
+
+        def load_existing() -> CloudFile | None:
+            return (
+                self.db.query(CloudFile)
+                .filter(
+                    CloudFile.department_id == self.department_id,
+                    CloudFile.provider == "canvas",
+                    CloudFile.provider_parent_id == course_id,
+                    or_(
+                        CloudFile.content_source == CanvasContentType.FILE.value,
+                        CloudFile.content_source.is_(None),
+                    ),
+                    CloudFile.provider_file_id == file_info.id,
+                )
+                .first()
             )
-            .first()
-        )
+
+        existing = load_existing()
 
         # Short type code (pdf, docx, ...) for the file_type column — NOT
         # the full MIME type, which belongs in mime_type. Mirrors
@@ -2041,11 +2097,18 @@ class CanvasContentScanner:
         )
 
         if existing:
+            observed_version = (
+                file_info.updated_at.isoformat() if file_info.updated_at else None
+            )
+            if existing.provider_version != observed_version:
+                invalidate_canvas_derived_state(existing)
             existing.file_name = file_info.display_name or file_info.filename
             existing.file_type = file_type
             existing.mime_type = file_info.content_type
             existing.file_size_bytes = file_info.size
             existing.web_view_link = file_info.url
+            existing.provider_modified_at = file_info.updated_at
+            existing.provider_version = observed_version
             existing.provider_parent_id = course_id
             existing.content_source = CanvasContentType.FILE.value
             existing.needs_rescan = True
@@ -2063,11 +2126,14 @@ class CanvasContentScanner:
             mime_type=file_info.content_type,
             file_size_bytes=file_info.size,
             web_view_link=file_info.url,
+            provider_modified_at=file_info.updated_at,
+            provider_version=(
+                file_info.updated_at.isoformat() if file_info.updated_at else None
+            ),
             content_source=CanvasContentType.FILE.value,
             needs_rescan=True,
         )
-        self.db.add(cloud_file)
-        return cloud_file
+        return add_or_get_canvas_cloud_file(self.db, cloud_file, load_existing)
 
     async def _run_axe_scan(self, html: str) -> Dict[str, Any]:
         """

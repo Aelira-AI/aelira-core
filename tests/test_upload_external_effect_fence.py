@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy import CheckConstraint
 
-PROVIDERS = ("google", "microsoft", "canvas", "blackboard")
+PROVIDERS = ("google", "microsoft", "blackboard")
 
 
 def test_upload_external_effect_columns_and_constraints_are_dedicated():
@@ -111,12 +111,6 @@ async def test_all_upload_providers_checkpoint_immediately_before_provider_call(
         "refresh_if_expired",
         AsyncMock(return_value="access-token"),
     )
-    monkeypatch.setattr(
-        upload_job,
-        "require_persisted_canvas_origin",
-        lambda _credential: "https://example.test",
-    )
-
     result = await upload_job._process_upload_path(
         {
             "id": "job-1",
@@ -133,6 +127,46 @@ async def test_all_upload_providers_checkpoint_immediately_before_provider_call(
     assert result["success"] is True
     assert events == [("checkpoint", None), ("provider", effect_marker)]
     selected.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_canvas_generic_upload_is_rejected_before_external_effect(tmp_path):
+    from src.jobs import upload_job
+
+    path = tmp_path / "approved.pdf"
+    path.write_bytes(b"approved bytes")
+    begin = AsyncMock(return_value="effect-token")
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        credential_id="credential-1",
+        provider_parent_id="course-1",
+        file_name="approved.pdf",
+    )
+    query = MagicMock()
+    query.filter.return_value.first.return_value = cloud_file
+    db = MagicMock()
+    db.query.return_value = query
+
+    result = await upload_job._process_upload_path(
+        {
+            "id": "job-1",
+            "file_path": str(path),
+            "cloud_file_id": "file-1",
+            "department_id": "department-1",
+            "provider": "canvas",
+        },
+        db,
+        assert_owned=AsyncMock(),
+        begin_external_effect=begin,
+    )
+
+    assert result == {
+        "success": False,
+        "uploaded": False,
+        "error": "Unsupported provider: canvas",
+    }
+    begin.assert_not_awaited()
+    assert not hasattr(upload_job, "_upload_to_canvas")
 
 
 def test_pre_request_upload_failure_remains_retryable():
