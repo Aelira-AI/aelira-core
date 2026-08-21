@@ -43,6 +43,8 @@ def _principal(auth_method="session", role=UserRole.FACULTY, **overrides):
         "user_role": role,
         "auth_method": auth_method,
     }
+    if auth_method == "lti":
+        values["lti_platform"] = "brightspace"
     values.update(overrides)
     return AuthenticatedPrincipal(**values)
 
@@ -125,6 +127,36 @@ async def test_account_wide_lti_administrator_can_start_brightspace_connect(
             principal=principal,
         )
     assert result["state"] == "state-1"
+
+
+@pytest.mark.asyncio
+async def test_canvas_lti_administrator_cannot_start_brightspace_connect():
+    from src.api.brightspace_routes import (
+        BrightspaceConnectRequest,
+        connect_brightspace,
+    )
+
+    principal = _principal(
+        "lti",
+        role=UserRole.ADMIN,
+        lti_staff_role="Administrator",
+        lti_account_wide=True,
+        lti_platform="canvas",
+    )
+    with patch(
+        "src.api.brightspace_routes.OAuthStateManager.create_state"
+    ) as create_state:
+        with pytest.raises(HTTPException) as denied:
+            await connect_brightspace(
+                BrightspaceConnectRequest(
+                    brightspace_instance_url="https://brightspace.example"
+                ),
+                db=MagicMock(),
+                principal=principal,
+            )
+
+    assert denied.value.status_code == 403
+    create_state.assert_not_called()
 
 
 @pytest.mark.asyncio

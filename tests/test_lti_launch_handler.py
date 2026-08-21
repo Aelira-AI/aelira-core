@@ -373,5 +373,6 @@ def test_staff_launch_mints_v2_authorization_claims(
     assert claims["lti_staff"] is True
     assert claims["lti_staff_role"] == staff_role
     assert claims["lti_account_wide"] is account_wide
+    assert claims["lti_platform"] == "canvas"
     assert claims["lti_authz_version"] == 2
     assert claims["course_id"] == "course-42"

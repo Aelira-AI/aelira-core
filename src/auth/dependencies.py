@@ -46,6 +46,7 @@ class AuthenticatedPrincipal:
     lti_course_id: str | None = None
     lti_staff_role: str | None = None
     lti_account_wide: bool = False
+    lti_platform: str | None = None
 
     def __post_init__(self) -> None:
         """Reject authorization contexts that cannot come from trusted auth."""
@@ -66,12 +67,20 @@ class AuthenticatedPrincipal:
                 self.lti_course_id is not None
                 or self.lti_staff_role is not None
                 or self.lti_account_wide
+                or self.lti_platform is not None
             ):
                 raise ValueError("Only LTI principals may carry LTI authorization")
             return
 
         if self.api_key is not None:
             raise ValueError("LTI principals cannot carry API keys")
+        # Directly constructed legacy/test principals predate provider binding
+        # and represent Canvas unless stated otherwise. Signed tokens never use
+        # this fallback: _principal_from_lti_payload requires an explicit claim.
+        if self.lti_platform is None:
+            object.__setattr__(self, "lti_platform", "canvas")
+        if self.lti_platform not in {"canvas", "brightspace", "blackboard"}:
+            raise ValueError("Malformed LTI platform scope")
         if self.lti_staff_role == "Administrator":
             if not self.lti_account_wide or self.user_role is not UserRole.ADMIN:
                 raise ValueError("Malformed LTI administrator principal")
@@ -118,9 +127,11 @@ def _principal_from_lti_payload(
     course_id = payload.get("course_id")
     staff_role = payload.get("lti_staff_role")
     account_wide = payload.get("lti_account_wide")
+    platform = payload.get("lti_platform")
     if (
         not isinstance(staff_role, str)
         or not isinstance(account_wide, bool)
+        or platform not in {"canvas", "brightspace", "blackboard"}
         or (course_id is not None and not isinstance(course_id, str))
     ):
         return None
@@ -135,6 +146,7 @@ def _principal_from_lti_payload(
             lti_course_id=course_id,
             lti_staff_role=staff_role,
             lti_account_wide=account_wide,
+            lti_platform=platform,
         )
     except ValueError:
         return None
@@ -208,7 +220,7 @@ def get_authenticated_principal(
 ) -> AuthenticatedPrincipal:
     """Authenticate once and retain the authorization context for policy checks."""
     from ..config.settings import get_settings
-    from ..auth.auth_service import AuthService
+    from ..auth.auth_service import AuthService, RateLimiter
     from ..auth.session_service import get_session_service
 
     settings = get_settings()
@@ -227,6 +239,18 @@ def get_authenticated_principal(
                 and owner.is_active is True
                 and str(owner.department_id) == str(api_key.department_id)
             ):
+                allowed, rate_headers = RateLimiter.check_rate_limit(
+                    api_key.id, api_key.rate_limit_per_hour
+                )
+                if not allowed:
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail=(
+                            "Rate limit exceeded. Limit: "
+                            f"{api_key.rate_limit_per_hour} requests/hour"
+                        ),
+                        headers=rate_headers,
+                    )
                 try:
                     return AuthenticatedPrincipal(
                         api_key=api_key,

@@ -18,7 +18,7 @@ import {
   ArrowLeft,
   Wrench,
 } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { LTILayout } from '../components/LTILayout';
 import { useLTISession } from '../hooks/useLTISession';
 import { apiClient } from '../api/client';
@@ -209,7 +209,9 @@ function contentItemStateStyle(key: ContentItemStateKey): { bg: string; color: s
 // ============================================================================
 
 export function LTICourseView(): React.ReactElement {
-  const { accessToken, courseId: sessionCourseId, courseName: sessionCourseName, platform, loading: sessionLoading, error: sessionError } = useLTISession();
+  const { accessToken, courseId: launchCourseId, courseName: sessionCourseName, platform, accountWide, loading: sessionLoading, error: sessionError } = useLTISession();
+  const { courseId: routeCourseId } = useParams<{ courseId: string }>();
+  const sessionCourseId = routeCourseId || launchCourseId;
   const navigate = useNavigate();
   const toast = useToast();
   const [searchParams] = useSearchParams();
@@ -218,11 +220,17 @@ export function LTICourseView(): React.ReactElement {
   // Provider-aware API prefix for Canvas vs Brightspace
   const apiPrefix = platform === 'brightspace' ? '/brightspace' : '/canvas';
 
-  // A launch that resolved without a usable course id (e.g. an
-  // account-level placement, or a Canvas launch that didn't send course
-  // custom params) has nothing to render here. Rather than fall through to
-  // a blank/broken view, hand off to the LTI overview — the access token is
-  // already in localStorage from the exchange, so no code is needed.
+  const routeScopeError =
+    accessToken &&
+    !accountWide &&
+    launchCourseId &&
+    routeCourseId &&
+    launchCourseId !== routeCourseId
+      ? 'This LTI session is limited to its launch course.'
+      : null;
+
+  // Account launches select a route course from the overview. A route with
+  // neither an explicit course nor launch course has nothing to render.
   useEffect(() => {
     if (!sessionLoading && !sessionError && accessToken && !sessionCourseId) {
       navigate('/lti/overview', { replace: true });
@@ -390,7 +398,7 @@ export function LTICourseView(): React.ReactElement {
   // Fetch files data
   // --------------------------------------------------
   const fetchData = useCallback(async (isRefresh = false): Promise<void> => {
-    if (!accessToken || !sessionCourseId) return;
+    if (!accessToken || !sessionCourseId || routeScopeError) return;
 
     const client = clientRef.current;
     if (!client) return;
@@ -436,13 +444,13 @@ export function LTICourseView(): React.ReactElement {
       setLoadingData(false);
       setRefreshing(false);
     }
-  }, [accessToken, sessionCourseId, apiPrefix]);
+  }, [accessToken, sessionCourseId, apiPrefix, routeScopeError]);
 
   // --------------------------------------------------
   // Fetch content data
   // --------------------------------------------------
   const fetchContentData = useCallback(async (): Promise<void> => {
-    if (!accessToken || !sessionCourseId) return;
+    if (!accessToken || !sessionCourseId || routeScopeError) return;
 
     const client = clientRef.current;
     if (!client) return;
@@ -459,11 +467,11 @@ export function LTICourseView(): React.ReactElement {
     } finally {
       setContentLoading(false);
     }
-  }, [accessToken, sessionCourseId, apiPrefix]);
+  }, [accessToken, sessionCourseId, apiPrefix, routeScopeError]);
 
   // Fetch course name if not available from LTI session
   useEffect(() => {
-    if (!sessionCourseName && sessionCourseId && clientRef.current) {
+    if (!routeScopeError && !sessionCourseName && sessionCourseId && clientRef.current) {
       clientRef.current.get(`${apiPrefix}/courses`)
         .then((res) => {
           const courses = Array.isArray(res.data) ? res.data : res.data?.courses || [];
@@ -474,16 +482,16 @@ export function LTICourseView(): React.ReactElement {
         })
         .catch(() => { /* ignore — fallback to Course ID */ });
     }
-  }, [sessionCourseName, sessionCourseId, apiPrefix]);
+  }, [sessionCourseName, sessionCourseId, apiPrefix, routeScopeError]);
 
   // Initial data fetch
   useEffect(() => {
-    if (accessToken && sessionCourseId) {
+    if (accessToken && sessionCourseId && !routeScopeError) {
       clientRef.current = apiClient;
       fetchData();
       fetchContentData();
     }
-  }, [accessToken, sessionCourseId, fetchData, fetchContentData]);
+  }, [accessToken, sessionCourseId, fetchData, fetchContentData, routeScopeError]);
 
   // --------------------------------------------------
   // Files Polling
@@ -1324,13 +1332,13 @@ export function LTICourseView(): React.ReactElement {
   // --------------------------------------------------
   // Render
   // --------------------------------------------------
-  const isLoading = sessionLoading || (loadingData && !dataError);
+  const isLoading = sessionLoading || (!routeScopeError && loadingData && !dataError);
 
   return (
-    <LTILayout loading={isLoading} error={sessionError}>
+    <LTILayout loading={isLoading} error={sessionError || routeScopeError}>
       <div className="max-w-6xl mx-auto">
         {/* Data error (distinct from session error which LTILayout handles) */}
-        {dataError && !sessionError && (
+        {dataError && !sessionError && !routeScopeError && (
           <div
             className="mb-6 p-4 rounded-lg flex items-center gap-3"
             style={{ backgroundColor: 'var(--surface-error-subtle)', color: 'var(--content-error)' }}

@@ -32,10 +32,12 @@ import { DocumentReviewPage } from './pages/DocumentReviewPage';
 import { CookieBanner } from './components/CookieBanner';
 import { Analytics } from './components/Analytics';
 import { APIKeyRetirementBanner } from './components/APIKeyRetirementBanner';
-import { LTICourseView } from './pages/LTICourseView';
+import { LTICourseRoute } from './pages/LTICourseRoute';
 import { LTIReportView } from './pages/LTIReportView';
 import { LTIFilePicker } from './pages/LTIFilePicker';
 import { LTIGo } from './pages/LTIGo';
+import { LTISessionProvider } from './hooks/useLTISession';
+import { LTIBrightspaceReview } from './pages/LTIBrightspaceReview';
 
 const queryClient = new QueryClient();
 
@@ -80,14 +82,16 @@ function App(): React.ReactElement {
             <Routes>
               <Route path="/login" element={<Login />} />
               <Route path="/auth/verify" element={<VerifyMagicLink />} />
-              {/* LTI routes — auth via LTI token, not session cookies */}
-              <Route path="/lti/course/:courseId" element={<LTICourseView />} />
-              <Route path="/lti/overview" element={<CourseOverview isLTI />} />
-              {/* Public hop that exchanges a launch code. It must not sit
-                  behind ProtectedRoute: see LTIGo.tsx for why. */}
-              <Route path="/lti/go" element={<LTIGo />} />
-              <Route path="/lti/report/:scanId" element={<LTIReportView />} />
-              <Route path="/lti/pick/:courseId" element={<LTIFilePicker />} />
+              {/* LTI routes share one launch/session boundary. Child navigation
+                  restores the short-lived session and never replays the code. */}
+              <Route path="/lti" element={<LTISessionProvider />}>
+                <Route path="course/:courseId" element={<LTICourseRoute />} />
+                <Route path="course/:courseId/content/:cloudFileId/review" element={<LTIBrightspaceReview />} />
+                <Route path="overview" element={<CourseOverview isLTI />} />
+                <Route path="go" element={<LTIGo />} />
+                <Route path="report/:scanId" element={<LTIReportView />} />
+                <Route path="pick/:courseId" element={<LTIFilePicker />} />
+              </Route>
             <Route
               path="/dashboard"
               element={
@@ -202,6 +206,7 @@ function App(): React.ReactElement {
             <Route path="/canvas/courses/:courseId/content" element={<ProtectedRoute><AppLayout><CanvasContentPage /></AppLayout></ProtectedRoute>} />
             <Route path="/canvas/courses/:courseId/content/:cloudFileId/review" element={<ProtectedRoute><AppLayout><CanvasContentDiffPage /></AppLayout></ProtectedRoute>} />
             <Route path="/brightspace/courses/:orgUnitId/content" element={<ProtectedRoute><AppLayout><BrightspaceContentPage /></AppLayout></ProtectedRoute>} />
+            <Route path="/brightspace/courses/:orgUnitId/content/:cloudFileId/review" element={<ProtectedRoute><AppLayout><LTIBrightspaceReview /></AppLayout></ProtectedRoute>} />
             <Route
               path="/admin"
               element={

@@ -101,7 +101,12 @@ def validate_lti_staff_token_payload(
 
     staff_role = payload.get("lti_staff_role")
     asserted_roles = payload.get("lti_roles")
-    if not isinstance(staff_role, str) or not isinstance(asserted_roles, list):
+    platform = payload.get("lti_platform")
+    if (
+        not isinstance(staff_role, str)
+        or not isinstance(asserted_roles, list)
+        or platform not in {"canvas", "brightspace", "blackboard"}
+    ):
         return None
     if not all(isinstance(role, str) for role in asserted_roles):
         return None

@@ -55,7 +55,7 @@ def test_authenticated_principal_is_immutable_and_preserves_legacy_tuple():
 
 
 def test_api_key_principal_uses_active_database_owner_role_and_tenant(monkeypatch):
-    from src.auth.auth_service import AuthService
+    from src.auth.auth_service import AuthService, RateLimiter
 
     api_key = MagicMock(
         spec=APIKey,
@@ -66,7 +66,9 @@ def test_api_key_principal_uses_active_database_owner_role_and_tenant(monkeypatc
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = owner
     validate = MagicMock(return_value=api_key)
+    limiter = MagicMock(return_value=(True, {}))
     monkeypatch.setattr(AuthService, "validate_api_key", validate)
+    monkeypatch.setattr(RateLimiter, "check_rate_limit", limiter)
 
     principal = get_authenticated_principal(
         _request(), credentials=_bearer("api-token"), db=db
@@ -80,6 +82,36 @@ def test_api_key_principal_uses_active_database_owner_role_and_tenant(monkeypatc
         auth_method="api_key",
     )
     validate.assert_called_once_with(db, "api-token")
+    limiter.assert_called_once_with(api_key.id, api_key.rate_limit_per_hour)
+
+
+def test_api_key_principal_rejects_rate_limited_bearer(monkeypatch):
+    from src.auth.auth_service import AuthService, RateLimiter
+
+    api_key = MagicMock(
+        spec=APIKey,
+        id="key-1",
+        user_id="user-1",
+        department_id="dept-1",
+        rate_limit_per_hour=20,
+    )
+    owner = _user(role=UserRole.ADMIN)
+    api_key.user = owner
+    db = MagicMock()
+    monkeypatch.setattr(
+        AuthService, "validate_api_key", MagicMock(return_value=api_key)
+    )
+    monkeypatch.setattr(
+        RateLimiter,
+        "check_rate_limit",
+        MagicMock(return_value=(False, {"Retry-After": "30"})),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        get_authenticated_principal(_request(), credentials=_bearer("api-token"), db=db)
+
+    assert exc.value.status_code == 429
+    assert exc.value.headers == {"Retry-After": "30"}
 
 
 def test_api_key_principal_rejects_inactive_owner(monkeypatch):
@@ -147,6 +179,7 @@ def test_lti_principal_retains_only_canonical_v2_authorization_claims(monkeypatc
         "lti_staff_role": "TeachingAssistant",
         "lti_roles": ["TeachingAssistant"],
         "lti_account_wide": False,
+        "lti_platform": "canvas",
         "lti_authz_version": 2,
         "course_id": "course-1",
         "untrusted_extra": "ignored",

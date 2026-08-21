@@ -116,6 +116,7 @@ def _v2_lti_staff_token(jwt_service, *, department_id="d1"):
             "lti_staff_role": "Instructor",
             "lti_roles": ["Instructor"],
             "lti_account_wide": False,
+            "lti_platform": "canvas",
             "lti_authz_version": 2,
         },
     )
@@ -165,6 +166,7 @@ def test_v2_lti_staff_cookie_resolves_an_api_key(jwt_service, no_session):
             "lti_staff_role": "Instructor",
             "lti_roles": ["Instructor"],
             "lti_account_wide": False,
+            "lti_platform": "canvas",
             "lti_authz_version": 2,
         },
     )

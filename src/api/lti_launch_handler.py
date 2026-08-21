@@ -241,6 +241,7 @@ def handle_lti_launch(
             "lti_staff": True,
             "lti_staff_role": role_decision.staff_role,
             "lti_account_wide": role_decision.account_wide,
+            "lti_platform": platform,
             "lti_authz_version": 2,
         },
         expires_in_minutes=settings.lti_access_token_expire_minutes,

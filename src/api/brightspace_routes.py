@@ -51,6 +51,7 @@ from ..auth import verify_department_access
 from ..auth.canvas_permissions import (
     require_account_management,
     require_lti_course_access,
+    require_lti_platform_access,
 )
 from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ..auth.redis_rate_limiter import OAuthStateManager
@@ -214,6 +215,25 @@ class BrightspaceBatchRemediateResponse(BaseModel):
     results: List[RemediationOutcome]
 
 
+class BrightspaceBatchContentRequest(BaseModel):
+    """Bounded complete-set request for object-level batch actions."""
+
+    model_config = ConfigDict(extra="forbid")
+    cloud_file_ids: List[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("cloud_file_ids")
+    @classmethod
+    def validate_cloud_file_ids(cls, values: List[str]) -> List[str]:
+        return BrightspaceBatchRemediateRequest.validate_cloud_file_ids(values)
+
+
+class BrightspaceCourseActionRequest(BaseModel):
+    """Strict Brightspace course identity for course-wide actions."""
+
+    model_config = ConfigDict(extra="forbid")
+    org_unit_id: StrictInt = Field(gt=0)
+
+
 class BrightspaceRemediateResponse(BaseModel):
     """Response from remediation request"""
 
@@ -350,7 +370,7 @@ async def connect_brightspace(
     Requires account-management authorization before OAuth state creation.
     Returns authorization URL to redirect user to.
     """
-    require_account_management(principal)
+    require_account_management(principal, platform="brightspace")
     dept_id = request.department_id or principal.department_id
     verify_department_access(dept_id, principal.department_id)
 
@@ -588,14 +608,12 @@ async def get_brightspace_status(
 
 @router.get("/courses")
 async def list_brightspace_courses(
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> List[Dict[str, Any]]:
-    """List all Brightspace courses the user has access to.
-
-    Requires API key authentication.
-    """
-    department_id = api_key.department_id
+    """List Brightspace courses within the authenticated launch scope."""
+    require_lti_platform_access(principal, "brightspace")
+    department_id = principal.department_id
 
     credential = (
         db.query(CloudOAuthCredentials)
@@ -626,6 +644,12 @@ async def list_brightspace_courses(
 
     try:
         courses = await api_client.get_my_enrollments()
+        if principal.auth_method == "lti" and not principal.lti_account_wide:
+            courses = [
+                course
+                for course in courses
+                if str(course.OrgUnitId) == principal.lti_course_id
+            ]
 
         return [
             {
@@ -649,14 +673,12 @@ async def list_brightspace_courses(
 @router.get("/courses/{org_unit_id}/content")
 async def list_brightspace_course_content(
     org_unit_id: int,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> List[Dict[str, Any]]:
-    """List all content modules in a Brightspace course.
-
-    Requires API key authentication.
-    """
-    department_id = api_key.department_id
+    """List content modules in an authorized Brightspace course."""
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
+    department_id = principal.department_id
 
     credential = (
         db.query(CloudOAuthCredentials)
@@ -712,16 +734,16 @@ async def list_brightspace_course_content(
 @router.get("/courses/{org_unit_id}/files")
 async def list_brightspace_course_files(
     org_unit_id: int,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> List[Dict[str, Any]]:
     """List all scannable content items in a Brightspace course.
 
     Recursively walks the course content tree and returns files and HTML topics.
-
-    Requires API key authentication.
+    LTI course staff are limited to the exact launch course.
     """
-    department_id = api_key.department_id
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
+    department_id = principal.department_id
     credential = _get_credential(db, department_id)
 
     # Ensure token is valid (refresh if expired)
@@ -1032,7 +1054,7 @@ async def _authorize_brightspace_files(
         raise HTTPException(status_code=404, detail="Content item not found")
 
     try:
-        require_lti_course_access(principal, str(org_unit_id))
+        require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
     except HTTPException:
         raise HTTPException(status_code=404, detail="Content item not found") from None
 
@@ -1637,17 +1659,19 @@ async def _remediate_file(
 @router.post("/content/scan")
 async def scan_brightspace_content(
     request: BrightspaceContentScanRequest,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> BrightspaceContentScanResponse:
     """Queue scan jobs for Brightspace course content.
 
     Recursively discovers content items and creates scan jobs for each.
     Filter by scan_types: 'files', 'html', or 'both' (default).
-
-    Requires API key authentication.
+    LTI course staff are limited to the exact launch course.
     """
-    department_id = api_key.department_id
+    require_lti_course_access(
+        principal, str(request.org_unit_id), platform="brightspace"
+    )
+    department_id = principal.department_id
     credential = _get_credential(db, department_id)
 
     # Ensure token is valid (refresh if expired)
@@ -1796,16 +1820,16 @@ async def scan_brightspace_content(
 @router.get("/content/courses/{org_unit_id}/status")
 async def get_brightspace_content_status(
     org_unit_id: int,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Get scan status for all content items in a Brightspace course.
 
     Returns compliance scores and scan status for each tracked content item.
-
-    Requires API key authentication.
+    LTI course staff are limited to the exact launch course.
     """
-    department_id = api_key.department_id
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
+    department_id = principal.department_id
 
     # Query all CloudFile records for this course
     cloud_files = (
@@ -1942,7 +1966,7 @@ async def disconnect_brightspace(
 
     Requires account-management authorization.
     """
-    require_account_management(principal)
+    require_account_management(principal, platform="brightspace")
     department_id = principal.department_id
 
     credential = (
@@ -2009,6 +2033,29 @@ def _get_cloud_file_or_404(
     if not cf:
         raise HTTPException(status_code=404, detail="Content item not found")
     return cf
+
+
+def _get_authorized_cloud_file_or_404(
+    db: Session,
+    cloud_file_id: str,
+    principal: AuthenticatedPrincipal,
+) -> CloudFile:
+    """Resolve a tenant-owned Brightspace item and enforce its launch course."""
+    cloud_file = _get_cloud_file_or_404(db, cloud_file_id, principal.department_id)
+    try:
+        org_unit_id = int(cloud_file.provider_parent_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="Content item not found") from None
+    if not _validate_brightspace_file_scope(
+        cloud_file,
+        department_id=principal.department_id,
+        org_unit_id=org_unit_id,
+    ):
+        raise HTTPException(status_code=404, detail="Content item not found")
+    require_lti_course_access(
+        principal, cloud_file.provider_parent_id, platform="brightspace"
+    )
+    return cloud_file
 
 
 @router.post("/content/{cloud_file_id}/remediate", response_model=RemediationOutcome)
@@ -2196,13 +2243,13 @@ async def batch_remediate_content(
 @router.get("/content/{cloud_file_id}/diff")
 async def get_content_diff(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Get original vs remediated content for review."""
     from ..db.models import ScanResult
 
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
 
     issues_fixed = 0
     issues_remaining = 0
@@ -2241,11 +2288,11 @@ async def get_content_diff(
 @router.post("/content/{cloud_file_id}/approve")
 async def approve_content(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Approve remediated content for write-back."""
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
     if not cf.remediated_body:
         raise HTTPException(status_code=400, detail="No remediated content to approve")
     cf.writeback_status = "approved"
@@ -2256,11 +2303,11 @@ async def approve_content(
 @router.post("/content/{cloud_file_id}/reject")
 async def reject_content(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Reject remediated content."""
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
     cf.writeback_status = "rejected"
     db.commit()
     return {"success": True, "message": "Content rejected"}
@@ -2268,21 +2315,40 @@ async def reject_content(
 
 @router.post("/content/batch-approve")
 async def batch_approve_content(
-    request: Dict[str, Any],
-    api_key: APIKey = Depends(get_current_api_key),
+    request: BrightspaceBatchContentRequest,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Approve multiple content items at once."""
-    cloud_file_ids = request.get("cloud_file_ids", [])
+    cloud_file_ids = request.cloud_file_ids
     cloud_files = (
         db.query(CloudFile)
         .filter(
             CloudFile.id.in_(cloud_file_ids),
-            CloudFile.department_id == api_key.department_id,
+            CloudFile.department_id == principal.department_id,
             CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
         )
         .all()
     )
+    if len(cloud_files) != len(cloud_file_ids):
+        raise HTTPException(status_code=404, detail="Content item not found")
+    for cloud_file in cloud_files:
+        try:
+            org_unit_id = int(cloud_file.provider_parent_id)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=404, detail="Content item not found"
+            ) from None
+        if not _validate_brightspace_file_scope(
+            cloud_file,
+            department_id=principal.department_id,
+            org_unit_id=org_unit_id,
+        ):
+            raise HTTPException(status_code=404, detail="Content item not found")
+        require_lti_course_access(
+            principal, cloud_file.provider_parent_id, platform="brightspace"
+        )
+
     approved = 0
     for cf in cloud_files:
         if cf.remediated_body:
@@ -2392,11 +2458,11 @@ async def _writeback_single(api_client, cf: CloudFile, org_unit_id, topic_id, db
 @router.post("/content/{cloud_file_id}/writeback")
 async def writeback_content(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Write approved remediated content back to Brightspace."""
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
 
     if cf.current_remediation_artifact_id:
         raise HTTPException(
@@ -2413,7 +2479,7 @@ async def writeback_content(
             status_code=400, detail="No remediated content to write back"
         )
 
-    credential = _get_credential(db, api_key.department_id)
+    credential = _get_credential(db, principal.department_id)
     access_token = await _ensure_valid_token(credential, db)
     metadata = cf.provider_metadata or {}
     org_unit_id = metadata.get("org_unit_id")
@@ -2443,19 +2509,20 @@ async def writeback_content(
 
 @router.post("/content/batch-writeback")
 async def batch_writeback_content(
-    request: Dict[str, Any],
-    api_key: APIKey = Depends(get_current_api_key),
+    request: BrightspaceCourseActionRequest,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Write back all approved content items for a course."""
-    org_unit_id = request.get("org_unit_id")
+    org_unit_id = request.org_unit_id
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
 
     approved_files = (
         db.query(CloudFile)
         .filter(
             CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
             CloudFile.provider_parent_id == str(org_unit_id),
-            CloudFile.department_id == api_key.department_id,
+            CloudFile.department_id == principal.department_id,
             CloudFile.writeback_status == "approved",
             CloudFile.remediated_body.isnot(None),
         )
@@ -2465,7 +2532,17 @@ async def batch_writeback_content(
     if not approved_files:
         return {"written_count": 0, "failed_count": 0, "stale_count": 0}
 
-    credential = _get_credential(db, api_key.department_id)
+    if any(
+        not _validate_brightspace_file_scope(
+            cloud_file,
+            department_id=principal.department_id,
+            org_unit_id=org_unit_id,
+        )
+        for cloud_file in approved_files
+    ):
+        raise HTTPException(status_code=404, detail="Content item not found")
+
+    credential = _get_credential(db, principal.department_id)
     access_token = await _ensure_valid_token(credential, db)
 
     api_client = BrightspaceAPIClient(
@@ -2502,11 +2579,11 @@ async def batch_writeback_content(
 @router.post("/content/{cloud_file_id}/rollback")
 async def rollback_content(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Roll back a written-back item to its original content in Brightspace."""
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
 
     if cf.writeback_status != "written_back":
         raise HTTPException(
@@ -2517,7 +2594,7 @@ async def rollback_content(
             status_code=400, detail="Original content not available for rollback"
         )
 
-    credential = _get_credential(db, api_key.department_id)
+    credential = _get_credential(db, principal.department_id)
     access_token = await _ensure_valid_token(credential, db)
     metadata = cf.provider_metadata or {}
     org_unit_id = metadata.get("org_unit_id")
@@ -2576,19 +2653,20 @@ async def rollback_content(
 
 @router.post("/content/batch-rollback")
 async def batch_rollback_content(
-    request: Dict[str, Any],
-    api_key: APIKey = Depends(get_current_api_key),
+    request: BrightspaceCourseActionRequest,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Roll back all written-back items for a course to their originals."""
-    org_unit_id = request.get("org_unit_id")
+    org_unit_id = request.org_unit_id
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
 
     written_files = (
         db.query(CloudFile)
         .filter(
             CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
             CloudFile.provider_parent_id == str(org_unit_id),
-            CloudFile.department_id == api_key.department_id,
+            CloudFile.department_id == principal.department_id,
             CloudFile.writeback_status == "written_back",
             CloudFile.content_body.isnot(None),
         )
@@ -2598,7 +2676,17 @@ async def batch_rollback_content(
     if not written_files:
         return {"rolled_back_count": 0, "failed_count": 0}
 
-    credential = _get_credential(db, api_key.department_id)
+    if any(
+        not _validate_brightspace_file_scope(
+            cloud_file,
+            department_id=principal.department_id,
+            org_unit_id=org_unit_id,
+        )
+        for cloud_file in written_files
+    ):
+        raise HTTPException(status_code=404, detail="Content item not found")
+
+    credential = _get_credential(db, principal.department_id)
     access_token = await _ensure_valid_token(credential, db)
 
     api_client = BrightspaceAPIClient(

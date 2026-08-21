@@ -110,8 +110,17 @@ const SCAN_POLL_INTERVAL_MS = 3000;
 // Component
 // ============================================================================
 
-export default function BrightspaceContentPage(): React.ReactElement {
-  const { orgUnitId } = useParams<{ orgUnitId: string }>();
+interface BrightspaceContentPageProps {
+  orgUnitIdOverride?: string;
+  isLTI?: boolean;
+}
+
+export default function BrightspaceContentPage({
+  orgUnitIdOverride,
+  isLTI = false,
+}: BrightspaceContentPageProps = {}): React.ReactElement {
+  const { orgUnitId: routeOrgUnitId } = useParams<{ orgUnitId: string }>();
+  const orgUnitId = orgUnitIdOverride || routeOrgUnitId;
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -552,7 +561,9 @@ export default function BrightspaceContentPage(): React.ReactElement {
   const handleItemClick = (item: ContentItemStatus): void => {
     if (item.content_type === 'html' || item.content_type === 'topic_html') {
       navigate(
-        `/brightspace/courses/${orgUnitId}/content/${item.cloud_file_id}/review`
+        isLTI
+          ? `/lti/course/${orgUnitId}/content/${item.cloud_file_id}/review`
+          : `/brightspace/courses/${orgUnitId}/content/${item.cloud_file_id}/review`
       );
     }
     // For file items, we could navigate to scan detail if a scan exists
@@ -1100,7 +1111,9 @@ export default function BrightspaceContentPage(): React.ReactElement {
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             navigate(
-                                              `/brightspace/courses/${orgUnitId}/content/${item.cloud_file_id}/review`
+                                              isLTI
+                                                ? `/lti/course/${orgUnitId}/content/${item.cloud_file_id}/review`
+                                                : `/brightspace/courses/${orgUnitId}/content/${item.cloud_file_id}/review`
                                             );
                                           }}
                                           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-[var(--surface-tertiary)] text-[var(--content-primary)]"
