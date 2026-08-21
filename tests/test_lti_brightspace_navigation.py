@@ -199,7 +199,7 @@ async def test_course_lti_staff_can_read_their_brightspace_content_status():
 
 
 @pytest.mark.asyncio
-async def test_course_lti_staff_cannot_review_another_course_item():
+async def test_course_lti_staff_cannot_enumerate_another_course_item():
     cloud_file = MagicMock()
     cloud_file.id = "cf-other"
     cloud_file.department_id = "dept-1"
@@ -218,4 +218,4 @@ async def test_course_lti_staff_cannot_review_another_course_item():
             db=db,
         )
 
-    assert denied.value.status_code == 403
+    assert denied.value.status_code == 404

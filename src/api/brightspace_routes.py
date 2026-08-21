@@ -2052,9 +2052,12 @@ def _get_authorized_cloud_file_or_404(
         org_unit_id=org_unit_id,
     ):
         raise HTTPException(status_code=404, detail="Content item not found")
-    require_lti_course_access(
-        principal, cloud_file.provider_parent_id, platform="brightspace"
-    )
+    try:
+        require_lti_course_access(
+            principal, cloud_file.provider_parent_id, platform="brightspace"
+        )
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Content item not found") from None
     return cloud_file
 
 
@@ -2345,9 +2348,14 @@ async def batch_approve_content(
             org_unit_id=org_unit_id,
         ):
             raise HTTPException(status_code=404, detail="Content item not found")
-        require_lti_course_access(
-            principal, cloud_file.provider_parent_id, platform="brightspace"
-        )
+        try:
+            require_lti_course_access(
+                principal, cloud_file.provider_parent_id, platform="brightspace"
+            )
+        except HTTPException:
+            raise HTTPException(
+                status_code=404, detail="Content item not found"
+            ) from None
 
     approved = 0
     for cf in cloud_files:

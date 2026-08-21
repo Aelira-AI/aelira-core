@@ -40,10 +40,6 @@ export function LTIGo(): React.ReactElement {
         ? `/brightspace/courses/${course}/content`
         : `/canvas/courses/${course}/content`
       : '/lti/overview';
-    // Protected dashboard routes bootstrap from this legacy storage key.
-    // Mini-view navigation stays sessionStorage/default-header only so an LTI
-    // 401 is not misclassified as a dashboard API-key failure.
-    localStorage.setItem('apiKey', accessToken);
     window.location.replace(destination);
   }, [accessToken, accountWide, courseId, error, loading, navigate, platform, requestedCourse]);
 

@@ -18,6 +18,7 @@ live LTI session.
 import json
 import logging
 import secrets
+import time
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
@@ -56,7 +57,7 @@ def require_lti_staff_access(launch_data: CanvasLaunchData) -> LTIStaffAuthoriza
 # ---------------------------------------------------------------------------
 # In-memory fallback when Redis is unavailable (dev only)
 # ---------------------------------------------------------------------------
-_code_store: Dict[str, str] = {}
+_code_store: Dict[str, tuple[str, float]] = {}
 
 
 def _simplify_roles(lti_roles: list[str]) -> list[str]:
@@ -425,17 +426,19 @@ def store_ags_context(
 
 
 def _store_code(key: str, value: str, ttl: int = 30) -> None:
-    """Store a short-lived value in Redis (or in-memory fallback)."""
+    """Store a short-lived value durably, with a bounded local dev fallback."""
     redis = get_redis_client()
     if redis is not None:
         try:
             redis.setex(key, ttl, value)
             return
         except Exception:
-            logger.warning(
-                "Redis setex failed, falling back to in-memory", exc_info=True
-            )
-    _code_store[key] = value
+            logger.error("Redis setex failed", exc_info=True)
+
+    settings = get_settings()
+    if settings.env.lower() not in {"development", "test", "testing"}:
+        raise RuntimeError("Durable LTI launch-code storage unavailable")
+    _code_store[key] = (value, time.monotonic() + ttl)
 
 
 def _pop_code(key: str) -> Optional[str]:
@@ -453,4 +456,10 @@ def _pop_code(key: str) -> Optional[str]:
             # Fall through — might be in memory if Redis write failed earlier
         except Exception:
             logger.warning("Redis pop failed, trying in-memory", exc_info=True)
-    return _code_store.pop(key, None)
+    local = _code_store.pop(key, None)
+    if local is None:
+        return None
+    value, expires_at = local
+    if time.monotonic() >= expires_at:
+        return None
+    return value
