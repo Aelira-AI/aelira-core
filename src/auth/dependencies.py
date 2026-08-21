@@ -326,6 +326,77 @@ def get_authenticated_principal(
     )
 
 
+def get_key_management_principal(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db_dependency),
+) -> AuthenticatedPrincipal:
+    """Authenticate key CRUD without stale Bearer state shadowing a session.
+
+    Normal dashboard sessions are authoritative. LTI launch cookies cannot
+    manage account-wide programmatic credentials. When a cookie is absent,
+    invalid, or LTI-scoped, a valid database API key remains supported.
+    """
+    from ..auth.auth_service import AuthService, RateLimiter
+    from ..auth.session_service import get_session_service
+
+    cookie_token = request.cookies.get("aelira_access")
+    cookie_was_lti = False
+    if cookie_token:
+        resolved = resolve_access_token(
+            db, cookie_token, session_service=get_session_service()
+        )
+        if resolved is not None:
+            if resolved.principal.auth_method == "session":
+                return resolved.principal
+            cookie_was_lti = resolved.principal.auth_method == "lti"
+
+    if credentials is not None:
+        api_key = AuthService.validate_api_key(db, credentials.credentials)
+        if api_key is not None:
+            owner = getattr(api_key, "user", None)
+            if not isinstance(owner, User):
+                owner = db.query(User).filter(User.id == api_key.user_id).first()
+            if (
+                owner is not None
+                and owner.is_active is True
+                and str(owner.department_id) == str(api_key.department_id)
+            ):
+                allowed, rate_headers = RateLimiter.check_rate_limit(
+                    api_key.id, api_key.rate_limit_per_hour
+                )
+                if not allowed:
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail=(
+                            "Rate limit exceeded. Limit: "
+                            f"{api_key.rate_limit_per_hour} requests/hour"
+                        ),
+                        headers=rate_headers,
+                    )
+                try:
+                    return AuthenticatedPrincipal(
+                        api_key=api_key,
+                        user_id=str(owner.id),
+                        department_id=str(owner.department_id),
+                        user_role=_user_role(owner),
+                        auth_method="api_key",
+                    )
+                except ValueError:
+                    pass
+
+    if cookie_was_lti:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="LTI launch sessions cannot manage API keys",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Log in via dashboard or provide a valid API key.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 def get_required_api_key(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),

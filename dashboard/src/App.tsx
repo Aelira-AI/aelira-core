@@ -31,6 +31,7 @@ import { ReviewQueuePage } from './pages/ReviewQueuePage';
 import { DocumentReviewPage } from './pages/DocumentReviewPage';
 import { CookieBanner } from './components/CookieBanner';
 import { Analytics } from './components/Analytics';
+import { APIKeyRetirementBanner } from './components/APIKeyRetirementBanner';
 import { LTICourseView } from './pages/LTICourseView';
 import { LTIReportView } from './pages/LTIReportView';
 import { LTIFilePicker } from './pages/LTIFilePicker';
@@ -57,6 +58,7 @@ function AppLayout({ children }: AppLayoutProps): React.ReactElement {
         Skip to main content
       </a>
       <Navbar />
+      <APIKeyRetirementBanner />
       <div className="flex">
         <Sidebar />
         <main id="main-content" className="flex-1 min-w-0 pb-20 lg:pb-0" tabIndex={-1}>

@@ -128,7 +128,7 @@ export function Login(): React.ReactElement {
 
     try {
       trackEvent('dash-login-method', { method: 'magic_link' });
-      await apiClient.post('/auth/magic-link/request', { email });
+      await apiClient.post('/auth/magic-link/request', { email }, { _skipApiKeyAuth: true });
       setSuccess('Check your email! We sent you a magic link to sign in.');
     } catch (err: unknown) {
       const axiosError = err as { response?: { data?: { detail?: string } } };
@@ -174,7 +174,9 @@ export function Login(): React.ReactElement {
 
     const checkSession = async (): Promise<void> => {
       try {
-        const response = await apiClient.get<{ user?: unknown }>('/auth/session/validate');
+        const response = await apiClient.get<{ user?: unknown }>('/auth/session/validate', {
+          _skipApiKeyAuth: true,
+        });
         if (response.data.user) {
           navigate(resolveSafeNext(searchParams.get('next')));
         }

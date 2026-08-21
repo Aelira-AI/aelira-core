@@ -95,6 +95,7 @@ class AuditService:
 
         if not commit:
             self.db.add(audit_log)
+            self.db.flush()
             return audit_log
 
         try:
@@ -169,6 +170,7 @@ class AuditService:
         api_key_id: str,
         key_name: Optional[str] = None,
         request: Optional[Request] = None,
+        commit: bool = True,
     ) -> AuditLog:
         """Log API key creation."""
         return self.log_action(
@@ -180,6 +182,7 @@ class AuditService:
             resource_id=api_key_id,
             details={"key_name": key_name},
             request=request,
+            commit=commit,
         )
 
     def log_api_key_revoke(
@@ -188,6 +191,7 @@ class AuditService:
         department_id: str,
         api_key_id: str,
         request: Optional[Request] = None,
+        commit: bool = True,
     ) -> AuditLog:
         """Log API key revocation."""
         return self.log_action(
@@ -198,6 +202,7 @@ class AuditService:
             resource_type="api_key",
             resource_id=api_key_id,
             request=request,
+            commit=commit,
         )
 
     def log_session_revoke(

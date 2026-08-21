@@ -248,6 +248,20 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         auth_header = request.headers.get("Authorization", "")
         return auth_header.startswith("Bearer ")
 
+    def _bearer_auth_is_csrf_exempt(self, request: Request) -> bool:
+        """Keep key CRUD cookie-bound when its preferred principal is a session.
+
+        Key-management authentication prefers ``aelira_access`` over Bearer
+        credentials. Cookie presence therefore determines the CSRF boundary,
+        even when that cookie is invalid and the Bearer credential could be a
+        valid API key. This intentionally fails closed before authentication.
+        """
+        is_key_management = request.url.path.startswith("/auth/keys")
+        has_access_cookie = "aelira_access" in request.cookies
+        return self._has_bearer_auth(request) and not (
+            is_key_management and has_access_cookie
+        )
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Skip if CSRF is disabled
         if not self.enabled:
@@ -266,7 +280,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
         # Skip for Bearer token authenticated requests
         # (CSRF is only relevant for cookie-based auth)
-        if self._has_bearer_auth(request):
+        if self._bearer_auth_is_csrf_exempt(request):
             return await call_next(request)
 
         # Validate CSRF token for state-changing requests

@@ -47,10 +47,11 @@ export function VerifyMagicLink(): React.ReactElement {
     try {
       // Call the API to verify the magic link (POST to prevent prefetch consumption)
       // This endpoint sets session cookies on success
-      const response = await apiClient.post<VerifyResponse>('/auth/magic-link/verify', {
-        email,
-        token
-      });
+      const response = await apiClient.post<VerifyResponse>(
+        '/auth/magic-link/verify',
+        { email, token },
+        { _skipApiKeyAuth: true }
+      );
 
       if (response.data.success) {
         setStatus('success');

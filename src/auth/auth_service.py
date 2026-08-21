@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 RateLimiter = RedisRateLimiter
 
 MAX_API_KEY_BCRYPT_CANDIDATES = 5
+MAX_ACTIVE_API_KEYS_PER_USER = 10
+MAX_TOTAL_API_KEYS_PER_USER = 100
+
+
+class APIKeyQuotaError(ValueError):
+    """Raised when an API key cannot be created within account invariants."""
 
 
 class AuthService:
@@ -85,6 +91,7 @@ class AuthService:
         name: str = "Default API Key",
         rate_limit_per_hour: int = 100,
         expires_days: Optional[int] = None,
+        commit: bool = True,
     ) -> Tuple[APIKey, str]:
         """
         Create a new API key for a user
@@ -101,7 +108,52 @@ class AuthService:
             Tuple of (APIKey object, full_key string)
             **IMPORTANT:** full_key is only returned once - store it safely!
         """
-        # Generate key
+        # Serialize all creates for this owner before counting. The owner lookup
+        # simultaneously proves the trusted user/tenant pair is still active.
+        owner = (
+            db.query(User)
+            .filter(
+                User.id == user_id,
+                User.department_id == department_id,
+                User.is_active == True,  # noqa: E712
+            )
+            .with_for_update()
+            .first()
+        )
+        if (
+            owner is None
+            or owner.is_active is not True
+            or str(owner.id) != str(user_id)
+            or str(owner.department_id) != str(department_id)
+        ):
+            raise APIKeyQuotaError(
+                "Active user in the authenticated tenant is required"
+            )
+
+        active_count = (
+            db.query(APIKey)
+            .filter(
+                APIKey.user_id == user_id,
+                APIKey.department_id == department_id,
+                APIKey.is_active == True,  # noqa: E712
+            )
+            .count()
+        )
+        if active_count >= MAX_ACTIVE_API_KEYS_PER_USER:
+            raise APIKeyQuotaError("Active API key limit reached (10)")
+
+        total_count = (
+            db.query(APIKey)
+            .filter(
+                APIKey.user_id == user_id,
+                APIKey.department_id == department_id,
+            )
+            .count()
+        )
+        if total_count >= MAX_TOTAL_API_KEYS_PER_USER:
+            raise APIKeyQuotaError("API key lifetime limit reached (100)")
+
+        # Generate key only after locking and quota rejection paths.
         full_key, key_hash, key_prefix = AuthService.generate_api_key()
 
         # Calculate expiration
@@ -122,8 +174,11 @@ class AuthService:
         )
 
         db.add(api_key)
-        db.commit()
-        db.refresh(api_key)
+        if commit:
+            db.commit()
+            db.refresh(api_key)
+        else:
+            db.flush()
 
         logger.info(
             f"Created API key: {api_key.id} ({key_prefix}...) for user {user_id}"
@@ -226,7 +281,9 @@ class AuthService:
         return None
 
     @staticmethod
-    def revoke_api_key(db: Session, key_id: str, user_id: str) -> bool:
+    def revoke_api_key(
+        db: Session, key_id: str, user_id: str, commit: bool = True
+    ) -> bool:
         """
         Revoke (deactivate) an API key
 
@@ -252,7 +309,10 @@ class AuthService:
             return False
 
         api_key.is_active = False
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
 
         logger.info(f"Revoked API key: {key_id} ({api_key.key_prefix}...)")
         return True

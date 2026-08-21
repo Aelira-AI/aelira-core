@@ -12,6 +12,8 @@ exempt by auth method.
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
 from starlette.responses import Response
 
 from src.middleware.security import CSRFMiddleware
@@ -28,6 +30,35 @@ def _request(method, path, cookies=None, headers=None):
     req.cookies = cookies or {}
     req.headers = headers or {}
     return req
+
+
+def _full_middleware_client():
+    app = FastAPI()
+    app.add_middleware(
+        CSRFMiddleware,
+        cookie_secure=False,
+        cookie_httponly=False,
+    )
+
+    @app.post("/auth/keys")
+    async def create_key(request: Request):
+        principal = (
+            "session"
+            if request.cookies.get("aelira_access") == "valid-session"
+            else "api_key"
+        )
+        return {"reached": True, "principal": principal}
+
+    @app.delete("/auth/keys/{key_id}")
+    async def delete_key(key_id: str, request: Request):
+        principal = (
+            "session"
+            if request.cookies.get("aelira_access") == "valid-session"
+            else "api_key"
+        )
+        return {"reached": True, "key_id": key_id, "principal": principal}
+
+    return TestClient(app)
 
 
 DASHBOARD_MUTATION_ROUTES = [
@@ -85,6 +116,77 @@ async def test_bearer_post_skips_csrf():
     req = _request("POST", "/education/scan", headers={"Authorization": "Bearer k"})
     await mw.dispatch(req, call_next)
     call_next.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("post", "/auth/keys"), ("delete", "/auth/keys/key-1")],
+)
+def test_key_mutation_with_session_cookie_and_stale_bearer_requires_csrf(method, path):
+    client = _full_middleware_client()
+
+    response = getattr(client, method)(
+        path,
+        cookies={"aelira_access": "valid-session"},
+        headers={"Authorization": "Bearer stale-or-invalid"},
+        **({"json": {"name": "Automation"}} if method == "post" else {}),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"].startswith("CSRF token missing")
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("post", "/auth/keys"), ("delete", "/auth/keys/key-1")],
+)
+def test_key_mutation_with_session_cookie_stale_bearer_and_matching_csrf_reaches_session_endpoint(
+    method, path
+):
+    client = _full_middleware_client()
+    cookies = {"aelira_access": "valid-session", "csrf_token": "matching-token"}
+    headers = {
+        "Authorization": "Bearer stale-or-invalid",
+        "X-CSRF-Token": "matching-token",
+    }
+
+    response = getattr(client, method)(
+        path,
+        cookies=cookies,
+        headers=headers,
+        **({"json": {"name": "Automation"}} if method == "post" else {}),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reached"] is True
+    assert response.json()["principal"] == "session"
+
+
+def test_key_mutation_with_valid_api_key_and_no_session_cookie_remains_csrf_exempt():
+    client = _full_middleware_client()
+
+    response = client.post(
+        "/auth/keys",
+        json={"name": "CLI"},
+        headers={"Authorization": "Bearer valid-api-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"reached": True, "principal": "api_key"}
+
+
+def test_key_mutation_with_invalid_session_cookie_and_valid_api_key_fails_closed_without_csrf():
+    """Cookie presence makes key CRUD CSRF-protected even with API-key fallback."""
+    client = _full_middleware_client()
+
+    response = client.post(
+        "/auth/keys",
+        json={"name": "CLI"},
+        cookies={"aelira_access": "invalid-session"},
+        headers={"Authorization": "Bearer valid-api-key"},
+    )
+
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio

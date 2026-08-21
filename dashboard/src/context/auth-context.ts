@@ -8,7 +8,7 @@
 import { createContext, useContext } from 'react';
 import type { User, Department } from '../types';
 
-export type AuthMethod = 'session' | 'api_key' | null;
+export type AuthMethod = 'session' | 'lti' | 'api_key' | null;
 
 export interface LoginResult {
   success: boolean;
