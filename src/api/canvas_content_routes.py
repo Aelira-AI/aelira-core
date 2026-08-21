@@ -53,6 +53,10 @@ from ..db.models import (
 from ..education.canvas_content_scanner import CanvasContentScanner
 from ..integrations.canvas.content_models import CanvasContentType
 from ..middleware.quota import require_feature
+from ..services.remediation_artifact_service import (
+    ArtifactError,
+    RemediationArtifactService,
+)
 from ..utils.security import require_persisted_canvas_origin
 from .canvas_routes import _get_canvas_client
 from .canvas_scan_routes import _canvas_scan_file_task
@@ -120,6 +124,7 @@ class ContentItemStatus(BaseModel):
     issue_count: int = 0
     writeback_status: Optional[str] = None
     has_remediated_version: bool = False
+    current_remediation_artifact_id: Optional[str] = None
     # The scan whose results are current for this item — the client needs
     # this to call POST /education/remediate/{scan_id} for a per-item
     # remediate action (the same endpoint the LTI Files tab already uses).
@@ -657,6 +662,11 @@ async def get_course_content_status(
             issue_count=issue_counts.get(cf.last_scan_id, 0) if cf.last_scan_id else 0,
             writeback_status=cf.writeback_status,
             has_remediated_version=cf.has_remediated_version or False,
+            current_remediation_artifact_id=(
+                cf.current_remediation_artifact_id
+                if isinstance(cf.current_remediation_artifact_id, str)
+                else None
+            ),
             last_scanned_at=(
                 cf.last_scanned_at.isoformat() if cf.last_scanned_at else None
             ),
@@ -1117,11 +1127,30 @@ async def approve_content(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
-    # File-type rows are remediated as FILES (has_remediated_version set by
-    # POST /education/remediate/{scan_id}) — remediated_body stays NULL for
-    # them permanently, since they're real documents, not HTML fragments.
-    # Checking remediated_body alone made every file unapprovable.
-    if not cf.remediated_body and not cf.has_remediated_version:
+    if cf.content_source == "file":
+        if not cf.current_remediation_artifact_id:
+            raise HTTPException(status_code=400, detail="Managed artifact required")
+        try:
+            artifact = RemediationArtifactService.from_settings().approve(
+                db,
+                artifact_id=str(cf.current_remediation_artifact_id),
+                approved_by_id=user_id,
+                approved_by_ref=f"{principal.auth_method}:{user_id}",
+            )
+            cf.writeback_status = "approved"
+            db.commit()
+        except ArtifactError:
+            db.rollback()
+            raise HTTPException(
+                status_code=400, detail="Artifact cannot be approved"
+            ) from None
+        logger.info(
+            "Managed artifact approved for write-back",
+            extra={"cloud_file_id": cf.id, "artifact_id": artifact.id},
+        )
+        return ApproveRejectResponse(cloud_file_id=cf.id, writeback_status="approved")
+
+    if not cf.remediated_body:
         raise HTTPException(status_code=400, detail="No remediated content to approve")
 
     cf.writeback_status = "approved"
@@ -1165,8 +1194,25 @@ async def reject_content(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
-    cf.writeback_status = "rejected"
-    db.commit()
+    if cf.content_source == "file":
+        if not cf.current_remediation_artifact_id:
+            raise HTTPException(status_code=400, detail="Managed artifact required")
+        try:
+            RemediationArtifactService.from_settings().reject(
+                db,
+                artifact_id=str(cf.current_remediation_artifact_id),
+                rejected_by_id=user_id,
+                rejected_by_ref=f"{principal.auth_method}:{user_id}",
+            )
+            db.commit()
+        except ArtifactError:
+            db.rollback()
+            raise HTTPException(
+                status_code=400, detail="Artifact cannot be rejected"
+            ) from None
+    else:
+        cf.writeback_status = "rejected"
+        db.commit()
 
     logger.info(
         "Content rejected",
@@ -1235,21 +1281,36 @@ async def batch_approve_content(
     except HTTPException:
         raise HTTPException(status_code=404, detail="Content items not found") from None
 
-    approved = 0
+    invalid = [
+        cf.id
+        for cf in cloud_files
+        if (cf.content_source == "file" and not cf.current_remediation_artifact_id)
+        or (cf.content_source != "file" and not cf.remediated_body)
+    ]
+    if invalid:
+        raise HTTPException(
+            status_code=400, detail="Batch contains unapprovable content"
+        )
+
+    try:
+        for cf in cloud_files:
+            if cf.content_source == "file":
+                RemediationArtifactService.from_settings().approve(
+                    db,
+                    artifact_id=str(cf.current_remediation_artifact_id),
+                    approved_by_id=user_id,
+                    approved_by_ref=f"{principal.auth_method}:{user_id}",
+                )
+            else:
+                cf.writeback_status = "approved"
+        db.commit()
+    except ArtifactError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Batch approval failed") from None
+
+    approved = len(cloud_files)
     skipped = 0
     errors: List[str] = []
-
-    for cf in cloud_files:
-        # See approve_content's comment above — files carry
-        # has_remediated_version instead of remediated_body.
-        if not cf.remediated_body and not cf.has_remediated_version:
-            skipped += 1
-            errors.append(f"{cf.id}: no remediated content")
-            continue
-        cf.writeback_status = "approved"
-        approved += 1
-
-    db.commit()
 
     logger.info(
         "Batch approve complete",

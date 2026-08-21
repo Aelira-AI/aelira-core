@@ -37,6 +37,10 @@ from ..integrations.google_workspace.google_docs import GoogleDocsService
 from ..integrations.google_workspace.google_slides import GoogleSlidesService
 from ..integrations.google_workspace.google_sheets import GoogleSheetsService
 from ..config.settings import get_settings
+from ..services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
+    RemediationArtifactService,
+)
 
 # Aliases for test compatibility
 get_db = get_db_dependency
@@ -492,21 +496,38 @@ async def disconnect_google(
             detail="Google Workspace not connected",
         )
 
+    # Managed artifacts use RESTRICT parents and must be handled explicitly.
     try:
-        # Revoke token with Google
+        RemediationArtifactService.from_settings().delete_for_credential(
+            db,
+            department_id=api_key.department_id,
+            credential_id=credential.id,
+        )
+    except ArtifactAuthorizationError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_cleanup_required"
+        ) from None
+
+    try:
+        # Only revoke after the complete managed-child set is authorized.
         token_manager = get_token_manager()
         access_token = token_manager.decrypt_token(credential.access_token)
         await token_manager.revoke_google_token(access_token)
     except Exception as e:
         logger.warning(f"Failed to revoke Google token (may already be revoked): {e}")
 
-    # Delete credential and associated data
-    db.query(CloudFile).filter(CloudFile.credential_id == credential.id).delete()
-    db.query(CloudJobQueue).filter(
-        CloudJobQueue.credential_id == credential.id
-    ).delete()
-    db.delete(credential)
-    db.commit()
+    try:
+        # Finalize children and credential in the same transaction as artifact rows.
+        db.query(CloudJobQueue).filter(
+            CloudJobQueue.credential_id == credential.id
+        ).delete()
+        db.query(CloudFile).filter(CloudFile.credential_id == credential.id).delete()
+        db.delete(credential)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     logger.info(f"Disconnected Google Workspace for department {api_key.department_id}")
 

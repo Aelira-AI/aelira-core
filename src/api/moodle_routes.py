@@ -16,7 +16,13 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
 from ..db.database import get_db_dependency
+from ..services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
+    RemediationArtifactService,
+)
 from ..db.models import (
+    CloudFile,
+    CloudJobQueue,
     CloudOAuthCredentials,
     CloudProvider,
     APIKey,
@@ -468,9 +474,28 @@ async def disconnect_moodle(
             detail="Moodle not connected for this department",
         )
 
-    # Delete credential
-    db.delete(credential)
-    db.commit()
+    try:
+        RemediationArtifactService.from_settings().delete_for_credential(
+            db,
+            department_id=department_id,
+            credential_id=credential.id,
+        )
+    except ArtifactAuthorizationError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_cleanup_required"
+        ) from None
+
+    try:
+        db.query(CloudJobQueue).filter(
+            CloudJobQueue.credential_id == credential.id
+        ).delete()
+        db.query(CloudFile).filter(CloudFile.credential_id == credential.id).delete()
+        db.delete(credential)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     logger.info(f"Disconnected Moodle for department {department_id}")
 

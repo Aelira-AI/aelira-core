@@ -82,9 +82,14 @@ def test_claim_result_carries_secret_token_without_artifact_repr_contract():
 def test_lock_order_static_guard_has_no_artifact_then_parent_path():
     source = inspect.getsource(module)
     assert "_lock_authority_order" in source
-    assert (
-        "LOCK_ORDER = (Department, Scan, CloudFile, CloudJobQueue, RemediationArtifact)"
-        in source
+    assert module.LOCK_ORDER == (
+        models.Department,
+        models.User,
+        models.CloudOAuthCredentials,
+        models.Scan,
+        models.CloudFile,
+        models.CloudJobQueue,
+        models.RemediationArtifact,
     )
     # Existing-artifact paths must discover immutable IDs without FOR UPDATE,
     # then delegate all locks to the one canonical helper.
@@ -107,6 +112,14 @@ def test_lock_order_static_guard_has_no_artifact_then_parent_path():
             )
         )
         assert "_lock_and_validate_parents" not in method_source
+
+    finalizer_source = inspect.getsource(
+        module.RemediationArtifactService._stage_claimed_parent_cleanup
+    )
+    assert "_artifact_metadata" in finalizer_source
+    assert "_lock_existing_artifact" in finalizer_source
+    before_canonical_lock = finalizer_source.split("_lock_existing_artifact", 1)[0]
+    assert "with_for_update" not in before_canonical_lock
 
 
 def test_cleanup_candidate_selection_is_unlocked_and_heartbeat_based():

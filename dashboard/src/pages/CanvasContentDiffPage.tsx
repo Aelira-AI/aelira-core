@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   ArrowLeft,
   FileText,
+  Download,
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { createPatch } from 'diff';
@@ -28,6 +29,8 @@ import type {
   ContentIssue,
   ContentItemStatus,
 } from '../api/canvasContent';
+import { scansApi } from '../api/scans';
+import type { ManagedArtifactMetadata } from '../api/scans';
 import { useToast } from '../context/toast-context';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -87,6 +90,7 @@ export function CanvasContentDiffPage(): React.ReactElement {
   // Data state
   const [diff, setDiff] = useState<ContentDiffResponse | null>(null);
   const [items, setItems] = useState<ContentItemStatus[]>([]);
+  const [artifact, setArtifact] = useState<ManagedArtifactMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -119,6 +123,19 @@ export function CanvasContentDiffPage(): React.ReactElement {
 
         setDiff(diffData);
         setItems(statusData.items);
+        const current = statusData.items.find(
+          (item) => item.cloud_file_id === cloudFileId
+        );
+        if (current?.scan_id && current.current_remediation_artifact_id) {
+          setArtifact(
+            await scansApi.getManagedArtifact(
+              current.scan_id,
+              current.current_remediation_artifact_id
+            )
+          );
+        } else {
+          setArtifact(null);
+        }
       } catch (err: unknown) {
         console.error('Failed to fetch content diff:', err);
         const message =
@@ -155,8 +172,13 @@ export function CanvasContentDiffPage(): React.ReactElement {
     if (!cloudFileId) return;
     setActionLoading('approve');
     try {
-      const result = await approveContent(cloudFileId);
-      toast.success(result.message || 'Content approved', 'Approved');
+      if (artifact) {
+        await scansApi.approveManagedArtifact(artifact.scan_id, artifact.id);
+        toast.success('Managed artifact approved', 'Approved');
+      } else {
+        const result = await approveContent(cloudFileId);
+        toast.success(result.message || 'Content approved', 'Approved');
+      }
       // Navigate to next item if available, otherwise back to course
       if (hasNext) {
         navigateToItem(currentIndex + 1);
@@ -170,14 +192,19 @@ export function CanvasContentDiffPage(): React.ReactElement {
     } finally {
       setActionLoading(null);
     }
-  }, [cloudFileId, courseId, hasNext, currentIndex, navigateToItem, navigate, toast]);
+  }, [artifact, cloudFileId, courseId, hasNext, currentIndex, navigateToItem, navigate, toast]);
 
   const handleReject = useCallback(async () => {
     if (!cloudFileId) return;
     setActionLoading('reject');
     try {
-      const result = await rejectContent(cloudFileId);
-      toast.success(result.message || 'Content rejected for manual review', 'Rejected');
+      if (artifact) {
+        await scansApi.rejectManagedArtifact(artifact.scan_id, artifact.id);
+        toast.success('Managed artifact rejected', 'Rejected');
+      } else {
+        const result = await rejectContent(cloudFileId);
+        toast.success(result.message || 'Content rejected for manual review', 'Rejected');
+      }
       // Navigate to next item if available, otherwise back to course
       if (hasNext) {
         navigateToItem(currentIndex + 1);
@@ -191,7 +218,22 @@ export function CanvasContentDiffPage(): React.ReactElement {
     } finally {
       setActionLoading(null);
     }
-  }, [cloudFileId, courseId, hasNext, currentIndex, navigateToItem, navigate, toast]);
+  }, [artifact, cloudFileId, courseId, hasNext, currentIndex, navigateToItem, navigate, toast]);
+
+  const handleDownloadArtifact = useCallback(async () => {
+    if (!artifact) return;
+    try {
+      const blob = await scansApi.downloadManagedArtifact(artifact.scan_id, artifact.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = artifact.filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Download failed', 'Error');
+    }
+  }, [artifact, toast]);
 
   // Files (content_type "file") have no HTML content_body — they're real
   // uploaded documents, not HTML fragments — so original_html/
@@ -358,6 +400,35 @@ export function CanvasContentDiffPage(): React.ReactElement {
         </div>
       </div>
 
+      {artifact && (
+        <section
+          aria-label="Managed remediation artifact"
+          className="px-6 py-3 bg-[var(--surface-secondary)] border-b border-[var(--border-primary)]"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm text-[var(--content-secondary)]">
+              <strong className="text-[var(--content-primary)]">{artifact.filename}</strong>
+              {' · '}{artifact.mime_type}{' · '}{artifact.size_bytes.toLocaleString()} bytes
+              {' · SHA-256 '}{artifact.sha256.slice(0, 12)}…
+              {' · expires '}{new Date(artifact.expires_at).toLocaleString()}
+            </div>
+            <button
+              type="button"
+              onClick={handleDownloadArtifact}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border border-[var(--border-primary)]"
+            >
+              <Download className="w-4 h-4" aria-hidden="true" />
+              Download
+            </button>
+          </div>
+          {artifact.approval_blockers.length > 0 && (
+            <p id="artifact-approval-reasons" className="mt-2 text-sm text-[var(--feature-warning-content)]">
+              Approval unavailable: {artifact.approval_blockers.join(', ')}
+            </p>
+          )}
+        </section>
+      )}
+
       {/* ================================================================
           Main Content Area
           ================================================================ */}
@@ -518,7 +589,18 @@ export function CanvasContentDiffPage(): React.ReactElement {
             <Button
               variant="primary"
               onClick={handleApprove}
-              disabled={actionLoading !== null}
+              disabled={
+                actionLoading !== null ||
+                (artifact !== null && !artifact.can_approve)
+              }
+              aria-describedby={
+                artifact && !artifact.can_approve ? 'artifact-approval-reasons' : undefined
+              }
+              title={
+                artifact && !artifact.can_approve
+                  ? artifact.approval_blockers.join(', ')
+                  : undefined
+              }
               className="flex-1 justify-center"
               aria-label="Approve remediation"
             >

@@ -22,10 +22,17 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from src.db.models import (
     CloudFile,
     CloudJobQueue,
+    CloudOAuthCredentials,
+    ContentWritebackLog,
     Department,
     RemediationArtifact,
+    ReviewAuditLog,
     Scan,
+    ScanFix,
+    ScanStatus,
+    RemediationOutcome,
     ScanType,
+    User,
 )
 
 
@@ -78,6 +85,23 @@ class ArtifactPublicationRetryable(ArtifactError):
         super().__init__("artifact_publication_retryable")
 
 
+@dataclass(frozen=True)
+class ParentCleanupTransaction:
+    """Artifact deletes staged for the caller's parent transaction."""
+
+    artifact_ids: tuple[str, ...]
+    claimed_at: datetime | None
+    reason: str
+    owner: str
+    removed: int = 0
+    missing: int = 0
+    cleanup_token: str | None = dataclass_field(default=None, repr=False)
+
+    @property
+    def count(self) -> int:
+        return len(self.artifact_ids)
+
+
 _PROVIDERS = {
     "google",
     "microsoft",
@@ -120,7 +144,16 @@ _DIRECTORY_FLAGS = (
     os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 )
 _FILE_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-LOCK_ORDER = (Department, Scan, CloudFile, CloudJobQueue, RemediationArtifact)
+LOCK_ORDER = (
+    Department,
+    User,
+    CloudOAuthCredentials,
+    Scan,
+    CloudFile,
+    CloudJobQueue,
+    RemediationArtifact,
+)
+_PARENT_CLEANUP_LIMIT = 10_000
 
 
 @dataclass(frozen=True)
@@ -487,6 +520,19 @@ class RemediationArtifactService:
             provider=row.provider,
         )
 
+    @staticmethod
+    def _validate_cleanup_fence(row: Any, expected_token: str | None) -> None:
+        token = getattr(row, "artifact_cleanup_token", None)
+        claimed_at = getattr(row, "artifact_cleanup_claimed_at", None)
+        if (token is None) != (claimed_at is None):
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        if token is not None and (
+            expected_token is None
+            or not isinstance(expected_token, str)
+            or not hmac.compare_digest(token, expected_token)
+        ):
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+
     def _lock_authority_order(
         self,
         db: Any,
@@ -499,9 +545,54 @@ class RemediationArtifactService:
         artifact_id: str | None = None,
         artifact_job_id: str | None = None,
         skip_locked_artifact: bool = False,
+        expected_cleanup_token: str | None = None,
     ) -> tuple[Any, Any, Any, Any, RemediationArtifact | None]:
-        """Lock Department→Scan→CloudFile→Job→Artifact, and only this order."""
+        """Lock Department→User→Credential→Scan→CloudFile→Job→Artifact."""
+        # Discover lock coordinates without locking. Every coordinate is checked
+        # again after the canonical parent locks have been acquired.
+        scan_coordinates = (
+            db.query(Scan).filter(Scan.id == scan_id).populate_existing().one_or_none()
+        )
+        if scan_coordinates is None:
+            raise ArtifactAuthorizationError("scan does not exist in current authority")
+        cloud_coordinates = None
+        if cloud_file_id is not None:
+            cloud_coordinates = (
+                db.query(CloudFile)
+                .filter(CloudFile.id == cloud_file_id)
+                .populate_existing()
+                .one_or_none()
+            )
+            if cloud_coordinates is None:
+                raise ArtifactAuthorizationError(
+                    "cloud file does not exist in current authority"
+                )
+        job_coordinates = None
+        if remediation_job_id is not None:
+            job_coordinates = (
+                db.query(CloudJobQueue)
+                .filter(CloudJobQueue.id == remediation_job_id)
+                .populate_existing()
+                .one_or_none()
+            )
+            if job_coordinates is None:
+                raise ArtifactAuthorizationError(
+                    "remediation job does not exist in current authority"
+                )
+
+        user_id = getattr(scan_coordinates, "user_id", None)
+        credential_id = (
+            getattr(cloud_coordinates, "credential_id", None)
+            if cloud_coordinates is not None
+            else getattr(job_coordinates, "credential_id", None)
+        )
         department = self._locked(db, Department, department_id, "department")
+        user = self._locked(db, User, user_id, "user") if user_id is not None else None
+        credential = (
+            self._locked(db, CloudOAuthCredentials, credential_id, "credential")
+            if credential_id is not None
+            else None
+        )
         scan = self._locked(db, Scan, scan_id, "scan")
         cloud_file = (
             self._locked(db, CloudFile, cloud_file_id, "cloud file")
@@ -513,9 +604,19 @@ class RemediationArtifactService:
             if remediation_job_id is not None
             else None
         )
-        if scan.department_id != department.id:
+        for parent in (department, user, credential, scan, cloud_file):
+            if parent is not None:
+                self._validate_cleanup_fence(parent, expected_cleanup_token)
+        if (
+            scan.department_id != department.id
+            or getattr(scan, "user_id", None) != user_id
+        ):
             raise ArtifactAuthorizationError(
                 "scan and department authority do not match"
+            )
+        if user is not None and user.department_id != department.id:
+            raise ArtifactAuthorizationError(
+                "user and department authority do not match"
             )
         if cloud_file is None:
             if provider != "local" or remediation_job_id is not None:
@@ -527,9 +628,18 @@ class RemediationArtifactService:
             or cloud_file.department_id != department.id
             or cloud_file.last_scan_id != scan.id
             or cloud_file.provider != provider
+            or cloud_file.credential_id != credential_id
         ):
             raise ArtifactAuthorizationError(
                 "cloud file does not match the exact scan authority"
+            )
+        if credential is not None and (
+            credential.department_id != department.id
+            or credential.id != credential_id
+            or (cloud_file is not None and credential.provider != cloud_file.provider)
+        ):
+            raise ArtifactAuthorizationError(
+                "credential does not match the exact artifact graph"
             )
         if job is not None:
             if (
@@ -538,6 +648,7 @@ class RemediationArtifactService:
                 or job.cloud_file_id != cloud_file.id
                 or job.job_type != "remediate"
                 or job.provider != provider
+                or getattr(job, "credential_id", None) not in (None, credential_id)
             ):
                 raise ArtifactAuthorizationError(
                     "remediation job does not match the exact artifact graph"
@@ -573,7 +684,12 @@ class RemediationArtifactService:
         return department, scan, cloud_file, job, artifact
 
     def _lock_existing_artifact(
-        self, db: Any, artifact_id: str, *, skip_locked: bool = False
+        self,
+        db: Any,
+        artifact_id: str,
+        *,
+        skip_locked: bool = False,
+        expected_cleanup_token: str | None = None,
     ) -> tuple[Any, Any, Any, Any, RemediationArtifact | None]:
         artifact_id = _canonical_uuid(artifact_id, "artifact_id")
         metadata = self._artifact_metadata(db, artifact_id)
@@ -586,6 +702,7 @@ class RemediationArtifactService:
             provider=metadata.provider,
             artifact_id=metadata.id,
             skip_locked_artifact=skip_locked,
+            expected_cleanup_token=expected_cleanup_token,
         )
         artifact = locked[-1]
         if artifact is None:
@@ -600,6 +717,30 @@ class RemediationArtifactService:
         )
         if actual != metadata:
             raise ArtifactAuthorizationError("artifact authority changed while locking")
+        return locked
+
+    def lock_current(
+        self,
+        db: Any,
+        *,
+        artifact_id: str,
+        department_id: str,
+        cloud_file_id: str,
+        provider: str,
+    ) -> tuple[Any, Any, Any, Any, RemediationArtifact | None]:
+        """Lock and validate an artifact as the exact current cloud output."""
+        locked = self._lock_existing_artifact(db, artifact_id)
+        department, _, cloud_file, _, artifact = locked
+        if (
+            artifact is None
+            or cloud_file is None
+            or department.id != department_id
+            or cloud_file.id != cloud_file_id
+            or cloud_file.current_remediation_artifact_id != artifact.id
+            or cloud_file.provider != provider
+            or artifact.provider != provider
+        ):
+            raise ArtifactAuthorizationError("artifact is not the exact current output")
         return locked
 
     @staticmethod
@@ -1127,6 +1268,24 @@ class RemediationArtifactService:
         if cloud_file is not None:
             cloud_file.current_remediation_artifact_id = artifact.id
             cloud_file.has_remediated_version = True
+        else:
+            previous_id = scan.current_remediation_artifact_id
+            if previous_id and previous_id != artifact.id:
+                previous = (
+                    db.query(RemediationArtifact)
+                    .filter(RemediationArtifact.id == previous_id)
+                    .with_for_update()
+                    .populate_existing()
+                    .one_or_none()
+                )
+                if (
+                    previous is not None
+                    and previous.scan_id == scan.id
+                    and previous.provider == "local"
+                    and previous.lifecycle_status == "available"
+                ):
+                    previous.lifecycle_status = "superseded"
+            scan.current_remediation_artifact_id = artifact.id
         db.flush()
         if commit:
             db.commit()
@@ -1295,12 +1454,17 @@ class RemediationArtifactService:
         approval_checksum: str | None = None,
     ) -> Iterator[BinaryIO]:
         """Lock current authority and yield a descriptor-bound verified stream."""
-        _, locked_scan, _, _, locked_artifact = self._lock_existing_artifact(
+        _, locked_scan, locked_cloud, _, locked_artifact = self._lock_existing_artifact(
             db, artifact.id
         )
         assert locked_artifact is not None
         artifact = locked_artifact
         self._validate_artifact_scan_type(artifact, locked_scan.scan_type)
+        if (
+            locked_cloud is None
+            and locked_scan.current_remediation_artifact_id != artifact.id
+        ):
+            raise ArtifactAuthorizationError("artifact is not the exact current output")
         self._validate_record_state(
             artifact,
             department_id=department_id,
@@ -1366,12 +1530,59 @@ class RemediationArtifactService:
         return artifact
 
     def _lock_mutable(self, db: Any, artifact_id: str) -> RemediationArtifact:
-        _, scan, _, _, artifact = self._lock_existing_artifact(db, artifact_id)
+        _, scan, cloud_file, _, artifact = self._lock_existing_artifact(db, artifact_id)
         assert artifact is not None
         if artifact.cleanup_claimed_at is not None:
             raise ArtifactAuthorizationError("artifact has a cleanup claim")
         self._validate_artifact_scan_type(artifact, scan.scan_type)
+        if (
+            cloud_file is not None
+            and cloud_file.current_remediation_artifact_id != artifact.id
+        ):
+            raise ArtifactAuthorizationError("artifact is not the exact current output")
+        if cloud_file is None and scan.current_remediation_artifact_id != artifact.id:
+            raise ArtifactAuthorizationError("artifact is not the exact current output")
         return artifact
+
+    @staticmethod
+    def _review_actor_ref(actor_ref: str) -> str:
+        if (
+            not isinstance(actor_ref, str)
+            or not actor_ref.strip()
+            or len(actor_ref) > 255
+        ):
+            raise ArtifactValidationError("review actor reference is invalid")
+        return actor_ref.strip()
+
+    def _require_approvable_review(
+        self, db: Any, artifact: RemediationArtifact
+    ) -> None:
+        scan = (
+            db.query(Scan)
+            .filter(Scan.id == artifact.scan_id)
+            .with_for_update()
+            .populate_existing()
+            .one_or_none()
+        )
+        if (
+            scan is None
+            or scan.status != ScanStatus.COMPLETED
+            or scan.remediation_outcome != RemediationOutcome.COMPLETED.value
+        ):
+            raise ArtifactAuthorizationError("artifact verification has not passed")
+        fixes = (
+            db.query(ScanFix)
+            .filter(ScanFix.scan_id == artifact.scan_id)
+            .with_for_update()
+            .populate_existing()
+            .all()
+        )
+        terminal = {"auto_approved", "approved", "rejected"}
+        accepted = {"auto_approved", "approved"}
+        if not fixes or any(fix.review_status not in terminal for fix in fixes):
+            raise ArtifactAuthorizationError("scan fixes are not all terminal")
+        if not any(fix.review_status in accepted for fix in fixes):
+            raise ArtifactAuthorizationError("artifact has no accepted fix")
 
     def approve(
         self,
@@ -1382,9 +1593,8 @@ class RemediationArtifactService:
         approved_by_id: str | None = None,
         now: datetime | None = None,
     ) -> RemediationArtifact:
+        approved_by_ref = self._review_actor_ref(approved_by_ref)
         artifact = self._lock_mutable(db, artifact_id)
-        if not approved_by_ref:
-            raise ArtifactValidationError("approved_by_ref is required")
         effective_now = _utc(now or datetime.now(timezone.utc))
         if _utc(artifact.expires_at) <= effective_now:
             raise ArtifactExpiredError("artifact has expired")
@@ -1417,6 +1627,7 @@ class RemediationArtifactService:
             or artifact.rejected_at is not None
         ):
             raise ArtifactAuthorizationError("artifact is not pending approval")
+        self._require_approvable_review(db, artifact)
         with self.open_verified(
             db,
             artifact,
@@ -1433,6 +1644,31 @@ class RemediationArtifactService:
         artifact.expires_at = effective_now + timedelta(
             days=self.approved_retention_days
         )
+        if artifact.cloud_file_id is not None:
+            cloud_file = (
+                db.query(CloudFile)
+                .filter(CloudFile.id == artifact.cloud_file_id)
+                .with_for_update()
+                .populate_existing()
+                .one_or_none()
+            )
+            if (
+                cloud_file is None
+                or cloud_file.current_remediation_artifact_id != artifact.id
+            ):
+                raise ArtifactAuthorizationError(
+                    "artifact is not the exact current output"
+                )
+            cloud_file.writeback_status = "approved"
+            cloud_file.has_remediated_version = True
+        db.add(
+            ReviewAuditLog(
+                scan_id=artifact.scan_id,
+                user_id=approved_by_id,
+                action="artifact_approved",
+                details={"artifact_id": artifact.id, "sha256": artifact.sha256},
+            )
+        )
         db.flush()
         return artifact
 
@@ -1445,9 +1681,8 @@ class RemediationArtifactService:
         rejected_by_id: str | None = None,
         now: datetime | None = None,
     ) -> RemediationArtifact:
+        rejected_by_ref = self._review_actor_ref(rejected_by_ref)
         artifact = self._lock_mutable(db, artifact_id)
-        if not rejected_by_ref:
-            raise ArtifactValidationError("rejected_by_ref is required")
         effective_now = _utc(now or datetime.now(timezone.utc))
         if _utc(artifact.expires_at) <= effective_now:
             raise ArtifactExpiredError("artifact has expired")
@@ -1480,6 +1715,14 @@ class RemediationArtifactService:
             or artifact.rejected_at is not None
         ):
             raise ArtifactAuthorizationError("artifact cannot be rejected")
+        with self.open_verified(
+            db,
+            artifact,
+            department_id=artifact.department_id,
+            scan_id=artifact.scan_id,
+            cloud_file_id=artifact.cloud_file_id,
+        ):
+            pass
         artifact.review_status = "rejected"
         artifact.approval_checksum = None
         artifact.approved_by_id = None
@@ -1488,6 +1731,26 @@ class RemediationArtifactService:
         artifact.rejected_by_id = rejected_by_id
         artifact.rejected_by_ref = rejected_by_ref
         artifact.rejected_at = effective_now
+        if artifact.cloud_file_id is not None:
+            cloud_file = (
+                db.query(CloudFile)
+                .filter(CloudFile.id == artifact.cloud_file_id)
+                .with_for_update()
+                .populate_existing()
+                .one_or_none()
+            )
+            if cloud_file is None:
+                raise ArtifactAuthorizationError("artifact cloud authority is missing")
+            cloud_file.writeback_status = "rejected"
+            cloud_file.has_remediated_version = False
+        db.add(
+            ReviewAuditLog(
+                scan_id=artifact.scan_id,
+                user_id=rejected_by_id,
+                action="artifact_rejected",
+                details={"artifact_id": artifact.id, "sha256": artifact.sha256},
+            )
+        )
         db.flush()
         return artifact
 
@@ -1533,6 +1796,643 @@ class RemediationArtifactService:
         artifact.expires_at = written_at + timedelta(days=self.written_retention_days)
         db.flush()
         return artifact
+
+    @staticmethod
+    def _force_terminal_rejection(
+        artifact: RemediationArtifact, *, actor_ref: str, now: datetime
+    ) -> None:
+        if artifact.review_status == "approved" and artifact.written_back_at is None:
+            artifact.review_status = "rejected"
+            artifact.approval_checksum = None
+            artifact.approved_by_id = None
+            artifact.approved_by_ref = None
+            artifact.approved_at = None
+            artifact.rejected_by_id = None
+            artifact.rejected_by_ref = actor_ref
+            artifact.rejected_at = now
+
+    @staticmethod
+    def _fence_cleanup_parents(db: Any, parents: list[Any]) -> str:
+        """Set or resume one cryptographic fence while parent locks are held."""
+        if not parents:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        existing = {
+            getattr(parent, "artifact_cleanup_token", None)
+            for parent in parents
+            if getattr(parent, "artifact_cleanup_token", None) is not None
+        }
+        if len(existing) > 1 or (
+            existing
+            and any(
+                getattr(parent, "artifact_cleanup_token", None) is None
+                for parent in parents
+            )
+        ):
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        token = next(iter(existing), None) or secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        for parent in parents:
+            claimed_at = getattr(parent, "artifact_cleanup_claimed_at", None)
+            current = getattr(parent, "artifact_cleanup_token", None)
+            if (current is None) != (claimed_at is None):
+                raise ArtifactAuthorizationError("artifact_cleanup_required")
+            if current is None:
+                parent.artifact_cleanup_token = token
+                parent.artifact_cleanup_claimed_at = now
+            elif not hmac.compare_digest(current, token):
+                raise ArtifactAuthorizationError("artifact_cleanup_required")
+        db.flush()
+        return token
+
+    def delete_for_cloud_file(
+        self,
+        db: Any,
+        *,
+        department_id: str,
+        cloud_file_id: str,
+        destructive_actor_ref: str | None = None,
+    ) -> ParentCleanupTransaction:
+        return self.delete_for_cloud_files(
+            db,
+            department_id=department_id,
+            cloud_file_ids=[cloud_file_id],
+            destructive_actor_ref=destructive_actor_ref,
+        )
+
+    def delete_for_cloud_files(
+        self,
+        db: Any,
+        *,
+        department_id: str,
+        cloud_file_ids: list[str],
+        allow_approved_unwritten: bool = False,
+        destructive_actor_ref: str | None = None,
+        cleanup_reason: str = "cloud_file_delete",
+        cleanup_owner: str | None = None,
+        _cleanup_token: str | None = None,
+    ) -> ParentCleanupTransaction:
+        """Claim all file artifacts, remove bytes, and stage their row deletes."""
+        department_id = _canonical_uuid(department_id, "department_id")
+        requested_ids = {
+            _canonical_uuid(value, "cloud_file_id") for value in cloud_file_ids
+        }
+        if not requested_ids:
+            return ParentCleanupTransaction(
+                (),
+                None,
+                cleanup_reason,
+                cleanup_owner or department_id,
+                cleanup_token=_cleanup_token,
+            )
+        if len(requested_ids) > _PARENT_CLEANUP_LIMIT:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        self._locked(db, Department, department_id, "department")
+        cloud_files = (
+            db.query(CloudFile)
+            .filter(
+                CloudFile.id.in_(requested_ids),
+                CloudFile.department_id == department_id,
+            )
+            .with_for_update()
+            .populate_existing()
+            .limit(_PARENT_CLEANUP_LIMIT + 1)
+            .all()
+        )
+        if {row.id for row in cloud_files} != requested_ids:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        if _cleanup_token is None:
+            cleanup_token = self._fence_cleanup_parents(db, cloud_files)
+        else:
+            cleanup_token = _cleanup_token
+            now = datetime.now(timezone.utc)
+            for cloud_file in cloud_files:
+                current = getattr(cloud_file, "artifact_cleanup_token", None)
+                claimed_at = getattr(cloud_file, "artifact_cleanup_claimed_at", None)
+                if (current is None) != (claimed_at is None):
+                    raise ArtifactAuthorizationError("artifact_cleanup_required")
+                if current is None:
+                    cloud_file.artifact_cleanup_token = cleanup_token
+                    cloud_file.artifact_cleanup_claimed_at = now
+                elif not hmac.compare_digest(current, cleanup_token):
+                    raise ArtifactAuthorizationError("artifact_cleanup_required")
+            db.flush()
+        artifacts = (
+            db.query(RemediationArtifact)
+            .filter(RemediationArtifact.cloud_file_id.in_(requested_ids))
+            .with_for_update()
+            .populate_existing()
+            .limit(_PARENT_CLEANUP_LIMIT + 1)
+            .all()
+        )
+        current_ids = {
+            row.current_remediation_artifact_id
+            for row in cloud_files
+            if row.current_remediation_artifact_id
+        }
+        effective_owner = (
+            cleanup_owner
+            or hashlib.sha256(",".join(sorted(requested_ids)).encode()).hexdigest()
+        )
+        resuming = bool(artifacts) and all(
+            artifact.cleanup_claimed_at is not None
+            and artifact.cleanup_reason == cleanup_reason
+            and artifact.cleanup_owner == effective_owner
+            for artifact in artifacts
+        )
+        if len(artifacts) > _PARENT_CLEANUP_LIMIT or any(
+            artifact.department_id != department_id
+            or (
+                destructive_actor_ref is None
+                and not resuming
+                and (
+                    artifact.id in current_ids
+                    or (
+                        artifact.review_status == "approved"
+                        and artifact.written_back_at is None
+                        and not allow_approved_unwritten
+                    )
+                )
+            )
+            for artifact in artifacts
+        ):
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        return self._prepare_parent_cleanup(
+            db,
+            artifacts=artifacts,
+            reason=cleanup_reason,
+            owner=effective_owner,
+            force=destructive_actor_ref is not None,
+            destructive_actor_ref=destructive_actor_ref,
+            allow_approved_unwritten=allow_approved_unwritten,
+            cleanup_token=cleanup_token,
+        )
+
+    def delete_for_scan(
+        self,
+        db: Any,
+        *,
+        department_id: str,
+        scan_id: str,
+        allow_approved_unwritten: bool = False,
+        destructive_actor_ref: str | None = None,
+    ) -> ParentCleanupTransaction:
+        """Claim scan artifacts and stage them with the caller's scan delete."""
+        department_id = _canonical_uuid(department_id, "department_id")
+        scan_id = _canonical_uuid(scan_id, "scan_id")
+        self._locked(db, Department, department_id, "department")
+        scan = self._locked(db, Scan, scan_id, "scan")
+        if scan.department_id != department_id:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        cleanup_token = self._fence_cleanup_parents(db, [scan])
+        artifacts = (
+            db.query(RemediationArtifact)
+            .filter(
+                RemediationArtifact.scan_id == scan_id,
+                RemediationArtifact.department_id == department_id,
+            )
+            .with_for_update()
+            .populate_existing()
+            .limit(_PARENT_CLEANUP_LIMIT + 1)
+            .all()
+        )
+        cloud_ids = [
+            artifact.cloud_file_id for artifact in artifacts if artifact.cloud_file_id
+        ]
+        cloud_files = (
+            db.query(CloudFile)
+            .filter(CloudFile.id.in_(cloud_ids))
+            .with_for_update()
+            .populate_existing()
+            .all()
+            if cloud_ids
+            else []
+        )
+        cloud_current_hold = any(
+            cloud_file.current_remediation_artifact_id is not None
+            for cloud_file in cloud_files
+        )
+        resuming = bool(artifacts) and all(
+            artifact.cleanup_claimed_at is not None
+            and artifact.cleanup_reason == "scan_delete"
+            and artifact.cleanup_owner == scan_id
+            for artifact in artifacts
+        )
+        if len(artifacts) > _PARENT_CLEANUP_LIMIT or (
+            destructive_actor_ref is None
+            and not resuming
+            and (
+                scan.current_remediation_artifact_id is not None
+                or cloud_current_hold
+                or any(
+                    artifact.review_status == "approved"
+                    and artifact.written_back_at is None
+                    and not allow_approved_unwritten
+                    for artifact in artifacts
+                )
+            )
+        ):
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        return self._prepare_parent_cleanup(
+            db,
+            artifacts=artifacts,
+            reason="scan_delete",
+            owner=scan_id,
+            force=destructive_actor_ref is not None,
+            destructive_actor_ref=destructive_actor_ref,
+            allow_approved_unwritten=allow_approved_unwritten,
+            cleanup_token=cleanup_token,
+        )
+
+    def delete_for_credential(
+        self,
+        db: Any,
+        *,
+        department_id: str,
+        credential_id: str,
+        destructive_actor_ref: str | None = None,
+    ) -> ParentCleanupTransaction:
+        """Delete managed children for one exact provider credential."""
+        department_id = _canonical_uuid(department_id, "department_id")
+        credential_id = _canonical_uuid(credential_id, "credential_id")
+        self._locked(db, Department, department_id, "department")
+        credential = self._locked(
+            db, CloudOAuthCredentials, credential_id, "credential"
+        )
+        if credential.department_id != department_id:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        cleanup_token = self._fence_cleanup_parents(db, [credential])
+        files = (
+            db.query(CloudFile)
+            .filter(CloudFile.credential_id == credential_id)
+            .limit(_PARENT_CLEANUP_LIMIT + 1)
+            .all()
+        )
+        if len(files) > _PARENT_CLEANUP_LIMIT:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        return self.delete_for_cloud_files(
+            db,
+            department_id=department_id,
+            cloud_file_ids=[row.id for row in files],
+            destructive_actor_ref=destructive_actor_ref,
+            cleanup_reason="credential_disconnect",
+            cleanup_owner=credential_id,
+            _cleanup_token=cleanup_token,
+        )
+
+    def delete_for_provider(
+        self,
+        db: Any,
+        *,
+        department_id: str,
+        provider: str,
+        destructive_actor_ref: str | None = None,
+    ) -> ParentCleanupTransaction:
+        """Delete managed children for a supported provider in one tenant."""
+        if provider not in _PROVIDERS - {"local"}:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        department_id = _canonical_uuid(department_id, "department_id")
+        self._locked(db, Department, department_id, "department")
+        credentials = (
+            db.query(CloudOAuthCredentials)
+            .filter(
+                CloudOAuthCredentials.department_id == department_id,
+                CloudOAuthCredentials.provider == provider,
+            )
+            .with_for_update()
+            .populate_existing()
+            .limit(_PARENT_CLEANUP_LIMIT + 1)
+            .all()
+        )
+        if len(credentials) > _PARENT_CLEANUP_LIMIT:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        cleanup_token = (
+            self._fence_cleanup_parents(db, credentials)
+            if credentials
+            else secrets.token_urlsafe(32)
+        )
+        credential_ids = [credential.id for credential in credentials]
+        files = (
+            db.query(CloudFile)
+            .filter(CloudFile.credential_id.in_(credential_ids))
+            .limit(_PARENT_CLEANUP_LIMIT + 1)
+            .all()
+            if credential_ids
+            else []
+        )
+        if len(files) > _PARENT_CLEANUP_LIMIT:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        return self.delete_for_cloud_files(
+            db,
+            department_id=department_id,
+            cloud_file_ids=[row.id for row in files],
+            destructive_actor_ref=destructive_actor_ref,
+            cleanup_reason="provider_disconnect",
+            cleanup_owner=f"{provider}:{department_id}",
+            _cleanup_token=cleanup_token,
+        )
+
+    def delete_for_department(
+        self,
+        db: Any,
+        *,
+        department_id: str,
+        destructive_actor_ref: str | None = None,
+    ) -> ParentCleanupTransaction:
+        """Delete all tenant artifacts under explicit bounded authority."""
+        department_id = _canonical_uuid(department_id, "department_id")
+        department = self._locked(db, Department, department_id, "department")
+        cleanup_token = self._fence_cleanup_parents(db, [department])
+        scans = (
+            db.query(Scan)
+            .filter(Scan.department_id == department_id)
+            .order_by(Scan.id)
+            .with_for_update()
+            .populate_existing()
+            .limit(_PARENT_CLEANUP_LIMIT + 1)
+            .all()
+        )
+        if len(scans) > _PARENT_CLEANUP_LIMIT:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        return self._cleanup_for_scans(
+            db,
+            department_id=department_id,
+            scans=scans,
+            reason="department_delete",
+            owner=department_id,
+            destructive_actor_ref=destructive_actor_ref,
+            cleanup_token=cleanup_token,
+        )
+
+    def cleanup_for_user(
+        self,
+        db: Any,
+        *,
+        department_id: str,
+        user_id: str,
+        destructive_actor_ref: str | None = None,
+    ) -> ParentCleanupTransaction:
+        """Stage only artifacts belonging to scans owned by one tenant user."""
+        department_id = _canonical_uuid(department_id, "department_id")
+        user_id = _canonical_uuid(user_id, "user_id")
+        self._locked(db, Department, department_id, "department")
+        user = self._locked(db, User, user_id, "user")
+        if user.department_id != department_id:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        cleanup_token = self._fence_cleanup_parents(db, [user])
+        scans = (
+            db.query(Scan)
+            .filter(Scan.user_id == user_id, Scan.department_id == department_id)
+            .order_by(Scan.id)
+            .with_for_update()
+            .populate_existing()
+            .limit(_PARENT_CLEANUP_LIMIT + 1)
+            .all()
+        )
+        if len(scans) > _PARENT_CLEANUP_LIMIT:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        return self._cleanup_for_scans(
+            db,
+            department_id=department_id,
+            scans=scans,
+            reason="account_deletion",
+            owner=user_id,
+            destructive_actor_ref=destructive_actor_ref,
+            cleanup_token=cleanup_token,
+        )
+
+    def _cleanup_for_scans(
+        self,
+        db: Any,
+        *,
+        department_id: str,
+        scans: list[Any],
+        reason: str,
+        owner: str,
+        destructive_actor_ref: str | None,
+        cleanup_token: str,
+    ) -> ParentCleanupTransaction:
+        scan_ids = [scan.id for scan in scans]
+        artifacts = (
+            db.query(RemediationArtifact)
+            .filter(
+                RemediationArtifact.scan_id.in_(scan_ids),
+                RemediationArtifact.department_id == department_id,
+            )
+            .with_for_update()
+            .populate_existing()
+            .limit(_PARENT_CLEANUP_LIMIT + 1)
+            .all()
+            if scan_ids
+            else []
+        )
+        if len(artifacts) > _PARENT_CLEANUP_LIMIT:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        return self._prepare_parent_cleanup(
+            db,
+            artifacts=artifacts,
+            reason=reason,
+            owner=owner,
+            force=destructive_actor_ref is not None,
+            destructive_actor_ref=destructive_actor_ref,
+            cleanup_token=cleanup_token,
+        )
+
+    def _claim_parent_artifacts(
+        self,
+        db: Any,
+        *,
+        artifacts: list[Any],
+        reason: str,
+        owner: str,
+        force: bool,
+        destructive_actor_ref: str | None,
+        now: datetime,
+    ) -> tuple[list[Any], datetime | None]:
+        claimed_at: datetime | None = None
+        for artifact in artifacts:
+            if artifact.cleanup_claimed_at is None:
+                continue
+            if artifact.cleanup_reason != reason or artifact.cleanup_owner != owner:
+                raise ArtifactAuthorizationError("artifact_cleanup_required")
+            existing = _utc(artifact.cleanup_claimed_at)
+            if claimed_at is not None and existing != claimed_at:
+                raise ArtifactAuthorizationError("artifact_cleanup_required")
+            claimed_at = existing
+        claimed_at = claimed_at or now
+        for artifact in artifacts:
+            if artifact.cleanup_claimed_at is not None:
+                continue
+            if force and destructive_actor_ref is not None:
+                self._force_terminal_rejection(
+                    artifact, actor_ref=destructive_actor_ref, now=now
+                )
+            artifact.cleanup_claimed_at = claimed_at
+            artifact.cleanup_reason = reason
+            artifact.cleanup_owner = owner
+        db.flush()
+        return artifacts, claimed_at if artifacts else None
+
+    def _prepare_parent_cleanup(
+        self,
+        db: Any,
+        *,
+        artifacts: list[Any],
+        reason: str,
+        owner: str,
+        force: bool,
+        destructive_actor_ref: str | None = None,
+        allow_approved_unwritten: bool = False,
+        cleanup_token: str | None = None,
+    ) -> ParentCleanupTransaction:
+        if not reason or len(reason) > 64 or not owner or len(owner) > 255:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        if len(artifacts) > _PARENT_CLEANUP_LIMIT:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        artifact_ids = [artifact.id for artifact in artifacts]
+        if len(set(artifact_ids)) != len(artifact_ids):
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        resuming = bool(artifacts) and all(
+            artifact.cleanup_claimed_at is not None
+            and artifact.cleanup_reason == reason
+            and artifact.cleanup_owner == owner
+            for artifact in artifacts
+        )
+        if (
+            not force
+            and not resuming
+            and any(
+                artifact.review_status == "approved"
+                and artifact.written_back_at is None
+                and not allow_approved_unwritten
+                for artifact in artifacts
+            )
+        ):
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        if artifact_ids and not force and not resuming:
+            unresolved = (
+                db.query(ContentWritebackLog)
+                .filter(
+                    ContentWritebackLog.artifact_id.in_(artifact_ids),
+                    ContentWritebackLog.reconciliation_status
+                    == "reconciliation_required",
+                )
+                .first()
+            )
+            if unresolved is not None:
+                raise ArtifactAuthorizationError("artifact_cleanup_required")
+        if cleanup_token is None:
+            cleanup_token = secrets.token_urlsafe(32)
+        if not isinstance(cleanup_token, str) or not (43 <= len(cleanup_token) <= 64):
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        now = datetime.now(timezone.utc)
+        claimed, claimed_at = self._claim_parent_artifacts(
+            db,
+            artifacts=artifacts,
+            reason=reason,
+            owner=owner,
+            force=force,
+            destructive_actor_ref=destructive_actor_ref,
+            now=now,
+        )
+        if not claimed:
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            return ParentCleanupTransaction(
+                (), None, reason, owner, cleanup_token=cleanup_token
+            )
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        removed = 0
+        missing = 0
+        for artifact in claimed:
+            if self.delete_known(artifact):
+                removed += 1
+            else:
+                missing += 1
+        self._stage_claimed_parent_cleanup(
+            db,
+            artifact_ids=tuple(artifact_ids),
+            claimed_at=claimed_at,
+            reason=reason,
+            owner=owner,
+            cleanup_token=cleanup_token,
+        )
+        return ParentCleanupTransaction(
+            tuple(artifact_ids),
+            claimed_at,
+            reason,
+            owner,
+            removed,
+            missing,
+            cleanup_token,
+        )
+
+    def _stage_claimed_parent_cleanup(
+        self,
+        db: Any,
+        *,
+        artifact_ids: tuple[str, ...],
+        claimed_at: datetime | None,
+        reason: str,
+        owner: str,
+        cleanup_token: str,
+    ) -> None:
+        # Discover coordinates without locks, then use the canonical helper so
+        # finalization has no Artifact→parent acquisition path.
+        metadata = [
+            self._artifact_metadata(db, artifact_id) for artifact_id in artifact_ids
+        ]
+        artifacts = []
+        locked_scans: dict[str, Any] = {}
+        locked_cloud_files: dict[str, Any] = {}
+        for item in sorted(metadata, key=lambda value: value.id):
+            _, scan, cloud_file, _, artifact = self._lock_existing_artifact(
+                db, item.id, expected_cleanup_token=cleanup_token
+            )
+            assert artifact is not None
+            artifacts.append(artifact)
+            locked_scans[scan.id] = scan
+            if cloud_file is not None:
+                locked_cloud_files[cloud_file.id] = cloud_file
+        if {artifact.id for artifact in artifacts} != set(artifact_ids) or any(
+            artifact.cleanup_claimed_at is None
+            or _utc(artifact.cleanup_claimed_at) != claimed_at
+            or artifact.cleanup_reason != reason
+            or artifact.cleanup_owner != owner
+            for artifact in artifacts
+        ):
+            db.rollback()
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        db.query(ContentWritebackLog).filter(
+            ContentWritebackLog.artifact_id.in_(artifact_ids)
+        ).delete(synchronize_session=False)
+        cloud_ids = {
+            artifact.cloud_file_id for artifact in artifacts if artifact.cloud_file_id
+        }
+        if cloud_ids:
+            if set(locked_cloud_files) != cloud_ids:
+                raise ArtifactAuthorizationError("artifact_cleanup_required")
+            for cloud_file in locked_cloud_files.values():
+                if cloud_file.current_remediation_artifact_id in artifact_ids:
+                    cloud_file.current_remediation_artifact_id = None
+                    cloud_file.has_remediated_version = False
+                    if cloud_file.writeback_status == "approved":
+                        cloud_file.writeback_status = "rejected"
+        scan_ids = {artifact.scan_id for artifact in artifacts}
+        if set(locked_scans) != scan_ids:
+            raise ArtifactAuthorizationError("artifact_cleanup_required")
+        for scan in locked_scans.values():
+            if scan.current_remediation_artifact_id in artifact_ids:
+                scan.current_remediation_artifact_id = None
+        for artifact in artifacts:
+            db.delete(artifact)
+        db.flush()
 
     def delete_known(
         self, artifact: PreparedRemediationArtifact | RemediationArtifact
@@ -1635,6 +2535,11 @@ class RemediationArtifactCleanup:
         ):
             return False
         claimed_at = artifact.cleanup_claimed_at
+        if claimed_at is not None and (
+            artifact.cleanup_reason != "scheduled_cleanup"
+            or artifact.cleanup_owner != "scheduler"
+        ):
+            return False
         if claimed_at is not None and _utc(claimed_at) > claim_cutoff:
             return False
         if artifact.lifecycle_status == "staging":
@@ -1675,7 +2580,11 @@ class RemediationArtifactCleanup:
                 ),
                 or_(
                     RemediationArtifact.cleanup_claimed_at.is_(None),
-                    RemediationArtifact.cleanup_claimed_at <= claim_cutoff,
+                    and_(
+                        RemediationArtifact.cleanup_claimed_at <= claim_cutoff,
+                        RemediationArtifact.cleanup_reason == "scheduled_cleanup",
+                        RemediationArtifact.cleanup_owner == "scheduler",
+                    ),
                 ),
             )
             .order_by(
@@ -1695,6 +2604,8 @@ class RemediationArtifactCleanup:
                     artifact, now=now, claim_cutoff=claim_cutoff
                 ):
                     artifact.cleanup_claimed_at = now
+                    artifact.cleanup_reason = "scheduled_cleanup"
+                    artifact.cleanup_owner = "scheduler"
                     targets.append(_CleanupTarget(artifact.id, now))
             except ArtifactAuthorizationError:
                 continue
@@ -1714,7 +2625,7 @@ class RemediationArtifactCleanup:
 
         for target in targets:
             try:
-                _, _, cloud_file, _, artifact = self.service._lock_existing_artifact(
+                _, scan, cloud_file, _, artifact = self.service._lock_existing_artifact(
                     db, target.id
                 )
                 if artifact is None:
@@ -1724,6 +2635,8 @@ class RemediationArtifactCleanup:
                 exact_claim = (
                     artifact.cleanup_claimed_at is not None
                     and _utc(artifact.cleanup_claimed_at) == target.claimed_at
+                    and artifact.cleanup_reason == "scheduled_cleanup"
+                    and artifact.cleanup_owner == "scheduler"
                 )
                 eligible = self._eligible_after_select(
                     artifact, now=now, claim_cutoff=now
@@ -1733,6 +2646,8 @@ class RemediationArtifactCleanup:
                     continue
                 if not eligible:
                     artifact.cleanup_claimed_at = None
+                    artifact.cleanup_reason = None
+                    artifact.cleanup_owner = None
                     db.commit()
                     continue
                 removed = self.service.delete_known(artifact)
@@ -1741,12 +2656,19 @@ class RemediationArtifactCleanup:
                 artifact.publication_heartbeat_at = None
                 artifact.deleted_at = now
                 artifact.cleanup_claimed_at = None
+                artifact.cleanup_reason = None
+                artifact.cleanup_owner = None
                 if (
                     cloud_file is not None
                     and cloud_file.current_remediation_artifact_id == artifact.id
                 ):
                     cloud_file.current_remediation_artifact_id = None
                     cloud_file.has_remediated_version = False
+                if (
+                    cloud_file is None
+                    and scan.current_remediation_artifact_id == artifact.id
+                ):
+                    scan.current_remediation_artifact_id = None
                 db.delete(artifact)
                 db.commit()
             except Exception:

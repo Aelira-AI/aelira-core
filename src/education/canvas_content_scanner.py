@@ -34,7 +34,9 @@ from ..db.models import (
     CloudJobQueue,
     CloudJobStatus,
     CloudJobType,
+    CloudOAuthCredentials,
     ContentWritebackLog,
+    RemediationArtifact,
     Scan,
     ScanResult,
     ScanType,
@@ -45,6 +47,10 @@ from ..integrations.canvas.models import CanvasFileInfo
 from ..config.settings import get_settings
 from ..integrations.canvas.content_models import CanvasContentType
 from ..utils.sanitization import sanitize_for_postgres
+from ..services.remediation_artifact_service import (
+    ArtifactError,
+    RemediationArtifactService,
+)
 from .deterministic_axe import DeterministicScanUnavailable, run_deterministic_axe
 
 logger = logging.getLogger(__name__)
@@ -377,11 +383,15 @@ class CanvasContentScanner:
         course_name: str = "",
         course_code: str = "",
         scan_options: Optional[Dict[str, Any]] = None,
+        artifact_service: Optional[RemediationArtifactService] = None,
     ):
         self.canvas_client = canvas_client
         self.db = db
         self.department_id = department_id
         self.credential_id = credential_id
+        self.artifact_service = (
+            artifact_service or RemediationArtifactService.from_settings()
+        )
         self.course_name = course_name
         self.course_code = course_code
         # Safe fallbacks are deterministic. Explicit options are retained for
@@ -1402,158 +1412,270 @@ class CanvasContentScanner:
     # 3c. write_back_file — upload a remediated file to the Canvas course
     # ------------------------------------------------------------------
 
-    def _find_remediated_file_path(self, cloud_file: CloudFile) -> Optional[str]:
-        """Path to the remediated artefact a remediation job produced.
-
-        The remediator writes to disk and records the path on its job row.
-        The file is not permanent, so a caller has to cope with it being
-        gone rather than assume it is there.
-        """
-        job = (
-            self.db.query(CloudJobQueue)
-            .filter(
-                CloudJobQueue.cloud_file_id == cloud_file.id,
-                CloudJobQueue.job_type == CloudJobType.REMEDIATE.value,
-                CloudJobQueue.status == CloudJobStatus.COMPLETED.value,
-            )
-            .order_by(CloudJobQueue.completed_at.desc())
-            .first()
+    def _lock_file_writeback_graph(
+        self, requested: CloudFile
+    ) -> tuple[CloudFile, Scan, RemediationArtifact]:
+        """Lock and revalidate the exact current Canvas artifact authority."""
+        artifact_id = requested.current_remediation_artifact_id
+        if not artifact_id:
+            raise ValueError("artifact_not_current")
+        _, scan, cloud_file, _, artifact = self.artifact_service.lock_current(
+            self.db,
+            artifact_id=artifact_id,
+            department_id=self.department_id,
+            cloud_file_id=requested.id,
+            provider="canvas",
         )
-        if not job or not isinstance(job.result_data, dict):
-            return None
-        path = job.result_data.get("output_file")
-        if path and os.path.exists(path):
-            return path
-        return None
+        if cloud_file is None or artifact is None:
+            raise ValueError("artifact_not_current")
+        credential = (
+            self.db.query(CloudOAuthCredentials)
+            .filter(CloudOAuthCredentials.id == self.credential_id)
+            .with_for_update()
+            .populate_existing()
+            .one_or_none()
+        )
+        if (
+            credential is None
+            or credential.id != cloud_file.credential_id
+            or credential.department_id != self.department_id
+            or credential.provider != "canvas"
+            or not credential.is_active
+        ):
+            raise ValueError("credential_not_current")
+        return cloud_file, scan, artifact
+
+    def _persist_file_reconciliation(
+        self,
+        *,
+        cloud_file: CloudFile,
+        artifact: RemediationArtifact,
+        approved_by: str,
+        correlation_id: str,
+        provider_result: Dict[str, Any],
+        accessible_name: str,
+    ) -> None:
+        """Commit an ambiguity record after the main transaction rolled back."""
+        self.db.add(
+            ContentWritebackLog(
+                id=str(uuid.uuid4()),
+                cloud_file_id=cloud_file.id,
+                original_body=(
+                    f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}"
+                ),
+                remediated_body=f"canvas-file:unknown {accessible_name}",
+                approved_by=approved_by,
+                approved_at=artifact.approved_at,
+                artifact_id=artifact.id,
+                artifact_checksum=artifact.sha256,
+                correlation_id=correlation_id,
+                reconciliation_status="reconciliation_required",
+                provider_result=provider_result,
+            )
+        )
+        self.db.commit()
 
     async def write_back_file(
         self,
         cloud_file: CloudFile,
         approved_by: str,
     ) -> Dict[str, Any]:
-        """Upload the remediated copy of a file to its Canvas course.
-
-        Canvas files are not edited in place. The remediated copy is
-        uploaded alongside the original with an _accessible suffix, the
-        same convention the standalone upload endpoint already uses, so
-        nothing anyone authored is overwritten. That also means there is no
-        body to stale-check: what has to be checked is that the remediated
-        artefact still exists, because it is written to disk and can be
-        cleaned up before anyone approves it.
-        """
+        """Upload the exact current approved artifact from its verified descriptor."""
         if cloud_file.content_source != "file":
             return {
                 "success": False,
                 "stale": False,
                 "error": "Not a file row; use write_back_content for content items",
             }
-
+        try:
+            cloud_file, _scan, artifact = self._lock_file_writeback_graph(cloud_file)
+        except (ArtifactError, ValueError):
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Managed remediation artifact is unavailable",
+                "error_code": "artifact_unavailable",
+            }
+        unresolved = (
+            self.db.query(ContentWritebackLog)
+            .filter(
+                ContentWritebackLog.artifact_id == artifact.id,
+                ContentWritebackLog.reconciliation_status == "reconciliation_required",
+            )
+            .first()
+        )
+        if isinstance(unresolved, ContentWritebackLog):
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Writeback reconciliation is unresolved",
+                "error_code": "writeback_reconciliation_required",
+                "retry_safe": False,
+            }
         if cloud_file.writeback_status != "approved":
+            self.db.rollback()
             return {
                 "success": False,
                 "stale": False,
-                "error": (
-                    f"Cannot write back: status is "
-                    f"'{cloud_file.writeback_status}', must be 'approved'"
-                ),
+                "error": "Artifact is not approved",
+                "error_code": "artifact_not_approved",
             }
-
-        if not cloud_file.has_remediated_version:
-            return {
-                "success": False,
-                "stale": False,
-                "error": "No remediated version for this file",
-            }
-
         course_id = cloud_file.provider_parent_id
         if not course_id:
-            return {
-                "success": False,
-                "stale": False,
-                "error": "File has no course to upload into",
-            }
+            self.db.rollback()
+            return {"success": False, "stale": False, "error": "File has no course"}
 
-        remediated_path = self._find_remediated_file_path(cloud_file)
-        if not remediated_path:
-            return {
-                "success": False,
-                "stale": False,
-                "error": (
-                    "The remediated file is no longer on disk. "
-                    "Remediate it again before writing back."
-                ),
-            }
-
-        original = Path(cloud_file.file_name)
+        original = Path(str(cloud_file.file_name))
         accessible_name = f"{original.stem}_accessible{original.suffix}"
+        correlation_id = str(uuid.uuid4())
+        try:
+            with self.artifact_service.open_verified(
+                self.db,
+                artifact,
+                department_id=str(artifact.department_id),
+                scan_id=str(artifact.scan_id),
+                cloud_file_id=str(artifact.cloud_file_id),
+                require_approved=True,
+                approval_checksum=str(artifact.sha256),
+            ) as stream:
+                if cloud_file.provider_modified_at is not None:
+                    current_file = await self.canvas_client.get_file(
+                        str(cloud_file.provider_file_id)
+                    )
+                    if current_file.updated_at > cloud_file.provider_modified_at:
+                        self.db.rollback()
+                        return {
+                            "success": False,
+                            "stale": True,
+                            "error": "Canvas file changed since the scan",
+                            "error_code": "canvas_file_stale",
+                        }
+                upload = await self.canvas_client.upload_file_stream(
+                    course_id=str(course_id),
+                    stream=stream,
+                    size_bytes=int(artifact.size_bytes),
+                    mime_type=str(artifact.mime_type),
+                    file_name=accessible_name,
+                    correlation_id=correlation_id,
+                )
+        except ArtifactError:
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Managed remediation artifact is unavailable",
+                "error_code": "artifact_unavailable",
+            }
+        except Exception as exc:
+            self.db.rollback()
+            logger.warning(
+                "Canvas artifact upload failed",
+                extra={
+                    "cloud_file_id": str(cloud_file.id),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return {"success": False, "stale": False, "error": "Canvas upload failed"}
 
-        # For file rows these two columns hold references rather than
-        # bodies: an uploaded file has no HTML to keep, and what an auditor
-        # needs is a way to find both copies.
+        upload_outcome = getattr(upload, "outcome", None)
+        if upload_outcome == "indeterminate":
+            self.db.rollback()
+            durable_correlation = str(getattr(upload, "correlation_id", correlation_id))
+            ambiguous_result = getattr(upload, "provider_result", None) or {
+                "phase": "upload",
+                "outcome": "indeterminate",
+            }
+            self._persist_file_reconciliation(
+                cloud_file=cloud_file,
+                artifact=artifact,
+                approved_by=approved_by,
+                correlation_id=durable_correlation,
+                provider_result=ambiguous_result,
+                accessible_name=accessible_name,
+            )
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Canvas upload outcome requires reconciliation",
+                "error_code": "writeback_reconciliation_required",
+                "correlation_id": durable_correlation,
+                "retry_safe": False,
+            }
+        if not getattr(upload, "success", False):
+            self.db.rollback()
+            return {"success": False, "stale": False, "error": "Canvas upload failed"}
+
+        now = datetime.now(timezone.utc)
+        provider_result = {
+            "correlation_id": correlation_id,
+            "canvas_file_id": str(upload.file_id),
+            "file_name": accessible_name,
+            "url": getattr(upload, "web_view_link", None),
+        }
         writeback_log = ContentWritebackLog(
             id=str(uuid.uuid4()),
             cloud_file_id=cloud_file.id,
-            original_body=(
-                f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}"
-            ),
-            remediated_body=f"local:{remediated_path}",
+            original_body=f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}",
+            remediated_body=f"canvas-file:{upload.file_id} {accessible_name}",
             approved_by=approved_by,
-            approved_at=datetime.now(timezone.utc),
+            approved_at=artifact.approved_at,
+            written_back_at=now,
+            canvas_revision=str(upload.file_id),
+            artifact_id=artifact.id,
+            artifact_checksum=artifact.sha256,
+            correlation_id=correlation_id,
+            reconciliation_status="committed",
+            provider_result=getattr(upload, "provider_result", None),
         )
         self.db.add(writeback_log)
-
-        try:
-            upload = await self.canvas_client.upload_file(
-                course_id=course_id,
-                local_path=remediated_path,
-                file_name=accessible_name,
-            )
-        except Exception as e:
-            self.db.rollback()
-            logger.error(
-                "Canvas file upload raised: %s",
-                e,
-                extra={"cloud_file_id": cloud_file.id},
-            )
-            return {"success": False, "stale": False, "error": f"Canvas upload: {e}"}
-
-        if not getattr(upload, "success", False):
-            self.db.rollback()
-            return {
-                "success": False,
-                "stale": False,
-                "error": f"Canvas upload failed: {getattr(upload, 'error', 'unknown')}",
-            }
-
-        now = datetime.now(timezone.utc)
-        writeback_log.written_back_at = now
-        writeback_log.canvas_revision = upload.file_id
-        writeback_log.remediated_body = (
-            f"canvas-file:{upload.file_id} {accessible_name}"
-        )
-        cloud_file.remediated_file_id = upload.file_id
+        cloud_file.remediated_file_id = str(upload.file_id)
         cloud_file.writeback_status = "written_back"
         cloud_file.writeback_at = now
         if cloud_file.remediated_compliance_score is not None:
             cloud_file.last_compliance_score = cloud_file.remediated_compliance_score
-        self.db.commit()
-
-        logger.info(
-            "Remediated file uploaded to Canvas",
-            extra={
-                "cloud_file_id": cloud_file.id,
-                "course_id": course_id,
-                "canvas_file_id": upload.file_id,
-                "file_name": accessible_name,
-            },
+        self.artifact_service.mark_written(
+            self.db, artifact_id=str(artifact.id), provider_result=provider_result
         )
-
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            self._persist_file_reconciliation(
+                cloud_file=cloud_file,
+                artifact=artifact,
+                approved_by=approved_by,
+                correlation_id=correlation_id,
+                provider_result=provider_result,
+                accessible_name=accessible_name,
+            )
+            logger.error(
+                "Canvas writeback reconciliation required",
+                extra={
+                    "correlation_id": correlation_id,
+                    "artifact_id": str(artifact.id),
+                    "artifact_checksum": str(artifact.sha256),
+                    "canvas_file_id": str(upload.file_id),
+                    "retry_safe": False,
+                },
+            )
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Canvas accepted the file but reconciliation is required",
+                "error_code": "writeback_reconciliation_required",
+                "correlation_id": correlation_id,
+                "retry_safe": False,
+            }
         return {
             "success": True,
             "stale": False,
-            "canvas_file_id": upload.file_id,
+            "canvas_file_id": str(upload.file_id),
             "file_name": accessible_name,
             "url": getattr(upload, "web_view_link", None),
+            "artifact_id": str(artifact.id),
+            "artifact_checksum": str(artifact.sha256),
         }
 
     # ------------------------------------------------------------------

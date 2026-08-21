@@ -4,7 +4,7 @@ Canvas Integration Models
 Data models for Canvas LMS REST API integration.
 """
 
-from typing import Optional
+from typing import Any, Dict, Optional
 from pydantic import BaseModel
 from datetime import datetime
 from enum import Enum
@@ -104,9 +104,12 @@ class CanvasOAuthCredential(BaseModel):
 
 
 class CanvasUploadResult(BaseModel):
-    """Result of file upload to Canvas"""
+    """Result of file upload to Canvas with retry-safety classification."""
 
     success: bool
+    outcome: str = "definite_failure"
+    correlation_id: Optional[str] = None
+    provider_result: Optional[Dict[str, Any]] = None
     file_id: Optional[str] = None
     file_name: Optional[str] = None
     web_view_link: Optional[str] = None

@@ -159,6 +159,21 @@ export interface DepartmentReviewSummary {
 // API Methods
 // ============================================================================
 
+export interface ManagedArtifactMetadata {
+  id: string;
+  scan_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string;
+  expires_at: string;
+  review_status: 'pending' | 'approved' | 'rejected';
+  lifecycle_status: 'available';
+  availability: 'available';
+  approval_blockers: string[];
+  can_approve: boolean;
+}
+
 export const scansApi = {
   /**
    * Upload file for scanning
@@ -238,6 +253,44 @@ export const scansApi = {
     return (data as Record<string, unknown>).scan
       ? ((data as Record<string, unknown>).scan as ScanDetailResponse)
       : (data as ScanDetailResponse);
+  },
+
+  getManagedArtifact: async (
+    scanId: string,
+    artifactId: string
+  ): Promise<ManagedArtifactMetadata> => {
+    const response = await apiClient.get<ManagedArtifactMetadata>(
+      `/education/scans/${encodeURIComponent(scanId)}/artifacts/${encodeURIComponent(artifactId)}`
+    );
+    return response.data;
+  },
+
+  downloadManagedArtifact: async (scanId: string, artifactId: string): Promise<Blob> => {
+    const response = await apiClient.get<Blob>(
+      `/education/scans/${encodeURIComponent(scanId)}/artifacts/${encodeURIComponent(artifactId)}/download`,
+      { responseType: 'blob' }
+    );
+    return response.data;
+  },
+
+  approveManagedArtifact: async (
+    scanId: string,
+    artifactId: string
+  ): Promise<ManagedArtifactMetadata> => {
+    const response = await apiClient.post<ManagedArtifactMetadata>(
+      `/education/scans/${encodeURIComponent(scanId)}/artifacts/${encodeURIComponent(artifactId)}/approve`
+    );
+    return response.data;
+  },
+
+  rejectManagedArtifact: async (
+    scanId: string,
+    artifactId: string
+  ): Promise<ManagedArtifactMetadata> => {
+    const response = await apiClient.post<ManagedArtifactMetadata>(
+      `/education/scans/${encodeURIComponent(scanId)}/artifacts/${encodeURIComponent(artifactId)}/reject`
+    );
+    return response.data;
   },
 
   /**

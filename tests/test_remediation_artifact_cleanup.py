@@ -387,6 +387,19 @@ def test_delete_failure_keeps_durable_cleanup_claim_for_retry():
     assert db.commit.call_count == 1
 
 
+def test_scheduled_cleanup_never_steals_parent_cleanup_claim():
+    now = datetime.now(timezone.utc)
+    artifact = _artifact(
+        cleanup_claimed_at=now - timedelta(days=1),
+        cleanup_reason="scan_delete",
+        cleanup_owner="22222222-2222-4222-8222-222222222222",
+    )
+
+    assert not RemediationArtifactCleanup._eligible_after_select(
+        artifact, now=now, claim_cutoff=now
+    )
+
+
 def test_cleanup_has_no_orphan_filesystem_scan_surface():
     names = set(RemediationArtifactCleanup.run_batch.__code__.co_names)
     assert not {"rglob", "walk", "glob", "iterdir"} & names

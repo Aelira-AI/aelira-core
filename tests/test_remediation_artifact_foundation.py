@@ -83,6 +83,8 @@ def test_artifact_model_has_authority_fields_constraints_indexes_and_relationshi
         "rejected_at",
         "written_back_at",
         "cleanup_claimed_at",
+        "cleanup_reason",
+        "cleanup_owner",
         "deleted_at",
         "provider_result",
         "expires_at",
@@ -134,6 +136,7 @@ def test_artifact_model_has_authority_fields_constraints_indexes_and_relationshi
         "ck_remediation_artifacts_review_metadata",
         "ck_remediation_artifacts_written",
         "ck_remediation_artifacts_deleted",
+        "ck_remediation_artifacts_cleanup_claim",
         "ck_remediation_artifacts_expiry",
     } <= checks.keys()
     assert all(
@@ -316,7 +319,11 @@ def test_migration_chain_schema_order_constraints_indexes_and_reversal(monkeypat
     migration_columns = {
         item.name: item for item in table_items if hasattr(item, "type")
     }
-    assert set(models.RemediationArtifact.__table__.c.keys()) == set(migration_columns)
+    # Task16B2 adds durable parent-cleanup metadata after this foundation migration.
+    assert set(models.RemediationArtifact.__table__.c.keys()) - {
+        "cleanup_reason",
+        "cleanup_owner",
+    } == set(migration_columns)
     assert isinstance(migration_columns["size_bytes"].type, BigInteger)
     assert migration_columns["approved_by_ref"].type.length == 255
     assert migration_columns["rejected_by_ref"].type.length == 255

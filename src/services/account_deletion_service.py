@@ -34,6 +34,7 @@ from ..db.models import (
 from ..auth.session_service import get_session_service
 from ..security.audit_service import AuditService
 from ..mailer.email_service import get_email_service
+from .remediation_artifact_service import RemediationArtifactService
 
 logger = logging.getLogger(__name__)
 
@@ -516,6 +517,19 @@ class AccountDeletionService:
             db.query(Department).filter(Department.id == user.department_id).first()
         )
 
+        # Account deletion is explicit destructive authority for managed outputs.
+        artifact_count = 0
+        if department is not None:
+            artifact_cleanup = (
+                RemediationArtifactService.from_settings().cleanup_for_user(
+                    db,
+                    department_id=department.id,
+                    user_id=user_id,
+                    destructive_actor_ref="account_deletion",
+                )
+            )
+            artifact_count = artifact_cleanup.count
+
         # 1. Delete scan results
         scans = db.query(Scan).filter(Scan.user_id == user_id).all()
         for scan in scans:
@@ -562,7 +576,12 @@ class AccountDeletionService:
         user.deletion_confirmation_code_hash = None
         user.deletion_confirmation_expires_at = None
 
-        db.commit()
+        try:
+            # Commit artifact rows and departing-user parents atomically.
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
         # 7. Audit log
         audit = AuditService(db)
@@ -572,7 +591,11 @@ class AccountDeletionService:
             department_id=user.department_id,
             resource_type="user",
             resource_id=user_id,
-            details={"email_hash": email_hash[:12] + "..."},
+            details={
+                "email_hash": email_hash[:12] + "...",
+                "artifact_actor_ref": "account_deletion",
+                "artifacts_deleted": artifact_count,
+            },
         )
 
         logger.info(

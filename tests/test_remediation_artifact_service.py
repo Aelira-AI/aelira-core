@@ -54,17 +54,42 @@ def _pdf_source(tmp_path):
 
 def _parents(**overrides):
     values = {
-        "department": SimpleNamespace(id=DEPARTMENT_ID),
+        "department": SimpleNamespace(
+            id=DEPARTMENT_ID,
+            artifact_cleanup_token=None,
+            artifact_cleanup_claimed_at=None,
+        ),
+        "user": SimpleNamespace(
+            id=USER_ID,
+            department_id=DEPARTMENT_ID,
+            artifact_cleanup_token=None,
+            artifact_cleanup_claimed_at=None,
+        ),
+        "credential": SimpleNamespace(
+            id="66666666-6666-4666-8666-666666666666",
+            department_id=DEPARTMENT_ID,
+            provider="canvas",
+            artifact_cleanup_token=None,
+            artifact_cleanup_claimed_at=None,
+        ),
         "scan": SimpleNamespace(
-            id=SCAN_ID, department_id=DEPARTMENT_ID, scan_type=ScanType.WORD
+            id=SCAN_ID,
+            department_id=DEPARTMENT_ID,
+            user_id=USER_ID,
+            scan_type=ScanType.WORD,
+            artifact_cleanup_token=None,
+            artifact_cleanup_claimed_at=None,
         ),
         "cloud": SimpleNamespace(
             id=CLOUD_FILE_ID,
             department_id=DEPARTMENT_ID,
             last_scan_id=SCAN_ID,
             provider="canvas",
+            credential_id="66666666-6666-4666-8666-666666666666",
             current_remediation_artifact_id=None,
             has_remediated_version=False,
+            artifact_cleanup_token=None,
+            artifact_cleanup_claimed_at=None,
         ),
         "job": SimpleNamespace(
             id=JOB_ID,
@@ -72,15 +97,25 @@ def _parents(**overrides):
             cloud_file_id=CLOUD_FILE_ID,
             job_type="remediate",
             provider="canvas",
+            credential_id="66666666-6666-4666-8666-666666666666",
             execution_context={"scan_id": SCAN_ID},
         ),
     }
+    for name, replacement in overrides.items():
+        default = values.get(name)
+        if default is not None:
+            for attribute, value in vars(default).items():
+                if not hasattr(replacement, attribute):
+                    setattr(replacement, attribute, value)
     values.update(overrides)
     return values
 
 
 def _query(row):
     query = MagicMock()
+    query.filter.return_value.populate_existing.return_value.one_or_none.return_value = (
+        row
+    )
     locked = query.filter.return_value.with_for_update.return_value
     locked.populate_existing.return_value.one_or_none.return_value = row
     return query
@@ -133,7 +168,12 @@ def _publish(service, artifact, **kwargs):
 def _claim_db(parents, existing=None):
     db = MagicMock()
     db.query.side_effect = [
+        _query(parents["scan"]),
+        _query(parents["cloud"]),
+        _query(parents["job"]),
         _query(parents["department"]),
+        _query(parents["user"]),
+        _query(parents["credential"]),
         _query(parents["scan"]),
         _query(parents["cloud"]),
         _query(parents["job"]),
@@ -702,10 +742,14 @@ def test_unique_race_loser_rolls_back_relocks_and_reloads_existing(tmp_path):
     winner = _artifact(prepared)
     parents = _parents()
     db = MagicMock()
+    canonical_names = ("department", "user", "credential", "scan", "cloud", "job")
+    discovery = ("scan", "cloud", "job")
     db.query.side_effect = [
-        *[_query(parents[name]) for name in ("department", "scan", "cloud", "job")],
+        *[_query(parents[name]) for name in discovery],
+        *[_query(parents[name]) for name in canonical_names],
         _query(None),
-        *[_query(parents[name]) for name in ("department", "scan", "cloud", "job")],
+        *[_query(parents[name]) for name in discovery],
+        *[_query(parents[name]) for name in canonical_names],
         _query(winner),
     ]
     db.flush.side_effect = IntegrityError("insert", {}, Exception("unique"))

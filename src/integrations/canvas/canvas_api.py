@@ -17,7 +17,8 @@ import asyncio
 from dataclasses import dataclass
 import logging
 import re
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, BinaryIO
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -96,6 +97,14 @@ class CanvasAPIClient:
     """
 
     MAX_PAGINATION_PAGES = 1000
+
+    # Canvas can definitively reject an upload body with these documented client
+    # errors. Every other post-body HTTP failure is conservative: Canvas, its
+    # object store, or an intermediary may have committed the bytes even though
+    # the client did not receive a usable success response.
+    DEFINITE_POST_BODY_REJECTION_STATUSES = frozenset(
+        {400, 401, 403, 404, 409, 413, 415, 422}
+    )
 
     def __init__(
         self,
@@ -545,6 +554,157 @@ class CanvasAPIClient:
         return CanvasImageDownloadResult(
             success=False, error="Canvas course image download failed"
         )
+
+    async def upload_file_stream(
+        self,
+        *,
+        course_id: str,
+        stream: BinaryIO,
+        size_bytes: int,
+        mime_type: str,
+        file_name: str,
+        folder_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> CanvasUploadResult:
+        """Upload a verified stream and classify whether retry is safe."""
+        correlation_id = correlation_id or str(uuid.uuid4())
+        try:
+            parsed_correlation = uuid.UUID(correlation_id)
+            if (
+                parsed_correlation.version != 4
+                or str(parsed_correlation) != correlation_id
+            ):
+                raise ValueError("invalid correlation id")
+        except (AttributeError, ValueError):
+            return CanvasUploadResult(
+                success=False,
+                outcome="definite_failure",
+                error="Canvas file upload metadata is invalid",
+            )
+        body_started = False
+        provider_result: Dict[str, Any] = {"phase": "preaccept"}
+        try:
+            if size_bytes < 0 or not file_name:
+                raise ValueError("invalid upload metadata")
+            client = await self._get_client()
+            upload_params: Dict[str, Any] = {
+                "name": file_name,
+                "size": size_bytes,
+                "content_type": mime_type,
+            }
+            if folder_id:
+                upload_params["parent_folder_id"] = folder_id
+            response = await client.post(
+                f"{self.api_base}/courses/{course_id}/files", json=upload_params
+            )
+            response.raise_for_status()
+            upload_data = response.json()
+            upload_url = prepare_canvas_outbound_url(
+                upload_data["upload_url"],
+                self.canvas_url,
+                development_origin=self._canvas_origin,
+            )
+            provider_result = {"phase": "upload", "request_accepted": True}
+            async with httpx.AsyncClient(
+                timeout=60.0,
+                follow_redirects=False,
+                transport=create_canvas_safe_transport(self._canvas_origin),
+                trust_env=False,
+            ) as upload_client:
+                upload_client.cookies.clear()
+                body_started = True
+                upload_response = await upload_client.post(
+                    upload_url,
+                    data=upload_data["upload_params"],
+                    files={"file": (file_name, stream, mime_type)},
+                    headers=self._authorization_headers(upload_url),
+                    follow_redirects=False,
+                )
+                provider_result["upload_status"] = upload_response.status_code
+                if upload_response.status_code in (301, 302, 303, 307, 308):
+                    location = upload_response.headers.get("Location")
+                    if not location:
+                        raise RuntimeError(
+                            "accepted upload redirect lacks confirmation"
+                        )
+                    confirm_url = prepare_canvas_outbound_url(
+                        location,
+                        upload_url,
+                        development_origin=self._canvas_origin,
+                    )
+                    upload_client.cookies.clear()
+                    confirmed = await upload_client.get(
+                        confirm_url,
+                        headers=self._authorization_headers(confirm_url),
+                        follow_redirects=False,
+                    )
+                    provider_result["confirmation_status"] = confirmed.status_code
+                    confirmed.raise_for_status()
+                    file_info = confirmed.json()
+                else:
+                    upload_response.raise_for_status()
+                    file_info = upload_response.json()
+            provider_result.update(
+                {"phase": "complete", "canvas_file_id": str(file_info["id"])}
+            )
+            return CanvasUploadResult(
+                success=True,
+                outcome="success",
+                correlation_id=correlation_id,
+                provider_result=provider_result,
+                file_id=str(file_info["id"]),
+                file_name=file_info["filename"],
+                web_view_link=file_info.get("url"),
+            )
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if not body_started:
+                indeterminate = False
+            elif provider_result.get("upload_status") in {
+                301,
+                302,
+                303,
+                307,
+                308,
+            }:
+                # The upload service accepted the body and redirected to a
+                # confirmation endpoint; a confirmation rejection cannot prove
+                # that the upload itself was rolled back.
+                indeterminate = True
+            else:
+                indeterminate = (
+                    status_code not in self.DEFINITE_POST_BODY_REJECTION_STATUSES
+                )
+            provider_result.update({"status_code": status_code})
+            return CanvasUploadResult(
+                success=False,
+                outcome="indeterminate" if indeterminate else "definite_failure",
+                correlation_id=correlation_id if indeterminate else None,
+                provider_result=provider_result,
+                error=(
+                    "Canvas file upload outcome is indeterminate"
+                    if indeterminate
+                    else "Canvas file upload failed"
+                ),
+            )
+        except Exception as exc:
+            indeterminate = body_started
+            logger.warning(
+                "Canvas verified-stream upload failed (%s, indeterminate=%s)",
+                type(exc).__name__,
+                indeterminate,
+            )
+            return CanvasUploadResult(
+                success=False,
+                outcome="indeterminate" if indeterminate else "definite_failure",
+                correlation_id=correlation_id if indeterminate else None,
+                provider_result=provider_result,
+                error=(
+                    "Canvas file upload outcome is indeterminate"
+                    if indeterminate
+                    else "Canvas file upload failed"
+                ),
+            )
 
     async def upload_file(
         self,

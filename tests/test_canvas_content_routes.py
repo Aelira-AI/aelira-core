@@ -108,6 +108,7 @@ def _make_cloud_file(
     compliance_score=None,
     last_scan_id=None,
     has_remediated_version=None,
+    current_remediation_artifact_id=None,
     remediated_issues_fixed=None,
     remediated_issues_remaining=None,
 ):
@@ -132,6 +133,7 @@ def _make_cloud_file(
         if has_remediated_version is None
         else has_remediated_version
     )
+    cf.current_remediation_artifact_id = current_remediation_artifact_id
     # Explicitly None unless a test sets them: a bare MagicMock attribute
     # is truthy and coerces to an int, which would let the "was this
     # verified by a rescan" check pass silently in every fixture.
@@ -712,13 +714,10 @@ class TestApproveContent:
         assert response.status_code == 400
         assert "remediated" in response.json()["detail"].lower()
 
-    def test_approve_accepts_file_row_with_no_remediated_body(
+    def test_approve_rejects_legacy_file_flag_without_managed_artifact(
         self, client, mock_session, override_deps
     ):
-        """A file-type row remediated as a file (has_remediated_version=True,
-        remediated_body=None — files never get an HTML body) must still be
-        approvable. Checking remediated_body alone made every file
-        unapprovable even after a successful remediation."""
+        """A legacy boolean cannot authorize file approval without byte identity."""
         cf = _make_cloud_file(
             content_source="file",
             writeback_status=None,
@@ -729,9 +728,8 @@ class TestApproveContent:
 
         response = client.post(f"/canvas/content/{cf.id}/approve")
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["writeback_status"] == "approved"
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Managed artifact required"
 
 
 # ---------------------------------------------------------------------------
@@ -797,12 +795,10 @@ class TestBatchApprove:
         data = response.json()
         assert data["approved_count"] == 2
 
-    def test_batch_approve_accepts_files_and_skips_unremediated(
+    def test_batch_approve_is_atomic_when_any_item_is_unapprovable(
         self, client, mock_session, override_deps
     ):
-        """A body-only item and a has_remediated_version-only (file) item
-        both approve; an item with neither is still skipped with the
-        existing 'no remediated content' error."""
+        """No item mutates when the complete set is not approvable."""
         html_item = _make_cloud_file(
             writeback_status="pending_review",
             remediated_body="<p>Fixed</p>",
@@ -830,13 +826,9 @@ class TestBatchApprove:
             json={"cloud_file_ids": [html_item.id, file_item.id, unremediated_item.id]},
         )
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["approved_count"] == 2
-        assert data["skipped_count"] == 1
-        assert any("no remediated content" in e for e in data["errors"])
-        assert html_item.writeback_status == "approved"
-        assert file_item.writeback_status == "approved"
+        assert response.status_code == 400
+        assert html_item.writeback_status == "pending_review"
+        assert file_item.writeback_status is None
 
 
 # ---------------------------------------------------------------------------

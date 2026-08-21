@@ -173,8 +173,10 @@ class Department(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     trial_ends_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Status
+    # Status and durable managed-artifact cleanup fence.
     is_active = Column(Boolean, default=True)
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Region/Country for deadline tracking
     country_code = Column(String(2), nullable=True, default="US")  # ISO 3166-1 alpha-2
@@ -217,6 +219,11 @@ class Department(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_departments_artifact_cleanup_fence",
+        ),
         CheckConstraint(
             "lms_ai_provider IS NULL OR lms_ai_provider IN "
             "('ollama', 'gemini', 'openai', 'anthropic', 'xai')",
@@ -282,6 +289,16 @@ class User(Base):
     # Department relationship
     department_id = Column(String(36), ForeignKey("departments.id"), nullable=False)
     role = Column(SQLEnum(UserRole), default=UserRole.FACULTY)
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_users_artifact_cleanup_fence",
+        ),
+    )
 
     # Preferences
     timezone = Column(String(50), default="America/New_York")
@@ -468,6 +485,16 @@ class Scan(Base):
     # Ownership
     user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
     department_id = Column(String(36), ForeignKey("departments.id"), nullable=False)
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_scans_artifact_cleanup_fence",
+        ),
+    )
 
     # Processing details
     processing_time_ms = Column(Integer)  # Time taken to process
@@ -479,6 +506,12 @@ class Scan(Base):
 
     # Storage location (if we store files)
     storage_path = Column(String(512), nullable=True)  # S3/local path
+    current_remediation_artifact_id = Column(
+        String(36),
+        ForeignKey("remediation_artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -491,7 +524,16 @@ class Scan(Base):
     user = relationship("User", back_populates="scans")
     department = relationship("Department", back_populates="scans")
     result = relationship("ScanResult", back_populates="scan", uselist=False)
-    remediation_artifacts = relationship("RemediationArtifact", back_populates="scan")
+    remediation_artifacts = relationship(
+        "RemediationArtifact",
+        back_populates="scan",
+        foreign_keys="RemediationArtifact.scan_id",
+    )
+    current_remediation_artifact = relationship(
+        "RemediationArtifact",
+        foreign_keys=[current_remediation_artifact_id],
+        post_update=True,
+    )
 
 
 class ScanResult(Base):
@@ -956,6 +998,16 @@ class CloudOAuthCredentials(Base):
     is_active = Column(Boolean, default=True)
     last_sync_at = Column(DateTime(timezone=True), nullable=True)
     last_error = Column(Text, nullable=True)
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_cloud_oauth_credentials_artifact_cleanup_fence",
+        ),
+    )
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -987,6 +1039,16 @@ class CloudFile(Base):
         String(36),
         ForeignKey("cloud_oauth_credentials.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_cloud_files_artifact_cleanup_fence",
+        ),
     )
 
     # Provider-specific IDs
@@ -1088,11 +1150,39 @@ class ContentWritebackLog(Base):
     approved_at = Column(DateTime(timezone=True), nullable=True)
     written_back_at = Column(DateTime(timezone=True), nullable=True)
     canvas_revision = Column(String(255), nullable=True)
+    # File write-backs are bound to immutable managed bytes, never a local path.
+    artifact_id = Column(
+        String(36),
+        ForeignKey("remediation_artifacts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    artifact_checksum = Column(String(64), nullable=True)
+    correlation_id = Column(String(36), nullable=True, unique=True)
+    reconciliation_status = Column(String(32), nullable=True)
+    provider_result = Column(JSON, nullable=True)
     rollback_status = Column(String(20), nullable=True)  # rolled_back
     rolled_back_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     cloud_file = relationship("CloudFile", backref="writeback_logs")
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_id IS NULL AND artifact_checksum IS NULL) OR "
+            "(artifact_id IS NOT NULL AND artifact_checksum ~ '^[0-9a-f]{64}$')",
+            name="ck_content_writeback_log_artifact_binding",
+        ),
+        CheckConstraint(
+            "reconciliation_status IS NULL OR reconciliation_status IN "
+            "('pending', 'committed', 'reconciliation_required')",
+            name="ck_content_writeback_log_reconciliation",
+        ),
+        CheckConstraint(
+            "correlation_id IS NULL OR correlation_id ~ "
+            "'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'",
+            name="ck_content_writeback_log_correlation_id",
+        ),
+    )
 
 
 class CloudSyncFolder(Base):
@@ -1304,6 +1394,8 @@ class RemediationArtifact(Base):
     rejected_at = Column(DateTime(timezone=True), nullable=True)
     written_back_at = Column(DateTime(timezone=True), nullable=True)
     cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    cleanup_reason = Column(String(64), nullable=True)
+    cleanup_owner = Column(String(255), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     provider_result = Column(JSON, nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)
@@ -1389,6 +1481,13 @@ class RemediationArtifact(Base):
             name="ck_remediation_artifacts_deleted",
         ),
         CheckConstraint(
+            "(cleanup_claimed_at IS NULL AND cleanup_reason IS NULL AND "
+            "cleanup_owner IS NULL) OR (cleanup_claimed_at IS NOT NULL AND "
+            "cleanup_reason IS NOT NULL AND cleanup_reason <> '' AND "
+            "cleanup_owner IS NOT NULL AND cleanup_owner <> '')",
+            name="ck_remediation_artifacts_cleanup_claim",
+        ),
+        CheckConstraint(
             "expires_at > created_at",
             name="ck_remediation_artifacts_expiry",
         ),
@@ -1412,7 +1511,9 @@ class RemediationArtifact(Base):
     )
 
     department = relationship("Department", back_populates="remediation_artifacts")
-    scan = relationship("Scan", back_populates="remediation_artifacts")
+    scan = relationship(
+        "Scan", back_populates="remediation_artifacts", foreign_keys=[scan_id]
+    )
     cloud_file = relationship(
         "CloudFile",
         back_populates="remediation_artifacts",

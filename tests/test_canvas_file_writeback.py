@@ -1,136 +1,148 @@
-"""Remediated files must reach Canvas, and say so honestly when they cannot.
+"""Regression guards for descriptor-bound Canvas managed-artifact writeback."""
 
-A remediated file used to have no route back to the course at all: approve
-worked, write-back returned "not wired up yet", and the remediated artefact
-sat on disk. Canvas files are not edited in place, so the remediated copy is
-uploaded alongside the original and nothing anyone authored is overwritten.
-"""
+import inspect
+import io
+from types import SimpleNamespace
 
-from unittest.mock import AsyncMock, MagicMock
-
+import httpx
 import pytest
 
 from src.education.canvas_content_scanner import CanvasContentScanner
+from src.integrations.canvas import canvas_api
+from src.integrations.canvas.canvas_api import CanvasAPIClient
 
 
-def _scanner(canvas_client=None, db=None):
-    return CanvasContentScanner(
-        canvas_client=canvas_client or MagicMock(),
-        db=db or MagicMock(),
-        department_id="d1",
-        credential_id="cred-1",
+class _UploadClient:
+    def __init__(self, response: httpx.Response):
+        self.response = response
+        self.cookies = SimpleNamespace(clear=lambda: None)
+        self.post_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def post(self, *_args, **_kwargs):
+        self.post_calls += 1
+        return self.response
+
+
+class _PreacceptClient:
+    async def post(self, *_args, **_kwargs):
+        request = httpx.Request("POST", "https://canvas.example/api/v1/courses/1/files")
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "upload_url": "https://canvas.example/upload",
+                "upload_params": {"key": "value"},
+            },
+        )
+
+
+async def _direct_upload_result(monkeypatch, status_code: int):
+    monkeypatch.setattr(
+        canvas_api, "resolve_canvas_network_origin", lambda url: url.rstrip("/")
+    )
+    monkeypatch.setattr(
+        canvas_api,
+        "prepare_canvas_outbound_url",
+        lambda url, _base, **_kwargs: url,
+    )
+    client = CanvasAPIClient("https://canvas.example", "secret")
+    monkeypatch.setattr(client, "_client", _PreacceptClient())
+    request = httpx.Request("POST", "https://canvas.example/upload")
+    response_body = (
+        {"id": 77, "filename": "fixed.pdf", "url": "https://canvas.example/files/77"}
+        if status_code < 400
+        else {"errors": [{"message": "rejected"}]}
+    )
+    upload_client = _UploadClient(
+        httpx.Response(status_code, request=request, json=response_body)
+    )
+    monkeypatch.setattr(
+        canvas_api.httpx, "AsyncClient", lambda **_kwargs: upload_client
     )
 
+    result = await client.upload_file_stream(
+        course_id="1",
+        stream=io.BytesIO(b"fixed"),
+        size_bytes=5,
+        mime_type="application/pdf",
+        file_name="fixed.pdf",
+        correlation_id="11111111-1111-4111-8111-111111111111",
+    )
+    return result, upload_client
 
-def _file_row(**overrides):
-    cf = MagicMock()
-    cf.id = "cf-1"
-    cf.content_source = "file"
-    cf.file_name = "syllabus.pdf"
-    cf.provider_file_id = "9001"
-    cf.provider_parent_id = "101"
-    cf.writeback_status = "approved"
-    cf.has_remediated_version = True
-    cf.remediated_compliance_score = 96.0
-    for key, value in overrides.items():
-        setattr(cf, key, value)
-    return cf
+
+def test_job_json_path_discovery_was_removed():
+    source = inspect.getsource(CanvasContentScanner.write_back_file)
+    assert "_find_remediated_file_path" not in source
+    assert "result_data" not in source
+    assert "local_path" not in source
+    assert "open_verified" in source
+    assert "upload_file_stream" in source
+
+
+def test_canvas_has_descriptor_stream_adapter():
+    signature = inspect.signature(CanvasAPIClient.upload_file_stream)
+    assert "stream" in signature.parameters
+    assert "size_bytes" in signature.parameters
+    assert "mime_type" in signature.parameters
 
 
 @pytest.mark.asyncio
-async def test_a_remediated_file_is_uploaded_and_recorded(tmp_path, monkeypatch):
-    artefact = tmp_path / "syllabus_fixed.pdf"
-    artefact.write_bytes(b"%PDF-1.7")
+@pytest.mark.parametrize("status_code", [500, 502, 503, 408, 429])
+async def test_canvas_post_body_retry_unsafe_status_is_indeterminate(
+    monkeypatch, status_code
+):
+    result, upload_client = await _direct_upload_result(monkeypatch, status_code)
 
-    upload = MagicMock(
-        success=True, file_id="canvas-77", web_view_link="https://canvas/files/77"
-    )
-    client = MagicMock()
-    client.upload_file = AsyncMock(return_value=upload)
-
-    scanner = _scanner(canvas_client=client)
-    monkeypatch.setattr(scanner, "_find_remediated_file_path", lambda cf: str(artefact))
-
-    cf = _file_row()
-    result = await scanner.write_back_file(cf, approved_by="u1")
-
-    assert result["success"] is True
-    assert result["file_name"] == "syllabus_accessible.pdf"
-    client.upload_file.assert_awaited_once()
-    kwargs = client.upload_file.await_args.kwargs
-    assert kwargs["course_id"] == "101"
-    assert kwargs["local_path"] == str(artefact)
-    assert cf.remediated_file_id == "canvas-77"
-    assert cf.writeback_status == "written_back"
-    # The verified remediated score becomes the item's current score.
-    assert cf.last_compliance_score == 96.0
+    assert result.success is False
+    assert result.outcome == "indeterminate"
+    assert result.correlation_id == "11111111-1111-4111-8111-111111111111"
+    assert result.error == "Canvas file upload outcome is indeterminate"
+    assert result.provider_result == {
+        "phase": "upload",
+        "request_accepted": True,
+        "upload_status": status_code,
+        "status_code": status_code,
+    }
+    assert upload_client.post_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_a_missing_artefact_is_reported_not_uploaded(monkeypatch):
-    client = MagicMock()
-    client.upload_file = AsyncMock()
-    scanner = _scanner(canvas_client=client)
-    monkeypatch.setattr(scanner, "_find_remediated_file_path", lambda cf: None)
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 409, 413, 415, 422])
+async def test_canvas_post_body_documented_safe_rejection_is_definite(
+    monkeypatch, status_code
+):
+    result, upload_client = await _direct_upload_result(monkeypatch, status_code)
 
-    result = await scanner.write_back_file(_file_row(), approved_by="u1")
-
-    assert result["success"] is False
-    assert "no longer on disk" in result["error"]
-    client.upload_file.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_an_unapproved_file_is_refused(monkeypatch):
-    scanner = _scanner()
-    monkeypatch.setattr(scanner, "_find_remediated_file_path", lambda cf: "/tmp/x.pdf")
-
-    result = await scanner.write_back_file(
-        _file_row(writeback_status="pending_review"), approved_by="u1"
-    )
-
-    assert result["success"] is False
-    assert "must be 'approved'" in result["error"]
+    assert result.success is False
+    assert result.outcome == "definite_failure"
+    assert result.correlation_id is None
+    assert result.error == "Canvas file upload failed"
+    assert upload_client.post_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_a_failed_upload_leaves_the_row_untouched(tmp_path, monkeypatch):
-    artefact = tmp_path / "a.pdf"
-    artefact.write_bytes(b"%PDF")
+async def test_canvas_post_body_unknown_4xx_is_conservatively_indeterminate(
+    monkeypatch,
+):
+    result, _ = await _direct_upload_result(monkeypatch, 418)
 
-    client = MagicMock()
-    client.upload_file = AsyncMock(
-        return_value=MagicMock(success=False, error="quota exceeded")
-    )
-    db = MagicMock()
-    scanner = _scanner(canvas_client=client, db=db)
-    monkeypatch.setattr(scanner, "_find_remediated_file_path", lambda cf: str(artefact))
-
-    cf = _file_row()
-    cf.writeback_at = None
-    result = await scanner.write_back_file(cf, approved_by="u1")
-
-    assert result["success"] is False
-    assert "quota exceeded" in result["error"]
-    assert cf.writeback_status == "approved"
-    db.rollback.assert_called_once()
+    assert result.outcome == "indeterminate"
+    assert result.correlation_id == "11111111-1111-4111-8111-111111111111"
 
 
-def test_the_remediated_path_comes_from_a_completed_job(tmp_path):
-    artefact = tmp_path / "out.pdf"
-    artefact.write_bytes(b"%PDF")
+@pytest.mark.asyncio
+async def test_canvas_direct_upload_success(monkeypatch):
+    result, upload_client = await _direct_upload_result(monkeypatch, 201)
 
-    job = MagicMock()
-    job.result_data = {"output_file": str(artefact)}
-    db = MagicMock()
-    chain = MagicMock()
-    chain.filter.return_value = chain
-    chain.order_by.return_value = chain
-    chain.first.return_value = job
-    db.query.return_value = chain
-
-    scanner = _scanner(db=db)
-    assert scanner._find_remediated_file_path(_file_row()) == str(artefact)
-
-    job.result_data = {"output_file": str(tmp_path / "gone.pdf")}
-    assert scanner._find_remediated_file_path(_file_row()) is None
+    assert result.success is True
+    assert result.outcome == "success"
+    assert result.file_id == "77"
+    assert result.file_name == "fixed.pdf"
+    assert upload_client.post_calls == 1

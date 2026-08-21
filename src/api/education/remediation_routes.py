@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from urllib.parse import quote
 
 from ...ai.providers import get_provider_manager
 from ...ai.lms_remediation_client import LMSRemediationClient
@@ -22,7 +24,9 @@ from ...db.database import get_db_dependency
 from ...db.models import (
     CloudFile,
     CloudOAuthCredentials,
+    RemediationArtifact,
     RemediationOutcome,
+    Scan,
     ScanFix,
     ScanStatus,
     ScanType,
@@ -31,6 +35,9 @@ from ...db.scan_service import ScanService
 from ...education.image_alt_text import ImageAltTextGenerator
 from ...middleware.quota import require_feature
 from ...services.remediation_artifact_service import (
+    ArtifactError,
+    ArtifactAuthorizationError,
+    ArtifactIntegrityError,
     ArtifactPublicationResult,
     RemediationArtifactService,
 )
@@ -49,6 +56,204 @@ from ._scope import authorize_scan_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _managed_artifact_authority(
+    db: Session,
+    *,
+    scan_id: str,
+    artifact_id: str,
+    principal: AuthenticatedPrincipal,
+) -> tuple[Scan, CloudFile | None, RemediationArtifact]:
+    """Resolve exact tenant/scan/current-artifact authority without disclosure."""
+    scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    authorized_cloud = authorize_scan_access(db, scan, principal)
+    cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized_cloud)
+    artifact = (
+        db.query(RemediationArtifact)
+        .filter(
+            RemediationArtifact.id == artifact_id,
+            RemediationArtifact.scan_id == scan_id,
+            RemediationArtifact.department_id == principal.department_id,
+        )
+        .one_or_none()
+    )
+    current = cloud_file is None or (
+        artifact is not None
+        and artifact.cloud_file_id == cloud_file.id
+        and cloud_file.current_remediation_artifact_id == artifact.id
+    )
+    if artifact is None or not current:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return scan, cloud_file, artifact
+
+
+def _artifact_review_blockers(
+    db: Session, scan: Scan, artifact: RemediationArtifact
+) -> list[str]:
+    blockers: list[str] = []
+    if artifact.review_status != "pending":
+        blockers.append(f"review_{artifact.review_status}")
+    if scan.status != ScanStatus.COMPLETED:
+        blockers.append("scan_not_completed")
+    if scan.remediation_outcome != RemediationOutcome.COMPLETED.value:
+        blockers.append("verification_not_passed")
+    fixes = db.query(ScanFix).filter(ScanFix.scan_id == scan.id).all()
+    terminal = {"auto_approved", "approved", "rejected"}
+    accepted = {"auto_approved", "approved"}
+    if not fixes:
+        blockers.append("no_fixes")
+    elif any(fix.review_status not in terminal for fix in fixes):
+        blockers.append("fixes_pending_review")
+    if fixes and not any(fix.review_status in accepted for fix in fixes):
+        blockers.append("no_accepted_fix")
+    return blockers
+
+
+def _artifact_failure(exc: ArtifactError) -> HTTPException:
+    status_code = 409 if isinstance(exc, ArtifactIntegrityError) else 400
+    if isinstance(exc, ArtifactAuthorizationError):
+        status_code = 404
+    return HTTPException(status_code=status_code, detail="Artifact unavailable")
+
+
+@router.get("/scans/{scan_id}/artifacts/{artifact_id}")
+async def get_managed_artifact_metadata(
+    scan_id: str,
+    artifact_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    scan, cloud_file, artifact = _managed_artifact_authority(
+        db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
+    )
+    service = RemediationArtifactService.from_settings()
+    try:
+        service.resolve_record(
+            db,
+            artifact,
+            department_id=principal.department_id,
+            scan_id=scan_id,
+            cloud_file_id=str(cloud_file.id) if cloud_file is not None else None,
+        )
+    except ArtifactError as exc:
+        raise _artifact_failure(exc) from None
+    blockers = _artifact_review_blockers(db, scan, artifact)
+    return {
+        "id": artifact.id,
+        "scan_id": artifact.scan_id,
+        "filename": artifact.filename,
+        "mime_type": artifact.mime_type,
+        "size_bytes": artifact.size_bytes,
+        "sha256": artifact.sha256,
+        "expires_at": artifact.expires_at,
+        "review_status": artifact.review_status,
+        "lifecycle_status": artifact.lifecycle_status,
+        "availability": "available",
+        "approval_blockers": blockers,
+        "can_approve": not blockers,
+    }
+
+
+@router.get("/scans/{scan_id}/artifacts/{artifact_id}/download")
+async def download_managed_artifact(
+    scan_id: str,
+    artifact_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    _, cloud_file, artifact = _managed_artifact_authority(
+        db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
+    )
+    service = RemediationArtifactService.from_settings()
+    context = service.open_verified(
+        db,
+        artifact,
+        department_id=principal.department_id,
+        scan_id=scan_id,
+        cloud_file_id=str(cloud_file.id) if cloud_file is not None else None,
+    )
+    try:
+        stream = context.__enter__()
+    except ArtifactError as exc:
+        raise _artifact_failure(exc) from None
+
+    def descriptor_chunks():
+        try:
+            while chunk := stream.read(64 * 1024):
+                yield chunk
+        finally:
+            context.__exit__(None, None, None)
+
+    encoded = quote(str(artifact.filename), safe="")
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}",
+        "Content-Length": str(artifact.size_bytes),
+        "X-Content-Type-Options": "nosniff",
+    }
+    return StreamingResponse(
+        descriptor_chunks(), media_type=artifact.mime_type, headers=headers
+    )
+
+
+@router.post("/scans/{scan_id}/artifacts/{artifact_id}/approve")
+async def approve_managed_artifact(
+    scan_id: str,
+    artifact_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    _managed_artifact_authority(
+        db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
+    )
+    service = RemediationArtifactService.from_settings()
+    try:
+        artifact = service.approve(
+            db,
+            artifact_id=artifact_id,
+            approved_by_id=principal.user_id,
+            approved_by_ref=f"{principal.auth_method}:{principal.user_id}",
+        )
+        db.commit()
+    except ArtifactError as exc:
+        db.rollback()
+        raise _artifact_failure(exc) from None
+    return {
+        "id": artifact.id,
+        "review_status": artifact.review_status,
+        "sha256": artifact.sha256,
+    }
+
+
+@router.post("/scans/{scan_id}/artifacts/{artifact_id}/reject")
+async def reject_managed_artifact(
+    scan_id: str,
+    artifact_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    _managed_artifact_authority(
+        db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
+    )
+    service = RemediationArtifactService.from_settings()
+    try:
+        artifact = service.reject(
+            db,
+            artifact_id=artifact_id,
+            rejected_by_id=principal.user_id,
+            rejected_by_ref=f"{principal.auth_method}:{principal.user_id}",
+        )
+        db.commit()
+    except ArtifactError as exc:
+        db.rollback()
+        raise _artifact_failure(exc) from None
+    return {
+        "id": artifact.id,
+        "review_status": artifact.review_status,
+        "sha256": artifact.sha256,
+    }
 
 
 class _PurposeUsageTracker:

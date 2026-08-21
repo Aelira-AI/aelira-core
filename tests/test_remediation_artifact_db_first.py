@@ -10,7 +10,14 @@ import zipfile
 
 import pytest
 
-from src.db.models import RemediationArtifact
+from src.db.models import (
+    CloudFile,
+    RemediationArtifact,
+    RemediationOutcome,
+    Scan,
+    ScanFix,
+    ScanStatus,
+)
 from src.services.remediation_artifact_service import (
     ArtifactAuthorizationError,
     ArtifactIntegrityError,
@@ -78,8 +85,8 @@ def _db(service, artifact, *, locked_scan_type="WORD"):
         department_id=DEPT,
         last_scan_id=SCAN,
         provider="canvas",
-        current_remediation_artifact_id=None,
-        has_remediated_version=False,
+        current_remediation_artifact_id=artifact.id,
+        has_remediated_version=True,
     )
     service._lock_existing_artifact = MagicMock(
         return_value=(
@@ -90,7 +97,27 @@ def _db(service, artifact, *, locked_scan_type="WORD"):
             artifact,
         )
     )
-    return MagicMock(), cloud
+    db = MagicMock()
+
+    def query(model):
+        chain = MagicMock()
+        chain.filter.return_value = chain
+        chain.with_for_update.return_value = chain
+        chain.populate_existing.return_value = chain
+        if model is Scan:
+            chain.one_or_none.return_value = SimpleNamespace(
+                id=SCAN,
+                status=ScanStatus.COMPLETED,
+                remediation_outcome=RemediationOutcome.COMPLETED.value,
+            )
+        elif model is ScanFix:
+            chain.all.return_value = [SimpleNamespace(review_status="approved")]
+        elif model is CloudFile:
+            chain.one_or_none.return_value = cloud
+        return chain
+
+    db.query.side_effect = query
+    return db, cloud
 
 
 def test_open_verified_yields_descriptor_bound_stream_after_canonical_lock(tmp_path):
@@ -140,6 +167,28 @@ def test_state_mutations_reject_durable_cleanup_claim(tmp_path):
     ):
         with pytest.raises(ArtifactAuthorizationError, match="cleanup"):
             action()
+
+
+def test_old_local_artifact_is_rejected_when_scan_points_to_new_current(tmp_path):
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    artifact.cloud_file_id = None
+    artifact.remediation_job_id = None
+    artifact.provider = "local"
+    scan = SimpleNamespace(
+        id=SCAN,
+        department_id=DEPT,
+        scan_type="WORD",
+        current_remediation_artifact_id="cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    )
+    service._lock_existing_artifact = MagicMock(
+        return_value=(SimpleNamespace(id=DEPT), scan, None, None, artifact)
+    )
+
+    with pytest.raises(ArtifactAuthorizationError, match="exact current output"):
+        service.reject(
+            MagicMock(), artifact_id=artifact.id, rejected_by_ref="reviewer@example.com"
+        )
 
 
 def test_mark_written_uses_written_retention_setting(tmp_path):

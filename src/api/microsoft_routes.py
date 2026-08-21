@@ -35,6 +35,10 @@ from ..integrations.microsoft_365.onedrive import OneDriveIntegration
 from ..integrations.microsoft_365.microsoft_oauth import MicrosoftOAuthService
 from ..integrations.microsoft_365.microsoft_graph import GraphClient
 from ..config.settings import get_settings
+from ..services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
+    RemediationArtifactService,
+)
 
 # Alias for test compatibility
 get_db = get_db_dependency
@@ -502,13 +506,29 @@ async def disconnect_microsoft(
             status_code=status.HTTP_404_NOT_FOUND, detail="Microsoft 365 not connected"
         )
 
-    # Delete credential and associated data
-    db.query(CloudFile).filter(CloudFile.credential_id == credential.id).delete()
-    db.query(CloudJobQueue).filter(
-        CloudJobQueue.credential_id == credential.id
-    ).delete()
-    db.delete(credential)
-    db.commit()
+    # Managed artifacts use RESTRICT parents and must be handled explicitly.
+    try:
+        RemediationArtifactService.from_settings().delete_for_credential(
+            db,
+            department_id=api_key.department_id,
+            credential_id=credential.id,
+        )
+    except ArtifactAuthorizationError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_cleanup_required"
+        ) from None
+
+    try:
+        db.query(CloudJobQueue).filter(
+            CloudJobQueue.credential_id == credential.id
+        ).delete()
+        db.query(CloudFile).filter(CloudFile.credential_id == credential.id).delete()
+        db.delete(credential)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     logger.info(f"Disconnected Microsoft 365 for department {api_key.department_id}")
 

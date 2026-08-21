@@ -56,6 +56,7 @@ from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_princi
 from ..auth.redis_rate_limiter import OAuthStateManager
 from ..ai.lms_remediation_client import LMSRemediationClient
 from ..services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
     ArtifactPublicationResult,
     RemediationArtifactService,
 )
@@ -2005,9 +2006,28 @@ async def disconnect_brightspace(
             detail="Brightspace not connected for this department",
         )
 
-    # Delete credential
-    db.delete(credential)
-    db.commit()
+    try:
+        RemediationArtifactService.from_settings().delete_for_credential(
+            db,
+            department_id=department_id,
+            credential_id=credential.id,
+        )
+    except ArtifactAuthorizationError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_cleanup_required"
+        ) from None
+
+    try:
+        db.query(CloudJobQueue).filter(
+            CloudJobQueue.credential_id == credential.id
+        ).delete()
+        db.query(CloudFile).filter(CloudFile.credential_id == credential.id).delete()
+        db.delete(credential)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     logger.info(f"Disconnected Brightspace for department {department_id}")
 
@@ -2423,6 +2443,12 @@ async def writeback_content(
 ) -> Dict[str, Any]:
     """Write approved remediated content back to Brightspace."""
     cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
+
+    if cf.current_remediation_artifact_id:
+        raise HTTPException(
+            status_code=501,
+            detail="Managed artifact automatic write-back is unsupported for Brightspace; use authenticated download",
+        )
 
     if cf.writeback_status != "approved":
         raise HTTPException(
