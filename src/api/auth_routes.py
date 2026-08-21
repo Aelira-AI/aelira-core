@@ -283,8 +283,8 @@ def create_api_key(
     """
     Create a new API key
 
-    Requires a valid API key. New keys inherit the user_id and department_id
-    from the authenticating key.
+    Requires an authenticated dashboard session or API key. New keys inherit
+    the trusted user_id and department_id from that principal.
 
     Returns the full API key - **store it safely, it will only be shown once!**
     """
@@ -369,11 +369,14 @@ def list_api_keys(
     """
     List all API keys for current user
 
-    Requires a valid API key. Returns all keys belonging to the same user.
+    Requires an authenticated dashboard session or API key. Returns keys
+    belonging to the same user in the principal's current department.
     """
-    user_id = principal.user_id
-
-    keys = AuthService.list_api_keys(db, user_id)
+    keys = AuthService.list_api_keys(
+        db,
+        principal.user_id,
+        principal.department_id,
+    )
 
     return [
         APIKeyResponse(
@@ -399,12 +402,17 @@ def revoke_api_key(
     """
     Revoke (deactivate) an API key
 
-    Requires a valid API key. Can only revoke keys belonging to the same user.
+    Requires an authenticated dashboard session or API key. Can only revoke
+    keys belonging to the same user in the principal's current department.
     """
-    user_id = principal.user_id
-
     try:
-        success = AuthService.revoke_api_key(db, key_id, user_id, commit=False)
+        success = AuthService.revoke_api_key(
+            db,
+            key_id,
+            principal.user_id,
+            principal.department_id,
+            commit=False,
+        )
 
         if not success:
             db.rollback()
@@ -415,7 +423,7 @@ def revoke_api_key(
 
         audit = get_audit_service(db)
         audit.log_api_key_revoke(
-            user_id=user_id,
+            user_id=principal.user_id,
             department_id=principal.department_id,
             api_key_id=key_id,
             commit=False,

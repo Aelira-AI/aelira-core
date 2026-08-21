@@ -282,7 +282,11 @@ class AuthService:
 
     @staticmethod
     def revoke_api_key(
-        db: Session, key_id: str, user_id: str, commit: bool = True
+        db: Session,
+        key_id: str,
+        user_id: str,
+        department_id: str,
+        commit: bool = True,
     ) -> bool:
         """
         Revoke (deactivate) an API key
@@ -291,6 +295,7 @@ class AuthService:
             db: Database session
             key_id: API key ID to revoke
             user_id: User requesting revocation (must own the key)
+            department_id: Department the key must belong to
 
         Returns:
             True if revoked, False if not found or unauthorized
@@ -299,6 +304,7 @@ class AuthService:
             db.query(APIKey)
             .filter(APIKey.id == key_id)
             .filter(APIKey.user_id == user_id)
+            .filter(APIKey.department_id == department_id)
             .first()
         )
 
@@ -318,20 +324,24 @@ class AuthService:
         return True
 
     @staticmethod
-    def list_api_keys(db: Session, user_id: str) -> list:
+    def list_api_keys(db: Session, user_id: str, department_id: str) -> list:
         """
         List all API keys for a user (excluding hashes)
 
         Args:
             db: Database session
             user_id: User to list keys for
+            department_id: Department to scope the key list to
 
         Returns:
             List of APIKey objects (keys are masked)
         """
         keys = (
             db.query(APIKey)
-            .filter(APIKey.user_id == user_id)
+            .filter(
+                APIKey.user_id == user_id,
+                APIKey.department_id == department_id,
+            )
             .order_by(APIKey.created_at.desc())
             .all()
         )

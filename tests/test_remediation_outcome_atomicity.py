@@ -158,6 +158,9 @@ class _TransactionDB:
     def add(self, value):
         self.pending.append(value)
 
+    def flush(self):
+        return None
+
     def commit(self):
         self.commits += 1
         if self.fail_commit:

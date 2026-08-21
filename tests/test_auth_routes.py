@@ -279,7 +279,9 @@ class TestListApiKeys:
     def test_happy_path(self, client, mock_db, valid_api_key, monkeypatch):
         keys = [_fake_api_key(id="key-a"), _fake_api_key(id="key-b")]
         monkeypatch.setattr(
-            AuthService, "list_api_keys", staticmethod(lambda db, user_id: keys)
+            AuthService,
+            "list_api_keys",
+            staticmethod(lambda db, user_id, department_id: keys),
         )
         response = client.get("/auth/keys", headers=AUTH_HEADERS)
         assert response.status_code == 200
@@ -317,7 +319,7 @@ class TestListApiKeys:
 
         assert response.status_code == 200
         assert response.json() == []
-        listed.assert_called_once_with(mock_db, "session-user")
+        listed.assert_called_once_with(mock_db, "session-user", "session-dept")
 
 
 class TestRevokeApiKey:
@@ -332,7 +334,7 @@ class TestRevokeApiKey:
         monkeypatch.setattr(
             AuthService,
             "revoke_api_key",
-            staticmethod(lambda db, kid, uid, commit=True: False),
+            staticmethod(lambda db, kid, uid, department_id, commit=True: False),
         )
         response = client.delete("/auth/keys/missing-key", headers=AUTH_HEADERS)
         assert response.status_code == 404
@@ -341,7 +343,7 @@ class TestRevokeApiKey:
         monkeypatch.setattr(
             AuthService,
             "revoke_api_key",
-            staticmethod(lambda db, kid, uid, commit=True: True),
+            staticmethod(lambda db, kid, uid, department_id, commit=True: True),
         )
         response = client.delete("/auth/keys/key-1", headers=AUTH_HEADERS)
         assert response.status_code == 200
@@ -997,7 +999,7 @@ class TestSessionValidate:
         assert creation.status_code == 200
         assert creation.json()["full_key"] == "aelira_live_visible_once"
         assert creation.json()["api_key"]["id"] == "requested-key"
-        listed.assert_called_once_with(mock_db, "session-user")
+        listed.assert_called_once_with(mock_db, "session-user", "session-dept")
         create.assert_called_once()
         assert create.call_args.kwargs["name"] == "Automation"
 

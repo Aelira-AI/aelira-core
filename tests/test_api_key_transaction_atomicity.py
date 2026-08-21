@@ -108,7 +108,16 @@ def test_auth_revoke_commit_false_flushes_without_committing():
     db = MagicMock()
     db.query.return_value = query
 
-    assert AuthService.revoke_api_key(db, "key-1", "user-1", commit=False) is True
+    assert (
+        AuthService.revoke_api_key(
+            db,
+            "key-1",
+            "user-1",
+            "dept-1",
+            commit=False,
+        )
+        is True
+    )
 
     assert api_key.is_active is False
     db.flush.assert_called_once_with()
@@ -122,9 +131,40 @@ def test_auth_revoke_default_still_commits():
     db = MagicMock()
     db.query.return_value = query
 
-    assert AuthService.revoke_api_key(db, "key-1", "user-1") is True
+    assert AuthService.revoke_api_key(db, "key-1", "user-1", "dept-1") is True
 
     db.commit.assert_called_once_with()
+
+
+def test_auth_revoke_query_is_scoped_to_current_department():
+    query = MagicMock()
+    query.filter.return_value = query
+    query.first.return_value = None
+    db = MagicMock()
+    db.query.return_value = query
+
+    assert AuthService.revoke_api_key(db, "old-key", "user-1", "current-dept") is False
+
+    predicates = " ".join(str(call.args[0]) for call in query.filter.call_args_list)
+    assert "api_keys.user_id" in predicates
+    assert "api_keys.department_id" in predicates
+    db.commit.assert_not_called()
+    db.flush.assert_not_called()
+
+
+def test_auth_list_query_is_scoped_to_current_department():
+    query = MagicMock()
+    query.filter.return_value = query
+    query.order_by.return_value = query
+    query.all.return_value = []
+    db = MagicMock()
+    db.query.return_value = query
+
+    assert AuthService.list_api_keys(db, "user-1", "current-dept") == []
+
+    predicates = " ".join(str(arg) for arg in query.filter.call_args.args)
+    assert "api_keys.user_id" in predicates
+    assert "api_keys.department_id" in predicates
 
 
 def test_api_key_audit_commit_false_flushes_without_committing():
@@ -177,6 +217,17 @@ def test_create_success_commits_key_and_audit_once(monkeypatch):
     db.rollback.assert_not_called()
 
 
+def test_list_keys_scopes_moved_user_to_current_department(monkeypatch):
+    list_keys = MagicMock(return_value=[])
+    monkeypatch.setattr(AuthService, "list_api_keys", list_keys)
+    db = MagicMock()
+
+    result = auth_routes.list_api_keys(_principal(), db)
+
+    assert result == []
+    list_keys.assert_called_once_with(db, "user-1", "dept-1")
+
+
 @pytest.mark.parametrize(
     "failure_stage", ["create", "audit_add", "audit_flush", "commit"]
 )
@@ -220,7 +271,13 @@ def test_revoke_success_commits_key_and_audit_once(monkeypatch):
 
     assert result["success"] is True
     assert result["revoked_current_key"] is True
-    revoke.assert_called_once_with(db, "key-1", "user-1", commit=False)
+    revoke.assert_called_once_with(
+        db,
+        "key-1",
+        "user-1",
+        "dept-1",
+        commit=False,
+    )
     audit.log_api_key_revoke.assert_called_once_with(
         user_id="user-1",
         department_id="dept-1",
@@ -236,7 +293,7 @@ def test_revoke_failure_rolls_back_so_key_remains_active(monkeypatch, failure_st
     key = _api_key()
     db = MagicMock()
 
-    def revoke(_db, _key_id, _user_id, *, commit):
+    def revoke(_db, _key_id, _user_id, _department_id, *, commit):
         assert commit is False
         key.is_active = False
         return True
