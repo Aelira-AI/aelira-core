@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import hashlib
 import logging
 import os
+from urllib.parse import urlencode
 
 from fastapi.responses import JSONResponse
 
@@ -766,6 +767,7 @@ class MagicLinkRequestModel(BaseModel):
     # (open-signup mode or first-run bootstrap), optional otherwise
     name: Optional[str] = Field(None, min_length=2, max_length=100)
     institution: Optional[str] = Field(None, min_length=2, max_length=200)
+    next: Optional[str] = Field(None, max_length=2048)
 
 
 class MagicLinkVerifyRequest(BaseModel):
@@ -927,10 +929,18 @@ async def request_magic_link(
         signup_institution=request_body.institution,
     )
 
-    # Build magic link URL
-    magic_link_url = (
-        f"{settings.magic_link_base_url}/auth/verify?email={email}&token={token}"
-    )
+    # Build a link with only a same-origin path continuation. Keep this policy
+    # aligned with dashboard/src/utils/safeNext.ts.
+    next_path = request_body.next
+    if (
+        not next_path
+        or not next_path.startswith("/")
+        or next_path.startswith("//")
+        or next_path.startswith("/\\")
+    ):
+        next_path = "/dashboard"
+    query = urlencode({"email": email, "token": token, "next": next_path})
+    magic_link_url = f"{settings.magic_link_base_url}/auth/verify?{query}"
 
     # Send email (non-blocking)
     try:

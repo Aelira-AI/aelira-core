@@ -39,6 +39,7 @@ import {
   type MergedContentItem,
 } from '../utils/mergeCourseContent';
 import { summarizeBatchOutcome } from '../utils/batchActionResult';
+import { remediateAllAccounting } from '../utils/remediateAllAccounting';
 
 // ============================================================================
 // Helpers
@@ -433,12 +434,10 @@ export default function CanvasContentPage(): React.ReactElement {
   const handleRemediateAll = async (): Promise<void> => {
     if (remediableItems.length === 0) return;
 
-    const scannedCount = mergedItems.filter((item) => item.compliance_score !== null).length;
-    const skippedCount = scannedCount - remediableItems.length;
-
-    const total = remediableItems.length;
+    const accounting = remediateAllAccounting(mergedItems.length, remediableItems.length);
+    const { total, skipped: skippedCount } = accounting;
     setRemediatingAll(true);
-    setRemediateAllProgress({ done: 0, total });
+    setRemediateAllProgress({ done: skippedCount, total });
     setRemediatingIds((prev) => {
       const next = new Set(prev);
       remediableItems.forEach((item) => next.add(item.identity_key));
@@ -467,7 +466,7 @@ export default function CanvasContentPage(): React.ReactElement {
           next.delete(item.identity_key);
           return next;
         });
-        setRemediateAllProgress({ done: index + 1, total });
+        setRemediateAllProgress({ done: skippedCount + index + 1, total });
       }
     }
 
@@ -513,6 +512,19 @@ export default function CanvasContentPage(): React.ReactElement {
       <ArrowDown className="w-3 h-3" />
     );
   };
+
+  const renderSortableHeader = (field: SortField, label: string): React.ReactElement => (
+    <th
+      scope="col"
+      aria-sort={sortField === field ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className="text-left px-6 py-3 text-xs font-semibold text-[var(--content-secondary)]"
+    >
+      <button type="button" onClick={() => toggleSort(field)} className="inline-flex items-center gap-1">
+        {label}
+        <SortIcon field={field} />
+      </button>
+    </th>
+  );
 
   const contentTypes = useMemo(() => {
     // Derived from the unified list (not data.by_type) so an unscanned
@@ -903,42 +915,10 @@ export default function CanvasContentPage(): React.ReactElement {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[var(--border-primary)]">
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('title')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Name
-                      <SortIcon field="title" />
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('content_type')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Type
-                      <SortIcon field="content_type" />
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('compliance_score')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Score
-                      <SortIcon field="compliance_score" />
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('issue_count')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Issues
-                      <SortIcon field="issue_count" />
-                    </span>
-                  </th>
+                  {renderSortableHeader('title', 'Name')}
+                  {renderSortableHeader('content_type', 'Type')}
+                  {renderSortableHeader('compliance_score', 'Score')}
+                  {renderSortableHeader('issue_count', 'Issues')}
                   <th className="text-left px-6 py-3 text-xs font-semibold text-[var(--content-secondary)]">
                     Status
                   </th>

@@ -32,6 +32,11 @@ import {
   type ContentItemStatus,
 } from '../api/brightspaceContent';
 import { remediateAllInChunks } from '../utils/brightspaceRemediateAll';
+import {
+  brightspaceApprovalIds,
+  brightspaceApprovalSummary,
+} from '../utils/brightspaceBatchSelection';
+import { resolveBrightspaceContentStatus } from '../utils/brightspaceContentStatus';
 import { apiClient } from '../api/client';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -52,38 +57,6 @@ function getComplianceBadgeVariant(
 function getComplianceBadgeLabel(score: number | null): string {
   if (score === null) return 'Not scanned';
   return `${score.toFixed(0)}%`;
-}
-
-function getWritebackBadgeVariant(
-  status: string | null
-): 'accent' | 'success' | 'warning' | 'neutral' | null {
-  if (!status) return null;
-  switch (status) {
-    case 'remediated':
-      return 'accent';
-    case 'approved':
-      return 'accent';
-    case 'written_back':
-      return 'success';
-    case 'stale':
-      return 'warning';
-    case 'rolled_back':
-      return 'neutral';
-    default:
-      return null;
-  }
-}
-
-function getWritebackBadgeLabel(status: string | null): string | null {
-  if (!status) return null;
-  switch (status) {
-    case 'remediated':   return 'Remediated';
-    case 'approved':     return 'Approved';
-    case 'written_back': return 'Written back';
-    case 'stale':        return 'Stale';
-    case 'rolled_back':  return 'Rolled back';
-    default:             return null;
-  }
 }
 
 function getContentTypeIcon(contentType: string): React.ReactElement {
@@ -380,15 +353,7 @@ export default function BrightspaceContentPage({
   const handleApproveAll = async (): Promise<void> => {
     if (!data) return;
 
-    // Get all items with scores that have been scanned but not yet approved/written back
-    const eligibleIds = data.items
-      .filter(
-        (item) =>
-          item.compliance_score !== null &&
-          item.issue_count >= 0 &&
-          (!item.writeback_status || item.writeback_status === 'remediated')
-      )
-      .map((item) => item.cloud_file_id);
+    const eligibleIds = brightspaceApprovalIds(data.items);
 
     if (eligibleIds.length === 0) {
       toast.info('No items to approve.', 'Nothing to Do');
@@ -398,10 +363,12 @@ export default function BrightspaceContentPage({
     setApprovingAll(true);
     try {
       const result = await batchApproveContent({ cloud_file_ids: eligibleIds });
-      toast.success(
-        `Approved ${result.approved_count} item${result.approved_count !== 1 ? 's' : ''}.`,
-        'Batch Approve'
-      );
+      const summary = brightspaceApprovalSummary(result);
+      if (summary.status === 'success') {
+        toast.success(summary.message, 'Batch Approve');
+      } else {
+        toast.warning(summary.message, 'Batch Approve');
+      }
       // Refresh data
       await fetchStatus();
     } catch (err) {
@@ -480,6 +447,19 @@ export default function BrightspaceContentPage({
       <ArrowDown className="w-3 h-3" />
     );
   };
+
+  const renderSortableHeader = (field: SortField, label: string): React.ReactElement => (
+    <th
+      scope="col"
+      aria-sort={sortField === field ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className="text-left px-6 py-3 text-xs font-semibold text-[var(--content-secondary)]"
+    >
+      <button type="button" onClick={() => toggleSort(field)} className="inline-flex items-center gap-1">
+        {label}
+        {renderSortIcon(field)}
+      </button>
+    </th>
+  );
 
   const filteredAndSortedItems = useMemo(() => {
     if (!data) return [];
@@ -916,42 +896,10 @@ export default function BrightspaceContentPage({
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[var(--border-primary)]">
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('title')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Name
-                      {renderSortIcon('title')}
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('module_path')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Module
-                      {renderSortIcon('module_path')}
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('compliance_score')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Score
-                      {renderSortIcon('compliance_score')}
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('issue_count')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Issues
-                      {renderSortIcon('issue_count')}
-                    </span>
-                  </th>
+                  {renderSortableHeader('title', 'Name')}
+                  {renderSortableHeader('module_path', 'Module')}
+                  {renderSortableHeader('compliance_score', 'Score')}
+                  {renderSortableHeader('issue_count', 'Issues')}
                   <th className="text-left px-6 py-3 text-xs font-semibold text-[var(--content-secondary)]">
                     Status
                   </th>
@@ -1019,8 +967,7 @@ export default function BrightspaceContentPage({
                           items.map((item, idx) => {
                             const scoreBadgeVariant = getComplianceBadgeVariant(item.compliance_score);
                             const scoreBadgeLabel = getComplianceBadgeLabel(item.compliance_score);
-                            const wbVariant = getWritebackBadgeVariant(item.writeback_status);
-                            const wbLabel = getWritebackBadgeLabel(item.writeback_status);
+                            const statusBadge = resolveBrightspaceContentStatus(item);
 
                             return (
                               <tr
@@ -1088,12 +1035,12 @@ export default function BrightspaceContentPage({
 
                                 {/* Status */}
                                 <td className="px-6 py-3">
-                                  {wbVariant && wbLabel ? (
-                                    <Badge variant={wbVariant}>
+                                  {statusBadge ? (
+                                    <Badge variant={statusBadge.variant}>
                                       {item.writeback_status === 'written_back' && (
                                         <Check className="w-3 h-3" />
                                       )}
-                                      {wbLabel}
+                                      {statusBadge.label}
                                     </Badge>
                                   ) : item.compliance_score !== null ? (
                                     <Badge variant="neutral">Scanned</Badge>

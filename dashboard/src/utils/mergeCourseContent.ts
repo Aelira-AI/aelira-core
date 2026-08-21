@@ -25,6 +25,7 @@ export interface StatusContentItem {
   issue_count: number;
   writeback_status: string | null;
   has_remediated_version: boolean;
+  remediation_origin: 'automatic' | 'manual' | null;
   last_scanned_at: string | null;
   content_updated_at?: string | null;
   /** The scan whose results are current for this item — needed to call
@@ -60,6 +61,7 @@ export interface MergedContentItem {
   issue_count: number;
   writeback_status: string | null;
   has_remediated_version: boolean;
+  remediation_origin: 'automatic' | 'manual' | null;
   last_scanned_at: string | null;
   content_updated_at: string | null;
   scan_id: string | null;
@@ -100,6 +102,7 @@ function fromStatusItem(
     issue_count: item.issue_count,
     writeback_status: item.writeback_status,
     has_remediated_version: item.has_remediated_version,
+    remediation_origin: item.remediation_origin,
     last_scanned_at: item.last_scanned_at,
     content_updated_at: item.content_updated_at ?? null,
     scan_id: item.scan_id ?? null,
@@ -123,6 +126,7 @@ function fromLiveFile(
     issue_count: 0,
     writeback_status: null,
     has_remediated_version: false,
+    remediation_origin: null,
     last_scanned_at: null,
     content_updated_at: null,
     scan_id: null,
@@ -230,14 +234,9 @@ export interface ContentItemState {
 }
 
 /**
- * The visible per-item state: the actual reason a demo watching "pending
- * review" on every single row looks broken. HTML content is
- * auto-remediated at scan time (CanvasContentScanner.remediate_content_item,
- * called during the same scan that finds the issues); files only get
- * remediated via the explicit POST /education/remediate/{scan_id} action
- * — which is exactly why "Remediate All" correctly targets only files.
- * Nothing on screen said so; every remediated-but-not-yet-approved row
- * just read "pending review" regardless of how it got there.
+ * The visible per-item state. Remediation provenance is persisted by the
+ * backend; content type must never be used to guess how remediation happened.
+ * Legacy rows intentionally have a null origin and receive a generic label.
  *
  * Priority order (checked top to bottom — terminal writeback states win
  * over remediation state, which wins over the raw issue count):
@@ -247,10 +246,7 @@ export interface ContentItemState {
  *      variant ('written_back'/'writtenback')
  *   4. writeback_status === 'rejected'     -> rejected
  *   5. writeback_status === 'rolled_back'  -> rolled_back
- *   6. has_remediated_version              -> auto_remediated_pending_review
- *                                              (content_type !== 'file')
- *                                           -> remediated_pending_review
- *                                              (content_type === 'file')
+ *   6. has_remediated_version              -> origin-specific pending review
  *   7. issue_count === 0                   -> compliant
  *   8. otherwise                           -> needs_remediation
  *
@@ -262,15 +258,6 @@ export interface ContentItemState {
  * so without this check it would misread as still pending review —
  * exactly the kind of state-legibility gap this task exists to close.
  *
- * Auto vs manual remediation can't be read off has_remediated_version
- * alone — both remediation paths set the exact same boolean, with no
- * field recording which one ran. content_type is the discriminator: HTML
- * types (page/assignment/announcement/quiz/discussion) only ever reach
- * has_remediated_version via the scan-time auto-remediation step; 'file'
- * rows only ever reach it via the explicit per-item/batch remediate
- * action. If a future content type breaks that assumption (e.g. an
- * HTML-bearing type gets a manual remediation path too), this inference
- * needs revisiting.
  */
 export function contentItemState(item: MergedContentItem): ContentItemState {
   if (item.compliance_score === null) {
@@ -289,9 +276,19 @@ export function contentItemState(item: MergedContentItem): ContentItemState {
     return { key: 'rolled_back', label: 'Rolled back' };
   }
   if (item.has_remediated_version) {
-    return item.content_type === 'file'
-      ? { key: 'remediated_pending_review', label: 'Remediated · pending review' }
-      : { key: 'auto_remediated_pending_review', label: 'Auto-remediated · pending review' };
+    if (item.remediation_origin === 'automatic') {
+      return {
+        key: 'auto_remediated_pending_review',
+        label: 'Auto-remediated · pending review',
+      };
+    }
+    if (item.remediation_origin === 'manual') {
+      return {
+        key: 'remediated_pending_review',
+        label: 'Manually remediated · pending review',
+      };
+    }
+    return { key: 'remediated_pending_review', label: 'Remediated · pending review' };
   }
   if (item.issue_count === 0) {
     return { key: 'compliant', label: 'Compliant' };
@@ -316,8 +313,8 @@ export const CONTENT_ITEM_STATE_COLOR: Record<
 > = {
   unscanned: 'neutral',
   needs_remediation: 'warning',
-  auto_remediated_pending_review: 'warning',
-  remediated_pending_review: 'warning',
+  auto_remediated_pending_review: 'neutral',
+  remediated_pending_review: 'neutral',
   approved: 'accent',
   written_back: 'success',
   rejected: 'danger',

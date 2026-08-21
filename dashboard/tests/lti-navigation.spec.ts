@@ -285,6 +285,8 @@ test.describe('stable LTI overview navigation', () => {
           compliance_score: 50,
           issue_count: 1,
           writeback_status: phase === 'initial' ? null : phase,
+          has_remediated_version: phase !== 'initial',
+          approval_eligible: phase === 'remediated',
           module_path: 'Module 1',
         }],
       });
@@ -315,7 +317,14 @@ test.describe('stable LTI overview navigation', () => {
     await page.route('**/brightspace/content/batch-approve', async (route) => {
       actionBodies.approve.push(route.request().postDataJSON());
       phase = 'approved';
-      await json(route, { approved_count: 1 });
+      await json(route, {
+        requested_count: 1,
+        approved_count: 1,
+        skipped_count: 0,
+        failed_count: 0,
+        outcomes: [{ cloud_file_id: 'cf-action', status: 'approved', reason: null }],
+        errors: [],
+      });
     });
     await page.route('**/brightspace/content/batch-writeback', async (route) => {
       actionBodies.writeback.push(route.request().postDataJSON());

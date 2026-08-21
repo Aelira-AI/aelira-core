@@ -199,6 +199,33 @@ async def test_course_lti_staff_can_read_their_brightspace_content_status():
 
 
 @pytest.mark.asyncio
+async def test_lti_brightspace_status_returns_persisted_remediation_origin():
+    cloud_file = MagicMock()
+    cloud_file.id = "cf-1"
+    cloud_file.provider_file_id = "42"
+    cloud_file.file_name = "Topic"
+    cloud_file.file_type = "html"
+    cloud_file.last_compliance_score = None
+    cloud_file.last_scan_id = None
+    cloud_file.provider_metadata = {}
+    cloud_file.writeback_status = "pending_review"
+    cloud_file.last_scanned_at = None
+    cloud_file.has_remediated_version = True
+    cloud_file.remediation_origin = "automatic"
+    cloud_file.needs_rescan = False
+    db = MagicMock()
+    db.query.return_value.filter.return_value.all.return_value = [cloud_file]
+
+    result = await get_brightspace_content_status(
+        org_unit_id=101,
+        principal=_principal(course_id="101"),
+        db=db,
+    )
+
+    assert result["items"][0]["remediation_origin"] == "automatic"
+
+
+@pytest.mark.asyncio
 async def test_course_lti_staff_cannot_enumerate_another_course_item():
     cloud_file = MagicMock()
     cloud_file.id = "cf-other"

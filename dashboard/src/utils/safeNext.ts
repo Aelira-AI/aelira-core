@@ -20,3 +20,13 @@ export function isSafeNextPath(next: string | null | undefined): next is string 
 export function resolveSafeNext(next: string | null | undefined, fallback = '/dashboard'): string {
   return isSafeNextPath(next) ? next : fallback;
 }
+
+/** Builds an auth endpoint URL carrying only an encoded safe continuation. */
+export function buildAuthContinuationUrl(
+  baseUrl: string | undefined,
+  endpoint: string,
+  next: string | null | undefined
+): string {
+  const query = new URLSearchParams({ next: resolveSafeNext(next) });
+  return `${baseUrl ?? ''}${endpoint}?${query.toString()}`;
+}

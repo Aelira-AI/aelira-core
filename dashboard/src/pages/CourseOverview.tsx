@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getCourseOverview, CourseOverviewResponse, CourseOverviewItem } from '../api/canvasContent';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useLTISession } from '../hooks/useLTISession';
 import { LTILayout } from '../components/LTILayout';
 import { daysUntilAdaTitleIIDeadline } from '../utils/deadlines';
@@ -34,7 +34,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'compliance' | 'issues' | 'name'>('compliance');
-  const navigate = useNavigate();
+
 
   // LTI session validation — only runs when embedded in Canvas iframe
   const ltiSession = useLTISession(isLTI);
@@ -149,13 +149,12 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
     return courses;
   }
 
-  function handleCourseClick(courseId: string) {
-    if (isLTI) {
-      navigate(`/lti/course/${courseId}?from=overview`);
-    } else {
-      navigate(`/canvas/courses/${courseId}/content`);
-    }
-  }
+  const courseHref = (courseId: string) => {
+    const encodedCourseId = encodeURIComponent(courseId);
+    return isLTI
+      ? `/lti/course/${encodedCourseId}?from=overview`
+      : `/canvas/courses/${encodedCourseId}/content`;
+  };
 
   // When in LTI mode, delegate loading/session-error states to LTILayout
   const isLoading = isLTI
@@ -317,15 +316,16 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
                 return (
                   <tr
                     key={course.course_id}
-                    onClick={() => handleCourseClick(course.course_id)}
-                    className="border-b border-[var(--border-primary)] hover:bg-[var(--surface-tertiary)] cursor-pointer"
-                    role="link"
-                    tabIndex={0}
-                    onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && handleCourseClick(course.course_id)}
-                    aria-label={`${course.course_name}, ${scoreValue.toFixed(0)}% compliant, ${course.total_issues} issues`}
+                    className="border-b border-[var(--border-primary)] hover:bg-[var(--surface-tertiary)]"
                   >
                     <td className="px-4 py-3">
-                      <div className="font-medium text-[var(--content-primary)]">{course.course_name}</div>
+                      <Link
+                        to={courseHref(course.course_id)}
+                        className="font-medium text-[var(--content-accent)] hover:underline"
+                        aria-label={`${course.course_name}, ${scoreValue.toFixed(0)}% compliant, ${course.total_issues} issues`}
+                      >
+                        {course.course_name}
+                      </Link>
                       {course.course_code && (
                         <div className="text-xs text-[var(--content-tertiary)]">{course.course_code}</div>
                       )}

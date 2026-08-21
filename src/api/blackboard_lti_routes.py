@@ -271,8 +271,8 @@ async def blackboard_lti_launch(
                 content=_render_lti_error_page(
                     "Feature Not Available",
                     feature_error,
-                    "Ask your administrator to raise this department's tier.",
-                    show_upgrade_button=True,
+                    "Ask your administrator to review this workspace's configuration.",
+                    show_configuration_button=True,
                 ),
                 status_code=403,
             )
@@ -681,7 +681,7 @@ def _render_lti_error_page(
     title: str,
     message: str,
     help_text: str = "",
-    show_upgrade_button: bool = False,
+    show_configuration_button: bool = False,
 ) -> str:
     """
     Render a user-friendly error page for LTI launch failures.
@@ -690,16 +690,16 @@ def _render_lti_error_page(
         title: Error title
         message: Error message
         help_text: Additional help text
-        show_upgrade_button: Whether to show an upgrade CTA
+        show_configuration_button: Whether to show a configuration CTA
 
     Returns:
         HTML content for the error page
     """
-    upgrade_button = ""
-    if show_upgrade_button:
-        upgrade_button = """
+    configuration_button = ""
+    if show_configuration_button:
+        configuration_button = """
         <p style="margin-top: 16px; color: #4b5563;">
-            Ask your administrator to raise this department's tier.
+            Ask your administrator to review this workspace's configuration.
         </p>
         """
 
@@ -750,7 +750,7 @@ def _render_lti_error_page(
         <div class="error-icon">⚠</div>
         <h1>{title}</h1>
         <p class="message">{message}</p>
-        {upgrade_button}
+        {configuration_button}
         <p class="help-text">{help_text}</p>
         <p class="logo">Powered by Aelira - WCAG 2.1 Accessibility Platform</p>
     </body>

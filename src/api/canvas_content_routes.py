@@ -143,6 +143,7 @@ class ContentItemStatus(BaseModel):
     issue_count: int = 0
     writeback_status: Optional[str] = None
     has_remediated_version: bool = False
+    remediation_origin: Optional[str] = None
     current_remediation_artifact_id: Optional[str] = None
     # The scan whose results are current for this item — the client needs
     # this to call POST /education/remediate/{scan_id} for a per-item
@@ -662,6 +663,7 @@ async def get_course_content_status(
             issue_count=issue_counts.get(cf.last_scan_id, 0) if cf.last_scan_id else 0,
             writeback_status=cf.writeback_status,
             has_remediated_version=cf.has_remediated_version or False,
+            remediation_origin=cf.remediation_origin,
             current_remediation_artifact_id=(
                 cf.current_remediation_artifact_id
                 if isinstance(cf.current_remediation_artifact_id, str)
@@ -1061,6 +1063,7 @@ async def remediate_content_item(
                 remediation_client=remediation_client,
                 alt_text_client=alt_text_client,
                 requested_purposes=requested_purposes,
+                remediation_origin="manual",
             )
         finally:
             await api_client.close()
@@ -1216,6 +1219,7 @@ async def reject_content(
             ) from None
     else:
         cf.writeback_status = "rejected"
+        cf.remediation_origin = None
         db.commit()
 
     logger.info(

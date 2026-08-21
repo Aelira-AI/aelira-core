@@ -50,6 +50,7 @@ export interface ContentItemStatus {
   issue_count: number;
   writeback_status: string | null;
   has_remediated_version: boolean;
+  remediation_origin: 'automatic' | 'manual' | null;
   current_remediation_artifact_id: string | null;
   last_scanned_at: string | null;
   content_updated_at: string | null;

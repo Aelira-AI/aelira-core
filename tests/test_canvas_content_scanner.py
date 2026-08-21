@@ -1642,6 +1642,7 @@ async def test_canvas_html_remediation_contains_and_removes_real_output_artifact
         remediated_body=None,
         writeback_status=None,
         has_remediated_version=False,
+        remediation_origin=None,
         remediated_compliance_score=None,
     )
     scanner = CanvasContentScanner(AsyncMock(), db, "dept-1", "cred-1")
@@ -1664,6 +1665,7 @@ async def test_canvas_html_remediation_contains_and_removes_real_output_artifact
         result = await scanner.remediate_content_item(cloud_file)
 
     assert result["success"] is True
+    assert cloud_file.remediation_origin == "automatic"
     assert captured["config"].create_backup is False
     assert captured["config"].output_directory == str(captured["source"].parent)
     assert not captured["source"].parent.exists()
@@ -1689,6 +1691,7 @@ async def test_verified_response_and_persistence_use_authoritative_rescan_counts
         remediated_body=None,
         writeback_status=None,
         has_remediated_version=False,
+        remediation_origin=None,
         remediated_compliance_score=None,
         remediated_issues_fixed=None,
         remediated_issues_remaining=None,
@@ -1950,6 +1953,7 @@ async def test_raising_remediator_removes_backup_partial_and_source_without_leak
         remediated_body=None,
         writeback_status=None,
         has_remediated_version=False,
+        remediation_origin=None,
         remediated_compliance_score=None,
     )
     scanner = CanvasContentScanner(AsyncMock(), db, "dept-1", "cred-1")
@@ -2332,6 +2336,7 @@ async def test_control_bearing_image_description_stays_manual_and_unfixed_on_res
         remediated_body=None,
         writeback_status=None,
         has_remediated_version=False,
+        remediation_origin=None,
         remediated_compliance_score=None,
         remediated_issues_fixed=None,
         remediated_issues_remaining=None,
@@ -2576,6 +2581,7 @@ async def test_animated_inline_image_stays_manual_without_provider_call():
         remediated_body=None,
         writeback_status=None,
         has_remediated_version=False,
+        remediation_origin=None,
         remediated_compliance_score=None,
         remediated_issues_fixed=None,
         remediated_issues_remaining=None,

@@ -329,6 +329,7 @@ async def _process_upload_path(
 
             # Update cloud file record to track remediated version
             cloud_file.has_remediated_version = True
+            cloud_file.remediation_origin = "manual"
             cloud_file.remediated_file_id = result.get("new_file_id")
             if assert_owned is not None:
                 await assert_owned()

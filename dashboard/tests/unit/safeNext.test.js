@@ -5,7 +5,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isSafeNextPath, resolveSafeNext } from '../../src/utils/safeNext.ts';
+import { buildAuthContinuationUrl, isSafeNextPath, resolveSafeNext } from '../../src/utils/safeNext.ts';
 
 describe('isSafeNextPath', () => {
   it('accepts a plain relative path', () => {
@@ -38,6 +38,22 @@ describe('isSafeNextPath', () => {
     assert.equal(isSafeNextPath(null), false);
     assert.equal(isSafeNextPath(undefined), false);
     assert.equal(isSafeNextPath(''), false);
+  });
+});
+
+describe('buildAuthContinuationUrl', () => {
+  it('encodes a safe continuation for an auth endpoint', () => {
+    assert.equal(
+      buildAuthContinuationUrl('https://api.example.test', '/auth/google/login', '/canvas/42?tab=files'),
+      'https://api.example.test/auth/google/login?next=%2Fcanvas%2F42%3Ftab%3Dfiles'
+    );
+  });
+
+  it('replaces unsafe continuations before encoding', () => {
+    assert.equal(
+      buildAuthContinuationUrl('https://api.example.test', '/auth/microsoft/login', '//evil.example'),
+      'https://api.example.test/auth/microsoft/login?next=%2Fdashboard'
+    );
   });
 });
 

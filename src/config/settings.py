@@ -667,12 +667,11 @@ class Settings(BaseSettings):
 # =============================================================================
 # Tier-based Quota Configuration
 # =============================================================================
-# These define the limits for each pricing tier.
+# These define capacity defaults for each compatible workspace shape.
 # -1 means unlimited for that metric.
 
 TIER_QUOTAS = {
-    # Aelira Core has no pricing tiers — everything is free. The two entries
-    # here are workspace shapes, not plans: "individual" is a personal
+    # The two entries here are workspace shapes, not plans: "individual" is a personal
     # single-user workspace, "department" is a shared multi-user one. The
     # quota mechanism is retained so an operator with capacity constraints
     # can tighten any limit by editing these values.
@@ -728,8 +727,8 @@ TIER_QUOTAS = {
 # Account Limits
 # =============================================================================
 # Caps the number of self-service individual signups a deployment will accept.
-# Everything in Aelira Core is free; this bound exists so a publicly reachable
-# deployment can't be flooded with workspace creations. Operators can raise or
+# This bound prevents a publicly reachable deployment from being flooded with
+# workspace creations. Operators can raise or
 # lower it.
 
 # Maximum number of individual (self-signup) workspaces allowed

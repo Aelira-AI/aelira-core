@@ -33,6 +33,48 @@ router = APIRouter(prefix="/auth", tags=["oauth"])
 
 # Tiers that allow OAuth login
 OAUTH_ALLOWED_TIERS = {"department"}
+OAUTH_NEXT_COOKIE = "oauth_next"
+OAUTH_ACCOUNT_UNAVAILABLE = "account_unavailable"
+OAUTH_NOT_ALLOWED_MESSAGE = (
+    "No account exists for this email. Ask your administrator for an invitation."
+)
+
+
+def _safe_next_path(next_path: str | None) -> str:
+    """Resolve an untrusted continuation using the dashboard's path policy."""
+    if (
+        not next_path
+        or not next_path.startswith("/")
+        or next_path.startswith("//")
+        or next_path.startswith("/\\")
+    ):
+        return "/dashboard"
+    return next_path
+
+
+def _set_oauth_next_cookie(
+    response: RedirectResponse, next_path: str | None, settings
+) -> None:
+    response.set_cookie(
+        key=OAUTH_NEXT_COOKIE,
+        value=_safe_next_path(next_path),
+        max_age=600,
+        httponly=True,
+        secure=settings.session_cookie_secure,
+        samesite="lax",
+    )
+
+
+def _oauth_error_response(settings, error: str, message: str | None = None):
+    query = {"error": error}
+    if message:
+        query["message"] = message
+    response = RedirectResponse(
+        url=f"{settings.magic_link_base_url.rstrip('/')}/login?{urlencode(query)}"
+    )
+    response.delete_cookie(key="oauth_state")
+    response.delete_cookie(key=OAUTH_NEXT_COOKIE)
+    return response
 
 
 def _check_oauth_tier(db: Session, email: str) -> tuple[bool, str, Department | None]:
@@ -45,6 +87,8 @@ def _check_oauth_tier(db: Session, email: str) -> tuple[bool, str, Department | 
     # Existing users can always log in via OAuth, whatever their workspace type
     user = db.query(User).filter(User.email == email.lower()).first()
     if user:
+        if user.is_active is False:
+            return False, OAUTH_ACCOUNT_UNAVAILABLE, None
         department = (
             db.query(Department).filter(Department.id == user.department_id).first()
         )
@@ -71,8 +115,7 @@ def _check_oauth_tier(db: Session, email: str) -> tuple[bool, str, Department | 
 
     return (
         False,
-        "No account exists for this email. "
-        "Ask your administrator for an invitation.",
+        OAUTH_NOT_ALLOWED_MESSAGE,
         None,
     )
 
@@ -87,7 +130,7 @@ GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 
 @router.get("/google/login")
-async def google_login(request: Request):
+async def google_login(request: Request, next: str | None = None):
     """
     Initiate Google OAuth login.
 
@@ -128,6 +171,7 @@ async def google_login(request: Request):
         secure=settings.session_cookie_secure,
         samesite="lax",
     )
+    _set_oauth_next_cookie(response, next, settings)
 
     logger.info("Initiating Google OAuth login")
     return response
@@ -136,10 +180,27 @@ async def google_login(request: Request):
 @router.get("/google/callback")
 async def google_callback(
     request: Request,
-    code: str = None,
-    state: str = None,
-    error: str = None,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
     db: Session = Depends(get_db_dependency),
+):
+    """Handle Google OAuth callbacks through a cleanup-safe public boundary."""
+    settings = get_settings()
+    try:
+        return await _google_callback_impl(request, code, state, error, db)
+    except Exception:
+        db.rollback()
+        logger.exception("Unexpected Google OAuth callback failure")
+        return _oauth_error_response(settings, "oauth_error")
+
+
+async def _google_callback_impl(
+    request: Request,
+    code: str | None,
+    state: str | None,
+    error: str | None,
+    db: Session,
 ):
     """
     Handle Google OAuth callback.
@@ -152,17 +213,13 @@ async def google_callback(
     # Check for errors
     if error:
         logger.warning(f"Google OAuth error: {error}")
-        return RedirectResponse(
-            url=f"{settings.magic_link_base_url}/login?error=oauth_denied"
-        )
+        return _oauth_error_response(settings, "oauth_denied")
 
     # Validate state (CSRF protection) - timing-safe comparison
     stored_state = request.cookies.get("oauth_state")
-    if not stored_state or not secrets.compare_digest(stored_state, state):
+    if not stored_state or not state or not secrets.compare_digest(stored_state, state):
         logger.warning("Google OAuth state mismatch")
-        return RedirectResponse(
-            url=f"{settings.magic_link_base_url}/login?error=invalid_state"
-        )
+        return _oauth_error_response(settings, "invalid_state")
 
     # Exchange code for tokens
     try:
@@ -181,9 +238,7 @@ async def google_callback(
 
             if "error" in token_data:
                 logger.error(f"Google token error: {token_data}")
-                return RedirectResponse(
-                    url=f"{settings.magic_link_base_url}/login?error=token_error"
-                )
+                return _oauth_error_response(settings, "token_error")
 
             # Get user info
             userinfo_response = await client.get(
@@ -194,9 +249,7 @@ async def google_callback(
 
     except Exception as e:
         logger.error(f"Google OAuth error: {e}")
-        return RedirectResponse(
-            url=f"{settings.magic_link_base_url}/login?error=oauth_error"
-        )
+        return _oauth_error_response(settings, "oauth_error")
 
     email = userinfo.get("email", "").lower()
     google_id = userinfo.get("id")
@@ -207,9 +260,9 @@ async def google_callback(
     is_allowed, message, department = _check_oauth_tier(db, email)
     if not is_allowed:
         logger.warning(f"Google OAuth denied for {email}: {message}")
-        return RedirectResponse(
-            url=f"{settings.magic_link_base_url}/login?error=tier_required&message={message}"
-        )
+        if message == OAUTH_ACCOUNT_UNAVAILABLE:
+            return _oauth_error_response(settings, "oauth_error")
+        return _oauth_error_response(settings, "tier_required", message)
 
     # Get or create user
     user = db.query(User).filter(User.email == email).first()
@@ -227,13 +280,10 @@ async def google_callback(
         # Check if email is blocked (deactivated/deleted account)
         from ..services.account_deletion_service import AccountDeletionService
 
-        blocked, block_reason = AccountDeletionService.is_email_blocked(db, email)
+        blocked, _block_reason = AccountDeletionService.is_email_blocked(db, email)
         if blocked:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=block_reason
-                or "This email address is not available for registration.",
-            )
+            logger.warning("Google OAuth registration blocked for %s", email)
+            return _oauth_error_response(settings, "oauth_error")
 
         # Create new user
         user = User(
@@ -248,9 +298,7 @@ async def google_callback(
             email_verified_at=datetime.now(timezone.utc),
         )
         db.add(user)
-
-    db.commit()
-    db.refresh(user)
+        db.flush()
 
     # Get client info for session
     client_ip = request.client.host if request.client else "unknown"
@@ -269,9 +317,10 @@ async def google_callback(
         )
     )
 
-    # Redirect to dashboard with cookies
+    # Redirect to the validated same-origin continuation with cookies.
+    next_path = _safe_next_path(request.cookies.get(OAUTH_NEXT_COOKIE))
     response = RedirectResponse(
-        url=f"{settings.magic_link_base_url}/dashboard",
+        url=f"{settings.magic_link_base_url.rstrip('/')}{next_path}",
         status_code=302,
     )
 
@@ -298,8 +347,9 @@ async def google_callback(
         **cookie_settings,
     )
 
-    # Clear OAuth state cookie
+    # Clear one-time OAuth cookies.
     response.delete_cookie(key="oauth_state")
+    response.delete_cookie(key=OAUTH_NEXT_COOKIE)
 
     logger.info(f"Google OAuth login successful for {email}")
     return response
@@ -322,7 +372,7 @@ MICROSOFT_GRAPH_URL = "https://graph.microsoft.com/v1.0/me"
 
 
 @router.get("/microsoft/login")
-async def microsoft_login(request: Request):
+async def microsoft_login(request: Request, next: str | None = None):
     """
     Initiate Microsoft OAuth login.
 
@@ -359,6 +409,7 @@ async def microsoft_login(request: Request):
         secure=settings.session_cookie_secure,
         samesite="lax",
     )
+    _set_oauth_next_cookie(response, next, settings)
 
     logger.info("Initiating Microsoft OAuth login")
     return response
@@ -367,11 +418,31 @@ async def microsoft_login(request: Request):
 @router.get("/microsoft/callback")
 async def microsoft_callback(
     request: Request,
-    code: str = None,
-    state: str = None,
-    error: str = None,
-    error_description: str = None,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
     db: Session = Depends(get_db_dependency),
+):
+    """Handle Microsoft OAuth callbacks through a cleanup-safe public boundary."""
+    settings = get_settings()
+    try:
+        return await _microsoft_callback_impl(
+            request, code, state, error, error_description, db
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("Unexpected Microsoft OAuth callback failure")
+        return _oauth_error_response(settings, "oauth_error")
+
+
+async def _microsoft_callback_impl(
+    request: Request,
+    code: str | None,
+    state: str | None,
+    error: str | None,
+    error_description: str | None,
+    db: Session,
 ):
     """
     Handle Microsoft OAuth callback.
@@ -382,17 +453,13 @@ async def microsoft_callback(
     # Check for errors
     if error:
         logger.warning(f"Microsoft OAuth error: {error} - {error_description}")
-        return RedirectResponse(
-            url=f"{settings.magic_link_base_url}/login?error=oauth_denied"
-        )
+        return _oauth_error_response(settings, "oauth_denied")
 
     # Validate state - timing-safe comparison
     stored_state = request.cookies.get("oauth_state")
-    if not stored_state or not secrets.compare_digest(stored_state, state):
+    if not stored_state or not state or not secrets.compare_digest(stored_state, state):
         logger.warning("Microsoft OAuth state mismatch")
-        return RedirectResponse(
-            url=f"{settings.magic_link_base_url}/login?error=invalid_state"
-        )
+        return _oauth_error_response(settings, "invalid_state")
 
     # Exchange code for tokens
     try:
@@ -412,9 +479,7 @@ async def microsoft_callback(
 
             if "error" in token_data:
                 logger.error(f"Microsoft token error: {token_data}")
-                return RedirectResponse(
-                    url=f"{settings.magic_link_base_url}/login?error=token_error"
-                )
+                return _oauth_error_response(settings, "token_error")
 
             # Get user info from Graph API
             userinfo_response = await client.get(
@@ -425,9 +490,7 @@ async def microsoft_callback(
 
     except Exception as e:
         logger.error(f"Microsoft OAuth error: {e}")
-        return RedirectResponse(
-            url=f"{settings.magic_link_base_url}/login?error=oauth_error"
-        )
+        return _oauth_error_response(settings, "oauth_error")
 
     email = (userinfo.get("mail") or userinfo.get("userPrincipalName", "")).lower()
     microsoft_id = userinfo.get("id")
@@ -435,17 +498,15 @@ async def microsoft_callback(
 
     if not email:
         logger.error("Microsoft OAuth: No email returned")
-        return RedirectResponse(
-            url=f"{settings.magic_link_base_url}/login?error=no_email"
-        )
+        return _oauth_error_response(settings, "no_email")
 
     # Check tier
     is_allowed, message, department = _check_oauth_tier(db, email)
     if not is_allowed:
         logger.warning(f"Microsoft OAuth denied for {email}: {message}")
-        return RedirectResponse(
-            url=f"{settings.magic_link_base_url}/login?error=tier_required"
-        )
+        if message == OAUTH_ACCOUNT_UNAVAILABLE:
+            return _oauth_error_response(settings, "oauth_error")
+        return _oauth_error_response(settings, "tier_required", message)
 
     # Get or create user
     user = db.query(User).filter(User.email == email).first()
@@ -461,13 +522,10 @@ async def microsoft_callback(
         # Check if email is blocked (deactivated/deleted account)
         from ..services.account_deletion_service import AccountDeletionService
 
-        blocked, block_reason = AccountDeletionService.is_email_blocked(db, email)
+        blocked, _block_reason = AccountDeletionService.is_email_blocked(db, email)
         if blocked:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=block_reason
-                or "This email address is not available for registration.",
-            )
+            logger.warning("Microsoft OAuth registration blocked for %s", email)
+            return _oauth_error_response(settings, "oauth_error")
 
         user = User(
             email=email,
@@ -480,9 +538,7 @@ async def microsoft_callback(
             email_verified_at=datetime.now(timezone.utc),
         )
         db.add(user)
-
-    db.commit()
-    db.refresh(user)
+        db.flush()
 
     # Get client info
     client_ip = request.client.host if request.client else "unknown"
@@ -501,9 +557,10 @@ async def microsoft_callback(
         )
     )
 
-    # Redirect with cookies
+    # Redirect to the validated same-origin continuation with cookies.
+    next_path = _safe_next_path(request.cookies.get(OAUTH_NEXT_COOKIE))
     response = RedirectResponse(
-        url=f"{settings.magic_link_base_url}/dashboard",
+        url=f"{settings.magic_link_base_url.rstrip('/')}{next_path}",
         status_code=302,
     )
 
@@ -531,6 +588,7 @@ async def microsoft_callback(
     )
 
     response.delete_cookie(key="oauth_state")
+    response.delete_cookie(key=OAUTH_NEXT_COOKIE)
 
     logger.info(f"Microsoft OAuth login successful for {email}")
     return response
@@ -574,14 +632,13 @@ async def oauth_status(
     result = {
         "google_available": bool(settings.google_oauth_client_id),
         "microsoft_available": bool(settings.microsoft_oauth_client_id),
-        "oauth_allowed": False,
+        # Do not reveal whether an email belongs to an active, inactive, or
+        # unknown account. The callback performs the authoritative policy
+        # check after provider authentication.
+        "oauth_allowed": bool(
+            settings.google_oauth_client_id or settings.microsoft_oauth_client_id
+        ),
         "message": None,
     }
-
-    if email:
-        is_allowed, message, _ = _check_oauth_tier(db, email)
-        result["oauth_allowed"] = is_allowed
-        if not is_allowed:
-            result["message"] = message
 
     return result

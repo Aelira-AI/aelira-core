@@ -837,6 +837,7 @@ class CanvasContentScanner:
         remediation_client: Any = None,
         alt_text_client: Any = None,
         requested_purposes: Optional[set[str]] = None,
+        remediation_origin: str = "automatic",
     ) -> Dict[str, Any]:
         """
         Load accessibility issues from the last scan, run HtmlRemediator
@@ -849,6 +850,8 @@ class CanvasContentScanner:
         Returns:
             Dict with remediation result summary
         """
+        if remediation_origin not in {"automatic", "manual"}:
+            raise ValueError("invalid remediation origin")
         requested_purposes = requested_purposes or set()
         remediation_tracker = _AIUsageTracker(
             remediation_client,
@@ -922,6 +925,7 @@ class CanvasContentScanner:
             "remediated_body",
             "writeback_status",
             "has_remediated_version",
+            "remediation_origin",
             "remediated_compliance_score",
             "remediated_issues_fixed",
             "remediated_issues_remaining",
@@ -1029,6 +1033,7 @@ class CanvasContentScanner:
             cloud_file.remediated_body = pending.body
             cloud_file.writeback_status = "pending_review"
             cloud_file.has_remediated_version = True
+            cloud_file.remediation_origin = remediation_origin
             cloud_file.remediated_compliance_score = pending.remediated_score
 
             verification = pending.verification

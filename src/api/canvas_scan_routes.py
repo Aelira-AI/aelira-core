@@ -113,6 +113,7 @@ class FileScanStatus(BaseModel):
     issues_count: int = 0
     status: str = "pending"
     has_remediated_version: bool = False
+    remediation_origin: Optional[str] = None
 
 
 class CourseScanStatusResponse(BaseModel):
@@ -626,6 +627,7 @@ async def get_course_scan_status(
                 issues_count=issues_count,
                 status=status,
                 has_remediated_version=has_remediated,
+                remediation_origin=cf.remediation_origin,
             )
         )
 

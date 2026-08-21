@@ -687,6 +687,47 @@ class TestMagicLinkRequest:
         }
         assert session_service.create_magic_link.called
 
+    @pytest.mark.parametrize(
+        ("requested_next", "expected_next"),
+        [
+            (
+                "/canvas/courses/42/content?tab=files",
+                "/canvas/courses/42/content?tab=files",
+            ),
+            ("//evil.example", "/dashboard"),
+            ("https://evil.example/steal", "/dashboard"),
+            ("/\\\\evil.example", "/dashboard"),
+            ("\\\\evil.example", "/dashboard"),
+        ],
+    )
+    def test_generated_link_carries_only_safe_next(
+        self, client, monkeypatch, requested_next, expected_next
+    ):
+        from urllib.parse import parse_qs, urlparse
+
+        _allow_rate_limit(monkeypatch)
+        existing_user = MagicMock(is_active=True)
+        session_service = MagicMock()
+        session_service.create_magic_link.return_value = "tok-123"
+        monkeypatch.setattr(auth_routes, "get_session_service", lambda: session_service)
+        email_service = MagicMock()
+        email_service.is_configured.return_value = True
+        email_service.send_magic_link = AsyncMock(return_value={"success": True})
+        monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
+        _use_db(
+            _db_with({DeletedEmail: {"first": None}, User: {"first": existing_user}})
+        )
+
+        response = client.post(
+            "/auth/magic-link/request",
+            json={"email": EDU_EMAIL, "next": requested_next},
+        )
+
+        assert response.status_code == 200
+        email_service.send_magic_link.assert_awaited_once()
+        sent_url = email_service.send_magic_link.await_args.kwargs["magic_link_url"]
+        assert parse_qs(urlparse(sent_url).query)["next"] == [expected_next]
+
     def test_unknown_email_closed_signup_returns_generic_success(
         self, client, monkeypatch
     ):

@@ -1739,6 +1739,11 @@ async def remediate_scan(
     original_cloud_remediated = (
         resolved_cloud_file.has_remediated_version if resolved_cloud_file else None
     )
+    original_remediation_origin = (
+        getattr(resolved_cloud_file, "remediation_origin", None)
+        if resolved_cloud_file
+        else None
+    )
     artifact = None
     artifact_publication = None
     artifact_service = None
@@ -2111,6 +2116,7 @@ async def remediate_scan(
         if resolved_cloud_file is not None:
             try:
                 resolved_cloud_file.has_remediated_version = original_cloud_remediated
+                resolved_cloud_file.remediation_origin = original_remediation_origin
             except Exception:
                 logger.warning(
                     "Failed to restore in-memory CloudFile remediation status",

@@ -58,6 +58,7 @@ from ..auth.redis_rate_limiter import OAuthStateManager
 from ..ai.lms_remediation_client import LMSRemediationClient
 from ..services.remediation_artifact_service import (
     ArtifactAuthorizationError,
+    ArtifactError,
     ArtifactPublicationResult,
     RemediationArtifactService,
 )
@@ -1361,7 +1362,8 @@ async def _remediate_file_impl(
     artifact = None
     artifact_publication = None
 
-    if _is_inline_html_content(cloud_file, ext):
+    inline_html = _is_inline_html_content(cloud_file, ext)
+    if inline_html:
         if not isinstance(cloud_file.content_body, str) or not cloud_file.content_body:
             return RemediationOutcome(
                 cloud_file_id=str(cloud_file.id),
@@ -1563,6 +1565,11 @@ async def _remediate_file_impl(
     manual = _bounded_count(getattr(result, "manual_count", 0))
     failed = _bounded_count(getattr(result, "failed_count", 0))
     cloud_file.has_remediated_version = bool(durable_output and fixed > 0)
+    cloud_file.remediation_origin = (
+        ("automatic" if inline_html else "manual")
+        if cloud_file.has_remediated_version
+        else None
+    )
     cloud_file.remediated_issues_fixed = fixed
     cloud_file.remediated_issues_remaining = manual + failed
     cloud_file.writeback_status = (
@@ -1922,6 +1929,8 @@ async def get_brightspace_content_status(
                 ),
                 "scan_status": latest_scan.status.value if latest_scan else None,
                 "has_remediated_version": cf.has_remediated_version,
+                "approval_eligible": _brightspace_approval_eligibility(cf).eligible,
+                "remediation_origin": cf.remediation_origin,
                 "needs_rescan": cf.needs_rescan,
             }
         )
@@ -2015,6 +2024,55 @@ async def disconnect_brightspace(
 # =============================================================================
 # Content Review & Writeback
 # =============================================================================
+
+
+@dataclass(frozen=True)
+class _BrightspaceApprovalEligibility:
+    eligible: bool
+    authority: Optional[Literal["html", "artifact"]] = None
+    reason: Optional[str] = None
+
+
+def _brightspace_approval_eligibility(
+    cloud_file: CloudFile, *, now: Optional[datetime] = None
+) -> _BrightspaceApprovalEligibility:
+    """Return the server-authoritative durable approval authority for an item."""
+    terminal_statuses = {
+        "approved",
+        "written_back",
+        "writtenback",
+        "rejected",
+        "rolled_back",
+    }
+    if cloud_file.writeback_status in terminal_statuses:
+        return _BrightspaceApprovalEligibility(False, reason="already_terminal")
+    if cloud_file.remediated_body:
+        return _BrightspaceApprovalEligibility(True, authority="html")
+
+    artifact_id = cloud_file.current_remediation_artifact_id
+    artifact = cloud_file.current_remediation_artifact
+    effective_now = now or datetime.now(timezone.utc)
+    artifact_is_current = (
+        bool(artifact_id)
+        and artifact is not None
+        and artifact.id == artifact_id
+        and artifact.cloud_file_id == cloud_file.id
+        and artifact.department_id == cloud_file.department_id
+        and artifact.provider == CloudProvider.BRIGHTSPACE.value
+    )
+    artifact_is_approvable = artifact_is_current and (
+        artifact.lifecycle_status == "available"
+        and artifact.review_status == "pending"
+        and artifact.cleanup_claimed_at is None
+        and artifact.written_back_at is None
+        and artifact.published_at is not None
+        and artifact.expires_at > effective_now
+    )
+    if artifact_is_approvable:
+        return _BrightspaceApprovalEligibility(True, authority="artifact")
+    return _BrightspaceApprovalEligibility(
+        False, reason="no_durable_remediation_authority"
+    )
 
 
 def _get_cloud_file_or_404(
@@ -2296,10 +2354,25 @@ async def approve_content(
 ) -> Dict[str, Any]:
     """Approve remediated content for write-back."""
     cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
-    if not cf.remediated_body:
-        raise HTTPException(status_code=400, detail="No remediated content to approve")
-    cf.writeback_status = "approved"
-    db.commit()
+    eligibility = _brightspace_approval_eligibility(cf)
+    if not eligibility.eligible:
+        raise HTTPException(status_code=400, detail=eligibility.reason)
+    try:
+        if eligibility.authority == "artifact":
+            RemediationArtifactService.from_settings().approve(
+                db,
+                artifact_id=cf.current_remediation_artifact_id,
+                approved_by_id=principal.user_id,
+                approved_by_ref=f"{principal.auth_method}:{principal.user_id}",
+            )
+        else:
+            cf.writeback_status = "approved"
+        db.commit()
+    except ArtifactError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_approval_validation_failed"
+        ) from None
     return {"success": True, "message": "Content approved"}
 
 
@@ -2311,8 +2384,27 @@ async def reject_content(
 ) -> Dict[str, Any]:
     """Reject remediated content."""
     cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
-    cf.writeback_status = "rejected"
-    db.commit()
+    eligibility = _brightspace_approval_eligibility(cf)
+    if not eligibility.eligible:
+        raise HTTPException(status_code=400, detail=eligibility.reason)
+    try:
+        if eligibility.authority == "artifact":
+            RemediationArtifactService.from_settings().reject(
+                db,
+                artifact_id=cf.current_remediation_artifact_id,
+                rejected_by_id=principal.user_id,
+                rejected_by_ref=f"{principal.auth_method}:{principal.user_id}",
+            )
+        else:
+            cf.writeback_status = "rejected"
+            cf.has_remediated_version = False
+            cf.remediation_origin = None
+        db.commit()
+    except ArtifactError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_rejection_validation_failed"
+        ) from None
     return {"success": True, "message": "Content rejected"}
 
 
@@ -2357,13 +2449,67 @@ async def batch_approve_content(
                 status_code=404, detail="Content item not found"
             ) from None
 
-    approved = 0
-    for cf in cloud_files:
-        if cf.remediated_body:
-            cf.writeback_status = "approved"
-            approved += 1
+    by_id = {str(cloud_file.id): cloud_file for cloud_file in cloud_files}
+    outcomes: List[Dict[str, Optional[str]]] = []
+    artifact_service: Optional[RemediationArtifactService] = None
+    for cloud_file_id in cloud_file_ids:
+        cloud_file = by_id[cloud_file_id]
+        eligibility = _brightspace_approval_eligibility(cloud_file)
+        if not eligibility.eligible:
+            outcomes.append(
+                {
+                    "cloud_file_id": cloud_file_id,
+                    "status": "skipped",
+                    "reason": eligibility.reason,
+                }
+            )
+            continue
+        try:
+            with db.begin_nested():
+                if eligibility.authority == "artifact":
+                    if artifact_service is None:
+                        artifact_service = RemediationArtifactService.from_settings()
+                    artifact_service.approve(
+                        db,
+                        artifact_id=cloud_file.current_remediation_artifact_id,
+                        approved_by_id=principal.user_id,
+                        approved_by_ref=f"{principal.auth_method}:{principal.user_id}",
+                    )
+                else:
+                    cloud_file.writeback_status = "approved"
+            outcomes.append(
+                {
+                    "cloud_file_id": cloud_file_id,
+                    "status": "approved",
+                    "reason": None,
+                }
+            )
+        except ArtifactError:
+            outcomes.append(
+                {
+                    "cloud_file_id": cloud_file_id,
+                    "status": "failed",
+                    "reason": "artifact_approval_validation_failed",
+                }
+            )
+
     db.commit()
-    return {"approved_count": approved}
+    approved = sum(item["status"] == "approved" for item in outcomes)
+    skipped = sum(item["status"] == "skipped" for item in outcomes)
+    failed = sum(item["status"] == "failed" for item in outcomes)
+    errors = [
+        f'{item["cloud_file_id"]}: {item["reason"]}'
+        for item in outcomes
+        if item["reason"] is not None
+    ]
+    return {
+        "requested_count": len(cloud_file_ids),
+        "approved_count": approved,
+        "skipped_count": skipped,
+        "failed_count": failed,
+        "outcomes": outcomes,
+        "errors": errors,
+    }
 
 
 async def _writeback_single(api_client, cf: CloudFile, org_unit_id, topic_id, db=None):

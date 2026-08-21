@@ -291,6 +291,7 @@ async def _run_document_route(
         if db.cloud_file is not None:
             db.cloud_file.current_remediation_artifact_id = artifact.id
             db.cloud_file.has_remediated_version = True
+            db.cloud_file.remediation_origin = "manual"
         return artifact
 
     artifact_service.claim_and_publish.side_effect = persist
@@ -323,6 +324,7 @@ async def test_generic_audit_failure_rolls_back_fixes_and_restores_scan(tmp_path
     path.write_bytes(b"document")
     scan = _scan(path)
     cloud_file = _cloud_file()
+    cloud_file.remediation_origin = "automatic"
     db = _TransactionDB(cloud_file)
 
     with pytest.raises(HTTPException) as caught:
@@ -344,6 +346,7 @@ async def test_generic_audit_failure_rolls_back_fixes_and_restores_scan(tmp_path
     assert scan.status == ScanStatus.PROCESSING
     assert scan.remediation_outcome is None
     assert cloud_file.has_remediated_version is False
+    assert cloud_file.remediation_origin == "automatic"
 
 
 @pytest.mark.asyncio

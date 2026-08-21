@@ -674,6 +674,7 @@ async def test_brightspace_html_helper_reports_real_remediation_usage():
         content_body='<html lang="en"><body><button></button></body></html>',
         remediated_body=None,
         has_remediated_version=False,
+        remediation_origin=None,
         remediated_issues_fixed=0,
         remediated_issues_remaining=0,
         writeback_status=None,
@@ -731,6 +732,7 @@ async def test_brightspace_html_helper_promotes_only_verified_durable_output(ver
         content_body="<html><body><p>Course content</p></body></html>",
         remediated_body=None,
         has_remediated_version=False,
+        remediation_origin=None,
         remediated_issues_fixed=0,
         remediated_issues_remaining=0,
         writeback_status=None,
@@ -774,6 +776,7 @@ async def test_brightspace_html_helper_promotes_only_verified_durable_output(ver
         )
 
     assert outcome.has_remediated_version is verified
+    assert cloud_file.remediation_origin == ("automatic" if verified else None)
     assert outcome.status == ("completed" if verified else "manual_required")
     if verified:
         db.commit.assert_called_once()
@@ -881,6 +884,7 @@ async def test_sync_remediator_runs_in_thread_without_db_session(tmp_path):
         content_body="<html><body>before</body></html>",
         remediated_body=None,
         has_remediated_version=False,
+        remediation_origin=None,
         remediated_issues_fixed=0,
         remediated_issues_remaining=0,
         writeback_status=None,
@@ -1062,6 +1066,7 @@ async def test_local_downloaded_image_bytes_enable_the_supported_vision_path(tmp
         content_body=None,
         remediated_body=None,
         has_remediated_version=False,
+        remediation_origin=None,
         remediated_issues_fixed=0,
         remediated_issues_remaining=0,
         writeback_status=None,

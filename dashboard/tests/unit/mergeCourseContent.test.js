@@ -25,6 +25,7 @@ function statusItem(overrides = {}) {
     issue_count: 1,
     writeback_status: null,
     has_remediated_version: false,
+    remediation_origin: null,
     last_scanned_at: '2026-08-18T00:00:00Z',
     ...overrides,
   };
@@ -228,6 +229,7 @@ function mergedItem(overrides = {}) {
     issue_count: 1,
     writeback_status: null,
     has_remediated_version: false,
+    remediation_origin: null,
     last_scanned_at: '2026-08-18T00:00:00Z',
     content_updated_at: null,
     scan_id: 'scan-1',
@@ -429,39 +431,54 @@ describe('contentItemState', () => {
     assert.equal(state.label, 'Scanned · needs remediation');
   });
 
-  it('is auto_remediated_pending_review for a remediated HTML item', () => {
-    const state = contentItemState(
-      mergedItem({
-        content_type: 'page',
-        has_remediated_version: true,
-        writeback_status: null,
-      })
-    );
-    assert.equal(state.key, 'auto_remediated_pending_review');
-    assert.equal(state.label, 'Auto-remediated · pending review');
-  });
-
-  it('is auto_remediated_pending_review with writeback_status pending_review too', () => {
-    const state = contentItemState(
-      mergedItem({
-        content_type: 'assignment',
-        has_remediated_version: true,
-        writeback_status: 'pending_review',
-      })
-    );
-    assert.equal(state.key, 'auto_remediated_pending_review');
-  });
-
-  it('is remediated_pending_review for a remediated file (manual path)', () => {
+  it('uses persisted automatic origin for a remediated file without content-type inference', () => {
     const state = contentItemState(
       mergedItem({
         content_type: 'file',
         has_remediated_version: true,
-        writeback_status: null,
+        remediation_origin: 'automatic',
       })
     );
-    assert.equal(state.key, 'remediated_pending_review');
-    assert.equal(state.label, 'Remediated · pending review');
+    assert.deepEqual(state, {
+      key: 'auto_remediated_pending_review',
+      label: 'Auto-remediated · pending review',
+    });
+  });
+
+  it('uses persisted manual origin for otherwise identical remediated content', () => {
+    const state = contentItemState(
+      mergedItem({
+        content_type: 'file',
+        has_remediated_version: true,
+        remediation_origin: 'manual',
+      })
+    );
+    assert.deepEqual(state, {
+      key: 'remediated_pending_review',
+      label: 'Manually remediated · pending review',
+    });
+  });
+
+  it('shows a neutral generic remediation label for legacy null origin', () => {
+    const state = contentItemState(
+      mergedItem({
+        content_type: 'page',
+        has_remediated_version: true,
+        remediation_origin: null,
+      })
+    );
+    assert.deepEqual(state, {
+      key: 'remediated_pending_review',
+      label: 'Remediated · pending review',
+    });
+  });
+
+  it('carries persisted remediation origin through the course-content merge', () => {
+    const [item] = mergeCourseContent(
+      [statusItem({ remediation_origin: 'automatic', has_remediated_version: true })],
+      []
+    );
+    assert.equal(item.remediation_origin, 'automatic');
   });
 
   it('is approved when writeback_status is approved', () => {
@@ -529,6 +546,11 @@ describe('contentItemState', () => {
     assert.equal(state.label, 'Rolled back');
   });
 
+  it('uses neutral styling for both pending-remediation states', () => {
+    assert.equal(CONTENT_ITEM_STATE_COLOR.auto_remediated_pending_review, 'neutral');
+    assert.equal(CONTENT_ITEM_STATE_COLOR.remediated_pending_review, 'neutral');
+  });
+
   it('has a color mapping for every possible state key', () => {
     const keys = [
       'unscanned',
@@ -544,5 +566,10 @@ describe('contentItemState', () => {
     for (const key of keys) {
       assert.ok(CONTENT_ITEM_STATE_COLOR[key], `missing color for ${key}`);
     }
+  });
+
+  it('uses neutral styling for both pending-remediation provenance states', () => {
+    assert.equal(CONTENT_ITEM_STATE_COLOR.auto_remediated_pending_review, 'neutral');
+    assert.equal(CONTENT_ITEM_STATE_COLOR.remediated_pending_review, 'neutral');
   });
 });

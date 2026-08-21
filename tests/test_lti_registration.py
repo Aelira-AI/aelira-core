@@ -324,22 +324,22 @@ class TestRenderLTIErrorPage:
         assert "Contact support" in html
         assert "<!DOCTYPE html>" in html
 
-    def test_error_page_with_upgrade_button(self):
-        """Test error page with upgrade button."""
+    def test_error_page_with_configuration_button(self):
+        """Test error page with administrator-configuration guidance."""
         html = _render_lti_error_page(
             title="Feature Not Available",
-            message="LMS Integration requires upgrade",
-            show_upgrade_button=True,
+            message="LMS integration requires administrator configuration",
+            show_configuration_button=True,
         )
 
         assert "Ask your administrator" in html
 
-    def test_error_page_without_upgrade_button(self):
-        """Test error page without upgrade button."""
+    def test_error_page_without_configuration_button(self):
+        """Test error page without configuration guidance."""
         html = _render_lti_error_page(
             title="Registration Required",
             message="Contact your admin",
-            show_upgrade_button=False,
+            show_configuration_button=False,
         )
 
         assert "View Plans & Pricing" not in html

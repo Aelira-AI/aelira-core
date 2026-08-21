@@ -315,6 +315,7 @@ async def get_cloud_files(
                 "last_compliance_score": f.last_compliance_score,
                 "needs_rescan": f.needs_rescan,
                 "has_remediated_version": f.has_remediated_version,
+                "remediation_origin": f.remediation_origin,
                 "provider_modified_at": (
                     f.provider_modified_at.isoformat()
                     if f.provider_modified_at

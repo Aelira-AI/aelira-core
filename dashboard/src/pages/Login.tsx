@@ -6,7 +6,7 @@ import { apiClient } from '../api/client';
 import { Key, Moon, Sun, Mail, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { Logo } from '../components/Logo';
 import { trackEvent } from '../utils/analytics';
-import { resolveSafeNext } from '../utils/safeNext';
+import { buildAuthContinuationUrl, resolveSafeNext } from '../utils/safeNext';
 
 interface IconProps {
   className?: string;
@@ -128,7 +128,11 @@ export function Login(): React.ReactElement {
 
     try {
       trackEvent('dash-login-method', { method: 'magic_link' });
-      await apiClient.post('/auth/magic-link/request', { email }, { _skipApiKeyAuth: true });
+      await apiClient.post(
+        '/auth/magic-link/request',
+        { email, next: resolveSafeNext(searchParams.get('next')) },
+        { _skipApiKeyAuth: true }
+      );
       setSuccess('Check your email! We sent you a magic link to sign in.');
     } catch (err: unknown) {
       const axiosError = err as { response?: { data?: { detail?: string } } };
@@ -158,12 +162,20 @@ export function Login(): React.ReactElement {
 
   const handleGoogleLogin = (): void => {
     trackEvent('dash-login-method', { method: 'google' });
-    window.location.href = `${apiClient.defaults.baseURL}/auth/google/login`;
+    window.location.href = buildAuthContinuationUrl(
+      apiClient.defaults.baseURL,
+      '/auth/google/login',
+      searchParams.get('next')
+    );
   };
 
   const handleMicrosoftLogin = (): void => {
     trackEvent('dash-login-method', { method: 'microsoft' });
-    window.location.href = `${apiClient.defaults.baseURL}/auth/microsoft/login`;
+    window.location.href = buildAuthContinuationUrl(
+      apiClient.defaults.baseURL,
+      '/auth/microsoft/login',
+      searchParams.get('next')
+    );
   };
 
   // Check if user already has a session
@@ -337,7 +349,7 @@ export function Login(): React.ReactElement {
               {oauthStatus && !oauthStatus.oauth_allowed && email.includes('@') && !checkingOauth && (
                 <p className="text-xs text-tertiary mt-4 text-center">
                   OAuth login is available for department and university accounts. Ask your
-                  administrator to raise this department's tier to unlock SSO.
+                  administrator to enable SSO in this workspace's configuration.
                 </p>
               )}
 

@@ -5,6 +5,7 @@ import { apiClient } from '../api/client';
 import { Logo } from '../components/Logo';
 import { trackEvent } from '../utils/analytics';
 import { Loader2, CheckCircle, XCircle, Mail } from 'lucide-react';
+import { resolveSafeNext } from '../utils/safeNext';
 
 type VerificationStatus = 'ready' | 'verifying' | 'success' | 'error';
 
@@ -26,6 +27,7 @@ export function VerifyMagicLink(): React.ReactElement {
 
   const email = searchParams.get('email');
   const token = searchParams.get('token');
+  const nextPath = resolveSafeNext(searchParams.get('next'));
 
   // Check for missing params on render
   const hasValidParams = email && token;
@@ -62,7 +64,7 @@ export function VerifyMagicLink(): React.ReactElement {
 
         // Redirect to dashboard after a brief delay
         setTimeout(() => {
-          navigate('/dashboard', { replace: true });
+          navigate(nextPath, { replace: true });
         }, 1500);
       } else {
         setStatus('error');

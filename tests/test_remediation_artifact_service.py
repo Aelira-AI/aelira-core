@@ -88,6 +88,7 @@ def _parents(**overrides):
             credential_id="66666666-6666-4666-8666-666666666666",
             current_remediation_artifact_id=None,
             has_remediated_version=False,
+            remediation_origin=None,
             artifact_cleanup_token=None,
             artifact_cleanup_claimed_at=None,
         ),
@@ -259,6 +260,7 @@ def test_deferred_finalization_does_not_commit_caller_transaction(tmp_path):
     assert finalized.lifecycle_status == "available"
     assert parents["cloud"].current_remediation_artifact_id == artifact.id
     assert parents["cloud"].has_remediated_version is True
+    assert parents["cloud"].remediation_origin == "manual"
     db.flush.assert_called_once()
     db.commit.assert_not_called()
 

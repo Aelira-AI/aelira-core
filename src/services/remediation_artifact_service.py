@@ -1268,6 +1268,7 @@ class RemediationArtifactService:
         if cloud_file is not None:
             cloud_file.current_remediation_artifact_id = artifact.id
             cloud_file.has_remediated_version = True
+            cloud_file.remediation_origin = "manual"
         else:
             previous_id = scan.current_remediation_artifact_id
             if previous_id and previous_id != artifact.id:
@@ -1334,6 +1335,7 @@ class RemediationArtifactService:
         ):
             cloud_file.current_remediation_artifact_id = None
             cloud_file.has_remediated_version = False
+            cloud_file.remediation_origin = None
         db.delete(artifact)
         db.commit()
         return removed
@@ -1661,6 +1663,7 @@ class RemediationArtifactService:
                 )
             cloud_file.writeback_status = "approved"
             cloud_file.has_remediated_version = True
+            cloud_file.remediation_origin = "manual"
         db.add(
             ReviewAuditLog(
                 scan_id=artifact.scan_id,
@@ -1743,6 +1746,7 @@ class RemediationArtifactService:
                 raise ArtifactAuthorizationError("artifact cloud authority is missing")
             cloud_file.writeback_status = "rejected"
             cloud_file.has_remediated_version = False
+            cloud_file.remediation_origin = None
         db.add(
             ReviewAuditLog(
                 scan_id=artifact.scan_id,
@@ -2422,6 +2426,7 @@ class RemediationArtifactService:
                 if cloud_file.current_remediation_artifact_id in artifact_ids:
                     cloud_file.current_remediation_artifact_id = None
                     cloud_file.has_remediated_version = False
+                    cloud_file.remediation_origin = None
                     if cloud_file.writeback_status == "approved":
                         cloud_file.writeback_status = "rejected"
         scan_ids = {artifact.scan_id for artifact in artifacts}
@@ -2664,6 +2669,7 @@ class RemediationArtifactCleanup:
                 ):
                     cloud_file.current_remediation_artifact_id = None
                     cloud_file.has_remediated_version = False
+                    cloud_file.remediation_origin = None
                 if (
                     cloud_file is None
                     and scan.current_remediation_artifact_id == artifact.id

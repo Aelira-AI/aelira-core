@@ -18,6 +18,7 @@ def invalidate_canvas_derived_state(cloud_file: CloudFile) -> None:
     cloud_file.last_compliance_score = None
     cloud_file.needs_rescan = True
     cloud_file.has_remediated_version = False
+    cloud_file.remediation_origin = None
     cloud_file.remediated_file_id = None
     cloud_file.current_remediation_artifact_id = None
     cloud_file.remediated_body = None

@@ -34,6 +34,7 @@ import {
   type MergedContentItem,
 } from '../utils/mergeCourseContent';
 import { summarizeBatchOutcome } from '../utils/batchActionResult';
+import { remediateAllAccounting } from '../utils/remediateAllAccounting';
 import { useToast } from '../context/toast-context';
 import type { BatchApproveResponse, BatchWritebackResponse } from '../api/canvasContent';
 
@@ -93,6 +94,7 @@ interface ContentItemStatus {
   issue_count: number;
   writeback_status: string | null;
   has_remediated_version: boolean;
+  remediation_origin: 'automatic' | 'manual' | null;
   last_scanned_at: string | null;
   content_updated_at: string | null;
   scan_id: string | null;
@@ -867,12 +869,11 @@ export function LTICourseView(): React.ReactElement {
     const client = clientRef.current;
     if (!client || remediableItems.length === 0) return;
 
-    const scannedCount = mergedItems.filter((item) => item.compliance_score !== null).length;
-    const skippedCount = scannedCount - remediableItems.length;
-    const total = remediableItems.length;
+    const accounting = remediateAllAccounting(mergedItems.length, remediableItems.length);
+    const { total, skipped: skippedCount } = accounting;
 
     setRemediatingAll(true);
-    setRemediateAllProgress({ done: 0, total });
+    setRemediateAllProgress({ done: skippedCount, total });
     setRemediatingContentIds((prev) => {
       const next = new Set(prev);
       remediableItems.forEach((item) => next.add(item.identity_key));
@@ -901,7 +902,7 @@ export function LTICourseView(): React.ReactElement {
           next.delete(item.identity_key);
           return next;
         });
-        setRemediateAllProgress({ done: index + 1, total });
+        setRemediateAllProgress({ done: skippedCount + index + 1, total });
       }
     }
 

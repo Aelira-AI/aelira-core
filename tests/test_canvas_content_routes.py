@@ -109,6 +109,7 @@ def _make_cloud_file(
     compliance_score=None,
     last_scan_id=None,
     has_remediated_version=None,
+    remediation_origin=None,
     current_remediation_artifact_id=None,
     remediated_issues_fixed=None,
     remediated_issues_remaining=None,
@@ -134,6 +135,7 @@ def _make_cloud_file(
         if has_remediated_version is None
         else has_remediated_version
     )
+    cf.remediation_origin = remediation_origin
     cf.current_remediation_artifact_id = current_remediation_artifact_id
     # Explicitly None unless a test sets them: a bare MagicMock attribute
     # is truthy and coerces to an int, which would let the "was this
@@ -461,6 +463,39 @@ class TestCourseContentStatus:
             data["items"][0]["content_updated_at"] == cf1.content_updated_at.isoformat()
         )
 
+    def test_status_returns_persisted_remediation_origin(
+        self, client, mock_session, override_deps
+    ):
+        automatic = _make_cloud_file(
+            cloud_file_id="automatic",
+            has_remediated_version=True,
+            remediation_origin="automatic",
+        )
+        manual = _make_cloud_file(
+            cloud_file_id="manual",
+            has_remediated_version=True,
+            remediation_origin="manual",
+        )
+        legacy = _make_cloud_file(
+            cloud_file_id="legacy",
+            has_remediated_version=True,
+            remediation_origin=None,
+        )
+        mock_session.query.return_value.filter.return_value.all.return_value = [
+            automatic,
+            manual,
+            legacy,
+        ]
+
+        response = client.get("/canvas/content/courses/101/status")
+
+        assert response.status_code == 200
+        assert [item["remediation_origin"] for item in response.json()["items"]] == [
+            "automatic",
+            "manual",
+            None,
+        ]
+
     def test_status_counts_files_with_no_content_source(
         self, client, mock_session, override_deps
     ):
@@ -764,6 +799,7 @@ class TestRejectContent:
         cf = _make_cloud_file(
             writeback_status="pending_review",
             remediated_body="<p>Fixed</p>",
+            remediation_origin="automatic",
         )
         mock_session.query.return_value.filter.return_value.first.return_value = cf
 
@@ -772,6 +808,7 @@ class TestRejectContent:
         assert response.status_code == 200
         data = response.json()
         assert data["writeback_status"] == "rejected"
+        assert cf.remediation_origin is None
 
     def test_reject_not_found(self, client, mock_session, override_deps):
         """Reject for missing cloud_file_id returns 404."""
@@ -1134,6 +1171,7 @@ class TestWriteback:
             remediation_client=None,
             alt_text_client=None,
             requested_purposes=set(),
+            remediation_origin="manual",
         )
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)

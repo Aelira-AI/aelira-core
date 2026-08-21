@@ -243,10 +243,10 @@ async def invite_user(
                 detail="An invitation is already pending for this email",
             )
 
-        # Check department user limit based on tier
+        # Check administrator-configured workspace user capacity
         department = db.query(Department).filter(Department.id == department_id).first()
         if department:
-            # Get max_users from tier configuration (or department override)
+            # Get default capacity from workspace configuration (or department override)
             tier_quota = get_tier_quota(department.tier)
             max_users = tier_quota.get("max_users", -1)
 
@@ -279,8 +279,8 @@ async def invite_user(
                         status_code=403,
                         detail={
                             "error": "user_limit_exceeded",
-                            "message": f"User limit reached for {tier_name} tier ({max_users} users). "
-                            "Ask your administrator to raise this department's tier or limits.",
+                            "message": f"Workspace user capacity reached ({max_users} users; configuration {tier_name}). "
+                            "Ask your administrator to adjust this workspace's capacity.",
                             "current_users": current_user_count,
                             "pending_invites": pending_invites,
                             "max_users": max_users,

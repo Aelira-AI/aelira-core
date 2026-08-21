@@ -1048,6 +1048,11 @@ class CloudFile(Base):
 
     __table_args__ = (
         CheckConstraint(
+            "remediation_origin IS NULL OR "
+            "remediation_origin IN ('automatic', 'manual')",
+            name="ck_cloud_files_remediation_origin",
+        ),
+        CheckConstraint(
             "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
             "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
             name="ck_cloud_files_artifact_cleanup_fence",
@@ -1098,6 +1103,7 @@ class CloudFile(Base):
 
     # Remediation state
     has_remediated_version = Column(Boolean, default=False)
+    remediation_origin = Column(String(16), nullable=True)
     remediated_file_id = Column(String(255), nullable=True)  # ID of fixed file
     current_remediation_artifact_id = Column(
         String(36),
