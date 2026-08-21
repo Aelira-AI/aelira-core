@@ -31,8 +31,6 @@ from sqlalchemy.orm import Session
 
 from ..db.models import (
     CloudFile,
-    CloudJobQueue,
-    CloudJobStatus,
     CloudJobType,
     CloudOAuthCredentials,
     ContentWritebackLog,
@@ -51,6 +49,8 @@ from ..services.remediation_artifact_service import (
     ArtifactError,
     RemediationArtifactService,
 )
+from ..services.job_enqueue_service import enqueue_cloud_job
+from ..utils.security import require_persisted_canvas_origin
 from .deterministic_axe import DeterministicScanUnavailable, run_deterministic_axe
 
 logger = logging.getLogger(__name__)
@@ -609,21 +609,62 @@ class CanvasContentScanner:
         # fires the background task for it (see file_scan_jobs above).
         for file_info in files:
             cf = self._upsert_file_cloud_file(course_id=course_id, file_info=file_info)
-            job_id = str(uuid.uuid4())
             counts["file"] += 1
-            self.db.add(
-                CloudJobQueue(
-                    id=job_id,
-                    department_id=self.department_id,
-                    job_type=CloudJobType.SCAN.value,
-                    provider="canvas",
-                    provider_file_id=cf.provider_file_id,
-                    cloud_file_id=cf.id,
-                    credential_id=self.credential_id,
-                    status=CloudJobStatus.PENDING.value,
-                )
+            scan_job = enqueue_cloud_job(
+                self.db,
+                department_id=self.department_id,
+                job_type=CloudJobType.SCAN.value,
+                payload={
+                    "scan_kind": "cloud_file",
+                    "cloud_file_id": cf.id,
+                    "credential_id": self.credential_id,
+                    "provider": "canvas",
+                    "provider_file_id": cf.provider_file_id,
+                    "course_id": course_id,
+                },
+                dedupe_key=(
+                    f"canvas-file-scan:{self.credential_id}:"
+                    f"{cf.provider_file_id}:{cf.provider_version or 'current'}"
+                ),
+                provider="canvas",
+                credential_id=self.credential_id,
+                cloud_file_id=cf.id,
+                provider_file_id=cf.provider_file_id,
             )
-            file_scan_jobs.append({"job_id": job_id, "cloud_file_id": cf.id})
+            file_scan_jobs.append({"job_id": scan_job.id, "cloud_file_id": cf.id})
+
+        for cloud_file_id in cloud_file_ids:
+            cloud_file = self.db.get(CloudFile, cloud_file_id)
+            if cloud_file is None:
+                continue
+            content_version = (
+                cloud_file.content_updated_at.isoformat()
+                if cloud_file.content_updated_at is not None
+                else "current"
+            )
+            enqueue_cloud_job(
+                self.db,
+                department_id=self.department_id,
+                job_type=CloudJobType.SCAN.value,
+                payload={
+                    "scan_kind": "canvas_content",
+                    "cloud_file_id": cloud_file.id,
+                    "credential_id": self.credential_id,
+                    "provider": "canvas",
+                    "provider_file_id": cloud_file.provider_file_id,
+                    "course_id": course_id,
+                    "content_source": cloud_file.content_source,
+                    "scan_options": self.scan_options,
+                },
+                dedupe_key=(
+                    f"canvas-content-scan:{self.credential_id}:"
+                    f"{cloud_file.provider_file_id}:{content_version}"
+                ),
+                provider="canvas",
+                credential_id=self.credential_id,
+                cloud_file_id=cloud_file.id,
+                provider_file_id=cloud_file.provider_file_id,
+            )
 
         self.db.commit()
 
@@ -1456,22 +1497,47 @@ class CanvasContentScanner:
         accessible_name: str,
     ) -> None:
         """Commit an ambiguity record after the main transaction rolled back."""
-        self.db.add(
-            ContentWritebackLog(
-                id=str(uuid.uuid4()),
-                cloud_file_id=cloud_file.id,
-                original_body=(
-                    f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}"
-                ),
-                remediated_body=f"canvas-file:unknown {accessible_name}",
-                approved_by=approved_by,
-                approved_at=artifact.approved_at,
-                artifact_id=artifact.id,
-                artifact_checksum=artifact.sha256,
-                correlation_id=correlation_id,
-                reconciliation_status="reconciliation_required",
-                provider_result=provider_result,
-            )
+        credential = self.db.get(CloudOAuthCredentials, cloud_file.credential_id)
+        if credential is None:
+            raise ValueError("credential_not_current")
+        canvas_origin = require_persisted_canvas_origin(credential)
+        durable_result = {
+            **provider_result,
+            "correlation_id": correlation_id,
+            "credential_id": credential.id,
+            "canvas_origin": canvas_origin,
+            "course_id": str(cloud_file.provider_parent_id),
+            "source_file_id": str(cloud_file.provider_file_id),
+            "expected_file_name": accessible_name,
+            "artifact_checksum": artifact.sha256,
+        }
+        writeback_log = ContentWritebackLog(
+            id=str(uuid.uuid4()),
+            cloud_file_id=cloud_file.id,
+            original_body=(
+                f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}"
+            ),
+            remediated_body=f"canvas-file:unknown {accessible_name}",
+            approved_by=approved_by,
+            approved_at=artifact.approved_at,
+            artifact_id=artifact.id,
+            artifact_checksum=artifact.sha256,
+            correlation_id=correlation_id,
+            reconciliation_status="reconciliation_required",
+            provider_result=durable_result,
+        )
+        self.db.add(writeback_log)
+        self.db.flush()
+        enqueue_cloud_job(
+            self.db,
+            department_id=cloud_file.department_id,
+            job_type=CloudJobType.RECONCILE.value,
+            payload={"writeback_log_id": writeback_log.id},
+            dedupe_key=f"canvas-reconcile:{writeback_log.id}",
+            provider="canvas",
+            credential_id=credential.id,
+            cloud_file_id=cloud_file.id,
+            provider_file_id=cloud_file.provider_file_id,
         )
         self.db.commit()
 

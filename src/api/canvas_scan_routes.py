@@ -15,11 +15,10 @@ SECURITY:
 
 import logging
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -37,8 +36,8 @@ from ..db.models import (
     ScanResult,
 )
 from ..integrations.canvas import CanvasAPIClient
-from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..middleware.quota import require_feature
+from ..services.job_enqueue_service import enqueue_cloud_job
 
 # Import _get_canvas_client from the main canvas routes
 from .canvas_routes import _get_canvas_client
@@ -164,64 +163,6 @@ def _rewrite_localhost_for_docker(api_client: CanvasAPIClient) -> None:
 
 
 # =============================================================================
-# Background Task
-# =============================================================================
-
-
-async def _canvas_scan_file_task(job_id: str, cloud_file_id: str, credential_id: str):
-    """Background task to scan a file from Canvas LMS."""
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.cloud_scan_job import handle_scan_job
-
-    logger.info(f"Starting Canvas scan: job={job_id}, file={cloud_file_id}")
-
-    with _get_db_ctx() as db:
-        job = db.query(CloudJobQueue).filter(CloudJobQueue.id == job_id).first()
-        if not job:
-            logger.error(f"Scan job not found: {job_id}")
-            return
-
-        try:
-            job.status = CloudJobStatus.PROCESSING.value
-            job.started_at = datetime.now(timezone.utc)
-            job.progress = 10
-            job.progress_message = "Downloading file from Canvas..."
-            db.commit()
-
-            token_manager = OAuthTokenManager()
-            result = await handle_scan_job(job, db, token_manager)
-
-            job.status = CloudJobStatus.COMPLETED.value
-            job.progress = 100
-            job.progress_message = "Scan complete"
-            job.result_data = result
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(
-                f"Canvas scan complete: job={job_id}, "
-                f"score={result.get('compliance_score')}, "
-                f"issues={result.get('issues_found', 0)}"
-            )
-        except Exception as exc:
-            logger.error(
-                "Canvas scan background job failed",
-                extra={
-                    "job_id": job_id,
-                    "cloud_file_id": cloud_file_id,
-                    "credential_id": credential_id,
-                    "error_type": type(exc).__name__,
-                },
-            )
-            job.status = CloudJobStatus.FAILED.value
-            job.progress = 100
-            job.progress_message = "Scan failed"
-            job.error_message = "Accessibility scan failed"
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-
-# =============================================================================
 # Endpoints
 # =============================================================================
 
@@ -229,7 +170,6 @@ async def _canvas_scan_file_task(job_id: str, cloud_file_id: str, credential_id:
 @router.post("/scan", response_model=CanvasScanResponse)
 async def scan_canvas_file(
     request: CanvasScanRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasScanResponse:
@@ -315,31 +255,32 @@ async def scan_canvas_file(
                 db.add(cloud_file)
 
             # Create scan job
-            job_id = str(uuid.uuid4())
-            scan_job = CloudJobQueue(
-                id=job_id,
+            db.flush()
+            scan_job = enqueue_cloud_job(
+                db,
                 department_id=dept_id,
                 job_type=CloudJobType.SCAN.value,
+                payload={
+                    "cloud_file_id": cloud_file.id,
+                    "credential_id": credential.id,
+                    "provider": CloudProvider.CANVAS.value,
+                    "provider_file_id": str(request.file_id),
+                    "course_id": str(request.course_id),
+                },
+                dedupe_key=(
+                    f"scan:canvas:{request.course_id}:{request.file_id}:"
+                    f"{getattr(file_info, 'updated_at', None) or 'current'}"
+                ),
                 cloud_file_id=cloud_file.id,
                 credential_id=credential.id,
                 provider=CloudProvider.CANVAS.value,
                 provider_file_id=request.file_id,
-                status=CloudJobStatus.PENDING.value,
                 priority=5,
             )
-            db.add(scan_job)
             db.commit()
 
-            # Queue background task
-            background_tasks.add_task(
-                _canvas_scan_file_task,
-                job_id=job_id,
-                cloud_file_id=cloud_file.id,
-                credential_id=credential.id,
-            )
-
             return CanvasScanResponse(
-                job_id=job_id,
+                job_id=scan_job.id,
                 status="queued",
                 cloud_file_id=cloud_file.id,
             )
@@ -369,7 +310,6 @@ async def scan_canvas_file(
 @router.post("/scan/bulk", response_model=CanvasBulkScanResponse)
 async def scan_canvas_course_files(
     request: CanvasBulkScanRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasBulkScanResponse:
@@ -451,33 +391,34 @@ async def scan_canvas_course_files(
                     db.add(cloud_file)
 
                 # Create scan job
-                job_id = str(uuid.uuid4())
-                scan_job = CloudJobQueue(
-                    id=job_id,
+                db.flush()
+                scan_job = enqueue_cloud_job(
+                    db,
                     department_id=dept_id,
                     job_type=CloudJobType.SCAN.value,
+                    payload={
+                        "cloud_file_id": cloud_file.id,
+                        "credential_id": credential.id,
+                        "provider": CloudProvider.CANVAS.value,
+                        "provider_file_id": str(file_id),
+                        "course_id": str(request.course_id),
+                    },
+                    dedupe_key=(
+                        f"scan:canvas:{request.course_id}:{file_id}:"
+                        f"{getattr(file_info, 'updated_at', None) or 'current'}"
+                    ),
                     cloud_file_id=cloud_file.id,
                     credential_id=credential.id,
                     provider=CloudProvider.CANVAS.value,
                     provider_file_id=file_id,
-                    status=CloudJobStatus.PENDING.value,
                     priority=5,
-                )
-                db.add(scan_job)
-
-                # Queue background task
-                background_tasks.add_task(
-                    _canvas_scan_file_task,
-                    job_id=job_id,
-                    cloud_file_id=cloud_file.id,
-                    credential_id=credential.id,
                 )
 
                 jobs.append(
                     BulkScanFileJob(
                         file_id=file_id,
                         file_name=file_info.display_name or file_info.filename,
-                        job_id=job_id,
+                        job_id=scan_job.id,
                     )
                 )
 

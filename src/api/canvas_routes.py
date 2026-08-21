@@ -12,8 +12,8 @@ import logging
 import os
 from urllib.parse import quote
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -23,9 +23,7 @@ from ..db.models import (
     CloudOAuthCredentials,
     CloudProvider,
     CloudFile,
-    CloudJobQueue,
     CloudJobType,
-    CloudJobStatus,
 )
 from ..integrations.canvas import (
     CanvasOAuthService,
@@ -45,6 +43,7 @@ from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_princi
 from ..middleware.quota import require_feature
 from ..ai.lms_remediation_client import LMSRemediationClient
 from ..jobs.remediation_job import sanitize_execution_context
+from ..services.job_enqueue_service import enqueue_cloud_job
 from ..utils.security import (
     require_canvas_oauth_allowed_origin,
     require_persisted_canvas_origin,
@@ -546,170 +545,9 @@ async def list_canvas_course_folders(
 # =============================================================================
 
 
-def _refresh_job_after_rollback(db, job_id: str, fallback):
-    """Reload a queue row after rollback, tolerating narrow test doubles."""
-    refresh = getattr(db, "refresh", None)
-    if callable(refresh):
-        try:
-            refresh(fallback)
-            return fallback
-        except Exception:
-            pass
-
-    get = getattr(db, "get", None)
-    if callable(get):
-        try:
-            return get(CloudJobQueue, job_id, populate_existing=True) or fallback
-        except Exception:
-            pass
-    return fallback
-
-
-async def _canvas_scan_then_remediate_task(
-    scan_job_id: str, remediation_job_id: str
-) -> None:
-    """Run the queued scan, then the queued remediation, in that order.
-
-    Job rows are records, not work: nothing polls the queue, so whoever
-    creates a row has to run it. The scan runs first because remediation
-    reads the scan's stored issues, and a failed scan fails its remediation
-    rather than leaving it pending forever.
-    """
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.cloud_scan_job import handle_scan_job
-    from ..jobs.remediation_job import handle_remediation_job
-
-    token_manager = OAuthTokenManager()
-
-    with _get_db_ctx() as db:
-        scan_job = (
-            db.query(CloudJobQueue).filter(CloudJobQueue.id == scan_job_id).first()
-        )
-        remediation_job = (
-            db.query(CloudJobQueue)
-            .filter(CloudJobQueue.id == remediation_job_id)
-            .first()
-        )
-        if not scan_job or not remediation_job:
-            logger.error(
-                f"Canvas remediation jobs not found: scan={scan_job_id}, "
-                f"remediate={remediation_job_id}"
-            )
-            return
-
-        try:
-            scan_job.status = CloudJobStatus.PROCESSING.value
-            scan_job.started_at = datetime.now(timezone.utc)
-            scan_job.progress = 10
-            scan_job.progress_message = "Downloading file from Canvas..."
-            db.commit()
-
-            scan_result = await handle_scan_job(scan_job, db, token_manager)
-
-            scan_job.status = CloudJobStatus.COMPLETED.value
-            scan_job.progress = 100
-            scan_job.progress_message = "Scan complete"
-            scan_job.result_data = scan_result
-            scan_job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-        except Exception as exc:
-            logger.error(
-                "Canvas scan failed",
-                extra={"job_id": scan_job_id, "error_type": type(exc).__name__},
-            )
-            db.rollback()
-            scan_job = _refresh_job_after_rollback(db, scan_job_id, scan_job)
-            remediation_job = _refresh_job_after_rollback(
-                db, remediation_job_id, remediation_job
-            )
-            now = datetime.now(timezone.utc)
-            scan_job.status = CloudJobStatus.FAILED.value
-            scan_job.progress = 10
-            scan_job.progress_message = "Scan failed"
-            scan_job.error_message = "canvas_scan_failed"
-            scan_job.completed_at = now
-            remediation_job.status = CloudJobStatus.FAILED.value
-            remediation_job.progress = 10
-            remediation_job.progress_message = "Not run: the scan it depends on failed"
-            remediation_job.error_message = "canvas_scan_failed"
-            remediation_job.completed_at = now
-            db.commit()
-            return
-
-        try:
-            # handle_remediation_job reads the scan id off the remediation
-            # job's own result_data, so the completed scan's id goes there.
-            remediation_job.status = CloudJobStatus.PROCESSING.value
-            remediation_job.started_at = datetime.now(timezone.utc)
-            remediation_job.progress = 10
-            remediation_job.progress_message = "Remediating..."
-            remediation_job.result_data = {
-                "scan_id": (scan_result or {}).get("scan_id")
-            }
-            db.commit()
-
-            result = await handle_remediation_job(remediation_job, db, token_manager)
-
-            logger.info(
-                f"Canvas remediation complete: job={remediation_job_id}, "
-                f"fixed={result.get('fixed_count')}"
-            )
-        except Exception as exc:
-            from ..jobs.remediation_job import (
-                RemediationJobFailed,
-                RetryableRemediationJobError,
-                transition_retryable_remediation_job,
-            )
-
-            if isinstance(exc, RetryableRemediationJobError):
-                transition_retryable_remediation_job(remediation_job, db, exc)
-                logger.warning(
-                    "Canvas remediation queued after transient failure",
-                    extra={
-                        "job_id": remediation_job_id,
-                        "error_code": exc.code,
-                    },
-                )
-                return
-            if (
-                isinstance(exc, RemediationJobFailed)
-                and exc.terminal_state_committed is True
-            ):
-                logger.warning(
-                    "Canvas remediation reached a committed terminal failure",
-                    extra={"job_id": remediation_job_id, "error_code": exc.code},
-                )
-                return
-            error_code = (
-                getattr(exc, "code")
-                if type(exc).__name__ == "RemediationJobFailed"
-                and type(exc).__module__ == "src.jobs.remediation_job"
-                else "remediation_failed"
-            )
-            logger.error(
-                "Canvas remediation failed",
-                extra={
-                    "job_id": remediation_job_id,
-                    "error_type": type(exc).__name__,
-                    "error_code": error_code,
-                },
-            )
-            db.rollback()
-            remediation_job = _refresh_job_after_rollback(
-                db, remediation_job_id, remediation_job
-            )
-            remediation_job.status = CloudJobStatus.FAILED.value
-            remediation_job.progress = 10
-            remediation_job.progress_message = "Remediation failed"
-            remediation_job.error_message = error_code
-            remediation_job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-
 @router.post("/remediate")
 async def remediate_canvas_file(
     request: CanvasRemediateRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasRemediateResponse:
@@ -815,14 +653,21 @@ async def remediate_canvas_file(
             )
             db.add(cloud_file)
 
-        # Create scan job
-        scan_job_id = str(uuid.uuid4())
-        scan_job = CloudJobQueue(
-            id=scan_job_id,
+        db.flush()
+        scan_payload = {
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.CANVAS.value,
+            "provider_file_id": str(request.file_id),
+            "course_id": str(request.course_id),
+        }
+        scan_job = enqueue_cloud_job(
+            db,
             department_id=dept_id,
             job_type=CloudJobType.SCAN.value,
+            payload=scan_payload,
+            dedupe_key=f"scan:canvas:{request.course_id}:{request.file_id}:current",
             provider=CloudProvider.CANVAS.value,
-            status=CloudJobStatus.PENDING.value,
             priority=1,
             cloud_file_id=cloud_file.id,
             credential_id=credential.id,
@@ -834,16 +679,30 @@ async def remediate_canvas_file(
                 }
             ),
         )
-        db.add(scan_job)
 
-        # Create remediation job (will execute after scan completes)
-        remediation_job_id = str(uuid.uuid4())
-        remediation_job = CloudJobQueue(
-            id=remediation_job_id,
+        remediation_payload = {
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.CANVAS.value,
+            "provider_file_id": str(request.file_id),
+            "course_id": str(request.course_id),
+            "scan_job_id": scan_job.id,
+            "ai_requested": ai_requested,
+            "alt_text_requested": alt_text_requested,
+            "upload_back": False,
+        }
+        remediation_job = enqueue_cloud_job(
+            db,
             department_id=dept_id,
             job_type=CloudJobType.REMEDIATE.value,
+            payload=remediation_payload,
+            dedupe_key=(
+                f"remediate:canvas:{request.course_id}:{request.file_id}:"
+                f"version=current:ai={str(ai_requested).lower()}:"
+                f"alt={str(alt_text_requested).lower()}"
+            ),
+            depends_on_job_id=scan_job.id,
             provider=CloudProvider.CANVAS.value,
-            status=CloudJobStatus.PENDING.value,
             priority=2,
             cloud_file_id=cloud_file.id,
             credential_id=credential.id,
@@ -867,24 +726,18 @@ async def remediate_canvas_file(
                 }
             ),
         )
-        db.add(remediation_job)
 
         db.commit()
 
-        # The queue has no processor: fire the work that satisfies the rows
-        # we just wrote, or this endpoint reports success for nothing.
-        background_tasks.add_task(
-            _canvas_scan_then_remediate_task, scan_job_id, remediation_job_id
-        )
-
         logger.info(
-            f"Started Canvas remediation for file {request.file_id}: scan={scan_job_id}, remediate={remediation_job_id}"
+            f"Queued Canvas remediation for file {request.file_id}: "
+            f"scan={scan_job.id}, remediate={remediation_job.id}"
         )
 
         return CanvasRemediateResponse(
             success=True,
             scan_id=None,  # Will be created by scan job
-            job_id=remediation_job_id,
+            job_id=remediation_job.id,
             message=(
                 "Remediation started. The file is downloaded, scanned, and "
                 "remediated; the remediated copy is not written back to "

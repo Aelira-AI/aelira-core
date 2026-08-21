@@ -406,6 +406,34 @@ class JobProcessor:
         if not await asyncio.to_thread(self._owns_claim, claim):
             raise LostJobOwnership("job ownership lost")
 
+    def _begin_external_effect_sync(self, claim: ClaimedJob) -> str:
+        """Commit a stable request token before provider bytes can leave."""
+        with self.session_factory() as db:
+            job = db.scalar(
+                select(CloudJobQueue).where(self._fence(claim)).with_for_update()
+            )
+            if job is None or job.job_type != "upload":
+                db.rollback()
+                raise LostJobOwnership("external effect fence unavailable")
+            if job.external_effect_state == "requesting":
+                token = str(job.external_effect_token)
+                db.commit()
+                return token
+            if job.external_effect_state is not None:
+                db.rollback()
+                raise LostJobOwnership("external effect requires reconciliation")
+            token = str(uuid.uuid4())
+            now = utcnow()
+            job.external_effect_state = "requesting"
+            job.external_effect_token = token
+            job.external_effect_started_at = now
+            job.updated_at = now
+            db.commit()
+            return token
+
+    async def begin_external_effect(self, claim: ClaimedJob) -> str:
+        return await asyncio.to_thread(self._begin_external_effect_sync, claim)
+
     async def _claim_heartbeat(
         self, claim: ClaimedJob, ownership_lost: asyncio.Event
     ) -> None:
@@ -447,12 +475,61 @@ class JobProcessor:
         base = min(300.0, 5.0 * (2 ** max(0, attempt_count - 1)))
         return timedelta(seconds=base * random.SystemRandom().uniform(0.8, 1.2))
 
-    def _finish(self, claim: ClaimedJob, result: JobResult) -> bool:
+    def _external_effect_state(self, claim: ClaimedJob) -> str | None:
+        if claim.job_type != "upload":
+            return None
+        with self.session_factory() as db:
+            return db.scalar(
+                select(CloudJobQueue.external_effect_state).where(self._fence(claim))
+            )
+
+    def _finish_values(
+        self,
+        claim: ClaimedJob,
+        result: JobResult,
+        *,
+        external_effect_state: str | None,
+    ) -> dict[str, Any]:
         now = utcnow()
         clear = self._clear_claim_values()
+        effect_not_applied = (
+            isinstance(result, JobFailure)
+            and result.details.get("external_effect_not_applied") is True
+        )
+        effect_values: dict[str, Any] = {}
+        if external_effect_state in {"requesting", "indeterminate", "confirmed"}:
+            if isinstance(result, JobSuccess) and external_effect_state in {
+                "requesting",
+                "confirmed",
+            }:
+                effect_values["external_effect_state"] = "confirmed"
+            elif effect_not_applied and external_effect_state == "requesting":
+                effect_values = {
+                    "external_effect_state": None,
+                    "external_effect_token": None,
+                    "external_effect_started_at": None,
+                }
+            else:
+                return {
+                    **clear,
+                    "status": CloudJobStatus.FAILED.value,
+                    "completed_at": now,
+                    "progress_message": "Failed",
+                    "result_data": {"retry_safe": False, "manual_required": True},
+                    "error_message": "upload_outcome_indeterminate",
+                    "last_error_code": "upload_outcome_indeterminate",
+                    "last_error_retryable": False,
+                    "external_effect_state": (
+                        "confirmed"
+                        if external_effect_state == "confirmed"
+                        else "indeterminate"
+                    ),
+                    "updated_at": now,
+                }
         if isinstance(result, JobSuccess):
-            values = {
+            return {
                 **clear,
+                **effect_values,
                 "status": CloudJobStatus.COMPLETED.value,
                 "completed_at": now,
                 "progress": 100,
@@ -463,39 +540,52 @@ class JobProcessor:
                 "last_error_retryable": None,
                 "updated_at": now,
             }
-        else:
-            retryable = result.kind in {
-                FailureKind.RETRYABLE,
-                FailureKind.INDETERMINATE,
+        retryable_kind = result.kind in {
+            FailureKind.RETRYABLE,
+            FailureKind.INDETERMINATE,
+        }
+        retry_safe = result.details.get("retry_safe") is not False
+        retryable = retryable_kind and retry_safe
+        exhausted = claim.attempt_count >= claim.max_retries
+        if retryable and not exhausted:
+            return {
+                **clear,
+                **effect_values,
+                "status": CloudJobStatus.PENDING.value,
+                "scheduled_for": now + self._backoff(claim.attempt_count),
+                "completed_at": None,
+                "progress": 0,
+                "progress_message": "Queued for retry",
+                "result_data": result.details,
+                "error_message": result.code,
+                "last_error_code": result.code,
+                "last_error_retryable": True,
+                "updated_at": now,
             }
-            exhausted = claim.attempt_count >= claim.max_retries
-            if retryable and not exhausted:
-                values = {
-                    **clear,
-                    "status": CloudJobStatus.PENDING.value,
-                    "scheduled_for": now + self._backoff(claim.attempt_count),
-                    "completed_at": None,
-                    "progress": 0,
-                    "progress_message": "Queued for retry",
-                    "result_data": result.details,
-                    "error_message": result.code,
-                    "last_error_code": result.code,
-                    "last_error_retryable": True,
-                    "updated_at": now,
-                }
-            else:
-                values = {
-                    **clear,
-                    "status": CloudJobStatus.FAILED.value,
-                    "completed_at": now,
-                    "progress_message": "Failed",
-                    "result_data": None,
-                    "error_message": result.code,
-                    "last_error_code": result.code,
-                    "last_error_retryable": retryable,
-                    "updated_at": now,
-                }
-        return self._fenced_update(claim, values)
+        terminal_result = (
+            {**result.details, "retry_safe": False, "manual_required": True}
+            if retryable_kind and not retry_safe
+            else None
+        )
+        return {
+            **clear,
+            **effect_values,
+            "status": CloudJobStatus.FAILED.value,
+            "completed_at": now,
+            "progress_message": "Failed",
+            "result_data": terminal_result,
+            "error_message": result.code,
+            "last_error_code": result.code,
+            "last_error_retryable": retryable,
+            "updated_at": now,
+        }
+
+    def _finish(self, claim: ClaimedJob, result: JobResult) -> bool:
+        state = self._external_effect_state(claim)
+        return self._fenced_update(
+            claim,
+            self._finish_values(claim, result, external_effect_state=state),
+        )
 
     def _handler_terminal_committed(self, job_id: str) -> bool:
         with self.session_factory() as db:
@@ -543,6 +633,7 @@ class JobProcessor:
                         claim, progress, message
                     ),
                     assert_owned=lambda: self._assert_owned(claim),
+                    begin_external_effect=lambda: self.begin_external_effect(claim),
                 )
                 try:
                     with self.session_factory() as db:
@@ -640,6 +731,28 @@ class JobProcessor:
                 ).all()
             )
             for job in jobs:
+                if job.external_effect_state in {
+                    "requesting",
+                    "indeterminate",
+                    "confirmed",
+                }:
+                    job.status = CloudJobStatus.FAILED.value
+                    job.completed_at = now
+                    job.error_message = "upload_outcome_indeterminate"
+                    job.last_error_code = "upload_outcome_indeterminate"
+                    job.last_error_retryable = False
+                    job.result_data = {
+                        "retry_safe": False,
+                        "manual_required": True,
+                    }
+                    if job.external_effect_state != "confirmed":
+                        job.external_effect_state = "indeterminate"
+                    job.progress = 0
+                    job.progress_message = "Failed"
+                    for key, value in self._clear_claim_values().items():
+                        setattr(job, key, value)
+                    recovered += 1
+                    continue
                 exhausted = (job.attempt_count or 0) >= (
                     job.max_retries if job.max_retries is not None else self.max_retries
                 )

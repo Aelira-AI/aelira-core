@@ -104,6 +104,9 @@ class BlackboardUploadResult(BaseModel):
     content_id: Optional[str] = None  # Blackboard content item ID
     web_view_link: Optional[str] = None
     error: Optional[str] = None
+    failure_kind: Optional[str] = None
+    status_code: Optional[int] = None
+    retry_after: Optional[int] = None
 
 
 class BlackboardDownloadResult(BaseModel):

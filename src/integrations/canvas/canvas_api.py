@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
+from src.integrations.cloud_base import CloudUploadResult
 
 from src.utils.security import (
     prepare_canvas_outbound_url,
@@ -826,9 +827,13 @@ class CanvasAPIClient:
                 course_id,
                 type(exc).__name__,
             )
+            failure = CloudUploadResult.from_exception(exc, body_started=True)
             return CanvasUploadResult(
                 success=False,
                 error="Canvas file upload failed",
+                failure_kind=failure.failure_kind,
+                status_code=failure.status_code,
+                retry_after=failure.retry_after,
             )
 
     # =========================================================================

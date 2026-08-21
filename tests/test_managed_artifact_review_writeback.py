@@ -10,8 +10,14 @@ import uuid
 
 import pytest
 
-from src.db.models import RemediationOutcome, ScanStatus
-from src.db.models import ContentWritebackLog, Scan
+from src.db.models import (
+    CloudFile,
+    CloudOAuthCredentials,
+    ContentWritebackLog,
+    RemediationOutcome,
+    Scan,
+    ScanStatus,
+)
 from src.education.canvas_content_scanner import CanvasContentScanner
 
 
@@ -74,7 +80,7 @@ def _file_graph(payload=b"%PDF-1.7\n"):
         expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         written_back_at=None,
     )
-    cloud = SimpleNamespace(
+    cloud = CloudFile(
         id=cloud_id,
         department_id=department_id,
         last_scan_id=scan_id,
@@ -83,6 +89,8 @@ def _file_graph(payload=b"%PDF-1.7\n"):
         provider="canvas",
         content_source="file",
         file_name="syllabus.pdf",
+        file_type="pdf",
+        mime_type="application/pdf",
         provider_file_id="9001",
         provider_parent_id="101",
         provider_version="v1",
@@ -95,6 +103,29 @@ def _file_graph(payload=b"%PDF-1.7\n"):
         writeback_at=None,
     )
     return cloud, scan, artifact
+
+
+def _persisted_canvas_authority(db, cloud):
+    credential = CloudOAuthCredentials(
+        id=cloud.credential_id,
+        department_id=cloud.department_id,
+        provider="canvas",
+        access_token="encrypted-access-token",
+        refresh_token="encrypted-refresh-token",
+        token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        provider_metadata={"canvas_instance_url": "http://localhost:3000"},
+        is_active=True,
+    )
+
+    def get(model, identity):
+        if model is CloudOAuthCredentials and identity == credential.id:
+            return credential
+        if model is CloudFile and identity == cloud.id:
+            return cloud
+        return None
+
+    db.get.side_effect = get
+    return credential
 
 
 def test_local_current_pointer_and_reconciliation_constraints_match_contract():
@@ -193,6 +224,7 @@ async def test_canvas_indeterminate_upload_persists_durable_reconciliation_log()
         )
     )
     db = MagicMock()
+    _persisted_canvas_authority(db, cloud)
     scanner = CanvasContentScanner(
         canvas_client=client,
         db=db,
@@ -280,6 +312,7 @@ async def test_canvas_success_then_database_failure_persists_reconciliation_sepa
     )
     db = MagicMock()
     db.commit.side_effect = [RuntimeError("commit lost"), None]
+    _persisted_canvas_authority(db, cloud)
     scanner = CanvasContentScanner(
         canvas_client=client,
         db=db,

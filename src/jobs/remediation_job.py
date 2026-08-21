@@ -297,7 +297,7 @@ async def _commit_terminal_failure(
     commit_job: bool = True,
     rollback_scan_state: Dict[str, Any] | None = None,
 ) -> NoReturn:
-    """Atomically persist bounded terminal scan/job failure state, then signal."""
+    """Persist domain failure state, leaving queue finalization to the worker."""
     failure = RemediationJobFailed(code)
     code = failure.code
     if not commit_job:
@@ -307,22 +307,6 @@ async def _commit_terminal_failure(
     if assert_owned is not None:
         await assert_owned()
     _fence_claim_for_handler_commit(job, db)
-    prior_job_state = {
-        field: getattr(job, field, None)
-        for field in (
-            "status",
-            "progress",
-            "progress_message",
-            "result_data",
-            "completed_at",
-            "error_message",
-            "claim_token",
-            "worker_id",
-            "claimed_at",
-            "heartbeat_at",
-            "lease_expires_at",
-        )
-    }
     prior_scan_state = rollback_scan_state
     if scan is not None:
         if prior_scan_state is None:
@@ -346,25 +330,15 @@ async def _commit_terminal_failure(
         elif scan.completed_at is None:
             scan.completed_at = datetime.now(timezone.utc)
 
-    safe_result = _safe_failure_result(code, result, scan)
-    job.status = CloudJobStatus.FAILED.value
-    job.progress = 100
-    job.progress_message = "Remediation failed"
-    job.error_message = code
-    job.result_data = safe_result
-    job.completed_at = datetime.now(timezone.utc)
-    _clear_claim_for_terminal(job)
     try:
         db.commit()
     except Exception as exc:
         db.rollback()
-        for field, value in prior_job_state.items():
-            setattr(job, field, value)
         if scan is not None and prior_scan_state is not None:
             for field, value in prior_scan_state.items():
                 setattr(scan, field, value)
         raise RemediationJobFailed(code, terminal_state_committed=False) from exc
-    raise RemediationJobFailed(code, terminal_state_committed=True)
+    raise RemediationJobFailed(code, terminal_state_committed=False)
 
 
 def sanitize_execution_context(value: Any) -> Dict[str, Any]:
@@ -1071,7 +1045,7 @@ async def _download_cloud_file(
         if credential.provider == CloudProvider.GOOGLE.value:
             integration = GoogleDriveIntegration(
                 access_token=access_token,
-                department_id=department_id,
+                credential_id=credential.id,
             )
             try:
                 result = await integration.download_file(
@@ -1089,7 +1063,7 @@ async def _download_cloud_file(
         elif credential.provider == CloudProvider.MICROSOFT.value:
             integration = OneDriveIntegration(
                 access_token=access_token,
-                department_id=department_id,
+                credential_id=credential.id,
             )
             try:
                 result = await integration.download_file(
@@ -1422,8 +1396,7 @@ async def handle_remediation_job(
     )
     explicit_scan_id = None
     payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
-    legacy_input = job.result_data if isinstance(job.result_data, dict) else {}
-    candidate = payload.get("scan_id") or legacy_input.get("scan_id")
+    candidate = payload.get("scan_id")
     if isinstance(candidate, str) and candidate.strip():
         explicit_scan_id = candidate
     scan_id = explicit_scan_id or (
@@ -1473,28 +1446,6 @@ async def handle_remediation_job(
             scan=authoritative_scan,
             commit_job=safe_job_scope,
         )
-
-    retry_state = job.result_data if isinstance(job.result_data, dict) else {}
-    retained_artifact_id = retry_state.get("artifact_id")
-    if retry_state.get("publication_cleanup_pending") is True and isinstance(
-        retained_artifact_id, str
-    ):
-        try:
-            RemediationArtifactService.from_settings().abort_staging_for_job(
-                db,
-                artifact_id=retained_artifact_id,
-                remediation_job_id=str(job.id),
-            )
-        except Exception as exc:
-            db.rollback()
-            raise RetryableRemediationJobError(
-                "remediation_artifact_retryable",
-                artifact_id=retained_artifact_id,
-                cleanup_complete=False,
-            ) from exc
-        job.result_data = {}
-        if isinstance(retry_state.get("scan_id"), str):
-            job.result_data["scan_id"] = retry_state["scan_id"]
 
     provider = credential.provider
     if provider in _LMS_PROVIDERS and provider not in _EXECUTABLE_QUEUED_LMS_PROVIDERS:
@@ -1580,43 +1531,18 @@ async def handle_remediation_job(
             rollback_scan_state=pre_process_scan_state,
         )
 
-    safe_result = RemediationJobHandledResult(
-        (key, value) for key, value in result.items() if key in _SAFE_RESULT_FIELDS
-    )
+    safe_result = {
+        key: value for key, value in result.items() if key in _SAFE_RESULT_FIELDS
+    }
     artifact_publication = getattr(result, "artifact_publication", None)
     assert_owned = getattr(job, "_assert_owned", None)
     if assert_owned is not None:
         await assert_owned()
     _fence_claim_for_handler_commit(job, db)
-    prior_job_state = {
-        field: getattr(job, field, None)
-        for field in (
-            "status",
-            "progress",
-            "progress_message",
-            "result_data",
-            "completed_at",
-            "error_message",
-            "claim_token",
-            "worker_id",
-            "claimed_at",
-            "heartbeat_at",
-            "lease_expires_at",
-        )
-    }
-    job.status = CloudJobStatus.COMPLETED.value
-    job.progress = 100
-    job.progress_message = "Remediation complete"
-    job.result_data = dict(safe_result)
-    job.completed_at = datetime.now(timezone.utc)
-    job.error_message = None
-    _clear_claim_for_terminal(job)
     try:
         db.commit()
     except Exception as exc:
         db.rollback()
-        for field, value in prior_job_state.items():
-            setattr(job, field, value)
         artifact_id = safe_result.get("artifact_id")
         cleanup_complete = artifact_id is None
         if (

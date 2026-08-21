@@ -8,7 +8,7 @@ Provides endpoints for:
 - Auto-remediation with upload back to OneDrive
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -26,7 +26,6 @@ from ..db.models import (
     CloudJobQueue,
     CloudProvider,
     CloudJobType,
-    CloudJobStatus,
 )
 from ..api.auth_routes import get_current_api_key
 from ..integrations.oauth_token_manager import OAuthTokenManager
@@ -39,6 +38,7 @@ from ..services.remediation_artifact_service import (
     ArtifactAuthorizationError,
     RemediationArtifactService,
 )
+from ..services.job_enqueue_service import enqueue_cloud_job
 
 # Alias for test compatibility
 get_db = get_db_dependency
@@ -261,7 +261,7 @@ async def get_microsoft_integration(
 
     return OneDriveIntegration(
         access_token=access_token,
-        department_id=credential.department_id,
+        credential_id=credential.id,
         drive_id=drive_id,
         site_id=site_id,
     )
@@ -676,7 +676,7 @@ async def list_onedrive_files(
                 .filter(
                     CloudFile.department_id == api_key.department_id,
                     CloudFile.provider == CloudProvider.MICROSOFT.value,
-                    CloudFile.provider_file_id == file_info.provider_file_id,
+                    CloudFile.provider_file_id == file_info.id,
                 )
                 .first()
             )
@@ -694,17 +694,15 @@ async def list_onedrive_files(
                     department_id=api_key.department_id,
                     credential_id=credential.id,
                     provider=CloudProvider.MICROSOFT.value,
-                    provider_file_id=file_info.provider_file_id,
-                    provider_parent_id=(
-                        file_info.parents[0] if file_info.parents else None
-                    ),
+                    provider_file_id=file_info.id,
+                    provider_parent_id=file_info.parent_id,
                     file_name=file_name,
                     file_type=file_ext,
                     mime_type=file_info.mime_type,
-                    file_size_bytes=file_info.size,
+                    file_size_bytes=file_info.size_bytes,
                     web_view_link=file_info.web_view_link,
                     provider_version=file_info.version,
-                    provider_modified_at=file_info.modified_time,
+                    provider_modified_at=file_info.modified_at,
                     needs_rescan=True,
                 )
                 db.add(cloud_file)
@@ -713,7 +711,7 @@ async def list_onedrive_files(
                 if file_info.version != cloud_file.provider_version:
                     cloud_file.file_name = file_name
                     cloud_file.provider_version = file_info.version
-                    cloud_file.provider_modified_at = file_info.modified_time
+                    cloud_file.provider_modified_at = file_info.modified_at
                     cloud_file.needs_rescan = True
 
             response_files.append(
@@ -793,7 +791,7 @@ async def list_onedrive_folders(
         # Initialize OneDrive integration
         integration = OneDriveIntegration(
             access_token=access_token,
-            department_id=api_key.department_id,
+            credential_id=credential.id,
         )
 
         # List folders
@@ -831,7 +829,6 @@ async def list_onedrive_folders(
 @router.post("/scan/file", response_model=ScanResultResponse)
 async def scan_file(
     request: ScanFileRequest,
-    background_tasks: BackgroundTasks,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
@@ -859,27 +856,24 @@ async def scan_file(
     credential = await get_microsoft_credential(api_key, db)
 
     # Create scan job
-    job = CloudJobQueue(
-        id=str(uuid.uuid4()),
+    job = enqueue_cloud_job(
+        db,
         department_id=api_key.department_id,
         job_type=CloudJobType.SCAN.value,
+        payload={
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.MICROSOFT.value,
+            "provider_file_id": cloud_file.provider_file_id,
+        },
+        dedupe_key=f"scan:microsoft:{cloud_file.id}:{cloud_file.provider_version or 'current'}",
         cloud_file_id=cloud_file.id,
         credential_id=credential.id,
         provider=CloudProvider.MICROSOFT.value,
         provider_file_id=cloud_file.provider_file_id,
-        status=CloudJobStatus.PENDING.value,
         priority=5,
     )
-    db.add(job)
     db.commit()
-
-    # Queue background task
-    background_tasks.add_task(
-        _scan_file_task,
-        job_id=job.id,
-        cloud_file_id=cloud_file.id,
-        credential_id=credential.id,
-    )
 
     return ScanResultResponse(
         file_id=cloud_file.id,
@@ -894,7 +888,6 @@ async def scan_file(
 @router.post("/scan/folder", response_model=Dict[str, Any])
 async def scan_folder(
     request: ScanFolderRequest,
-    background_tasks: BackgroundTasks,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
@@ -934,7 +927,7 @@ async def scan_folder(
                 .filter(
                     CloudFile.department_id == api_key.department_id,
                     CloudFile.provider == CloudProvider.MICROSOFT.value,
-                    CloudFile.provider_file_id == file_info.provider_file_id,
+                    CloudFile.provider_file_id == file_info.id,
                 )
                 .first()
             )
@@ -950,7 +943,7 @@ async def scan_folder(
                     department_id=api_key.department_id,
                     credential_id=credential.id,
                     provider=CloudProvider.MICROSOFT.value,
-                    provider_file_id=file_info.provider_file_id,
+                    provider_file_id=file_info.id,
                     file_name=file_name,
                     file_type=file_ext,
                     mime_type=file_info.mime_type,
@@ -960,18 +953,23 @@ async def scan_folder(
                 db.flush()
 
             # Create scan job
-            job = CloudJobQueue(
-                id=str(uuid.uuid4()),
+            enqueue_cloud_job(
+                db,
                 department_id=api_key.department_id,
                 job_type=CloudJobType.SCAN.value,
+                payload={
+                    "cloud_file_id": cloud_file.id,
+                    "credential_id": credential.id,
+                    "provider": CloudProvider.MICROSOFT.value,
+                    "provider_file_id": cloud_file.provider_file_id,
+                },
+                dedupe_key=f"scan:microsoft:{cloud_file.id}:{cloud_file.provider_version or 'current'}",
                 cloud_file_id=cloud_file.id,
                 credential_id=credential.id,
                 provider=CloudProvider.MICROSOFT.value,
                 provider_file_id=cloud_file.provider_file_id,
-                status=CloudJobStatus.PENDING.value,
                 priority=5,
             )
-            db.add(job)
             jobs_created += 1
 
         db.commit()
@@ -1000,7 +998,6 @@ async def scan_folder(
 @router.post("/remediate", response_model=Dict[str, Any])
 async def remediate_file(
     request: RemediateFileRequest,
-    background_tasks: BackgroundTasks,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
@@ -1034,29 +1031,29 @@ async def remediate_file(
     credential = await get_microsoft_credential(api_key, db)
 
     # Create remediation job
-    job = CloudJobQueue(
-        id=str(uuid.uuid4()),
+    job = enqueue_cloud_job(
+        db,
         department_id=api_key.department_id,
         job_type=CloudJobType.REMEDIATE.value,
+        payload={
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.MICROSOFT.value,
+            "provider_file_id": cloud_file.provider_file_id,
+            "scan_id": cloud_file.last_scan_id,
+            "upload_as_new": request.upload_as_new,
+        },
+        dedupe_key=(
+            f"remediate:microsoft:{cloud_file.id}:{cloud_file.last_scan_id}:"
+            f"upload-new={str(request.upload_as_new).lower()}"
+        ),
         cloud_file_id=cloud_file.id,
         credential_id=credential.id,
         provider=CloudProvider.MICROSOFT.value,
         provider_file_id=cloud_file.provider_file_id,
-        status=CloudJobStatus.PENDING.value,
         priority=3,  # Higher priority than scans
-        result_data={"upload_as_new": request.upload_as_new},
     )
-    db.add(job)
     db.commit()
-
-    # Queue background task
-    background_tasks.add_task(
-        _remediate_file_task,
-        job_id=job.id,
-        cloud_file_id=cloud_file.id,
-        credential_id=credential.id,
-        upload_as_new=request.upload_as_new,
-    )
 
     return {
         "success": True,
@@ -1138,115 +1135,6 @@ async def list_jobs(
         )
         for job in jobs
     ]
-
-
-# ==================== Background Task Functions ====================
-
-
-async def _scan_file_task(job_id: str, cloud_file_id: str, credential_id: str):
-    """Background task to scan a file from OneDrive."""
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.cloud_scan_job import handle_scan_job
-
-    logger.info(f"Starting cloud scan: job={job_id}, file={cloud_file_id}")
-
-    with _get_db_ctx() as db:
-        job = db.query(CloudJobQueue).filter(CloudJobQueue.id == job_id).first()
-        if not job:
-            logger.error(f"Scan job not found: {job_id}")
-            return
-
-        try:
-            job.status = CloudJobStatus.PROCESSING.value
-            job.started_at = datetime.now(timezone.utc)
-            job.progress = 10
-            job.progress_message = "Downloading file from OneDrive..."
-            db.commit()
-
-            token_manager = OAuthTokenManager()
-            result = await handle_scan_job(job, db, token_manager)
-
-            job.status = CloudJobStatus.COMPLETED.value
-            job.progress = 100
-            job.progress_message = "Scan complete"
-            job.result_data = result
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(
-                f"Cloud scan complete: job={job_id}, "
-                f"score={result.get('compliance_score')}, "
-                f"issues={result.get('issues_found', 0)}"
-            )
-        except Exception as e:
-            logger.error(f"Cloud scan failed: job={job_id}, error={e}")
-            job.status = CloudJobStatus.FAILED.value
-            job.progress = 100
-            job.progress_message = f"Scan failed: {e}"
-            job.error_message = str(e)
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-
-async def _remediate_file_task(
-    job_id: str,
-    cloud_file_id: str,
-    credential_id: str,
-    upload_as_new: bool,
-):
-    """Background task to remediate a file and upload back to OneDrive."""
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.remediation_job import handle_remediation_job
-
-    logger.info(f"Starting cloud remediation: job={job_id}, file={cloud_file_id}")
-
-    with _get_db_ctx() as db:
-        job = db.query(CloudJobQueue).filter(CloudJobQueue.id == job_id).first()
-        if not job:
-            logger.error(f"Remediation job not found: {job_id}")
-            return
-
-        try:
-            job.status = CloudJobStatus.PROCESSING.value
-            job.started_at = datetime.now(timezone.utc)
-            job.progress = 10
-            job.progress_message = "Starting remediation..."
-            db.commit()
-
-            token_manager = OAuthTokenManager()
-            await handle_remediation_job(job, db, token_manager)
-
-            logger.info(f"Cloud remediation complete: job={job_id}")
-        except Exception as e:
-            from ..jobs.remediation_job import (
-                RemediationJobFailed,
-                RetryableRemediationJobError,
-                transition_retryable_remediation_job,
-            )
-
-            if isinstance(e, RetryableRemediationJobError):
-                transition_retryable_remediation_job(job, db, e)
-                logger.warning(
-                    "Microsoft remediation queued after transient failure",
-                    extra={"job_id": job_id, "error_code": e.code},
-                )
-                return
-            if (
-                isinstance(e, RemediationJobFailed)
-                and e.terminal_state_committed is True
-            ):
-                logger.warning(
-                    "Microsoft remediation reached a committed terminal failure",
-                    extra={"job_id": job_id, "error_code": e.code},
-                )
-                return
-            logger.error(f"Cloud remediation failed: job={job_id}, error={e}")
-            job.status = CloudJobStatus.FAILED.value
-            job.progress = 100
-            job.progress_message = f"Remediation failed: {e}"
-            job.error_message = str(e)
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
 
 
 # ==================== Account Management ====================
@@ -1485,7 +1373,7 @@ async def upload_to_onedrive(
     access_token = token_manager.decrypt_token(credential.access_token)
 
     # Upload file using OneDrive integration
-    OneDriveIntegration(access_token=access_token)
+    OneDriveIntegration(access_token=access_token, credential_id=credential.id)
 
     try:
         # Placeholder - would use upload_file method
@@ -1669,7 +1557,6 @@ async def scan_sharepoint_file(
     file_id: str,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
-    background_tasks: BackgroundTasks = None,
 ):
     """
     Scan a SharePoint file for accessibility issues.
@@ -1697,21 +1584,24 @@ async def scan_sharepoint_file(
         )
 
     # Create a scan job (similar to OneDrive scan)
-    job_id = str(uuid.uuid4())
-
-    new_job = CloudJobQueue(
-        id=job_id,
+    new_job = enqueue_cloud_job(
+        db,
         department_id=api_key.department_id,
         job_type=CloudJobType.SCAN.value,
+        payload={
+            "credential_id": credential.id,
+            "provider": CloudProvider.MICROSOFT.value,
+            "provider_file_id": file_id,
+        },
+        dedupe_key=f"scan:microsoft:sharepoint:{file_id}:current",
+        credential_id=credential.id,
         provider=CloudProvider.MICROSOFT.value,
-        status=CloudJobStatus.PENDING.value,
+        provider_file_id=file_id,
     )
-
-    db.add(new_job)
     db.commit()
 
     return {
-        "job_id": job_id,
+        "job_id": new_job.id,
         "file_id": file_id,
         "status": "pending",
         "message": "SharePoint file scan queued",

@@ -19,6 +19,34 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 import uuid
 
+
+def _enumeration_enqueue(db):
+    """Keep enumeration tests focused while preserving durable queue outputs."""
+    from src.db.models import CloudJobQueue, CloudJobStatus
+
+    def enqueue(bound_db, **kwargs):
+        assert bound_db is db
+        job = CloudJobQueue(
+            id=str(uuid.uuid4()),
+            department_id=kwargs["department_id"],
+            job_type=kwargs["job_type"],
+            payload=kwargs["payload"],
+            dedupe_key=kwargs["dedupe_key"],
+            provider=kwargs.get("provider"),
+            credential_id=kwargs.get("credential_id"),
+            cloud_file_id=kwargs.get("cloud_file_id"),
+            provider_file_id=kwargs.get("provider_file_id"),
+            status=CloudJobStatus.PENDING.value,
+        )
+        db.add(job)
+        return job
+
+    return patch(
+        "src.education.canvas_content_scanner.enqueue_cloud_job",
+        side_effect=enqueue,
+    )
+
+
 # ---------------------------------------------------------------------------
 # TestHtmlWrapping
 # ---------------------------------------------------------------------------
@@ -377,7 +405,8 @@ class TestCanvasContentScanner:
             credential_id=credential_id,
         )
 
-        result = await scanner.scan_course_content("COURSE123")
+        with _enumeration_enqueue(db):
+            result = await scanner.scan_course_content("COURSE123")
 
         # All 5 list methods should have been called
         canvas_client.list_course_pages.assert_awaited_once_with("COURSE123")
@@ -429,7 +458,8 @@ class TestCanvasContentScanner:
             credential_id=credential_id,
         )
 
-        result = await scanner.scan_course_content("COURSE123")
+        with _enumeration_enqueue(db):
+            result = await scanner.scan_course_content("COURSE123")
 
         # Empty content should be skipped — no CloudFile created
         assert db.add.call_count == 0
@@ -476,7 +506,8 @@ class TestCanvasContentScanner:
             credential_id=credential_id,
         )
 
-        result = await scanner.scan_course_content("COURSE123")
+        with _enumeration_enqueue(db):
+            result = await scanner.scan_course_content("COURSE123")
 
         # Should update existing record, not add new one
         assert existing_file.content_body == "<p>Updated body</p>"
@@ -566,15 +597,15 @@ class TestCanvasContentScannerFiles:
             credential_id=str(uuid.uuid4()),
         )
 
-        result = await scanner.scan_course_content("COURSE123")
+        with _enumeration_enqueue(db):
+            result = await scanner.scan_course_content("COURSE123")
 
         canvas_client.list_course_files.assert_awaited_once_with("COURSE123")
         assert result["counts"]["file"] == 1
         assert result["counts"]["page"] == 1
         assert len(result["file_scan_jobs"]) == 1
-        # Page still goes through the normal cloud_file_ids list — files
-        # must NOT be mixed into it (that list drives the axe-core-only
-        # background task loop in the route handler).
+        # HTML content and uploaded files remain separate durable scan kinds;
+        # document files must never enter the HTML-only content list.
         assert (
             result["file_scan_jobs"][0]["cloud_file_id"] not in result["cloud_file_ids"]
         )
@@ -592,7 +623,8 @@ class TestCanvasContentScannerFiles:
         mock_query.filter.return_value.first.return_value = None
         db.query.return_value = mock_query
 
-        result = await scanner.scan_course_content("COURSE123")
+        with _enumeration_enqueue(db):
+            result = await scanner.scan_course_content("COURSE123")
 
         # One CloudFile add + one CloudJobQueue add
         added = [call.args[0] for call in db.add.call_args_list]
@@ -606,8 +638,8 @@ class TestCanvasContentScannerFiles:
         assert len(jobs) == 1
         assert jobs[0].job_type == "scan"
         assert jobs[0].cloud_file_id == cloud_files[0].id
-        # The job's id must be the same one handed back in file_scan_jobs —
-        # that's what the route handler fires _canvas_scan_file_task with.
+        # The job's id must be the same one handed back in file_scan_jobs so
+        # the durable worker can claim the exact persisted scan request.
         assert len(result["file_scan_jobs"]) == 1
         assert result["file_scan_jobs"][0]["job_id"] == jobs[0].id
         assert result["file_scan_jobs"][0]["cloud_file_id"] == cloud_files[0].id
@@ -631,7 +663,8 @@ class TestCanvasContentScannerFiles:
         mock_query.filter.return_value.first.return_value = existing_file
         db.query.return_value = mock_query
 
-        result = await scanner.scan_course_content("COURSE123")
+        with _enumeration_enqueue(db):
+            result = await scanner.scan_course_content("COURSE123")
 
         # No new CloudFile created for the file — only the CloudJobQueue row
         added = [call.args[0] for call in db.add.call_args_list]
@@ -647,10 +680,9 @@ class TestCanvasContentScannerFiles:
         ]
 
     @pytest.mark.asyncio
-    async def test_files_scan_job_queued_via_cloud_job_queue_not_background_task(self):
-        # Regression guard for the core design decision: files must NOT
-        # flow through cloud_file_ids (the axe-core background-task list) —
-        # they'd silently no-op ("No content body") in scan_content_item.
+    async def test_files_scan_job_queued_for_durable_document_worker(self):
+        # Regression guard: files must not flow through cloud_file_ids, where
+        # the HTML scanner would silently no-op with "No content body".
         canvas_client = AsyncMock()
         db = MagicMock()
         scanner = self._scanner_with_empty_html_types(canvas_client, db)
@@ -661,7 +693,8 @@ class TestCanvasContentScannerFiles:
         mock_query.filter.return_value.first.return_value = None
         db.query.return_value = mock_query
 
-        result = await scanner.scan_course_content("COURSE123")
+        with _enumeration_enqueue(db):
+            result = await scanner.scan_course_content("COURSE123")
 
         assert result["cloud_file_ids"] == []
         assert len(result["file_scan_jobs"]) == 1

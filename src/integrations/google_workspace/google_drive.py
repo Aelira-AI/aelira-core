@@ -34,6 +34,25 @@ from .models import GoogleFileInfo, GoogleFolderInfo
 logger = logging.getLogger(__name__)
 
 
+class GoogleWebhookRequestError(RuntimeError):
+    """Sanitized watch-request failure with explicit send state."""
+
+    def __init__(
+        self, code: str, *, request_started: bool, retryable: bool = False
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.request_started = request_started
+        self.retryable = retryable
+
+
+class IndeterminateProviderOutcome(GoogleWebhookRequestError):
+    """The watch POST may have succeeded and must not be blindly repeated."""
+
+    def __init__(self, code: str = "webhook_provider_outcome_indeterminate") -> None:
+        super().__init__(code, request_started=True, retryable=False)
+
+
 class GoogleDriveIntegration(BaseCloudIntegration):
     """
     Google Drive integration using Drive API v3.
@@ -71,8 +90,8 @@ class GoogleDriveIntegration(BaseCloudIntegration):
         "application/vnd.google-apps.spreadsheet": ".xlsx",
     }
 
-    def __init__(self, credential_id: str, access_token: str):
-        super().__init__(credential_id, access_token)
+    def __init__(self, access_token: str, credential_id: str):
+        super().__init__(access_token=access_token, credential_id=credential_id)
         self._client: Optional[httpx.AsyncClient] = None
 
     @property
@@ -420,9 +439,9 @@ class GoogleDriveIntegration(BaseCloudIntegration):
                 web_view_link=data.get("webViewLink"),
             )
 
-        except Exception as e:
-            logger.error(f"Upload failed: {e}")
-            return CloudUploadResult(success=False, error=str(e))
+        except Exception as exc:
+            logger.error("Upload failed (%s)", type(exc).__name__)
+            return CloudUploadResult.from_exception(exc, body_started=True)
 
     async def _upload_resumable(
         self, content: bytes, metadata: Dict, mime_type: str
@@ -466,8 +485,8 @@ class GoogleDriveIntegration(BaseCloudIntegration):
                 web_view_link=data.get("webViewLink"),
             )
 
-        except Exception as e:
-            return CloudUploadResult(success=False, error=str(e))
+        except Exception as exc:
+            return CloudUploadResult.from_exception(exc, body_started=True)
 
     async def list_folders(
         self, parent_id: Optional[str] = None
@@ -513,6 +532,7 @@ class GoogleDriveIntegration(BaseCloudIntegration):
         self,
         notification_url: str,
         resource_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a webhook subscription for file changes.
@@ -524,8 +544,25 @@ class GoogleDriveIntegration(BaseCloudIntegration):
         Returns:
             Webhook channel details
         """
-        client = await self._get_client()
-        channel_id = str(uuid.uuid4())
+        if not isinstance(notification_url, str) or not notification_url.strip():
+            raise GoogleWebhookRequestError(
+                "webhook_notification_url_invalid", request_started=False
+            )
+        if channel_id is not None and (
+            not isinstance(channel_id, str) or not channel_id.strip()
+        ):
+            raise GoogleWebhookRequestError(
+                "webhook_channel_id_invalid", request_started=False
+            )
+        channel_id = channel_id or str(uuid.uuid4())
+        try:
+            client = await self._get_client()
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise GoogleWebhookRequestError(
+                "webhook_provider_unavailable",
+                request_started=False,
+                retryable=True,
+            ) from exc
 
         # Watch the changes endpoint or a specific file
         if resource_id:
@@ -555,7 +592,12 @@ class GoogleDriveIntegration(BaseCloudIntegration):
         if start_page_token:
             body["pageToken"] = start_page_token
 
-        response = await client.post(watch_url, json=body)
+        try:
+            response = await client.post(watch_url, json=body)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise IndeterminateProviderOutcome() from exc
+        if response.status_code >= 500:
+            raise IndeterminateProviderOutcome()
         data = await self._handle_response(response)
 
         logger.info(f"Created webhook channel: {channel_id}")
@@ -603,6 +645,7 @@ class GoogleDriveIntegration(BaseCloudIntegration):
             created_at=google_file.created_time,
             modified_at=google_file.modified_time,
             parent_id=google_file.parents[0] if google_file.parents else None,
+            path=None,
             web_view_link=google_file.web_view_link,
             download_link=google_file.web_content_link,
             version=google_file.version or google_file.md5_checksum,

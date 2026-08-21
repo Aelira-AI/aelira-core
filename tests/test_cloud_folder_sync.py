@@ -26,6 +26,7 @@ from src.db.models import (
     CloudJobQueue,
 )
 from src.jobs.cloud_sync_job import handle_sync_job
+from src.jobs.contracts import FailureKind, JobFailure
 
 # Mark all tests in this module as integration tests
 pytestmark = pytest.mark.integration
@@ -105,6 +106,11 @@ class TestFolderSyncPrivacy:
         mock_job = MagicMock(spec=CloudJobQueue)
         mock_job.credential_id = mock_credential.id
         mock_job.department_id = mock_credential.department_id
+        mock_job.provider = mock_credential.provider
+        mock_job.payload = {
+            "credential_id": mock_credential.id,
+            "provider": mock_credential.provider,
+        }
 
         # Run sync
         with patch("src.jobs.cloud_sync_job.CloudSyncJob"):
@@ -196,12 +202,18 @@ class TestFolderSyncPrivacy:
         mock_job = MagicMock(spec=CloudJobQueue)
         mock_job.credential_id = mock_credential.id
         mock_job.department_id = mock_credential.department_id
+        mock_job.provider = mock_credential.provider
+        mock_job.payload = {
+            "credential_id": mock_credential.id,
+            "provider": mock_credential.provider,
+            "folder_ids": [folder_a.id],
+        }
 
         # Mock the CloudSyncJob to track which folders are synced
         synced_folders = []
 
-        async def mock_run(db, folder_id=None):
-            synced_folders.append(folder_id)
+        async def mock_run(db, folder_id=None, *, recursive=True):
+            synced_folders.append((folder_id, recursive))
             return {
                 "files_discovered": 1,
                 "files_updated": 0,
@@ -221,9 +233,38 @@ class TestFolderSyncPrivacy:
             )
 
         # Verify: Only folder A was synced, not folder B
-        assert "folder-a" in synced_folders
-        assert "folder-b" not in synced_folders
+        assert ("folder-a", True) in synced_folders
+        assert all(folder_id != "folder-b" for folder_id, _recursive in synced_folders)
         assert result["folders_processed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_payload_scope_returns_typed_failure_without_syncing(
+        self, mock_db_session, mock_credential, mock_token_manager
+    ):
+        """A stale durable payload fails with the typed handler contract."""
+        mock_job = MagicMock(spec=CloudJobQueue)
+        mock_job.credential_id = mock_credential.id
+        mock_job.department_id = mock_credential.department_id
+        mock_job.provider = mock_credential.provider
+        mock_job.payload = {
+            "credential_id": mock_credential.id,
+            "provider": CloudProvider.MICROSOFT.value,
+            "folder_ids": [str(uuid.uuid4())],
+        }
+
+        with patch("src.jobs.cloud_sync_job.CloudSyncJob") as sync_job:
+            result = await handle_sync_job(
+                job=mock_job,
+                db=mock_db_session,
+                token_manager=mock_token_manager,
+            )
+
+        assert isinstance(result, JobFailure)
+        assert result.kind is FailureKind.DETERMINISTIC
+        assert result.code == "invalid_job_scope"
+        assert result.details == {}
+        sync_job.assert_not_called()
+        mock_db_session.query.assert_not_called()
 
 
 class TestSyncSubfoldersFlag:
@@ -374,6 +415,11 @@ class TestSyncJobPrivacyLogging:
         mock_job = MagicMock(spec=CloudJobQueue)
         mock_job.credential_id = mock_credential.id
         mock_job.department_id = mock_credential.department_id
+        mock_job.provider = mock_credential.provider
+        mock_job.payload = {
+            "credential_id": mock_credential.id,
+            "provider": mock_credential.provider,
+        }
 
         import logging
 
@@ -421,6 +467,11 @@ class TestMicrosoftSyncPrivacy:
         mock_job = MagicMock(spec=CloudJobQueue)
         mock_job.credential_id = microsoft_credential.id
         mock_job.department_id = microsoft_credential.department_id
+        mock_job.provider = microsoft_credential.provider
+        mock_job.payload = {
+            "credential_id": microsoft_credential.id,
+            "provider": microsoft_credential.provider,
+        }
 
         result = await handle_sync_job(
             job=mock_job,

@@ -973,22 +973,55 @@ async def test_cloud_scan_canvas_sink_rejects_stale_origin_before_client_creatio
 
 
 @pytest.mark.asyncio
-async def test_content_background_sink_rejects_stale_origin_before_token_use():
-    from src.api.canvas_content_routes import _content_scan_task
+async def test_content_scan_worker_rejects_stale_origin_before_token_use():
+    from src.jobs.cloud_scan_job import handle_scan_job
 
-    cloud_file = SimpleNamespace(id="file-1")
     credential = SimpleNamespace(
         id="credential-1",
+        department_id="department-1",
+        provider="canvas",
+        is_active=True,
         provider_metadata={"canvas_instance_url": "https://old-canvas.example.edu"},
         access_token="encrypted-access",
     )
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        department_id="department-1",
+        credential_id="credential-1",
+        provider="canvas",
+        provider_file_id="page-1",
+        provider_parent_id="course-1",
+        content_source="page",
+    )
+    job = SimpleNamespace(
+        id="job-1",
+        department_id="department-1",
+        credential_id="credential-1",
+        provider="canvas",
+        provider_file_id="page-1",
+        cloud_file_id="file-1",
+        payload={
+            "scan_kind": "canvas_content",
+            "credential_id": "credential-1",
+            "provider": "canvas",
+            "provider_file_id": "page-1",
+            "cloud_file_id": "file-1",
+            "course_id": "course-1",
+            "content_source": "page",
+            "scan_options": {
+                "generate_alt_text": False,
+                "auto_remediate": False,
+                "detect_decorative": False,
+            },
+        },
+    )
     db = MagicMock()
     db.query.return_value.filter.return_value.first.side_effect = [
-        cloud_file,
         credential,
+        cloud_file,
     ]
-    db_context = MagicMock()
-    db_context.__enter__.return_value = db
+    token_manager = MagicMock()
+    token_manager.refresh_if_expired = AsyncMock()
     public_dns = [(2, 1, 6, "", ("93.184.216.34", 0))]
 
     with (
@@ -1000,13 +1033,10 @@ async def test_content_background_sink_rejects_stale_origin_before_token_use():
             },
         ),
         patch("src.utils.security.socket.getaddrinfo", return_value=public_dns),
-        patch("src.db.database.get_db", return_value=db_context),
-        patch(
-            "src.integrations.oauth_token_manager.OAuthTokenManager"
-        ) as token_manager,
-        patch("src.integrations.canvas.CanvasAPIClient") as api_client,
+        patch("src.integrations.canvas.canvas_api.CanvasAPIClient") as api_client,
+        pytest.raises(ValueError, match="reconnect Canvas"),
     ):
-        await _content_scan_task("file-1", "department-1", "credential-1")
+        await handle_scan_job(job, db, token_manager)
 
-    token_manager.return_value.decrypt_token.assert_not_called()
+    token_manager.refresh_if_expired.assert_not_awaited()
     api_client.assert_not_called()

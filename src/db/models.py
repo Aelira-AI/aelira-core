@@ -956,6 +956,7 @@ class CloudJobType(str, Enum):
     REMEDIATE = "remediate"  # Remediate and upload fixed file
     UPLOAD = "upload"  # Upload file to cloud
     WEBHOOK_REFRESH = "webhook_refresh"  # Renew webhook subscription
+    RECONCILE = "canvas_reconcile"  # Observe an uncertain Canvas writeback
 
 
 class CloudJobStatus(str, Enum):
@@ -1162,6 +1163,16 @@ class ContentWritebackLog(Base):
     correlation_id = Column(String(36), nullable=True, unique=True)
     reconciliation_status = Column(String(32), nullable=True)
     provider_result = Column(JSON, nullable=True)
+    reconciliation_attempt_count = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    reconciliation_lease_token = Column(String(36), nullable=True)
+    reconciliation_leased_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_last_error = Column(String(128), nullable=True)
+    reconciliation_resolved_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_resolution = Column(String(32), nullable=True)
     rollback_status = Column(String(20), nullable=True)  # rolled_back
     rolled_back_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -1176,13 +1187,35 @@ class ContentWritebackLog(Base):
         ),
         CheckConstraint(
             "reconciliation_status IS NULL OR reconciliation_status IN "
-            "('pending', 'committed', 'reconciliation_required')",
+            "('pending', 'committed', 'reconciliation_required', 'reconciled', "
+            "'failed_manual', 'manual_required')",
             name="ck_content_writeback_log_reconciliation",
+        ),
+        CheckConstraint(
+            "(reconciliation_lease_token IS NULL AND reconciliation_leased_at IS NULL "
+            "AND reconciliation_lease_expires_at IS NULL) OR "
+            "(reconciliation_lease_token IS NOT NULL AND reconciliation_leased_at IS NOT NULL "
+            "AND reconciliation_lease_expires_at IS NOT NULL)",
+            name="ck_content_writeback_log_reconciliation_lease",
+        ),
+        CheckConstraint(
+            "reconciliation_attempt_count >= 0",
+            name="ck_content_writeback_log_reconciliation_attempts",
+        ),
+        CheckConstraint(
+            "reconciliation_resolution IS NULL OR reconciliation_resolution IN "
+            "('confirmed', 'failed_manual', 'manual_required')",
+            name="ck_content_writeback_log_reconciliation_resolution",
         ),
         CheckConstraint(
             "correlation_id IS NULL OR correlation_id ~ "
             "'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'",
             name="ck_content_writeback_log_correlation_id",
+        ),
+        Index(
+            "ix_content_writeback_log_reconciliation_due",
+            "reconciliation_status",
+            "reconciliation_next_attempt_at",
         ),
     )
 
@@ -1238,6 +1271,10 @@ class CloudWebhookSubscription(Base):
 
     provider = Column(String(20), nullable=False)
     subscription_id = Column(String(255), nullable=False)  # Provider's subscription ID
+    # Exact provider object originally requested for renewal (for example a Drive file ID).
+    provider_resource_id = Column(String(1024), nullable=True)
+    # Opaque resource identity returned by the provider for the active channel.
+    provider_channel_resource_id = Column(String(1024), nullable=True)
     resource_uri = Column(String(1024), nullable=True)  # What we're watching
 
     # Subscription details
@@ -1247,6 +1284,11 @@ class CloudWebhookSubscription(Base):
     # State
     is_active = Column(Boolean, default=True)
     last_notification_at = Column(DateTime(timezone=True), nullable=True)
+    last_renewed_at = Column(DateTime(timezone=True), nullable=True)
+    renewal_status = Column(String(32), nullable=True)
+    renewal_result = Column(JSON, nullable=True)
+    pending_renewal_channel_id = Column(String(255), nullable=True, unique=True)
+    pending_renewal_started_at = Column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1255,6 +1297,38 @@ class CloudWebhookSubscription(Base):
     department = relationship("Department", backref="webhook_subscriptions")
     credential = relationship(
         "CloudOAuthCredentials", back_populates="webhook_subscriptions"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(pending_renewal_channel_id IS NULL AND pending_renewal_started_at IS NULL) "
+            "OR (pending_renewal_channel_id IS NOT NULL "
+            "AND pending_renewal_started_at IS NOT NULL)",
+            name="ck_cloud_webhook_pending_renewal_pair",
+        ),
+        CheckConstraint(
+            "renewal_status NOT IN ('pending', 'requesting', 'indeterminate') "
+            "OR (pending_renewal_channel_id IS NOT NULL "
+            "AND pending_renewal_started_at IS NOT NULL)",
+            name="ck_cloud_webhook_pending_renewal_status",
+        ),
+        Index(
+            "uq_cloud_webhook_initial_intent",
+            "department_id",
+            "credential_id",
+            "provider",
+            "provider_resource_id",
+            "notification_url",
+            unique=True,
+            postgresql_where=text(
+                "provider = 'google' AND renewal_status IN "
+                "('requesting', 'indeterminate', 'created', 'renewed')"
+            ),
+            sqlite_where=text(
+                "provider = 'google' AND renewal_status IN "
+                "('requesting', 'indeterminate', 'created', 'renewed')"
+            ),
+        ),
     )
 
 
@@ -1318,6 +1392,10 @@ class CloudJobQueue(Base):
     heartbeat_at = Column(DateTime(timezone=True), nullable=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True)
 
+    external_effect_state = Column(String(20), nullable=True)
+    external_effect_token = Column(String(36), nullable=True)
+    external_effect_started_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -1366,6 +1444,22 @@ class CloudJobQueue(Base):
         CheckConstraint(
             "status NOT IN ('completed', 'failed') OR completed_at IS NOT NULL",
             name="ck_cloud_job_queue_terminal",
+        ),
+        CheckConstraint(
+            "external_effect_state IS NULL OR external_effect_state IN "
+            "('requesting', 'confirmed', 'indeterminate')",
+            name="ck_cloud_job_queue_external_effect_state",
+        ),
+        CheckConstraint(
+            "(external_effect_state IS NULL AND external_effect_token IS NULL AND "
+            "external_effect_started_at IS NULL) OR (external_effect_state IS NOT NULL "
+            "AND external_effect_token IS NOT NULL AND external_effect_started_at IS NOT NULL)",
+            name="ck_cloud_job_queue_external_effect_pair",
+        ),
+        CheckConstraint(
+            "job_type = 'upload' OR (external_effect_state IS NULL AND "
+            "external_effect_token IS NULL AND external_effect_started_at IS NULL)",
+            name="ck_cloud_job_queue_external_effect_upload_only",
         ),
         Index(
             "ix_cloud_job_queue_claim",
@@ -1633,6 +1727,94 @@ class RemediationArtifact(Base):
         "CloudFile",
         back_populates="current_remediation_artifact",
         foreign_keys="CloudFile.current_remediation_artifact_id",
+    )
+
+
+class ArtifactOrphanQuarantine(Base):
+    """Unknown artifact-root file retained for explicit human review."""
+
+    __tablename__ = "artifact_orphan_quarantine"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    intent_token = Column(String(32), nullable=False)
+    original_key = Column(String(1024), nullable=False, unique=True)
+    quarantine_key = Column(String(1024), nullable=False, unique=True)
+    size_bytes = Column(BigInteger, nullable=False)
+    source_mtime = Column(DateTime(timezone=True), nullable=False)
+    source_mtime_ns = Column(BigInteger, nullable=False)
+    source_device = Column(BigInteger, nullable=False)
+    source_inode = Column(BigInteger, nullable=False)
+    kind = Column(String(32), nullable=False, server_default="regular_file")
+    status = Column(String(32), nullable=False, server_default="pending_move")
+    reason = Column(String(128), nullable=False)
+    recovery_error = Column(String(128), nullable=True)
+    quarantined_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String(255), nullable=True)
+    purge_claimed_at = Column(DateTime(timezone=True), nullable=True)
+    purge_token = Column(String(32), nullable=True)
+    purged_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("size_bytes >= 0", name="ck_artifact_orphan_quarantine_size"),
+        CheckConstraint(
+            "kind IN ('regular_file')",
+            name="ck_artifact_orphan_quarantine_kind",
+        ),
+        CheckConstraint(
+            "status IN ('pending_move', 'quarantined', 'restore_required', "
+            "'reviewed', 'purging', 'purged')",
+            name="ck_artifact_orphan_quarantine_status",
+        ),
+        CheckConstraint(
+            "(purge_claimed_at IS NULL AND purge_token IS NULL) OR "
+            "(purge_claimed_at IS NOT NULL AND purge_token IS NOT NULL "
+            "AND length(purge_token) = 32)",
+            name="ck_artifact_orphan_quarantine_purge_claim",
+        ),
+        CheckConstraint(
+            "(status IN ('pending_move', 'quarantined') "
+            "AND reviewed_at IS NULL AND reviewed_by IS NULL "
+            "AND purge_claimed_at IS NULL AND purge_token IS NULL "
+            "AND purged_at IS NULL) OR "
+            "(status = 'restore_required' AND purged_at IS NULL AND "
+            "((reviewed_at IS NULL AND reviewed_by IS NULL "
+            "AND purge_claimed_at IS NULL AND purge_token IS NULL) OR "
+            "(reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL "
+            "AND purge_claimed_at IS NOT NULL AND purge_token IS NOT NULL))) OR "
+            "(status = 'reviewed' AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL "
+            "AND purge_claimed_at IS NULL AND purge_token IS NULL "
+            "AND purged_at IS NULL) OR "
+            "(status = 'purging' AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL "
+            "AND purge_claimed_at IS NOT NULL AND purge_token IS NOT NULL "
+            "AND purged_at IS NULL) OR "
+            "(status = 'purged' AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL "
+            "AND purge_claimed_at IS NOT NULL AND purge_token IS NOT NULL "
+            "AND purged_at IS NOT NULL)",
+            name="ck_artifact_orphan_quarantine_review",
+        ),
+        Index(
+            "ix_artifact_orphan_quarantine_status_age",
+            "status",
+            "quarantined_at",
+        ),
+    )
+
+
+class MaintenanceCursor(Base):
+    """Durable progress for bounded maintenance traversals."""
+
+    __tablename__ = "maintenance_cursors"
+
+    key = Column(String(128), primary_key=True)
+    cursor_json = Column(
+        JOB_JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 

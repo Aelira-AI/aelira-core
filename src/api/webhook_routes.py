@@ -9,24 +9,22 @@ These webhooks notify us when files change in cloud storage,
 allowing us to trigger automatic rescans.
 """
 
-from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Query, Depends
+from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from fastapi.responses import Response, PlainTextResponse
 from sqlalchemy.orm import Session
 from typing import Optional, Tuple
 import logging
 from datetime import datetime, timezone
-import uuid
 
 from ..auth.dependencies import get_required_api_key as get_api_key_or_mock
 from ..db.database import get_db, get_db_dependency
 from ..db.models import (
     APIKey,
     CloudWebhookSubscription,
-    CloudJobQueue,
     CloudProvider,
     CloudJobType,
-    CloudJobStatus,
 )
+from ..services.job_enqueue_service import enqueue_cloud_job
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +39,6 @@ router = APIRouter(prefix="/webhooks", tags=["cloud-webhooks"])
 @router.post("/google")
 async def google_drive_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
 ):
     """
     Handle Google Drive push notifications.
@@ -87,57 +84,29 @@ async def google_drive_webhook(
 
         # Update last notification time
         subscription.last_notification_at = datetime.now(timezone.utc)
+        enqueue_cloud_job(
+            db,
+            department_id=subscription.department_id,
+            job_type=CloudJobType.SYNC.value,
+            payload={
+                "credential_id": subscription.credential_id,
+                "provider": CloudProvider.GOOGLE.value,
+                "subscription_id": subscription.id,
+                "resource_id": resource_id,
+                "resource_state": resource_state,
+                "message_number": message_number,
+            },
+            dedupe_key=(
+                f"webhook:google:{subscription.subscription_id}:"
+                f"{message_number or resource_id or resource_state or 'change'}"
+            ),
+            credential_id=subscription.credential_id,
+            provider=CloudProvider.GOOGLE.value,
+            priority=3,
+        )
         db.commit()
-
-        # Get department ID from subscription
-        department_id = subscription.department_id
-        credential_id = subscription.credential_id
-
-    # Queue background task to process the change
-    background_tasks.add_task(
-        _process_google_change,
-        department_id=department_id,
-        credential_id=credential_id,
-        resource_id=resource_id,
-        resource_state=resource_state,
-    )
 
     return Response(status_code=200)
-
-
-async def _process_google_change(
-    department_id: str,
-    credential_id: str,
-    resource_id: str,
-    resource_state: str,
-):
-    """
-    Process a Google Drive file change notification.
-
-    Creates sync jobs to discover and scan changed files.
-    """
-    logger.info(
-        f"Processing Google change: resource={resource_id}, state={resource_state}"
-    )
-
-    with get_db() as db:
-        # For now, create a sync job to refresh all files
-        # Google notifications don't include specific file IDs,
-        # so we need to use the changes API or delta queries
-        job = CloudJobQueue(
-            id=str(uuid.uuid4()),
-            department_id=department_id,
-            job_type=CloudJobType.SYNC.value,
-            credential_id=credential_id,
-            provider=CloudProvider.GOOGLE.value,
-            status=CloudJobStatus.PENDING.value,
-            priority=3,  # Higher priority for webhook-triggered jobs
-            progress_message=f"Triggered by webhook: {resource_state}",
-        )
-        db.add(job)
-        db.commit()
-
-        logger.info(f"Created sync job {job.id} for Google webhook")
 
 
 # =============================================================================
@@ -148,7 +117,6 @@ async def _process_google_change(
 @router.post("/microsoft")
 async def microsoft_graph_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     validationToken: str = Query(None),
 ):
     """
@@ -216,18 +184,28 @@ async def microsoft_graph_webhook(
                 )
                 continue
 
-            # Update last notification time
+            # Update last notification time and durably enqueue reconciliation.
             subscription.last_notification_at = datetime.now(timezone.utc)
-            db.commit()
-
-            # Queue background task
-            background_tasks.add_task(
-                _process_microsoft_change,
+            enqueue_cloud_job(
+                db,
                 department_id=subscription.department_id,
+                job_type=CloudJobType.SYNC.value,
+                payload={
+                    "credential_id": subscription.credential_id,
+                    "provider": CloudProvider.MICROSOFT.value,
+                    "subscription_id": subscription.id,
+                    "resource": resource,
+                    "change_type": change_type,
+                },
+                dedupe_key=(
+                    f"webhook:microsoft:{subscription.subscription_id}:"
+                    f"{resource or 'resource'}:{change_type or 'change'}"
+                ),
                 credential_id=subscription.credential_id,
-                resource=resource,
-                change_type=change_type,
+                provider=CloudProvider.MICROSOFT.value,
+                priority=3,
             )
+            db.commit()
 
     return Response(status_code=202)
 
@@ -242,40 +220,6 @@ async def microsoft_graph_validation(validationToken: str = Query(..., max_lengt
     """
     logger.info(f"Microsoft webhook validation GET: {validationToken}")
     return PlainTextResponse(content=validationToken, status_code=200)
-
-
-async def _process_microsoft_change(
-    department_id: str,
-    credential_id: str,
-    resource: str,
-    change_type: str,
-):
-    """
-    Process a Microsoft OneDrive/SharePoint file change notification.
-
-    Creates sync jobs to discover and scan changed files.
-    """
-    logger.info(f"Processing Microsoft change: resource={resource}, type={change_type}")
-
-    with get_db() as db:
-        # Create a sync job to refresh files
-        # Microsoft notifications can include the specific resource path,
-        # but we'll do a full sync for simplicity
-        job = CloudJobQueue(
-            id=str(uuid.uuid4()),
-            department_id=department_id,
-            job_type=CloudJobType.SYNC.value,
-            credential_id=credential_id,
-            provider=CloudProvider.MICROSOFT.value,
-            status=CloudJobStatus.PENDING.value,
-            priority=3,
-            progress_message=f"Triggered by webhook: {change_type}",
-            result_data={"resource": resource, "change_type": change_type},
-        )
-        db.add(job)
-        db.commit()
-
-        logger.info(f"Created sync job {job.id} for Microsoft webhook")
 
 
 # =============================================================================

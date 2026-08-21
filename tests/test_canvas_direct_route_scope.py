@@ -345,7 +345,7 @@ def test_scan_hides_cached_file_from_another_course_before_queueing(client, db):
     )
     canvas = AsyncMock()
     canvas.list_course_files.return_value = []
-    background_tasks = MagicMock()
+    enqueue = MagicMock()
 
     with (
         patch("src.api.canvas_scan_routes.require_feature", new=AsyncMock()),
@@ -354,8 +354,8 @@ def test_scan_hides_cached_file_from_another_course_before_queueing(client, db):
             new=AsyncMock(return_value=(SimpleNamespace(id="cred-1"), canvas)),
         ),
         patch(
-            "src.api.canvas_scan_routes.BackgroundTasks.add_task",
-            background_tasks.add_task,
+            "src.api.canvas_scan_routes.enqueue_cloud_job",
+            enqueue,
         ),
     ):
         response = client.post(
@@ -368,7 +368,7 @@ def test_scan_hides_cached_file_from_another_course_before_queueing(client, db):
     canvas.list_course_files.assert_awaited_once_with(COURSE)
     canvas.close.assert_awaited_once()
     db.add.assert_not_called()
-    background_tasks.add_task.assert_not_called()
+    enqueue.assert_not_called()
     assert other_course_file.provider_parent_id == OTHER_COURSE
 
 
@@ -418,7 +418,8 @@ def test_scan_finds_target_file_after_first_canvas_page(client, db):
     canvas, request_mock, close_mock = _paginated_canvas_client(
         first_page, [_canvas_file(101)]
     )
-    background_tasks = MagicMock()
+    enqueue = MagicMock(return_value=SimpleNamespace(id="job-101"))
+    execute_scan = AsyncMock()
 
     with (
         patch("src.api.canvas_scan_routes.require_feature", new=AsyncMock()),
@@ -427,9 +428,10 @@ def test_scan_finds_target_file_after_first_canvas_page(client, db):
             new=AsyncMock(return_value=(SimpleNamespace(id="cred-1"), canvas)),
         ),
         patch(
-            "src.api.canvas_scan_routes.BackgroundTasks.add_task",
-            background_tasks.add_task,
+            "src.api.canvas_scan_routes.enqueue_cloud_job",
+            enqueue,
         ),
+        patch("src.jobs.cloud_scan_job.CloudScanJob.run", execute_scan),
     ):
         response = client.post(
             "/canvas/scan",
@@ -440,7 +442,30 @@ def test_scan_finds_target_file_after_first_canvas_page(client, db):
     assert response.json()["status"] == "queued"
     assert request_mock.await_count == 2
     close_mock.assert_awaited_once()
-    background_tasks.add_task.assert_called_once()
+    created = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if isinstance(call.args[0], CloudFile)
+    )
+    enqueue.assert_called_once_with(
+        db,
+        department_id=DEPT,
+        job_type="scan",
+        payload={
+            "cloud_file_id": created.id,
+            "credential_id": "cred-1",
+            "provider": "canvas",
+            "provider_file_id": "101",
+            "course_id": COURSE,
+        },
+        dedupe_key="scan:canvas:course-1:101:2026-03-01 10:00:00+00:00",
+        cloud_file_id=created.id,
+        credential_id="cred-1",
+        provider="canvas",
+        provider_file_id="101",
+        priority=5,
+    )
+    execute_scan.assert_not_awaited()
 
 
 def test_bulk_scan_includes_all_files_across_canvas_pages(client, db):
@@ -453,7 +478,12 @@ def test_bulk_scan_includes_all_files_across_canvas_pages(client, db):
     canvas, request_mock, close_mock = _paginated_canvas_client(
         first_page, [_canvas_file(101)]
     )
-    background_tasks = MagicMock()
+    enqueue = MagicMock(
+        side_effect=lambda *args, **kwargs: SimpleNamespace(
+            id=f"job-{kwargs['provider_file_id']}"
+        )
+    )
+    execute_scan = AsyncMock()
 
     with (
         patch("src.api.canvas_scan_routes.require_feature", new=AsyncMock()),
@@ -462,9 +492,10 @@ def test_bulk_scan_includes_all_files_across_canvas_pages(client, db):
             new=AsyncMock(return_value=(SimpleNamespace(id="cred-1"), canvas)),
         ),
         patch(
-            "src.api.canvas_scan_routes.BackgroundTasks.add_task",
-            background_tasks.add_task,
+            "src.api.canvas_scan_routes.enqueue_cloud_job",
+            enqueue,
         ),
+        patch("src.jobs.cloud_scan_job.CloudScanJob.run", execute_scan),
     ):
         response = client.post(
             "/canvas/scan/bulk",
@@ -480,16 +511,29 @@ def test_bulk_scan_includes_all_files_across_canvas_pages(client, db):
         for call in db.add.call_args_list
         if isinstance(call.args[0], CloudFile)
     ]
-    created_jobs = [
-        call.args[0]
-        for call in db.add.call_args_list
-        if isinstance(call.args[0], CloudJobQueue)
-    ]
     assert len(created_cloud_files) == 101
-    assert len(created_jobs) == 101
-    assert background_tasks.add_task.call_count == 101
+    assert enqueue.call_count == 101
+    first_enqueue = enqueue.call_args_list[0].kwargs
+    last_enqueue = enqueue.call_args_list[-1].kwargs
+    assert first_enqueue["department_id"] == DEPT
+    assert first_enqueue["credential_id"] == "cred-1"
+    assert first_enqueue["payload"] == {
+        "cloud_file_id": created_cloud_files[0].id,
+        "credential_id": "cred-1",
+        "provider": "canvas",
+        "provider_file_id": "1",
+        "course_id": COURSE,
+    }
+    assert first_enqueue["dedupe_key"] == (
+        "scan:canvas:course-1:1:2026-03-01 10:00:00+00:00"
+    )
+    assert last_enqueue["payload"]["provider_file_id"] == "101"
+    assert last_enqueue["dedupe_key"] == (
+        "scan:canvas:course-1:101:2026-03-01 10:00:00+00:00"
+    )
     assert request_mock.await_count == 2
     close_mock.assert_awaited_once()
+    execute_scan.assert_not_awaited()
 
 
 def test_bulk_scan_does_not_reassign_cached_file_from_another_course(client, db):
@@ -516,7 +560,7 @@ def test_bulk_scan_does_not_reassign_cached_file_from_another_course(client, db)
             url="https://canvas.test/files/file-1",
         )
     ]
-    background_tasks = MagicMock()
+    enqueue = MagicMock(return_value=SimpleNamespace(id="job-file-1"))
 
     with (
         patch("src.api.canvas_scan_routes.require_feature", new=AsyncMock()),
@@ -525,8 +569,8 @@ def test_bulk_scan_does_not_reassign_cached_file_from_another_course(client, db)
             new=AsyncMock(return_value=(SimpleNamespace(id="cred-1"), canvas)),
         ),
         patch(
-            "src.api.canvas_scan_routes.BackgroundTasks.add_task",
-            background_tasks.add_task,
+            "src.api.canvas_scan_routes.enqueue_cloud_job",
+            enqueue,
         ),
     ):
         response = client.post(
@@ -545,7 +589,25 @@ def test_bulk_scan_does_not_reassign_cached_file_from_another_course(client, db)
     ]
     assert len(created_files) == 1
     assert created_files[0].provider_parent_id == COURSE
-    background_tasks.add_task.assert_called_once()
+    created = created_files[0]
+    enqueue.assert_called_once_with(
+        db,
+        department_id=DEPT,
+        job_type="scan",
+        payload={
+            "cloud_file_id": created.id,
+            "credential_id": "cred-1",
+            "provider": "canvas",
+            "provider_file_id": "file-1",
+            "course_id": COURSE,
+        },
+        dedupe_key="scan:canvas:course-1:file-1:current",
+        cloud_file_id=created.id,
+        credential_id="cred-1",
+        provider="canvas",
+        provider_file_id="file-1",
+        priority=5,
+    )
     canvas.close.assert_awaited_once()
 
 
@@ -567,7 +629,7 @@ def test_remediate_hides_file_from_another_course_before_queueing(client, db):
     )
     canvas = AsyncMock()
     canvas.list_course_files.return_value = []
-    background_tasks = MagicMock()
+    enqueue = MagicMock()
 
     with (
         patch("src.api.canvas_routes.require_feature", new=AsyncMock()),
@@ -576,8 +638,8 @@ def test_remediate_hides_file_from_another_course_before_queueing(client, db):
             new=AsyncMock(return_value=(credential, canvas)),
         ),
         patch(
-            "src.api.canvas_routes.BackgroundTasks.add_task",
-            background_tasks.add_task,
+            "src.api.canvas_routes.enqueue_cloud_job",
+            enqueue,
         ),
     ):
         response = client.post(
@@ -590,7 +652,7 @@ def test_remediate_hides_file_from_another_course_before_queueing(client, db):
     canvas.list_course_files.assert_awaited_once_with(COURSE)
     canvas.close.assert_awaited_once()
     db.add.assert_not_called()
-    background_tasks.add_task.assert_not_called()
+    enqueue.assert_not_called()
     assert other_course_file.provider_parent_id == OTHER_COURSE
 
 

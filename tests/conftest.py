@@ -68,6 +68,7 @@ sys.path.insert(0, str(backend_dir))
 os.environ["ENV"] = "test"
 os.environ["DEBUG"] = "true"
 os.environ["REDIS_ENABLED"] = "false"  # Disable Redis for faster tests unless needed
+os.environ.setdefault("JWT_SECRET", "test-only-jwt-secret-at-least-32-bytes-long")
 
 # Set a valid Fernet encryption key for OAuthTokenManager tests
 if "TOKEN_ENCRYPTION_KEY" not in os.environ:

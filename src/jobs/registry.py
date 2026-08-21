@@ -7,7 +7,9 @@ from typing import Any
 
 from .contracts import JobFailure, JobHandler, JobResult, JobSuccess, sanitize_json
 
-EXECUTABLE_JOB_TYPES = frozenset({"sync", "scan", "remediate", "upload"})
+EXECUTABLE_JOB_TYPES = frozenset(
+    {"sync", "scan", "remediate", "upload", "webhook_refresh", "canvas_reconcile"}
+)
 
 
 class JobRegistry:
@@ -48,7 +50,16 @@ def adapt_legacy_handler(
             job = context
         assert_owned = getattr(context, "assert_owned", None)
         if assert_owned is not None:
-            setattr(job, "_assert_owned", assert_owned)
+            try:
+                setattr(job, "_assert_owned", assert_owned)
+            except (AttributeError, TypeError):
+                pass
+        begin_external_effect = getattr(context, "begin_external_effect", None)
+        if begin_external_effect is not None:
+            try:
+                setattr(job, "_begin_external_effect", begin_external_effect)
+            except (AttributeError, TypeError):
+                pass
         try:
             result = await handler(job, session, token_manager)
         except Exception as exc:
@@ -88,6 +99,15 @@ def adapt_legacy_handler(
             )
         if result.get("success") is False:
             code = result.get("error_code") or result.get("error") or "handler_failed"
+            failure_kind = result.get("failure_kind")
+            if failure_kind == "retryable":
+                return JobFailure.retryable(
+                    code if isinstance(code, str) else "handler_failed"
+                )
+            if failure_kind == "indeterminate":
+                return JobFailure.indeterminate(
+                    code if isinstance(code, str) else "handler_failed"
+                )
             return JobFailure.deterministic(
                 code if isinstance(code, str) else "handler_failed"
             )
@@ -101,11 +121,19 @@ def build_default_registry() -> JobRegistry:
     from .cloud_sync_job import handle_sync_job
     from .remediation_job import handle_remediation_job
     from .upload_job import handle_upload_job
+    from .webhook_refresh_job import handle_webhook_refresh_job
+    from .reconciliation_job import handle_reconciliation_job
 
     registry = JobRegistry()
     registry.register("sync", adapt_legacy_handler(handle_sync_job))
     registry.register("scan", adapt_legacy_handler(handle_scan_job))
     registry.register("remediate", adapt_legacy_handler(handle_remediation_job))
     registry.register("upload", adapt_legacy_handler(handle_upload_job))
+    registry.register(
+        "webhook_refresh", adapt_legacy_handler(handle_webhook_refresh_job)
+    )
+    registry.register(
+        "canvas_reconcile", adapt_legacy_handler(handle_reconciliation_job)
+    )
     registry.validate()
     return registry

@@ -19,13 +19,15 @@ Endpoints:
 import logging
 import secrets
 from typing import Dict, Any, Optional, Tuple
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from ..db.database import get_db_dependency
 from ..db.models import (
     CloudOAuthCredentials,
+    CloudFile,
+    CloudJobType,
     CloudProvider,
     APIKey,
 )
@@ -35,6 +37,8 @@ from ..integrations.blackboard import (
     BlackboardAPIClient,
 )
 from ..auth import get_required_api_key, verify_department_access
+from ..services.job_enqueue_service import enqueue_cloud_job
+from ..utils.security import require_persisted_blackboard_origin
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +209,7 @@ async def blackboard_oauth_callback(
                 provider_name=f"{user_info.name.get('given', '')} {user_info.name.get('family', '')}".strip(),
                 scopes=credential.scope.split() if credential.scope else None,
                 is_active=True,
-                metadata={"blackboard_instance_url": blackboard_instance_url},
+                provider_metadata={"blackboard_instance_url": blackboard_instance_url},
             )
             db.add(new_credential)
             db.commit()
@@ -319,9 +323,12 @@ async def _get_blackboard_client(
 
     # Get decrypted access token
     access_token = token_manager.decrypt_token(credential.access_token)
-    blackboard_instance_url = credential.provider_metadata.get(
-        "blackboard_instance_url"
-    )
+    try:
+        blackboard_instance_url = require_persisted_blackboard_origin(
+            credential.provider_metadata
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     api_client = BlackboardAPIClient(
         blackboard_instance_url=blackboard_instance_url,
@@ -413,23 +420,106 @@ async def list_blackboard_files(
 @router.post("/remediate")
 async def remediate_blackboard_file(
     request: BlackboardRemediateRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
 ):
     """
-    Report that Blackboard remediation execution is unavailable.
+    Validate persisted Blackboard authority and enqueue a durable pipeline.
 
     REQUIRES API KEY
 
-    Durable Blackboard remediation execution is not available in v0.9.4.
+    The route performs no provider I/O. The durable worker owns all execution.
     """
     auth_department_id = api_key_info[2]
     verify_department_access(request.department_id, auth_department_id)
-    raise HTTPException(
-        status_code=501,
-        detail="Blackboard remediation execution is not available in this release.",
+    credential = (
+        db.query(CloudOAuthCredentials)
+        .filter(
+            CloudOAuthCredentials.department_id == request.department_id,
+            CloudOAuthCredentials.provider == CloudProvider.BLACKBOARD.value,
+            CloudOAuthCredentials.is_active,
+        )
+        .first()
     )
+    if credential is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No active Blackboard connection found. Please connect first.",
+        )
+    try:
+        require_persisted_blackboard_origin(credential.provider_metadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    cloud_file = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.department_id == request.department_id,
+            CloudFile.provider == CloudProvider.BLACKBOARD.value,
+            CloudFile.provider_file_id == request.content_id,
+            CloudFile.provider_parent_id == request.course_id,
+            CloudFile.credential_id == credential.id,
+        )
+        .first()
+    )
+    if cloud_file is None:
+        raise HTTPException(status_code=404, detail="Blackboard file not found")
+
+    version = cloud_file.provider_version or cloud_file.file_hash or "current"
+    scan_job = enqueue_cloud_job(
+        db,
+        department_id=request.department_id,
+        job_type=CloudJobType.SCAN.value,
+        payload={
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.BLACKBOARD.value,
+            "provider_file_id": request.content_id,
+            "course_id": request.course_id,
+        },
+        dedupe_key=f"scan:blackboard:{request.course_id}:{request.content_id}:{version}",
+        cloud_file_id=cloud_file.id,
+        credential_id=credential.id,
+        provider=CloudProvider.BLACKBOARD.value,
+        provider_file_id=request.content_id,
+        priority=1,
+    )
+    remediation_job = enqueue_cloud_job(
+        db,
+        department_id=request.department_id,
+        job_type=CloudJobType.REMEDIATE.value,
+        payload={
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.BLACKBOARD.value,
+            "provider_file_id": request.content_id,
+            "course_id": request.course_id,
+            "scan_job_id": scan_job.id,
+            "upload_as_new": request.upload_as_new,
+            "use_ai": request.use_ai,
+        },
+        dedupe_key=(
+            f"remediate:blackboard:{request.course_id}:{request.content_id}:"
+            f"version={version}:upload-new={str(request.upload_as_new).lower()}:"
+            f"ai={str(request.use_ai).lower()}"
+        ),
+        depends_on_job_id=scan_job.id,
+        cloud_file_id=cloud_file.id,
+        credential_id=credential.id,
+        provider=CloudProvider.BLACKBOARD.value,
+        provider_file_id=request.content_id,
+        priority=2,
+    )
+    db.commit()
+    return {
+        "success": True,
+        "job_id": remediation_job.id,
+        "scan_job_id": scan_job.id,
+        "status": remediation_job.status,
+        "progress": remediation_job.progress,
+        "course_id": request.course_id,
+        "content_id": request.content_id,
+    }
 
 
 __all__ = ["router"]

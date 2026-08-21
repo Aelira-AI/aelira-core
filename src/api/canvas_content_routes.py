@@ -29,10 +29,11 @@ SECURITY:
 """
 
 import logging
+import hashlib
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -46,6 +47,8 @@ from ..ai.lms_remediation_client import LMSRemediationClient
 from ..db.database import get_db_dependency
 from ..db.models import (
     CloudFile,
+    CloudJobType,
+    CloudOAuthCredentials,
     CloudProvider,
     ContentWritebackLog,
     ScanResult,
@@ -57,9 +60,9 @@ from ..services.remediation_artifact_service import (
     ArtifactError,
     RemediationArtifactService,
 )
+from ..services.job_enqueue_service import enqueue_cloud_job
 from ..utils.security import require_persisted_canvas_origin
 from .canvas_routes import _get_canvas_client
-from .canvas_scan_routes import _canvas_scan_file_task
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,9 @@ class CanvasContentScanRequest(BaseModel):
 class CanvasContentScanResponse(BaseModel):
     """Summary after queuing content scans."""
 
+    job_id: Optional[str] = None
+    status: str = "pending"
+    progress: int = 0
     total_items: int
     jobs_queued: int
     skipped: int
@@ -359,7 +365,6 @@ def _format_scan_issue(raw: Dict[str, Any]) -> ContentIssueDetail:
 @router.post("/scan", response_model=CanvasContentScanResponse)
 async def scan_course_content(
     request: CanvasContentScanRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasContentScanResponse:
@@ -379,69 +384,51 @@ async def scan_course_content(
     )
 
     try:
-        credential, api_client = await _get_canvas_client(dept_id, db)
-        try:
-            course_name, course_code = await _fetch_course_meta(
-                api_client, request.course_id
+        credential = (
+            db.query(CloudOAuthCredentials)
+            .filter(
+                CloudOAuthCredentials.department_id == dept_id,
+                CloudOAuthCredentials.provider == CloudProvider.CANVAS.value,
+                CloudOAuthCredentials.is_active,
             )
-
-            scan_options = request.to_scan_options()
-
-            scanner = CanvasContentScanner(
-                canvas_client=api_client,
-                db=db,
-                department_id=dept_id,
-                credential_id=credential.id,
-                course_name=course_name,
-                course_code=course_code,
-                scan_options=scan_options,
-            )
-            result = await scanner.scan_course_content(request.course_id)
-
-            counts = result.get("counts", {})
-            cloud_file_ids = result.get("cloud_file_ids", [])
-            # The scanner already created a CloudJobQueue row for each file
-            # (it needs the file-download pipeline, not the axe-core
-            # background task below) — but a CloudJobQueue row is a record
-            # only. Nothing in this app polls the queue (JobProcessor is
-            # never started), so the row sits PENDING forever unless a
-            # background task is actually fired for it here, exactly like
-            # canvas_scan_routes.py's single-file scan endpoint does.
-            file_scan_jobs = result.get("file_scan_jobs", [])
-            skipped = counts.get("skipped_empty", 0)
-
-            # Queue background scan jobs for each discovered HTML content item
-            for cf_id in cloud_file_ids:
-                background_tasks.add_task(
-                    _content_scan_task,
-                    cf_id,
-                    dept_id,
-                    credential.id,
-                    scan_options=scan_options,
-                )
-
-            # Fire the actual background task for each file's CloudJobQueue
-            # row — mirrors canvas_scan_routes.py's single-file scan
-            # endpoint's call signature exactly.
-            for job in file_scan_jobs:
-                background_tasks.add_task(
-                    _canvas_scan_file_task,
-                    job_id=job["job_id"],
-                    cloud_file_id=job["cloud_file_id"],
-                    credential_id=credential.id,
-                )
-
-            by_type = {k: v for k, v in counts.items() if k != "skipped_empty"}
-            total_items = len(cloud_file_ids) + len(file_scan_jobs)
-
-            return CanvasContentScanResponse(
-                total_items=total_items,
-                jobs_queued=total_items,
-                skipped=skipped,
-                by_type=by_type,
-            )
-        finally:
-            await api_client.close()
+            .first()
+        )
+        if credential is None:
+            raise HTTPException(status_code=404, detail="Canvas not connected")
+        require_persisted_canvas_origin(credential)
+        payload = {
+            "scan_kind": "canvas_course",
+            "credential_id": credential.id,
+            "provider": "canvas",
+            "course_id": request.course_id,
+            "content_types": [item.value for item in CanvasContentType],
+            "scan_options": request.to_scan_options(),
+        }
+        digest = hashlib.sha256(
+            ",".join(payload["content_types"]).encode()
+        ).hexdigest()[:16]
+        job = enqueue_cloud_job(
+            db,
+            department_id=dept_id,
+            job_type=CloudJobType.SCAN.value,
+            payload=payload,
+            dedupe_key=(
+                f"canvas-course-scan:{credential.id}:{request.course_id}:{digest}"
+            ),
+            provider="canvas",
+            credential_id=credential.id,
+            provider_file_id=request.course_id,
+        )
+        db.commit()
+        return CanvasContentScanResponse(
+            job_id=job.id,
+            status=job.status,
+            progress=job.progress,
+            total_items=0,
+            jobs_queued=1,
+            skipped=0,
+            by_type={},
+        )
 
     except HTTPException:
         raise
@@ -479,7 +466,6 @@ class ContentTypeParam(str, Enum):
 async def scan_course_content_by_type(
     content_type: ContentTypeParam,
     request: CanvasContentScanRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasContentScanResponse:
@@ -499,51 +485,49 @@ async def scan_course_content_by_type(
     )
 
     try:
-        credential, api_client = await _get_canvas_client(dept_id, db)
-        try:
-            course_name, course_code = await _fetch_course_meta(
-                api_client, request.course_id
+        credential = (
+            db.query(CloudOAuthCredentials)
+            .filter(
+                CloudOAuthCredentials.department_id == dept_id,
+                CloudOAuthCredentials.provider == CloudProvider.CANVAS.value,
+                CloudOAuthCredentials.is_active,
             )
-
-            scan_options = request.to_scan_options()
-
-            scanner = CanvasContentScanner(
-                canvas_client=api_client,
-                db=db,
-                department_id=dept_id,
-                credential_id=credential.id,
-                course_name=course_name,
-                course_code=course_code,
-                scan_options=scan_options,
-            )
-            result = await scanner.scan_course_content(
-                request.course_id,
-                content_types=[CanvasContentType(content_type.value)],
-            )
-
-            counts = result.get("counts", {})
-            cloud_file_ids = result.get("cloud_file_ids", [])
-            skipped = counts.get("skipped_empty", 0)
-
-            for cf_id in cloud_file_ids:
-                background_tasks.add_task(
-                    _content_scan_task,
-                    cf_id,
-                    dept_id,
-                    credential.id,
-                    scan_options=scan_options,
-                )
-
-            by_type = {k: v for k, v in counts.items() if k != "skipped_empty"}
-
-            return CanvasContentScanResponse(
-                total_items=len(cloud_file_ids),
-                jobs_queued=len(cloud_file_ids),
-                skipped=skipped,
-                by_type=by_type,
-            )
-        finally:
-            await api_client.close()
+            .first()
+        )
+        if credential is None:
+            raise HTTPException(status_code=404, detail="Canvas not connected")
+        require_persisted_canvas_origin(credential)
+        payload = {
+            "scan_kind": "canvas_course",
+            "credential_id": credential.id,
+            "provider": "canvas",
+            "course_id": request.course_id,
+            "content_types": [content_type.value],
+            "scan_options": request.to_scan_options(),
+        }
+        job = enqueue_cloud_job(
+            db,
+            department_id=dept_id,
+            job_type=CloudJobType.SCAN.value,
+            payload=payload,
+            dedupe_key=(
+                f"canvas-course-scan:{credential.id}:{request.course_id}:"
+                f"{content_type.value}"
+            ),
+            provider="canvas",
+            credential_id=credential.id,
+            provider_file_id=request.course_id,
+        )
+        db.commit()
+        return CanvasContentScanResponse(
+            job_id=job.id,
+            status=job.status,
+            progress=job.progress,
+            total_items=0,
+            jobs_queued=1,
+            skipped=0,
+            by_type={},
+        )
 
     except HTTPException:
         raise
@@ -1618,112 +1602,3 @@ async def get_audit_log(
         cloud_file_id=cf.id,
         entries=entries,
     )
-
-
-# =============================================================================
-# Background task
-# =============================================================================
-
-
-async def _content_scan_task(
-    cloud_file_id: str,
-    department_id: str,
-    credential_id: str,
-    scan_options: Optional[Dict[str, Any]] = None,
-):
-    """Scan a single content item with deterministic checks only."""
-    from ..db.database import get_db as _get_db_ctx
-
-    logger.info(
-        f"Starting content scan: cloud_file={cloud_file_id}, dept={department_id}"
-    )
-
-    with _get_db_ctx() as db:
-        cloud_file = db.query(CloudFile).filter(CloudFile.id == cloud_file_id).first()
-        if not cloud_file:
-            logger.error("CloudFile unavailable for content scan")
-            return {
-                "success": False,
-                "error": "Content item unavailable",
-                "error_code": "CONTENT_UNAVAILABLE",
-                "operation_kind": "deterministic_scan",
-                "external_ai_used": False,
-                "ai_used": False,
-            }
-
-        try:
-            from ..integrations.canvas import CanvasAPIClient
-            from ..integrations.oauth_token_manager import OAuthTokenManager
-            from ..db.models import CloudOAuthCredentials
-
-            credential = (
-                db.query(CloudOAuthCredentials)
-                .filter(CloudOAuthCredentials.id == credential_id)
-                .first()
-            )
-            if not credential:
-                logger.error("Credential unavailable for content scan")
-                return {
-                    "success": False,
-                    "error": "Scan credential unavailable",
-                    "error_code": "CREDENTIAL_UNAVAILABLE",
-                    "operation_kind": "deterministic_scan",
-                    "external_ai_used": False,
-                    "ai_used": False,
-                }
-
-            canvas_url = require_persisted_canvas_origin(credential)
-            token_manager = OAuthTokenManager()
-            access_token = token_manager.decrypt_token(credential.access_token)
-
-            api_client = CanvasAPIClient(
-                canvas_instance_url=canvas_url,
-                access_token=access_token,
-                credential_id=credential_id,
-            )
-
-            try:
-                deterministic_options = {
-                    "generate_alt_text": False,
-                    "auto_remediate": False,
-                    "detect_decorative": False,
-                }
-                scanner = CanvasContentScanner(
-                    canvas_client=api_client,
-                    db=db,
-                    department_id=department_id,
-                    credential_id=credential_id,
-                    scan_options=deterministic_options,
-                )
-
-                scan_result = await scanner.scan_content_item(cloud_file)
-                logger.info(
-                    f"Content scan complete: {cloud_file_id}, "
-                    f"issues={scan_result.get('issues', 0)}"
-                )
-                return {
-                    **scan_result,
-                    "operation_kind": "deterministic_scan",
-                    "external_ai_used": False,
-                    "ai_used": False,
-                }
-
-            finally:
-                await api_client.close()
-
-        except Exception as exc:
-            logger.error(
-                "Content scan task failed",
-                extra={
-                    "cloud_file_id": cloud_file_id,
-                    "error_type": type(exc).__name__,
-                },
-            )
-            return {
-                "success": False,
-                "error": "Deterministic accessibility scan unavailable",
-                "error_code": "DETERMINISTIC_SCAN_UNAVAILABLE",
-                "operation_kind": "deterministic_scan",
-                "external_ai_used": False,
-                "ai_used": False,
-            }

@@ -325,22 +325,36 @@ async def test_canvas_queue_context_is_built_from_trusted_fields_not_body_inject
             "src.api.canvas_routes.LMSRemediationClient.bind_if_allowed",
             return_value=SimpleNamespace(provider="gemini"),
         ),
+        patch(
+            "src.api.canvas_routes.enqueue_cloud_job",
+            side_effect=[
+                SimpleNamespace(id="scan-job-1"),
+                SimpleNamespace(id="remediation-job-1"),
+            ],
+        ) as enqueue,
     ):
         response = await remediate_canvas_file(
             request=body,
-            background_tasks=MagicMock(),
             db=db,
             principal=_principal(),
         )
 
     assert response.success is True
-    jobs = [
-        call.args[0]
-        for call in db.add.call_args_list
-        if isinstance(call.args[0], CloudJobQueue)
-    ]
-    remediation = next(job for job in jobs if job.job_type == "remediate")
-    assert remediation.execution_context == {
+    assert enqueue.call_count == 2
+    scan_call, remediation_call = enqueue.call_args_list
+    assert scan_call.kwargs["department_id"] == "dept-1"
+    assert scan_call.kwargs["credential_id"] == "cred-1"
+    assert scan_call.kwargs["payload"] == {
+        "cloud_file_id": "cloud-1",
+        "credential_id": "cred-1",
+        "provider": "canvas",
+        "provider_file_id": "file-1",
+        "course_id": "course-1",
+    }
+    assert scan_call.kwargs["dedupe_key"] == ("scan:canvas:course-1:file-1:current")
+    assert remediation_call.kwargs["depends_on_job_id"] == "scan-job-1"
+    assert remediation_call.kwargs["payload"]["scan_job_id"] == "scan-job-1"
+    assert remediation_call.kwargs["execution_context"] == {
         "ai_requested": True,
         "alt_text_requested": True,
         "requested_purposes": ["remediation", "alt_text"],
@@ -350,8 +364,8 @@ async def test_canvas_queue_context_is_built_from_trusted_fields_not_body_inject
         "resource_id": "file-1",
         "course_id": "course-1",
     }
-    assert "secret" not in repr(remediation.execution_context)
-    assert "evil" not in repr(remediation.execution_context)
+    assert "secret" not in repr(remediation_call.kwargs)
+    assert "evil" not in repr(remediation_call.kwargs)
 
 
 class HandlerDB:
@@ -437,7 +451,8 @@ def _job_graph(
         cloud_file_id=cloud_file.id,
         credential_id=credential.id,
         provider=provider,
-        result_data={"scan_id": scan.id},
+        payload={"scan_id": scan.id},
+        result_data=None,
         execution_context=context or {},
     )
     return job, HandlerDB(cloud_file=cloud_file, credential=credential, scan=scan)
@@ -517,7 +532,7 @@ async def test_deterministic_lms_job_never_binds_and_injects_no_clients():
 
 
 @pytest.mark.asyncio
-async def test_remediation_handler_owns_one_atomic_completion_commit():
+async def test_remediation_handler_returns_sanitized_result_for_worker_terminalization():
     from src.jobs.remediation_job import handle_remediation_job
 
     job, db = _job_graph(context={})
@@ -536,12 +551,10 @@ async def test_remediation_handler_owns_one_atomic_completion_commit():
     assert process.await_args.kwargs["defer_final_commit"] is True
     assert db.commits == 1
     assert db.rollbacks == 0
-    assert job.status == "completed"
-    assert job.progress == 100
-    assert job.completed_at is not None
-    assert job.result_data["artifact_id"] == "artifact-1"
-    assert "file_path" not in job.result_data
-    assert result == job.result_data
+    assert result["artifact_id"] == "artifact-1"
+    assert "file_path" not in result
+    assert job.result_data is None
+    assert not hasattr(job, "status")
 
 
 @pytest.mark.asyncio
@@ -560,7 +573,7 @@ async def test_remediation_handler_owns_one_atomic_completion_commit():
         )
     ],
 )
-async def test_remediation_failure_commits_scan_and_job_once_for_every_provider(
+async def test_remediation_failure_commits_domain_state_for_worker_terminalization(
     provider, error_code, outcome
 ):
     from src.jobs.remediation_job import RemediationJobFailed, handle_remediation_job
@@ -594,27 +607,13 @@ async def test_remediation_failure_commits_scan_and_job_once_for_every_provider(
         await handle_remediation_job(job, db, MagicMock())
 
     assert caught.value.code == error_code
-    assert caught.value.terminal_state_committed is True
+    assert caught.value.terminal_state_committed is False
     assert db.commits == 1
     assert db.rollbacks == 0
     assert scan.status == ScanStatus.FAILED
     assert scan.remediation_outcome == outcome
-    assert job.status == CloudJobStatus.FAILED.value
-    assert job.progress == 100
-    assert job.progress_message == "Remediation failed"
-    assert job.error_message == error_code
-    assert job.completed_at is not None
-    assert job.result_data == {
-        "success": False,
-        "error": error_code,
-        "fixed_count": 2,
-        "manual_count": 3,
-        "failed_count": 1,
-        "skipped_count": 4,
-        "total_issues": 10,
-        "scan_id": scan.id,
-        "artifact_id": None,
-    }
+    assert job.result_data is None
+    assert not hasattr(job, "status")
 
 
 @pytest.mark.asyncio
@@ -827,230 +826,24 @@ async def test_job_processor_retries_uncommitted_terminal_commit_failure():
     assert job.completed_at is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("module_name", "task_name"),
-    [
-        ("src.api.google_routes", "_remediate_file_task"),
-        ("src.api.microsoft_routes", "_remediate_file_task"),
-    ],
-)
-async def test_cloud_background_wrapper_cannot_second_commit_remediation_completion(
-    module_name, task_name
-):
-    import importlib
+def test_provider_routes_delegate_remediation_to_the_durable_worker():
+    from src.api import canvas_routes, google_routes, microsoft_routes
 
-    from src.jobs.remediation_job import RemediationJobHandledResult
-
-    module = importlib.import_module(module_name)
-    task = getattr(module, task_name)
-    job = SimpleNamespace(
-        id="job-1",
-        status="pending",
-        started_at=None,
-        progress=0,
-        progress_message=None,
-        result_data=None,
-        completed_at=None,
-        error_message=None,
+    routes = (
+        (canvas_routes, "_canvas_scan_then_remediate_task"),
+        (google_routes, "_remediate_file_task"),
+        (microsoft_routes, "_remediate_file_task"),
     )
-    query = MagicMock()
-    query.filter.return_value = query
-    query.first.return_value = job
-    db = MagicMock()
-    db.query.return_value = query
-    db.commit.side_effect = [None, RuntimeError("forbidden second commit")]
-    context = MagicMock()
-    context.__enter__.return_value = db
-    context.__exit__.return_value = False
-
-    with (
-        patch("src.db.database.get_db", return_value=context),
-        patch(f"{module_name}.OAuthTokenManager", return_value=MagicMock()),
-        patch(
-            "src.jobs.remediation_job.handle_remediation_job",
-            new=AsyncMock(return_value=RemediationJobHandledResult(success=True)),
-        ),
-    ):
-        await task("job-1", "cloud-1", "cred-1", False)
-
-    db.commit.assert_called_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("module_name", "task_name"),
-    [
-        ("src.api.google_routes", "_remediate_file_task"),
-        ("src.api.microsoft_routes", "_remediate_file_task"),
-    ],
-)
-async def test_cloud_wrapper_does_not_touch_committed_terminal_failure(
-    module_name, task_name
-):
-    import importlib
-
-    from src.jobs.remediation_job import RemediationJobFailed
-
-    module = importlib.import_module(module_name)
-    task = getattr(module, task_name)
-    job = SimpleNamespace(
-        id="job-1",
-        status="pending",
-        started_at=None,
-        progress=0,
-        progress_message=None,
-        result_data=None,
-        completed_at=None,
-        error_message=None,
-    )
-    query = MagicMock()
-    query.filter.return_value = query
-    query.first.return_value = job
-    db = MagicMock()
-    db.query.return_value = query
-    context = MagicMock()
-    context.__enter__.return_value = db
-    context.__exit__.return_value = False
-
-    async def committed_failure(*args):
-        job.status = CloudJobStatus.FAILED.value
-        job.progress = 100
-        job.progress_message = "Remediation failed"
-        job.error_message = "manual_required"
-        job.result_data = {"success": False, "error": "manual_required"}
-        raise RemediationJobFailed("manual_required", terminal_state_committed=True)
-
-    with (
-        patch("src.db.database.get_db", return_value=context),
-        patch(f"{module_name}.OAuthTokenManager", return_value=MagicMock()),
-        patch(
-            "src.jobs.remediation_job.handle_remediation_job",
-            new=AsyncMock(side_effect=committed_failure),
-        ),
-    ):
-        await task("job-1", "cloud-1", "cred-1", False)
-
-    db.commit.assert_called_once()
-    db.rollback.assert_not_called()
-    assert job.status == CloudJobStatus.FAILED.value
-    assert job.progress == 100
-    assert job.error_message == "manual_required"
-    assert job.result_data == {"success": False, "error": "manual_required"}
-
-
-@pytest.mark.asyncio
-async def test_canvas_background_wrapper_cannot_second_commit_remediation_completion():
-    from src.api.canvas_routes import _canvas_scan_then_remediate_task
-    from src.jobs.remediation_job import RemediationJobHandledResult
-
-    def job(job_id):
-        return SimpleNamespace(
-            id=job_id,
-            status="pending",
-            started_at=None,
-            progress=0,
-            progress_message=None,
-            result_data=None,
-            completed_at=None,
-            error_message=None,
+    for module, legacy_wrapper in routes:
+        assert not hasattr(module, legacy_wrapper)
+        endpoint = (
+            module.remediate_canvas_file
+            if module is canvas_routes
+            else module.remediate_file
         )
-
-    scan_job = job("scan-job")
-    remediation_job = job("remediation-job")
-    queries = []
-    for value in (scan_job, remediation_job):
-        query = MagicMock()
-        query.filter.return_value = query
-        query.first.return_value = value
-        queries.append(query)
-    db = MagicMock()
-    db.query.side_effect = queries
-    db.commit.side_effect = [
-        None,
-        None,
-        None,
-        RuntimeError("forbidden second completion commit"),
-    ]
-    context = MagicMock()
-    context.__enter__.return_value = db
-    context.__exit__.return_value = False
-
-    with (
-        patch("src.db.database.get_db", return_value=context),
-        patch("src.api.canvas_routes.OAuthTokenManager", return_value=MagicMock()),
-        patch(
-            "src.jobs.cloud_scan_job.handle_scan_job",
-            new=AsyncMock(return_value={"scan_id": "scan-1"}),
-        ),
-        patch(
-            "src.jobs.remediation_job.handle_remediation_job",
-            new=AsyncMock(return_value=RemediationJobHandledResult(success=True)),
-        ),
-    ):
-        await _canvas_scan_then_remediate_task("scan-job", "remediation-job")
-
-    assert db.commit.call_count == 3
-
-
-@pytest.mark.asyncio
-async def test_canvas_wrapper_does_not_touch_committed_terminal_failure():
-    from src.api.canvas_routes import _canvas_scan_then_remediate_task
-    from src.jobs.remediation_job import RemediationJobFailed
-
-    def job(job_id):
-        return SimpleNamespace(
-            id=job_id,
-            status="pending",
-            started_at=None,
-            progress=0,
-            progress_message=None,
-            result_data=None,
-            completed_at=None,
-            error_message=None,
-        )
-
-    scan_job = job("scan-job")
-    remediation_job = job("remediation-job")
-    queries = []
-    for value in (scan_job, remediation_job):
-        query = MagicMock()
-        query.filter.return_value = query
-        query.first.return_value = value
-        queries.append(query)
-    db = MagicMock()
-    db.query.side_effect = queries
-    context = MagicMock()
-    context.__enter__.return_value = db
-    context.__exit__.return_value = False
-
-    async def committed_failure(*args):
-        remediation_job.status = CloudJobStatus.FAILED.value
-        remediation_job.progress = 100
-        remediation_job.progress_message = "Remediation failed"
-        remediation_job.error_message = "manual_required"
-        remediation_job.result_data = {"success": False, "error": "manual_required"}
-        raise RemediationJobFailed("manual_required", terminal_state_committed=True)
-
-    with (
-        patch("src.db.database.get_db", return_value=context),
-        patch("src.api.canvas_routes.OAuthTokenManager", return_value=MagicMock()),
-        patch(
-            "src.jobs.cloud_scan_job.handle_scan_job",
-            new=AsyncMock(return_value={"scan_id": "scan-1"}),
-        ),
-        patch(
-            "src.jobs.remediation_job.handle_remediation_job",
-            new=AsyncMock(side_effect=committed_failure),
-        ),
-    ):
-        await _canvas_scan_then_remediate_task("scan-job", "remediation-job")
-
-    assert db.commit.call_count == 3
-    db.rollback.assert_not_called()
-    assert remediation_job.status == CloudJobStatus.FAILED.value
-    assert remediation_job.progress == 100
-    assert remediation_job.error_message == "manual_required"
+        source = inspect.getsource(endpoint)
+        assert "enqueue_cloud_job" in source
+        assert "handle_remediation_job" not in source
 
 
 @pytest.mark.asyncio
@@ -1061,7 +854,7 @@ async def test_non_lms_route_shaped_job_uses_exact_last_scan_fallback(provider):
     from src.jobs.remediation_job import handle_remediation_job
 
     job, db = _job_graph(provider=provider)
-    job.result_data = {"upload_as_new": True}
+    job.payload = {"upload_as_new": True}
     process = AsyncMock(return_value={"success": True, "scan_id": "scan-1"})
     with patch("src.jobs.remediation_job.process_remediation_job", new=process):
         result = await handle_remediation_job(job, db, MagicMock())
@@ -1079,7 +872,7 @@ async def test_non_lms_route_shaped_job_rejects_wrong_explicit_scan(provider):
     from src.jobs.remediation_job import RemediationJobFailed, handle_remediation_job
 
     job, db = _job_graph(provider=provider)
-    job.result_data = {"scan_id": "scan-other", "upload_as_new": True}
+    job.payload = {"scan_id": "scan-other", "upload_as_new": True}
     with (
         patch(
             "src.jobs.remediation_job.process_remediation_job", new=AsyncMock()
@@ -1196,7 +989,7 @@ async def test_policy_disabled_after_enqueue_fails_without_stale_provider():
 
 
 @pytest.mark.asyncio
-async def test_early_policy_failure_commits_coherent_scan_and_job_once():
+async def test_early_policy_failure_commits_domain_state_for_worker_terminalization():
     from src.jobs.remediation_job import RemediationJobFailed, handle_remediation_job
 
     job, db = _job_graph(
@@ -1221,13 +1014,13 @@ async def test_early_policy_failure_commits_coherent_scan_and_job_once():
         await handle_remediation_job(job, db, MagicMock())
 
     assert caught.value.code == "policy_not_permitted"
-    assert caught.value.terminal_state_committed is True
+    assert caught.value.terminal_state_committed is False
     assert db.commits == 1
     assert scan.status == ScanStatus.FAILED
     assert scan.remediation_outcome == RemediationOutcome.REMEDIATION_FAILED.value
     assert scan.completed_at is not old_completed_at
-    assert job.status == CloudJobStatus.FAILED.value
-    assert job.result_data["artifact_id"] is None
+    assert job.result_data is None
+    assert not hasattr(job, "status")
 
 
 @pytest.mark.asyncio
@@ -1454,286 +1247,34 @@ async def test_job_processor_publication_retry_is_immediate_and_bounded(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "module_name", ["src.api.google_routes", "src.api.microsoft_routes"]
-)
-@pytest.mark.parametrize(
-    ("retry_count", "expected_status"),
-    [(0, CloudJobStatus.PENDING.value), (2, CloudJobStatus.FAILED.value)],
-)
-async def test_cloud_wrappers_requeue_publication_retry_immediately(
-    module_name, retry_count, expected_status
-):
-    import importlib
-
+async def test_retryable_artifact_failure_becomes_typed_durable_worker_outcome():
+    from src.jobs.contracts import FailureKind, JobFailure
+    from src.jobs.registry import adapt_legacy_handler
     from src.jobs.remediation_job import RetryableRemediationJobError
 
-    module = importlib.import_module(module_name)
-    job = SimpleNamespace(
-        id="job-1",
-        status="pending",
-        started_at=None,
-        completed_at=None,
-        progress=0,
-        progress_message=None,
-        result_data={"scan_id": "scan-1"},
-        error_message=None,
-        retry_count=retry_count,
-        max_retries=3,
-    )
-    query = MagicMock()
-    query.filter.return_value = query
-    query.first.return_value = job
-    db = MagicMock()
-    db.query.return_value = query
-    context = MagicMock()
-    context.__enter__.return_value = db
-    context.__exit__.return_value = False
-
-    with (
-        patch("src.db.database.get_db", return_value=context),
-        patch(f"{module_name}.OAuthTokenManager", return_value=MagicMock()),
-        patch(
-            "src.jobs.remediation_job.handle_remediation_job",
-            new=AsyncMock(
-                side_effect=RetryableRemediationJobError(
-                    "remediation_artifact_retryable",
-                    artifact_id="artifact-1",
-                    cleanup_complete=False,
-                )
-            ),
-        ),
-    ):
-        await module._remediate_file_task("job-1", "cloud-1", "cred-1", False)
-
-    db.rollback.assert_called_once()
-    assert db.commit.call_count == 2
-    assert job.status == expected_status
-    assert job.retry_count == retry_count + 1
-    assert job.error_message == "remediation_artifact_retryable"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("retry_count", "expected_status"),
-    [(0, CloudJobStatus.PENDING.value), (2, CloudJobStatus.FAILED.value)],
-)
-async def test_canvas_wrapper_requeues_publication_retry_immediately(
-    retry_count, expected_status
-):
-    from src.api.canvas_routes import _canvas_scan_then_remediate_task
-    from src.jobs.remediation_job import RetryableRemediationJobError
-
-    scan_job = SimpleNamespace(
-        id="scan-job",
-        status="pending",
-        started_at=None,
-        progress=0,
-        progress_message=None,
-        result_data=None,
-        completed_at=None,
-        error_message=None,
-    )
-    remediation_job = SimpleNamespace(
-        id="remediation-job",
-        status="pending",
-        started_at=None,
-        progress=0,
-        progress_message=None,
-        result_data={"scan_id": "scan-1"},
-        completed_at=None,
-        error_message=None,
-        retry_count=retry_count,
-        max_retries=3,
-    )
-    queries = []
-    for value in (scan_job, remediation_job):
-        query = MagicMock()
-        query.filter.return_value = query
-        query.first.return_value = value
-        queries.append(query)
-    db = MagicMock()
-    db.query.side_effect = queries
-    context = MagicMock()
-    context.__enter__.return_value = db
-    context.__exit__.return_value = False
-
-    with (
-        patch("src.db.database.get_db", return_value=context),
-        patch("src.api.canvas_routes.OAuthTokenManager", return_value=MagicMock()),
-        patch(
-            "src.jobs.cloud_scan_job.handle_scan_job",
-            new=AsyncMock(return_value={"scan_id": "scan-1"}),
-        ),
-        patch(
-            "src.jobs.remediation_job.handle_remediation_job",
-            new=AsyncMock(
-                side_effect=RetryableRemediationJobError(
-                    "remediation_artifact_retryable",
-                    artifact_id="artifact-1",
-                    cleanup_complete=False,
-                )
-            ),
-        ),
-    ):
-        await _canvas_scan_then_remediate_task("scan-job", "remediation-job")
-
-    db.rollback.assert_called_once()
-    assert db.commit.call_count == 4
-    assert remediation_job.status == expected_status
-    assert remediation_job.retry_count == retry_count + 1
-    assert remediation_job.error_message == "remediation_artifact_retryable"
-
-
-@pytest.mark.asyncio
-async def test_canvas_background_chain_marks_artifact_failure_failed_without_raw_error():
-    from src.api.canvas_routes import _canvas_scan_then_remediate_task
-    from src.jobs.remediation_job import RemediationJobFailed
-
-    scan_job = SimpleNamespace(
-        id="scan-job",
-        status="pending",
-        started_at=None,
-        progress=0,
-        progress_message=None,
-        result_data=None,
-        completed_at=None,
-        error_message=None,
-    )
-    remediation_job = SimpleNamespace(
-        id="remediation-job",
-        status="pending",
-        started_at=None,
-        progress=0,
-        progress_message=None,
-        result_data=None,
-        completed_at=None,
-        error_message=None,
-    )
-    scan_query = MagicMock()
-    scan_query.filter.return_value = scan_query
-    scan_query.first.return_value = scan_job
-    remediation_query = MagicMock()
-    remediation_query.filter.return_value = remediation_query
-    remediation_query.first.return_value = remediation_job
-    db = MagicMock()
-    db.query.side_effect = [scan_query, remediation_query]
-    context = MagicMock()
-    context.__enter__.return_value = db
-    context.__exit__.return_value = False
-
-    with (
-        patch("src.db.database.get_db", return_value=context),
-        patch(
-            "src.jobs.cloud_scan_job.handle_scan_job",
-            new=AsyncMock(return_value={"scan_id": "scan-1"}),
-        ),
-        patch(
-            "src.jobs.remediation_job.handle_remediation_job",
-            new=AsyncMock(
-                side_effect=RemediationJobFailed("remediation_artifact_unavailable")
-            ),
-        ),
-    ):
-        await _canvas_scan_then_remediate_task("scan-job", "remediation-job")
-
-    assert scan_job.status == "completed"
-    assert remediation_job.status == "failed"
-    assert remediation_job.progress == 10
-    assert remediation_job.error_message == "remediation_artifact_unavailable"
-    assert "secret" not in repr(remediation_job.progress_message)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure_phase", ["scan", "remediation"])
-async def test_canvas_background_failure_rolls_back_before_terminal_state_mutation(
-    failure_phase,
-):
-    from src.api.canvas_routes import _canvas_scan_then_remediate_task
-
-    events = []
-
-    class TrackingJob(SimpleNamespace):
-        def __setattr__(self, name, value):
-            if name in {"status", "error_message", "completed_at"}:
-                events.append(("set", self.id, name, value))
-            super().__setattr__(name, value)
-
-    class RollbackOnlyDB:
-        def __init__(self, scan_job, remediation_job):
-            self.jobs = [scan_job, remediation_job]
-
-        def query(self, model):
-            value = self.jobs.pop(0)
-            query = MagicMock()
-            query.filter.return_value = query
-            query.first.return_value = value
-            return query
-
-        def commit(self):
-            events.append("commit")
-
-        def rollback(self):
-            events.append("rollback")
-
-    def job(job_id):
-        return TrackingJob(
-            id=job_id,
-            status="pending",
-            started_at=None,
-            progress=0,
-            progress_message=None,
-            result_data=None,
-            completed_at=None,
-            error_message=None,
+    legacy = AsyncMock(
+        side_effect=RetryableRemediationJobError(
+            "remediation_artifact_retryable",
+            artifact_id="artifact-1",
+            cleanup_complete=False,
         )
+    )
+    handler = adapt_legacy_handler(legacy)
+    context = SimpleNamespace(job_id="job-1", assert_owned=AsyncMock())
+    job = SimpleNamespace(id="job-1")
+    db = MagicMock()
+    db.get.return_value = job
 
-    scan_job = job("scan-job")
-    remediation_job = job("remediation-job")
-    events.clear()
-    db = RollbackOnlyDB(scan_job, remediation_job)
-    context = MagicMock()
-    context.__enter__.return_value = db
-    context.__exit__.return_value = False
-    scan_handler = AsyncMock(
-        side_effect=(RuntimeError("scan failed") if failure_phase == "scan" else None),
-        return_value={"scan_id": "scan-1"},
-    )
-    remediation_handler = AsyncMock(
-        side_effect=(
-            RuntimeError("remediation failed")
-            if failure_phase == "remediation"
-            else None
-        ),
-        return_value={"success": True, "fixed_count": 0},
-    )
+    result = await handler(context, db, MagicMock())
 
-    with (
-        patch("src.db.database.get_db", return_value=context),
-        patch("src.jobs.cloud_scan_job.handle_scan_job", new=scan_handler),
-        patch(
-            "src.jobs.remediation_job.handle_remediation_job",
-            new=remediation_handler,
-        ),
-    ):
-        await _canvas_scan_then_remediate_task("scan-job", "remediation-job")
-
-    rollback_index = events.index("rollback")
-    terminal_job_ids = (
-        {"scan-job", "remediation-job"}
-        if failure_phase == "scan"
-        else {"remediation-job"}
-    )
-    first_terminal_mutation = next(
-        index
-        for index, event in enumerate(events)
-        if isinstance(event, tuple)
-        and event[0] == "set"
-        and event[1] in terminal_job_ids
-        and event[2] == "error_message"
-    )
-    assert rollback_index < first_terminal_mutation
-    assert events[-1] == "commit"
+    assert isinstance(result, JobFailure)
+    assert result.kind is FailureKind.RETRYABLE
+    assert result.code == "remediation_artifact_retryable"
+    assert result.details == {
+        "artifact_id": "artifact-1",
+        "publication_cleanup_pending": True,
+    }
+    assert job._assert_owned is context.assert_owned
 
 
 @pytest.mark.asyncio
@@ -1820,7 +1361,7 @@ async def test_worker_uses_exact_validated_credential_and_never_uploads():
 
 
 @pytest.mark.asyncio
-async def test_same_job_retry_cleans_retained_artifact_before_processing_once():
+async def test_same_job_retry_leaves_retained_artifact_cleanup_to_maintenance():
     from src.jobs.remediation_job import handle_remediation_job
 
     job, db = _job_graph(context={})
@@ -1851,13 +1392,13 @@ async def test_same_job_retry_cleans_retained_artifact_before_processing_once():
     ):
         await handle_remediation_job(job, db, MagicMock())
 
-    assert events == ["cleanup", "process"]
-    service.abort_staging_for_job.assert_called_once_with(
-        db,
-        artifact_id="artifact-1",
-        remediation_job_id="job-1",
-    )
-    assert job.result_data.get("publication_cleanup_pending") is None
+    assert events == ["process"]
+    service.abort_staging_for_job.assert_not_called()
+    assert job.result_data == {
+        "scan_id": "scan-1",
+        "artifact_id": "artifact-1",
+        "publication_cleanup_pending": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -4127,7 +3668,6 @@ async def test_canvas_authorizes_course_file_before_policy_oracle():
         with pytest.raises(HTTPException) as caught:
             await remediate_canvas_file(
                 request=request,
-                background_tasks=MagicMock(),
                 db=db,
                 principal=_principal(),
             )
@@ -4162,7 +3702,6 @@ async def test_canvas_explicit_upload_back_fails_closed_before_enqueue():
                 request=CanvasRemediateRequest(
                     file_id="file-1", course_id="course-1", upload_back=True
                 ),
-                background_tasks=MagicMock(),
                 db=db,
                 principal=_principal(),
             )

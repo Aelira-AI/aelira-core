@@ -1,7 +1,9 @@
 """Task 14 slice 2: LMS scan execution is deterministic-only."""
 
 import ast
+import hashlib
 import inspect
+import subprocess
 import sys
 import textwrap
 import asyncio
@@ -114,7 +116,6 @@ async def test_canvas_queue_failures_do_not_expose_or_log_raw_exception(
         await route(
             request_class(**request_kwargs),
             MagicMock(),
-            MagicMock(),
             SimpleNamespace(department_id="department-1"),
         )
 
@@ -153,7 +154,11 @@ async def test_canvas_content_scan_boundaries_log_sanitized_context(
 
     sensitive_marker = "canvas-secret:/customer/private/path"
     request = canvas_content_routes.CanvasContentScanRequest(course_id="course-1")
-    args = [request, MagicMock(), MagicMock(), SimpleNamespace(department_id="dept-1")]
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        id="credential-1"
+    )
+    args = [request, db, SimpleNamespace(department_id="dept-1")]
     if content_type is not None:
         args.insert(0, canvas_content_routes.ContentTypeParam(content_type))
 
@@ -165,8 +170,12 @@ async def test_canvas_content_scan_boundaries_log_sanitized_context(
         ),
         patch.object(
             canvas_content_routes,
-            "_get_canvas_client",
-            new=AsyncMock(side_effect=RuntimeError(sensitive_marker)),
+            "require_persisted_canvas_origin",
+        ),
+        patch.object(
+            canvas_content_routes,
+            "enqueue_cloud_job",
+            side_effect=RuntimeError(sensitive_marker),
         ),
         pytest.raises(HTTPException) as exc,
     ):
@@ -185,166 +194,106 @@ async def test_canvas_content_scan_boundaries_log_sanitized_context(
 
 
 @pytest.mark.asyncio
-async def test_canvas_background_scan_boundary_logs_sanitized_context(caplog):
-    from src.api.canvas_scan_routes import _canvas_scan_file_task
-    from src.db.models import CloudJobStatus
+async def test_content_scan_endpoint_enqueues_immutable_deterministic_payload():
+    from src.api import canvas_content_routes
 
-    sensitive_marker = "background-secret:/customer/private/path"
-    job = SimpleNamespace(
-        status=CloudJobStatus.PENDING.value,
-        started_at=None,
-        progress=0,
-        progress_message=None,
-        result_data=None,
-        error_message=None,
-        completed_at=None,
-    )
+    credential = SimpleNamespace(id="credential-1")
+    query = MagicMock()
+    query.filter.return_value.first.return_value = credential
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.return_value = job
-    db_context = MagicMock()
-    db_context.__enter__.return_value = db
-
-    with (
-        patch("src.db.database.get_db", return_value=db_context),
-        patch(
-            "src.jobs.cloud_scan_job.handle_scan_job",
-            new=AsyncMock(side_effect=RuntimeError(sensitive_marker)),
-        ),
-    ):
-        await _canvas_scan_file_task("job-1", "file-1", "credential-1")
-
-    assert job.status == CloudJobStatus.FAILED.value
-    assert job.error_message == "Accessibility scan failed"
-    assert sensitive_marker not in caplog.text
-    record = next(
-        record
-        for record in caplog.records
-        if record.message == "Canvas scan background job failed"
-    )
-    assert record.job_id == "job-1"
-    assert record.cloud_file_id == "file-1"
-    assert record.credential_id == "credential-1"
-    assert record.error_type == "RuntimeError"
-    assert record.exc_info is None
-
-
-@pytest.mark.asyncio
-async def test_content_scan_task_ignores_legacy_true_flags_and_never_remediates():
-    from src.api.canvas_content_routes import _content_scan_task
-
-    cloud_file = SimpleNamespace(id="file-1")
-    credential = SimpleNamespace(
-        id="credential-1",
-        provider_metadata={"canvas_instance_url": "https://canvas.example.edu"},
-        access_token="x",
-    )
-    db = MagicMock()
-    db.query.return_value.filter.return_value.first.side_effect = [
-        cloud_file,
-        credential,
+    db.query.return_value = query
+    job = SimpleNamespace(id="job-1", status="pending", progress=0)
+    enqueue = MagicMock(return_value=job)
+    request = canvas_content_routes.CanvasContentScanRequest(course_id="course-1")
+    principal = SimpleNamespace(department_id="department-1")
+    content_types = [
+        "page",
+        "assignment",
+        "announcement",
+        "quiz",
+        "discussion",
+        "file",
     ]
-    db_context = MagicMock()
-    db_context.__enter__.return_value = db
+    digest = hashlib.sha256(",".join(content_types).encode()).hexdigest()[:16]
     scanner = MagicMock()
-    scanner.scan_content_item = AsyncMock(
-        return_value={"scan_id": "scan-1", "issues": 1, **DETERMINISTIC_METADATA}
-    )
-    scanner.remediate_content_item = AsyncMock()
-    canvas_client = AsyncMock()
 
     with (
-        patch("src.db.database.get_db", return_value=db_context),
-        patch(
-            "src.api.canvas_content_routes.require_persisted_canvas_origin",
-            return_value="https://canvas.example.edu",
+        patch.object(canvas_content_routes, "verify_department_access"),
+        patch.object(canvas_content_routes, "require_lti_course_access"),
+        patch.object(
+            canvas_content_routes, "require_feature", new=AsyncMock(return_value=None)
         ),
-        patch("src.integrations.oauth_token_manager.OAuthTokenManager") as tokens,
-        patch("src.integrations.canvas.CanvasAPIClient", return_value=canvas_client),
-        patch(
-            "src.api.canvas_content_routes.CanvasContentScanner", return_value=scanner
-        ) as scanner_class,
+        patch.object(canvas_content_routes, "require_persisted_canvas_origin"),
+        patch.object(canvas_content_routes, "enqueue_cloud_job", enqueue),
+        patch.object(canvas_content_routes, "CanvasContentScanner", scanner),
     ):
-        tokens.return_value.decrypt_token.return_value = "token"
-        result = await _content_scan_task(
-            "file-1",
-            "department-1",
-            "credential-1",
-            scan_options={
-                "generate_alt_text": True,
-                "auto_remediate": True,
-                "provider": "gemini",
-            },
+        response = await canvas_content_routes.scan_course_content(
+            request, db, principal
         )
 
-    scanner.scan_content_item.assert_awaited_once_with(cloud_file)
-    scanner.remediate_content_item.assert_not_awaited()
-    assert scanner_class.call_args.kwargs["scan_options"] == {
-        "generate_alt_text": False,
-        "auto_remediate": False,
-        "detect_decorative": False,
-    }
-    assert DETERMINISTIC_METADATA.items() <= result.items()
+    assert response.job_id == "job-1"
+    enqueue.assert_called_once_with(
+        db,
+        department_id="department-1",
+        job_type="scan",
+        payload={
+            "scan_kind": "canvas_course",
+            "credential_id": "credential-1",
+            "provider": "canvas",
+            "course_id": "course-1",
+            "content_types": content_types,
+            "scan_options": {
+                "generate_alt_text": False,
+                "auto_remediate": False,
+                "detect_decorative": False,
+            },
+        },
+        dedupe_key=f"canvas-course-scan:credential-1:course-1:{digest}",
+        provider="canvas",
+        credential_id="credential-1",
+        provider_file_id="course-1",
+    )
+    scanner.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "failure_point",
-    ["origin_validation", "token_decryption", "client_creation", "client_close"],
-)
-@pytest.mark.asyncio
-async def test_content_scan_task_returns_sanitized_authoritative_failure(
-    failure_point, caplog
-):
-    from src.api.canvas_content_routes import _content_scan_task
+def test_scan_payload_is_immutable_and_worker_owns_typed_terminalization():
+    from src.jobs.contracts import FailureKind, JobContext, JobFailure
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
 
-    sensitive_marker = "private-detail:/customer/path"
-    cloud_file = SimpleNamespace(id="file-1")
-    credential = SimpleNamespace(id="credential-1", access_token="x")
-    db = MagicMock()
-    db.query.return_value.filter.return_value.first.side_effect = [
-        cloud_file,
-        credential,
-    ]
-    db_context = MagicMock()
-    db_context.__enter__.return_value = db
-    canvas_client = AsyncMock()
-    scanner = MagicMock()
-    scanner.scan_content_item = AsyncMock(return_value={"success": True})
+    claim_marker = "claim-1"
+    context = JobContext(
+        job_id="job-1",
+        job_type="scan",
+        payload={"cloud_file_id": "file-1", "provider": "canvas"},
+        claim_token=claim_marker,
+        worker_id="worker-1",
+        attempt_count=1,
+        report_progress=AsyncMock(),
+        assert_owned=AsyncMock(),
+    )
+    with pytest.raises(TypeError):
+        context.payload["cloud_file_id"] = "other-file"
 
-    with (
-        patch("src.db.database.get_db", return_value=db_context),
-        patch(
-            "src.api.canvas_content_routes.require_persisted_canvas_origin",
-            return_value="https://canvas.example.edu",
-        ) as validate_origin,
-        patch("src.integrations.oauth_token_manager.OAuthTokenManager") as tokens,
-        patch(
-            "src.integrations.canvas.CanvasAPIClient", return_value=canvas_client
-        ) as client_class,
-        patch(
-            "src.api.canvas_content_routes.CanvasContentScanner", return_value=scanner
-        ),
-    ):
-        tokens.return_value.decrypt_token.return_value = "token"
-        if failure_point == "origin_validation":
-            validate_origin.side_effect = RuntimeError(sensitive_marker)
-        elif failure_point == "token_decryption":
-            tokens.return_value.decrypt_token.side_effect = RuntimeError(
-                sensitive_marker
-            )
-        elif failure_point == "client_creation":
-            client_class.side_effect = RuntimeError(sensitive_marker)
-        else:
-            canvas_client.close.side_effect = RuntimeError(sensitive_marker)
+    outcome = JobFailure.deterministic("SCAN_PROCESSING_FAILED")
+    claim = ClaimedJob(
+        job_id="job-1",
+        job_type="scan",
+        payload=dict(context.payload),
+        claim_token=claim_marker,
+        worker_id="worker-1",
+        attempt_count=1,
+        max_retries=3,
+    )
+    processor = JobProcessor()
+    with patch.object(processor, "_fenced_update", return_value=True) as update:
+        assert processor._finish(claim, outcome) is True
 
-        result = await _content_scan_task("file-1", "department-1", "credential-1")
-
-    assert result == {
-        "success": False,
-        "error": "Deterministic accessibility scan unavailable",
-        "error_code": "DETERMINISTIC_SCAN_UNAVAILABLE",
-        **DETERMINISTIC_METADATA,
-    }
-    assert sensitive_marker not in caplog.text
+    values = update.call_args.args[1]
+    assert outcome.kind is FailureKind.DETERMINISTIC
+    assert values["status"] == "failed"
+    assert values["error_message"] == "SCAN_PROCESSING_FAILED"
+    assert values["last_error_retryable"] is False
+    assert values["result_data"] is None
 
 
 def test_canvas_content_scanner_fallback_options_are_deterministic():
@@ -832,8 +781,10 @@ def test_scan_execution_functions_have_no_direct_generative_ai_dependencies():
     from src.jobs import cloud_scan_job
 
     guarded = [
-        canvas_content_routes._content_scan_task,
-        canvas_scan_routes._canvas_scan_file_task,
+        canvas_content_routes.scan_course_content,
+        canvas_content_routes.scan_course_content_by_type,
+        canvas_scan_routes.scan_canvas_file,
+        canvas_scan_routes.scan_canvas_course_files,
         canvas_content_scanner.CanvasContentScanner.scan_course_content,
         canvas_content_scanner.CanvasContentScanner.scan_content_item,
         canvas_content_scanner.CanvasContentScanner._verify_remediation,
@@ -1113,35 +1064,89 @@ async def test_cloud_real_processor_model_normalizes_success_and_failure_is_not_
 
 
 @pytest.mark.asyncio
-async def test_handle_scan_job_raises_sanitized_typed_error_for_structured_failure():
-    from src.jobs.cloud_scan_job import CloudScanJob, ScanJobFailed, handle_scan_job
+async def test_scan_worker_types_sanitized_handler_failure_before_terminalizing(caplog):
+    from src.jobs.cloud_scan_job import CloudScanJob
+    from src.jobs.contracts import FailureKind, JobFailure
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
+    from src.jobs.registry import build_default_registry
 
-    credential = SimpleNamespace(id="cred")
-    cloud_file = SimpleNamespace(id="file")
+    credential = SimpleNamespace(
+        id="cred", department_id="dept", provider="google", is_active=True
+    )
+    cloud_file = SimpleNamespace(
+        id="file",
+        department_id="dept",
+        credential_id="cred",
+        provider="google",
+        provider_file_id="remote-file",
+    )
     db = MagicMock()
     db.query.return_value.filter.return_value.first.side_effect = [
         credential,
         cloud_file,
     ]
-    with patch.object(
-        CloudScanJob,
-        "run",
-        new=AsyncMock(
-            return_value={
-                "success": False,
-                "error": "secret token",
-                "error_code": "SCAN_PROCESSING_FAILED",
-            }
+    durable_job = SimpleNamespace(
+        id="job-1",
+        credential_id="cred",
+        cloud_file_id="file",
+        department_id="dept",
+        provider="google",
+        provider_file_id="remote-file",
+        status="processing",
+        payload={
+            "credential_id": "cred",
+            "cloud_file_id": "file",
+            "provider": "google",
+            "provider_file_id": "remote-file",
+        },
+    )
+    db.get.return_value = durable_job
+    session_context = MagicMock()
+    session_context.__enter__.return_value = db
+    processor = JobProcessor(
+        session_factory=lambda: session_context,
+        registry=build_default_registry(),
+    )
+    claim_marker = "claim-1"
+    claim = ClaimedJob(
+        job_id="job-1",
+        job_type="scan",
+        payload=durable_job.payload,
+        claim_token=claim_marker,
+        worker_id="worker-1",
+        attempt_count=1,
+        max_retries=3,
+    )
+
+    with (
+        patch.object(processor, "_owns_claim", return_value=True),
+        patch.object(processor, "_claim_heartbeat", new=AsyncMock()),
+        patch.object(processor, "_get_token_manager", return_value=MagicMock()),
+        patch.object(processor, "_finish", return_value=True) as finish,
+        patch.object(processor, "_record_outcome"),
+        patch.object(
+            CloudScanJob,
+            "run",
+            new=AsyncMock(
+                return_value={
+                    "success": False,
+                    "error": "secret token",
+                    "error_code": "SCAN_PROCESSING_FAILED",
+                }
+            ),
         ),
     ):
-        with pytest.raises(ScanJobFailed) as exc:
-            await handle_scan_job(
-                SimpleNamespace(credential_id="cred", cloud_file_id="file"),
-                db,
-                MagicMock(),
-            )
-    assert str(exc.value) == "Accessibility scan failed"
-    assert exc.value.code == "SCAN_PROCESSING_FAILED"
+        assert await processor.process_claim(claim) is True
+
+    result = finish.call_args.args[1]
+    assert isinstance(result, JobFailure)
+    assert result.kind is FailureKind.INDETERMINATE
+    assert result.code == "job_handler_exception"
+    assert "secret token" not in repr(result)
+    assert "secret token" not in caplog.text
+    assert durable_job.status == "processing"
+    assert not hasattr(durable_job, "completed_at")
+    db.commit.assert_not_called()
 
 
 def test_all_real_processor_models_without_success_are_normalized_from_score():
@@ -1223,51 +1228,18 @@ def test_all_real_processor_models_without_success_are_normalized_from_score():
     assert [item["compliance_score"] for item in normalized] == [80, 81, 82, 83, 84]
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("module_path", "task_name"),
-    [
-        ("src.api.canvas_scan_routes", "_canvas_scan_file_task"),
-        ("src.api.microsoft_routes", "_scan_file_task"),
-    ],
-)
-async def test_background_scan_callers_mark_typed_scan_failure_failed(
-    module_path, task_name
-):
-    import importlib
+def test_scan_routes_delegate_execution_to_durable_enqueue():
+    from src.api import canvas_scan_routes, microsoft_routes
 
-    from src.db.models import CloudJobStatus
-    from src.jobs.cloud_scan_job import ScanJobFailed
-
-    module = importlib.import_module(module_path)
-    task = getattr(module, task_name)
-    job = SimpleNamespace(
-        status=CloudJobStatus.PENDING.value,
-        started_at=None,
-        progress=0,
-        progress_message=None,
-        result_data=None,
-        error_message=None,
-        completed_at=None,
-    )
-    db = MagicMock()
-    db.query.return_value.filter.return_value.first.return_value = job
-    db_context = MagicMock()
-    db_context.__enter__.return_value = db
-
-    handler_target = "src.jobs.cloud_scan_job.handle_scan_job"
-    with (
-        patch("src.db.database.get_db", return_value=db_context),
-        patch(
-            handler_target,
-            new=AsyncMock(side_effect=ScanJobFailed("SCAN_PROCESSING_FAILED")),
-        ),
+    assert not hasattr(canvas_scan_routes, "_canvas_scan_file_task")
+    assert not hasattr(microsoft_routes, "_scan_file_task")
+    for endpoint in (
+        canvas_scan_routes.scan_canvas_file,
+        microsoft_routes.scan_file,
     ):
-        await task("job-1", "file-1", "cred-1")
-
-    assert job.status == CloudJobStatus.FAILED.value
-    assert job.error_message == "Accessibility scan failed"
-    assert "secret" not in str(job.progress_message)
+        source = inspect.getsource(endpoint)
+        assert "enqueue_cloud_job" in source
+        assert "handle_scan_job" not in source
 
 
 def test_scan_execution_uses_shared_bundled_axe_without_cdn_fallbacks():
@@ -1284,5 +1256,13 @@ def test_scan_execution_uses_shared_bundled_axe_without_cdn_fallbacks():
         assert "node_modules" not in source
 
 
-def test_uv_lock_is_not_created():
-    assert not (Path(__file__).parents[1] / "uv.lock").exists()
+def test_uv_lock_is_not_part_of_tracked_source():
+    result = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "uv.lock"],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0

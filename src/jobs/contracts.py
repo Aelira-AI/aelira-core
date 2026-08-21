@@ -11,10 +11,16 @@ from typing import Any, Awaitable, Callable, Mapping
 
 ProgressReporter = Callable[[int, str | None], Awaitable[bool]]
 OwnershipChecker = Callable[[], Awaitable[None]]
+ExternalEffectBeginner = Callable[[], Awaitable[str]]
 
 
 async def _assume_owned() -> None:
     """Compatibility default for direct/legacy handler invocation."""
+
+
+async def _external_effect_checkpoint_unavailable() -> str:
+    """Fail closed when a non-durable caller attempts an external mutation."""
+    raise RuntimeError("external effect checkpoint unavailable")
 
 
 class LostJobOwnership(RuntimeError):
@@ -107,6 +113,9 @@ class JobContext:
     attempt_count: int
     report_progress: ProgressReporter
     assert_owned: OwnershipChecker = _assume_owned
+    begin_external_effect: ExternalEffectBeginner = (
+        _external_effect_checkpoint_unavailable
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(

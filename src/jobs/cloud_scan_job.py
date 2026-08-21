@@ -236,7 +236,7 @@ class CloudScanJob:
         """Download file from Google Drive."""
         integration = GoogleDriveIntegration(
             access_token=access_token,
-            department_id=self.credential.department_id,
+            credential_id=self.credential.id,
         )
 
         try:
@@ -261,7 +261,7 @@ class CloudScanJob:
         """Download file from OneDrive/SharePoint."""
         integration = OneDriveIntegration(
             access_token=access_token,
-            department_id=self.credential.department_id,
+            credential_id=self.credential.id,
         )
 
         try:
@@ -818,6 +818,18 @@ async def handle_scan_job(
     Returns:
         Scan results
     """
+    payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
+    if any(
+        payload.get(field) not in (None, getattr(job, field))
+        for field in (
+            "cloud_file_id",
+            "credential_id",
+            "provider",
+            "provider_file_id",
+        )
+    ):
+        raise ScanJobFailed("INVALID_JOB_SCOPE")
+
     # Get credential
     credential = (
         db.query(CloudOAuthCredentials)
@@ -827,12 +839,37 @@ async def handle_scan_job(
 
     if not credential:
         raise ScanJobFailed("CREDENTIAL_UNAVAILABLE")
+    if (
+        credential.department_id != job.department_id
+        or credential.provider != job.provider
+        or credential.is_active is not True
+    ):
+        raise ScanJobFailed("INVALID_JOB_SCOPE")
+
+    scan_kind = payload.get("scan_kind", "cloud_file")
+    if scan_kind == "canvas_course":
+        return await _handle_canvas_course_scan(
+            job, db, token_manager, credential, payload
+        )
 
     # Get cloud file
     cloud_file = db.query(CloudFile).filter(CloudFile.id == job.cloud_file_id).first()
 
     if not cloud_file:
         raise ScanJobFailed("FILE_UNAVAILABLE")
+    if (
+        cloud_file.department_id != job.department_id
+        or cloud_file.credential_id != credential.id
+        or cloud_file.provider != credential.provider
+    ):
+        raise ScanJobFailed("INVALID_JOB_SCOPE")
+
+    if scan_kind == "canvas_content":
+        return await _handle_canvas_content_scan(
+            job, db, token_manager, credential, cloud_file, payload
+        )
+    if scan_kind != "cloud_file":
+        raise ScanJobFailed("INVALID_JOB_SCOPE")
 
     # Run scan
     scan_job = CloudScanJob(
@@ -845,3 +882,93 @@ async def handle_scan_job(
     if not result.get("success"):
         raise ScanJobFailed(result.get("error_code", "SCAN_PROCESSING_FAILED"))
     return result
+
+
+async def _handle_canvas_course_scan(
+    job: CloudJobQueue,
+    db: Session,
+    token_manager: OAuthTokenManager,
+    credential: CloudOAuthCredentials,
+    payload: dict[str, Any],
+) -> Dict[str, Any]:
+    """Discover a Canvas course and durably fan out its child scan jobs."""
+    from ..education.canvas_content_scanner import CanvasContentScanner
+    from ..integrations.canvas.canvas_api import CanvasAPIClient
+    from ..integrations.canvas.content_models import CanvasContentType
+    from ..utils.security import require_persisted_canvas_origin
+
+    course_id = payload.get("course_id")
+    raw_types = payload.get("content_types")
+    if (
+        job.provider != "canvas"
+        or not isinstance(course_id, str)
+        or not course_id
+        or not isinstance(raw_types, list)
+        or not raw_types
+    ):
+        raise ScanJobFailed("INVALID_JOB_SCOPE")
+    try:
+        content_types = [CanvasContentType(value) for value in raw_types]
+    except (TypeError, ValueError) as exc:
+        raise ScanJobFailed("INVALID_JOB_SCOPE") from exc
+    origin = require_persisted_canvas_origin(credential)
+    access_token = await token_manager.refresh_if_expired(credential, db)
+    client = CanvasAPIClient(
+        canvas_instance_url=origin,
+        access_token=access_token,
+        credential_id=credential.id,
+    )
+    try:
+        scanner = CanvasContentScanner(
+            canvas_client=client,
+            db=db,
+            department_id=job.department_id,
+            credential_id=credential.id,
+            scan_options=payload.get("scan_options"),
+        )
+        result = await scanner.scan_course_content(
+            course_id, content_types=content_types
+        )
+        return {"success": True, **result}
+    finally:
+        await client.close()
+
+
+async def _handle_canvas_content_scan(
+    job: CloudJobQueue,
+    db: Session,
+    token_manager: OAuthTokenManager,
+    credential: CloudOAuthCredentials,
+    cloud_file: CloudFile,
+    payload: dict[str, Any],
+) -> Dict[str, Any]:
+    """Run the deterministic Canvas HTML scan from immutable queue input."""
+    from ..education.canvas_content_scanner import CanvasContentScanner
+    from ..integrations.canvas.canvas_api import CanvasAPIClient
+    from ..utils.security import require_persisted_canvas_origin
+
+    if (
+        job.provider != "canvas"
+        or payload.get("course_id") != cloud_file.provider_parent_id
+        or payload.get("content_source") != cloud_file.content_source
+    ):
+        raise ScanJobFailed("INVALID_JOB_SCOPE")
+    origin = require_persisted_canvas_origin(credential)
+    access_token = await token_manager.refresh_if_expired(credential, db)
+    client = CanvasAPIClient(
+        canvas_instance_url=origin,
+        access_token=access_token,
+        credential_id=credential.id,
+    )
+    try:
+        scanner = CanvasContentScanner(
+            canvas_client=client,
+            db=db,
+            department_id=job.department_id,
+            credential_id=credential.id,
+            scan_options=payload.get("scan_options"),
+        )
+        result = await scanner.scan_content_item(cloud_file)
+        return {"success": True, **result}
+    finally:
+        await client.close()

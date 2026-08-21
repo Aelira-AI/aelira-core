@@ -11,9 +11,10 @@ Provides unified endpoints for:
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional
 from datetime import datetime
+import hashlib
 import logging
 import uuid
 
@@ -23,11 +24,13 @@ from ..db.models import (
     CloudOAuthCredentials,
     CloudProvider,
     CloudJobQueue,
+    CloudJobType,
     CloudJobStatus,
     CloudFile,
     CloudSyncFolder,
 )
 from ..api.auth_routes import get_current_api_key
+from ..services.job_enqueue_service import enqueue_cloud_job
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +78,13 @@ class AddSyncFolderRequest(BaseModel):
     folder_name: str
     folder_path: Optional[str] = None
     sync_subfolders: bool = True
+
+
+class TriggerSyncRequest(BaseModel):
+    """Explicit provider and selected folder set for one durable sync."""
+
+    provider: str
+    folder_ids: list[str] = Field(min_length=1, max_length=100)
 
 
 class SyncFolderResponse(BaseModel):
@@ -322,20 +332,77 @@ async def get_cloud_files(
 
 @router.post("/sync")
 async def trigger_sync(
+    request: TriggerSyncRequest,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
     """
-    Report that cloud provider sync execution is unavailable.
-
-    Durable provider sync execution is not available in v0.9.4.
+    Validate an explicit folder set and durably enqueue provider sync.
 
     Authentication: Requires valid API key
     """
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Cloud provider sync execution is not available in this release.",
+    provider_map = {
+        "google": CloudProvider.GOOGLE.value,
+        "microsoft": CloudProvider.MICROSOFT.value,
+    }
+    provider = provider_map.get(request.provider)
+    if provider is None:
+        raise HTTPException(status_code=400, detail="Unsupported sync provider")
+    if len(set(request.folder_ids)) != len(request.folder_ids):
+        raise HTTPException(status_code=400, detail="Duplicate sync folder")
+
+    department_id = api_key.department_id
+    credential = (
+        db.query(CloudOAuthCredentials)
+        .filter(
+            CloudOAuthCredentials.department_id == department_id,
+            CloudOAuthCredentials.provider == provider,
+            CloudOAuthCredentials.is_active,
+        )
+        .first()
     )
+    if credential is None:
+        raise HTTPException(status_code=404, detail="Integration not connected")
+
+    folders = (
+        db.query(CloudSyncFolder)
+        .filter(
+            CloudSyncFolder.id.in_(request.folder_ids),
+            CloudSyncFolder.department_id == department_id,
+            CloudSyncFolder.credential_id == credential.id,
+            CloudSyncFolder.provider == provider,
+            CloudSyncFolder.is_active,
+        )
+        .all()
+    )
+    found_ids = {folder.id for folder in folders}
+    if found_ids != set(request.folder_ids):
+        raise HTTPException(status_code=404, detail="Sync folder not found")
+
+    folder_ids = sorted(found_ids)
+    folder_digest = hashlib.sha256("\n".join(folder_ids).encode()).hexdigest()[:24]
+    job = enqueue_cloud_job(
+        db,
+        department_id=department_id,
+        job_type=CloudJobType.SYNC.value,
+        payload={
+            "credential_id": credential.id,
+            "provider": provider,
+            "folder_ids": folder_ids,
+        },
+        dedupe_key=f"sync:{provider}:{credential.id}:{folder_digest}",
+        credential_id=credential.id,
+        provider=provider,
+        priority=4,
+    )
+    db.commit()
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "progress": job.progress,
+        "provider": provider,
+        "folder_ids": folder_ids,
+    }
 
 
 @router.get("/health", response_model=HealthCheckResponse)

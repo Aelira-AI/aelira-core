@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List, Tuple, Literal
 from datetime import datetime, timezone
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from pydantic import (
@@ -60,6 +60,7 @@ from ..services.remediation_artifact_service import (
     ArtifactPublicationResult,
     RemediationArtifactService,
 )
+from ..services.job_enqueue_service import enqueue_cloud_job
 from ..utils.security import (
     PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
     require_brightspace_oauth_allowed_origin,
@@ -752,52 +753,6 @@ async def list_brightspace_course_files(
 
     finally:
         await api_client.close()
-
-
-async def _brightspace_scan_file_task(
-    job_id: str, cloud_file_id: str, credential_id: str
-):
-    """Background task to scan and auto-remediate a file from Brightspace LMS."""
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.cloud_scan_job import handle_scan_job
-
-    logger.info(f"Starting Brightspace scan: job={job_id}, file={cloud_file_id}")
-
-    with _get_db_ctx() as db:
-        job = db.query(CloudJobQueue).filter(CloudJobQueue.id == job_id).first()
-        if not job:
-            logger.error(f"Scan job not found: {job_id}")
-            return
-
-        try:
-            job.status = CloudJobStatus.PROCESSING.value
-            job.started_at = datetime.now(timezone.utc)
-            job.progress = 10
-            db.commit()
-
-            token_manager = OAuthTokenManager()
-            result = await handle_scan_job(job, db, token_manager)
-
-            job.status = CloudJobStatus.COMPLETED.value
-            job.progress = 100
-            job.result_data = result
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(
-                f"Brightspace scan complete: job={job_id}, "
-                f"score={result.get('compliance_score')}"
-            )
-
-            # Store content_body reference for later remediation
-            # (remediation is triggered separately by the user)
-
-        except Exception as e:
-            logger.error(f"Brightspace scan failed: job={job_id}, error={e}")
-            job.status = CloudJobStatus.FAILED.value
-            job.error_message = str(e)[:500]
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
 
 
 def _convert_axe_issues(axe_violations: list) -> list:
@@ -1682,7 +1637,6 @@ async def _remediate_file(
 @router.post("/content/scan")
 async def scan_brightspace_content(
     request: BrightspaceContentScanRequest,
-    background_tasks: BackgroundTasks,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ) -> BrightspaceContentScanResponse:
@@ -1802,28 +1756,28 @@ async def scan_brightspace_content(
             skipped += 1
             continue
 
-        # Create scan job
-        job_id = str(uuid.uuid4())
-        scan_job = CloudJobQueue(
-            id=job_id,
+        db.flush()
+        enqueue_cloud_job(
+            db,
             department_id=department_id,
             job_type=CloudJobType.SCAN.value,
+            payload={
+                "cloud_file_id": cloud_file.id,
+                "credential_id": credential.id,
+                "provider": CloudProvider.BRIGHTSPACE.value,
+                "provider_file_id": str(item.topic_id),
+                "course_id": str(request.org_unit_id),
+            },
+            dedupe_key=(
+                f"scan:brightspace:{request.org_unit_id}:{item.topic_id}:"
+                f"{getattr(item, 'modified_at', None) or 'current'}"
+            ),
             provider=CloudProvider.BRIGHTSPACE.value,
-            status=CloudJobStatus.PENDING.value,
             priority=1,
             cloud_file_id=cloud_file.id,
             credential_id=credential.id,
         )
-        db.add(scan_job)
         jobs_queued += 1
-
-        # Queue background task to execute the scan
-        background_tasks.add_task(
-            _brightspace_scan_file_task,
-            job_id=job_id,
-            cloud_file_id=cloud_file.id,
-            credential_id=credential.id,
-        )
 
     db.commit()
 

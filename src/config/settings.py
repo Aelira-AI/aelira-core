@@ -457,6 +457,62 @@ class Settings(BaseSettings):
         ge=60,
         le=86400,
     )
+    remediation_artifact_orphan_batch_size: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_BATCH_SIZE", "100")
+        ),
+        ge=1,
+        le=1000,
+    )
+    remediation_artifact_orphan_grace_seconds: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_GRACE_SECONDS", "86400")
+        ),
+        ge=60,
+        le=604800,
+    )
+    remediation_artifact_orphan_max_visited_entries: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_MAX_VISITED_ENTRIES", "2000")
+        ),
+        ge=10,
+        le=100000,
+    )
+    remediation_artifact_orphan_max_visited_directories: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_MAX_VISITED_DIRECTORIES", "500")
+        ),
+        ge=1,
+        le=10000,
+    )
+    remediation_artifact_orphan_max_directory_entries: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_MAX_DIRECTORY_ENTRIES", "1000")
+        ),
+        ge=1,
+        le=100000,
+    )
+    remediation_artifact_orphan_max_seconds: float = Field(
+        default_factory=lambda: float(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_MAX_SECONDS", "5")
+        ),
+        gt=0,
+        le=60,
+    )
+    remediation_artifact_quarantine_retention_days: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_QUARANTINE_RETENTION_DAYS", "30")
+        ),
+        ge=1,
+        le=3650,
+    )
+    durable_maintenance_interval_seconds: int = Field(
+        default_factory=lambda: int(
+            os.getenv("DURABLE_MAINTENANCE_INTERVAL_SECONDS", "300")
+        ),
+        ge=10,
+        le=86400,
+    )
 
     @field_validator("remediation_artifact_dir")
     @classmethod

@@ -354,7 +354,7 @@ async def test_custom_handler_result_must_use_typed_job_contract():
         def _owns_claim(self, _claim):
             return True
 
-        def _fenced_update(self, _claim, values):
+        def _fenced_update(self, claim, values):
             self.finished_values = values
             return True
 
@@ -417,3 +417,61 @@ async def test_max_execution_timeout_is_bounded_and_retryable():
     assert cancelled.is_set()
     assert worker.finished_values["status"] == "pending"
     assert worker.finished_values["last_error_code"] == "job_execution_timeout"
+
+
+@pytest.mark.parametrize("kind", ["retryable", "indeterminate"])
+def test_retry_unsafe_failure_is_terminal_at_queue_boundary(kind):
+    from src.jobs.contracts import JobFailure
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
+
+    class CapturingProcessor(JobProcessor):
+        def _fenced_update(self, claim, values):
+            self.finished_values = values
+            return True
+
+    worker = CapturingProcessor(registry=_complete_registry(AsyncMock()))
+    claim = ClaimedJob("job-1", "scan", {}, "token-1", worker.worker_id, 1, 3)
+    failure = getattr(JobFailure, kind)(
+        "provider_outcome_unknown",
+        {"provider": "google", "retry_safe": False},
+    )
+
+    assert worker._finish(claim, failure) is True
+    values = worker.finished_values
+    assert values["status"] == "failed"
+    assert values["completed_at"] is not None
+    assert values["last_error_code"] == "provider_outcome_unknown"
+    assert values["last_error_retryable"] is False
+    assert values["result_data"] == {
+        "provider": "google",
+        "retry_safe": False,
+        "manual_required": True,
+    }
+    assert values["claim_token"] is None
+    assert values["worker_id"] is None
+    assert "scheduled_for" not in values
+
+
+@pytest.mark.parametrize("kind", ["retryable", "indeterminate"])
+def test_retry_safe_failure_retains_bounded_queue_retry(kind):
+    from src.jobs.contracts import JobFailure
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
+
+    class CapturingProcessor(JobProcessor):
+        def _fenced_update(self, claim, values):
+            self.finished_values = values
+            return True
+
+    worker = CapturingProcessor(registry=_complete_registry(AsyncMock()))
+    claim = ClaimedJob("job-1", "scan", {}, "token-1", worker.worker_id, 1, 3)
+    failure = getattr(JobFailure, kind)(
+        "provider_temporarily_unavailable", {"retry_safe": True}
+    )
+
+    assert worker._finish(claim, failure) is True
+    values = worker.finished_values
+    assert values["status"] == "pending"
+    assert values["completed_at"] is None
+    assert values["last_error_retryable"] is True
+    assert values["result_data"] == {"retry_safe": True}
+    assert values["scheduled_for"] is not None

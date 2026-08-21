@@ -16,6 +16,8 @@ from sqlalchemy.orm import sessionmaker
 from src.db.models import (
     CloudJobQueue,
     CloudJobStatus,
+    CloudOAuthCredentials,
+    CloudWebhookSubscription,
     Department,
     WorkerHeartbeat,
 )
@@ -74,7 +76,7 @@ def enqueue(factory, department_id, **values) -> str:
             CloudJobQueue(
                 id=job_id,
                 department_id=department_id,
-                job_type="scan",
+                job_type=values.pop("job_type", "scan"),
                 payload=values.pop("payload", {}),
                 status=values.pop("status", "pending"),
                 **values,
@@ -95,6 +97,175 @@ def processor(factory, worker_id, registry, **kwargs) -> JobProcessor:
     )
     value._token_manager = MagicMock()
     return value
+
+
+def upload_registry(handler) -> JobRegistry:
+    registry = JobRegistry()
+    registry.register("upload", handler)
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_upload_checkpoint_crash_is_reaped_manual_and_never_reclaimed(
+    pg_sessions,
+):
+    factory, department_id = pg_sessions
+    provider = AsyncMock()
+    job_id = enqueue(factory, department_id, job_type="upload")
+    first = processor(
+        factory,
+        "task17-upload-crashed",
+        upload_registry(AsyncMock()),
+        lease_seconds=1,
+    )
+    second = processor(
+        factory,
+        "task17-upload-retry",
+        upload_registry(provider),
+    )
+    [claim] = first.claim_batch()
+
+    token = await first.begin_external_effect(claim)
+    assert await first.begin_external_effect(claim) == token
+    with factory() as db:
+        db.execute(
+            update(CloudJobQueue)
+            .where(CloudJobQueue.id == job_id)
+            .values(lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+        )
+        db.commit()
+
+    assert second.reap_stale_jobs() == 1
+    assert second.claim_batch() == []
+    provider.assert_not_awaited()
+    with factory() as db:
+        job = db.get(CloudJobQueue, job_id)
+        assert job.status == "failed"
+        assert job.last_error_code == "upload_outcome_indeterminate"
+        assert job.last_error_retryable is False
+        assert job.result_data == {"retry_safe": False, "manual_required": True}
+        assert job.external_effect_state == "indeterminate"
+        assert job.external_effect_token == token
+
+
+@pytest.mark.asyncio
+async def test_upload_timeout_after_checkpoint_is_terminal_without_retry(pg_sessions):
+    factory, department_id = pg_sessions
+    accepted = asyncio.Event()
+
+    async def accepted_then_hang(context, _db, _tokens):
+        await context.begin_external_effect()
+        accepted.set()
+        await asyncio.sleep(10)
+
+    job_id = enqueue(factory, department_id, job_type="upload")
+    worker = processor(
+        factory,
+        "task17-upload-timeout",
+        upload_registry(accepted_then_hang),
+        max_execution_seconds=1,
+    )
+    [claim] = worker.claim_batch()
+    assert await worker.process_claim(claim) is True
+    assert accepted.is_set()
+    with factory() as db:
+        job = db.get(CloudJobQueue, job_id)
+        assert job.status == "failed"
+        assert job.last_error_code == "upload_outcome_indeterminate"
+        assert job.external_effect_state == "indeterminate"
+
+
+@pytest.mark.asyncio
+async def test_upload_success_confirms_effect_and_completes_once(pg_sessions):
+    factory, department_id = pg_sessions
+    provider_calls = 0
+
+    async def upload_once(context, _db, _tokens):
+        nonlocal provider_calls
+        await context.begin_external_effect()
+        provider_calls += 1
+        return JobSuccess({"uploaded": True})
+
+    job_id = enqueue(factory, department_id, job_type="upload")
+    worker = processor(factory, "task17-upload-success", upload_registry(upload_once))
+    [claim] = worker.claim_batch()
+    assert await worker.process_claim(claim) is True
+    assert await worker._process_batch() == 0
+    assert provider_calls == 1
+    with factory() as db:
+        job = db.get(CloudJobQueue, job_id)
+        assert job.status == "completed"
+        assert job.external_effect_state == "confirmed"
+        assert job.external_effect_token is not None
+
+
+@pytest.mark.asyncio
+async def test_upload_pre_request_failure_keeps_bounded_retry(pg_sessions):
+    factory, department_id = pg_sessions
+
+    async def fail_before_request(_context, _db, _tokens):
+        return JobFailure.retryable("artifact_temporarily_unavailable")
+
+    job_id = enqueue(factory, department_id, job_type="upload")
+    worker = processor(
+        factory,
+        "task17-upload-pre-request",
+        upload_registry(fail_before_request),
+    )
+    [claim] = worker.claim_batch()
+    assert await worker.process_claim(claim) is True
+    with factory() as db:
+        job = db.get(CloudJobQueue, job_id)
+        assert job.status == "pending"
+        assert job.external_effect_state is None
+        assert job.external_effect_token is None
+        assert job.last_error_retryable is True
+
+
+@pytest.mark.asyncio
+async def test_upload_heartbeat_ownership_loss_reaps_manual(pg_sessions):
+    factory, department_id = pg_sessions
+    checkpointed = asyncio.Event()
+
+    async def wait_after_checkpoint(context, _db, _tokens):
+        await context.begin_external_effect()
+        checkpointed.set()
+        await asyncio.Event().wait()
+
+    job_id = enqueue(factory, department_id, job_type="upload")
+    worker = processor(
+        factory,
+        "task17-upload-heartbeat-loss",
+        upload_registry(wait_after_checkpoint),
+        heartbeat_interval=0.02,
+        lease_seconds=1,
+    )
+    reaper = processor(
+        factory,
+        "task17-upload-heartbeat-reaper",
+        upload_registry(AsyncMock()),
+    )
+    [claim] = worker.claim_batch()
+    task = asyncio.create_task(worker.process_claim(claim))
+    await asyncio.wait_for(checkpointed.wait(), timeout=1)
+    with factory() as db:
+        db.execute(
+            update(CloudJobQueue)
+            .where(CloudJobQueue.id == job_id)
+            .values(
+                worker_id="task17-stolen-owner",
+                lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            )
+        )
+        db.commit()
+
+    assert await asyncio.wait_for(task, timeout=1) is False
+    assert reaper.reap_stale_jobs() == 1
+    with factory() as db:
+        job = db.get(CloudJobQueue, job_id)
+        assert job.status == "failed"
+        assert job.last_error_code == "upload_outcome_indeterminate"
+        assert job.external_effect_state == "indeterminate"
 
 
 def test_two_workers_cannot_double_claim_and_batch_is_committed_first(pg_sessions):
@@ -131,6 +302,102 @@ async def test_false_success_never_completes_and_deterministic_failure_is_termin
         assert job.last_error_code == "invalid_scope"
         assert job.claim_token is None
         assert job.result_data is None
+
+
+@pytest.mark.asyncio
+async def test_google_requesting_webhook_is_terminal_manual_without_requeue(
+    pg_sessions, monkeypatch
+):
+    from src.jobs import webhook_refresh_job
+
+    factory, department_id = pg_sessions
+    credential_id = str(uuid.uuid4())
+    subscription_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    with factory() as db:
+        db.add(
+            CloudOAuthCredentials(
+                id=credential_id,
+                department_id=department_id,
+                provider="google",
+                access_token="encrypted-access-token",
+                refresh_token="encrypted-refresh-token",
+                token_expires_at=now + timedelta(hours=1),
+                is_active=True,
+            )
+        )
+        db.add(
+            CloudWebhookSubscription(
+                id=subscription_id,
+                department_id=department_id,
+                credential_id=credential_id,
+                provider="google",
+                subscription_id="active-channel",
+                provider_resource_id="watched-file",
+                expiration_time=now + timedelta(days=1),
+                notification_url="https://example.test/hooks/google",
+                is_active=True,
+                renewal_status="requesting",
+                renewal_result={"correlation_id": job_id},
+                pending_renewal_channel_id="safe-pending-channel",
+                pending_renewal_started_at=now,
+            )
+        )
+        db.add(
+            CloudJobQueue(
+                id=job_id,
+                department_id=department_id,
+                credential_id=credential_id,
+                provider="google",
+                job_type="webhook_refresh",
+                payload={"subscription_id": subscription_id},
+                max_retries=3,
+            )
+        )
+        db.commit()
+
+    integration_constructor = MagicMock()
+    monkeypatch.setattr(
+        webhook_refresh_job, "GoogleDriveIntegration", integration_constructor
+    )
+    registry = JobRegistry()
+    registry.register(
+        "webhook_refresh",
+        adapt_legacy_handler(webhook_refresh_job.handle_webhook_refresh_job),
+    )
+    worker = processor(factory, "task17-worker-google-manual", registry)
+
+    [claim] = worker.claim_batch()
+    assert claim.attempt_count == 1
+    assert await worker.process_claim(claim) is True
+    integration_constructor.assert_not_called()
+
+    with factory() as db:
+        job = db.get(CloudJobQueue, job_id)
+        subscription = db.get(CloudWebhookSubscription, subscription_id)
+        assert job.status == CloudJobStatus.FAILED.value
+        assert job.attempt_count == 1
+        assert job.completed_at is not None
+        assert job.last_error_code == "webhook_provider_outcome_indeterminate"
+        assert job.last_error_retryable is False
+        assert job.result_data == {
+            "provider": "google",
+            "retry_safe": False,
+            "manual_required": True,
+        }
+        assert job.claim_token is None
+        assert job.worker_id is None
+        assert subscription.renewal_status == "indeterminate"
+        assert not ({"raw", "token", "path"} & job.result_data.keys())
+
+    assert await worker._process_batch() == 0
+    assert worker.reap_stale_jobs() == 0
+    integration_constructor.assert_not_called()
+    with factory() as db:
+        job = db.get(CloudJobQueue, job_id)
+        assert job.status == CloudJobStatus.FAILED.value
+        assert job.attempt_count == 1
 
 
 @pytest.mark.asyncio

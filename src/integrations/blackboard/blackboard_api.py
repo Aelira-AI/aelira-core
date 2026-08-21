@@ -13,6 +13,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 from urllib.parse import urlsplit
 import httpx
+from ..cloud_base import CloudUploadResult
 
 from ...utils.security import require_blackboard_oauth_allowed_origin
 from .safe_http import create_blackboard_safe_transport
@@ -413,9 +414,13 @@ class BlackboardAPIClient:
                 "Failed to upload file to Blackboard",
                 extra={"error_type": type(exc).__name__},
             )
+            failure = CloudUploadResult.from_exception(exc, body_started=True)
             return BlackboardUploadResult(
                 success=False,
                 error="blackboard_upload_failed",
+                failure_kind=failure.failure_kind,
+                status_code=failure.status_code,
+                retry_after=failure.retry_after,
             )
 
     # =========================================================================

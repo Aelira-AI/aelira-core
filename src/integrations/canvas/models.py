@@ -114,6 +114,9 @@ class CanvasUploadResult(BaseModel):
     file_name: Optional[str] = None
     web_view_link: Optional[str] = None
     error: Optional[str] = None
+    failure_kind: Optional[str] = None
+    status_code: Optional[int] = None
+    retry_after: Optional[int] = None
 
 
 class CanvasDownloadResult(BaseModel):

@@ -46,21 +46,10 @@ def _clear_overrides():
     app.dependency_overrides.pop(get_db_dependency, None)
 
 
-@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPER_ADMIN])
-def test_worker_status_allows_account_managers(role):
-    app.dependency_overrides[get_authenticated_principal] = lambda: _principal(role)
-    app.dependency_overrides[get_db_dependency] = _db
-    assert TestClient(app).get("/api/jobs/worker-status").status_code == 200
-
-
-def test_worker_status_allows_account_wide_lti_administrator():
-    principal = _principal(
-        UserRole.ADMIN,
-        auth_method="lti",
-        staff_role="Administrator",
-        account_wide=True,
+def test_worker_status_allows_only_super_admin():
+    app.dependency_overrides[get_authenticated_principal] = lambda: _principal(
+        UserRole.SUPER_ADMIN
     )
-    app.dependency_overrides[get_authenticated_principal] = lambda: principal
     app.dependency_overrides[get_db_dependency] = _db
     assert TestClient(app).get("/api/jobs/worker-status").status_code == 200
 
@@ -68,6 +57,13 @@ def test_worker_status_allows_account_wide_lti_administrator():
 @pytest.mark.parametrize(
     "principal",
     [
+        _principal(UserRole.ADMIN),
+        _principal(
+            UserRole.ADMIN,
+            auth_method="lti",
+            staff_role="Administrator",
+            account_wide=True,
+        ),
         _principal(UserRole.FACULTY),
         _principal(
             UserRole.FACULTY,
@@ -77,7 +73,13 @@ def test_worker_status_allows_account_wide_lti_administrator():
         ),
     ],
 )
-def test_worker_status_denies_faculty_and_course_scoped_lti(principal):
+def test_worker_status_denies_all_non_global_operators(principal):
     app.dependency_overrides[get_authenticated_principal] = lambda: principal
     app.dependency_overrides[get_db_dependency] = _db
     assert TestClient(app).get("/api/jobs/worker-status").status_code == 403
+
+
+def test_worker_status_requires_authentication():
+    response = TestClient(app).get("/api/jobs/worker-status")
+    assert response.status_code == 401
+    assert "queue" not in response.text

@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import uuid
 
 from src.api.main import app
@@ -252,119 +253,109 @@ class TestAuthRequired:
 class TestScanCourseContent:
     """Tests for POST /canvas/content/scan."""
 
-    @patch("src.api.canvas_content_routes._content_scan_task", new_callable=AsyncMock)
-    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_scan_returns_summary(
-        self, mock_get_client, mock_scan_task, client, mock_session, override_deps
+    def test_scan_enqueues_one_durable_course_discovery(
+        self, client, mock_session, override_deps
     ):
-        """Successful scan returns total_items, jobs_queued, skipped, by_type."""
-        mock_credential = MagicMock()
-        mock_credential.id = "cred-1"
-        mock_canvas = AsyncMock()
-        mock_get_client.return_value = (mock_credential, mock_canvas)
+        """The route persists immutable discovery input for the worker."""
+        credential = SimpleNamespace(id="cred-1")
+        mock_session.query.return_value.filter.return_value.first.return_value = (
+            credential
+        )
+        queued_job = SimpleNamespace(id="job-course", status="pending", progress=0)
+        enqueue = MagicMock(return_value=queued_job)
+        scanner = MagicMock()
+        get_client = AsyncMock()
 
-        scan_result = {
-            "course_id": "101",
-            "cloud_file_ids": ["cf-1", "cf-2", "cf-3"],
-            "counts": {
-                "page": 2,
-                "assignment": 1,
-                "announcement": 0,
-                "quiz": 0,
-                "discussion": 0,
-                "skipped_empty": 3,
-            },
-        }
-
-        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
-            scanner_instance = AsyncMock()
-            scanner_instance.scan_course_content.return_value = scan_result
-            MockScanner.return_value = scanner_instance
-
+        with (
+            patch("src.api.canvas_content_routes.require_persisted_canvas_origin"),
+            patch("src.api.canvas_content_routes.enqueue_cloud_job", enqueue),
+            patch("src.api.canvas_content_routes.CanvasContentScanner", scanner),
+            patch("src.api.canvas_content_routes._get_canvas_client", get_client),
+        ):
             response = client.post(
                 "/canvas/content/scan",
                 json={"course_id": "101"},
             )
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["total_items"] == 3
-        assert data["jobs_queued"] == 3
-        assert data["skipped"] == 3
-        assert data["by_type"]["page"] == 2
-        assert data["by_type"]["assignment"] == 1
-
-    @patch(
-        "src.api.canvas_content_routes._canvas_scan_file_task", new_callable=AsyncMock
-    )
-    @patch("src.api.canvas_content_routes._content_scan_task", new_callable=AsyncMock)
-    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_scan_fires_background_task_per_file_job(
-        self,
-        mock_get_client,
-        mock_content_task,
-        mock_file_task,
-        client,
-        mock_session,
-        override_deps,
-    ):
-        """Each file_scan_job the scanner returns must get its own
-        _canvas_scan_file_task background task fired. A CloudJobQueue row
-        the scanner created but nobody fires a task for sits PENDING
-        forever — nothing in this app polls the queue (JobProcessor is
-        never started)."""
-        mock_credential = MagicMock()
-        mock_credential.id = "cred-1"
-        mock_canvas = AsyncMock()
-        mock_get_client.return_value = (mock_credential, mock_canvas)
-
-        scan_result = {
-            "course_id": "101",
-            "cloud_file_ids": ["cf-1"],
-            "file_scan_jobs": [
-                {"job_id": "job-1", "cloud_file_id": "file-cf-1"},
-                {"job_id": "job-2", "cloud_file_id": "file-cf-2"},
-            ],
-            "counts": {
-                "page": 1,
-                "assignment": 0,
-                "announcement": 0,
-                "quiz": 0,
-                "discussion": 0,
-                "file": 2,
-                "skipped_empty": 0,
-            },
+        assert response.json() == {
+            "job_id": "job-course",
+            "status": "pending",
+            "progress": 0,
+            "total_items": 0,
+            "jobs_queued": 1,
+            "skipped": 0,
+            "by_type": {},
+            "operation_kind": "deterministic_scan",
+            "external_ai_used": False,
+            "ai_used": False,
         }
+        enqueue.assert_called_once_with(
+            mock_session,
+            department_id="test-dept-456",
+            job_type="scan",
+            payload={
+                "scan_kind": "canvas_course",
+                "credential_id": "cred-1",
+                "provider": "canvas",
+                "course_id": "101",
+                "content_types": [
+                    "page",
+                    "assignment",
+                    "announcement",
+                    "quiz",
+                    "discussion",
+                    "file",
+                ],
+                "scan_options": {
+                    "generate_alt_text": False,
+                    "auto_remediate": False,
+                    "detect_decorative": False,
+                },
+            },
+            dedupe_key="canvas-course-scan:cred-1:101:68549e4fec25e6f7",
+            provider="canvas",
+            credential_id="cred-1",
+            provider_file_id="101",
+        )
+        scanner.assert_not_called()
+        get_client.assert_not_awaited()
 
-        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
-            scanner_instance = AsyncMock()
-            scanner_instance.scan_course_content.return_value = scan_result
-            MockScanner.return_value = scanner_instance
+    def test_scan_legacy_true_flags_cannot_expand_inline_execution(
+        self, client, mock_session, override_deps
+    ):
+        """Legacy generative flags are frozen false in the durable payload."""
+        credential = SimpleNamespace(id="cred-1")
+        mock_session.query.return_value.filter.return_value.first.return_value = (
+            credential
+        )
+        queued_job = SimpleNamespace(id="job-course", status="pending", progress=0)
+        enqueue = MagicMock(return_value=queued_job)
+        scanner = MagicMock()
 
+        with (
+            patch("src.api.canvas_content_routes.require_persisted_canvas_origin"),
+            patch("src.api.canvas_content_routes.enqueue_cloud_job", enqueue),
+            patch("src.api.canvas_content_routes.CanvasContentScanner", scanner),
+        ):
             response = client.post(
                 "/canvas/content/scan",
-                json={"course_id": "101"},
+                json={
+                    "course_id": "101",
+                    "generate_alt_text": True,
+                    "auto_remediate": True,
+                    "detect_decorative": True,
+                },
             )
 
         assert response.status_code == 200
-        data = response.json()
-        # 1 HTML item + 2 files — files must be counted, not just queued.
-        assert data["total_items"] == 3
-        assert data["jobs_queued"] == 3
-        assert data["by_type"]["file"] == 2
-
-        assert mock_file_task.await_count == 2
-        called_kwargs = [call.kwargs for call in mock_file_task.await_args_list]
-        assert {
-            "job_id": "job-1",
-            "cloud_file_id": "file-cf-1",
-            "credential_id": "cred-1",
-        } in called_kwargs
-        assert {
-            "job_id": "job-2",
-            "cloud_file_id": "file-cf-2",
-            "credential_id": "cred-1",
-        } in called_kwargs
+        assert enqueue.call_args.kwargs["payload"]["scan_options"] == {
+            "generate_alt_text": False,
+            "auto_remediate": False,
+            "detect_decorative": False,
+        }
+        assert enqueue.call_count == 1
+        scanner.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -375,43 +366,50 @@ class TestScanCourseContent:
 class TestScanSingleContentType:
     """Tests for POST /canvas/content/scan/{content_type}."""
 
-    @patch("src.api.canvas_content_routes._content_scan_task", new_callable=AsyncMock)
-    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_scan_single_type(
-        self, mock_get_client, mock_scan_task, client, mock_session, override_deps
-    ):
-        """Scanning a single content type returns filtered results."""
-        mock_credential = MagicMock()
-        mock_credential.id = "cred-1"
-        mock_canvas = AsyncMock()
-        mock_get_client.return_value = (mock_credential, mock_canvas)
+    def test_scan_single_type(self, client, mock_session, override_deps):
+        """A type-scoped request persists that exact worker scope."""
+        credential = SimpleNamespace(id="cred-1")
+        mock_session.query.return_value.filter.return_value.first.return_value = (
+            credential
+        )
+        queued_job = SimpleNamespace(id="job-page", status="pending", progress=0)
+        enqueue = MagicMock(return_value=queued_job)
+        scanner = MagicMock()
 
-        scan_result = {
-            "course_id": "101",
-            "cloud_file_ids": ["cf-1"],
-            "counts": {
-                "page": 1,
-                "assignment": 0,
-                "announcement": 0,
-                "quiz": 0,
-                "discussion": 0,
-                "skipped_empty": 0,
-            },
-        }
-
-        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
-            scanner_instance = AsyncMock()
-            scanner_instance.scan_course_content.return_value = scan_result
-            MockScanner.return_value = scanner_instance
-
+        with (
+            patch("src.api.canvas_content_routes.require_persisted_canvas_origin"),
+            patch("src.api.canvas_content_routes.enqueue_cloud_job", enqueue),
+            patch("src.api.canvas_content_routes.CanvasContentScanner", scanner),
+        ):
             response = client.post(
                 "/canvas/content/scan/page",
                 json={"course_id": "101"},
             )
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["by_type"]["page"] == 1
+        assert response.json()["job_id"] == "job-page"
+        enqueue.assert_called_once_with(
+            mock_session,
+            department_id="test-dept-456",
+            job_type="scan",
+            payload={
+                "scan_kind": "canvas_course",
+                "credential_id": "cred-1",
+                "provider": "canvas",
+                "course_id": "101",
+                "content_types": ["page"],
+                "scan_options": {
+                    "generate_alt_text": False,
+                    "auto_remediate": False,
+                    "detect_decorative": False,
+                },
+            },
+            dedupe_key="canvas-course-scan:cred-1:101:page",
+            provider="canvas",
+            credential_id="cred-1",
+            provider_file_id="101",
+        )
+        scanner.assert_not_called()
 
     def test_scan_invalid_content_type(self, client, override_deps):
         """Invalid content type returns 422."""

@@ -21,6 +21,7 @@ from enum import Enum
 import logging
 import tempfile
 import os
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ class CloudFileInfo:
     created_at: Optional[datetime] = None
     modified_at: Optional[datetime] = None
     parent_id: Optional[str] = None  # Folder ID
+    path: Optional[str] = None
     web_view_link: Optional[str] = None
     download_link: Optional[str] = None
     version: Optional[str] = None  # etag or version ID
@@ -132,6 +134,8 @@ class CloudExportResult:
     file_type: Optional[CloudFileType] = None
     error: Optional[str] = None
     mime_type: Optional[str] = None
+    file_name: Optional[str] = None
+    size_bytes: Optional[int] = None
 
 
 @dataclass
@@ -142,6 +146,46 @@ class CloudUploadResult:
     file_id: Optional[str] = None
     web_view_link: Optional[str] = None
     error: Optional[str] = None
+    failure_kind: Optional[str] = None
+    status_code: Optional[int] = None
+    retry_after: Optional[int] = None
+
+    @classmethod
+    def from_exception(
+        cls, exc: Exception, *, body_started: bool = False
+    ) -> "CloudUploadResult":
+        """Retain retry classification without retaining provider error text."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            raw_retry = exc.response.headers.get("retry-after")
+            try:
+                retry_after = max(0, min(3600, int(raw_retry or 0)))
+            except ValueError:
+                retry_after = 0
+            if status == 429 or status >= 500 or status in (408, 425):
+                return cls(
+                    False,
+                    error="provider_retryable",
+                    failure_kind="retryable",
+                    status_code=status,
+                    retry_after=retry_after,
+                )
+            if 400 <= status < 500:
+                return cls(
+                    False,
+                    error="provider_rejected",
+                    failure_kind="deterministic",
+                    status_code=status,
+                )
+        if isinstance(exc, httpx.ConnectError):
+            return cls(False, error="provider_network", failure_kind="retryable")
+        if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+            return cls(
+                False,
+                error="provider_transport",
+                failure_kind="indeterminate" if body_started else "retryable",
+            )
+        return cls(False, error="provider_failure", failure_kind="indeterminate")
 
 
 class BaseCloudIntegration(ABC):
@@ -156,7 +200,7 @@ class BaseCloudIntegration(ABC):
     - Webhook management
     """
 
-    def __init__(self, credential_id: str, access_token: str):
+    def __init__(self, access_token: str, credential_id: str):
         """
         Initialize the cloud integration.
 
