@@ -30,10 +30,12 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import relationship, DeclarativeBase
+from sqlalchemy.orm import relationship, DeclarativeBase, validates
 from sqlalchemy.sql import func
 from enum import Enum
 import uuid
+
+JOB_JSON = JSON().with_variant(JSONB, "postgresql")
 
 
 class Base(DeclarativeBase):
@@ -1257,7 +1259,7 @@ class CloudWebhookSubscription(Base):
 
 
 class CloudJobQueue(Base):
-    """Background job queue for cloud operations"""
+    """Durable, atomically claimed background job queue."""
 
     __tablename__ = "cloud_job_queue"
 
@@ -1265,11 +1267,7 @@ class CloudJobQueue(Base):
     department_id = Column(
         String(36), ForeignKey("departments.id", ondelete="CASCADE"), nullable=False
     )
-
-    # Job type
-    job_type = Column(String(50), nullable=False)  # sync, scan, remediate, upload
-
-    # Job target
+    job_type = Column(String(50), nullable=False)
     cloud_file_id = Column(
         String(36), ForeignKey("cloud_files.id", ondelete="CASCADE"), nullable=True
     )
@@ -1281,36 +1279,144 @@ class CloudJobQueue(Base):
     provider = Column(String(20), nullable=True)
     provider_file_id = Column(String(255), nullable=True)
 
-    # Job state
-    status = Column(
-        String(20), default="pending"
-    )  # pending, processing, completed, failed
-    priority = Column(Integer, default=5)  # 1=highest, 10=lowest
+    payload = Column(
+        JOB_JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
-    # Progress
-    progress = Column(Integer, default=0)
+    @validates("payload")
+    def validate_payload(self, _key, value):
+        """Reject non-object payloads at every ORM enqueue boundary."""
+        if type(value) is not dict:
+            raise ValueError("job payload must be an object")
+        return value
+
+    depends_on_job_id = Column(
+        String(36), ForeignKey("cloud_job_queue.id", ondelete="RESTRICT"), nullable=True
+    )
+    dedupe_key = Column(String(255), nullable=True)
+    status = Column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    priority = Column(Integer, nullable=False, default=5, server_default="5")
+    progress = Column(Integer, nullable=False, default=0, server_default="0")
     progress_message = Column(Text, nullable=True)
 
-    # Results and sanitized execution intent. The context is diagnostic/request
-    # scope only; workers always resolve current policy again at execution time.
     execution_context = Column(
         JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     result_data = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
-    retry_count = Column(Integer, default=0)
-    max_retries = Column(Integer, default=3)
+    last_error_code = Column(String(128), nullable=True)
+    last_error_retryable = Column(Boolean, nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0, server_default="0")
+    attempt_count = Column(Integer, nullable=False, default=0, server_default="0")
+    max_retries = Column(Integer, nullable=False, default=3, server_default="3")
 
-    # Timing
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    claim_token = Column(String(36), nullable=True)
+    worker_id = Column(String(255), nullable=True)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
-    scheduled_for = Column(DateTime(timezone=True), server_default=func.now())
+    scheduled_for = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
-    # Relationships
     department = relationship("Department", backref="cloud_jobs")
     cloud_file = relationship("CloudFile", back_populates="jobs")
     credential = relationship("CloudOAuthCredentials", back_populates="jobs")
+    dependency = relationship(
+        "CloudJobQueue", remote_side=[id], foreign_keys=[depends_on_job_id]
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed')",
+            name="ck_cloud_job_queue_status",
+        ),
+        CheckConstraint(
+            "progress BETWEEN 0 AND 100", name="ck_cloud_job_queue_progress"
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_retries >= 0",
+            name="ck_cloud_job_queue_attempts",
+        ),
+        CheckConstraint(
+            "depends_on_job_id IS NULL OR depends_on_job_id <> id",
+            name="ck_cloud_job_queue_not_self_dependent",
+        ),
+        CheckConstraint(
+            "(status = 'processing' AND claim_token IS NOT NULL AND worker_id IS NOT NULL "
+            "AND claimed_at IS NOT NULL AND heartbeat_at IS NOT NULL AND lease_expires_at IS NOT NULL) "
+            "OR (status <> 'processing' AND claim_token IS NULL AND worker_id IS NULL "
+            "AND claimed_at IS NULL AND heartbeat_at IS NULL AND lease_expires_at IS NULL)",
+            name="ck_cloud_job_queue_claim_state",
+        ),
+        CheckConstraint(
+            "status NOT IN ('completed', 'failed') OR completed_at IS NOT NULL",
+            name="ck_cloud_job_queue_terminal",
+        ),
+        Index(
+            "ix_cloud_job_queue_claim",
+            "status",
+            "scheduled_for",
+            "priority",
+            "created_at",
+        ),
+        Index("ix_cloud_job_queue_lease", "status", "lease_expires_at"),
+        Index("ix_cloud_job_queue_dependency", "depends_on_job_id"),
+        Index(
+            "uq_cloud_job_queue_active_dedupe",
+            "department_id",
+            "job_type",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text(
+                "dedupe_key IS NOT NULL AND status IN ('pending', 'processing')"
+            ),
+        ),
+    )
+
+
+class WorkerHeartbeat(Base):
+    """Liveness and drain state for a standalone durable queue worker."""
+
+    __tablename__ = "worker_heartbeats"
+
+    worker_id = Column(String(255), primary_key=True)
+    status = Column(String(20), nullable=False, server_default="running")
+    started_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    heartbeat_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    jobs_claimed = Column(Integer, nullable=False, server_default="0", default=0)
+    jobs_completed = Column(Integer, nullable=False, server_default="0", default=0)
+    jobs_failed = Column(Integer, nullable=False, server_default="0", default=0)
+    metadata_json = Column(
+        JOB_JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'draining', 'stopped')",
+            name="ck_worker_heartbeats_status",
+        ),
+        Index("ix_worker_heartbeats_liveness", "status", "heartbeat_at"),
+    )
 
 
 class RemediationArtifact(Base):

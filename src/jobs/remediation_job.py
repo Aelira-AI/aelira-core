@@ -5,6 +5,7 @@ Processes accessibility remediation jobs for scanned files.
 Applies automated fixes to accessibility issues.
 """
 
+import asyncio
 import logging
 import re
 import tempfile
@@ -13,6 +14,7 @@ import uuid
 from typing import Any, Dict, List, NoReturn, Optional
 from pathlib import Path
 from datetime import datetime, timezone
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db.models import (
@@ -25,6 +27,7 @@ from ..db.models import (
     ReviewAuditLog,
     MatterhornResult as MatterhornResultModel,
     CloudFile,
+    CloudJobQueue,
     CloudJobStatus,
     CloudOAuthCredentials,
     CloudProvider,
@@ -51,6 +54,7 @@ from ..services.remediation_artifact_service import (
     ArtifactPublicationRetryable,
     RemediationArtifactService,
 )
+from .contracts import LostJobOwnership
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +254,40 @@ def _safe_failure_result(
     return safe
 
 
-def _commit_terminal_failure(
+def _fence_claim_for_handler_commit(job: Any, db: Session) -> None:
+    """Lock and verify durable ownership before a handler-owned commit."""
+    token = getattr(job, "claim_token", None)
+    worker_id = getattr(job, "worker_id", None)
+    if not token or not worker_id:
+        return
+    owner = db.execute(
+        select(CloudJobQueue.id)
+        .where(
+            CloudJobQueue.id == job.id,
+            CloudJobQueue.status == CloudJobStatus.PROCESSING.value,
+            CloudJobQueue.claim_token == token,
+            CloudJobQueue.worker_id == worker_id,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if owner is None:
+        raise RetryableRemediationJobError("job_ownership_lost")
+
+
+def _clear_claim_for_terminal(job: Any) -> None:
+    if getattr(job, "claim_token", None) is None:
+        return
+    for field in (
+        "claim_token",
+        "worker_id",
+        "claimed_at",
+        "heartbeat_at",
+        "lease_expires_at",
+    ):
+        setattr(job, field, None)
+
+
+async def _commit_terminal_failure(
     job: Any,
     db: Session,
     code: str,
@@ -266,6 +303,10 @@ def _commit_terminal_failure(
     if not commit_job:
         raise failure
 
+    assert_owned = getattr(job, "_assert_owned", None)
+    if assert_owned is not None:
+        await assert_owned()
+    _fence_claim_for_handler_commit(job, db)
     prior_job_state = {
         field: getattr(job, field, None)
         for field in (
@@ -275,6 +316,11 @@ def _commit_terminal_failure(
             "result_data",
             "completed_at",
             "error_message",
+            "claim_token",
+            "worker_id",
+            "claimed_at",
+            "heartbeat_at",
+            "lease_expires_at",
         )
     }
     prior_scan_state = rollback_scan_state
@@ -307,6 +353,7 @@ def _commit_terminal_failure(
     job.error_message = code
     job.result_data = safe_result
     job.completed_at = datetime.now(timezone.utc)
+    _clear_claim_for_terminal(job)
     try:
         db.commit()
     except Exception as exc:
@@ -385,6 +432,7 @@ async def process_remediation_job(
     credential: CloudOAuthCredentials | None = None,
     token_manager: OAuthTokenManager | None = None,
     defer_final_commit: bool = False,
+    assert_owned: Any = None,
 ) -> Dict[str, Any]:
     """
     Process a remediation job.
@@ -451,6 +499,8 @@ async def process_remediation_job(
                 _set_remediation_outcome(scan, RemediationOutcome.NO_OP)
                 scan.completed_at = datetime.now(timezone.utc)
                 if not defer_final_commit:
+                    if assert_owned is not None:
+                        await assert_owned()
                     db.commit()
             except Exception:
                 db.rollback()
@@ -560,7 +610,7 @@ async def process_remediation_job(
 
         # 8. Run remediation
         logger.info(f"Starting remediation with {remediator.__class__.__name__}")
-        remediation_result = remediator.remediate()
+        remediation_result = await asyncio.to_thread(remediator.remediate)
         if remediation_result.success is not True:
             return {
                 "success": False,
@@ -592,6 +642,8 @@ async def process_remediation_job(
             _set_remediation_outcome(scan, RemediationOutcome.MANUAL_REQUIRED)
             scan.completed_at = datetime.now(timezone.utc)
             if not defer_final_commit:
+                if assert_owned is not None:
+                    await assert_owned()
                 db.commit()
             return {
                 "success": False,
@@ -623,6 +675,8 @@ async def process_remediation_job(
                 _set_remediation_outcome(scan, RemediationOutcome.ARTIFACT_UNAVAILABLE)
                 scan.completed_at = datetime.now(timezone.utc)
                 if not defer_final_commit:
+                    if assert_owned is not None:
+                        await assert_owned()
                     db.commit()
                 return {
                     "success": False,
@@ -638,7 +692,7 @@ async def process_remediation_job(
             artifact_temp_dir = tempfile.mkdtemp(prefix="aelira_remediation_artifact_")
             artifact_source = Path(artifact_temp_dir) / Path(output_file).name
             try:
-                shutil.copyfile(output_file, artifact_source)
+                await asyncio.to_thread(shutil.copyfile, output_file, artifact_source)
             except OSError as exc:
                 raise RetryableRemediationJobError(
                     "remediation_artifact_retryable"
@@ -759,7 +813,9 @@ async def process_remediation_job(
                 from ..education.validation.matterhorn import MatterhornValidator
 
                 validator = MatterhornValidator()
-                matterhorn = validator.validate(remediation_result.output_file)
+                matterhorn = await asyncio.to_thread(
+                    validator.validate, remediation_result.output_file
+                )
 
                 for cp in matterhorn.checkpoints:
                     db.add(
@@ -811,6 +867,8 @@ async def process_remediation_job(
                 )
 
         if not defer_final_commit:
+            if assert_owned is not None:
+                await assert_owned()
             db.commit()
 
         # Queued processing cannot notify here: the caller still has to commit
@@ -844,6 +902,10 @@ async def process_remediation_job(
         return RemediationProcessingResult(
             response, artifact_publication=artifact_publication
         )
+
+    except LostJobOwnership:
+        db.rollback()
+        raise
 
     except ArtifactInProgressError as exc:
         db.rollback()
@@ -1359,10 +1421,11 @@ async def handle_remediation_job(
         else None
     )
     explicit_scan_id = None
-    if job.result_data and isinstance(job.result_data, dict):
-        candidate = job.result_data.get("scan_id")
-        if isinstance(candidate, str) and candidate.strip():
-            explicit_scan_id = candidate
+    payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
+    legacy_input = job.result_data if isinstance(job.result_data, dict) else {}
+    candidate = payload.get("scan_id") or legacy_input.get("scan_id")
+    if isinstance(candidate, str) and candidate.strip():
+        explicit_scan_id = candidate
     scan_id = explicit_scan_id or (
         cloud_file.last_scan_id if cloud_file is not None else None
     )
@@ -1403,7 +1466,7 @@ async def handle_remediation_job(
         or cloud_file.provider != credential.provider
         or job.provider != credential.provider
     ):
-        _commit_terminal_failure(
+        await _commit_terminal_failure(
             job,
             db,
             "invalid_job_scope",
@@ -1435,7 +1498,7 @@ async def handle_remediation_job(
 
     provider = credential.provider
     if provider in _LMS_PROVIDERS and provider not in _EXECUTABLE_QUEUED_LMS_PROVIDERS:
-        _commit_terminal_failure(
+        await _commit_terminal_failure(
             job, db, "unsupported_lms_remediation", scan=authoritative_scan
         )
     if provider in _LMS_PROVIDERS and scan.scan_type in (
@@ -1445,7 +1508,7 @@ async def handle_remediation_job(
     ):
         # Standalone IMAGE work has no remediated file bytes. Keep the stable
         # unsupported/manual outcome rather than inventing an artifact.
-        _commit_terminal_failure(
+        await _commit_terminal_failure(
             job, db, "remediation_artifact_unavailable", scan=authoritative_scan
         )
 
@@ -1470,7 +1533,7 @@ async def handle_remediation_job(
                 purpose="remediation", **binding
             )
             if remediation_client is None:
-                _commit_terminal_failure(
+                await _commit_terminal_failure(
                     job, db, "policy_not_permitted", scan=authoritative_scan
                 )
         if "alt_text" in requested:
@@ -1478,7 +1541,7 @@ async def handle_remediation_job(
                 purpose="alt_text", **binding
             )
             if alt_text_client is None:
-                _commit_terminal_failure(
+                await _commit_terminal_failure(
                     job, db, "policy_not_permitted", scan=authoritative_scan
                 )
 
@@ -1503,11 +1566,12 @@ async def handle_remediation_job(
         credential=credential,
         token_manager=token_manager,
         defer_final_commit=True,
+        assert_owned=getattr(job, "_assert_owned", None),
     )
     if result.get("success") is not True:
         error = result.get("error")
         code = error if isinstance(error, str) else "remediation_failed"
-        _commit_terminal_failure(
+        await _commit_terminal_failure(
             job,
             db,
             code,
@@ -1520,6 +1584,10 @@ async def handle_remediation_job(
         (key, value) for key, value in result.items() if key in _SAFE_RESULT_FIELDS
     )
     artifact_publication = getattr(result, "artifact_publication", None)
+    assert_owned = getattr(job, "_assert_owned", None)
+    if assert_owned is not None:
+        await assert_owned()
+    _fence_claim_for_handler_commit(job, db)
     prior_job_state = {
         field: getattr(job, field, None)
         for field in (
@@ -1529,6 +1597,11 @@ async def handle_remediation_job(
             "result_data",
             "completed_at",
             "error_message",
+            "claim_token",
+            "worker_id",
+            "claimed_at",
+            "heartbeat_at",
+            "lease_expires_at",
         )
     }
     job.status = CloudJobStatus.COMPLETED.value
@@ -1537,6 +1610,7 @@ async def handle_remediation_job(
     job.result_data = dict(safe_result)
     job.completed_at = datetime.now(timezone.utc)
     job.error_message = None
+    _clear_claim_for_terminal(job)
     try:
         db.commit()
     except Exception as exc:

@@ -23,6 +23,7 @@ from ..db.models import (
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
+from .contracts import LostJobOwnership
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class CloudSyncJob:
         self,
         credential: CloudOAuthCredentials,
         token_manager: OAuthTokenManager,
+        assert_owned: Any = None,
     ):
         """
         Initialize sync job.
@@ -48,6 +50,11 @@ class CloudSyncJob:
         """
         self.credential = credential
         self.token_manager = token_manager
+        self.assert_owned = assert_owned
+
+    async def _checkpoint(self) -> None:
+        if self.assert_owned is not None:
+            await self.assert_owned()
 
     async def run(self, db: Session, folder_id: str = None) -> Dict[str, Any]:
         """
@@ -173,6 +180,7 @@ class CloudSyncJob:
                         db.add(scan_job)
                         results["scan_jobs_created"] += 1
 
+                await self._checkpoint()
                 db.commit()
 
                 if not next_token:
@@ -181,6 +189,7 @@ class CloudSyncJob:
 
             # Update credential last sync time
             self.credential.last_sync_at = datetime.now(timezone.utc)
+            await self._checkpoint()
             db.commit()
 
             logger.info(
@@ -301,6 +310,7 @@ class CloudSyncJob:
                         db.add(scan_job)
                         results["scan_jobs_created"] += 1
 
+                await self._checkpoint()
                 db.commit()
 
                 if not next_token:
@@ -309,6 +319,7 @@ class CloudSyncJob:
 
             # Update credential last sync time
             self.credential.last_sync_at = datetime.now(timezone.utc)
+            await self._checkpoint()
             db.commit()
 
             logger.info(
@@ -386,6 +397,7 @@ async def handle_sync_job(
             f"Skipping sync to prevent syncing entire drive (privacy-conscious)."
         )
         return {
+            "success": True,
             "provider": credential.provider,
             "folders_processed": 0,
             "files_discovered": 0,
@@ -397,6 +409,7 @@ async def handle_sync_job(
 
     # Aggregate results across all folders
     total_results = {
+        "success": True,
         "provider": credential.provider,
         "folders_processed": 0,
         "files_discovered": 0,
@@ -406,7 +419,11 @@ async def handle_sync_job(
         "folder_details": [],
     }
 
-    sync_job = CloudSyncJob(credential=credential, token_manager=token_manager)
+    sync_job = CloudSyncJob(
+        credential=credential,
+        token_manager=token_manager,
+        assert_owned=getattr(job, "_assert_owned", None),
+    )
 
     # Sync each selected folder
     for sync_folder in sync_folders:
@@ -442,6 +459,9 @@ async def handle_sync_job(
                 }
             )
 
+        except LostJobOwnership:
+            db.rollback()
+            raise
         except Exception as e:
             logger.error(
                 f"Failed to sync folder {sync_folder.folder_name} "

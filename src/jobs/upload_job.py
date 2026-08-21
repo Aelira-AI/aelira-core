@@ -5,6 +5,7 @@ Processes cloud file upload jobs.
 Uploads remediated files back to cloud storage (Google Drive, OneDrive, SharePoint).
 """
 
+import asyncio
 import logging
 from typing import Dict, Any
 from sqlalchemy.orm import Session
@@ -18,6 +19,7 @@ from ..db.models import (
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
+from .contracts import LostJobOwnership
 from ..utils.security import (
     PERSISTED_CANVAS_ORIGIN_ERROR,
     require_persisted_canvas_origin,
@@ -29,6 +31,8 @@ logger = logging.getLogger(__name__)
 async def process_upload_job(
     job_data: Dict[str, Any],
     db: Session,
+    *,
+    assert_owned: Any = None,
 ) -> Dict[str, Any]:
     """
     Process an upload job.
@@ -66,7 +70,7 @@ async def process_upload_job(
         )
 
         # Validate file exists
-        if not file_path or not Path(file_path).exists():
+        if not file_path or not await asyncio.to_thread(Path(file_path).exists):
             return {
                 "success": False,
                 "uploaded": False,
@@ -129,6 +133,8 @@ async def process_upload_job(
             new_file_name = original_path.name
 
         # Upload file based on provider
+        if assert_owned is not None:
+            await assert_owned()
         if provider == "google":
             result = await _upload_to_google(
                 file_path=file_path,
@@ -177,10 +183,15 @@ async def process_upload_job(
             # Update cloud file record to track remediated version
             cloud_file.has_remediated_version = True
             cloud_file.remediated_file_id = result.get("new_file_id")
+            if assert_owned is not None:
+                await assert_owned()
             db.commit()
 
         return result
 
+    except LostJobOwnership:
+        db.rollback()
+        raise
     except Exception as e:
         logger.error(f"Error processing upload job: {e}", exc_info=True)
         return {
@@ -508,9 +519,17 @@ async def handle_upload_job(
         "department_id": job.department_id,
         "provider": job.provider,
     }
+    payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
+    for field in ("file_path", "artifact_id", "artifact_checksum"):
+        if field in payload:
+            job_data[field] = payload[field]
     if job.result_data and isinstance(job.result_data, dict):
-        job_data["file_path"] = job.result_data.get("output_file")
-    return await process_upload_job(job_data, db)
+        job_data["file_path"] = job.result_data.get("output_file") or job_data.get(
+            "file_path"
+        )
+    return await process_upload_job(
+        job_data, db, assert_owned=getattr(job, "_assert_owned", None)
+    )
 
 
 __all__ = ["process_upload_job", "handle_upload_job"]

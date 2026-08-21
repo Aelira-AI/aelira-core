@@ -5,10 +5,12 @@ Downloads files from cloud storage, scans for accessibility issues
 using existing processors, and stores results.
 """
 
+import asyncio
 import logging
 import math
 import tempfile
 import os
+from pathlib import Path
 from datetime import datetime, timezone
 from numbers import Real
 from typing import Dict, Any, cast
@@ -27,6 +29,7 @@ from ..db.models import (
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
+from .contracts import LostJobOwnership
 from ..utils.security import (
     PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
     PERSISTED_CANVAS_ORIGIN_ERROR,
@@ -95,6 +98,7 @@ class CloudScanJob:
         credential: CloudOAuthCredentials,
         cloud_file: CloudFile,
         token_manager: OAuthTokenManager,
+        assert_owned: Any = None,
     ):
         """
         Initialize scan job.
@@ -107,6 +111,11 @@ class CloudScanJob:
         self.credential = credential
         self.cloud_file = cloud_file
         self.token_manager = token_manager
+        self.assert_owned = assert_owned
+
+    async def _checkpoint(self) -> None:
+        if self.assert_owned is not None:
+            await self.assert_owned()
 
     async def run(self, db: Session) -> Dict[str, Any]:
         """
@@ -168,7 +177,7 @@ class CloudScanJob:
         """
         return await self.token_manager.refresh_if_expired(self.credential, db)
 
-    def _persist_failed_scan(
+    async def _persist_failed_scan(
         self, db: Session, file_type: str, error_code: str
     ) -> Dict[str, Any]:
         """Persist a failed processor/runtime outcome without a false score."""
@@ -207,6 +216,7 @@ class CloudScanJob:
         db.add(scan)
         db.flush()
         self.cloud_file.needs_rescan = True
+        await self._checkpoint()
         db.commit()
         return {
             "scan_id": scan.id,
@@ -340,8 +350,9 @@ class CloudScanJob:
         try:
             if topic_type == "html":
                 html_content = await client.get_topic_html(int(org_unit_id), topic_id)
-                with open(local_path, "w", encoding="utf-8") as f:
-                    f.write(html_content)
+                await asyncio.to_thread(
+                    Path(local_path).write_text, html_content, encoding="utf-8"
+                )
                 # Store HTML in content_body for remediation
                 self.cloud_file.content_body = html_content
                 return {
@@ -374,8 +385,7 @@ class CloudScanJob:
                 file_name = self.cloud_file.file_name or f"topic_{topic_id}"
                 actual_path = local_path + ext if ext else local_path
 
-                with open(actual_path, "wb") as f:
-                    f.write(file_bytes)
+                await asyncio.to_thread(Path(actual_path).write_bytes, file_bytes)
                 # Store HTML content for remediation
                 if content_type == "text/html" or ext == ".html":
                     try:
@@ -443,8 +453,9 @@ class CloudScanJob:
             else:
                 # Check if file content looks like HTML
                 try:
-                    with open(file_path, "rb") as f:
-                        head = f.read(500).strip()
+                    head = (await asyncio.to_thread(Path(file_path).read_bytes))[
+                        :500
+                    ].strip()
                     if (
                         head[:1] == b"<"
                         or b"<html" in head.lower()
@@ -465,7 +476,7 @@ class CloudScanJob:
                     enhance_descriptions=False,
                     simulate_color_blindness=False,
                 )
-                result = processor.process_docx(file_path)
+                result = await asyncio.to_thread(processor.process_docx, file_path)
 
             elif file_type in ("pptx", "ppt"):
                 from ..education.pptx_processor import PowerPointProcessor
@@ -476,7 +487,7 @@ class CloudScanJob:
                     simulate_color_blindness=False,
                     detect_images_of_text=False,
                 )
-                result = processor.process_pptx(file_path)
+                result = await asyncio.to_thread(processor.process_pptx, file_path)
 
             elif file_type in ("xlsx", "xls"):
                 from ..education.xlsx_processor import XlsxProcessor
@@ -487,7 +498,7 @@ class CloudScanJob:
                     validate_alt_text=False,
                     simulate_color_blindness=False,
                 )
-                result = processor.process_xlsx(file_path)
+                result = await asyncio.to_thread(processor.process_xlsx, file_path)
 
             elif file_type == "pdf":
                 from ..education.pdf_processor import PDFProcessor
@@ -498,14 +509,15 @@ class CloudScanJob:
                     enhance_descriptions=False,
                     simulate_color_blindness=False,
                 )
-                result = processor.process_pdf(file_path)
+                result = await asyncio.to_thread(processor.process_pdf, file_path)
 
             elif file_type in ("html", "htm"):
                 from ..education.canvas_content_scanner import _wrap_html_fragment
                 from ..education.deterministic_axe import run_deterministic_axe
 
-                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                    html_content = f.read()
+                html_content = await asyncio.to_thread(
+                    Path(file_path).read_text, encoding="utf-8", errors="replace"
+                )
 
                 if not html_content.strip():
                     result = {
@@ -542,7 +554,8 @@ class CloudScanJob:
                 from ..education.multimedia_processor import MultimediaProcessor
 
                 processor = MultimediaProcessor(use_gemini=False)
-                result = processor.process_media(
+                result = await asyncio.to_thread(
+                    processor.process_media,
                     file_path,
                     generate_captions=False,
                     generate_audio_descriptions=False,
@@ -651,6 +664,7 @@ class CloudScanJob:
 
             if not result["success"]:
                 self.cloud_file.needs_rescan = True
+                await self._checkpoint()
                 db.commit()
                 return {
                     "scan_id": scan.id,
@@ -721,6 +735,7 @@ class CloudScanJob:
             self.cloud_file.last_compliance_score = result.get("compliance_score")
             self.cloud_file.needs_rescan = False
 
+            await self._checkpoint()
             db.commit()
 
             logger.info(
@@ -733,7 +748,11 @@ class CloudScanJob:
             try:
                 from .email_alert_job import trigger_scan_alerts
 
+                await self._checkpoint()
                 await trigger_scan_alerts(db, scan)
+            except LostJobOwnership:
+                db.rollback()
+                raise
             except Exception as e:
                 # Don't fail the scan if email alerts fail
                 logger.warning(
@@ -752,6 +771,9 @@ class CloudScanJob:
                 "ai_used": False,
             }
 
+        except LostJobOwnership:
+            db.rollback()
+            raise
         except ImportError as exc:
             logger.error(
                 "Processor unavailable for cloud scan",
@@ -761,7 +783,9 @@ class CloudScanJob:
                     "exception_type": type(exc).__name__,
                 },
             )
-            return self._persist_failed_scan(db, file_type, "PROCESSOR_UNAVAILABLE")
+            return await self._persist_failed_scan(
+                db, file_type, "PROCESSOR_UNAVAILABLE"
+            )
         except Exception as exc:
             logger.error(
                 "Scan processing failed for cloud file",
@@ -773,7 +797,9 @@ class CloudScanJob:
                     "exception_type": type(exc).__name__,
                 },
             )
-            return self._persist_failed_scan(db, file_type, "SCAN_PROCESSING_FAILED")
+            return await self._persist_failed_scan(
+                db, file_type, "SCAN_PROCESSING_FAILED"
+            )
 
 
 async def handle_scan_job(
@@ -813,6 +839,7 @@ async def handle_scan_job(
         credential=credential,
         cloud_file=cloud_file,
         token_manager=token_manager,
+        assert_owned=getattr(job, "_assert_owned", None),
     )
     result = await scan_job.run(db)
     if not result.get("success"):

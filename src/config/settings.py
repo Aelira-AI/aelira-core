@@ -494,6 +494,11 @@ class Settings(BaseSettings):
     # AI/LLM Processing Configuration
     # =====================================================
     llm_thread_pool_size: int = int(os.getenv("LLM_THREAD_POOL_SIZE", "4"))
+    job_worker_max_concurrency: int = Field(
+        default_factory=lambda: int(os.getenv("JOB_WORKER_MAX_CONCURRENCY", "4")),
+        ge=1,
+        le=64,
+    )
     llm_request_timeout: int = int(os.getenv("LLM_REQUEST_TIMEOUT", "120"))
     llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "3"))
     llm_cache_ttl_hours: int = int(os.getenv("LLM_CACHE_TTL_HOURS", "24"))

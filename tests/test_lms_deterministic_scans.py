@@ -4,6 +4,9 @@ import ast
 import inspect
 import sys
 import textwrap
+import asyncio
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -561,6 +564,61 @@ async def test_lms_image_scan_emits_manual_review_finding_without_ai_provider_ca
     assert issue["manual_review_required"] is True
     assert DETERMINISTIC_METADATA.items() <= issue.items()
     assert "suggested_alt" not in issue
+
+
+@pytest.mark.asyncio
+async def test_cloud_document_processor_does_not_starve_event_loop_or_share_session():
+    from src.jobs.cloud_scan_job import CloudScanJob
+
+    main_thread = threading.get_ident()
+    processor_thread = None
+    ticks = 0
+    credential = SimpleNamespace(department_id="department-1")
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        file_type="docx",
+        file_name="example.docx",
+        file_size_bytes=10,
+        last_scan_id=None,
+        last_scanned_at=None,
+        last_compliance_score=None,
+        needs_rescan=True,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    db_thread_ids = []
+    db.add.side_effect = lambda _value: db_thread_ids.append(threading.get_ident())
+    processor = MagicMock()
+
+    def blocking_process(_path):
+        nonlocal processor_thread
+        processor_thread = threading.get_ident()
+        time.sleep(0.08)
+        return {"success": True, "issues": [], "compliance_score": 100.0}
+
+    processor.process_docx.side_effect = blocking_process
+
+    async def ticker():
+        nonlocal ticks
+        for _ in range(5):
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    with (
+        patch("src.education.docx_processor.DocxProcessor", return_value=processor),
+        patch("src.jobs.email_alert_job.trigger_scan_alerts", new=AsyncMock()),
+    ):
+        result, _ = await asyncio.gather(
+            CloudScanJob(credential, cloud_file, MagicMock())._scan_file(
+                "/tmp/example.docx", db
+            ),
+            ticker(),
+        )
+
+    assert result["success"] is True
+    assert ticks == 5
+    assert processor_thread is not None and processor_thread != main_thread
+    assert db_thread_ids and set(db_thread_ids) == {main_thread}
 
 
 @pytest.mark.asyncio

@@ -90,7 +90,7 @@ services:
     container_name: aelira-api-dev
     ports:
       - "8000:8000"
-    environment:
+    environment: &api-environment
       # Required: the app refuses to start without a JWT secret (HS256).
       # Dev-only value; generate a real one for anything reachable.
       JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-change-me}
@@ -139,6 +139,44 @@ services:
       redis:
         condition: service_healthy
     command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - aelira-network
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: aelira-worker-dev
+    environment:
+      <<: *api-environment
+      JOB_WORKER_ID: aelira-worker-dev
+      JOB_WORKER_MAX_CONCURRENCY: ${JOB_WORKER_MAX_CONCURRENCY:-4}
+      SKIP_MIGRATIONS: "true"
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./alembic:/app/alembic
+      - upload_data:/app/uploads
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python -m src.jobs.worker
+    healthcheck:
+      test: ["CMD", "python", "-m", "src.jobs.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     networks:
       - aelira-network
 
