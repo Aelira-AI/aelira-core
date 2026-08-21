@@ -81,6 +81,7 @@ is `.env.example`):
 | `SESSION_REPLAY_ENCRYPTION_KEY` | Encrypts the short-lived cached token pair used to tolerate one concurrent refresh replay | Required in staging and production. Generate a Fernet key with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Give every API worker the same value. |
 | `SESSION_REFRESH_GRACE_SECONDS` | Window for returning the exact cached replacement pair once | Defaults to `10`. Keep this short; increase it only to cover measured concurrent refresh latency. |
 | `TOKEN_ENCRYPTION_KEY` | Encrypts stored OAuth tokens | Required if you enable any cloud integration (Google Workspace, Microsoft 365, Canvas OAuth). Generate with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. |
+| `BLACKBOARD_OAUTH_ALLOWED_ORIGINS` | Exact Blackboard OAuth and bearer trust boundary | Required in staging/production when both Blackboard OAuth client credentials are configured. Use comma-separated canonical HTTPS root origins only, such as `https://blackboard.university.edu`; paths, userinfo, query strings, fragments, wildcards, private DNS, and foreign response origins are rejected. Removing an origin revokes persisted credentials on their next use. Development/test may omit the list only for the explicit localhost/test convention. |
 | `REMEDIATION_ARTIFACT_DIR` | Durable root for managed remediation outputs | Defaults to `/app/uploads/remediation-artifacts`. Mount this path on persistent storage. Every API and worker replica must see the same bytes at the same path. |
 | `REMEDIATION_ARTIFACT_RETENTION_DAYS`, `REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS`, `REMEDIATION_ARTIFACT_WRITTEN_RETENTION_DAYS` | Artifact retention windows | Defaults to 30 days while pending, a 30-day writeback deadline after approval, and 7 days after writeback. Approval sets the artifact expiry to the approved-retention deadline; an idempotent approval retry does not extend it. See `.env.example` for all bounded cleanup and size settings. |
 | `ALLOW_MOCK_AUTH` | Dev-only auth bypass | Must **not** be `true` in `production`/`staging` — `Settings` raises at startup if it is (`validate_mock_auth`). Leave unset. |
@@ -226,6 +227,9 @@ responses as an application failure.
 Existing LTI-provisioned users must relaunch from an authorized staff Canvas
 placement to complete reauthorization. Canvas OAuth credentials whose stored
 origin is no longer in `CANVAS_OAUTH_ALLOWED_ORIGINS` must reconnect.
+Blackboard OAuth credentials whose stored origin is no longer in
+`BLACKBOARD_OAUTH_ALLOWED_ORIGINS` must likewise reconnect; validation runs
+before token refresh or bearer-client construction.
 
 There is no supported in-place downgrade to v0.9.3. Keep the pre-upgrade database backup:
 returning to v0.9.3 requires restoring that backup together

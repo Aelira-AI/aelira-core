@@ -396,6 +396,11 @@ class Settings(BaseSettings):
     # Canvas OAuth network trust boundary. Staging/production validation below
     # makes this mandatory; route-level validation canonicalizes every entry.
     canvas_oauth_allowed_origins: str = os.getenv("CANVAS_OAUTH_ALLOWED_ORIGINS", "")
+    # Blackboard OAuth network trust boundary. Required for executable
+    # Blackboard OAuth in staging/production and checked again on every use.
+    blackboard_oauth_allowed_origins: str = os.getenv(
+        "BLACKBOARD_OAUTH_ALLOWED_ORIGINS", ""
+    )
 
     # File Upload Limits (in bytes)
     max_file_size_pdf: int = 50 * 1024 * 1024  # 50MB
@@ -574,6 +579,19 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "CANVAS_OAUTH_ALLOWED_ORIGINS must be set in staging and production"
+            )
+
+        blackboard_oauth_enabled = bool(
+            os.getenv("BLACKBOARD_OAUTH_CLIENT_ID", "").strip()
+            and os.getenv("BLACKBOARD_OAUTH_CLIENT_SECRET", "").strip()
+        )
+        if (
+            self.env.lower() in {"staging", "production"}
+            and blackboard_oauth_enabled
+            and not self.blackboard_oauth_allowed_origins.strip()
+        ):
+            raise ValueError(
+                "BLACKBOARD_OAUTH_ALLOWED_ORIGINS must be set in staging and production"
             )
 
         return self

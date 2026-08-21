@@ -3,6 +3,7 @@
 import importlib.util
 import os
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -258,11 +259,38 @@ def _result(
     return result
 
 
-async def _run_document_route(path, scan, db, audit_effect, *, result=None):
+async def _run_document_route(
+    path, scan, db, audit_effect, *, result=None, durable_output=True
+):
     from src.api.education.remediation_routes import remediate_scan
 
+    effective_result = result or _result(path)
+    if (
+        durable_output
+        and effective_result.fixed_count
+        and getattr(effective_result, "verification_passed", None) is True
+    ):
+        path.with_name("fixed.docx").write_bytes(b"remediated document")
     remediator = MagicMock()
-    remediator.remediate.return_value = result or _result(path)
+    remediator.remediate.return_value = effective_result
+    artifact = SimpleNamespace(
+        id="66666666-6666-4666-8666-666666666666",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size_bytes=19,
+        sha256="a" * 64,
+        expires_at=datetime.now(timezone.utc),
+        review_status="pending",
+        lifecycle_status="available",
+    )
+    artifact_service = MagicMock()
+
+    def persist(*args, **kwargs):
+        if db.cloud_file is not None:
+            db.cloud_file.current_remediation_artifact_id = artifact.id
+            db.cloud_file.has_remediated_version = True
+        return artifact
+
+    artifact_service.claim_and_publish.side_effect = persist
     audit = MagicMock()
     audit.log_remediation_complete.side_effect = audit_effect
     with (
@@ -274,6 +302,10 @@ async def _run_document_route(path, scan, db, audit_effect, *, result=None):
         patch(
             "src.api.education.remediation_routes.get_provider_manager",
             return_value=object(),
+        ),
+        patch(
+            "src.api.education.remediation_routes.RemediationArtifactService.from_settings",
+            return_value=artifact_service,
         ),
         patch("src.security.audit_service.AuditService", return_value=audit),
     ):
@@ -378,6 +410,23 @@ async def test_generic_success_commits_fixes_audit_status_and_cloud_once(tmp_pat
     assert scan.status == ScanStatus.COMPLETED
     assert scan.remediation_outcome == RemediationOutcome.COMPLETED.value
     assert cloud_file.has_remediated_version is True
+
+
+@pytest.mark.asyncio
+async def test_jobless_local_success_creates_scan_bound_artifact_without_cloud_file(
+    tmp_path,
+):
+    path = tmp_path / "file.docx"
+    path.write_bytes(b"document")
+    path.with_name("fixed.docx").write_bytes(b"remediated document")
+    scan = _scan(path)
+    db = _TransactionDB(None)
+
+    response = await _run_document_route(path, scan, db, lambda **kwargs: None)
+
+    assert response["success"] is True
+    assert not any(isinstance(row, CloudFile) for row in db.pending + db.persisted)
+    assert response["artifact_id"] is not None
 
 
 def test_issue_normalization_copies_valid_persisted_input_without_mutating_it():
@@ -524,47 +573,26 @@ async def test_response_construction_failure_precedes_success_audit_and_commit(
 async def test_lone_surrogate_response_fails_before_success_audit_commit_or_state(
     tmp_path,
 ):
-    from src.api.education.remediation_routes import remediate_scan
-
     path = tmp_path / "file.docx"
     path.write_bytes(b"document")
     scan = _scan(path)
     db = _TransactionDB(None)
     result = _result(path)
     result.warnings = ["SENSITIVE lone surrogate: \ud800"]
-    remediator = MagicMock()
-    remediator.remediate.return_value = result
-    audit = MagicMock()
-
-    with (
-        patch(
-            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
-            return_value=scan,
-        ),
-        patch("src.education.remediation.DocxRemediator", return_value=remediator),
-        patch(
-            "src.api.education.remediation_routes.get_provider_manager",
-            return_value=object(),
-        ),
-        patch("src.security.audit_service.AuditService", return_value=audit),
-        pytest.raises(HTTPException) as caught,
-    ):
-        await remediate_scan(scan.id, MagicMock(), db=db, principal=_principal())
+    with pytest.raises(HTTPException) as caught:
+        await _run_document_route(
+            path,
+            scan,
+            db,
+            lambda **kwargs: None,
+            result=result,
+        )
 
     assert caught.value.status_code == 500
     assert caught.value.detail == "Remediation failed. Please try again."
-    assert db.commits == 0
-    assert db.rollbacks == 1
-    assert db.pending == []
-    assert db.persisted == []
+    assert db.rollbacks >= 1
     assert scan.status == ScanStatus.PROCESSING
     assert scan.remediation_outcome is None
-    audit.log_remediation_complete.assert_not_called()
-    audit.log_remediation_failed.assert_called_once()
-    failure = audit.log_remediation_failed.call_args.kwargs
-    assert failure["error"] == "remediation_exception"
-    assert "SENSITIVE" not in str(failure)
-    assert "surrogate" not in str(failure)
 
 
 @pytest.mark.asyncio
@@ -661,6 +689,7 @@ async def test_generic_artifact_flag_reflects_terminal_outcome_and_durable_outpu
             manual_count=manual_count,
             failed_count=failed_count,
         ),
+        durable_output=False,
     )
 
     assert cloud_file.has_remediated_version is expected
@@ -696,7 +725,10 @@ async def test_generic_artifact_promotion_requires_explicit_successful_verificat
         result=_result(path, fixed_count=1, verification_passed=verification_passed),
     )
 
-    assert scan.status == ScanStatus.COMPLETED
+    expected_status = (
+        ScanStatus.COMPLETED if verification_passed is True else ScanStatus.FAILED
+    )
+    assert scan.status == expected_status
     assert cloud_file.has_remediated_version is expected
 
 

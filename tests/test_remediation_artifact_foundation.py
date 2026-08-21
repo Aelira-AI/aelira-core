@@ -12,6 +12,9 @@ from src.db import models
 
 ROOT = Path(__file__).parents[1]
 MIGRATION_PATH = ROOT / "alembic" / "versions" / "2026_08_21_remediation_artifacts.py"
+DIRECT_ARTIFACT_MIGRATION_PATH = (
+    ROOT / "alembic" / "versions" / "2026_08_21_task16b1_direct_artifacts.py"
+)
 
 OWNERSHIP_FOREIGN_KEYS = {
     "department_id": ("departments.id", "fk_remediation_artifacts_department"),
@@ -187,6 +190,55 @@ def test_cloud_file_current_artifact_pointer_is_nullable_and_set_null():
     assert column.index is True
     assert foreign_key.target_fullname == "remediation_artifacts.id"
     assert foreign_key.ondelete == "SET NULL"
+
+
+def test_direct_artifacts_allow_null_job_cloud_file_and_local_provider():
+    job_column = models.RemediationArtifact.__table__.c.remediation_job_id
+    cloud_file_column = models.RemediationArtifact.__table__.c.cloud_file_id
+    provider_constraint = next(
+        constraint
+        for constraint in models.RemediationArtifact.__table__.constraints
+        if constraint.name == "ck_remediation_artifacts_provider"
+    )
+
+    assert job_column.nullable is True
+    assert cloud_file_column.nullable is True
+    assert models.CloudFile.__table__.c.credential_id.nullable is False
+    assert "'local'" in str(provider_constraint.sqltext)
+
+
+def test_artifact_model_constrains_local_and_provider_authority():
+    constraint = next(
+        constraint
+        for constraint in models.RemediationArtifact.__table__.constraints
+        if constraint.name == "ck_remediation_artifacts_provider_authority"
+    )
+    sql = str(constraint.sqltext)
+
+    assert "provider = 'local'" in sql
+    assert "cloud_file_id IS NULL" in sql
+    assert "remediation_job_id IS NULL" in sql
+    assert "provider <> 'local'" in sql
+    assert "cloud_file_id IS NOT NULL" in sql
+    assert "remediation_job_id IS NULL OR cloud_file_id IS NOT NULL" in sql
+
+
+def test_direct_artifact_migration_adds_exact_provider_authority_check():
+    source = DIRECT_ARTIFACT_MIGRATION_PATH.read_text()
+
+    assert '"ck_remediation_artifacts_provider_authority"' in source
+    assert "provider = 'local'" in source
+    assert "cloud_file_id IS NULL" in source
+    assert "remediation_job_id IS NULL" in source
+    assert "provider <> 'local'" in source
+    assert "cloud_file_id IS NOT NULL" in source
+    assert "remediation_job_id IS NULL OR cloud_file_id IS NOT NULL" in source
+    assert source.index(
+        'op.create_check_constraint(\n        "ck_remediation_artifacts_provider_authority"'
+    ) < source.index("def downgrade")
+    assert source.index(
+        'op.drop_constraint(\n        "ck_remediation_artifacts_provider_authority"'
+    ) > source.index("def downgrade")
 
 
 def test_no_cascade_ownership_foreign_keys_static_guard():

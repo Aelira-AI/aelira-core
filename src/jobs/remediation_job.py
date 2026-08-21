@@ -10,7 +10,7 @@ import re
 import tempfile
 import shutil
 import uuid
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, NoReturn, Optional
 from pathlib import Path
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
@@ -25,6 +25,7 @@ from ..db.models import (
     ReviewAuditLog,
     MatterhornResult as MatterhornResultModel,
     CloudFile,
+    CloudJobStatus,
     CloudOAuthCredentials,
     CloudProvider,
 )
@@ -38,8 +39,17 @@ from ..education.remediation.base import (
     merge_partitioned_manual_issues,
 )
 from ..utils.security import (
+    PERSISTED_BLACKBOARD_ORIGIN_ERROR,
     PERSISTED_CANVAS_ORIGIN_ERROR,
+    require_persisted_blackboard_origin,
     require_persisted_canvas_origin,
+)
+from ..services.remediation_artifact_service import (
+    ArtifactInProgressError,
+    ArtifactIntegrityError,
+    ArtifactPublicationResult,
+    ArtifactPublicationRetryable,
+    RemediationArtifactService,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +72,7 @@ _LMS_PROVIDERS = {
 }
 _EXECUTABLE_QUEUED_LMS_PROVIDERS = {
     CloudProvider.CANVAS.value,
+    CloudProvider.BLACKBOARD.value,
 }
 _JOB_FAILURE_CODES = {
     "invalid_job_scope",
@@ -78,14 +89,235 @@ _JOB_FAILURE_CODES = {
 class RemediationJobFailed(RuntimeError):
     """Sanitized worker failure consumed by queue state machines."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, terminal_state_committed: bool = False):
         self.code = code if code in _JOB_FAILURE_CODES else "remediation_failed"
+        self.terminal_state_committed = terminal_state_committed is True
         super().__init__(self.code)
+
+
+class RetryableRemediationJobError(RuntimeError):
+    """Sanitized transient failure consumed by immediate queue retry paths."""
+
+    _CODES = {
+        "remediation_artifact_retryable",
+        "remediation_completion_retryable",
+    }
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        artifact_id: str | None = None,
+        cleanup_complete: bool = True,
+    ):
+        self.code = code if code in self._CODES else "remediation_artifact_retryable"
+        self.artifact_id = artifact_id if isinstance(artifact_id, str) else None
+        self.cleanup_complete = cleanup_complete is True
+        super().__init__(self.code)
+
+
+class RemediationCompletionCommitFailed(RetryableRemediationJobError):
+    """The sole completion commit rolled back and must be retried immediately."""
+
+    def __init__(
+        self, *, artifact_id: str | None = None, cleanup_complete: bool = True
+    ) -> None:
+        super().__init__(
+            "remediation_completion_retryable",
+            artifact_id=artifact_id,
+            cleanup_complete=cleanup_complete,
+        )
+
+
+class RemediationJobHandledResult(dict):
+    """Serializable result whose queue completion was committed by the handler."""
+
+    handler_committed = True
+
+
+class RemediationProcessingResult(dict):
+    """Worker result with a non-serializable in-memory publication claim."""
+
+    def __init__(
+        self,
+        *args: Any,
+        artifact_publication: ArtifactPublicationResult | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.artifact_publication = artifact_publication
+
+
+def transition_retryable_remediation_job(
+    job: Any, db: Session, failure: RetryableRemediationJobError
+) -> None:
+    """Rollback, then durably requeue or exhaust one transient remediation job."""
+    db.rollback()
+    try:
+        db.refresh(job)
+    except Exception:
+        pass
+
+    if getattr(job, "status", None) in {
+        CloudJobStatus.COMPLETED.value,
+        CloudJobStatus.FAILED.value,
+    }:
+        return
+
+    prior_result = job.result_data if isinstance(job.result_data, dict) else {}
+    safe_result: dict[str, Any] = {}
+    if isinstance(prior_result.get("scan_id"), str):
+        safe_result["scan_id"] = prior_result["scan_id"]
+    if failure.artifact_id is not None and not failure.cleanup_complete:
+        safe_result.update(
+            {
+                "artifact_id": failure.artifact_id,
+                "publication_cleanup_pending": True,
+            }
+        )
+
+    retry_count = int(getattr(job, "retry_count", 0) or 0) + 1
+    max_retries = int(getattr(job, "max_retries", 3) or 3)
+    job.retry_count = retry_count
+    job.error_message = failure.code
+    job.result_data = safe_result
+    if retry_count >= max_retries:
+        job.status = CloudJobStatus.FAILED.value
+        job.progress = 100
+        job.progress_message = "Remediation failed after retry limit"
+        job.completed_at = datetime.now(timezone.utc)
+    else:
+        job.status = CloudJobStatus.PENDING.value
+        job.progress = 0
+        job.progress_message = "Remediation queued for retry"
+        job.completed_at = None
+    db.commit()
+
+
+_SAFE_RESULT_FIELDS = {
+    "success",
+    "fixed_count",
+    "manual_count",
+    "failed_count",
+    "skipped_count",
+    "total_issues",
+    "compliance_improvement",
+    "upload_job_id",
+    "scan_id",
+    "artifact_id",
+    "artifact_mime_type",
+    "artifact_size_bytes",
+    "artifact_sha256",
+    "artifact_expires_at",
+    "artifact_review_status",
+    "artifact_required",
+}
 
 
 def _set_remediation_outcome(scan: Scan, outcome: RemediationOutcome | str) -> None:
     """Persist a bounded semantic outcome on its mapped column."""
     scan.remediation_outcome = RemediationOutcome(outcome).value
+
+
+def _failure_outcome(code: str) -> RemediationOutcome:
+    if code in {"manual_required", "alt_text_manual_required"}:
+        return RemediationOutcome.MANUAL_REQUIRED
+    if code == "remediation_artifact_unavailable":
+        return RemediationOutcome.ARTIFACT_UNAVAILABLE
+    return RemediationOutcome.REMEDIATION_FAILED
+
+
+def _safe_failure_result(
+    code: str, result: Dict[str, Any] | None, scan: Scan | None
+) -> Dict[str, Any]:
+    source = result if isinstance(result, dict) else {}
+    safe: Dict[str, Any] = {"success": False, "error": code}
+    for field in (
+        "fixed_count",
+        "manual_count",
+        "failed_count",
+        "skipped_count",
+        "total_issues",
+    ):
+        value = source.get(field, 0)
+        safe[field] = value if type(value) is int and value >= 0 else 0
+    scan_id = source.get("scan_id")
+    if not isinstance(scan_id, str) and scan is not None:
+        scan_id = str(scan.id)
+    if isinstance(scan_id, str):
+        safe["scan_id"] = scan_id
+    safe["artifact_id"] = None
+    return safe
+
+
+def _commit_terminal_failure(
+    job: Any,
+    db: Session,
+    code: str,
+    *,
+    scan: Scan | None,
+    result: Dict[str, Any] | None = None,
+    commit_job: bool = True,
+    rollback_scan_state: Dict[str, Any] | None = None,
+) -> NoReturn:
+    """Atomically persist bounded terminal scan/job failure state, then signal."""
+    failure = RemediationJobFailed(code)
+    code = failure.code
+    if not commit_job:
+        raise failure
+
+    prior_job_state = {
+        field: getattr(job, field, None)
+        for field in (
+            "status",
+            "progress",
+            "progress_message",
+            "result_data",
+            "completed_at",
+            "error_message",
+        )
+    }
+    prior_scan_state = rollback_scan_state
+    if scan is not None:
+        if prior_scan_state is None:
+            prior_scan_state = {
+                field: getattr(scan, field, None)
+                for field in ("status", "remediation_outcome", "completed_at")
+            }
+        valid_failure_outcomes = {
+            RemediationOutcome.MANUAL_REQUIRED.value,
+            RemediationOutcome.ARTIFACT_UNAVAILABLE.value,
+            RemediationOutcome.REMEDIATION_FAILED.value,
+        }
+        terminal_scan_staged = (
+            scan.status == ScanStatus.FAILED
+            and scan.remediation_outcome in valid_failure_outcomes
+        )
+        if not terminal_scan_staged:
+            scan.status = ScanStatus.FAILED
+            _set_remediation_outcome(scan, _failure_outcome(code))
+            scan.completed_at = datetime.now(timezone.utc)
+        elif scan.completed_at is None:
+            scan.completed_at = datetime.now(timezone.utc)
+
+    safe_result = _safe_failure_result(code, result, scan)
+    job.status = CloudJobStatus.FAILED.value
+    job.progress = 100
+    job.progress_message = "Remediation failed"
+    job.error_message = code
+    job.result_data = safe_result
+    job.completed_at = datetime.now(timezone.utc)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        for field, value in prior_job_state.items():
+            setattr(job, field, value)
+        if scan is not None and prior_scan_state is not None:
+            for field, value in prior_scan_state.items():
+                setattr(scan, field, value)
+        raise RemediationJobFailed(code, terminal_state_committed=False) from exc
+    raise RemediationJobFailed(code, terminal_state_committed=True)
 
 
 def sanitize_execution_context(value: Any) -> Dict[str, Any]:
@@ -152,6 +384,7 @@ async def process_remediation_job(
     lms_policy_authoritative: bool = False,
     credential: CloudOAuthCredentials | None = None,
     token_manager: OAuthTokenManager | None = None,
+    defer_final_commit: bool = False,
 ) -> Dict[str, Any]:
     """
     Process a remediation job.
@@ -175,8 +408,7 @@ async def process_remediation_job(
             - fixed_count: int (number of issues fixed)
             - manual_count: int (issues needing manual review)
             - failed_count: int (fixes that failed)
-            - output_file: str (path to remediated file)
-            - backup_path: str (path to backup)
+            - artifact_id and verified artifact metadata when fixes are published
             - upload_job_id: always None; automatic upload is disabled
             - error: str (if failed)
     """
@@ -184,7 +416,13 @@ async def process_remediation_job(
     cloud_file_id = job_data.get("cloud_file_id")
     file_path = job_data.get("file_path")
     department_id = job_data.get("department_id")
+    remediation_job_id = job_data.get("job_id")
+    created_by_id = job_data.get("actor_id")
     temp_file_path = None
+    artifact_temp_dir = None
+    artifact_service = None
+    artifact_id = None
+    artifact_publication: ArtifactPublicationResult | None = None
 
     try:
         logger.info(
@@ -212,7 +450,8 @@ async def process_remediation_job(
                 scan.status = ScanStatus.COMPLETED
                 _set_remediation_outcome(scan, RemediationOutcome.NO_OP)
                 scan.completed_at = datetime.now(timezone.utc)
-                db.commit()
+                if not defer_final_commit:
+                    db.commit()
             except Exception:
                 db.rollback()
                 scan.status = original_status
@@ -256,8 +495,7 @@ async def process_remediation_job(
         if not file_path or not Path(file_path).exists():
             return {"success": False, "error": f"File not found: {file_path}"}
 
-        # 5. Create backup
-        backup_path = _create_backup(file_path)
+        # Managed artifacts supersede caller-visible backup paths.
 
         # 6. Parse issues into RemediationIssue objects
         issues = scan_result.issues or []
@@ -287,8 +525,8 @@ async def process_remediation_job(
             "image",
             ScanType.IMAGE,
         ):
-            # Queued image remediation has nowhere durable to persist the
-            # generated result until Task 16. Fail before any provider call.
+            # A standalone queued IMAGE remediation produces alt-text metadata,
+            # not a remediated file. Task 16B1 must not fake a file artifact.
             return {
                 "success": False,
                 "error": "remediation_artifact_unavailable",
@@ -347,30 +585,14 @@ async def process_remediation_job(
                 purpose="manual_review",
             )
 
-        # Decide the authoritative LMS outcome before any success notification,
-        # fix/audit row, completed status, or remediation metadata can escape.
-        if lms_policy_authoritative and remediation_result.fixed_count > 0:
-            scan.status = ScanStatus.FAILED
-            _set_remediation_outcome(scan, RemediationOutcome.ARTIFACT_UNAVAILABLE)
-            scan.completed_at = datetime.now(timezone.utc)
-            db.commit()
-            return {
-                "success": False,
-                "error": "remediation_artifact_unavailable",
-                "fixed_count": remediation_result.fixed_count,
-                "manual_count": remediation_result.manual_count,
-                "failed_count": remediation_result.failed_count,
-                "skipped_count": remediation_result.skipped_count,
-                "total_issues": remediation_result.total_issues,
-                "scan_id": scan_id,
-            }
-        if lms_policy_authoritative and (
-            remediation_result.manual_count > 0 or remediation_result.failed_count > 0
-        ):
+        # Manual or failed work remains manual; never publish a partial output as
+        # the authoritative remediation artifact.
+        if remediation_result.manual_count > 0 or remediation_result.failed_count > 0:
             scan.status = ScanStatus.FAILED
             _set_remediation_outcome(scan, RemediationOutcome.MANUAL_REQUIRED)
             scan.completed_at = datetime.now(timezone.utc)
-            db.commit()
+            if not defer_final_commit:
+                db.commit()
             return {
                 "success": False,
                 "error": "manual_required",
@@ -381,6 +603,73 @@ async def process_remediation_job(
                 "total_issues": remediation_result.total_issues,
                 "scan_id": scan_id,
             }
+
+        artifact = None
+        if remediation_result.fixed_count > 0:
+            output_file = getattr(remediation_result, "output_file", None)
+            cloud_file = (
+                db.query(CloudFile).filter(CloudFile.id == cloud_file_id).first()
+                if cloud_file_id
+                else None
+            )
+            if (
+                not output_file
+                or not Path(output_file).is_file()
+                or getattr(remediation_result, "verification_passed", None) is not True
+                or cloud_file is None
+                or remediation_job_id is None
+            ):
+                scan.status = ScanStatus.FAILED
+                _set_remediation_outcome(scan, RemediationOutcome.ARTIFACT_UNAVAILABLE)
+                scan.completed_at = datetime.now(timezone.utc)
+                if not defer_final_commit:
+                    db.commit()
+                return {
+                    "success": False,
+                    "error": "remediation_artifact_unavailable",
+                    "fixed_count": remediation_result.fixed_count,
+                    "manual_count": remediation_result.manual_count,
+                    "failed_count": remediation_result.failed_count,
+                    "skipped_count": remediation_result.skipped_count,
+                    "total_issues": remediation_result.total_issues,
+                    "scan_id": scan_id,
+                }
+
+            artifact_temp_dir = tempfile.mkdtemp(prefix="aelira_remediation_artifact_")
+            artifact_source = Path(artifact_temp_dir) / Path(output_file).name
+            try:
+                shutil.copyfile(output_file, artifact_source)
+            except OSError as exc:
+                raise RetryableRemediationJobError(
+                    "remediation_artifact_retryable"
+                ) from exc
+            artifact_service = RemediationArtifactService.from_settings()
+            published = artifact_service.claim_and_publish(
+                db,
+                source_path=artifact_source,
+                trusted_temp_root=artifact_temp_dir,
+                department_id=str(department_id),
+                scan_id=str(scan_id),
+                cloud_file_id=str(cloud_file.id),
+                remediation_job_id=str(remediation_job_id),
+                created_by_id=created_by_id,
+                provider=str(cloud_file.provider),
+                scan_type=scan.scan_type,
+                filename=artifact_source.name,
+                provider_result={"verification_passed": True},
+                commit=False,
+            )
+            artifact_publication = (
+                published
+                if isinstance(published, ArtifactPublicationResult)
+                else ArtifactPublicationResult(
+                    artifact=published,
+                    artifact_id=str(published.id),
+                    publication_token=getattr(published, "publication_token", None),
+                )
+            )
+            artifact = artifact_publication.artifact
+            artifact_id = str(artifact.id)
 
         # Automatic upload is deliberately disabled until Task 16 provides a
         # durable artifact and approval record.
@@ -405,11 +694,8 @@ async def process_remediation_job(
             "fixed_count": remediation_result.fixed_count,
             "manual_count": remediation_result.manual_count,
             "failed_count": remediation_result.failed_count,
-            "output_file": (
-                None if lms_policy_authoritative else remediation_result.output_file
-            ),
-            "backup_path": None if lms_policy_authoritative else backup_path,
-            "artifact_persisted": not lms_policy_authoritative,
+            "artifact_id": artifact_id,
+            "artifact_persisted": artifact is not None,
             "compliance_improvement": remediation_result.improvement,
             "remediated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -462,6 +748,7 @@ async def process_remediation_job(
                     - auto_approved,
                     "manual_issues": remediation_result.manual_count,
                     "failed_issues": remediation_result.failed_count,
+                    "artifact_id": artifact_id,
                 },
             )
         )
@@ -523,40 +810,87 @@ async def process_remediation_job(
                     extra={"scan_id": scan_id, "error_type": type(exc).__name__},
                 )
 
-        db.commit()
+        if not defer_final_commit:
+            db.commit()
 
         # Queued processing cannot notify here: the caller still has to commit
         # the CloudJobQueue completion state. A transactional outbox/caller-side
         # notification is intentionally deferred to Task 17.
 
-        if lms_policy_authoritative:
-            return {
-                "success": True,
-                "fixed_count": 0,
-                "manual_count": remediation_result.manual_count,
-                "failed_count": remediation_result.failed_count,
-                "skipped_count": remediation_result.skipped_count,
-                "total_issues": remediation_result.total_issues,
-                "scan_id": scan_id,
-                "artifact_required": False,
-            }
-
-        return {
+        response = {
             "success": True,
             "fixed_count": remediation_result.fixed_count,
             "manual_count": remediation_result.manual_count,
             "failed_count": remediation_result.failed_count,
             "skipped_count": remediation_result.skipped_count,
             "total_issues": remediation_result.total_issues,
-            "output_file": remediation_result.output_file,
-            "backup_path": backup_path,
             "compliance_improvement": remediation_result.improvement,
             "upload_job_id": upload_job_id,
             "scan_id": scan_id,
         }
+        if artifact is not None:
+            response.update(
+                {
+                    "artifact_id": str(artifact.id),
+                    "artifact_mime_type": artifact.mime_type,
+                    "artifact_size_bytes": artifact.size_bytes,
+                    "artifact_sha256": artifact.sha256,
+                    "artifact_expires_at": artifact.expires_at.isoformat(),
+                    "artifact_review_status": artifact.review_status,
+                }
+            )
+        else:
+            response["artifact_required"] = False
+        return RemediationProcessingResult(
+            response, artifact_publication=artifact_publication
+        )
+
+    except ArtifactInProgressError as exc:
+        db.rollback()
+        raise RetryableRemediationJobError("remediation_artifact_retryable") from exc
+
+    except ArtifactPublicationRetryable as exc:
+        db.rollback()
+        raise RetryableRemediationJobError(
+            "remediation_artifact_retryable",
+            artifact_id=exc.result.artifact_id,
+            cleanup_complete=exc.result.cleanup_complete,
+        ) from exc
+
+    except ArtifactIntegrityError as exc:
+        db.rollback()
+        raise RetryableRemediationJobError(
+            "remediation_artifact_retryable",
+            artifact_id=artifact_id,
+            cleanup_complete=False,
+        ) from exc
+
+    except RetryableRemediationJobError:
+        db.rollback()
+        raise
 
     except Exception as exc:
         db.rollback()
+        if artifact_publication is not None and artifact_service is not None:
+            cleanup_complete = False
+            try:
+                artifact_service.abort_staging(
+                    db,
+                    artifact_id=artifact_publication.artifact_id,
+                    publication_token=artifact_publication.publication_token,
+                )
+                cleanup_complete = True
+            except Exception:
+                db.rollback()
+                logger.warning(
+                    "Failed to clean aborted remediation artifact",
+                    extra={"scan_id": scan_id},
+                )
+            raise RetryableRemediationJobError(
+                "remediation_artifact_retryable",
+                artifact_id=artifact_publication.artifact_id,
+                cleanup_complete=cleanup_complete,
+            ) from exc
         logger.error(
             "Error processing remediation job",
             extra={"scan_id": scan_id, "error_type": type(exc).__name__},
@@ -575,14 +909,14 @@ async def process_remediation_job(
                 # Also remove the parent temp directory
                 parent = Path(temp_file_path).parent
                 if parent.name.startswith("aelira_remediation_"):
-                    import shutil
-
                     shutil.rmtree(parent, ignore_errors=True)
             except Exception as exc:
                 logger.warning(
                     "Failed to cleanup remediation temp file",
                     extra={"scan_id": scan_id, "error_type": type(exc).__name__},
                 )
+        if artifact_temp_dir:
+            shutil.rmtree(artifact_temp_dir, ignore_errors=True)
 
 
 async def _download_cloud_file(
@@ -651,8 +985,19 @@ async def _download_cloud_file(
             }
 
         # Refresh token if needed (with distributed lock to prevent races)
+        blackboard_instance_url = None
         if credential.provider == CloudProvider.CANVAS.value:
             require_persisted_canvas_origin(credential)
+        elif credential.provider == CloudProvider.BLACKBOARD.value:
+            try:
+                blackboard_instance_url = require_persisted_blackboard_origin(
+                    credential
+                )
+            except ValueError:
+                return {
+                    "success": False,
+                    "error": PERSISTED_BLACKBOARD_ORIGIN_ERROR,
+                }
         token_manager = token_manager or OAuthTokenManager()
         access_token = await token_manager.refresh_if_expired(credential, db)
 
@@ -729,14 +1074,7 @@ async def _download_cloud_file(
         elif credential.provider == CloudProvider.BLACKBOARD.value:
             from ..integrations.blackboard import BlackboardAPIClient
 
-            blackboard_instance_url = credential.provider_metadata.get(
-                "blackboard_instance_url"
-            )
-            if not blackboard_instance_url:
-                return {
-                    "success": False,
-                    "error": "Blackboard instance URL not found in credential metadata",
-                }
+            assert blackboard_instance_url is not None
 
             # Get course_id from cloud file metadata
             course_id = cloud_file.metadata.get("course_id")
@@ -1030,6 +1368,19 @@ async def handle_remediation_job(
     )
     scan = db.get(Scan, scan_id) if scan_id else None
 
+    authoritative_scan = (
+        scan
+        if scan is not None
+        and job.department_id is not None
+        and scan.department_id == job.department_id
+        and scan_id is not None
+        and str(scan.id) == str(scan_id)
+        else None
+    )
+    safe_job_scope = (
+        getattr(job, "id", None) is not None and job.department_id is not None
+    )
+
     if (
         cloud_file is None
         or credential is None
@@ -1052,19 +1403,51 @@ async def handle_remediation_job(
         or cloud_file.provider != credential.provider
         or job.provider != credential.provider
     ):
-        raise RemediationJobFailed("invalid_job_scope")
+        _commit_terminal_failure(
+            job,
+            db,
+            "invalid_job_scope",
+            scan=authoritative_scan,
+            commit_job=safe_job_scope,
+        )
+
+    retry_state = job.result_data if isinstance(job.result_data, dict) else {}
+    retained_artifact_id = retry_state.get("artifact_id")
+    if retry_state.get("publication_cleanup_pending") is True and isinstance(
+        retained_artifact_id, str
+    ):
+        try:
+            RemediationArtifactService.from_settings().abort_staging_for_job(
+                db,
+                artifact_id=retained_artifact_id,
+                remediation_job_id=str(job.id),
+            )
+        except Exception as exc:
+            db.rollback()
+            raise RetryableRemediationJobError(
+                "remediation_artifact_retryable",
+                artifact_id=retained_artifact_id,
+                cleanup_complete=False,
+            ) from exc
+        job.result_data = {}
+        if isinstance(retry_state.get("scan_id"), str):
+            job.result_data["scan_id"] = retry_state["scan_id"]
 
     provider = credential.provider
     if provider in _LMS_PROVIDERS and provider not in _EXECUTABLE_QUEUED_LMS_PROVIDERS:
-        raise RemediationJobFailed("unsupported_lms_remediation")
+        _commit_terminal_failure(
+            job, db, "unsupported_lms_remediation", scan=authoritative_scan
+        )
     if provider in _LMS_PROVIDERS and scan.scan_type in (
         "IMAGE",
         "image",
         ScanType.IMAGE,
     ):
-        # Task 16 owns durable artifacts. A queued image result cannot be used
-        # or persisted honestly in 3C1, so do not spend a provider call.
-        raise RemediationJobFailed("remediation_artifact_unavailable")
+        # Standalone IMAGE work has no remediated file bytes. Keep the stable
+        # unsupported/manual outcome rather than inventing an artifact.
+        _commit_terminal_failure(
+            job, db, "remediation_artifact_unavailable", scan=authoritative_scan
+        )
 
     context = sanitize_execution_context(getattr(job, "execution_context", {}))
     requested = set(context.get("requested_purposes", []))
@@ -1087,20 +1470,29 @@ async def handle_remediation_job(
                 purpose="remediation", **binding
             )
             if remediation_client is None:
-                raise RemediationJobFailed("policy_not_permitted")
+                _commit_terminal_failure(
+                    job, db, "policy_not_permitted", scan=authoritative_scan
+                )
         if "alt_text" in requested:
             alt_text_client = LMSRemediationClient.bind_if_allowed(
                 purpose="alt_text", **binding
             )
             if alt_text_client is None:
-                raise RemediationJobFailed("policy_not_permitted")
+                _commit_terminal_failure(
+                    job, db, "policy_not_permitted", scan=authoritative_scan
+                )
 
     job_data = {
+        "job_id": str(job.id),
         "cloud_file_id": job.cloud_file_id,
         "department_id": job.department_id,
         "provider": provider,
         "upload_to_cloud": False,
         "scan_id": scan_id,
+    }
+    pre_process_scan_state = {
+        field: getattr(scan, field, None)
+        for field in ("status", "remediation_outcome", "completed_at")
     }
     result = await process_remediation_job(
         job_data,
@@ -1110,16 +1502,81 @@ async def handle_remediation_job(
         lms_policy_authoritative=provider in _LMS_PROVIDERS,
         credential=credential,
         token_manager=token_manager,
+        defer_final_commit=True,
     )
     if result.get("success") is not True:
         error = result.get("error")
         code = error if isinstance(error, str) else "remediation_failed"
-        raise RemediationJobFailed(code)
-    return result
+        _commit_terminal_failure(
+            job,
+            db,
+            code,
+            scan=authoritative_scan,
+            result=result,
+            rollback_scan_state=pre_process_scan_state,
+        )
+
+    safe_result = RemediationJobHandledResult(
+        (key, value) for key, value in result.items() if key in _SAFE_RESULT_FIELDS
+    )
+    artifact_publication = getattr(result, "artifact_publication", None)
+    prior_job_state = {
+        field: getattr(job, field, None)
+        for field in (
+            "status",
+            "progress",
+            "progress_message",
+            "result_data",
+            "completed_at",
+            "error_message",
+        )
+    }
+    job.status = CloudJobStatus.COMPLETED.value
+    job.progress = 100
+    job.progress_message = "Remediation complete"
+    job.result_data = dict(safe_result)
+    job.completed_at = datetime.now(timezone.utc)
+    job.error_message = None
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        for field, value in prior_job_state.items():
+            setattr(job, field, value)
+        artifact_id = safe_result.get("artifact_id")
+        cleanup_complete = artifact_id is None
+        if (
+            isinstance(artifact_id, str)
+            and isinstance(artifact_publication, ArtifactPublicationResult)
+            and isinstance(artifact_publication.publication_token, str)
+        ):
+            try:
+                RemediationArtifactService.from_settings().abort_staging(
+                    db,
+                    artifact_id=artifact_id,
+                    publication_token=artifact_publication.publication_token,
+                )
+                cleanup_complete = True
+            except Exception:
+                db.rollback()
+                logger.warning(
+                    "Failed to clean remediation artifact after completion rollback",
+                    extra={"job_id": str(job.id)},
+                )
+        raise RemediationCompletionCommitFailed(
+            artifact_id=artifact_id if isinstance(artifact_id, str) else None,
+            cleanup_complete=cleanup_complete,
+        ) from exc
+    return safe_result
 
 
 __all__ = [
     "process_remediation_job",
     "handle_remediation_job",
     "sanitize_execution_context",
+    "RetryableRemediationJobError",
+    "RemediationCompletionCommitFailed",
+    "RemediationJobHandledResult",
+    "RemediationProcessingResult",
+    "transition_retryable_remediation_job",
 ]

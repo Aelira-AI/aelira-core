@@ -374,6 +374,7 @@ class AuditService:
         providers: Optional[dict] = None,
         providers_attempted: Optional[dict] = None,
         purpose_outcomes: Optional[dict] = None,
+        artifact_id: Optional[str] = None,
         request: Optional[Request] = None,
         commit: bool = True,
     ) -> AuditLog:
@@ -410,6 +411,7 @@ class AuditService:
                 "providers": providers or {},
                 "providers_attempted": providers_attempted or {},
                 "purpose_outcomes": purpose_outcomes or {},
+                "artifact_id": artifact_id,
             },
             request=request,
             commit=commit,
@@ -442,6 +444,7 @@ class AuditService:
         providers: Optional[dict] = None,
         providers_attempted: Optional[dict] = None,
         purpose_outcomes: Optional[dict] = None,
+        artifact_id: Optional[str] = None,
         commit: bool = True,
     ) -> AuditLog:
         """Log a terminal remediation failure with bounded aggregate metadata."""
@@ -474,6 +477,7 @@ class AuditService:
                 "providers": providers or {},
                 "providers_attempted": providers_attempted or {},
                 "purpose_outcomes": purpose_outcomes or {},
+                "artifact_id": artifact_id,
             },
             request=request,
             commit=commit,

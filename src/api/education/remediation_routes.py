@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import shutil
+import tempfile
 import uuid
 from collections.abc import Mapping
 from copy import deepcopy
@@ -28,6 +30,10 @@ from ...db.models import (
 from ...db.scan_service import ScanService
 from ...education.image_alt_text import ImageAltTextGenerator
 from ...middleware.quota import require_feature
+from ...services.remediation_artifact_service import (
+    ArtifactPublicationResult,
+    RemediationArtifactService,
+)
 from ...jobs.remediation_job import _partition_authoritative_document_issues
 from ...utils.sanitization import sanitize_for_postgres
 from ...utils.security import (
@@ -286,6 +292,7 @@ def _audit_terminal_remediation(
     improvement: Optional[float] = None,
     duration_seconds: Optional[float] = None,
     error: str = "remediation_failed",
+    artifact_id: Optional[str] = None,
     commit: bool = False,
 ) -> None:
     """Emit exactly one bounded aggregate audit for a terminal route outcome."""
@@ -308,6 +315,7 @@ def _audit_terminal_remediation(
         "skipped_count": skipped_count,
         "request": request,
         "commit": commit,
+        "artifact_id": artifact_id,
     }
     audit = AuditService(db)
     if successful:
@@ -911,8 +919,8 @@ async def remediate_scan(
         use_ai: Whether to use AI for generating fixes (default: True, deprecated)
 
     Returns:
-        Remediation result with fixed and manual issues counts,
-        and path to the remediated document.
+        Remediation result with fixed/manual counts and managed artifact metadata.
+        Filesystem paths and storage keys are never returned.
     """
     from ...education.remediation import (
         RemediationConfig,
@@ -1214,8 +1222,6 @@ async def remediate_scan(
                     )
 
                     # Determine provider and download
-                    import tempfile
-
                     temp_dir = tempfile.mkdtemp()
                     local_path = os.path.join(
                         temp_dir, f"{cloud_file.file_name or 'file'}"
@@ -1528,6 +1534,10 @@ async def remediate_scan(
     original_cloud_remediated = (
         resolved_cloud_file.has_remediated_version if resolved_cloud_file else None
     )
+    artifact = None
+    artifact_publication = None
+    artifact_service = None
+    artifact_temp_dir = None
 
     try:
         # Configuration, partitioning, and persisted-input normalization are
@@ -1609,6 +1619,86 @@ async def remediate_scan(
                 reason="alt_text_client_unavailable",
                 purpose="manual_review",
             )
+
+        if (
+            result.success is True
+            and result.fixed_count > 0
+            and result.manual_count == 0
+            and result.failed_count == 0
+        ):
+            output_path = getattr(result, "output_file", None)
+            if (
+                not output_path
+                or not Path(output_path).is_file()
+                or getattr(result, "verification_passed", None) is not True
+            ):
+                scan.status = ScanStatus.FAILED
+                scan.remediation_outcome = RemediationOutcome.ARTIFACT_UNAVAILABLE.value
+                _audit_terminal_remediation(
+                    db=db,
+                    request=request,
+                    user_id=user_id,
+                    department_id=department_id,
+                    scan_id=scan_id,
+                    file_type=scan_type_value,
+                    remediation_requested=remediation_requested,
+                    alt_text_requested=alt_text_requested,
+                    remediation_tracker=remediation_tracker,
+                    alt_text_tracker=alt_text_tracker,
+                    successful=False,
+                    total_issues=result.total_issues,
+                    fixed_count=0,
+                    manual_count=result.fixed_count,
+                    failed_count=result.failed_count,
+                    error="remediation_artifact_unavailable",
+                    commit=False,
+                )
+                db.commit()
+                return {
+                    "success": False,
+                    "scan_id": scan_id,
+                    "error": "remediation_artifact_unavailable",
+                    "fixed_count": 0,
+                    "manual_count": result.fixed_count,
+                    "failed_count": result.failed_count,
+                    "artifact_id": None,
+                }
+            artifact_temp_dir = tempfile.mkdtemp(prefix="aelira_direct_artifact_")
+            artifact_source = Path(artifact_temp_dir) / Path(output_path).name
+            shutil.copyfile(output_path, artifact_source)
+            artifact_service = RemediationArtifactService.from_settings()
+            published = artifact_service.claim_and_publish(
+                db,
+                source_path=artifact_source,
+                trusted_temp_root=artifact_temp_dir,
+                department_id=str(department_id),
+                scan_id=str(scan.id),
+                cloud_file_id=(
+                    str(resolved_cloud_file.id)
+                    if resolved_cloud_file is not None
+                    else None
+                ),
+                remediation_job_id=None,
+                created_by_id=str(user_id) if user_id else None,
+                provider=(
+                    str(resolved_cloud_file.provider)
+                    if resolved_cloud_file is not None
+                    else "local"
+                ),
+                scan_type=scan.scan_type,
+                filename=artifact_source.name,
+                provider_result={"verification_passed": True},
+                commit=False,
+            )
+            if isinstance(published, ArtifactPublicationResult):
+                artifact_publication = published
+                artifact = published.artifact
+            else:
+                # Preserve compatibility with test doubles and older service
+                # adapters; the production service always returns the typed claim.
+                artifact = published
+            shutil.rmtree(artifact_temp_dir, ignore_errors=True)
+            artifact_temp_dir = None
 
         # Persist fixes to scan_fixes table for the review workflow
         import uuid as _uuid
@@ -1706,8 +1796,18 @@ async def remediate_scan(
         response_payload = {
             "success": result.success,
             "scan_id": scan_id,
-            "original_file": result.original_file,
-            "output_file": result.output_file,
+            "artifact_id": str(artifact.id) if artifact is not None else None,
+            "artifact_mime_type": artifact.mime_type if artifact is not None else None,
+            "artifact_size_bytes": (
+                artifact.size_bytes if artifact is not None else None
+            ),
+            "artifact_sha256": artifact.sha256 if artifact is not None else None,
+            "artifact_expires_at": (
+                artifact.expires_at.isoformat() if artifact is not None else None
+            ),
+            "artifact_review_status": (
+                artifact.review_status if artifact is not None else None
+            ),
             "total_issues": result.total_issues,
             "fixed_count": result.fixed_count,
             "manual_count": result.manual_count,
@@ -1770,6 +1870,7 @@ async def remediate_scan(
             remediated_score=result.remediated_compliance_score,
             improvement=result.improvement,
             duration_seconds=result.duration_seconds,
+            artifact_id=str(artifact.id) if artifact is not None else None,
             error=(
                 "manual_review_required"
                 if result.success is True and result.manual_count > 0
@@ -1777,23 +1878,29 @@ async def remediate_scan(
             ),
         )
 
-        durable_output_exists = bool(
-            result.output_file and Path(result.output_file).is_file()
-        )
-        if (
-            resolved_cloud_file
-            and scan.status == ScanStatus.COMPLETED
-            and result.fixed_count > 0
-            and durable_output_exists
-            and getattr(result, "verification_passed", None) is True
-        ):
-            resolved_cloud_file.has_remediated_version = True
+        # The managed artifact finalization already set the CloudFile pointer and
+        # version flag under the same pending caller transaction.
 
         # The commit is the final fallible operation guarded by this handler.
         db.commit()
 
     except Exception as e:
         db.rollback()
+        if artifact_publication is not None and artifact_service is not None:
+            try:
+                artifact_service.abort_staging(
+                    db,
+                    artifact_id=artifact_publication.artifact_id,
+                    publication_token=artifact_publication.publication_token,
+                )
+            except Exception:
+                db.rollback()
+                logger.warning(
+                    "Failed to clean aborted direct remediation artifact",
+                    extra={"scan_id": scan_id},
+                )
+        if artifact_temp_dir:
+            shutil.rmtree(artifact_temp_dir, ignore_errors=True)
         scan.status = original_status
         scan.remediation_outcome = original_outcome
         if resolved_cloud_file is not None:

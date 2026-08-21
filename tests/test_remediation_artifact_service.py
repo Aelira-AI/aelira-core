@@ -1,5 +1,6 @@
 """Task16A DB-first remediation artifact service contracts."""
 
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -152,6 +153,289 @@ def test_source_metadata_is_computed_before_db_claim_and_claim_is_staging(tmp_pa
     assert prepared.mime_type.endswith("wordprocessingml.document")
     assert prepared.scan_type == "WORD"
     assert prepared.cleanup_claimed_at is None
+
+
+def test_direct_local_artifact_can_be_prepared_without_queue_job(tmp_path):
+    service = _service(tmp_path)
+    root, source = _source(tmp_path)
+
+    prepared = _prepare(
+        service,
+        source,
+        root,
+        remediation_job_id=None,
+        created_by_id=None,
+        provider="local",
+    )
+
+    assert prepared.remediation_job_id is None
+    assert prepared.provider == "local"
+
+
+def test_direct_local_artifact_is_scan_bound_without_cloud_file_or_job(tmp_path):
+    service = _service(tmp_path)
+    root, source = _source(tmp_path)
+
+    prepared = _prepare(
+        service,
+        source,
+        root,
+        cloud_file_id=None,
+        remediation_job_id=None,
+        created_by_id=None,
+        provider="local",
+    )
+
+    assert prepared.cloud_file_id is None
+    assert prepared.remediation_job_id is None
+    assert prepared.provider == "local"
+
+
+def test_deferred_finalization_does_not_commit_caller_transaction(tmp_path):
+    service = _service(tmp_path)
+    root, source = _source(tmp_path)
+    prepared = _prepare(service, source, root)
+    artifact = _artifact(prepared, published_at=datetime.now(timezone.utc))
+    parents = _parents()
+    service._lock_existing_artifact = MagicMock(
+        return_value=(
+            parents["department"],
+            parents["scan"],
+            parents["cloud"],
+            parents["job"],
+            artifact,
+        )
+    )
+    service._open_verified = MagicMock(return_value=nullcontext())
+    db = MagicMock()
+
+    finalized = service.finalize(
+        db,
+        artifact_id=artifact.id,
+        publication_token=artifact.publication_token,
+        commit=False,
+    )
+
+    assert finalized.lifecycle_status == "available"
+    assert parents["cloud"].current_remediation_artifact_id == artifact.id
+    assert parents["cloud"].has_remediated_version is True
+    db.flush.assert_called_once()
+    db.commit.assert_not_called()
+
+
+def test_abort_staging_deletes_known_bytes_and_claim_row(tmp_path):
+    service = _service(tmp_path)
+    root, source = _source(tmp_path)
+    artifact = _artifact(_prepare(service, source, root))
+    parents = _parents()
+    service._lock_existing_artifact = MagicMock(
+        return_value=(
+            parents["department"],
+            parents["scan"],
+            parents["cloud"],
+            parents["job"],
+            artifact,
+        )
+    )
+    service.delete_known = MagicMock(return_value=True)
+    db = MagicMock()
+
+    assert (
+        service.abort_staging(
+            db,
+            artifact_id=artifact.id,
+            publication_token=artifact.publication_token,
+        )
+        is True
+    )
+
+    service.delete_known.assert_called_once_with(artifact)
+    db.delete.assert_called_once_with(artifact)
+    db.commit.assert_called_once()
+
+
+def test_abort_staging_requires_exact_publication_token(tmp_path):
+    service = _service(tmp_path)
+    root, source = _source(tmp_path)
+    artifact = _artifact(_prepare(service, source, root))
+    parents = _parents()
+    service._lock_existing_artifact = MagicMock(
+        return_value=(
+            parents["department"],
+            parents["scan"],
+            parents["cloud"],
+            parents["job"],
+            artifact,
+        )
+    )
+    service.delete_known = MagicMock()
+
+    with pytest.raises(module.ArtifactAuthorizationError, match="lease"):
+        service.abort_staging(
+            MagicMock(),
+            artifact_id=artifact.id,
+            publication_token="f" * 64,
+        )
+
+    service.delete_known.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["copy", "link", "fsync", "finalize"])
+def test_claim_and_publish_wraps_transient_phases_and_attempts_owned_cleanup(
+    tmp_path, monkeypatch, phase
+):
+    service = _service(tmp_path)
+    root, source = _source(tmp_path)
+    prepared = _prepare(service, source, root)
+    artifact = _artifact(prepared)
+    claim = module.ArtifactClaim(
+        artifact=artifact,
+        owned=True,
+        status="staging",
+        publication_token=prepared.publication_token,
+    )
+    service.claim = MagicMock(return_value=claim)
+    parents = _parents()
+    service._lock_existing_artifact = MagicMock(
+        return_value=(
+            parents["department"],
+            parents["scan"],
+            parents["cloud"],
+            parents["job"],
+            artifact,
+        )
+    )
+    service.abort_staging = MagicMock(return_value=True)
+    if phase == "copy":
+        monkeypatch.setattr(
+            module, "_write_all", MagicMock(side_effect=OSError("secret/path"))
+        )
+    elif phase == "link":
+        monkeypatch.setattr(
+            module.os, "link", MagicMock(side_effect=OSError("secret/path"))
+        )
+    elif phase == "fsync":
+        monkeypatch.setattr(
+            module.os, "fsync", MagicMock(side_effect=OSError("secret/path"))
+        )
+    else:
+        service._publish_fd = MagicMock()
+        service.finalize = MagicMock(side_effect=OSError("secret/path"))
+    db = MagicMock()
+
+    with pytest.raises(module.ArtifactPublicationRetryable) as caught:
+        service.claim_and_publish(
+            db,
+            source_path=source,
+            trusted_temp_root=root,
+            department_id=DEPARTMENT_ID,
+            scan_id=SCAN_ID,
+            cloud_file_id=CLOUD_FILE_ID,
+            remediation_job_id=JOB_ID,
+            created_by_id=USER_ID,
+            provider="canvas",
+            scan_type=ScanType.WORD,
+            filename="fixed.docx",
+            commit=False,
+        )
+
+    retry = caught.value.result
+    assert retry.artifact_id == artifact.id
+    assert retry.cleanup_complete is True
+    assert prepared.publication_token not in repr(retry)
+    assert prepared.publication_token not in repr(caught.value)
+    assert "secret/path" not in repr(caught.value)
+    service.abort_staging.assert_called_once_with(
+        db,
+        artifact_id=artifact.id,
+        publication_token=prepared.publication_token,
+    )
+
+
+def test_retryable_publication_retains_artifact_id_when_cleanup_fails(tmp_path):
+    service = _service(tmp_path)
+    root, source = _source(tmp_path)
+    prepared = _prepare(service, source, root)
+    artifact = _artifact(prepared)
+    service.claim = MagicMock(
+        return_value=module.ArtifactClaim(
+            artifact=artifact,
+            owned=True,
+            status="staging",
+            publication_token=prepared.publication_token,
+        )
+    )
+    service._publish_fd = MagicMock(side_effect=OSError("/private/path"))
+    service.abort_staging = MagicMock(side_effect=OSError("cleanup unavailable"))
+
+    with pytest.raises(module.ArtifactPublicationRetryable) as caught:
+        service.claim_and_publish(
+            MagicMock(),
+            source_path=source,
+            trusted_temp_root=root,
+            department_id=DEPARTMENT_ID,
+            scan_id=SCAN_ID,
+            cloud_file_id=CLOUD_FILE_ID,
+            remediation_job_id=JOB_ID,
+            created_by_id=USER_ID,
+            provider="canvas",
+            scan_type=ScanType.WORD,
+            filename="fixed.docx",
+            commit=False,
+        )
+
+    assert caught.value.result.artifact_id == artifact.id
+    assert caught.value.result.cleanup_complete is False
+    assert prepared.publication_token not in repr(caught.value)
+
+
+def test_same_job_retry_finalizes_ambiguous_published_claim_without_republishing(
+    tmp_path,
+):
+    service = _service(tmp_path)
+    root, source = _source(tmp_path)
+    prepared = _prepare(service, source, root)
+    artifact = _artifact(prepared, published_at=datetime.now(timezone.utc))
+    owned = module.ArtifactClaim(
+        artifact=artifact,
+        owned=True,
+        status="staging",
+        publication_token=prepared.publication_token,
+    )
+    ambiguous = module.ArtifactClaim(
+        artifact=artifact,
+        owned=True,
+        status="published",
+        publication_token=prepared.publication_token,
+    )
+    service.claim = MagicMock(side_effect=[owned, ambiguous])
+    service._publish_fd = MagicMock()
+    service.finalize = MagicMock(side_effect=[OSError("commit ambiguous"), artifact])
+    service.abort_staging = MagicMock(side_effect=OSError("cleanup unavailable"))
+
+    kwargs = dict(
+        db=MagicMock(),
+        source_path=source,
+        trusted_temp_root=root,
+        department_id=DEPARTMENT_ID,
+        scan_id=SCAN_ID,
+        cloud_file_id=CLOUD_FILE_ID,
+        remediation_job_id=JOB_ID,
+        created_by_id=USER_ID,
+        provider="canvas",
+        scan_type=ScanType.WORD,
+        filename="fixed.docx",
+        commit=False,
+    )
+    with pytest.raises(module.ArtifactPublicationRetryable):
+        service.claim_and_publish(**kwargs)
+
+    result = service.claim_and_publish(**kwargs)
+
+    assert result.artifact is artifact
+    assert result.artifact_id == artifact.id
+    assert service._publish_fd.call_count == 1
+    assert prepared.publication_token not in repr(result)
 
 
 def test_locked_scan_type_mismatch_rejects_before_row_commit_or_publication(
@@ -361,6 +645,41 @@ def test_existing_staging_claim_is_idempotent_in_progress(tmp_path):
     assert claim.owned is False
     assert claim.status == "in_progress"
     db.add.assert_not_called()
+
+
+def test_unowned_in_progress_publication_is_not_aborted_or_given_a_token(tmp_path):
+    service = _service(tmp_path)
+    root, source = _source(tmp_path)
+    prepared = _prepare(service, source, root)
+    existing = _artifact(prepared)
+    service.claim = MagicMock(
+        return_value=module.ArtifactClaim(
+            artifact=existing,
+            owned=False,
+            status="in_progress",
+            publication_token=None,
+        )
+    )
+    service.abort_staging = MagicMock()
+
+    with pytest.raises(module.ArtifactInProgressError) as caught:
+        service.claim_and_publish(
+            MagicMock(),
+            source_path=source,
+            trusted_temp_root=root,
+            department_id=DEPARTMENT_ID,
+            scan_id=SCAN_ID,
+            cloud_file_id=CLOUD_FILE_ID,
+            remediation_job_id=JOB_ID,
+            created_by_id=USER_ID,
+            provider="canvas",
+            scan_type=ScanType.WORD,
+            filename="fixed.docx",
+            commit=False,
+        )
+
+    service.abort_staging.assert_not_called()
+    assert prepared.publication_token not in repr(caught.value)
 
 
 def test_existing_available_claim_is_reusable(tmp_path):

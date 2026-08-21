@@ -55,6 +55,10 @@ from ..auth.canvas_permissions import (
 from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ..auth.redis_rate_limiter import OAuthStateManager
 from ..ai.lms_remediation_client import LMSRemediationClient
+from ..services.remediation_artifact_service import (
+    ArtifactPublicationResult,
+    RemediationArtifactService,
+)
 from ..utils.security import (
     PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
     require_brightspace_oauth_allowed_origin,
@@ -185,6 +189,12 @@ class RemediationOutcome(BaseModel):
     failed_count: int = Field(default=0, ge=0)
     skipped_count: int = Field(default=0, ge=0)
     has_remediated_version: bool = False
+    artifact_id: Optional[str] = None
+    artifact_mime_type: Optional[str] = None
+    artifact_size_bytes: Optional[int] = Field(default=None, ge=0)
+    artifact_sha256: Optional[str] = None
+    artifact_expires_at: Optional[datetime] = None
+    artifact_review_status: Optional[str] = None
     ai_used: bool = False
     external_ai_used: bool = False
     providers: List[str] = Field(default_factory=list, max_length=2)
@@ -1283,8 +1293,14 @@ def _run_remediator_worker(
 
         result = remediator.remediate()
         output_path = getattr(result, "output_file", None)
-        verified = bool(getattr(result, "verification_passed", False))
-        if not verified or not output_path or not os.path.isfile(output_path):
+        complete = (
+            getattr(result, "success", None) is True
+            and _bounded_count(getattr(result, "fixed_count", 0)) > 0
+            and _bounded_count(getattr(result, "manual_count", 0)) == 0
+            and _bounded_count(getattr(result, "failed_count", 0)) == 0
+            and getattr(result, "verification_passed", None) is True
+        )
+        if not complete or not output_path or not os.path.isfile(output_path):
             return _WorkerRemediationResult(result=result)
         if source_text is not None:
             with open(output_path, "r", encoding="utf-8") as output:
@@ -1364,6 +1380,8 @@ async def _remediate_file_impl(
     )
     result = None
     durable_output = False
+    artifact = None
+    artifact_publication = None
 
     if _is_inline_html_content(cloud_file, ext):
         if not isinstance(cloud_file.content_body, str) or not cloud_file.content_body:
@@ -1436,6 +1454,14 @@ async def _remediate_file_impl(
                     != "ollama",
                     providers=[getattr(alt_text_client, "provider", "unknown")][:1],
                 )
+            if len(raw_issues) != 1:
+                return RemediationOutcome(
+                    cloud_file_id=str(cloud_file.id),
+                    status="manual_required",
+                    manual_count=len(raw_issues),
+                    purpose_decisions=decisions,
+                    error_code="manual_required",
+                )
             cloud_file.remediated_body = (
                 f'<img src="" alt="{html.escape(alt_text.strip(), quote=True)}" />'
             )
@@ -1444,9 +1470,11 @@ async def _remediate_file_impl(
                 "ImageResult",
                 (),
                 {
+                    "success": True,
                     "fixed_count": 1,
-                    "manual_count": max(0, len(raw_issues) - 1),
+                    "manual_count": 0,
                     "failed_count": 0,
+                    "verification_passed": True,
                 },
             )()
             decisions["alt_text"] = "used"
@@ -1482,21 +1510,60 @@ async def _remediate_file_impl(
             source_bytes=file_bytes,
         )
         result = worker_result.result
-        if worker_result.remediated_bytes is not None:
-            persist_path = os.path.join(
-                os.getenv("UPLOAD_DIR", "/app/uploads"),
-                "remediated",
-                str(cloud_file.id),
-                f"remediated.{ext}",
-            )
-            durable_output = await _run_brightspace_worker(
-                str(getattr(cloud_file, "department_id", "unknown")),
-                _persist_remediated_bytes,
-                persist_path,
-                worker_result.remediated_bytes,
-            )
-            if durable_output:
-                cloud_file.remediated_file_id = persist_path
+        complete = (
+            getattr(result, "success", None) is True
+            and _bounded_count(getattr(result, "fixed_count", 0)) > 0
+            and _bounded_count(getattr(result, "manual_count", 0)) == 0
+            and _bounded_count(getattr(result, "failed_count", 0)) == 0
+            and getattr(result, "verification_passed", None) is True
+        )
+        if (
+            complete
+            and worker_result.remediated_bytes is not None
+            and ext
+            in {
+                "docx",
+                "pptx",
+                "xlsx",
+                "pdf",
+            }
+        ):
+            with tempfile.TemporaryDirectory(
+                prefix="aelira_brightspace_artifact_"
+            ) as artifact_temp_dir:
+                artifact_path = os.path.join(artifact_temp_dir, f"remediated.{ext}")
+                durable_output = await _run_brightspace_worker(
+                    str(getattr(cloud_file, "department_id", "unknown")),
+                    _persist_remediated_bytes,
+                    artifact_path,
+                    worker_result.remediated_bytes,
+                )
+                if durable_output:
+                    artifact = (
+                        RemediationArtifactService.from_settings().claim_and_publish(
+                            db,
+                            source_path=artifact_path,
+                            trusted_temp_root=artifact_temp_dir,
+                            department_id=str(cloud_file.department_id),
+                            scan_id=str(cloud_file.last_scan_id),
+                            cloud_file_id=str(cloud_file.id),
+                            remediation_job_id=None,
+                            created_by_id=None,
+                            provider=CloudProvider.BRIGHTSPACE.value,
+                            scan_type={
+                                "docx": "WORD",
+                                "pptx": "POWERPOINT",
+                                "xlsx": "EXCEL",
+                                "pdf": "PDF",
+                            }[ext],
+                            filename=f"remediated.{ext}",
+                            provider_result={"verification_passed": True},
+                            commit=False,
+                        )
+                    )
+                    if isinstance(artifact, ArtifactPublicationResult):
+                        artifact_publication = artifact
+                    durable_output = artifact.lifecycle_status == "available"
     else:
         return RemediationOutcome(
             cloud_file_id=str(cloud_file.id),
@@ -1506,6 +1573,14 @@ async def _remediate_file_impl(
             error_code="manual_required",
         )
 
+    if result is None:
+        return RemediationOutcome(
+            cloud_file_id=str(cloud_file.id),
+            status="failed",
+            failed_count=len(raw_issues),
+            purpose_decisions=decisions,
+            error_code="remediation_failed",
+        )
     fixed = _bounded_count(getattr(result, "fixed_count", 0))
     manual = _bounded_count(getattr(result, "manual_count", 0))
     failed = _bounded_count(getattr(result, "failed_count", 0))
@@ -1515,9 +1590,36 @@ async def _remediate_file_impl(
     cloud_file.writeback_status = (
         "pending_review" if cloud_file.has_remediated_version else None
     )
-    if cloud_file.has_remediated_version:
-        db.commit()
-    status = "completed" if cloud_file.has_remediated_version else "manual_required"
+    if cloud_file.has_remediated_version is True:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            if artifact_publication is not None:
+                try:
+                    RemediationArtifactService.from_settings().abort_staging(
+                        db,
+                        artifact_id=artifact_publication.artifact_id,
+                        publication_token=artifact_publication.publication_token,
+                    )
+                except Exception:
+                    db.rollback()
+                    logger.warning(
+                        "Failed to clean aborted Brightspace artifact",
+                    )
+            return RemediationOutcome(
+                cloud_file_id=str(cloud_file.id),
+                status="failed",
+                failed_count=max(1, fixed),
+                purpose_decisions=decisions,
+                error_code="remediation_failed",
+            )
+    if cloud_file.has_remediated_version is True:
+        status = "completed"
+    elif getattr(result, "success", None) is not True or failed > 0:
+        status = "failed"
+    else:
+        status = "manual_required"
     return RemediationOutcome(
         cloud_file_id=str(cloud_file.id),
         status=status,
@@ -1527,6 +1629,12 @@ async def _remediate_file_impl(
         ),
         failed_count=failed,
         has_remediated_version=bool(cloud_file.has_remediated_version),
+        artifact_id=str(artifact.id) if artifact is not None else None,
+        artifact_mime_type=artifact.mime_type if artifact is not None else None,
+        artifact_size_bytes=artifact.size_bytes if artifact is not None else None,
+        artifact_sha256=artifact.sha256 if artifact is not None else None,
+        artifact_expires_at=artifact.expires_at if artifact is not None else None,
+        artifact_review_status=artifact.review_status if artifact is not None else None,
         ai_used=decisions.get("alt_text") == "used",
         external_ai_used=(
             decisions.get("alt_text") == "used"

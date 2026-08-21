@@ -650,18 +650,36 @@ async def _canvas_scan_then_remediate_task(
 
             result = await handle_remediation_job(remediation_job, db, token_manager)
 
-            remediation_job.status = CloudJobStatus.COMPLETED.value
-            remediation_job.progress = 100
-            remediation_job.progress_message = "Remediation complete"
-            remediation_job.result_data = result
-            remediation_job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
             logger.info(
                 f"Canvas remediation complete: job={remediation_job_id}, "
                 f"fixed={result.get('fixed_count')}"
             )
         except Exception as exc:
+            from ..jobs.remediation_job import (
+                RemediationJobFailed,
+                RetryableRemediationJobError,
+                transition_retryable_remediation_job,
+            )
+
+            if isinstance(exc, RetryableRemediationJobError):
+                transition_retryable_remediation_job(remediation_job, db, exc)
+                logger.warning(
+                    "Canvas remediation queued after transient failure",
+                    extra={
+                        "job_id": remediation_job_id,
+                        "error_code": exc.code,
+                    },
+                )
+                return
+            if (
+                isinstance(exc, RemediationJobFailed)
+                and exc.terminal_state_committed is True
+            ):
+                logger.warning(
+                    "Canvas remediation reached a committed terminal failure",
+                    extra={"job_id": remediation_job_id, "error_code": exc.code},
+                )
+                return
             error_code = (
                 getattr(exc, "code")
                 if type(exc).__name__ == "RemediationJobFailed"

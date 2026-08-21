@@ -380,7 +380,7 @@ def test_non_lti_remediation_rejects_cross_tenant_cloud_file_before_side_effects
     refresh_token.assert_not_awaited()
     canvas_client.assert_not_called()
     assert cloud_file.has_remediated_version is False
-    db.commit.assert_not_called()
+    db.commit.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -433,7 +433,7 @@ def test_non_lti_remediation_rejects_unbound_credential_before_side_effects(
     canvas_client.assert_not_called()
     google_drive.assert_not_called()
     assert cloud_file.has_remediated_version is False
-    db.commit.assert_not_called()
+    db.commit.assert_called_once()
 
 
 def test_non_lti_fallback_helpers_return_only_same_tenant_provider_objects():

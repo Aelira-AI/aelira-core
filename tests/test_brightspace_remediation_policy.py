@@ -751,6 +751,7 @@ async def test_brightspace_html_helper_promotes_only_verified_durable_output(ver
     query.first.return_value = scan_result
     db.query.return_value = query
     fake_result = SimpleNamespace(
+        success=True,
         output_file=__file__,
         verification_passed=verified,
         fixed_count=1,
@@ -862,6 +863,7 @@ async def test_sync_remediator_runs_in_thread_without_db_session(tmp_path):
         def remediate(self):
             observed["run_thread"] = threading.get_ident()
             return SimpleNamespace(
+                success=True,
                 output_file=str(output),
                 verification_passed=True,
                 fixed_count=1,

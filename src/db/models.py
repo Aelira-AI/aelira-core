@@ -901,6 +901,7 @@ class CloudProvider(str, Enum):
     BLACKBOARD = "blackboard"
     MOODLE = "moodle"
     BRIGHTSPACE = "brightspace"
+    LOCAL = "local"
 
 
 class CloudJobType(str, Enum):
@@ -1251,7 +1252,7 @@ class RemediationArtifact(Base):
             name="fk_remediation_artifacts_cloud_file",
             ondelete="RESTRICT",
         ),
-        nullable=False,
+        nullable=True,
     )
     remediation_job_id = Column(
         String(36),
@@ -1260,7 +1261,7 @@ class RemediationArtifact(Base):
             name="fk_remediation_artifacts_remediation_job",
             ondelete="RESTRICT",
         ),
-        nullable=False,
+        nullable=True,
         unique=True,
     )
     created_by_id = Column(
@@ -1319,8 +1320,15 @@ class RemediationArtifact(Base):
     __table_args__ = (
         CheckConstraint(
             "provider IN ('google', 'microsoft', 'canvas', 'blackboard', "
-            "'moodle', 'brightspace')",
+            "'moodle', 'brightspace', 'local')",
             name="ck_remediation_artifacts_provider",
+        ),
+        CheckConstraint(
+            "((provider = 'local' AND cloud_file_id IS NULL AND "
+            "remediation_job_id IS NULL) OR "
+            "(provider <> 'local' AND cloud_file_id IS NOT NULL)) AND "
+            "(remediation_job_id IS NULL OR cloud_file_id IS NOT NULL)",
+            name="ck_remediation_artifacts_provider_authority",
         ),
         CheckConstraint(
             "scan_type IN ('PDF', 'POWERPOINT', 'WORD', 'EXCEL', 'LATEX', "

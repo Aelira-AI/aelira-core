@@ -17,7 +17,7 @@ import uuid
 import zipfile
 
 from sqlalchemy import and_, or_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from src.db.models import (
     CloudFile,
@@ -61,7 +61,32 @@ class ArtifactInProgressError(ArtifactError):
     """An idempotent job claim exists but publication is still in progress."""
 
 
-_PROVIDERS = {"google", "microsoft", "canvas", "blackboard", "moodle", "brightspace"}
+@dataclass(frozen=True)
+class ArtifactPublicationRetry:
+    """Bounded retry state for one known publication claim."""
+
+    artifact_id: str
+    publication_token: str | None = dataclass_field(default=None, repr=False)
+    cleanup_complete: bool = False
+
+
+class ArtifactPublicationRetryable(ArtifactError):
+    """A transient publication failure safe for queue retry."""
+
+    def __init__(self, result: ArtifactPublicationRetry):
+        self.result = result
+        super().__init__("artifact_publication_retryable")
+
+
+_PROVIDERS = {
+    "google",
+    "microsoft",
+    "canvas",
+    "blackboard",
+    "moodle",
+    "brightspace",
+    "local",
+}
 _MIME_BY_SCAN_TYPE = {
     "PDF": {".pdf": "application/pdf"},
     "WORD": {
@@ -105,8 +130,8 @@ class PreparedRemediationArtifact:
     id: str
     department_id: str
     scan_id: str
-    cloud_file_id: str
-    remediation_job_id: str
+    cloud_file_id: str | None
+    remediation_job_id: str | None
     created_by_id: str | None
     provider: str
     scan_type: str
@@ -149,12 +174,24 @@ class ArtifactClaim:
 
 
 @dataclass(frozen=True)
+class ArtifactPublicationResult:
+    """Published artifact plus its in-memory claim for commit cleanup."""
+
+    artifact: RemediationArtifact = dataclass_field(repr=False)
+    artifact_id: str
+    publication_token: str | None = dataclass_field(default=None, repr=False)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.artifact, name)
+
+
+@dataclass(frozen=True)
 class _ArtifactMetadata:
     id: str
     department_id: str
     scan_id: str
-    cloud_file_id: str
-    remediation_job_id: str
+    cloud_file_id: str | None
+    remediation_job_id: str | None
     provider: str
 
 
@@ -287,6 +324,22 @@ def _write_all(fd: int, data: bytes) -> None:
 
 class RemediationArtifactService:
     """Own the DB claim, immutable publication, and artifact state transitions."""
+
+    @classmethod
+    def from_settings(cls) -> "RemediationArtifactService":
+        from src.config.settings import get_settings
+
+        settings = get_settings()
+        return cls(
+            root=settings.remediation_artifact_dir,
+            max_bytes=settings.remediation_artifact_max_bytes,
+            retention_days=settings.remediation_artifact_retention_days,
+            approved_retention_days=(
+                settings.remediation_artifact_approved_retention_days
+            ),
+            written_retention_days=settings.remediation_artifact_written_retention_days,
+            staging_grace_seconds=settings.remediation_artifact_staging_grace_seconds,
+        )
 
     def __init__(
         self,
@@ -440,8 +493,8 @@ class RemediationArtifactService:
         *,
         department_id: str,
         scan_id: str,
-        cloud_file_id: str,
-        remediation_job_id: str,
+        cloud_file_id: str | None,
+        remediation_job_id: str | None,
         provider: str,
         artifact_id: str | None = None,
         artifact_job_id: str | None = None,
@@ -450,35 +503,51 @@ class RemediationArtifactService:
         """Lock Department→Scan→CloudFile→Job→Artifact, and only this order."""
         department = self._locked(db, Department, department_id, "department")
         scan = self._locked(db, Scan, scan_id, "scan")
-        cloud_file = self._locked(db, CloudFile, cloud_file_id, "cloud file")
-        job = self._locked(db, CloudJobQueue, remediation_job_id, "remediation job")
+        cloud_file = (
+            self._locked(db, CloudFile, cloud_file_id, "cloud file")
+            if cloud_file_id is not None
+            else None
+        )
+        job = (
+            self._locked(db, CloudJobQueue, remediation_job_id, "remediation job")
+            if remediation_job_id is not None
+            else None
+        )
         if scan.department_id != department.id:
             raise ArtifactAuthorizationError(
                 "scan and department authority do not match"
             )
-        if (
-            cloud_file.department_id != department.id
+        if cloud_file is None:
+            if provider != "local" or remediation_job_id is not None:
+                raise ArtifactAuthorizationError(
+                    "jobless artifact without cloud authority must be local"
+                )
+        elif (
+            provider == "local"
+            or cloud_file.department_id != department.id
             or cloud_file.last_scan_id != scan.id
             or cloud_file.provider != provider
         ):
             raise ArtifactAuthorizationError(
                 "cloud file does not match the exact scan authority"
             )
-        if (
-            job.department_id != department.id
-            or job.cloud_file_id != cloud_file.id
-            or job.job_type != "remediate"
-            or job.provider != provider
-        ):
-            raise ArtifactAuthorizationError(
-                "remediation job does not match the exact artifact graph"
-            )
-        context = getattr(job, "execution_context", None) or {}
-        context_scan_id = context.get("scan_id")
-        if context_scan_id is not None and context_scan_id != scan.id:
-            raise ArtifactAuthorizationError(
-                "remediation job scan context does not match"
-            )
+        if job is not None:
+            if (
+                cloud_file is None
+                or job.department_id != department.id
+                or job.cloud_file_id != cloud_file.id
+                or job.job_type != "remediate"
+                or job.provider != provider
+            ):
+                raise ArtifactAuthorizationError(
+                    "remediation job does not match the exact artifact graph"
+                )
+            context = getattr(job, "execution_context", None) or {}
+            context_scan_id = context.get("scan_id")
+            if context_scan_id is not None and context_scan_id != scan.id:
+                raise ArtifactAuthorizationError(
+                    "remediation job scan context does not match"
+                )
         artifact = None
         if artifact_id is not None or artifact_job_id is not None:
             query = db.query(RemediationArtifact)
@@ -605,8 +674,8 @@ class RemediationArtifactService:
         *,
         department_id: str,
         scan_id: str,
-        cloud_file_id: str,
-        remediation_job_id: str,
+        cloud_file_id: str | None,
+        remediation_job_id: str | None,
         created_by_id: str | None,
         provider: str,
         scan_type: ScanType | str,
@@ -615,8 +684,12 @@ class RemediationArtifactService:
     ) -> PreparedRemediationArtifact:
         department_id = _canonical_uuid(department_id, "department_id")
         scan_id = _canonical_uuid(scan_id, "scan_id")
-        cloud_file_id = _canonical_uuid(cloud_file_id, "cloud_file_id")
-        remediation_job_id = _canonical_uuid(remediation_job_id, "remediation_job_id")
+        if cloud_file_id is not None:
+            cloud_file_id = _canonical_uuid(cloud_file_id, "cloud_file_id")
+        if remediation_job_id is not None:
+            remediation_job_id = _canonical_uuid(
+                remediation_job_id, "remediation_job_id"
+            )
         if created_by_id is not None:
             created_by_id = _canonical_uuid(created_by_id, "created_by_id")
         scan_type = _normalize_scan_type(scan_type)
@@ -739,6 +812,13 @@ class RemediationArtifactService:
         if artifact.cleanup_claimed_at is not None:
             raise ArtifactInProgressError("existing artifact is claimed for cleanup")
         if artifact.lifecycle_status == "staging":
+            if artifact.published_at is not None and artifact.publication_token:
+                return ArtifactClaim(
+                    artifact=artifact,
+                    owned=True,
+                    status="published",
+                    publication_token=artifact.publication_token,
+                )
             return ArtifactClaim(artifact=artifact, owned=False, status="in_progress")
         if artifact.lifecycle_status == "available":
             return ArtifactClaim(artifact=artifact, owned=False, status="available")
@@ -752,15 +832,17 @@ class RemediationArtifactService:
         trusted_temp_root: str | Path,
         department_id: str,
         scan_id: str,
-        cloud_file_id: str,
-        remediation_job_id: str,
+        cloud_file_id: str | None,
+        remediation_job_id: str | None,
         created_by_id: str | None,
         provider: str,
         scan_type: ScanType | str,
         filename: str,
         provider_result: dict[str, Any] | None = None,
-    ) -> RemediationArtifact:
-        """Validate source, commit claim, publish only if owned, then finalize."""
+        commit: bool = True,
+    ) -> ArtifactPublicationResult:
+        """Validate, DB-first publish, and optionally defer the final commit."""
+        claim: ArtifactClaim | None = None
         with self._open_source_fd(source_path, trusted_temp_root) as source_fd:
             prepared = self._prepare(
                 source_fd,
@@ -775,29 +857,61 @@ class RemediationArtifactService:
                 provider_result=provider_result,
             )
             claim = self.claim(db, prepared)
-            if claim.status == "in_progress":
-                raise ArtifactInProgressError(
-                    "artifact publication is already in progress"
-                )
-            if claim.status == "available":
-                with self.open_verified(
+            try:
+                if claim.status == "in_progress":
+                    raise ArtifactInProgressError(
+                        "artifact publication is already in progress"
+                    )
+                if claim.status == "available":
+                    with self.open_verified(
+                        db,
+                        claim.artifact,
+                        department_id=department_id,
+                        scan_id=scan_id,
+                        cloud_file_id=cloud_file_id,
+                    ):
+                        pass
+                    return ArtifactPublicationResult(
+                        artifact=claim.artifact,
+                        artifact_id=str(claim.artifact.id),
+                    )
+                assert claim.publication_token is not None
+                if claim.status != "published":
+                    self._publish_fd(
+                        db, claim.artifact, claim.publication_token, source_fd
+                    )
+                artifact = self.finalize(
                     db,
-                    claim.artifact,
-                    department_id=department_id,
-                    scan_id=scan_id,
-                    cloud_file_id=cloud_file_id,
-                ):
-                    pass
-                return claim.artifact
-            assert claim.publication_token is not None
-            self._publish_fd(db, claim.artifact, claim.publication_token, source_fd)
-        artifact = self.finalize(
-            db,
-            artifact_id=claim.artifact.id,
-            publication_token=claim.publication_token,
-        )
-        db.commit()
-        return artifact
+                    artifact_id=claim.artifact.id,
+                    publication_token=claim.publication_token,
+                )
+                if commit:
+                    db.commit()
+                return ArtifactPublicationResult(
+                    artifact=artifact,
+                    artifact_id=str(artifact.id),
+                    publication_token=claim.publication_token,
+                )
+            except (OSError, ArtifactIntegrityError, SQLAlchemyError) as exc:
+                db.rollback()
+                cleanup_complete = False
+                if claim.owned and claim.publication_token is not None:
+                    try:
+                        self.abort_staging(
+                            db,
+                            artifact_id=str(claim.artifact.id),
+                            publication_token=claim.publication_token,
+                        )
+                        cleanup_complete = True
+                    except Exception:
+                        db.rollback()
+                raise ArtifactPublicationRetryable(
+                    ArtifactPublicationRetry(
+                        artifact_id=str(claim.artifact.id),
+                        publication_token=claim.publication_token,
+                        cleanup_complete=cleanup_complete,
+                    )
+                ) from exc
 
     def persist(self, **_: Any) -> PreparedRemediationArtifact:
         """Bytes-first persistence is intentionally disabled; use claim_and_publish."""
@@ -981,7 +1095,12 @@ class RemediationArtifactService:
             self._publish_fd(db, artifact, publication_token, source_fd)
 
     def finalize(
-        self, db: Any, *, artifact_id: str, publication_token: str
+        self,
+        db: Any,
+        *,
+        artifact_id: str,
+        publication_token: str,
+        commit: bool = False,
     ) -> RemediationArtifact:
         if not isinstance(publication_token, str) or len(publication_token) != 64:
             raise ArtifactAuthorizationError("publication token is invalid")
@@ -1005,10 +1124,60 @@ class RemediationArtifactService:
         artifact.lifecycle_status = "available"
         artifact.publication_token = None
         artifact.publication_heartbeat_at = None
-        cloud_file.current_remediation_artifact_id = artifact.id
-        cloud_file.has_remediated_version = True
+        if cloud_file is not None:
+            cloud_file.current_remediation_artifact_id = artifact.id
+            cloud_file.has_remediated_version = True
         db.flush()
+        if commit:
+            db.commit()
         return artifact
+
+    def abort_staging(
+        self, db: Any, *, artifact_id: str, publication_token: str
+    ) -> bool:
+        """Remove a known failed publication so the same job can retry cleanly."""
+        _, _, cloud_file, _, artifact = self._lock_existing_artifact(db, artifact_id)
+        assert artifact is not None
+        self._require_publication_owner(artifact, publication_token)
+        return self._abort_locked_staging(db, cloud_file, artifact)
+
+    def abort_staging_for_job(
+        self, db: Any, *, artifact_id: str, remediation_job_id: str
+    ) -> bool:
+        """Clean a retained retry claim using its locked internal token."""
+        try:
+            metadata = self._artifact_metadata(db, artifact_id)
+        except ArtifactAuthorizationError:
+            return False
+        if metadata.remediation_job_id != remediation_job_id:
+            raise ArtifactAuthorizationError(
+                "artifact cleanup does not match remediation job"
+            )
+        _, _, cloud_file, job, artifact = self._lock_existing_artifact(db, artifact_id)
+        assert artifact is not None
+        if job is None or str(job.id) != str(remediation_job_id):
+            raise ArtifactAuthorizationError(
+                "artifact cleanup does not match remediation job"
+            )
+        token = artifact.publication_token
+        if not isinstance(token, str):
+            raise ArtifactAuthorizationError("artifact publication token is missing")
+        self._require_publication_owner(artifact, token)
+        return self._abort_locked_staging(db, cloud_file, artifact)
+
+    def _abort_locked_staging(
+        self, db: Any, cloud_file: Any, artifact: RemediationArtifact
+    ) -> bool:
+        removed = self.delete_known(artifact)
+        if (
+            cloud_file is not None
+            and cloud_file.current_remediation_artifact_id == artifact.id
+        ):
+            cloud_file.current_remediation_artifact_id = None
+            cloud_file.has_remediated_version = False
+        db.delete(artifact)
+        db.commit()
+        return removed
 
     def _validate_record_state(
         self,
@@ -1016,7 +1185,7 @@ class RemediationArtifactService:
         *,
         department_id: str,
         scan_id: str,
-        cloud_file_id: str,
+        cloud_file_id: str | None,
         require_approved: bool,
         approval_checksum: str | None,
         allowed_lifecycle: set[str],
@@ -1024,13 +1193,23 @@ class RemediationArtifactService:
         requested = (
             _canonical_uuid(department_id, "department_id"),
             _canonical_uuid(scan_id, "scan_id"),
-            _canonical_uuid(cloud_file_id, "cloud_file_id"),
+            (
+                _canonical_uuid(cloud_file_id, "cloud_file_id")
+                if cloud_file_id is not None
+                else None
+            ),
         )
         actual = (artifact.department_id, artifact.scan_id, artifact.cloud_file_id)
-        if any(
-            not hmac.compare_digest(left, right)
+        authority_matches = all(
+            (left is None and right is None)
+            or (
+                isinstance(left, str)
+                and isinstance(right, str)
+                and hmac.compare_digest(left, right)
+            )
             for left, right in zip(actual, requested)
-        ):
+        )
+        if not authority_matches:
             raise ArtifactAuthorizationError(
                 "artifact authority does not match request"
             )
@@ -1111,7 +1290,7 @@ class RemediationArtifactService:
         *,
         department_id: str,
         scan_id: str,
-        cloud_file_id: str,
+        cloud_file_id: str | None,
         require_approved: bool = False,
         approval_checksum: str | None = None,
     ) -> Iterator[BinaryIO]:
@@ -1141,7 +1320,7 @@ class RemediationArtifactService:
         *,
         department_id: str,
         scan_id: str,
-        cloud_file_id: str,
+        cloud_file_id: str | None,
         require_approved: bool = False,
         approval_checksum: str | None = None,
     ) -> RemediationArtifact:
@@ -1165,7 +1344,7 @@ class RemediationArtifactService:
         remediation_job_id: str,
         department_id: str,
         scan_id: str,
-        cloud_file_id: str,
+        cloud_file_id: str | None,
     ):
         remediation_job_id = _canonical_uuid(remediation_job_id, "remediation_job_id")
         discovered = (
@@ -1562,7 +1741,10 @@ class RemediationArtifactCleanup:
                 artifact.publication_heartbeat_at = None
                 artifact.deleted_at = now
                 artifact.cleanup_claimed_at = None
-                if cloud_file.current_remediation_artifact_id == artifact.id:
+                if (
+                    cloud_file is not None
+                    and cloud_file.current_remediation_artifact_id == artifact.id
+                ):
                     cloud_file.current_remediation_artifact_id = None
                     cloud_file.has_remediated_version = False
                 db.delete(artifact)

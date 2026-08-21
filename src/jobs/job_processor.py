@@ -283,6 +283,11 @@ class JobProcessor:
             # Execute handler
             result = await handler(job, db, self._get_token_manager())
 
+            # Remediation owns its atomic artifact/outcome/job completion commit.
+            if getattr(result, "handler_committed", False) is True:
+                logger.info(f"Job {job.id} completed successfully")
+                return
+
             # Mark as completed
             job.status = CloudJobStatus.COMPLETED.value
             job.completed_at = datetime.now(timezone.utc)
@@ -293,6 +298,40 @@ class JobProcessor:
             logger.info(f"Job {job.id} completed successfully")
 
         except Exception as exc:
+            # Import locally to avoid coupling module initialization while still
+            # recognizing the real typed terminal failure (including subclasses).
+            from .remediation_job import (
+                RemediationJobFailed,
+                RetryableRemediationJobError,
+                transition_retryable_remediation_job,
+            )
+
+            if (
+                isinstance(exc, RemediationJobFailed)
+                and exc.terminal_state_committed is True
+            ):
+                logger.warning(
+                    "Remediation job reached a committed terminal failure",
+                    extra={
+                        "job_id": job.id,
+                        "job_type": job.job_type,
+                        "error_code": exc.code,
+                    },
+                )
+                return
+
+            if isinstance(exc, RetryableRemediationJobError):
+                transition_retryable_remediation_job(job, db, exc)
+                logger.warning(
+                    "Remediation job queued after transient failure",
+                    extra={
+                        "job_id": job.id,
+                        "job_type": job.job_type,
+                        "error_code": exc.code,
+                    },
+                )
+                return
+
             # A handler may leave the session in a failed transaction. Clear it
             # before touching queue state, then reload the job when supported.
             db.rollback()
@@ -307,12 +346,16 @@ class JobProcessor:
                     },
                 )
 
-            # Import locally to avoid coupling module initialization while still
-            # recognizing the real typed terminal failure (including subclasses).
-            from .remediation_job import RemediationJobFailed
-
-            deterministic_failure = isinstance(exc, RemediationJobFailed)
-            error_code = exc.code if deterministic_failure else "job_processing_failed"
+            # Uncommitted remediation failures include terminal-commit failures;
+            # preserve the ordinary transient retry path for them.
+            deterministic_failure = (
+                isinstance(exc, RemediationJobFailed) and exc.__cause__ is None
+            )
+            error_code = (
+                exc.code
+                if isinstance(exc, RemediationJobFailed)
+                else "job_processing_failed"
+            )
             logger.error(
                 "Job failed",
                 extra={

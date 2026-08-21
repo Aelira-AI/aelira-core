@@ -1194,17 +1194,32 @@ async def _remediate_file_task(
             db.commit()
 
             token_manager = OAuthTokenManager()
-            result = await handle_remediation_job(job, db, token_manager)
-
-            job.status = CloudJobStatus.COMPLETED.value
-            job.progress = 100
-            job.progress_message = "Remediation complete"
-            job.result_data = result
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
+            await handle_remediation_job(job, db, token_manager)
 
             logger.info(f"Cloud remediation complete: job={job_id}")
         except Exception as e:
+            from ..jobs.remediation_job import (
+                RemediationJobFailed,
+                RetryableRemediationJobError,
+                transition_retryable_remediation_job,
+            )
+
+            if isinstance(e, RetryableRemediationJobError):
+                transition_retryable_remediation_job(job, db, e)
+                logger.warning(
+                    "Microsoft remediation queued after transient failure",
+                    extra={"job_id": job_id, "error_code": e.code},
+                )
+                return
+            if (
+                isinstance(e, RemediationJobFailed)
+                and e.terminal_state_committed is True
+            ):
+                logger.warning(
+                    "Microsoft remediation reached a committed terminal failure",
+                    extra={"job_id": job_id, "error_code": e.code},
+                )
+                return
             logger.error(f"Cloud remediation failed: job={job_id}, error={e}")
             job.status = CloudJobStatus.FAILED.value
             job.progress = 100
