@@ -5,10 +5,11 @@ Uses environment variables with sensible defaults.
 """
 
 from pydantic_settings import BaseSettings
-from pydantic import validator, field_validator, model_validator
+from pydantic import Field, validator, field_validator, model_validator
 from typing import List
 import logging
 import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -403,6 +404,68 @@ class Settings(BaseSettings):
     max_image_pixels: int = 40_000_000
     max_file_size_video: int = 500 * 1024 * 1024  # 500MB
     max_file_size_code: int = 10 * 1024 * 1024  # 10MB
+
+    # Managed remediation artifact storage. All processes serving or cleaning
+    # artifacts must mount the same durable root.
+    remediation_artifact_dir: str = os.getenv(
+        "REMEDIATION_ARTIFACT_DIR", "/app/uploads/remediation-artifacts"
+    )
+    remediation_artifact_retention_days: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_RETENTION_DAYS", "30")
+        ),
+        ge=1,
+        le=3650,
+    )
+    remediation_artifact_approved_retention_days: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS", "30")
+        ),
+        ge=1,
+        le=3650,
+    )
+    remediation_artifact_written_retention_days: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_WRITTEN_RETENTION_DAYS", "7")
+        ),
+        ge=1,
+        le=3650,
+    )
+    remediation_artifact_max_bytes: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_MAX_BYTES", str(500 * 1024 * 1024))
+        ),
+        ge=1024,
+        le=5 * 1024**3,
+    )
+    remediation_artifact_cleanup_batch_size: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_CLEANUP_BATCH_SIZE", "100")
+        ),
+        ge=1,
+        le=1000,
+    )
+    remediation_artifact_staging_grace_seconds: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_STAGING_GRACE_SECONDS", "3600")
+        ),
+        ge=60,
+        le=86400,
+    )
+
+    @field_validator("remediation_artifact_dir")
+    @classmethod
+    def validate_remediation_artifact_dir(cls, value: str) -> str:
+        """Require a bounded, normalized absolute artifact root."""
+        if not value or len(value) > 4096 or "\x00" in value:
+            raise ValueError("REMEDIATION_ARTIFACT_DIR is invalid")
+        path = Path(value)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ValueError("REMEDIATION_ARTIFACT_DIR must be an absolute path")
+        normalized = os.path.normpath(value)
+        if normalized != value or normalized == os.path.sep:
+            raise ValueError("REMEDIATION_ARTIFACT_DIR must be canonical")
+        return normalized
 
     # =====================================================
     # Document Processing Limits

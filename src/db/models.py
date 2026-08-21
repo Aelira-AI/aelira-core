@@ -16,6 +16,7 @@ from sqlalchemy import (
     Column,
     String,
     Integer,
+    BigInteger,
     Float,
     Boolean,
     DateTime,
@@ -244,6 +245,9 @@ class Department(Base):
     users = relationship("User", back_populates="department")
     api_keys = relationship("APIKey", back_populates="department")
     scans = relationship("Scan", back_populates="department")
+    remediation_artifacts = relationship(
+        "RemediationArtifact", back_populates="department"
+    )
 
 
 class User(Base):
@@ -487,6 +491,7 @@ class Scan(Base):
     user = relationship("User", back_populates="scans")
     department = relationship("Department", back_populates="scans")
     result = relationship("ScanResult", back_populates="scan", uselist=False)
+    remediation_artifacts = relationship("RemediationArtifact", back_populates="scan")
 
 
 class ScanResult(Base):
@@ -1016,6 +1021,12 @@ class CloudFile(Base):
     # Remediation state
     has_remediated_version = Column(Boolean, default=False)
     remediated_file_id = Column(String(255), nullable=True)  # ID of fixed file
+    current_remediation_artifact_id = Column(
+        String(36),
+        ForeignKey("remediation_artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Canvas content support
     content_source = Column(
@@ -1047,6 +1058,17 @@ class CloudFile(Base):
     credential = relationship("CloudOAuthCredentials", back_populates="cloud_files")
     last_scan = relationship("Scan", backref="cloud_file_source")
     jobs = relationship("CloudJobQueue", back_populates="cloud_file")
+    remediation_artifacts = relationship(
+        "RemediationArtifact",
+        back_populates="cloud_file",
+        foreign_keys="RemediationArtifact.cloud_file_id",
+    )
+    current_remediation_artifact = relationship(
+        "RemediationArtifact",
+        back_populates="current_for_cloud_files",
+        foreign_keys=[current_remediation_artifact_id],
+        post_update=True,
+    )
 
 
 class ContentWritebackLog(Base):
@@ -1198,6 +1220,205 @@ class CloudJobQueue(Base):
     department = relationship("Department", backref="cloud_jobs")
     cloud_file = relationship("CloudFile", back_populates="jobs")
     credential = relationship("CloudOAuthCredentials", back_populates="jobs")
+
+
+class RemediationArtifact(Base):
+    """Managed, immutable output bytes produced by a remediation job."""
+
+    __tablename__ = "remediation_artifacts"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    department_id = Column(
+        String(36),
+        ForeignKey(
+            "departments.id",
+            name="fk_remediation_artifacts_department",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    scan_id = Column(
+        String(36),
+        ForeignKey(
+            "scans.id", name="fk_remediation_artifacts_scan", ondelete="RESTRICT"
+        ),
+        nullable=False,
+    )
+    cloud_file_id = Column(
+        String(36),
+        ForeignKey(
+            "cloud_files.id",
+            name="fk_remediation_artifacts_cloud_file",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    remediation_job_id = Column(
+        String(36),
+        ForeignKey(
+            "cloud_job_queue.id",
+            name="fk_remediation_artifacts_remediation_job",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+        unique=True,
+    )
+    created_by_id = Column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    provider = Column(String(20), nullable=False)
+    scan_type = Column(String(32), nullable=False)
+    publication_token = Column(String(64), nullable=True, unique=True)
+    publication_heartbeat_at = Column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    published_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    storage_backend = Column(
+        String(20), nullable=False, default="local", server_default=text("'local'")
+    )
+    storage_key = Column(String(1024), nullable=False, unique=True)
+    filename = Column(String(512), nullable=False)
+    mime_type = Column(String(255), nullable=False)
+    size_bytes = Column(BigInteger, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    lifecycle_status = Column(
+        String(20),
+        nullable=False,
+        default="staging",
+        server_default=text("'staging'"),
+    )
+    review_status = Column(
+        String(20), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    approval_checksum = Column(String(64), nullable=True)
+    approved_by_id = Column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    approved_by_ref = Column(String(255), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    rejected_by_id = Column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    rejected_by_ref = Column(String(255), nullable=True)
+    rejected_at = Column(DateTime(timezone=True), nullable=True)
+    written_back_at = Column(DateTime(timezone=True), nullable=True)
+    cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    provider_result = Column(JSON, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('google', 'microsoft', 'canvas', 'blackboard', "
+            "'moodle', 'brightspace')",
+            name="ck_remediation_artifacts_provider",
+        ),
+        CheckConstraint(
+            "scan_type IN ('PDF', 'POWERPOINT', 'WORD', 'EXCEL', 'LATEX', "
+            "'IMAGE', 'WEBSITE', 'CANVAS_CONTENT')",
+            name="ck_remediation_artifacts_scan_type",
+        ),
+        CheckConstraint(
+            "(lifecycle_status = 'staging' AND publication_token IS NOT NULL AND "
+            "publication_heartbeat_at IS NOT NULL) OR "
+            "(lifecycle_status <> 'staging' AND publication_token IS NULL AND "
+            "publication_heartbeat_at IS NULL)",
+            name="ck_remediation_artifacts_publication_lease",
+        ),
+        CheckConstraint(
+            "storage_backend = 'local'",
+            name="ck_remediation_artifacts_storage_backend",
+        ),
+        CheckConstraint(
+            "storage_key <> '' AND storage_key NOT LIKE '/%' AND "
+            "storage_key NOT LIKE '%..%' AND storage_key NOT LIKE '%\\\\%'",
+            name="ck_remediation_artifacts_storage_key",
+        ),
+        CheckConstraint("size_bytes >= 0", name="ck_remediation_artifacts_size"),
+        CheckConstraint(
+            "sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_remediation_artifacts_sha256",
+        ),
+        CheckConstraint(
+            "lifecycle_status IN "
+            "('available', 'staging', 'expired', 'deleted', 'superseded')",
+            name="ck_remediation_artifacts_lifecycle",
+        ),
+        CheckConstraint(
+            "review_status IN ('pending', 'approved', 'rejected')",
+            name="ck_remediation_artifacts_review",
+        ),
+        CheckConstraint(
+            "(review_status = 'pending' AND approval_checksum IS NULL AND "
+            "approved_by_id IS NULL AND approved_by_ref IS NULL AND "
+            "approved_at IS NULL AND rejected_by_id IS NULL AND "
+            "rejected_by_ref IS NULL AND rejected_at IS NULL) OR "
+            "(review_status = 'approved' AND approval_checksum IS NOT NULL AND "
+            "approved_by_ref IS NOT NULL AND approved_by_ref <> '' AND "
+            "approved_at IS NOT NULL AND rejected_by_id IS NULL AND "
+            "rejected_by_ref IS NULL AND rejected_at IS NULL) OR "
+            "(review_status = 'rejected' AND approval_checksum IS NULL AND "
+            "approved_by_id IS NULL AND approved_by_ref IS NULL AND "
+            "approved_at IS NULL AND rejected_by_ref IS NOT NULL AND "
+            "rejected_by_ref <> '' AND rejected_at IS NOT NULL)",
+            name="ck_remediation_artifacts_review_metadata",
+        ),
+        CheckConstraint(
+            "written_back_at IS NULL OR review_status = 'approved'",
+            name="ck_remediation_artifacts_written",
+        ),
+        CheckConstraint(
+            "deleted_at IS NULL OR lifecycle_status = 'deleted'",
+            name="ck_remediation_artifacts_deleted",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_remediation_artifacts_expiry",
+        ),
+        Index(
+            "ix_remediation_artifacts_department_lifecycle_expires",
+            "department_id",
+            "lifecycle_status",
+            "expires_at",
+        ),
+        Index("ix_remediation_artifacts_scan_created", "scan_id", "created_at"),
+        Index(
+            "ix_remediation_artifacts_cloud_file_review",
+            "cloud_file_id",
+            "review_status",
+        ),
+        Index(
+            "ix_remediation_artifacts_staging_heartbeat",
+            "lifecycle_status",
+            "publication_heartbeat_at",
+        ),
+    )
+
+    department = relationship("Department", back_populates="remediation_artifacts")
+    scan = relationship("Scan", back_populates="remediation_artifacts")
+    cloud_file = relationship(
+        "CloudFile",
+        back_populates="remediation_artifacts",
+        foreign_keys=[cloud_file_id],
+    )
+    remediation_job = relationship("CloudJobQueue", foreign_keys=[remediation_job_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+    rejected_by = relationship("User", foreign_keys=[rejected_by_id])
+    current_for_cloud_files = relationship(
+        "CloudFile",
+        back_populates="current_remediation_artifact",
+        foreign_keys="CloudFile.current_remediation_artifact_id",
+    )
 
 
 class EmailAlertSettings(Base):

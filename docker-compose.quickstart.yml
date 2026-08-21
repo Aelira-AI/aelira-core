@@ -89,9 +89,12 @@ services:
       LOG_LEVEL: info
       LLM_FALLBACK_PROVIDER: none
       OLLAMA_HOST: http://ollama:11434
+      REMEDIATION_ARTIFACT_DIR: /app/uploads/remediation-artifacts
+      REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS: ${REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS:-30}
     volumes:
       - ./src:/app/src
       - ./alembic:/app/alembic
+      - upload_data:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,6 +109,7 @@ volumes:
   postgres_data:
   redis_data:
   ollama_data:
+  upload_data:
 
 networks:
   aelira-network:

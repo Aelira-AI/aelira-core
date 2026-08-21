@@ -126,10 +126,13 @@ services:
       ALLOW_MOCK_AUTH: "true"
       DEBUG: "true"
       LOG_LEVEL: debug
+      REMEDIATION_ARTIFACT_DIR: /app/uploads/remediation-artifacts
+      REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS: ${REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS:-30}
     volumes:
       - ./src:/app/src  # Hot reload for development
       - ./tests:/app/tests
       - ./alembic:/app/alembic  # Hot reload for migrations
+      - upload_data:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,6 +146,7 @@ volumes:
   ollama_data:
   postgres_data:
   redis_data:
+  upload_data:
 
 networks:
   aelira-network:
