@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -160,7 +161,8 @@ def test_immutable_image_gate_precedes_receipts_and_signs_version_index() -> Non
     assert "exit-code: '1'" in workflow
     assert "severity: HIGH,CRITICAL" in workflow
     assert "ignore-unfixed: true" in workflow
-    assert "trivyignores:" not in workflow
+    assert "trivyignores: .trivyignore.inventory" in workflow
+    assert "trivyignores: .trivyignore" in workflow
     assert "subject-digest: ${{ steps.build.outputs.digest }}" in workflow
     assert "push-to-registry: true" in workflow
     assert "GH_TOKEN: ${{ github.token }}" in workflow
@@ -204,6 +206,7 @@ def test_trivy_preserves_unfixed_inventory_and_blocks_actionable_findings() -> N
         "exit-code: '0'",
         "severity: HIGH,CRITICAL",
         "ignore-unfixed: false",
+        "trivyignores: .trivyignore.inventory",
     ):
         assert expected in inventory
     for expected in (
@@ -219,13 +222,32 @@ def test_trivy_preserves_unfixed_inventory_and_blocks_actionable_findings() -> N
         "exit-code: '1'",
         "severity: HIGH,CRITICAL",
         "ignore-unfixed: true",
+        "trivyignores: .trivyignore",
     ):
         assert expected in blocking
-    assert "trivyignores:" not in workflow
+    assert inventory.count("trivyignores:") == 1
+    assert blocking.count("trivyignores:") == 1
     assert workflow.index(
         "Inventory all high and critical vulnerabilities"
     ) < workflow.index(
         "Scan immutable image for fixed high and critical vulnerabilities"
+    )
+
+
+def test_trivy_inventory_ignore_is_tracked_and_contains_no_cve_entries() -> None:
+    inventory_ignore = ROOT / ".trivyignore.inventory"
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", inventory_ignore.name],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert tracked.returncode == 0
+    assert inventory_ignore.is_file()
+    assert not re.search(
+        r"(?m)^\s*CVE-[0-9]{4}-[0-9]{4,}\s*$", inventory_ignore.read_text()
     )
 
 
@@ -351,6 +373,13 @@ def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
         "currently-unfixed",
         "remain visible",
         "not silently exempted",
+        "complete unsuppressed inventory",
+        "`.trivyignore.inventory`",
+        "blocking scan",
+        "`.trivyignore`",
+        "owner",
+        "justification",
+        "future expiry",
         "90-day",
         "not part of the exact seven",
         "https://token.actions.githubusercontent.com",

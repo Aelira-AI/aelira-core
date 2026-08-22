@@ -37,7 +37,9 @@ The GitHub Release verifies this exact seven-file set and attaches all seven ass
 
 The runtime image upgrades all available Debian packages before installing its runtime package set. Trivy then scans each immutable image digest with `severity: HIGH,CRITICAL`, `ignore-unfixed: true`, and a nonzero exit code; fixed/actionable HIGH/CRITICAL findings block publication.
 
-HIGH/CRITICAL findings that are currently-unfixed remain visible: affected components are recorded in the attached SBOMs and their vulnerability status remains available through scanner intelligence as fixes become available. Each image/platform leg also uploads a non-blocking JSON inventory of all HIGH/CRITICAL findings as a 90-day workflow artifact. These inventories are not part of the exact seven GitHub Release SBOM assets. Findings are not silently exempted. The publication workflow supplies no `.trivyignore` exemptions, `.trivyignore` contains no CVE entries, and `scripts/verify_trivy_allowlist.py` enforces that policy in CI.
+HIGH/CRITICAL findings that are currently-unfixed remain visible: affected components are recorded in the attached SBOMs and their vulnerability status remains available through scanner intelligence as fixes become available. Each image/platform leg also uploads a non-blocking JSON inventory of all HIGH/CRITICAL findings as a 90-day workflow artifact. This complete unsuppressed inventory explicitly uses the comment-only `.trivyignore.inventory`, so repository exemptions cannot hide findings from it. These inventories are not part of the exact seven GitHub Release SBOM assets.
+
+The blocking scan explicitly uses the repository `.trivyignore` and fails on fixed/actionable HIGH/CRITICAL findings that are not exempted there. Findings are not silently exempted: `scripts/verify_trivy_allowlist.py` permits a CVE exemption only when it has a nonempty owner and justification plus an ISO-formatted future expiry, and enforces that governance in CI.
 
 ## Signing, identity, provenance, and tags
 
