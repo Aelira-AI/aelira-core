@@ -16,7 +16,7 @@ QUARANTINE_QUERY = (
     "last_error_code = 'pre_v0_9_5_job_quarantined' "
     "ORDER BY created_at, id;"
 )
-WEBSITE_AUTOMATION_COMMIT = "7db2759b77589fa07bdbdd7a2f2b59bbffc98a9c"
+WEBSITE_RELEASE_COMMIT = "88d6e717aab852aefd10ca10e8bd49504eeb6d1c"
 
 
 def test_authoritative_release_versions_are_0_9_5():
@@ -69,8 +69,14 @@ def test_checked_in_github_release_body_has_exact_operator_notice_and_evidence()
 
     assert body.startswith("# Aelira v0.9.5\n")
     _assert_v095_notice(body)
-    assert WEBSITE_AUTOMATION_COMMIT in body
-    assert "13 tests" in body
+    assert WEBSITE_RELEASE_COMMIT in body
+    assert "through Task24a" in body
+    assert "Task23 HEAD" not in body
+    assert "15 focused tests" in body
+    assert "13 metadata + 2 dependency-policy" in body
+    assert "production website and CMS builds" in body
+    assert "generator check" in body
+    assert "canonical metadata remains v0.9.4" in body
     assert "synthetic immutable v0.9.5 fixture" in body
     assert "seven release SBOM assets" in body
 
