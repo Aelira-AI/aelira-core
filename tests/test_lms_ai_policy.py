@@ -208,15 +208,16 @@ def test_department_policy_constraints_reject_invalid_rows_in_postgresql():
             },
         ]
         for row in invalid_rows:
-            with connection.begin_nested():
-                with pytest.raises(IntegrityError):
-                    connection.execute(
-                        text(
-                            "INSERT INTO lms_ai_policy_constraint_test VALUES "
-                            "(:enabled, :provider, CAST(:purposes AS jsonb))"
-                        ),
-                        row,
-                    )
+            savepoint = connection.begin_nested()
+            with pytest.raises(IntegrityError):
+                connection.execute(
+                    text(
+                        "INSERT INTO lms_ai_policy_constraint_test VALUES "
+                        "(:enabled, :provider, CAST(:purposes AS jsonb))"
+                    ),
+                    row,
+                )
+            savepoint.rollback()
 
 
 def test_resolver_is_immutable_and_allows_only_consistent_policy():

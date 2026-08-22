@@ -178,7 +178,9 @@ def test_release_artifact_names_are_isolated_by_run_attempt() -> None:
     )
     assert len(artifact_blocks) == 8
     for block in artifact_blocks:
-        selectors = re.findall(r"^          (?:name|pattern): (.+)$", block, re.MULTILINE)
+        selectors = re.findall(
+            r"^          (?:name|pattern): (.+)$", block, re.MULTILINE
+        )
         assert len(selectors) == 1
         assert attempt in selectors[0]
 

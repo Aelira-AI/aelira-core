@@ -25,12 +25,17 @@ import tarfile
 required = {"--no-cache", "--pull=false", "--provenance=false", "--sbom=false"}
 if sys.argv[1:3] != ["buildx", "build"] or not required.issubset(sys.argv):
     raise SystemExit(64)
+if os.environ.get("SOURCE_DATE_EPOCH") != "0":
+    raise SystemExit(66)
 platform = sys.argv[sys.argv.index("--platform") + 1]
 dockerfile = sys.argv[sys.argv.index("--file") + 1]
 if platform != os.environ["EXPECTED_PLATFORM"] or dockerfile != os.environ["EXPECTED_DOCKERFILE"]:
     raise SystemExit(65)
 output = sys.argv[sys.argv.index("--output") + 1]
-destination = output.removeprefix("type=oci,dest=")
+options = dict(item.split("=", 1) for item in output.split(","))
+if options.get("type") != "oci" or options.get("rewrite-timestamp") != "true":
+    raise SystemExit(67)
+destination = options["dest"]
 state = Path(os.environ["FAKE_DOCKER_STATE"])
 invocation = int(state.read_text()) if state.exists() else 0
 state.write_text(str(invocation + 1))

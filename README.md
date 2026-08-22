@@ -10,7 +10,7 @@
 [![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-336791.svg)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Deploy-Docker_Compose-2496ED.svg)](docker-compose.quickstart.yml)
 
-> **Status: 0.9.4 beta.** The engine — scanning, deterministic scoring, remediation — is complete and tested (1,500+ backend tests). LMS integration maturity varies by platform: Canvas is production-verified, the others range from beta to untested (see the [integration status table](#lms-integration-status) below). Pre-1.0 means we're still hardening operational edges: long-running scans are not yet durable across API restarts, and multi-worker job processing is not yet supported (single worker is the default and the safe configuration). Known work is tracked openly in the issues.
+> **Status: 0.9.5 beta.** The engine — scanning, deterministic scoring, remediation — is complete and tested (1,500+ backend tests). LMS integration maturity varies by platform: Canvas is production-verified, the others range from beta to untested (see the [integration status table](#lms-integration-status) below). Pre-1.0 means we're still hardening operational edges. Cloud scan, remediation, upload, synchronization, and reconciliation jobs now use a bounded, multi-worker durable queue. Known work is tracked openly in the issues.
 
 Most accessibility tools tell you a PDF has no tags, an image has no alt text, and a table has no headers. Someone still has to open the file and fix it. Aelira does the fixing: you give it a document, it gives you back a remediated one, with a report of what changed and why.
 

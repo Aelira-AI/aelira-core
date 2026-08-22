@@ -200,6 +200,12 @@ class CloudFileDB:
     def commit(self):
         self.commits += 1
 
+    def flush(self):
+        pass
+
+    def rollback(self):
+        pass
+
 
 def _cloud_file(*, id="cloud-1", scan_id="scan-1", course_id="course-1"):
     return CloudFile(
@@ -295,6 +301,7 @@ async def test_canvas_queue_context_is_built_from_trusted_fields_not_body_inject
         department_id="dept-1",
         credential_id="cred-1",
         provider=CloudProvider.CANVAS.value,
+        provider_version=None,
     )
     chain = MagicMock()
     chain.filter.return_value = chain
@@ -351,7 +358,9 @@ async def test_canvas_queue_context_is_built_from_trusted_fields_not_body_inject
         "provider_file_id": "file-1",
         "course_id": "course-1",
     }
-    assert scan_call.kwargs["dedupe_key"] == ("scan:canvas:course-1:file-1:current")
+    assert scan_call.kwargs["dedupe_key"] == (
+        "scan:canvas:course-1:file:file-1:current"
+    )
     assert remediation_call.kwargs["depends_on_job_id"] == "scan-job-1"
     assert remediation_call.kwargs["payload"]["scan_job_id"] == "scan-job-1"
     assert remediation_call.kwargs["execution_context"] == {

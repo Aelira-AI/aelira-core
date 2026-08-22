@@ -68,6 +68,11 @@ jobs:
             echo "Release tag must be strict stable semver (vMAJOR.MINOR.PATCH): $TAG_NAME" >&2
             exit 1
           fi
+          RELEASE_BODY_PATH="docs/releases/$TAG_NAME.md"
+          [ -f "$RELEASE_BODY_PATH" ] && [ -s "$RELEASE_BODY_PATH" ] || {
+            echo "Missing or empty checked-in release body: $RELEASE_BODY_PATH" >&2
+            exit 1
+          }
           TAG_VERSION="${TAG_NAME#v}"
           PACKAGE_VERSION=$(node -p "require('./cli/package.json').version")
           LOCK_VERSION=$(node -p "require('./cli/package-lock.json').version")
@@ -185,31 +190,17 @@ jobs:
             }
           done
 
-      - name: Generate release notes
-        id: notes
-        run: |
-          set -euo pipefail
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
-          if [ -z "$PREV_TAG" ]; then
-            echo "body=Initial release" >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo 'body<<RELEASE_EOF'
-              echo "## Changes since $PREV_TAG"
-              echo
-              git log "$PREV_TAG"..HEAD --pretty=format:"- %s" --no-merges
-              echo
-              echo 'RELEASE_EOF'
-            } >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
-          RELEASE_BODY: ${{ steps.notes.outputs.body }}
         run: |
           set -euo pipefail
+          RELEASE_BODY_PATH="docs/releases/$TAG_NAME.md"
+          [ -f "$RELEASE_BODY_PATH" ] && [ -s "$RELEASE_BODY_PATH" ] || {
+            echo "Missing or empty checked-in release body: $RELEASE_BODY_PATH" >&2
+            exit 1
+          }
           mapfile -t CYCLONEDX < <(find release-assets -maxdepth 1 -type f -name '*.cdx.json' -print | sort)
           mapfile -t SPDX < <(find release-assets -maxdepth 1 -type f -name '*.spdx.json' -print | sort)
           gh release create "$TAG_NAME" \
@@ -217,4 +208,4 @@ jobs:
             "${SPDX[@]}" \
             --verify-tag \
             --title "$TAG_NAME" \
-            --notes "$RELEASE_BODY"
+            --notes-file "$RELEASE_BODY_PATH"

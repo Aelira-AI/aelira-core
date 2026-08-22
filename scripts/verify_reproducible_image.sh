@@ -9,6 +9,9 @@ fi
 context=$1
 dockerfile=$2
 platform=$3
+# BuildKit normalizes image/layer timestamps from this value. Without a stable
+# epoch, identical no-cache builds can produce different OCI manifests.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
 
 if [ ! -d "$context" ]; then
   echo "Build context is not a directory: $context" >&2
@@ -31,7 +34,7 @@ build_archive() {
     --sbom=false \
     --platform "$platform" \
     --file "$dockerfile" \
-    --output "type=oci,dest=$destination" \
+    --output "type=oci,dest=$destination,rewrite-timestamp=true" \
     "$context"
 }
 
