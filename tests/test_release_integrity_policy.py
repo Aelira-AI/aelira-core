@@ -126,6 +126,50 @@ def test_api_runtime_upgrades_available_debian_packages_before_install() -> None
     )
 
 
+def test_api_builder_removes_bootstrap_setuptools_before_reviewed_requirements() -> (
+    None
+):
+    api = (ROOT / "Dockerfile").read_text()
+    builder = api.split("# Stage 2: Runtime", 1)[0]
+    uninstall = "python -m pip uninstall --yes setuptools"
+    requirements = "pip install --no-cache-dir -r requirements.txt"
+
+    assert builder.count(uninstall) == 1
+    assert builder.index(uninstall) < builder.index(requirements)
+
+
+def test_api_runtime_replaces_global_msgpack_with_reviewed_version() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+    runtime = api.split("# Stage 2: Runtime", 1)[1]
+    uninstall = "/usr/local/bin/python -m pip uninstall --yes msgpack"
+    install = "/usr/local/bin/python -m pip install --no-cache-dir msgpack==1.2.1"
+    copy_venv = "COPY --from=builder /opt/venv /opt/venv"
+
+    assert runtime.count(uninstall) == 1
+    assert runtime.count(install) == 1
+    assert runtime.index(uninstall) < runtime.index(install) < runtime.index(copy_venv)
+
+
+def test_api_build_asserts_global_and_copied_venv_python_package_versions() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+    runtime = api.split("# Stage 2: Runtime", 1)[1]
+    copy_venv = "COPY --from=builder /opt/venv /opt/venv"
+    global_assertion = (
+        '/usr/local/bin/python -c "import importlib.metadata as m; '
+        "assert m.version('msgpack') == '1.2.1'\""
+    )
+    venv_assertion = (
+        '/opt/venv/bin/python -c "import importlib.metadata as m; '
+        "assert m.version('msgpack') == '1.2.1'; "
+        "assert m.version('setuptools') == '84.0.0'\""
+    )
+
+    assert runtime.count(global_assertion) == 1
+    assert runtime.count(venv_assertion) == 1
+    assert runtime.index(copy_venv) < runtime.index(global_assertion)
+    assert runtime.index(global_assertion) < runtime.index(venv_assertion)
+
+
 def test_ci_reproducibility_jobs_use_an_oci_capable_buildx_driver() -> None:
     workflow = (WORKFLOWS / "ci.yml").read_text()
     docker_job = workflow.split("  docker:\n", 1)[1]
