@@ -102,16 +102,17 @@ def test_release_workflow_preflights_and_consumes_exact_checked_in_body():
     preflight_body_assignment = workflow.index(
         release_body_assignment, strict_tag_validation
     )
-    preflight_body_check = workflow.index(
-        release_body_check, preflight_body_assignment
-    )
+    preflight_body_check = workflow.index(release_body_check, preflight_body_assignment)
     docker_publish = workflow.index("docker-publish:")
 
     assert strict_tag_validation < preflight_body_assignment < preflight_body_check
     assert preflight_body_check < docker_publish
     assert workflow.count(release_body_assignment) == 2
     assert workflow.count(release_body_check) == 2
-    assert workflow.count("Missing or empty checked-in release body: $RELEASE_BODY_PATH") == 2
+    assert (
+        workflow.count("Missing or empty checked-in release body: $RELEASE_BODY_PATH")
+        == 2
+    )
     assert '--notes-file "$RELEASE_BODY_PATH"' in workflow
     assert "Generate release notes" not in workflow
     assert 'git log "$PREV_TAG"..HEAD' not in workflow

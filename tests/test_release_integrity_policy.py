@@ -33,6 +33,7 @@ def test_dependency_gates_audit_only_the_three_shipped_surfaces_and_block() -> N
     workflow = (WORKFLOWS / "ci.yml").read_text()
 
     assert "pip-audit==2.10.0" in workflow
+    assert "sudo apt-get install -y libcairo2-dev pkg-config" in workflow
     assert "pip-audit --requirement requirements.txt --strict" in workflow
     assert "npm --prefix cli audit --audit-level=high" in workflow
     assert "npm --prefix dashboard audit --audit-level=high" in workflow
@@ -98,6 +99,20 @@ def test_api_dockerfile_normalizes_content_level_build_nondeterminism() -> None:
     assert "npm cache clean --force" in api
     assert "rm -rf /root/.npm" in api
     assert "ENV SOURCE_DATE_EPOCH" not in api
+
+
+def test_ci_reproducibility_jobs_use_an_oci_capable_buildx_driver() -> None:
+    workflow = (WORKFLOWS / "ci.yml").read_text()
+    docker_job = workflow.split("  docker:\n", 1)[1]
+    setup = (
+        "uses: docker/setup-buildx-action@"
+        "8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3"
+    )
+
+    assert setup in docker_job
+    assert docker_job.index(setup) < docker_job.index(
+        "scripts/verify_reproducible_image.sh"
+    )
 
 
 def test_immutable_image_gate_precedes_receipts_and_signs_version_index() -> None:
