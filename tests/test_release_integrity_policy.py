@@ -31,10 +31,18 @@ def test_every_external_action_is_pinned_to_a_commented_full_sha() -> None:
 
 def test_dependency_gates_audit_only_the_three_shipped_surfaces_and_block() -> None:
     workflow = (WORKFLOWS / "ci.yml").read_text()
+    dependency_job = workflow.split("  dependency-security:\n", 1)[1].split(
+        "\n  lint:\n", 1
+    )[0]
+    audit_prerequisites = "sudo apt-get install -y libcairo2-dev pkg-config"
+    strict_python_audit = "pip-audit --requirement requirements.txt --strict"
 
     assert "pip-audit==2.10.0" in workflow
-    assert "sudo apt-get install -y libcairo2-dev pkg-config" in workflow
-    assert "pip-audit --requirement requirements.txt --strict" in workflow
+    assert audit_prerequisites in dependency_job
+    assert strict_python_audit in dependency_job
+    assert dependency_job.index(audit_prerequisites) < dependency_job.index(
+        strict_python_audit
+    )
     assert "npm --prefix cli audit --audit-level=high" in workflow
     assert "npm --prefix dashboard audit --audit-level=high" in workflow
     assert workflow.count(" audit --audit-level=high") == 2
