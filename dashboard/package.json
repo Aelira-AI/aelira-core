@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "playwright test",
+    "test:e2e:release": "playwright test --config=playwright.release.config.ts",
+    "test:e2e:matrix": "playwright test --config=playwright.matrix.config.ts",
     "test:ui": "playwright test --ui",
     "test:auth": "playwright test tests/auth.spec.ts",
     "test:unit": "node --test tests/unit/*.test.js",

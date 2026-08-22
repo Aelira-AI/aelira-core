@@ -11,7 +11,7 @@ Reference: https://learn.microsoft.com/en-us/graph/api/overview
 
 import httpx
 import logging
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, AsyncIterator
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -20,6 +20,10 @@ from ..cloud_base import (
     CloudFileInfo,
     CloudExportResult,
     CloudUploadResult,
+    CloudIntegrationError,
+    CloudAuthError,
+    CloudNotFoundError,
+    CloudRateLimitError,
 )
 from .models import MicrosoftDriveInfo, MicrosoftSiteInfo
 
@@ -37,6 +41,10 @@ class OneDriveIntegration(BaseCloudIntegration):
     # Microsoft Graph API base URL
     GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
+    @property
+    def provider(self) -> str:
+        return "microsoft"
+
     # File types we can scan for accessibility
     SCANNABLE_EXTENSIONS = {
         ".docx",
@@ -51,7 +59,7 @@ class OneDriveIntegration(BaseCloudIntegration):
     def __init__(
         self,
         access_token: str,
-        department_id: str,
+        credential_id: str,
         drive_id: Optional[str] = None,
         site_id: Optional[str] = None,
     ):
@@ -60,15 +68,28 @@ class OneDriveIntegration(BaseCloudIntegration):
 
         Args:
             access_token: Valid Microsoft Graph access token
-            department_id: Aelira department ID for tracking
+            credential_id: Database ID of the OAuth credential
             drive_id: Specific drive ID (optional, uses default user drive if not provided)
             site_id: SharePoint site ID (optional, for SharePoint access)
         """
-        self._access_token = access_token
-        self._department_id = department_id
+        super().__init__(access_token=access_token, credential_id=credential_id)
         self._drive_id = drive_id
         self._site_id = site_id
         self._http_client: Optional[httpx.AsyncClient] = None
+
+    @staticmethod
+    def _raise_provider_error(response: httpx.Response) -> None:
+        """Translate Graph HTTP failures into the shared provider exception types."""
+        if response.status_code in (401, 403):
+            raise CloudAuthError("Microsoft OAuth token expired or invalid")
+        if response.status_code == 404:
+            raise CloudNotFoundError("File or folder not found")
+        if response.status_code == 429:
+            raise CloudRateLimitError("Microsoft Graph API rate limit exceeded")
+        if response.status_code >= 400:
+            raise CloudIntegrationError(
+                f"Microsoft Graph API error {response.status_code}"
+            )
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with auth headers."""
@@ -229,31 +250,26 @@ class OneDriveIntegration(BaseCloudIntegration):
             url += "&$select=id,name,size,file,folder,parentReference,createdDateTime,lastModifiedDateTime,webUrl,@microsoft.graph.downloadUrl,cTag,eTag"
 
         response = await client.get(url)
-        response.raise_for_status()
+        self._raise_provider_error(response)
         data = response.json()
 
         files = []
         for item in data.get("value", []):
-            # Skip folders unless we want them
             is_folder = "folder" in item
-            if is_folder:
-                continue
 
             # Get file extension
             name = item.get("name", "")
             ext = Path(name).suffix.lower() if name else ""
 
-            # Filter by file type if requested
-            if file_types:
+            # Folder DTOs are retained for normalized recursive traversal.
+            if file_types and not is_folder:
                 ext_without_dot = ext.lstrip(".")
                 if ext_without_dot not in file_types and ext not in file_types:
                     continue
 
-            # Skip non-scannable files
-            if ext not in self.SCANNABLE_EXTENSIONS:
+            if not is_folder and ext not in self.SCANNABLE_EXTENSIONS:
                 continue
 
-            # Parse dates
             created_at = None
             modified_at = None
             if item.get("createdDateTime"):
@@ -265,21 +281,28 @@ class OneDriveIntegration(BaseCloudIntegration):
                     item["lastModifiedDateTime"].replace("Z", "+00:00")
                 )
 
-            # Get parent info
             parent_ref = item.get("parentReference", {})
+            parent_path = parent_ref.get("path")
+            item_path = f"{parent_path}/{name}" if parent_path and name else parent_path
 
             file_info = CloudFileInfo(
-                provider="microsoft",
-                provider_file_id=item["id"],
+                id=str(item["id"]),
                 name=name,
-                mime_type=item.get("file", {}).get("mimeType"),
-                size=item.get("size"),
-                created_time=created_at,
-                modified_time=modified_at,
+                mime_type=(
+                    "application/vnd.microsoft.folder"
+                    if is_folder
+                    else item.get("file", {}).get("mimeType")
+                    or "application/octet-stream"
+                ),
+                size_bytes=item.get("size"),
+                created_at=created_at,
+                modified_at=modified_at,
+                parent_id=parent_ref.get("id"),
+                path=item_path,
+                is_folder=is_folder,
                 web_view_link=item.get("webUrl"),
                 download_link=item.get("@microsoft.graph.downloadUrl"),
                 version=item.get("eTag") or item.get("cTag"),
-                parents=[parent_ref.get("id")] if parent_ref.get("id") else [],
             )
             files.append(file_info)
 
@@ -287,6 +310,63 @@ class OneDriveIntegration(BaseCloudIntegration):
         next_token = data.get("@odata.nextLink")
 
         return files, next_token
+
+    async def list_all_files(
+        self,
+        folder_id: Optional[str] = None,
+        file_types: Optional[List[str]] = None,
+        recursive: bool = True,
+    ) -> AsyncIterator[CloudFileInfo]:
+        page_token: Optional[str] = None
+        while True:
+            files, page_token = await self.list_files(
+                folder_id=folder_id, file_types=file_types, page_token=page_token
+            )
+            for item in files:
+                yield item
+            if not page_token:
+                break
+        if recursive:
+            for folder in await self.list_folders(folder_id):
+                async for item in self.list_all_files(
+                    folder_id=folder.id, file_types=file_types, recursive=True
+                ):
+                    yield item
+
+    async def get_file_info(self, file_id: str) -> Optional[CloudFileInfo]:
+        client = await self._get_client()
+        response = await client.get(f"{self._get_drive_base_url()}/items/{file_id}")
+        if response.status_code == 404:
+            return None
+        self._raise_provider_error(response)
+        item = response.json()
+        parent = item.get("parentReference", {})
+        parent_path = parent.get("path")
+        return CloudFileInfo(
+            id=str(item["id"]),
+            name=str(item.get("name") or ""),
+            mime_type=str(
+                item.get("file", {}).get("mimeType") or "application/octet-stream"
+            ),
+            size_bytes=item.get("size"),
+            web_view_link=item.get("webUrl"),
+            download_link=item.get("@microsoft.graph.downloadUrl"),
+            version=item.get("eTag") or item.get("cTag"),
+            modified_at=(
+                datetime.fromisoformat(
+                    item["lastModifiedDateTime"].replace("Z", "+00:00")
+                )
+                if item.get("lastModifiedDateTime")
+                else None
+            ),
+            parent_id=parent.get("id"),
+            path=(
+                f"{parent_path}/{item.get('name')}"
+                if parent_path and item.get("name")
+                else parent_path
+            ),
+            is_folder="folder" in item,
+        )
 
     async def list_folders(
         self,
@@ -502,16 +582,13 @@ class OneDriveIntegration(BaseCloudIntegration):
 
             return CloudUploadResult(
                 success=True,
-                provider_file_id=data["id"],
+                file_id=data["id"],
                 web_view_link=data.get("webUrl"),
             )
 
-        except Exception as e:
-            logger.error(f"Simple upload failed: {e}")
-            return CloudUploadResult(
-                success=False,
-                error=str(e),
-            )
+        except Exception as exc:
+            logger.error("Simple upload failed (%s)", type(exc).__name__)
+            return CloudUploadResult.from_exception(exc, body_started=True)
 
     async def _resumable_upload(
         self,
@@ -572,7 +649,7 @@ class OneDriveIntegration(BaseCloudIntegration):
                             logger.info(f"Resumable upload complete: {data.get('id')}")
                             return CloudUploadResult(
                                 success=True,
-                                provider_file_id=data["id"],
+                                file_id=data["id"],
                                 web_view_link=data.get("webUrl"),
                             )
                         elif response.status_code == 202:
@@ -586,12 +663,9 @@ class OneDriveIntegration(BaseCloudIntegration):
                 error="Upload did not complete properly",
             )
 
-        except Exception as e:
-            logger.error(f"Resumable upload failed: {e}")
-            return CloudUploadResult(
-                success=False,
-                error=str(e),
-            )
+        except Exception as exc:
+            logger.error("Resumable upload failed (%s)", type(exc).__name__)
+            return CloudUploadResult.from_exception(exc, body_started=True)
 
     async def create_webhook(
         self,
@@ -629,7 +703,7 @@ class OneDriveIntegration(BaseCloudIntegration):
                     "notificationUrl": notification_url,
                     "resource": resource,
                     "expirationDateTime": expiration.isoformat().replace("+00:00", "Z"),
-                    "clientState": self._department_id,  # For verification
+                    "clientState": self.credential_id,  # Stable non-secret validation binding
                 },
             )
             response.raise_for_status()
@@ -769,15 +843,23 @@ class OneDriveIntegration(BaseCloudIntegration):
                 parent_ref = item.get("parentReference", {})
 
                 file_info = CloudFileInfo(
-                    provider="microsoft",
-                    provider_file_id=item["id"],
+                    id=str(item["id"]),
                     name=name,
-                    mime_type=item.get("file", {}).get("mimeType"),
-                    size=item.get("size"),
-                    modified_time=modified_at,
+                    mime_type=(
+                        item.get("file", {}).get("mimeType")
+                        or "application/octet-stream"
+                    ),
+                    size_bytes=item.get("size"),
+                    modified_at=modified_at,
+                    parent_id=parent_ref.get("id"),
+                    path=(
+                        f"{parent_ref.get('path')}/{name}"
+                        if parent_ref.get("path") and name
+                        else parent_ref.get("path")
+                    ),
+                    is_folder=False,
                     web_view_link=item.get("webUrl"),
                     version=item.get("eTag") or item.get("cTag"),
-                    parents=[parent_ref.get("id")] if parent_ref.get("id") else [],
                 )
                 all_files.append(file_info)
 

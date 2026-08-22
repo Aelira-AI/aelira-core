@@ -39,6 +39,7 @@ import {
   type MergedContentItem,
 } from '../utils/mergeCourseContent';
 import { summarizeBatchOutcome } from '../utils/batchActionResult';
+import { remediateAllAccounting } from '../utils/remediateAllAccounting';
 
 // ============================================================================
 // Helpers
@@ -116,7 +117,7 @@ export default function CanvasContentPage(): React.ReactElement {
   // { done, total } while Remediate All is running — drives "Remediating
   // 2 of 4…" on the button.
   const [remediateAllProgress, setRemediateAllProgress] = useState<{ done: number; total: number } | null>(null);
-  // Per-row remediate in-flight tracking, keyed by provider_file_id.
+  // Per-row remediate in-flight tracking, keyed by composite content identity.
   const [remediatingIds, setRemediatingIds] = useState<Set<string>>(new Set());
 
   // Table controls
@@ -198,8 +199,12 @@ export default function CanvasContentPage(): React.ReactElement {
   }, [fetchStatus, fetchCourseName, fetchLiveFiles]);
 
   const mergedItems = useMemo(
-    () => mergeCourseContent(data?.items ?? null, liveFiles),
-    [data, liveFiles]
+    () =>
+      mergeCourseContent(data?.items ?? null, liveFiles, {
+        provider: 'canvas',
+        parentId: courseId ?? '',
+      }),
+    [courseId, data, liveFiles]
   );
 
   // Content-by-type breakdown — derived from mergedItems (not data.by_type,
@@ -389,8 +394,7 @@ export default function CanvasContentPage(): React.ReactElement {
       : apiClient.post(`/canvas/content/${item.cloud_file_id}/remediate`);
 
   const handleRemediateItem = async (item: MergedContentItem): Promise<void> => {
-    const providerFileId = item.provider_file_id;
-    setRemediatingIds((prev) => new Set(prev).add(providerFileId));
+    setRemediatingIds((prev) => new Set(prev).add(item.identity_key));
     try {
       const res = await postRemediate(item);
       const fixed = res.data?.fixed_count ?? 0;
@@ -411,7 +415,7 @@ export default function CanvasContentPage(): React.ReactElement {
     } finally {
       setRemediatingIds((prev) => {
         const next = new Set(prev);
-        next.delete(providerFileId);
+        next.delete(item.identity_key);
         return next;
       });
     }
@@ -430,15 +434,13 @@ export default function CanvasContentPage(): React.ReactElement {
   const handleRemediateAll = async (): Promise<void> => {
     if (remediableItems.length === 0) return;
 
-    const scannedCount = mergedItems.filter((item) => item.compliance_score !== null).length;
-    const skippedCount = scannedCount - remediableItems.length;
-
-    const total = remediableItems.length;
+    const accounting = remediateAllAccounting(mergedItems.length, remediableItems.length);
+    const { total, skipped: skippedCount } = accounting;
     setRemediatingAll(true);
-    setRemediateAllProgress({ done: 0, total });
+    setRemediateAllProgress({ done: skippedCount, total });
     setRemediatingIds((prev) => {
       const next = new Set(prev);
-      remediableItems.forEach((item) => next.add(item.provider_file_id));
+      remediableItems.forEach((item) => next.add(item.identity_key));
       return next;
     });
 
@@ -461,10 +463,10 @@ export default function CanvasContentPage(): React.ReactElement {
       } finally {
         setRemediatingIds((prev) => {
           const next = new Set(prev);
-          next.delete(item.provider_file_id);
+          next.delete(item.identity_key);
           return next;
         });
-        setRemediateAllProgress({ done: index + 1, total });
+        setRemediateAllProgress({ done: skippedCount + index + 1, total });
       }
     }
 
@@ -510,6 +512,19 @@ export default function CanvasContentPage(): React.ReactElement {
       <ArrowDown className="w-3 h-3" />
     );
   };
+
+  const renderSortableHeader = (field: SortField, label: string): React.ReactElement => (
+    <th
+      scope="col"
+      aria-sort={sortField === field ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className="text-left px-6 py-3 text-xs font-semibold text-[var(--content-secondary)]"
+    >
+      <button type="button" onClick={() => toggleSort(field)} className="inline-flex items-center gap-1">
+        {label}
+        <SortIcon field={field} />
+      </button>
+    </th>
+  );
 
   const contentTypes = useMemo(() => {
     // Derived from the unified list (not data.by_type) so an unscanned
@@ -578,7 +593,7 @@ export default function CanvasContentPage(): React.ReactElement {
     return (
       <div className="max-w-7xl mx-auto px-4 py-8">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-[var(--accent-primary)]" />
+          <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
         </div>
       </div>
     );
@@ -900,42 +915,10 @@ export default function CanvasContentPage(): React.ReactElement {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[var(--border-primary)]">
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('title')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Name
-                      <SortIcon field="title" />
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('content_type')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Type
-                      <SortIcon field="content_type" />
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('compliance_score')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Score
-                      <SortIcon field="compliance_score" />
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('issue_count')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Issues
-                      <SortIcon field="issue_count" />
-                    </span>
-                  </th>
+                  {renderSortableHeader('title', 'Name')}
+                  {renderSortableHeader('content_type', 'Type')}
+                  {renderSortableHeader('compliance_score', 'Score')}
+                  {renderSortableHeader('issue_count', 'Issues')}
                   <th className="text-left px-6 py-3 text-xs font-semibold text-[var(--content-secondary)]">
                     Status
                   </th>
@@ -977,7 +960,7 @@ export default function CanvasContentPage(): React.ReactElement {
 
                   return (
                     <tr
-                      key={item.provider_file_id}
+                      key={item.identity_key}
                       style={{
                         borderBottom:
                           idx !== filteredAndSortedItems.length - 1
@@ -1061,10 +1044,10 @@ export default function CanvasContentPage(): React.ReactElement {
                                 onClick={() =>
                                   handleRemediateItem(item)
                                 }
-                                disabled={remediatingIds.has(item.provider_file_id)}
+                                disabled={remediatingIds.has(item.identity_key)}
                                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 bg-[var(--interactive-accent-bg)] text-[var(--interactive-primary-fg)]"
                               >
-                                {remediatingIds.has(item.provider_file_id) ? (
+                                {remediatingIds.has(item.identity_key) ? (
                                   <Loader2 className="w-3 h-3 animate-spin" />
                                 ) : (
                                   <Wrench className="w-3 h-3" />

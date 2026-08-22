@@ -9,13 +9,14 @@ Tests verify that Brightspace routes:
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
 
 from src.api.main import app
 from src.api.auth_routes import get_current_api_key
+from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from src.db.database import get_db_dependency
-from src.db.models import CloudOAuthCredentials, CloudProvider, APIKey
+from src.db.models import CloudOAuthCredentials, CloudProvider, APIKey, UserRole
 
 # Mark all tests in this module as integration
 pytestmark = pytest.mark.integration
@@ -50,9 +51,11 @@ def mock_brightspace_credential():
     cred.id = "cred-brightspace-123"
     cred.department_id = "dept-123"
     cred.provider = CloudProvider.BRIGHTSPACE.value
-    cred.provider_instance_url = "https://brightspace.university.edu"
-    cred.provider_user_email = "instructor@university.edu"
-    cred.provider_user_name = "Dr. Test Instructor"
+    cred.provider_metadata = {
+        "brightspace_instance_url": "https://brightspace.university.edu",
+        "user_email": "instructor@university.edu",
+        "user_name": "Dr. Test Instructor",
+    }
     cred.access_token = "encrypted-token"
     cred.created_at = datetime.now(timezone.utc)
     return cred
@@ -85,9 +88,19 @@ def mock_session():
 def override_deps(mock_api_key, mock_session):
     """Override FastAPI dependencies for auth and DB, cleaning up after the test."""
     app.dependency_overrides[get_current_api_key] = lambda: mock_api_key
+    app.dependency_overrides[get_authenticated_principal] = (
+        lambda: AuthenticatedPrincipal(
+            api_key=mock_api_key,
+            user_id="user-123",
+            department_id="dept-123",
+            user_role=UserRole.ADMIN,
+            auth_method="api_key",
+        )
+    )
     app.dependency_overrides[get_db_dependency] = lambda: mock_session
     yield
     app.dependency_overrides.pop(get_current_api_key, None)
+    app.dependency_overrides.pop(get_authenticated_principal, None)
     app.dependency_overrides.pop(get_db_dependency, None)
 
 
@@ -232,10 +245,14 @@ class TestBrightspaceDisconnect:
             mock_brightspace_credential
         )
 
-        response = client.delete(
-            "/brightspace/disconnect",
-            headers=auth_headers,
-        )
+        with patch(
+            "src.api.brightspace_routes.RemediationArtifactService.from_settings"
+        ) as cleanup:
+            cleanup.return_value.delete_for_credential.return_value.count = 0
+            response = client.delete(
+                "/brightspace/disconnect",
+                headers=auth_headers,
+            )
 
         assert response.status_code == 200
         assert "disconnected successfully" in response.json()["message"]

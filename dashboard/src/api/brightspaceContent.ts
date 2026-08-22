@@ -20,6 +20,9 @@ export interface BatchWritebackRequest {
 
 export interface BatchRemediateRequest {
   org_unit_id: number;
+  cloud_file_ids: string[];
+  use_ai?: boolean;
+  generate_alt_text?: boolean;
 }
 
 // ============================================================================
@@ -39,6 +42,9 @@ export interface ContentItemStatus {
   compliance_score: number | null;
   issue_count: number;
   writeback_status: string | null;
+  has_remediated_version: boolean;
+  approval_eligible: boolean;
+  remediation_origin: 'automatic' | 'manual' | null;
   module_path: string;
 }
 
@@ -65,8 +71,19 @@ export interface ContentActionResponse {
   message: string;
 }
 
+export interface BatchApproveOutcome {
+  cloud_file_id: string;
+  status: 'approved' | 'skipped' | 'failed';
+  reason: string | null;
+}
+
 export interface BatchApproveResponse {
+  requested_count: number;
   approved_count: number;
+  skipped_count: number;
+  failed_count: number;
+  outcomes: BatchApproveOutcome[];
+  errors: string[];
 }
 
 export interface BatchWritebackResponse {
@@ -76,16 +93,28 @@ export interface BatchWritebackResponse {
 }
 
 export interface RemediateResponse {
-  success: boolean;
-  message: string;
+  cloud_file_id: string;
+  status: 'completed' | 'manual_required' | 'no_op' | 'failed';
   fixed_count: number;
-  has_remediated_version?: boolean;
+  manual_count: number;
+  failed_count: number;
+  skipped_count: number;
+  has_remediated_version: boolean;
+  ai_used: boolean;
+  external_ai_used: boolean;
+  providers: string[];
+  purpose_decisions: Record<string, string>;
+  error_code?: string | null;
 }
 
 export interface BatchRemediateResponse {
-  total_eligible: number;
-  queued: number;
-  message: string;
+  status: 'completed';
+  requested_count: number;
+  completed_count: number;
+  manual_count: number;
+  failed_count: number;
+  fixed_count: number;
+  results: RemediateResponse[];
 }
 
 export interface AuditLogEntry {

@@ -16,6 +16,7 @@ from sqlalchemy import (
     Column,
     String,
     Integer,
+    BigInteger,
     Float,
     Boolean,
     DateTime,
@@ -29,10 +30,12 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import relationship, DeclarativeBase
+from sqlalchemy.orm import relationship, DeclarativeBase, validates
 from sqlalchemy.sql import func
 from enum import Enum
 import uuid
+
+JOB_JSON = JSON().with_variant(JSONB, "postgresql")
 
 
 class Base(DeclarativeBase):
@@ -66,6 +69,16 @@ class ScanStatus(str, Enum):
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+class RemediationOutcome(str, Enum):
+    """Durable semantic outcomes for remediation attempts."""
+
+    COMPLETED = "completed"
+    NO_OP = "no_op"
+    MANUAL_REQUIRED = "manual_required"
+    ARTIFACT_UNAVAILABLE = "artifact_unavailable"
+    REMEDIATION_FAILED = "remediation_failed"
 
 
 class IssueStatus(str, Enum):
@@ -162,8 +175,10 @@ class Department(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     trial_ends_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Status
+    # Status and durable managed-artifact cleanup fence.
     is_active = Column(Boolean, default=True)
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Region/Country for deadline tracking
     country_code = Column(String(2), nullable=True, default="US")  # ISO 3166-1 alpha-2
@@ -188,10 +203,60 @@ class Department(Base):
         Boolean, default=False
     )  # Manual override: lets a department use the platform's shared Gemini key instead of configuring BYOK
 
+    # LMS AI is a separate, explicit authorization boundary. Existing BYOK and
+    # pilot settings are configuration only and never imply permission to use AI.
+    lms_ai_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    lms_ai_provider = Column(String(50), nullable=True)
+    lms_ai_purposes = Column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
+    # Optimistic concurrency token for the account-wide admin policy editor.
+    lms_ai_policy_revision = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_departments_artifact_cleanup_fence",
+        ),
+        CheckConstraint(
+            "lms_ai_provider IS NULL OR lms_ai_provider IN "
+            "('ollama', 'gemini', 'openai', 'anthropic', 'xai')",
+            name="ck_departments_lms_ai_provider",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(lms_ai_purposes::jsonb) = 'array' AND "
+            'lms_ai_purposes::jsonb <@ \'["remediation", "alt_text"]\'::jsonb AND '
+            "jsonb_array_length(lms_ai_purposes::jsonb) = ("
+            "CASE WHEN lms_ai_purposes::jsonb @> "
+            "'[\"remediation\"]'::jsonb THEN 1 ELSE 0 END + "
+            "CASE WHEN lms_ai_purposes::jsonb @> "
+            "'[\"alt_text\"]'::jsonb THEN 1 ELSE 0 END)",
+            name="ck_departments_lms_ai_purposes",
+        ),
+        CheckConstraint(
+            "(NOT lms_ai_enabled AND lms_ai_provider IS NULL AND "
+            "lms_ai_purposes::jsonb = '[]'::jsonb) OR "
+            "(lms_ai_enabled AND lms_ai_provider IS NOT NULL AND "
+            "jsonb_array_length(lms_ai_purposes::jsonb) > 0)",
+            name="ck_departments_lms_ai_policy_consistency",
+        ),
+    )
+
     # Relationships
     users = relationship("User", back_populates="department")
     api_keys = relationship("APIKey", back_populates="department")
     scans = relationship("Scan", back_populates="department")
+    remediation_artifacts = relationship(
+        "RemediationArtifact", back_populates="department"
+    )
 
 
 class User(Base):
@@ -226,6 +291,16 @@ class User(Base):
     # Department relationship
     department_id = Column(String(36), ForeignKey("departments.id"), nullable=False)
     role = Column(SQLEnum(UserRole), default=UserRole.FACULTY)
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_users_artifact_cleanup_fence",
+        ),
+    )
 
     # Preferences
     timezone = Column(String(50), default="America/New_York")
@@ -402,6 +477,7 @@ class Scan(Base):
     # Scan details
     scan_type = Column(SQLEnum(ScanType), nullable=False)
     status = Column(SQLEnum(ScanStatus), default=ScanStatus.PENDING)
+    remediation_outcome = Column(String(32), nullable=True)
 
     # File information
     file_name = Column(String(512), nullable=False)
@@ -411,6 +487,16 @@ class Scan(Base):
     # Ownership
     user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
     department_id = Column(String(36), ForeignKey("departments.id"), nullable=False)
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_scans_artifact_cleanup_fence",
+        ),
+    )
 
     # Processing details
     processing_time_ms = Column(Integer)  # Time taken to process
@@ -422,6 +508,12 @@ class Scan(Base):
 
     # Storage location (if we store files)
     storage_path = Column(String(512), nullable=True)  # S3/local path
+    current_remediation_artifact_id = Column(
+        String(36),
+        ForeignKey("remediation_artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -434,6 +526,16 @@ class Scan(Base):
     user = relationship("User", back_populates="scans")
     department = relationship("Department", back_populates="scans")
     result = relationship("ScanResult", back_populates="scan", uselist=False)
+    remediation_artifacts = relationship(
+        "RemediationArtifact",
+        back_populates="scan",
+        foreign_keys="RemediationArtifact.scan_id",
+    )
+    current_remediation_artifact = relationship(
+        "RemediationArtifact",
+        foreign_keys=[current_remediation_artifact_id],
+        post_update=True,
+    )
 
 
 class ScanResult(Base):
@@ -843,6 +945,7 @@ class CloudProvider(str, Enum):
     BLACKBOARD = "blackboard"
     MOODLE = "moodle"
     BRIGHTSPACE = "brightspace"
+    LOCAL = "local"
 
 
 class CloudJobType(str, Enum):
@@ -853,6 +956,7 @@ class CloudJobType(str, Enum):
     REMEDIATE = "remediate"  # Remediate and upload fixed file
     UPLOAD = "upload"  # Upload file to cloud
     WEBHOOK_REFRESH = "webhook_refresh"  # Renew webhook subscription
+    RECONCILE = "canvas_reconcile"  # Observe an uncertain Canvas writeback
 
 
 class CloudJobStatus(str, Enum):
@@ -897,6 +1001,16 @@ class CloudOAuthCredentials(Base):
     is_active = Column(Boolean, default=True)
     last_sync_at = Column(DateTime(timezone=True), nullable=True)
     last_error = Column(Text, nullable=True)
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_cloud_oauth_credentials_artifact_cleanup_fence",
+        ),
+    )
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -928,6 +1042,33 @@ class CloudFile(Base):
         String(36),
         ForeignKey("cloud_oauth_credentials.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    artifact_cleanup_token = Column(String(64), nullable=True)
+    artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "remediation_origin IS NULL OR "
+            "remediation_origin IN ('automatic', 'manual')",
+            name="ck_cloud_files_remediation_origin",
+        ),
+        CheckConstraint(
+            "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
+            "(artifact_cleanup_token IS NOT NULL AND artifact_cleanup_claimed_at IS NOT NULL)",
+            name="ck_cloud_files_artifact_cleanup_fence",
+        ),
+        Index(
+            "uq_cloud_files_canvas_content_identity",
+            "department_id",
+            "provider",
+            "provider_parent_id",
+            text("COALESCE(content_source, 'file')"),
+            "provider_file_id",
+            unique=True,
+            postgresql_where=text(
+                "provider = 'canvas' AND provider_parent_id IS NOT NULL"
+            ),
+        ),
     )
 
     # Provider-specific IDs
@@ -962,7 +1103,14 @@ class CloudFile(Base):
 
     # Remediation state
     has_remediated_version = Column(Boolean, default=False)
+    remediation_origin = Column(String(16), nullable=True)
     remediated_file_id = Column(String(255), nullable=True)  # ID of fixed file
+    current_remediation_artifact_id = Column(
+        String(36),
+        ForeignKey("remediation_artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Canvas content support
     content_source = Column(
@@ -994,6 +1142,17 @@ class CloudFile(Base):
     credential = relationship("CloudOAuthCredentials", back_populates="cloud_files")
     last_scan = relationship("Scan", backref="cloud_file_source")
     jobs = relationship("CloudJobQueue", back_populates="cloud_file")
+    remediation_artifacts = relationship(
+        "RemediationArtifact",
+        back_populates="cloud_file",
+        foreign_keys="RemediationArtifact.cloud_file_id",
+    )
+    current_remediation_artifact = relationship(
+        "RemediationArtifact",
+        back_populates="current_for_cloud_files",
+        foreign_keys=[current_remediation_artifact_id],
+        post_update=True,
+    )
 
 
 class ContentWritebackLog(Base):
@@ -1012,11 +1171,71 @@ class ContentWritebackLog(Base):
     approved_at = Column(DateTime(timezone=True), nullable=True)
     written_back_at = Column(DateTime(timezone=True), nullable=True)
     canvas_revision = Column(String(255), nullable=True)
+    # File write-backs are bound to immutable managed bytes, never a local path.
+    artifact_id = Column(
+        String(36),
+        ForeignKey("remediation_artifacts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    artifact_checksum = Column(String(64), nullable=True)
+    correlation_id = Column(String(36), nullable=True, unique=True)
+    reconciliation_status = Column(String(32), nullable=True)
+    provider_result = Column(JSON, nullable=True)
+    reconciliation_attempt_count = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    reconciliation_lease_token = Column(String(36), nullable=True)
+    reconciliation_leased_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_last_error = Column(String(128), nullable=True)
+    reconciliation_resolved_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_resolution = Column(String(32), nullable=True)
     rollback_status = Column(String(20), nullable=True)  # rolled_back
     rolled_back_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     cloud_file = relationship("CloudFile", backref="writeback_logs")
+
+    __table_args__ = (
+        CheckConstraint(
+            "(artifact_id IS NULL AND artifact_checksum IS NULL) OR "
+            "(artifact_id IS NOT NULL AND artifact_checksum ~ '^[0-9a-f]{64}$')",
+            name="ck_content_writeback_log_artifact_binding",
+        ),
+        CheckConstraint(
+            "reconciliation_status IS NULL OR reconciliation_status IN "
+            "('pending', 'committed', 'reconciliation_required', 'reconciled', "
+            "'failed_manual', 'manual_required')",
+            name="ck_content_writeback_log_reconciliation",
+        ),
+        CheckConstraint(
+            "(reconciliation_lease_token IS NULL AND reconciliation_leased_at IS NULL "
+            "AND reconciliation_lease_expires_at IS NULL) OR "
+            "(reconciliation_lease_token IS NOT NULL AND reconciliation_leased_at IS NOT NULL "
+            "AND reconciliation_lease_expires_at IS NOT NULL)",
+            name="ck_content_writeback_log_reconciliation_lease",
+        ),
+        CheckConstraint(
+            "reconciliation_attempt_count >= 0",
+            name="ck_content_writeback_log_reconciliation_attempts",
+        ),
+        CheckConstraint(
+            "reconciliation_resolution IS NULL OR reconciliation_resolution IN "
+            "('confirmed', 'failed_manual', 'manual_required')",
+            name="ck_content_writeback_log_reconciliation_resolution",
+        ),
+        CheckConstraint(
+            "correlation_id IS NULL OR correlation_id ~ "
+            "'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'",
+            name="ck_content_writeback_log_correlation_id",
+        ),
+        Index(
+            "ix_content_writeback_log_reconciliation_due",
+            "reconciliation_status",
+            "reconciliation_next_attempt_at",
+        ),
+    )
 
 
 class CloudSyncFolder(Base):
@@ -1070,6 +1289,10 @@ class CloudWebhookSubscription(Base):
 
     provider = Column(String(20), nullable=False)
     subscription_id = Column(String(255), nullable=False)  # Provider's subscription ID
+    # Exact provider object originally requested for renewal (for example a Drive file ID).
+    provider_resource_id = Column(String(1024), nullable=True)
+    # Opaque resource identity returned by the provider for the active channel.
+    provider_channel_resource_id = Column(String(1024), nullable=True)
     resource_uri = Column(String(1024), nullable=True)  # What we're watching
 
     # Subscription details
@@ -1079,6 +1302,11 @@ class CloudWebhookSubscription(Base):
     # State
     is_active = Column(Boolean, default=True)
     last_notification_at = Column(DateTime(timezone=True), nullable=True)
+    last_renewed_at = Column(DateTime(timezone=True), nullable=True)
+    renewal_status = Column(String(32), nullable=True)
+    renewal_result = Column(JSON, nullable=True)
+    pending_renewal_channel_id = Column(String(255), nullable=True, unique=True)
+    pending_renewal_started_at = Column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1089,9 +1317,41 @@ class CloudWebhookSubscription(Base):
         "CloudOAuthCredentials", back_populates="webhook_subscriptions"
     )
 
+    __table_args__ = (
+        CheckConstraint(
+            "(pending_renewal_channel_id IS NULL AND pending_renewal_started_at IS NULL) "
+            "OR (pending_renewal_channel_id IS NOT NULL "
+            "AND pending_renewal_started_at IS NOT NULL)",
+            name="ck_cloud_webhook_pending_renewal_pair",
+        ),
+        CheckConstraint(
+            "renewal_status NOT IN ('pending', 'requesting', 'indeterminate') "
+            "OR (pending_renewal_channel_id IS NOT NULL "
+            "AND pending_renewal_started_at IS NOT NULL)",
+            name="ck_cloud_webhook_pending_renewal_status",
+        ),
+        Index(
+            "uq_cloud_webhook_initial_intent",
+            "department_id",
+            "credential_id",
+            "provider",
+            "provider_resource_id",
+            "notification_url",
+            unique=True,
+            postgresql_where=text(
+                "provider = 'google' AND renewal_status IN "
+                "('requesting', 'indeterminate', 'created', 'renewed')"
+            ),
+            sqlite_where=text(
+                "provider = 'google' AND renewal_status IN "
+                "('requesting', 'indeterminate', 'created', 'renewed')"
+            ),
+        ),
+    )
+
 
 class CloudJobQueue(Base):
-    """Background job queue for cloud operations"""
+    """Durable, atomically claimed background job queue."""
 
     __tablename__ = "cloud_job_queue"
 
@@ -1099,11 +1359,7 @@ class CloudJobQueue(Base):
     department_id = Column(
         String(36), ForeignKey("departments.id", ondelete="CASCADE"), nullable=False
     )
-
-    # Job type
-    job_type = Column(String(50), nullable=False)  # sync, scan, remediate, upload
-
-    # Job target
+    job_type = Column(String(50), nullable=False)
     cloud_file_id = Column(
         String(36), ForeignKey("cloud_files.id", ondelete="CASCADE"), nullable=True
     )
@@ -1115,32 +1371,469 @@ class CloudJobQueue(Base):
     provider = Column(String(20), nullable=True)
     provider_file_id = Column(String(255), nullable=True)
 
-    # Job state
-    status = Column(
-        String(20), default="pending"
-    )  # pending, processing, completed, failed
-    priority = Column(Integer, default=5)  # 1=highest, 10=lowest
+    payload = Column(
+        JOB_JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
-    # Progress
-    progress = Column(Integer, default=0)
+    @validates("payload")
+    def validate_payload(self, _key, value):
+        """Reject non-object payloads at every ORM enqueue boundary."""
+        if type(value) is not dict:
+            raise ValueError("job payload must be an object")
+        return value
+
+    depends_on_job_id = Column(
+        String(36), ForeignKey("cloud_job_queue.id", ondelete="RESTRICT"), nullable=True
+    )
+    dedupe_key = Column(String(255), nullable=True)
+    status = Column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    priority = Column(Integer, nullable=False, default=5, server_default="5")
+    progress = Column(Integer, nullable=False, default=0, server_default="0")
     progress_message = Column(Text, nullable=True)
 
-    # Results
+    execution_context = Column(
+        JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     result_data = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
-    retry_count = Column(Integer, default=0)
-    max_retries = Column(Integer, default=3)
+    last_error_code = Column(String(128), nullable=True)
+    last_error_retryable = Column(Boolean, nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0, server_default="0")
+    attempt_count = Column(Integer, nullable=False, default=0, server_default="0")
+    max_retries = Column(Integer, nullable=False, default=3, server_default="3")
 
-    # Timing
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    claim_token = Column(String(36), nullable=True)
+    worker_id = Column(String(255), nullable=True)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    external_effect_state = Column(String(20), nullable=True)
+    external_effect_token = Column(String(36), nullable=True)
+    external_effect_started_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
-    scheduled_for = Column(DateTime(timezone=True), server_default=func.now())
+    scheduled_for = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
-    # Relationships
     department = relationship("Department", backref="cloud_jobs")
     cloud_file = relationship("CloudFile", back_populates="jobs")
     credential = relationship("CloudOAuthCredentials", back_populates="jobs")
+    dependency = relationship(
+        "CloudJobQueue", remote_side=[id], foreign_keys=[depends_on_job_id]
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed')",
+            name="ck_cloud_job_queue_status",
+        ),
+        CheckConstraint(
+            "progress BETWEEN 0 AND 100", name="ck_cloud_job_queue_progress"
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_retries >= 0",
+            name="ck_cloud_job_queue_attempts",
+        ),
+        CheckConstraint(
+            "depends_on_job_id IS NULL OR depends_on_job_id <> id",
+            name="ck_cloud_job_queue_not_self_dependent",
+        ),
+        CheckConstraint(
+            "(status = 'processing' AND claim_token IS NOT NULL AND worker_id IS NOT NULL "
+            "AND claimed_at IS NOT NULL AND heartbeat_at IS NOT NULL AND lease_expires_at IS NOT NULL) "
+            "OR (status <> 'processing' AND claim_token IS NULL AND worker_id IS NULL "
+            "AND claimed_at IS NULL AND heartbeat_at IS NULL AND lease_expires_at IS NULL)",
+            name="ck_cloud_job_queue_claim_state",
+        ),
+        CheckConstraint(
+            "status NOT IN ('completed', 'failed') OR completed_at IS NOT NULL",
+            name="ck_cloud_job_queue_terminal",
+        ),
+        CheckConstraint(
+            "external_effect_state IS NULL OR external_effect_state IN "
+            "('requesting', 'confirmed', 'indeterminate')",
+            name="ck_cloud_job_queue_external_effect_state",
+        ),
+        CheckConstraint(
+            "(external_effect_state IS NULL AND external_effect_token IS NULL AND "
+            "external_effect_started_at IS NULL) OR (external_effect_state IS NOT NULL "
+            "AND external_effect_token IS NOT NULL AND external_effect_started_at IS NOT NULL)",
+            name="ck_cloud_job_queue_external_effect_pair",
+        ),
+        CheckConstraint(
+            "job_type = 'upload' OR (external_effect_state IS NULL AND "
+            "external_effect_token IS NULL AND external_effect_started_at IS NULL)",
+            name="ck_cloud_job_queue_external_effect_upload_only",
+        ),
+        Index(
+            "ix_cloud_job_queue_claim",
+            "status",
+            "scheduled_for",
+            "priority",
+            "created_at",
+        ),
+        Index("ix_cloud_job_queue_lease", "status", "lease_expires_at"),
+        Index("ix_cloud_job_queue_dependency", "depends_on_job_id"),
+        Index(
+            "uq_cloud_job_queue_active_dedupe",
+            "department_id",
+            "job_type",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text(
+                "dedupe_key IS NOT NULL AND status IN ('pending', 'processing')"
+            ),
+        ),
+    )
+
+
+class WorkerHeartbeat(Base):
+    """Liveness and drain state for a standalone durable queue worker."""
+
+    __tablename__ = "worker_heartbeats"
+
+    worker_id = Column(String(255), primary_key=True)
+    status = Column(String(20), nullable=False, server_default="running")
+    started_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    heartbeat_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    jobs_claimed = Column(Integer, nullable=False, server_default="0", default=0)
+    jobs_completed = Column(Integer, nullable=False, server_default="0", default=0)
+    jobs_failed = Column(Integer, nullable=False, server_default="0", default=0)
+    metadata_json = Column(
+        JOB_JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'draining', 'stopped')",
+            name="ck_worker_heartbeats_status",
+        ),
+        Index("ix_worker_heartbeats_liveness", "status", "heartbeat_at"),
+    )
+
+
+class RemediationArtifact(Base):
+    """Managed, immutable output bytes produced by a remediation job."""
+
+    __tablename__ = "remediation_artifacts"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    department_id = Column(
+        String(36),
+        ForeignKey(
+            "departments.id",
+            name="fk_remediation_artifacts_department",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    scan_id = Column(
+        String(36),
+        ForeignKey(
+            "scans.id", name="fk_remediation_artifacts_scan", ondelete="RESTRICT"
+        ),
+        nullable=False,
+    )
+    cloud_file_id = Column(
+        String(36),
+        ForeignKey(
+            "cloud_files.id",
+            name="fk_remediation_artifacts_cloud_file",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
+    remediation_job_id = Column(
+        String(36),
+        ForeignKey(
+            "cloud_job_queue.id",
+            name="fk_remediation_artifacts_remediation_job",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+        unique=True,
+    )
+    created_by_id = Column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    provider = Column(String(20), nullable=False)
+    scan_type = Column(String(32), nullable=False)
+    publication_token = Column(String(64), nullable=True, unique=True)
+    publication_heartbeat_at = Column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    published_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    storage_backend = Column(
+        String(20), nullable=False, default="local", server_default=text("'local'")
+    )
+    storage_key = Column(String(1024), nullable=False, unique=True)
+    filename = Column(String(512), nullable=False)
+    mime_type = Column(String(255), nullable=False)
+    size_bytes = Column(BigInteger, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    lifecycle_status = Column(
+        String(20),
+        nullable=False,
+        default="staging",
+        server_default=text("'staging'"),
+    )
+    review_status = Column(
+        String(20), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    approval_checksum = Column(String(64), nullable=True)
+    approved_by_id = Column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    approved_by_ref = Column(String(255), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    rejected_by_id = Column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    rejected_by_ref = Column(String(255), nullable=True)
+    rejected_at = Column(DateTime(timezone=True), nullable=True)
+    written_back_at = Column(DateTime(timezone=True), nullable=True)
+    cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    cleanup_reason = Column(String(64), nullable=True)
+    cleanup_owner = Column(String(255), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    provider_result = Column(JSON, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('google', 'microsoft', 'canvas', 'blackboard', "
+            "'moodle', 'brightspace', 'local')",
+            name="ck_remediation_artifacts_provider",
+        ),
+        CheckConstraint(
+            "((provider = 'local' AND cloud_file_id IS NULL AND "
+            "remediation_job_id IS NULL) OR "
+            "(provider <> 'local' AND cloud_file_id IS NOT NULL)) AND "
+            "(remediation_job_id IS NULL OR cloud_file_id IS NOT NULL)",
+            name="ck_remediation_artifacts_provider_authority",
+        ),
+        CheckConstraint(
+            "scan_type IN ('PDF', 'POWERPOINT', 'WORD', 'EXCEL', 'LATEX', "
+            "'IMAGE', 'WEBSITE', 'CANVAS_CONTENT')",
+            name="ck_remediation_artifacts_scan_type",
+        ),
+        CheckConstraint(
+            "(lifecycle_status = 'staging' AND publication_token IS NOT NULL AND "
+            "publication_heartbeat_at IS NOT NULL) OR "
+            "(lifecycle_status <> 'staging' AND publication_token IS NULL AND "
+            "publication_heartbeat_at IS NULL)",
+            name="ck_remediation_artifacts_publication_lease",
+        ),
+        CheckConstraint(
+            "storage_backend = 'local'",
+            name="ck_remediation_artifacts_storage_backend",
+        ),
+        CheckConstraint(
+            "storage_key <> '' AND storage_key NOT LIKE '/%' AND "
+            "storage_key NOT LIKE '%..%' AND storage_key NOT LIKE '%\\\\%'",
+            name="ck_remediation_artifacts_storage_key",
+        ),
+        CheckConstraint("size_bytes >= 0", name="ck_remediation_artifacts_size"),
+        CheckConstraint(
+            "sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_remediation_artifacts_sha256",
+        ),
+        CheckConstraint(
+            "lifecycle_status IN "
+            "('available', 'staging', 'expired', 'deleted', 'superseded')",
+            name="ck_remediation_artifacts_lifecycle",
+        ),
+        CheckConstraint(
+            "review_status IN ('pending', 'approved', 'rejected')",
+            name="ck_remediation_artifacts_review",
+        ),
+        CheckConstraint(
+            "(review_status = 'pending' AND approval_checksum IS NULL AND "
+            "approved_by_id IS NULL AND approved_by_ref IS NULL AND "
+            "approved_at IS NULL AND rejected_by_id IS NULL AND "
+            "rejected_by_ref IS NULL AND rejected_at IS NULL) OR "
+            "(review_status = 'approved' AND approval_checksum IS NOT NULL AND "
+            "approved_by_ref IS NOT NULL AND approved_by_ref <> '' AND "
+            "approved_at IS NOT NULL AND rejected_by_id IS NULL AND "
+            "rejected_by_ref IS NULL AND rejected_at IS NULL) OR "
+            "(review_status = 'rejected' AND approval_checksum IS NULL AND "
+            "approved_by_id IS NULL AND approved_by_ref IS NULL AND "
+            "approved_at IS NULL AND rejected_by_ref IS NOT NULL AND "
+            "rejected_by_ref <> '' AND rejected_at IS NOT NULL)",
+            name="ck_remediation_artifacts_review_metadata",
+        ),
+        CheckConstraint(
+            "written_back_at IS NULL OR review_status = 'approved'",
+            name="ck_remediation_artifacts_written",
+        ),
+        CheckConstraint(
+            "deleted_at IS NULL OR lifecycle_status = 'deleted'",
+            name="ck_remediation_artifacts_deleted",
+        ),
+        CheckConstraint(
+            "(cleanup_claimed_at IS NULL AND cleanup_reason IS NULL AND "
+            "cleanup_owner IS NULL) OR (cleanup_claimed_at IS NOT NULL AND "
+            "cleanup_reason IS NOT NULL AND cleanup_reason <> '' AND "
+            "cleanup_owner IS NOT NULL AND cleanup_owner <> '')",
+            name="ck_remediation_artifacts_cleanup_claim",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_remediation_artifacts_expiry",
+        ),
+        Index(
+            "ix_remediation_artifacts_department_lifecycle_expires",
+            "department_id",
+            "lifecycle_status",
+            "expires_at",
+        ),
+        Index("ix_remediation_artifacts_scan_created", "scan_id", "created_at"),
+        Index(
+            "ix_remediation_artifacts_cloud_file_review",
+            "cloud_file_id",
+            "review_status",
+        ),
+        Index(
+            "ix_remediation_artifacts_staging_heartbeat",
+            "lifecycle_status",
+            "publication_heartbeat_at",
+        ),
+    )
+
+    department = relationship("Department", back_populates="remediation_artifacts")
+    scan = relationship(
+        "Scan", back_populates="remediation_artifacts", foreign_keys=[scan_id]
+    )
+    cloud_file = relationship(
+        "CloudFile",
+        back_populates="remediation_artifacts",
+        foreign_keys=[cloud_file_id],
+    )
+    remediation_job = relationship("CloudJobQueue", foreign_keys=[remediation_job_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+    rejected_by = relationship("User", foreign_keys=[rejected_by_id])
+    current_for_cloud_files = relationship(
+        "CloudFile",
+        back_populates="current_remediation_artifact",
+        foreign_keys="CloudFile.current_remediation_artifact_id",
+    )
+
+
+class ArtifactOrphanQuarantine(Base):
+    """Unknown artifact-root file retained for explicit human review."""
+
+    __tablename__ = "artifact_orphan_quarantine"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    intent_token = Column(String(32), nullable=False)
+    original_key = Column(String(1024), nullable=False, unique=True)
+    quarantine_key = Column(String(1024), nullable=False, unique=True)
+    size_bytes = Column(BigInteger, nullable=False)
+    source_mtime = Column(DateTime(timezone=True), nullable=False)
+    source_mtime_ns = Column(BigInteger, nullable=False)
+    source_device = Column(BigInteger, nullable=False)
+    source_inode = Column(BigInteger, nullable=False)
+    kind = Column(String(32), nullable=False, server_default="regular_file")
+    status = Column(String(32), nullable=False, server_default="pending_move")
+    reason = Column(String(128), nullable=False)
+    recovery_error = Column(String(128), nullable=True)
+    quarantined_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String(255), nullable=True)
+    purge_claimed_at = Column(DateTime(timezone=True), nullable=True)
+    purge_token = Column(String(32), nullable=True)
+    purged_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("size_bytes >= 0", name="ck_artifact_orphan_quarantine_size"),
+        CheckConstraint(
+            "kind IN ('regular_file')",
+            name="ck_artifact_orphan_quarantine_kind",
+        ),
+        CheckConstraint(
+            "status IN ('pending_move', 'quarantined', 'restore_required', "
+            "'reviewed', 'purging', 'purged')",
+            name="ck_artifact_orphan_quarantine_status",
+        ),
+        CheckConstraint(
+            "(purge_claimed_at IS NULL AND purge_token IS NULL) OR "
+            "(purge_claimed_at IS NOT NULL AND purge_token IS NOT NULL "
+            "AND length(purge_token) = 32)",
+            name="ck_artifact_orphan_quarantine_purge_claim",
+        ),
+        CheckConstraint(
+            "(status IN ('pending_move', 'quarantined') "
+            "AND reviewed_at IS NULL AND reviewed_by IS NULL "
+            "AND purge_claimed_at IS NULL AND purge_token IS NULL "
+            "AND purged_at IS NULL) OR "
+            "(status = 'restore_required' AND purged_at IS NULL AND "
+            "((reviewed_at IS NULL AND reviewed_by IS NULL "
+            "AND purge_claimed_at IS NULL AND purge_token IS NULL) OR "
+            "(reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL "
+            "AND purge_claimed_at IS NOT NULL AND purge_token IS NOT NULL))) OR "
+            "(status = 'reviewed' AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL "
+            "AND purge_claimed_at IS NULL AND purge_token IS NULL "
+            "AND purged_at IS NULL) OR "
+            "(status = 'purging' AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL "
+            "AND purge_claimed_at IS NOT NULL AND purge_token IS NOT NULL "
+            "AND purged_at IS NULL) OR "
+            "(status = 'purged' AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL "
+            "AND purge_claimed_at IS NOT NULL AND purge_token IS NOT NULL "
+            "AND purged_at IS NOT NULL)",
+            name="ck_artifact_orphan_quarantine_review",
+        ),
+        Index(
+            "ix_artifact_orphan_quarantine_status_age",
+            "status",
+            "quarantined_at",
+        ),
+    )
+
+
+class MaintenanceCursor(Base):
+    """Durable progress for bounded maintenance traversals."""
+
+    __tablename__ = "maintenance_cursors"
+
+    key = Column(String(128), primary_key=True)
+    cursor_json = Column(
+        JOB_JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class EmailAlertSettings(Base):
@@ -1467,6 +2160,10 @@ class AuditLogAction(str, Enum):
     REMEDIATION_COMPLETE = "remediation_complete"
     REMEDIATION_FAILED = "remediation_failed"
     REMEDIATION_DOWNLOAD = "remediation_download"
+
+    # LMS AI policy governance and execution
+    LMS_AI_POLICY_UPDATE = "lms_ai_policy_update"
+    LMS_AI_EXECUTION = "lms_ai_execution"
 
 
 class AuditLogStatus(str, Enum):

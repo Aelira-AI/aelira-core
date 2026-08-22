@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { getCourseOverview, CourseOverviewResponse, CourseOverviewItem } from '../api/canvasContent';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useLTISession } from '../hooks/useLTISession';
 import { LTILayout } from '../components/LTILayout';
 import { daysUntilAdaTitleIIDeadline } from '../utils/deadlines';
 import { Badge, BadgeProps } from '../components/ui/Badge';
 import { ScoreChip } from '../components/ui/ScoreChip';
 import { ProgressBar } from '../components/ui/ProgressBar';
+import { apiClient } from '../api/client';
 
 interface CourseOverviewProps {
   isLTI?: boolean;  // When true, renders without AppLayout chrome
@@ -33,28 +34,105 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'compliance' | 'issues' | 'name'>('compliance');
-  const navigate = useNavigate();
+
 
   // LTI session validation — only runs when embedded in Canvas iframe
   const ltiSession = useLTISession(isLTI);
+  const ltiScopeError =
+    isLTI && ltiSession.accessToken && !ltiSession.accountWide
+      ? 'This course-scoped LTI session cannot access the account overview.'
+      : null;
 
   useEffect(() => {
     // Wait for LTI session to finish loading before fetching data
     if (isLTI && ltiSession.loading) return;
     if (isLTI && ltiSession.error) return;
+    if (ltiScopeError) return;
     loadOverview();
-  }, [isLTI, ltiSession.loading, ltiSession.error]);
+    // Dependencies below are the complete inputs read by loadOverview.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLTI, ltiSession.loading, ltiSession.error, ltiSession.platform, ltiScopeError]);
 
   async function loadOverview() {
     try {
       setLoading(true);
-      const result = await getCourseOverview();
+      const result = isLTI && ltiSession.platform === 'brightspace'
+        ? await loadBrightspaceOverview()
+        : await getCourseOverview();
       setData(result);
     } catch {
       setError('Failed to load course overview. Please try again.');
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadBrightspaceOverview(): Promise<CourseOverviewResponse> {
+    const response = await apiClient.get('/brightspace/courses');
+    const rawCourses = Array.isArray(response.data)
+      ? response.data
+      : Array.isArray(response.data?.courses)
+        ? response.data.courses
+        : [];
+    const courses: CourseOverviewItem[] = await Promise.all(
+      rawCourses.map(async (course: {
+        org_unit_id: number | string;
+        name: string;
+        code?: string | null;
+      }) => {
+        const courseId = String(course.org_unit_id);
+        const statusResponse = await apiClient.get(
+          `/brightspace/content/courses/${encodeURIComponent(courseId)}/status`
+        );
+        const statusData = statusResponse.data;
+        const items = Array.isArray(statusData.items) ? statusData.items : [];
+        const totalItems = Number(statusData.total_items) || 0;
+        const scannedItems = Number(statusData.scanned_items) || 0;
+        const average = typeof statusData.average_compliance === 'number'
+          ? statusData.average_compliance
+          : null;
+        const totalIssues = items.reduce(
+          (sum: number, item: { issue_count?: number }) => sum + (item.issue_count || 0),
+          0,
+        );
+        const writtenBack = items.filter(
+          (item: { writeback_status?: string | null }) => item.writeback_status === 'written_back'
+        ).length;
+        const status: CourseOverviewItem['status'] = scannedItems === 0
+          ? 'not_started'
+          : average !== null && average >= 95
+            ? 'compliant'
+            : average !== null && average >= 70
+              ? 'on_track'
+              : average !== null && average >= 50
+                ? 'at_risk'
+                : 'critical';
+        return {
+          course_id: courseId,
+          course_name: course.name,
+          course_code: course.code ?? null,
+          total_items: totalItems,
+          scanned_items: scannedItems,
+          avg_compliance: average,
+          total_issues: totalIssues,
+          written_back: writtenBack,
+          status,
+        };
+      })
+    );
+    const scores = courses
+      .map((course) => course.avg_compliance)
+      .filter((score): score is number => score !== null);
+    return {
+      total_courses: courses.length,
+      total_items: courses.reduce((sum, course) => sum + course.total_items, 0),
+      total_scanned: courses.reduce((sum, course) => sum + course.scanned_items, 0),
+      avg_compliance: scores.length
+        ? scores.reduce((sum, score) => sum + score, 0) / scores.length
+        : null,
+      total_issues: courses.reduce((sum, course) => sum + course.total_issues, 0),
+      courses,
+    };
   }
 
   function getFilteredCourses(): CourseOverviewItem[] {
@@ -71,24 +149,23 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
     return courses;
   }
 
-  function handleCourseClick(courseId: string) {
-    if (isLTI) {
-      navigate(`/lti/course/${courseId}?from=overview`);
-    } else {
-      navigate(`/canvas/courses/${courseId}/content`);
-    }
-  }
+  const courseHref = (courseId: string) => {
+    const encodedCourseId = encodeURIComponent(courseId);
+    return isLTI
+      ? `/lti/course/${encodedCourseId}?from=overview`
+      : `/canvas/courses/${encodedCourseId}/content`;
+  };
 
   // When in LTI mode, delegate loading/session-error states to LTILayout
   const isLoading = isLTI
-    ? (ltiSession.loading || loading)
+    ? (ltiSession.loading || (!ltiSession.error && !ltiScopeError && loading))
     : loading;
 
   const content = renderContent();
 
   if (isLTI) {
     return (
-      <LTILayout loading={isLoading} error={ltiSession.error}>
+      <LTILayout loading={isLoading} error={ltiSession.error || ltiScopeError}>
         {content}
       </LTILayout>
     );
@@ -133,10 +210,12 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold font-heading text-[var(--content-primary)]">
-              Compliance Overview
+              {isLTI && ltiSession.platform === 'brightspace' ? 'Course Overview' : 'Compliance Overview'}
             </h1>
             <p className="text-[var(--content-secondary)]">
-              Institution-wide accessibility compliance across all courses
+              {isLTI && ltiSession.platform === 'brightspace'
+                ? 'Select a Brightspace course to review its accessibility status'
+                : 'Institution-wide accessibility compliance across all courses'}
             </p>
           </div>
           <button
@@ -237,15 +316,16 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
                 return (
                   <tr
                     key={course.course_id}
-                    onClick={() => handleCourseClick(course.course_id)}
-                    className="border-b border-[var(--border-primary)] hover:bg-[var(--surface-tertiary)] cursor-pointer"
-                    role="link"
-                    tabIndex={0}
-                    onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && handleCourseClick(course.course_id)}
-                    aria-label={`${course.course_name}, ${scoreValue.toFixed(0)}% compliant, ${course.total_issues} issues`}
+                    className="border-b border-[var(--border-primary)] hover:bg-[var(--surface-tertiary)]"
                   >
                     <td className="px-4 py-3">
-                      <div className="font-medium text-[var(--content-primary)]">{course.course_name}</div>
+                      <Link
+                        to={courseHref(course.course_id)}
+                        className="font-medium text-[var(--content-accent)] hover:underline"
+                        aria-label={`${course.course_name}, ${scoreValue.toFixed(0)}% compliant, ${course.total_issues} issues`}
+                      >
+                        {course.course_name}
+                      </Link>
                       {course.course_code && (
                         <div className="text-xs text-[var(--content-tertiary)]">{course.course_code}</div>
                       )}

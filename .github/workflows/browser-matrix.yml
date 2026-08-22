@@ -1,0 +1,34 @@
+name: Scheduled browser matrix
+
+on:
+  schedule:
+    - cron: "17 3 * * 2,5"
+  workflow_dispatch:
+
+concurrency:
+  group: browser-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  browser-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dashboard dependencies
+        run: npm ci
+      - name: Install matrix browsers
+        run: npx playwright install --with-deps chromium firefox
+      - name: Run scheduled Chromium and Firefox matrix
+        run: npm run test:e2e:matrix

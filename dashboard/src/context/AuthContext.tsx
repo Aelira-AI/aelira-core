@@ -4,7 +4,7 @@ import React, {
   useCallback,
   ReactNode,
 } from 'react';
-import { apiClient } from '../api/client';
+import { apiClient, clearStoredApiKeyAuth } from '../api/client';
 import type { User, Department } from '../types';
 import { AuthContext } from './auth-context';
 import type { AuthMethod, LoginResult } from './auth-context';
@@ -16,6 +16,7 @@ interface AuthProviderProps {
 interface ValidateResponse {
   department: Department;
   user: User;
+  auth_method: 'session' | 'lti';
 }
 
 export function AuthProvider({ children }: AuthProviderProps): React.ReactElement {
@@ -31,10 +32,16 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
   // Validate session (cookie-based auth)
   const validateSession = useCallback(async (): Promise<boolean> => {
     try {
-      const response = await apiClient.get<ValidateResponse>('/auth/session/validate');
+      const response = await apiClient.get<ValidateResponse>('/auth/session/validate', {
+        _skipApiKeyAuth: true,
+      });
+      if (response.data.auth_method === 'session') {
+        clearStoredApiKeyAuth();
+        setApiKey(null);
+      }
       setDepartment(response.data.department);
       setUser(response.data.user);
-      setAuthMethod('session');
+      setAuthMethod(response.data.auth_method);
       return true;
     } catch {
       // Session not valid
@@ -128,7 +135,7 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
   // Refresh session tokens
   const refreshSession = async (): Promise<boolean> => {
     try {
-      await apiClient.post('/auth/session/refresh');
+      await apiClient.post('/auth/session/refresh', undefined, { _skipApiKeyAuth: true });
       return true;
     } catch (error) {
       const axiosError = error as { response?: { status?: number } };
@@ -148,7 +155,7 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
 
     // If session-based, revoke on server
     try {
-      await apiClient.post('/auth/session/logout');
+      await apiClient.post('/auth/session/logout', undefined, { _skipApiKeyAuth: true });
     } catch (error) {
       // Ignore errors - we're logging out anyway
       console.warn('Logout request failed:', error);
@@ -156,7 +163,9 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
   };
 
   // Check if user is authenticated
-  const isAuthenticated = !!(user && (authMethod === 'session' || authMethod === 'api_key'));
+  const isAuthenticated = !!(
+    user && (authMethod === 'session' || authMethod === 'lti' || authMethod === 'api_key')
+  );
 
   return (
     <AuthContext.Provider

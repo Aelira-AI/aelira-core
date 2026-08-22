@@ -284,13 +284,6 @@ export interface QuotaStatus {
   unlimited: boolean;
 }
 
-export interface BillingInfo {
-  tier: Tier;
-  status: 'active' | 'past_due' | 'canceled' | 'trialing';
-  current_period_end?: string;
-  cancel_at_period_end?: boolean;
-}
-
 // ============================================================================
 // AI/LLM Providers
 // ============================================================================

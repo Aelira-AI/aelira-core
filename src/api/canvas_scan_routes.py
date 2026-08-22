@@ -15,12 +15,11 @@ SECURITY:
 
 import logging
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..auth import verify_department_access
@@ -30,15 +29,20 @@ from ..db.database import get_db_dependency
 from ..db.models import (
     CloudFile,
     CloudJobQueue,
-    CloudJobStatus,
     CloudJobType,
     CloudProvider,
     Scan,
     ScanResult,
 )
 from ..integrations.canvas import CanvasAPIClient
-from ..integrations.oauth_token_manager import OAuthTokenManager
+from ..education.canvas_content_scanner import CanvasContentScanner
 from ..middleware.quota import require_feature
+from ..services.job_enqueue_service import enqueue_cloud_job
+from ..services.canvas_identity_service import (
+    add_or_get_canvas_cloud_file,
+    invalidate_canvas_derived_state,
+    load_canvas_file,
+)
 
 # Import _get_canvas_client from the main canvas routes
 from .canvas_routes import _get_canvas_client
@@ -67,6 +71,9 @@ class CanvasScanResponse(BaseModel):
     job_id: str
     status: str = "queued"
     cloud_file_id: str
+    operation_kind: str = "deterministic_scan"
+    external_ai_used: bool = False
+    ai_used: bool = False
 
 
 class CanvasBulkScanRequest(BaseModel):
@@ -90,6 +97,9 @@ class CanvasBulkScanResponse(BaseModel):
     jobs: List[BulkScanFileJob]
     total: int
     skipped: int
+    operation_kind: str = "deterministic_scan"
+    external_ai_used: bool = False
+    ai_used: bool = False
 
 
 class FileScanStatus(BaseModel):
@@ -103,6 +113,7 @@ class FileScanStatus(BaseModel):
     issues_count: int = 0
     status: str = "pending"
     has_remediated_version: bool = False
+    remediation_origin: Optional[str] = None
 
 
 class CourseScanStatusResponse(BaseModel):
@@ -158,56 +169,6 @@ def _rewrite_localhost_for_docker(api_client: CanvasAPIClient) -> None:
 
 
 # =============================================================================
-# Background Task
-# =============================================================================
-
-
-async def _canvas_scan_file_task(job_id: str, cloud_file_id: str, credential_id: str):
-    """Background task to scan a file from Canvas LMS."""
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.cloud_scan_job import handle_scan_job
-
-    logger.info(f"Starting Canvas scan: job={job_id}, file={cloud_file_id}")
-
-    with _get_db_ctx() as db:
-        job = db.query(CloudJobQueue).filter(CloudJobQueue.id == job_id).first()
-        if not job:
-            logger.error(f"Scan job not found: {job_id}")
-            return
-
-        try:
-            job.status = CloudJobStatus.PROCESSING.value
-            job.started_at = datetime.now(timezone.utc)
-            job.progress = 10
-            job.progress_message = "Downloading file from Canvas..."
-            db.commit()
-
-            token_manager = OAuthTokenManager()
-            result = await handle_scan_job(job, db, token_manager)
-
-            job.status = CloudJobStatus.COMPLETED.value
-            job.progress = 100
-            job.progress_message = "Scan complete"
-            job.result_data = result
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(
-                f"Canvas scan complete: job={job_id}, "
-                f"score={result.get('compliance_score')}, "
-                f"issues={result.get('issues_found', 0)}"
-            )
-        except Exception as e:
-            logger.error(f"Canvas scan failed: job={job_id}, error={e}")
-            job.status = CloudJobStatus.FAILED.value
-            job.progress = 100
-            job.progress_message = f"Scan failed: {e}"
-            job.error_message = str(e)
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-
-# =============================================================================
 # Endpoints
 # =============================================================================
 
@@ -215,7 +176,6 @@ async def _canvas_scan_file_task(job_id: str, cloud_file_id: str, credential_id:
 @router.post("/scan", response_model=CanvasScanResponse)
 async def scan_canvas_file(
     request: CanvasScanRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasScanResponse:
@@ -248,18 +208,27 @@ async def scan_canvas_file(
             if file_info is None:
                 raise HTTPException(status_code=404, detail="Canvas file not found")
 
+            file_type = _get_file_type(file_info.filename)
+            provider_modified_at = getattr(file_info, "updated_at", None)
+            provider_version = (
+                provider_modified_at.isoformat() if provider_modified_at else None
+            )
+
             # Cached Canvas files are course-scoped too. Never return or
             # reassign a row created for another course.
-            existing_cloud_file = (
-                db.query(CloudFile)
-                .filter(
-                    CloudFile.provider == CloudProvider.CANVAS.value,
-                    CloudFile.provider_file_id == request.file_id,
-                    CloudFile.provider_parent_id == request.course_id,
-                    CloudFile.department_id == dept_id,
-                )
-                .first()
+            existing_cloud_file = load_canvas_file(
+                db,
+                department_id=dept_id,
+                course_id=request.course_id,
+                provider_file_id=request.file_id,
             )
+
+            if (
+                existing_cloud_file
+                and provider_version is not None
+                and existing_cloud_file.provider_version != provider_version
+            ):
+                invalidate_canvas_derived_state(existing_cloud_file)
 
             if existing_cloud_file and not existing_cloud_file.needs_rescan:
                 # Return existing scan results
@@ -268,8 +237,6 @@ async def scan_canvas_file(
                     status="already_scanned",
                     cloud_file_id=existing_cloud_file.id,
                 )
-
-            file_type = _get_file_type(file_info.filename)
 
             if existing_cloud_file:
                 # Update existing record
@@ -280,7 +247,10 @@ async def scan_canvas_file(
                 existing_cloud_file.mime_type = file_info.content_type
                 existing_cloud_file.file_size_bytes = file_info.size
                 existing_cloud_file.web_view_link = file_info.url
+                existing_cloud_file.provider_modified_at = provider_modified_at
+                existing_cloud_file.provider_version = provider_version
                 existing_cloud_file.provider_parent_id = request.course_id
+                existing_cloud_file.content_source = "file"
                 existing_cloud_file.needs_rescan = True
                 cloud_file = existing_cloud_file
             else:
@@ -296,36 +266,49 @@ async def scan_canvas_file(
                     mime_type=file_info.content_type,
                     file_size_bytes=file_info.size,
                     web_view_link=file_info.url,
+                    provider_modified_at=provider_modified_at,
+                    provider_version=provider_version,
                     provider_parent_id=request.course_id,
+                    content_source="file",
                 )
-                db.add(cloud_file)
+                cloud_file = add_or_get_canvas_cloud_file(
+                    db,
+                    cloud_file,
+                    lambda: load_canvas_file(
+                        db,
+                        department_id=dept_id,
+                        course_id=request.course_id,
+                        provider_file_id=request.file_id,
+                    ),
+                )
 
             # Create scan job
-            job_id = str(uuid.uuid4())
-            scan_job = CloudJobQueue(
-                id=job_id,
+            db.flush()
+            scan_job = enqueue_cloud_job(
+                db,
                 department_id=dept_id,
                 job_type=CloudJobType.SCAN.value,
+                payload={
+                    "cloud_file_id": cloud_file.id,
+                    "credential_id": credential.id,
+                    "provider": CloudProvider.CANVAS.value,
+                    "provider_file_id": str(request.file_id),
+                    "course_id": str(request.course_id),
+                },
+                dedupe_key=(
+                    f"scan:canvas:{request.course_id}:file:{request.file_id}:"
+                    f"{provider_version or 'current'}"
+                ),
                 cloud_file_id=cloud_file.id,
                 credential_id=credential.id,
                 provider=CloudProvider.CANVAS.value,
                 provider_file_id=request.file_id,
-                status=CloudJobStatus.PENDING.value,
                 priority=5,
             )
-            db.add(scan_job)
             db.commit()
 
-            # Queue background task
-            background_tasks.add_task(
-                _canvas_scan_file_task,
-                job_id=job_id,
-                cloud_file_id=cloud_file.id,
-                credential_id=credential.id,
-            )
-
             return CanvasScanResponse(
-                job_id=job_id,
+                job_id=scan_job.id,
                 status="queued",
                 cloud_file_id=cloud_file.id,
             )
@@ -335,18 +318,26 @@ async def scan_canvas_file(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to queue Canvas scan: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Failed to queue Canvas scan",
+            extra={
+                "course_id": request.course_id,
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to queue scan: {str(e)}",
+            detail={
+                "code": "CANVAS_SCAN_QUEUE_FAILED",
+                "message": "Failed to queue Canvas scan",
+            },
         )
 
 
 @router.post("/scan/bulk", response_model=CanvasBulkScanResponse)
 async def scan_canvas_course_files(
     request: CanvasBulkScanRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasBulkScanResponse:
@@ -377,28 +368,34 @@ async def scan_canvas_course_files(
 
             for file_info in canvas_files:
                 file_id = file_info.id
+                file_type = _get_file_type(file_info.filename)
+                provider_modified_at = getattr(file_info, "updated_at", None)
+                provider_version = (
+                    provider_modified_at.isoformat() if provider_modified_at else None
+                )
 
                 # Check if CloudFile exists and doesn't need rescan
-                existing = (
-                    db.query(CloudFile)
-                    .filter(
-                        CloudFile.provider == CloudProvider.CANVAS.value,
-                        CloudFile.provider_file_id == file_id,
-                        CloudFile.provider_parent_id == request.course_id,
-                        CloudFile.department_id == dept_id,
-                    )
-                    .first()
+                existing = load_canvas_file(
+                    db,
+                    department_id=dept_id,
+                    course_id=request.course_id,
+                    provider_file_id=file_id,
                 )
                 if existing is not None and str(existing.provider_parent_id) != str(
                     request.course_id
                 ):
                     existing = None
 
+                if (
+                    existing
+                    and provider_version is not None
+                    and existing.provider_version != provider_version
+                ):
+                    invalidate_canvas_derived_state(existing)
+
                 if existing and not existing.needs_rescan:
                     skipped += 1
                     continue
-
-                file_type = _get_file_type(file_info.filename)
 
                 if existing:
                     # Update existing record
@@ -407,7 +404,10 @@ async def scan_canvas_course_files(
                     existing.mime_type = file_info.content_type
                     existing.file_size_bytes = file_info.size
                     existing.web_view_link = file_info.url
+                    existing.provider_modified_at = provider_modified_at
+                    existing.provider_version = provider_version
                     existing.provider_parent_id = request.course_id
+                    existing.content_source = "file"
                     existing.needs_rescan = True
                     cloud_file = existing
                 else:
@@ -423,38 +423,51 @@ async def scan_canvas_course_files(
                         mime_type=file_info.content_type,
                         file_size_bytes=file_info.size,
                         web_view_link=file_info.url,
+                        provider_modified_at=provider_modified_at,
+                        provider_version=provider_version,
                         provider_parent_id=request.course_id,
+                        content_source="file",
                     )
-                    db.add(cloud_file)
+                    cloud_file = add_or_get_canvas_cloud_file(
+                        db,
+                        cloud_file,
+                        lambda: load_canvas_file(
+                            db,
+                            department_id=dept_id,
+                            course_id=request.course_id,
+                            provider_file_id=file_id,
+                        ),
+                    )
 
                 # Create scan job
-                job_id = str(uuid.uuid4())
-                scan_job = CloudJobQueue(
-                    id=job_id,
+                db.flush()
+                scan_job = enqueue_cloud_job(
+                    db,
                     department_id=dept_id,
                     job_type=CloudJobType.SCAN.value,
+                    payload={
+                        "cloud_file_id": cloud_file.id,
+                        "credential_id": credential.id,
+                        "provider": CloudProvider.CANVAS.value,
+                        "provider_file_id": str(file_id),
+                        "course_id": str(request.course_id),
+                    },
+                    dedupe_key=(
+                        f"scan:canvas:{request.course_id}:file:{file_id}:"
+                        f"{provider_version or 'current'}"
+                    ),
                     cloud_file_id=cloud_file.id,
                     credential_id=credential.id,
                     provider=CloudProvider.CANVAS.value,
                     provider_file_id=file_id,
-                    status=CloudJobStatus.PENDING.value,
                     priority=5,
-                )
-                db.add(scan_job)
-
-                # Queue background task
-                background_tasks.add_task(
-                    _canvas_scan_file_task,
-                    job_id=job_id,
-                    cloud_file_id=cloud_file.id,
-                    credential_id=credential.id,
                 )
 
                 jobs.append(
                     BulkScanFileJob(
                         file_id=file_id,
                         file_name=file_info.display_name or file_info.filename,
-                        job_id=job_id,
+                        job_id=scan_job.id,
                     )
                 )
 
@@ -471,11 +484,20 @@ async def scan_canvas_course_files(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to queue Canvas bulk scan: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Failed to queue Canvas bulk scan",
+            extra={
+                "course_id": request.course_id,
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to queue bulk scan: {str(e)}",
+            detail={
+                "code": "CANVAS_BULK_SCAN_QUEUE_FAILED",
+                "message": "Failed to queue Canvas bulk scan",
+            },
         )
 
 
@@ -511,6 +533,10 @@ async def get_course_scan_status(
         .filter(
             CloudFile.provider == CloudProvider.CANVAS.value,
             CloudFile.provider_parent_id == course_id,
+            or_(
+                CloudFile.content_source == "file",
+                CloudFile.content_source.is_(None),
+            ),
             CloudFile.provider_file_id.in_(requested_file_ids),
             CloudFile.department_id == principal.department_id,
         )
@@ -601,6 +627,7 @@ async def get_course_scan_status(
                 issues_count=issues_count,
                 status=status,
                 has_remediated_version=has_remediated,
+                remediation_origin=cf.remediation_origin,
             )
         )
 
@@ -624,12 +651,12 @@ async def upload_remediated_to_canvas(
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasUploadRemediatedResponse:
     """
-    Upload a remediated file back to Canvas.
+    Write the current approved managed artifact back to Canvas.
 
-    Looks up the remediation output from the scan's metadata,
-    then uploads it to the specified Canvas course.
+    Resolves the exact scan-linked Canvas file, requires fresh approved
+    artifact authority, and delegates to the single managed Canvas writer.
 
-    Requires API key authentication and lms_integration feature.
+    Requires an authenticated principal and the lms_integration feature.
     """
     require_lti_course_access(principal, request.course_id)
 
@@ -640,6 +667,10 @@ async def upload_remediated_to_canvas(
             CloudFile.department_id == principal.department_id,
             CloudFile.provider == CloudProvider.CANVAS.value,
             CloudFile.provider_parent_id == request.course_id,
+            or_(
+                CloudFile.content_source == "file",
+                CloudFile.content_source.is_(None),
+            ),
         )
         .first()
     )
@@ -661,51 +692,14 @@ async def upload_remediated_to_canvas(
         db, principal.department_id, "lms_integration", "Canvas LMS Integration"
     )
 
-    # Find the remediated file path.
-    # The scan_id might be the original cloud scan (whose /tmp file is
-    # gone) or a later dashboard re-scan.  Search multiple sources.
-    from ..utils.file_storage import get_remediated_file_path
-
-    remediated_path = None
-
-    # 1. Check this scan's storage_path directly
-    if scan.storage_path:
-        sp = Path(scan.storage_path)
-        if sp.exists() and ("remediat" in sp.name.lower()):
-            remediated_path = str(sp)
-        else:
-            candidate = get_remediated_file_path(scan.storage_path)
-            if Path(candidate).exists():
-                remediated_path = candidate
-
-    # 2. Check completed remediation output linked to this exact CloudFile.
-    if not remediated_path:
-        remediation_job = (
-            db.query(CloudJobQueue)
-            .filter(
-                CloudJobQueue.cloud_file_id == cloud_file.id,
-                CloudJobQueue.job_type == CloudJobType.REMEDIATE.value,
-                CloudJobQueue.status == CloudJobStatus.COMPLETED.value,
-            )
-            .order_by(CloudJobQueue.completed_at.desc())
-            .first()
-        )
-        if remediation_job and remediation_job.result_data:
-            rp = remediation_job.result_data.get("output_file")
-            if rp and Path(rp).exists():
-                remediated_path = rp
-
-    if not remediated_path:
+    if cloud_file.needs_rescan:
+        raise HTTPException(status_code=409, detail="Source changed; re-scan required")
+    if (
+        not cloud_file.current_remediation_artifact_id
+        or cloud_file.writeback_status != "approved"
+    ):
         raise HTTPException(
-            status_code=404,
-            detail="No remediated file found for this scan. Please remediate the file first.",
-        )
-
-    # Check that the file exists on disk
-    if not Path(remediated_path).exists():
-        raise HTTPException(
-            status_code=410,
-            detail="Remediated file has expired. Please re-remediate.",
+            status_code=409, detail="Approved managed artifact required"
         )
 
     try:
@@ -713,41 +707,26 @@ async def upload_remediated_to_canvas(
         _rewrite_localhost_for_docker(api_client)
 
         try:
-            # Build the accessible file name
-            original_path = Path(scan.file_name)
-            base_name = original_path.stem
-            ext = original_path.suffix.lstrip(".")
-            accessible_file_name = f"{base_name}_accessible.{ext}"
-
-            # Upload to Canvas
-            upload_result = await api_client.upload_file(
-                course_id=request.course_id,
-                local_path=remediated_path,
-                file_name=accessible_file_name,
+            scanner = CanvasContentScanner(
+                canvas_client=api_client,
+                db=db,
+                department_id=principal.department_id,
+                credential_id=credential.id,
             )
-
-            if not upload_result.success:
+            result = await scanner.write_back_file(
+                cloud_file, approved_by=principal.user_id
+            )
+            if not result.get("success"):
+                status_code = 409 if result.get("stale") else 400
                 raise HTTPException(
-                    status_code=502,
-                    detail=f"Canvas upload failed: {upload_result.error}",
+                    status_code=status_code,
+                    detail=result.get("error", "Managed Canvas write-back failed"),
                 )
-
-            # Update CloudFile remediation state
-            cloud_file.has_remediated_version = True
-            cloud_file.remediated_file_id = upload_result.file_id
-            db.commit()
-
-            logger.info(
-                f"Uploaded remediated file to Canvas: scan={request.scan_id}, "
-                f"course={request.course_id}, file={accessible_file_name}"
-            )
-
             return CanvasUploadRemediatedResponse(
                 success=True,
-                canvas_file_url=upload_result.web_view_link,
-                file_name=accessible_file_name,
+                canvas_file_url=result.get("url"),
+                file_name=result.get("file_name"),
             )
-
         finally:
             await api_client.close()
 

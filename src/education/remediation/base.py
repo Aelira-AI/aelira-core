@@ -16,12 +16,51 @@ import os
 import uuid
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 from pydantic import BaseModel, Field
+
+ALT_TEXT_CATEGORY_ALIASES = frozenset(
+    {
+        "alt_text",
+        "alternative_text",
+        "image",
+        "image_alt",
+        "image_alt_text",
+        "image_description",
+        "image_of_text",
+        "missing_alt_text",
+        "missing_figure_caption",
+        "missing_image_description",
+        "area_alt",
+        "figure_alt",
+        "input_image_alt",
+        "object_alt",
+        "role_img_alt",
+        "svg_img_alt",
+    }
+)
+
+CHART_CATEGORY_ALIASES = frozenset(
+    {
+        "chart",
+        "chart_alt_text",
+        "chart_description",
+        "missing_chart_description",
+    }
+)
+
+VISUAL_DESCRIPTION_CATEGORY_ALIASES = ALT_TEXT_CATEGORY_ALIASES | CHART_CATEGORY_ALIASES
+
+
+def normalize_category_alias(value: object) -> str:
+    """Normalize scanner category spelling before exact alias lookup."""
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
+
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +94,132 @@ class IssueCategory(str, Enum):
     SHEET = "sheet"
     TITLE = "title"  # Document title issues
     OTHER = "other"
+
+
+_CATEGORY_FIELD_NAMES = (
+    "category",
+    "type",
+    "issue_type",
+    "rule",
+    "rule_id",
+    "id",
+    "axe_id",
+    "axe_rule_id",
+    "wcag_criteria",
+    "wcag_criterion",
+    "wcag",
+)
+
+_CATEGORY_ALIASES = {
+    **{alias: IssueCategory.ALT_TEXT for alias in ALT_TEXT_CATEGORY_ALIASES},
+    **{alias: IssueCategory.CHART for alias in CHART_CATEGORY_ALIASES},
+    "heading": IssueCategory.HEADING,
+    "heading_structure": IssueCategory.HEADING,
+    "contrast": IssueCategory.CONTRAST,
+    "color_contrast": IssueCategory.CONTRAST,
+    "table": IssueCategory.TABLE,
+    "table_header": IssueCategory.TABLE,
+    "link": IssueCategory.LINK,
+    "hyperlink": IssueCategory.LINK,
+    "list": IssueCategory.LIST,
+    "list_structure": IssueCategory.LIST,
+    "language": IssueCategory.LANGUAGE,
+    "missing_language": IssueCategory.LANGUAGE,
+    "missing_lang": IssueCategory.LANGUAGE,
+    "reading_order": IssueCategory.READING_ORDER,
+    "form": IssueCategory.FORM,
+    "aria": IssueCategory.ARIA,
+    "navigation": IssueCategory.NAVIGATION,
+    "bookmark": IssueCategory.NAVIGATION,
+    "bookmarks": IssueCategory.NAVIGATION,
+    "outline": IssueCategory.NAVIGATION,
+    "structure": IssueCategory.STRUCTURE,
+    "structure_tree": IssueCategory.STRUCTURE,
+    "tagged": IssueCategory.STRUCTURE,
+    "color": IssueCategory.COLOR,
+    "sheet": IssueCategory.SHEET,
+    "sheet_name": IssueCategory.SHEET,
+    "title": IssueCategory.TITLE,
+    "document_title": IssueCategory.TITLE,
+    "font_size": IssueCategory.STRUCTURE,
+    "1.1.1": IssueCategory.ALT_TEXT,
+    "1.3.1": IssueCategory.STRUCTURE,
+    "1.4.3": IssueCategory.CONTRAST,
+}
+
+
+@dataclass(frozen=True)
+class IssueCategoryClassification:
+    """Pure classification result shared by every remediation entry point."""
+
+    category: IssueCategory
+    manual_reason: Optional[str] = None
+
+
+def classify_issue_category(
+    issue: Dict[str, Any], *, authoritative: bool
+) -> IssueCategoryClassification:
+    """Classify all category-bearing fields without precedence bypasses.
+
+    Visual-description aliases always win because they select the least-
+    privileged client. Authoritative callers fail closed when non-visual fields
+    disagree or semantic category fields contain unknown values.
+    """
+    values: List[tuple[str, str]] = []
+    metadata = issue.get("metadata")
+    sources: tuple[Dict[str, Any], ...] = (
+        issue,
+        metadata if isinstance(metadata, dict) else {},
+    )
+    for source in sources:
+        for field in _CATEGORY_FIELD_NAMES:
+            value = source.get(field)
+            if value is None or isinstance(value, (dict, list, tuple, set)):
+                continue
+            normalized = normalize_category_alias(value)
+            if normalized:
+                values.append((field, normalized))
+
+    known = {
+        _CATEGORY_ALIASES[value] for _, value in values if value in _CATEGORY_ALIASES
+    }
+    visual = known & {IssueCategory.ALT_TEXT, IssueCategory.CHART}
+    if visual:
+        category = (
+            IssueCategory.CHART
+            if IssueCategory.CHART in visual
+            else IssueCategory.ALT_TEXT
+        )
+        return IssueCategoryClassification(category=category)
+
+    nonvisual = known - {IssueCategory.OTHER}
+    semantic_unknown = {
+        value
+        for field, value in values
+        if field in {"category", "type", "issue_type", "rule", "rule_id"}
+        and value not in _CATEGORY_ALIASES
+        and not value.startswith("wcag_")
+    }
+    if authoritative and len(nonvisual) > 1:
+        return IssueCategoryClassification(
+            category=IssueCategory.OTHER,
+            manual_reason="conflicting_issue_categories",
+        )
+    if authoritative and (
+        len(semantic_unknown) > 1 or (semantic_unknown and nonvisual)
+    ):
+        return IssueCategoryClassification(
+            category=IssueCategory.OTHER,
+            manual_reason="ambiguous_issue_category",
+        )
+    if nonvisual:
+        # Legacy callers preserve the historical first-recognized precedence.
+        for _, value in values:
+            category = _CATEGORY_ALIASES.get(value)
+            if category in nonvisual:
+                assert category is not None
+                return IssueCategoryClassification(category=category)
+    return IssueCategoryClassification(category=IssueCategory.OTHER)
 
 
 class FixStatus(str, Enum):
@@ -132,10 +297,95 @@ class ManualIssue(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+def materialize_manual_issues(
+    issues: List[Dict[str, Any]],
+    *,
+    reason: str,
+    purpose: str,
+) -> List[ManualIssue]:
+    """Create one safe manual record per raw issue node without deduplication."""
+    records: List[ManualIssue] = []
+    severity_map = {
+        "critical": IssueSeverity.CRITICAL,
+        "high": IssueSeverity.HIGH,
+        "medium": IssueSeverity.MEDIUM,
+        "low": IssueSeverity.LOW,
+        "error": IssueSeverity.HIGH,
+        "warning": IssueSeverity.MEDIUM,
+        "info": IssueSeverity.LOW,
+    }
+    for issue_index, issue in enumerate(issues):
+        classification = classify_issue_category(issue, authoritative=True)
+        nodes = issue.get("nodes")
+        node_count = max(1, len(nodes)) if isinstance(nodes, list) else 1
+        raw_id = str(issue.get("id") or f"issue-{issue_index}")
+        description = str(
+            issue.get("description") or issue.get("message") or "Accessibility issue"
+        )
+        issue_reason = classification.manual_reason or reason
+        issue_purpose = (
+            "alt_text"
+            if classification.category in {IssueCategory.ALT_TEXT, IssueCategory.CHART}
+            else purpose
+        )
+        severity = severity_map.get(
+            normalize_category_alias(issue.get("severity", "medium")),
+            IssueSeverity.MEDIUM,
+        )
+        for node_index in range(node_count):
+            records.append(
+                ManualIssue(
+                    issue_id=(
+                        f"{raw_id}:node:{node_index}" if node_count > 1 else raw_id
+                    ),
+                    category=classification.category,
+                    severity=severity,
+                    description=description,
+                    location=issue.get("location"),
+                    reason=issue_reason,
+                    recommendation="Review and remediate this issue manually.",
+                    wcag_criteria=issue.get("wcag_criteria") or issue.get("wcag"),
+                    metadata={"purpose": issue_purpose, "node_index": node_index},
+                )
+            )
+    return records
+
+
+def merge_partitioned_manual_issues(
+    result: Any,
+    issues: List[Dict[str, Any]],
+    *,
+    reason: str,
+    purpose: str,
+) -> None:
+    """Merge partitioned work while preserving the result accounting invariant."""
+    records = materialize_manual_issues(issues, reason=reason, purpose=purpose)
+    if not records:
+        return
+    if not hasattr(result, "manual_issues"):
+        result.manual_issues = []
+    if not hasattr(result, "total_issues"):
+        result.total_issues = sum(
+            int(getattr(result, field, 0) or 0)
+            for field in (
+                "fixed_count",
+                "manual_count",
+                "failed_count",
+                "skipped_count",
+            )
+        )
+    result.manual_issues.extend(records)
+    result.manual_count += len(records)
+    result.total_issues += len(records)
+
+
 class RemediationConfig(BaseModel):
     """Configuration options for remediation."""
 
     use_ai: bool = True  # Use AI for generating fixes
+    # Legacy nested helpers can acquire the global manager. Authoritative LMS
+    # entry points disable that path until explicit client injection lands.
+    allow_legacy_nested_ai: bool = True
     ai_model: str = "gemini"  # Which AI model to use
     verify_fixes: bool = True  # Verify fixes after applying
     create_backup: bool = True  # Backup original file
@@ -281,6 +531,8 @@ class BaseRemediator(ABC):
         issues: List[Dict[str, Any]],
         config: Optional[RemediationConfig] = None,
         ai_client: Optional[Any] = None,
+        *,
+        alt_text_client: Optional[Any] = None,
     ) -> None:
         """
         Initialize the remediator.
@@ -289,12 +541,16 @@ class BaseRemediator(ABC):
             file_path: Path to the document to remediate
             issues: List of accessibility issues from scan
             config: Remediation configuration options
-            ai_client: AI client for generating fixes (optional)
+            ai_client: Purpose-bound client for non-alt remediation (optional)
+            alt_text_client: Purpose-bound client for image/chart descriptions
         """
         self.file_path = file_path
-        self.issues = self._normalize_issues(issues)
         self.config = config or RemediationConfig()
+        self.issues = self._normalize_issues(issues)
         self.ai_client = ai_client
+        self.alt_text_client = alt_text_client
+        if self.alt_text_client is None and self.config.allow_legacy_nested_ai:
+            self.alt_text_client = ai_client
 
         # Initialize result
         self.result = RemediationResult(
@@ -324,8 +580,11 @@ class BaseRemediator(ABC):
         normalized = []
         for issue in issues:
             try:
+                classification = classify_issue_category(
+                    issue, authoritative=not self.config.allow_legacy_nested_ai
+                )
                 # Map category — check type/category fields first, fall back to WCAG rule
-                raw_category = issue.get("type", issue.get("category", ""))
+                raw_category = classification.category.value
                 if not raw_category or raw_category == "other":
                     # Try mapping from WCAG rule (e.g., "WCAG 1.3.1" → "structure")
                     rule = issue.get("rule", issue.get("wcag_criterion", ""))
@@ -385,6 +644,13 @@ class BaseRemediator(ABC):
                         ),
                         metadata={
                             **issue.get("metadata", {}),
+                            **(
+                                {
+                                    "classification_manual_reason": classification.manual_reason
+                                }
+                                if classification.manual_reason
+                                else {}
+                            ),
                             **{
                                 k: v
                                 for k, v in issue.items()
@@ -427,45 +693,9 @@ class BaseRemediator(ABC):
 
     def _map_category(self, category_str: str) -> IssueCategory:
         """Map a category string to IssueCategory enum."""
-        category_map = {
-            "alt_text": IssueCategory.ALT_TEXT,
-            "alternative_text": IssueCategory.ALT_TEXT,
-            "image": IssueCategory.ALT_TEXT,
-            "heading": IssueCategory.HEADING,
-            "heading_structure": IssueCategory.HEADING,
-            "contrast": IssueCategory.CONTRAST,
-            "color_contrast": IssueCategory.CONTRAST,
-            "table": IssueCategory.TABLE,
-            "table_header": IssueCategory.TABLE,
-            "link": IssueCategory.LINK,
-            "hyperlink": IssueCategory.LINK,
-            "list": IssueCategory.LIST,
-            "list_structure": IssueCategory.LIST,
-            "language": IssueCategory.LANGUAGE,
-            "missing_language": IssueCategory.LANGUAGE,
-            "missing_lang": IssueCategory.LANGUAGE,
-            "reading_order": IssueCategory.READING_ORDER,
-            "form": IssueCategory.FORM,
-            "aria": IssueCategory.ARIA,
-            "navigation": IssueCategory.NAVIGATION,
-            "bookmark": IssueCategory.NAVIGATION,
-            "bookmarks": IssueCategory.NAVIGATION,
-            "outline": IssueCategory.NAVIGATION,
-            "structure": IssueCategory.STRUCTURE,
-            "structure_tree": IssueCategory.STRUCTURE,
-            "tagged": IssueCategory.STRUCTURE,
-            "color": IssueCategory.COLOR,
-            "chart": IssueCategory.CHART,
-            "sheet": IssueCategory.SHEET,
-            "sheet_name": IssueCategory.SHEET,
-            "title": IssueCategory.TITLE,
-            "document_title": IssueCategory.TITLE,
-            "font_size": IssueCategory.STRUCTURE,  # Font size issues map to structure
-            "image_of_text": IssueCategory.ALT_TEXT,  # Images of text need alt text
-        }
-
-        normalized = category_str.lower().strip().replace(" ", "_").replace("-", "_")
-        return category_map.get(normalized, IssueCategory.OTHER)
+        return _CATEGORY_ALIASES.get(
+            normalize_category_alias(category_str), IssueCategory.OTHER
+        )
 
     def _map_severity(self, severity_str: str) -> IssueSeverity:
         """Map a severity string to IssueSeverity enum."""
@@ -556,6 +786,15 @@ class BaseRemediator(ABC):
             issue: The issue to process
             document: The loaded document object
         """
+        classification_reason = issue.metadata.get("classification_manual_reason")
+        if classification_reason:
+            self._add_manual_issue(
+                issue,
+                reason=str(classification_reason),
+                recommendation="Review the issue category and apply the fix manually.",
+            )
+            return
+
         # Check if this category is enabled for fixing
         if not self._is_category_enabled(issue.category):
             self._add_manual_issue(
@@ -639,9 +878,19 @@ class BaseRemediator(ABC):
         if rule_fix is not None:
             return rule_fix
 
-        # Use AI if configured
-        if self.config.use_ai and self.ai_client:
-            return self._get_ai_generated_fix(issue, document)
+        # AI clients are purpose-bound. Image and chart descriptions must never
+        # cross into the general remediation client.
+        client = self._get_client_for_issue(issue)
+        if client is not None:
+            try:
+                return self._get_ai_generated_fix(issue, document, client=client)
+            except Exception as exc:
+                logger.warning(
+                    "Purpose-bound AI generation failed for issue %s: %s",
+                    issue.id,
+                    type(exc).__name__,
+                )
+                return None
 
         # Use template fix as fallback
         return self._get_template_fix(issue)
@@ -650,7 +899,7 @@ class BaseRemediator(ABC):
         """Determine which method was used to generate the fix."""
         if self._get_rule_based_fix(issue, None):
             return "rule_based"
-        elif self.config.use_ai and self.ai_client:
+        elif self._get_client_for_issue(issue) is not None:
             return "ai_generated"
         else:
             return "template"
@@ -891,8 +1140,14 @@ class BaseRemediator(ABC):
         """
         return None
 
+    def _get_client_for_issue(self, issue: RemediationIssue) -> Optional[Any]:
+        """Return the only client permitted for an issue's AI purpose."""
+        if issue.category in {IssueCategory.ALT_TEXT, IssueCategory.CHART}:
+            return self.alt_text_client if self.config.fix_alt_text else None
+        return self.ai_client if self.config.use_ai else None
+
     def _get_ai_generated_fix(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """
         Get an AI-generated fix for an issue.
@@ -904,9 +1159,6 @@ class BaseRemediator(ABC):
         Returns:
             The AI-generated fix content, or None if generation failed
         """
-        if not self.ai_client:
-            return None
-
         # Subclasses should override for document-specific AI prompts
         self.result.ai_calls_made += 1
         return None

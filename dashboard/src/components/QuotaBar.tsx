@@ -70,7 +70,7 @@ function ProgressBar({
               ? 'var(--content-error)'
               : isWarning
                 ? 'var(--content-warning)'
-                : 'var(--accent-primary)',
+                : 'var(--accent-solid)',
           }}
         />
       </div>

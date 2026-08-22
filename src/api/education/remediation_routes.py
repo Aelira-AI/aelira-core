@@ -1,24 +1,53 @@
 """Remediation endpoints — auto-fix, code remediation, download, batch."""
 
+import json
 import logging
 import os
+import shutil
+import tempfile
 import uuid
+from collections.abc import Mapping
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from urllib.parse import quote
 
 from ...ai.providers import get_provider_manager
+from ...ai.lms_remediation_client import LMSRemediationClient
 from ...auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ...db.database import get_db_dependency
-from ...db.models import CloudFile, CloudOAuthCredentials, ScanFix, ScanType
+from ...db.models import (
+    CloudFile,
+    CloudOAuthCredentials,
+    RemediationArtifact,
+    RemediationOutcome,
+    Scan,
+    ScanFix,
+    ScanStatus,
+    ScanType,
+)
 from ...db.scan_service import ScanService
 from ...education.image_alt_text import ImageAltTextGenerator
 from ...middleware.quota import require_feature
+from ...services.remediation_artifact_service import (
+    ArtifactError,
+    ArtifactAuthorizationError,
+    ArtifactIntegrityError,
+    ArtifactPublicationResult,
+    RemediationArtifactService,
+)
+from ...jobs.remediation_job import _partition_authoritative_document_issues
 from ...utils.sanitization import sanitize_for_postgres
-from ...utils.security import require_persisted_canvas_origin
+from ...utils.security import (
+    PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
+    require_persisted_brightspace_origin,
+    require_persisted_canvas_origin,
+)
 from ._shared import (
     APPROVED_REVIEW_STATUSES,
     RemediationOptions,
@@ -27,6 +56,536 @@ from ._scope import authorize_scan_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _managed_artifact_authority(
+    db: Session,
+    *,
+    scan_id: str,
+    artifact_id: str,
+    principal: AuthenticatedPrincipal,
+) -> tuple[Scan, CloudFile | None, RemediationArtifact]:
+    """Resolve exact tenant/scan/current-artifact authority without disclosure."""
+    scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    authorized_cloud = authorize_scan_access(db, scan, principal)
+    cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized_cloud)
+    artifact = (
+        db.query(RemediationArtifact)
+        .filter(
+            RemediationArtifact.id == artifact_id,
+            RemediationArtifact.scan_id == scan_id,
+            RemediationArtifact.department_id == principal.department_id,
+        )
+        .one_or_none()
+    )
+    current = cloud_file is None or (
+        artifact is not None
+        and artifact.cloud_file_id == cloud_file.id
+        and cloud_file.current_remediation_artifact_id == artifact.id
+    )
+    if artifact is None or not current:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return scan, cloud_file, artifact
+
+
+def _artifact_review_blockers(
+    db: Session, scan: Scan, artifact: RemediationArtifact
+) -> list[str]:
+    blockers: list[str] = []
+    if artifact.review_status != "pending":
+        blockers.append(f"review_{artifact.review_status}")
+    if scan.status != ScanStatus.COMPLETED:
+        blockers.append("scan_not_completed")
+    if scan.remediation_outcome != RemediationOutcome.COMPLETED.value:
+        blockers.append("verification_not_passed")
+    fixes = db.query(ScanFix).filter(ScanFix.scan_id == scan.id).all()
+    terminal = {"auto_approved", "approved", "rejected"}
+    accepted = {"auto_approved", "approved"}
+    if not fixes:
+        blockers.append("no_fixes")
+    elif any(fix.review_status not in terminal for fix in fixes):
+        blockers.append("fixes_pending_review")
+    if fixes and not any(fix.review_status in accepted for fix in fixes):
+        blockers.append("no_accepted_fix")
+    return blockers
+
+
+def _artifact_failure(exc: ArtifactError) -> HTTPException:
+    status_code = 409 if isinstance(exc, ArtifactIntegrityError) else 400
+    if isinstance(exc, ArtifactAuthorizationError):
+        status_code = 404
+    return HTTPException(status_code=status_code, detail="Artifact unavailable")
+
+
+@router.get("/scans/{scan_id}/artifacts/{artifact_id}")
+async def get_managed_artifact_metadata(
+    scan_id: str,
+    artifact_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    scan, cloud_file, artifact = _managed_artifact_authority(
+        db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
+    )
+    service = RemediationArtifactService.from_settings()
+    try:
+        service.resolve_record(
+            db,
+            artifact,
+            department_id=principal.department_id,
+            scan_id=scan_id,
+            cloud_file_id=str(cloud_file.id) if cloud_file is not None else None,
+        )
+    except ArtifactError as exc:
+        raise _artifact_failure(exc) from None
+    blockers = _artifact_review_blockers(db, scan, artifact)
+    return {
+        "id": artifact.id,
+        "scan_id": artifact.scan_id,
+        "filename": artifact.filename,
+        "mime_type": artifact.mime_type,
+        "size_bytes": artifact.size_bytes,
+        "sha256": artifact.sha256,
+        "expires_at": artifact.expires_at,
+        "review_status": artifact.review_status,
+        "lifecycle_status": artifact.lifecycle_status,
+        "availability": "available",
+        "approval_blockers": blockers,
+        "can_approve": not blockers,
+    }
+
+
+@router.get("/scans/{scan_id}/artifacts/{artifact_id}/download")
+async def download_managed_artifact(
+    scan_id: str,
+    artifact_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    _, cloud_file, artifact = _managed_artifact_authority(
+        db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
+    )
+    service = RemediationArtifactService.from_settings()
+    context = service.open_verified(
+        db,
+        artifact,
+        department_id=principal.department_id,
+        scan_id=scan_id,
+        cloud_file_id=str(cloud_file.id) if cloud_file is not None else None,
+    )
+    try:
+        stream = context.__enter__()
+    except ArtifactError as exc:
+        raise _artifact_failure(exc) from None
+
+    def descriptor_chunks():
+        try:
+            while chunk := stream.read(64 * 1024):
+                yield chunk
+        finally:
+            context.__exit__(None, None, None)
+
+    encoded = quote(str(artifact.filename), safe="")
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}",
+        "Content-Length": str(artifact.size_bytes),
+        "X-Content-Type-Options": "nosniff",
+    }
+    return StreamingResponse(
+        descriptor_chunks(), media_type=artifact.mime_type, headers=headers
+    )
+
+
+@router.post("/scans/{scan_id}/artifacts/{artifact_id}/approve")
+async def approve_managed_artifact(
+    scan_id: str,
+    artifact_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    _managed_artifact_authority(
+        db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
+    )
+    service = RemediationArtifactService.from_settings()
+    try:
+        artifact = service.approve(
+            db,
+            artifact_id=artifact_id,
+            approved_by_id=principal.user_id,
+            approved_by_ref=f"{principal.auth_method}:{principal.user_id}",
+        )
+        db.commit()
+    except ArtifactError as exc:
+        db.rollback()
+        raise _artifact_failure(exc) from None
+    return {
+        "id": artifact.id,
+        "review_status": artifact.review_status,
+        "sha256": artifact.sha256,
+    }
+
+
+@router.post("/scans/{scan_id}/artifacts/{artifact_id}/reject")
+async def reject_managed_artifact(
+    scan_id: str,
+    artifact_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    _managed_artifact_authority(
+        db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
+    )
+    service = RemediationArtifactService.from_settings()
+    try:
+        artifact = service.reject(
+            db,
+            artifact_id=artifact_id,
+            rejected_by_id=principal.user_id,
+            rejected_by_ref=f"{principal.auth_method}:{principal.user_id}",
+        )
+        db.commit()
+    except ArtifactError as exc:
+        db.rollback()
+        raise _artifact_failure(exc) from None
+    return {
+        "id": artifact.id,
+        "review_status": artifact.review_status,
+        "sha256": artifact.sha256,
+    }
+
+
+class _PurposeUsageTracker:
+    """Transparent client wrapper that derives bounded, coherent usage metadata."""
+
+    _TRACKED_METHODS = frozenset(
+        {"generate_text_sync", "generate_code_sync", "analyze_image_sync"}
+    )
+    _KNOWN_PROVIDERS = frozenset(
+        {"anthropic", "gemini", "local", "ollama", "openai", "xai"}
+    )
+    _LOCAL_PROVIDERS = frozenset({"ollama", "local"})
+    _OUTCOME_PRECEDENCE = {
+        "not_requested": -1,
+        "allowed_not_used": 0,
+        "denied_at_dispatch": 1,
+        "attempted_failed": 2,
+        "used": 3,
+    }
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        requested: bool,
+        authoritative: bool,
+        trusted_lms_metadata: bool = False,
+    ):
+        self.client = client
+        self._authoritative = authoritative
+        self._trusted_lms_metadata = trusted_lms_metadata
+        self._bound_provider = self._provider_string(getattr(client, "provider", None))
+        self.call_attempted = False
+        self.ai_used = False
+        self.external_ai_used = False
+        self.provider_used: Optional[str] = None
+        self.model_used: Optional[str] = None
+        self.providers_attempted: tuple[str, ...] = ()
+        self.outcome = (
+            "not_requested"
+            if not requested
+            else (
+                "denied_at_dispatch"
+                if authoritative and client is None
+                else "allowed_not_used"
+            )
+        )
+
+    @property
+    def provider(self) -> Any:
+        return getattr(self.client, "provider", None)
+
+    def bind_client(self, client: Any) -> None:
+        """Attach an allowed client after the pre-dispatch tracker is created."""
+        self.client = client
+        self._bound_provider = self._provider_string(getattr(client, "provider", None))
+        if self.outcome == "denied_at_dispatch":
+            self.outcome = "allowed_not_used"
+
+    @classmethod
+    def _provider_string(cls, value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        provider = value.casefold()
+        return provider if provider in cls._KNOWN_PROVIDERS else None
+
+    @staticmethod
+    def _bounded_model(value: Any) -> Optional[str]:
+        if not isinstance(value, str) or not value or len(value) > 200:
+            return None
+        return value if value.isprintable() and "\x00" not in value else None
+
+    def _record_identity(self, result: Optional[Dict[str, Any]] = None) -> None:
+        # A purpose-bound LMS client is the authority for transport identity;
+        # response dictionaries cannot relabel the provider or model.
+        if self._trusted_lms_metadata:
+            provider = self._bound_provider
+            model = self._bounded_model(getattr(self.client, "model", None))
+        else:
+            provider = self._provider_string((result or {}).get("provider"))
+            if provider is None:
+                provider = self._provider_string(getattr(self.client, "provider", None))
+            model = self._bounded_model((result or {}).get("model"))
+        if provider is not None:
+            self.provider_used = provider
+        if model is not None:
+            self.model_used = model
+
+    def _attempt_is_external(self) -> bool:
+        # Unknown identity is treated as external rather than understating data
+        # egress. Only an allowlisted local provider proves locality.
+        return self.provider_used not in self._LOCAL_PROVIDERS
+
+    def _is_authoritative_no_call_denial(self, result: Dict[str, Any]) -> bool:
+        return (
+            self.provider_used is not None
+            and self._provider_string(getattr(self.client, "provider", None))
+            == self._bound_provider
+            and result.get("success") is False
+            and result.get("ai_used") is False
+            and result.get("external_ai_used") is False
+            and result.get("purpose_outcome") == "denied_at_dispatch"
+        )
+
+    def _promote_outcome(self, outcome: str) -> None:
+        if self._OUTCOME_PRECEDENCE[outcome] > self._OUTCOME_PRECEDENCE[self.outcome]:
+            self.outcome = outcome
+
+    def observe_image_usage(self, metadata: Any) -> None:
+        """Merge trusted, bounded generator transport metadata into this purpose."""
+        if not isinstance(metadata, Mapping):
+            return
+        attempted = metadata.get("providers_attempted")
+        safe_attempts = []
+        if isinstance(attempted, (list, tuple)):
+            for value in attempted[:8]:
+                provider = self._provider_string(value)
+                if provider is not None and provider not in safe_attempts:
+                    safe_attempts.append(provider)
+        self.providers_attempted = tuple(safe_attempts)
+        if safe_attempts:
+            self.call_attempted = True
+
+        provider = self._provider_string(metadata.get("provider"))
+        if provider is not None:
+            self.provider_used = provider
+        model = self._bounded_model(metadata.get("model"))
+        if model is not None:
+            self.model_used = model
+
+        if type(metadata.get("external_ai_used")) is bool:
+            self.external_ai_used = (
+                self.external_ai_used or metadata["external_ai_used"]
+            )
+        if metadata.get("ai_used") is True:
+            self.ai_used = True
+        outcome = metadata.get("outcome")
+        if isinstance(outcome, str) and outcome in self._OUTCOME_PRECEDENCE:
+            self._promote_outcome(outcome)
+
+    def __getattr__(self, name: str) -> Any:
+        target = getattr(self.client, name)
+        if not callable(target) or name not in self._TRACKED_METHODS:
+            return target
+
+        def tracked(*args: Any, **kwargs: Any) -> Any:
+            previously_attempted = self.call_attempted
+            self.call_attempted = True
+            try:
+                result = target(*args, **kwargs)
+            except Exception:
+                self._record_identity()
+                self.external_ai_used = (
+                    self.external_ai_used or self._attempt_is_external()
+                )
+                self._promote_outcome("attempted_failed")
+                raise
+
+            self._record_identity(result if isinstance(result, dict) else None)
+            if (
+                self._authoritative
+                and self._trusted_lms_metadata
+                and isinstance(result, dict)
+                and self._is_authoritative_no_call_denial(result)
+            ):
+                self.call_attempted = previously_attempted
+                self._promote_outcome("denied_at_dispatch")
+            elif isinstance(result, dict) and result.get("success") is True:
+                self.ai_used = True
+                self.external_ai_used = (
+                    self.external_ai_used or self._attempt_is_external()
+                )
+                self._promote_outcome("used")
+            else:
+                self.external_ai_used = (
+                    self.external_ai_used or self._attempt_is_external()
+                )
+                self._promote_outcome("attempted_failed")
+            return result
+
+        return tracked
+
+
+def _aggregate_purpose_usage(
+    remediation: _PurposeUsageTracker, alt_text: _PurposeUsageTracker
+) -> Dict[str, Any]:
+    """Return aggregate audit fields without retaining prompts or content."""
+    providers = {
+        purpose: tracker.provider_used
+        for purpose, tracker in (
+            ("remediation", remediation),
+            ("alt_text", alt_text),
+        )
+        if tracker.provider_used
+    }
+    providers_attempted = {
+        purpose: tracker.providers_attempted
+        for purpose, tracker in (
+            ("remediation", remediation),
+            ("alt_text", alt_text),
+        )
+        if tracker.providers_attempted
+    }
+    return {
+        "remediation_ai_attempted": remediation.call_attempted,
+        "alt_text_attempted": alt_text.call_attempted,
+        "remediation_ai_used": remediation.ai_used,
+        "alt_text_used": alt_text.ai_used,
+        "remediation_external_ai_used": remediation.external_ai_used,
+        "alt_text_external_ai_used": alt_text.external_ai_used,
+        "external_ai_used": (remediation.external_ai_used or alt_text.external_ai_used),
+        "providers": providers,
+        "providers_attempted": providers_attempted,
+        "purpose_outcomes": {
+            "remediation": remediation.outcome,
+            "alt_text": alt_text.outcome,
+        },
+    }
+
+
+def _audit_terminal_remediation(
+    *,
+    db: Session,
+    request: Request,
+    user_id: str,
+    department_id: str,
+    scan_id: str,
+    file_type: str,
+    remediation_requested: bool,
+    alt_text_requested: bool,
+    remediation_tracker: _PurposeUsageTracker,
+    alt_text_tracker: _PurposeUsageTracker,
+    successful: bool,
+    total_issues: int,
+    fixed_count: int,
+    manual_count: int,
+    failed_count: int,
+    skipped_count: int = 0,
+    original_score: Optional[float] = None,
+    remediated_score: Optional[float] = None,
+    improvement: Optional[float] = None,
+    duration_seconds: Optional[float] = None,
+    error: str = "remediation_failed",
+    artifact_id: Optional[str] = None,
+    commit: bool = False,
+) -> None:
+    """Emit exactly one bounded aggregate audit for a terminal route outcome."""
+    from ...security.audit_service import AuditService
+
+    usage = _aggregate_purpose_usage(remediation_tracker, alt_text_tracker)
+    common = {
+        "user_id": user_id,
+        "department_id": department_id,
+        "scan_id": scan_id,
+        "file_type": file_type,
+        "use_ai": usage["remediation_ai_used"] or usage["alt_text_used"],
+        "remediation_ai_requested": remediation_requested,
+        "alt_text_requested": alt_text_requested,
+        **usage,
+        "total_issues": total_issues,
+        "fixed_count": fixed_count,
+        "manual_count": manual_count,
+        "failed_count": failed_count,
+        "skipped_count": skipped_count,
+        "request": request,
+        "commit": commit,
+        "artifact_id": artifact_id,
+    }
+    audit = AuditService(db)
+    if successful:
+        audit.log_remediation_complete(
+            **common,
+            original_score=original_score,
+            remediated_score=remediated_score,
+            improvement=improvement,
+            duration_seconds=duration_seconds,
+        )
+    else:
+        audit.log_remediation_failed(**common, error=error)
+
+
+def _best_effort_terminal_dispatch_failure(
+    *,
+    db: Session,
+    request: Request,
+    user_id: str,
+    department_id: str,
+    scan_id: str,
+    file_type: str,
+    remediation_requested: bool,
+    alt_text_requested: bool,
+    remediation_tracker: _PurposeUsageTracker,
+    alt_text_tracker: _PurposeUsageTracker,
+    error_code: str,
+    total_issues: int = 0,
+    fixed_count: int = 0,
+    manual_count: int = 0,
+    failed_count: int = 0,
+    skipped_count: int = 0,
+) -> None:
+    """Persist one sanitized dispatch failure without changing the HTTP outcome.
+
+    These exits do not mutate remediation state, so their audit uses a separate
+    best-effort transaction. Audit persistence is deliberately fail-open here:
+    a logging outage must not convert an established 4xx response into a 500.
+    """
+    try:
+        _audit_terminal_remediation(
+            db=db,
+            request=request,
+            user_id=user_id,
+            department_id=department_id,
+            scan_id=scan_id,
+            file_type=file_type,
+            remediation_requested=remediation_requested,
+            alt_text_requested=alt_text_requested,
+            remediation_tracker=remediation_tracker,
+            alt_text_tracker=alt_text_tracker,
+            successful=False,
+            total_issues=total_issues,
+            fixed_count=fixed_count,
+            manual_count=manual_count,
+            failed_count=failed_count,
+            skipped_count=skipped_count,
+            error=error_code,
+            commit=True,
+        )
+    except Exception:
+        logger.exception(
+            "Best-effort terminal remediation dispatch audit could not be persisted",
+            extra={"scan_id": scan_id, "error_code": error_code},
+        )
 
 
 def _sanitize_str(value: Optional[str]) -> Optional[str]:
@@ -52,6 +611,54 @@ def _get_bound_fallback_cloud_file(
         or cloud_file.department_id != department_id
     ):
         return None
+    return cloud_file
+
+
+def _resolve_bound_scan_cloud_file(
+    db: Session,
+    scan,
+    principal: AuthenticatedPrincipal,
+    authorized_cloud_file: CloudFile | None,
+) -> CloudFile | None:
+    """Resolve the scan's unique tenant-bound CloudFile after authorization.
+
+    ``authorize_scan_access`` returns the course-bound file only for scoped LTI
+    principals. Other authorized principals still need the canonical scan link
+    for LMS policy classification. Two rows are enough to detect ambiguity.
+    """
+    cloud_files = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.department_id == principal.department_id,
+            CloudFile.last_scan_id == scan.id,
+        )
+        .limit(2)
+        .all()
+    )
+
+    if len(cloud_files) > 1:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    cloud_file = cloud_files[0] if cloud_files else None
+    if cloud_file is not None and (
+        cloud_file.department_id != principal.department_id
+        or cloud_file.last_scan_id != scan.id
+    ):
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    course_scoped_lti = (
+        principal.auth_method == "lti" and not principal.lti_account_wide
+    )
+    if course_scoped_lti:
+        if authorized_cloud_file is None or cloud_file is None:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if str(authorized_cloud_file.id) != str(cloud_file.id):
+            raise HTTPException(status_code=404, detail="Scan not found")
+    elif authorized_cloud_file is not None and (
+        cloud_file is None or str(authorized_cloud_file.id) != str(cloud_file.id)
+    ):
+        raise HTTPException(status_code=404, detail="Scan not found")
+
     return cloud_file
 
 
@@ -190,6 +797,86 @@ def _infer_category(issue: dict) -> str:
     return "other"
 
 
+class _InvalidScanResultError(ValueError):
+    """Persisted scan issues do not have a safe remediation shape."""
+
+
+class _InvalidProviderResponseError(ValueError):
+    """An image provider result does not have the documented safe shape."""
+
+
+def _copy_validated_remediation_issues(issues: Any) -> list:
+    """Return an isolated copy of persisted issues with a safe mapping shape."""
+    if not isinstance(issues, list):
+        raise _InvalidScanResultError("invalid_scan_result")
+
+    string_fields = {
+        "category",
+        "type",
+        "issue_type",
+        "rule",
+        "wcag_criteria",
+        "wcag_criterion",
+        "message",
+        "description",
+        "title",
+    }
+    for raw_issue in issues:
+        if not isinstance(raw_issue, dict):
+            raise _InvalidScanResultError("invalid_scan_result")
+        if not isinstance(raw_issue.get("metadata", {}), dict):
+            raise _InvalidScanResultError("invalid_scan_result")
+        raw_nodes = raw_issue.get("nodes", [])
+        if not isinstance(raw_nodes, list) or any(
+            not isinstance(node, dict) for node in raw_nodes
+        ):
+            raise _InvalidScanResultError("invalid_scan_result")
+        if any(
+            field in raw_issue
+            and raw_issue[field] is not None
+            and not isinstance(raw_issue[field], str)
+            for field in string_fields
+        ):
+            raise _InvalidScanResultError("invalid_scan_result")
+
+    return deepcopy(issues)
+
+
+def _extract_validated_remediation_issues(container: Any) -> list:
+    """Accept only the persisted list or documented ``details`` wrapper."""
+    if isinstance(container, list):
+        issues = container
+    elif isinstance(container, dict) and "details" in container:
+        issues = container["details"]
+    else:
+        raise _InvalidScanResultError("invalid_scan_result")
+    return _copy_validated_remediation_issues(issues)
+
+
+def _extract_validated_image_analysis(analysis: Any) -> tuple[str, bool]:
+    """Extract bounded image output while rejecting ambiguous provider shapes."""
+    if not isinstance(analysis, dict):
+        raise _InvalidProviderResponseError("invalid_provider_response")
+    type_detection = analysis.get("type_detection")
+    if not isinstance(type_detection, dict):
+        raise _InvalidProviderResponseError("invalid_provider_response")
+
+    is_decorative = type_detection.get("is_decorative")
+    if type(is_decorative) is not bool:
+        raise _InvalidProviderResponseError("invalid_provider_response")
+    description = analysis.get("description")
+    if is_decorative and description is None:
+        return "", True
+    if not isinstance(description, dict):
+        raise _InvalidProviderResponseError("invalid_provider_response")
+    raw_alt_text = description.get("alt_text", "")
+    if not isinstance(raw_alt_text, str):
+        raise _InvalidProviderResponseError("invalid_provider_response")
+    if is_decorative:
+        return "", True
+    return raw_alt_text.strip(), False
+
+
 def _normalize_issues_for_remediation(issues: list) -> list:
     """Normalize raw scanner issues into the format the remediator expects.
 
@@ -202,11 +889,11 @@ def _normalize_issues_for_remediation(issues: list) -> list:
     Normalizes raw scan issues into the remediator input shape.
     """
     normalized = []
-    for i, issue in enumerate(issues):
+    for i, issue in enumerate(_copy_validated_remediation_issues(issues)):
         category = _infer_category(issue)
         category_lower = category.lower()
 
-        metadata = issue.get("metadata") or {}
+        metadata = issue["metadata"] if "metadata" in issue else {}
         # Copy scanner top-level fields into metadata
         metadata.setdefault("page_number", issue.get("page_number", 1))
         metadata.setdefault("issue_type", issue.get("issue_type"))
@@ -366,6 +1053,35 @@ def _map_severity_string(severity_str: str):
 # ==================== Auto-Remediation Endpoints ====================
 
 
+def _effective_remediation_use_ai(
+    options: Optional[RemediationOptions],
+    query_use_ai: Optional[bool],
+    *,
+    lms_backed: bool,
+) -> bool:
+    """Resolve AI intent without promoting a Pydantic model default to consent.
+
+    An explicitly supplied body field takes precedence over the deprecated
+    query parameter. LMS-backed scans default to mechanical remediation unless
+    either request location explicitly asks for AI. Non-LMS scans retain the
+    historical default.
+    """
+    if options is not None and "use_ai" in options.model_fields_set:
+        return bool(options.use_ai)
+    if query_use_ai is not None:
+        return bool(query_use_ai)
+    return not lms_backed
+
+
+def _effective_generate_alt_text(
+    options: Optional[RemediationOptions], *, lms_backed: bool
+) -> bool:
+    """Resolve a separate, explicit alt-text intent for LMS documents."""
+    if options is not None and "generate_alt_text" in options.model_fields_set:
+        return bool(options.generate_alt_text)
+    return not lms_backed
+
+
 @router.post("/remediate/batch")
 async def batch_remediate(
     scan_ids: List[str],
@@ -389,7 +1105,7 @@ async def remediate_scan(
     scan_id: str,
     request: Request,
     options: Optional[RemediationOptions] = None,
-    use_ai: bool = True,  # Keep for backwards compatibility
+    use_ai: Optional[bool] = None,  # None preserves legacy only for non-LMS scans
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
@@ -408,8 +1124,8 @@ async def remediate_scan(
         use_ai: Whether to use AI for generating fixes (default: True, deprecated)
 
     Returns:
-        Remediation result with fixed and manual issues counts,
-        and path to the remediated document.
+        Remediation result with fixed/manual counts and managed artifact metadata.
+        Filesystem paths and storage keys are never returned.
     """
     from ...education.remediation import (
         RemediationConfig,
@@ -420,7 +1136,10 @@ async def remediate_scan(
         LatexRemediator,
         MultimediaRemediator,
     )
-    from ...education.remediation.base import OutputFormat
+    from ...education.remediation.base import (
+        OutputFormat,
+        merge_partitioned_manual_issues,
+    )
 
     _, user_id, department_id = principal.as_legacy_tuple()
 
@@ -431,24 +1150,242 @@ async def remediate_scan(
         raise HTTPException(status_code=404, detail="Scan not found")
 
     authorized_cloud_file = authorize_scan_access(db, scan, principal)
+    resolved_cloud_file = _resolve_bound_scan_cloud_file(
+        db, scan, principal, authorized_cloud_file
+    )
+
+    lms_providers = {
+        "canvas",
+        "blackboard",
+        "moodle",
+        "brightspace",
+    }
+    lms_cloud_file = (
+        resolved_cloud_file
+        if resolved_cloud_file and resolved_cloud_file.provider in lms_providers
+        else None
+    )
+    effective_use_ai = _effective_remediation_use_ai(
+        options,
+        use_ai,
+        lms_backed=lms_cloud_file is not None,
+    )
+    effective_alt_text = _effective_generate_alt_text(
+        options, lms_backed=lms_cloud_file is not None
+    )
+    scan_type_value = getattr(scan.scan_type, "value", scan.scan_type)
+    is_image_scan = scan_type_value == ScanType.IMAGE.value
+    remediation_requested = effective_use_ai and not is_image_scan
+    alt_text_requested = effective_alt_text or (effective_use_ai and is_image_scan)
+    remediation_client = None
+    alt_text_client = None
+    remediation_tracker = _PurposeUsageTracker(
+        None,
+        requested=remediation_requested,
+        authoritative=lms_cloud_file is not None,
+        trusted_lms_metadata=lms_cloud_file is not None,
+    )
+    alt_text_tracker = _PurposeUsageTracker(
+        None,
+        requested=alt_text_requested,
+        authoritative=lms_cloud_file is not None,
+        trusted_lms_metadata=lms_cloud_file is not None,
+    )
+
+    if lms_cloud_file and lms_cloud_file.provider in {"blackboard", "moodle"}:
+        _best_effort_terminal_dispatch_failure(
+            db=db,
+            request=request,
+            user_id=user_id,
+            department_id=department_id,
+            scan_id=scan_id,
+            file_type=scan_type_value,
+            remediation_requested=remediation_requested,
+            alt_text_requested=alt_text_requested,
+            remediation_tracker=remediation_tracker,
+            alt_text_tracker=alt_text_tracker,
+            error_code="unsupported_lms_provider",
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="LMS file remediation is not supported for this provider",
+        )
+
+    issues = []
+    if scan.result:
+        try:
+            issues = _extract_validated_remediation_issues(scan.result.issues)
+        except _InvalidScanResultError:
+            db.rollback()
+            try:
+                _audit_terminal_remediation(
+                    db=db,
+                    request=request,
+                    user_id=user_id,
+                    department_id=department_id,
+                    scan_id=scan_id,
+                    file_type=scan_type_value,
+                    remediation_requested=remediation_requested,
+                    alt_text_requested=alt_text_requested,
+                    remediation_tracker=remediation_tracker,
+                    alt_text_tracker=alt_text_tracker,
+                    successful=False,
+                    total_issues=0,
+                    fixed_count=0,
+                    manual_count=0,
+                    failed_count=0,
+                    error="invalid_scan_result",
+                    commit=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Best-effort invalid scan result audit could not be persisted",
+                    extra={"scan_id": scan_id},
+                )
+            raise HTTPException(
+                status_code=500, detail="Remediation failed. Please try again."
+            )
+
+    if lms_cloud_file:
+        binding = {
+            "department_id": principal.department_id,
+            "actor_id": principal.user_id,
+            "scan_id": str(scan.id),
+            "cloud_file_id": str(lms_cloud_file.id),
+        }
+
+        if remediation_requested:
+            remediation_client = LMSRemediationClient.bind_if_allowed(
+                purpose="remediation", **binding
+            )
+            if remediation_client is None:
+                _best_effort_terminal_dispatch_failure(
+                    db=db,
+                    request=request,
+                    user_id=user_id,
+                    department_id=department_id,
+                    scan_id=scan_id,
+                    file_type=scan_type_value,
+                    remediation_requested=remediation_requested,
+                    alt_text_requested=alt_text_requested,
+                    remediation_tracker=remediation_tracker,
+                    alt_text_tracker=alt_text_tracker,
+                    error_code="policy_not_permitted",
+                )
+                raise HTTPException(
+                    status_code=403, detail="LMS AI remediation is not permitted"
+                )
+            remediation_tracker.bind_client(remediation_client)
+        if alt_text_requested:
+            alt_text_client = LMSRemediationClient.bind_if_allowed(
+                purpose="alt_text", **binding
+            )
+            if alt_text_client is None:
+                _best_effort_terminal_dispatch_failure(
+                    db=db,
+                    request=request,
+                    user_id=user_id,
+                    department_id=department_id,
+                    scan_id=scan_id,
+                    file_type=scan_type_value,
+                    remediation_requested=remediation_requested,
+                    alt_text_requested=alt_text_requested,
+                    remediation_tracker=remediation_tracker,
+                    alt_text_tracker=alt_text_tracker,
+                    error_code="policy_not_permitted",
+                )
+                raise HTTPException(
+                    status_code=403, detail="LMS AI alt_text is not permitted"
+                )
+            alt_text_tracker.bind_client(alt_text_client)
 
     if not scan.result:
+        _best_effort_terminal_dispatch_failure(
+            db=db,
+            request=request,
+            user_id=user_id,
+            department_id=department_id,
+            scan_id=scan_id,
+            file_type=scan_type_value,
+            remediation_requested=remediation_requested,
+            alt_text_requested=alt_text_requested,
+            remediation_tracker=remediation_tracker,
+            alt_text_tracker=alt_text_tracker,
+            error_code="missing_scan_result",
+        )
         raise HTTPException(status_code=400, detail="Scan has no results to remediate")
 
-    # Get issues from scan result
-    issues = []
-    if scan.result.issues:
-        if isinstance(scan.result.issues, list):
-            issues = scan.result.issues
-        elif isinstance(scan.result.issues, dict):
-            issues = scan.result.issues.get("details", [])
-
     if not issues:
+        original_status = scan.status
+        original_outcome = scan.remediation_outcome
+        original_completed_at = scan.completed_at
+        commit_attempted = False
+        try:
+            scan.status = ScanStatus.COMPLETED
+            scan.remediation_outcome = RemediationOutcome.NO_OP.value
+            scan.completed_at = datetime.now(timezone.utc)
+            _audit_terminal_remediation(
+                db=db,
+                request=request,
+                user_id=user_id,
+                department_id=department_id,
+                scan_id=scan_id,
+                file_type=scan_type_value,
+                remediation_requested=remediation_requested,
+                alt_text_requested=alt_text_requested,
+                remediation_tracker=remediation_tracker,
+                alt_text_tracker=alt_text_tracker,
+                successful=True,
+                total_issues=0,
+                fixed_count=0,
+                manual_count=0,
+                failed_count=0,
+                skipped_count=0,
+                commit=False,
+            )
+            commit_attempted = True
+            db.commit()
+        except Exception:
+            db.rollback()
+            scan.status = original_status
+            scan.remediation_outcome = original_outcome
+            scan.completed_at = original_completed_at
+            if commit_attempted:
+                try:
+                    _audit_terminal_remediation(
+                        db=db,
+                        request=request,
+                        user_id=user_id,
+                        department_id=department_id,
+                        scan_id=scan_id,
+                        file_type=scan_type_value,
+                        remediation_requested=remediation_requested,
+                        alt_text_requested=alt_text_requested,
+                        remediation_tracker=remediation_tracker,
+                        alt_text_tracker=alt_text_tracker,
+                        successful=False,
+                        total_issues=0,
+                        fixed_count=0,
+                        manual_count=0,
+                        failed_count=0,
+                        error="remediation_exception",
+                        commit=True,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Best-effort no-op commit failure audit could not be persisted",
+                        extra={"scan_id": scan_id},
+                    )
+            raise HTTPException(
+                status_code=500, detail="Remediation failed. Please try again."
+            )
         return {
             "success": True,
             "message": "No issues to remediate",
             "fixed_count": 0,
             "manual_count": 0,
+            "failed_count": 0,
+            "artifact_required": False,
         }
 
     # Check if we have a stored file path (from manual upload)
@@ -463,14 +1400,23 @@ async def remediate_scan(
         from ...db.models import CloudProvider
         from ...integrations.oauth_token_manager import OAuthTokenManager
 
-        cloud_file = authorized_cloud_file or _get_bound_fallback_cloud_file(
-            db, scan_id, principal.department_id
-        )
+        cloud_file = resolved_cloud_file
         if cloud_file and cloud_file.credential_id:
             credential = _get_bound_cloud_credential(
                 db, cloud_file, principal.department_id
             )
             if credential:
+                brightspace_url = None
+                if credential.provider == CloudProvider.BRIGHTSPACE.value:
+                    try:
+                        brightspace_url = require_persisted_brightspace_origin(
+                            credential
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
+                        ) from exc
                 try:
                     canvas_url = None
                     if credential.provider == CloudProvider.CANVAS.value:
@@ -481,8 +1427,6 @@ async def remediate_scan(
                     )
 
                     # Determine provider and download
-                    import tempfile
-
                     temp_dir = tempfile.mkdtemp()
                     local_path = os.path.join(
                         temp_dir, f"{cloud_file.file_name or 'file'}"
@@ -539,9 +1483,6 @@ async def remediate_scan(
                             BrightspaceAPIClient,
                         )
 
-                        instance_url = (credential.provider_metadata or {}).get(
-                            "brightspace_instance_url", ""
-                        )
                         metadata = cloud_file.provider_metadata or {}
                         org_unit_id = metadata.get("org_unit_id")
                         topic_id = int(cloud_file.provider_file_id)
@@ -555,7 +1496,7 @@ async def remediate_scan(
                             )
 
                         bs_client = BrightspaceAPIClient(
-                            brightspace_instance_url=instance_url,
+                            brightspace_instance_url=brightspace_url,
                             access_token=access_token,
                         )
                         try:
@@ -579,6 +1520,20 @@ async def remediate_scan(
                     )
 
     if not file_path or not os.path.exists(file_path):
+        _best_effort_terminal_dispatch_failure(
+            db=db,
+            request=request,
+            user_id=user_id,
+            department_id=department_id,
+            scan_id=scan_id,
+            file_type=scan_type_value,
+            remediation_requested=remediation_requested,
+            alt_text_requested=alt_text_requested,
+            remediation_tracker=remediation_tracker,
+            alt_text_tracker=alt_text_tracker,
+            error_code="source_file_unavailable",
+            total_issues=len(issues),
+        )
         raise HTTPException(
             status_code=400,
             detail="Original file not available for remediation. Please re-upload and scan.",
@@ -609,83 +1564,351 @@ async def remediate_scan(
 
     # Special case: IMAGE scan — generate alt text via AI
     if scan_type == ScanType.IMAGE:
-        from ...education.image_alt_text import ImageAltTextGenerator
-
-        generator = ImageAltTextGenerator()
-        analysis = await generator.analyze_image_comprehensive(
-            image_path=file_path,
-            context=f"Educational course content: {scan.file_name}",
+        generator = ImageAltTextGenerator(
+            lms_client=(alt_text_tracker if alt_text_client is not None else None),
+            allow_legacy_transport=lms_cloud_file is None,
         )
+        if lms_cloud_file and alt_text_client is None:
+            _best_effort_terminal_dispatch_failure(
+                db=db,
+                request=request,
+                user_id=user_id,
+                department_id=department_id,
+                scan_id=scan_id,
+                file_type=scan_type_value,
+                remediation_requested=remediation_requested,
+                alt_text_requested=alt_text_requested,
+                remediation_tracker=remediation_tracker,
+                alt_text_tracker=alt_text_tracker,
+                error_code="alt_text_not_requested",
+                total_issues=len(issues),
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Image alt text requires an allowed LMS AI request",
+            )
+        original_status = scan.status
+        original_outcome = scan.remediation_outcome
+        try:
+            try:
+                analysis = await generator.analyze_image_comprehensive(
+                    image_path=file_path,
+                    context=f"Educational course content: {scan.file_name}",
+                )
+            finally:
+                alt_text_tracker.observe_image_usage(
+                    getattr(generator, "usage_metadata", None)
+                )
+            alt_text, is_decorative = _extract_validated_image_analysis(analysis)
+        except Exception as error:
+            db.rollback()
+            scan.status = original_status
+            scan.remediation_outcome = original_outcome
+            try:
+                _audit_terminal_remediation(
+                    db=db,
+                    request=request,
+                    user_id=user_id,
+                    department_id=department_id,
+                    scan_id=scan_id,
+                    file_type=scan_type.value,
+                    remediation_requested=remediation_requested,
+                    alt_text_requested=alt_text_requested,
+                    remediation_tracker=remediation_tracker,
+                    alt_text_tracker=alt_text_tracker,
+                    successful=False,
+                    total_issues=1,
+                    fixed_count=0,
+                    manual_count=0,
+                    failed_count=1,
+                    error=(
+                        "invalid_provider_response"
+                        if isinstance(error, _InvalidProviderResponseError)
+                        else "remediation_exception"
+                    ),
+                    commit=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Best-effort image remediation failure audit could not be persisted",
+                    extra={"scan_id": scan_id},
+                )
+            raise HTTPException(
+                status_code=500, detail="Remediation failed. Please try again."
+            )
 
-        alt_text = analysis.get("description", {}).get("alt_text", "")
-        is_decorative = analysis.get("type_detection", {}).get("is_decorative", False)
+        success = bool(alt_text) or is_decorative
 
-        scan.status = "COMPLETED"
-        scan.remediation_status = "completed"
-        db.commit()
+        try:
+            scan.status = ScanStatus.COMPLETED if success else ScanStatus.FAILED
+            scan.remediation_outcome = (
+                RemediationOutcome.COMPLETED.value
+                if success
+                else RemediationOutcome.MANUAL_REQUIRED.value
+            )
+            _audit_terminal_remediation(
+                db=db,
+                request=request,
+                user_id=user_id,
+                department_id=department_id,
+                scan_id=scan_id,
+                file_type=scan_type.value,
+                remediation_requested=remediation_requested,
+                alt_text_requested=alt_text_requested,
+                remediation_tracker=remediation_tracker,
+                alt_text_tracker=alt_text_tracker,
+                successful=success,
+                total_issues=1,
+                fixed_count=1 if success else 0,
+                manual_count=0 if success else 1,
+                failed_count=0,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            scan.status = original_status
+            scan.remediation_outcome = original_outcome
+            try:
+                _audit_terminal_remediation(
+                    db=db,
+                    request=request,
+                    user_id=user_id,
+                    department_id=department_id,
+                    scan_id=scan_id,
+                    file_type=scan_type.value,
+                    remediation_requested=remediation_requested,
+                    alt_text_requested=alt_text_requested,
+                    remediation_tracker=remediation_tracker,
+                    alt_text_tracker=alt_text_tracker,
+                    successful=False,
+                    total_issues=1,
+                    fixed_count=0,
+                    manual_count=0,
+                    failed_count=1,
+                    error="remediation_exception",
+                    commit=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Best-effort image remediation failure audit could not be persisted",
+                    extra={"scan_id": scan_id},
+                )
+            raise HTTPException(
+                status_code=500, detail="Remediation failed. Please try again."
+            )
 
         return {
-            "success": True,
+            "success": success,
             "message": (
                 "Image alt text generated"
                 if alt_text
-                else "Image classified as decorative"
+                else (
+                    "Image classified as decorative"
+                    if is_decorative
+                    else "manual_required"
+                )
             ),
-            "fixed_count": 1 if alt_text or is_decorative else 0,
-            "manual_count": 0,
+            "fixed_count": 1 if success else 0,
+            "manual_count": 0 if success else 1,
             "remediated_alt_text": alt_text,
             "is_decorative": is_decorative,
         }
 
     if not RemediatorClass:
+        _best_effort_terminal_dispatch_failure(
+            db=db,
+            request=request,
+            user_id=user_id,
+            department_id=department_id,
+            scan_id=scan_id,
+            file_type=scan_type_value,
+            remediation_requested=remediation_requested,
+            alt_text_requested=alt_text_requested,
+            remediation_tracker=remediation_tracker,
+            alt_text_tracker=alt_text_tracker,
+            error_code="unsupported_scan_type",
+            total_issues=len(issues),
+        )
         raise HTTPException(
             status_code=400,
             detail=f"Remediation not supported for scan type: {scan_type}",
         )
 
-    # Build remediation config with options
-    config = RemediationConfig(
-        use_ai=options.use_ai if options else use_ai,
-        verify_fixes=True,
-        create_backup=True,
-        output_directory=str(Path(file_path).parent),
+    original_status = scan.status
+    original_outcome = scan.remediation_outcome
+    original_cloud_remediated = (
+        resolved_cloud_file.has_remediated_version if resolved_cloud_file else None
     )
-
-    # Apply LaTeX-specific options (use defaults if no options provided)
-    if scan_type == ScanType.LATEX:
-        latex_formats = options.latex_formats if options else ["tex", "pdf", "html"]
-        config.latex_output_formats = [
-            OutputFormat(fmt) for fmt in latex_formats if fmt in ["tex", "pdf", "html"]
-        ]
-
-    # Apply Multimedia-specific options
-    if scan_type == ScanType.MULTIMEDIA and options:
-        config.multimedia_output_format = OutputFormat(options.multimedia_format)
-        config.include_original_in_zip = options.include_original_in_zip
-
-    # Normalize issues for the remediator — populate metadata dict from
-    # top-level fields so can_auto_fix() / apply_fix() work correctly.
-    # Normalize raw scan issues into the remediator input shape.
-    normalized_issues = _normalize_issues_for_remediation(issues)
-    logger.info(
-        f"Normalized {len(normalized_issues)} issues for remediation (scan {scan_id})"
+    original_remediation_origin = (
+        getattr(resolved_cloud_file, "remediation_origin", None)
+        if resolved_cloud_file
+        else None
     )
-
-    effective_use_ai = options.use_ai if options else use_ai
+    artifact = None
+    artifact_publication = None
+    artifact_service = None
+    artifact_temp_dir = None
 
     try:
-        # Get AI client for alt text generation
-        ai_client = get_provider_manager()
-
-        # Create remediator and run remediation
-        remediator = RemediatorClass(
-            file_path=file_path,
-            issues=normalized_issues,
-            config=config,
-            ai_client=ai_client,
+        # Configuration, partitioning, and persisted-input normalization are
+        # fallible and therefore belong inside the audited transaction funnel.
+        config = RemediationConfig(
+            use_ai=(
+                remediation_client is not None if lms_cloud_file else effective_use_ai
+            ),
+            allow_legacy_nested_ai=lms_cloud_file is None,
+            fix_alt_text=(
+                alt_text_client is not None if lms_cloud_file else effective_alt_text
+            ),
+            verify_fixes=True,
+            create_backup=True,
+            output_directory=str(Path(file_path).parent),
         )
 
+        if scan_type == ScanType.LATEX:
+            latex_formats = options.latex_formats if options else ["tex", "pdf", "html"]
+            config.latex_output_formats = [
+                OutputFormat(fmt)
+                for fmt in latex_formats
+                if fmt in ["tex", "pdf", "html"]
+            ]
+
+        if scan_type == ScanType.MULTIMEDIA and options:
+            config.multimedia_output_format = OutputFormat(options.multimedia_format)
+            config.include_original_in_zip = options.include_original_in_zip
+
+        issues = _copy_validated_remediation_issues(issues)
+        embedded_alt_manual = []
+        if lms_cloud_file and scan_type != ScanType.IMAGE:
+            issues, embedded_alt_manual = _partition_authoritative_document_issues(
+                issues, partition_visual=alt_text_client is None
+            )
+
+        normalized_issues = _normalize_issues_for_remediation(issues)
+        logger.info(
+            f"Normalized {len(normalized_issues)} issues for remediation (scan {scan_id})"
+        )
+
+        # LMS-backed scans receive only their purpose-bound current-policy
+        # client. Ordinary uploads retain the historical provider manager.
+        if lms_cloud_file:
+            ai_client = remediation_tracker if remediation_client is not None else None
+            tracked_alt_text_client = (
+                alt_text_tracker if alt_text_client is not None else None
+            )
+        else:
+            manager = get_provider_manager()
+            remediation_tracker.bind_client(manager)
+            alt_text_tracker.bind_client(manager)
+            ai_client = remediation_tracker
+            # The same legacy manager remains underneath both wrappers, while
+            # document remediators report the purpose that actually invoked it.
+            tracked_alt_text_client = alt_text_tracker if alt_text_requested else None
+
+        # Create remediator and run remediation
+        remediator_kwargs = {
+            "file_path": file_path,
+            "issues": normalized_issues,
+            "config": config,
+            "ai_client": ai_client,
+        }
+        if RemediatorClass in {
+            DocxRemediator,
+            PptxRemediator,
+            PdfRemediator,
+            XlsxRemediator,
+        }:
+            remediator_kwargs["alt_text_client"] = tracked_alt_text_client
+        remediator = RemediatorClass(**remediator_kwargs)
+
         result = remediator.remediate()
+        if embedded_alt_manual:
+            merge_partitioned_manual_issues(
+                result,
+                embedded_alt_manual,
+                reason="alt_text_client_unavailable",
+                purpose="manual_review",
+            )
+
+        if (
+            result.success is True
+            and result.fixed_count > 0
+            and result.manual_count == 0
+            and result.failed_count == 0
+        ):
+            output_path = getattr(result, "output_file", None)
+            if (
+                not output_path
+                or not Path(output_path).is_file()
+                or getattr(result, "verification_passed", None) is not True
+            ):
+                scan.status = ScanStatus.FAILED
+                scan.remediation_outcome = RemediationOutcome.ARTIFACT_UNAVAILABLE.value
+                _audit_terminal_remediation(
+                    db=db,
+                    request=request,
+                    user_id=user_id,
+                    department_id=department_id,
+                    scan_id=scan_id,
+                    file_type=scan_type_value,
+                    remediation_requested=remediation_requested,
+                    alt_text_requested=alt_text_requested,
+                    remediation_tracker=remediation_tracker,
+                    alt_text_tracker=alt_text_tracker,
+                    successful=False,
+                    total_issues=result.total_issues,
+                    fixed_count=0,
+                    manual_count=result.fixed_count,
+                    failed_count=result.failed_count,
+                    error="remediation_artifact_unavailable",
+                    commit=False,
+                )
+                db.commit()
+                return {
+                    "success": False,
+                    "scan_id": scan_id,
+                    "error": "remediation_artifact_unavailable",
+                    "fixed_count": 0,
+                    "manual_count": result.fixed_count,
+                    "failed_count": result.failed_count,
+                    "artifact_id": None,
+                }
+            artifact_temp_dir = tempfile.mkdtemp(prefix="aelira_direct_artifact_")
+            artifact_source = Path(artifact_temp_dir) / Path(output_path).name
+            shutil.copyfile(output_path, artifact_source)
+            artifact_service = RemediationArtifactService.from_settings()
+            published = artifact_service.claim_and_publish(
+                db,
+                source_path=artifact_source,
+                trusted_temp_root=artifact_temp_dir,
+                department_id=str(department_id),
+                scan_id=str(scan.id),
+                cloud_file_id=(
+                    str(resolved_cloud_file.id)
+                    if resolved_cloud_file is not None
+                    else None
+                ),
+                remediation_job_id=None,
+                created_by_id=str(user_id) if user_id else None,
+                provider=(
+                    str(resolved_cloud_file.provider)
+                    if resolved_cloud_file is not None
+                    else "local"
+                ),
+                scan_type=scan.scan_type,
+                filename=artifact_source.name,
+                provider_result={"verification_passed": True},
+                commit=False,
+            )
+            if isinstance(published, ArtifactPublicationResult):
+                artifact_publication = published
+                artifact = published.artifact
+            else:
+                # Preserve compatibility with test doubles and older service
+                # adapters; the production service always returns the typed claim.
+                artifact = published
+            shutil.rmtree(artifact_temp_dir, ignore_errors=True)
+            artifact_temp_dir = None
 
         # Persist fixes to scan_fixes table for the review workflow
         import uuid as _uuid
@@ -725,7 +1948,6 @@ async def remediate_scan(
                     page_number=getattr(fix, "page_number", None),
                 )
             )
-        db.commit()
 
         # Run Matterhorn validation on the remediated file
         try:
@@ -753,7 +1975,6 @@ async def remediate_scan(
                             page_number=cp.page_number,
                         )
                     )
-                db.commit()
                 logger.info(
                     f"Matterhorn validation complete for {scan_id}: "
                     f"{mh_result.passed}/{mh_result.total} passed"
@@ -761,95 +1982,188 @@ async def remediate_scan(
         except Exception as mh_err:
             logger.warning(f"Matterhorn validation skipped for {scan_id}: {mh_err}")
 
-        # Log remediation completion
-        from ...security.audit_service import AuditService
-
-        AuditService(db).log_remediation_complete(
-            user_id=user_id,
-            department_id=department_id,
-            scan_id=scan_id,
-            file_type=scan_type.value if scan_type else "unknown",
-            use_ai=effective_use_ai,
-            total_issues=result.total_issues,
-            fixed_count=result.fixed_count,
-            manual_count=result.manual_count,
-            original_score=result.original_compliance_score,
-            remediated_score=result.remediated_compliance_score,
-            improvement=result.improvement,
-            duration_seconds=result.duration_seconds,
-            request=request,
+        terminal_success = (
+            result.success is True
+            and result.failed_count == 0
+            and result.manual_count == 0
         )
+        if result.success is not True or result.failed_count > 0:
+            scan.status = ScanStatus.FAILED
+            scan.remediation_outcome = RemediationOutcome.REMEDIATION_FAILED.value
+        elif result.manual_count > 0:
+            scan.status = ScanStatus.FAILED
+            scan.remediation_outcome = RemediationOutcome.MANUAL_REQUIRED.value
+        elif result.fixed_count > 0:
+            scan.status = ScanStatus.COMPLETED
+            scan.remediation_outcome = RemediationOutcome.COMPLETED.value
+        else:
+            scan.status = ScanStatus.COMPLETED
+            scan.remediation_outcome = RemediationOutcome.NO_OP.value
 
-        # Update CloudFile if this scan came from a cloud integration
-        try:
-            cloud_file = authorized_cloud_file or _get_bound_fallback_cloud_file(
-                db, scan_id, principal.department_id
-            )
-            if cloud_file:
-                cloud_file.has_remediated_version = True
-                db.commit()
-        except Exception as cf_err:
-            logger.warning(f"Failed to update CloudFile remediation status: {cf_err}")
-
-        return {
+        # Fully materialize every response field before recording success or
+        # committing. Enum/property/list failures must still roll back through
+        # the single audited failure path.
+        response_payload = {
             "success": result.success,
             "scan_id": scan_id,
-            "original_file": result.original_file,
-            "output_file": result.output_file,
+            "artifact_id": str(artifact.id) if artifact is not None else None,
+            "artifact_mime_type": artifact.mime_type if artifact is not None else None,
+            "artifact_size_bytes": (
+                artifact.size_bytes if artifact is not None else None
+            ),
+            "artifact_sha256": artifact.sha256 if artifact is not None else None,
+            "artifact_expires_at": (
+                artifact.expires_at.isoformat() if artifact is not None else None
+            ),
+            "artifact_review_status": (
+                artifact.review_status if artifact is not None else None
+            ),
             "total_issues": result.total_issues,
             "fixed_count": result.fixed_count,
             "manual_count": result.manual_count,
             "failed_count": result.failed_count,
+            "skipped_count": getattr(result, "skipped_count", 0),
             "original_score": result.original_compliance_score,
             "remediated_score": result.remediated_compliance_score,
             "improvement": result.improvement,
             "duration_seconds": result.duration_seconds,
             "fixed_issues": [
                 {
-                    "id": f.issue_id,
-                    "category": f.category.value,
-                    "severity": f.severity.value,
-                    "description": f.description,
-                    "fix_method": f.fix_method,
+                    "id": fix.issue_id,
+                    "category": fix.category.value,
+                    "severity": fix.severity.value,
+                    "description": fix.description,
+                    "fix_method": fix.fix_method,
                 }
-                for f in result.fixed_issues
+                for fix in result.fixed_issues
             ],
             "manual_issues": [
                 {
-                    "id": m.issue_id,
-                    "category": m.category.value,
-                    "severity": m.severity.value,
-                    "description": m.description,
-                    "reason": m.reason,
-                    "recommendation": m.recommendation,
+                    "id": manual.issue_id,
+                    "category": manual.category.value,
+                    "severity": manual.severity.value,
+                    "description": manual.description,
+                    "reason": manual.reason,
+                    "recommendation": manual.recommendation,
                 }
-                for m in result.manual_issues
+                for manual in result.manual_issues
             ],
             "warnings": result.warnings,
         }
+        # Match Starlette's strict JSON response constraints while rollback and
+        # a single failure audit are still possible.
+        json.dumps(
+            response_payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
-    except HTTPException:
-        raise
+        _audit_terminal_remediation(
+            db=db,
+            request=request,
+            user_id=user_id,
+            department_id=department_id,
+            scan_id=scan_id,
+            file_type=scan_type.value if scan_type else "unknown",
+            remediation_requested=remediation_requested,
+            alt_text_requested=alt_text_requested,
+            remediation_tracker=remediation_tracker,
+            alt_text_tracker=alt_text_tracker,
+            successful=terminal_success,
+            total_issues=result.total_issues,
+            fixed_count=result.fixed_count,
+            manual_count=result.manual_count,
+            failed_count=result.failed_count,
+            skipped_count=getattr(result, "skipped_count", 0),
+            original_score=result.original_compliance_score,
+            remediated_score=result.remediated_compliance_score,
+            improvement=result.improvement,
+            duration_seconds=result.duration_seconds,
+            artifact_id=str(artifact.id) if artifact is not None else None,
+            error=(
+                "manual_review_required"
+                if result.success is True and result.manual_count > 0
+                else "remediation_failed"
+            ),
+        )
+
+        # The managed artifact finalization already set the CloudFile pointer and
+        # version flag under the same pending caller transaction.
+
+        # The commit is the final fallible operation guarded by this handler.
+        db.commit()
+
     except Exception as e:
+        db.rollback()
+        if artifact_publication is not None and artifact_service is not None:
+            try:
+                artifact_service.abort_staging(
+                    db,
+                    artifact_id=artifact_publication.artifact_id,
+                    publication_token=artifact_publication.publication_token,
+                )
+            except Exception:
+                db.rollback()
+                logger.warning(
+                    "Failed to clean aborted direct remediation artifact",
+                    extra={"scan_id": scan_id},
+                )
+        if artifact_temp_dir:
+            shutil.rmtree(artifact_temp_dir, ignore_errors=True)
+        scan.status = original_status
+        scan.remediation_outcome = original_outcome
+        if resolved_cloud_file is not None:
+            try:
+                resolved_cloud_file.has_remediated_version = original_cloud_remediated
+                resolved_cloud_file.remediation_origin = original_remediation_origin
+            except Exception:
+                logger.warning(
+                    "Failed to restore in-memory CloudFile remediation status",
+                    extra={"scan_id": scan_id},
+                )
         logger.error(f"Remediation failed for scan {scan_id}: {e}", exc_info=True)
-        # Log remediation failure
+        # The failed transaction (including any success audit row) is gone.
+        # Record one sanitized terminal failure in a fresh best-effort commit.
         try:
-            from ...security.audit_service import AuditService
-
-            AuditService(db).log_remediation_failed(
+            failed_result = locals().get("result")
+            _audit_terminal_remediation(
+                db=db,
+                request=request,
                 user_id=user_id,
                 department_id=department_id,
                 scan_id=scan_id,
                 file_type=scan_type.value if scan_type else "unknown",
-                use_ai=effective_use_ai,
-                error=str(e),
-                request=request,
+                remediation_requested=remediation_requested,
+                alt_text_requested=alt_text_requested,
+                remediation_tracker=remediation_tracker,
+                alt_text_tracker=alt_text_tracker,
+                successful=False,
+                total_issues=getattr(failed_result, "total_issues", 0),
+                fixed_count=getattr(failed_result, "fixed_count", 0),
+                manual_count=getattr(failed_result, "manual_count", 0),
+                failed_count=getattr(failed_result, "failed_count", 0),
+                skipped_count=getattr(failed_result, "skipped_count", 0),
+                error=(
+                    "invalid_scan_result"
+                    if isinstance(e, _InvalidScanResultError)
+                    else "remediation_exception"
+                ),
+                commit=True,
             )
         except Exception:
-            pass  # Audit logging should never break the main flow
+            logger.exception(
+                "Best-effort remediation failure audit could not be persisted",
+                extra={"scan_id": scan_id},
+            )
         raise HTTPException(
             status_code=500, detail="Remediation failed. Please try again."
         )
+
+    # Once commit succeeds, returning the already-built value is intentionally
+    # outside the rollback/failure-audit handler. Framework serialization cannot
+    # produce a second contradictory terminal audit.
+    return response_payload
 
 
 # ==================== Code Remediation Endpoint ====================
@@ -1319,7 +2633,7 @@ async def _batch_remediate_impl(
 async def health_check():
     """Health check endpoint"""
     # Check if llava model is available
-    generator = ImageAltTextGenerator()
+    generator = ImageAltTextGenerator(allow_legacy_transport=True)
     vision_health = generator.health_check()
 
     return {

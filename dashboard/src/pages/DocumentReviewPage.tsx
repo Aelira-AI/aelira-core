@@ -299,7 +299,7 @@ export function DocumentReviewPage(): React.ReactElement {
             <ArrowLeft className="w-5 h-5 text-[var(--content-secondary)]" aria-hidden="true" />
           </button>
           <div className="flex items-center gap-2 min-w-0">
-            <FileText className="w-5 h-5 text-[var(--accent-primary)] shrink-0" aria-hidden="true" />
+            <FileText className="w-5 h-5 text-[var(--accent)] shrink-0" aria-hidden="true" />
             <h1 className="text-lg font-semibold text-primary truncate">{review.file_name}</h1>
           </div>
           <div className="flex items-center gap-4 text-sm text-secondary shrink-0">
@@ -355,7 +355,7 @@ export function DocumentReviewPage(): React.ReactElement {
                 onClick={() => setVisualTab(key)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
                   visualTab === key
-                    ? 'bg-[var(--accent-primary)] text-white'
+                    ? 'bg-[var(--accent-solid)] text-white'
                     : 'text-[var(--content-secondary)] hover:bg-[var(--surface-tertiary)]'
                 }`}
               >
@@ -421,7 +421,7 @@ export function DocumentReviewPage(): React.ReactElement {
                 onClick={() => setFixFilter(key)}
                 className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
                   fixFilter === key
-                    ? 'bg-[var(--accent-primary)] text-white'
+                    ? 'bg-[var(--accent-solid)] text-white'
                     : 'text-[var(--content-secondary)] hover:bg-[var(--surface-secondary)]'
                 }`}
                 aria-pressed={fixFilter === key}

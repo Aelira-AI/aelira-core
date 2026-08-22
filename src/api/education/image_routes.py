@@ -86,7 +86,7 @@ async def generate_image_alt_text(
         logger.info(f"Generating alt text for: {file.filename} (user={user_id})")
 
         # Generate alt text
-        generator = ImageAltTextGenerator()
+        generator = ImageAltTextGenerator(allow_legacy_transport=True)
         result = await generator.generate_alt_text(
             image_path=tmp_path,
             context=context,
@@ -190,7 +190,7 @@ async def batch_generate_alt_text(
                 temp_files.append({"path": tmp.name, "filename": file.filename})
 
         # Process batch
-        generator = ImageAltTextGenerator()
+        generator = ImageAltTextGenerator(allow_legacy_transport=True)
         image_paths = [tf["path"] for tf in temp_files]
 
         batch_result = await generator.batch_generate_alt_text(
@@ -304,7 +304,7 @@ async def validate_image_alt_text(
         logger.info(f"Validating alt text for: {file.filename} (user={user_id})")
 
         # Validate alt text
-        generator = ImageAltTextGenerator()
+        generator = ImageAltTextGenerator(allow_legacy_transport=True)
         result = await generator.validate_alt_text(
             image_path=tmp_path, existing_alt_text=existing_alt_text, context=context
         )
@@ -415,7 +415,7 @@ async def score_alt_text_quality(
         logger.info(f"Scoring alt text quality for: {file.filename} (user={user_id})")
 
         # Score alt text quality
-        generator = ImageAltTextGenerator()
+        generator = ImageAltTextGenerator(allow_legacy_transport=True)
         result = await generator.score_alt_text_quality(
             image_path=tmp_path, alt_text=alt_text, context=context
         )
@@ -576,7 +576,7 @@ async def detect_image_type(
         logger.info(f"Detecting image type for: {file.filename} (user={user_id})")
 
         # Detect image type
-        generator = ImageAltTextGenerator()
+        generator = ImageAltTextGenerator(allow_legacy_transport=True)
         result = await generator.detect_image_type(image_path=tmp_path, context=context)
 
         processing_time = int((time.time() - start_time) * 1000)
@@ -702,7 +702,7 @@ async def describe_chart_or_graph(
         )
 
         # Generate chart description
-        generator = ImageAltTextGenerator()
+        generator = ImageAltTextGenerator(allow_legacy_transport=True)
         result = await generator.describe_chart_or_graph(
             image_path=tmp_path, context=context, detail_level=detail_level
         )
@@ -811,7 +811,7 @@ async def analyze_image_comprehensive(
         logger.info(f"Comprehensive image analysis: {file.filename} (user={user_id})")
 
         # Perform comprehensive analysis
-        generator = ImageAltTextGenerator()
+        generator = ImageAltTextGenerator(allow_legacy_transport=True)
         result = await generator.analyze_image_comprehensive(
             image_path=tmp_path, context=context, existing_alt_text=existing_alt_text
         )

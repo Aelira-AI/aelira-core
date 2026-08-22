@@ -27,6 +27,13 @@ let terminalRedirected = false;
 interface RetryableRequestConfig extends InternalAxiosRequestConfig {
   _retry?: boolean;
   _apiKeyAuth?: boolean;
+  _skipApiKeyAuth?: boolean;
+}
+
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    _skipApiKeyAuth?: boolean;
+  }
 }
 
 // Add auth token to all requests (for API key auth fallback)
@@ -40,18 +47,30 @@ function readCookie(name: string): string | null {
 }
 
 apiClient.interceptors.request.use((config: RetryableRequestConfig) => {
+  if (config._skipApiKeyAuth) {
+    delete config.headers.Authorization;
+  }
   const apiKey = localStorage.getItem('apiKey');
-  if (apiKey && !config.headers.Authorization) {
+  if (
+    apiKey &&
+    !config._skipApiKeyAuth &&
+    !isAuthEndpoint(config.url) &&
+    !config.headers.Authorization
+  ) {
     config.headers.Authorization = `Bearer ${apiKey}`;
     config._apiKeyAuth = true;
   }
 
-  // CSRF: on cookie-authenticated (no Bearer) state-changing requests, echo
-  // the double-submit token the server set. The server enforces this on all
-  // cookie-authed dashboard mutations; Bearer/API-key requests are exempt
-  // server-side, so we skip the header when an Authorization header is set.
+  // CSRF: on cookie-authenticated state-changing requests, echo the
+  // double-submit token even if a stale Bearer header remains. Key management
+  // prefers the session principal whenever aelira_access is present, and the
+  // server intentionally requires CSRF at that cookie-present boundary.
   const method = (config.method || 'get').toLowerCase();
-  if (!CSRF_SAFE_METHODS.has(method) && !config.headers.Authorization) {
+  const hasSessionCookie = readCookie('aelira_access') !== null;
+  if (
+    !CSRF_SAFE_METHODS.has(method) &&
+    (!config.headers.Authorization || hasSessionCookie)
+  ) {
     const csrfToken = readCookie('csrf_token');
     if (csrfToken) {
       config.headers['X-CSRF-Token'] = csrfToken;
@@ -78,13 +97,19 @@ function isAuthEndpoint(url: string | undefined): boolean {
   return AUTH_ENDPOINTS.some((endpoint) => url?.includes(endpoint));
 }
 
+/** Clear every browser location from which Axios can inherit a legacy API key. */
+export function clearStoredApiKeyAuth(): void {
+  localStorage.removeItem('apiKey');
+  delete apiClient.defaults.headers.common.Authorization;
+}
+
 function terminateSession(): Promise<void> {
   if (terminalLogoutPromise) {
     return terminalLogoutPromise;
   }
 
   if (!credentialsCleared) {
-    localStorage.removeItem('apiKey');
+    clearStoredApiKeyAuth();
     credentialsCleared = true;
   }
 

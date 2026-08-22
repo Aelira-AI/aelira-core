@@ -31,6 +31,12 @@ import {
   type CourseContentStatusResponse,
   type ContentItemStatus,
 } from '../api/brightspaceContent';
+import { remediateAllInChunks } from '../utils/brightspaceRemediateAll';
+import {
+  brightspaceApprovalIds,
+  brightspaceApprovalSummary,
+} from '../utils/brightspaceBatchSelection';
+import { resolveBrightspaceContentStatus } from '../utils/brightspaceContentStatus';
 import { apiClient } from '../api/client';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -51,38 +57,6 @@ function getComplianceBadgeVariant(
 function getComplianceBadgeLabel(score: number | null): string {
   if (score === null) return 'Not scanned';
   return `${score.toFixed(0)}%`;
-}
-
-function getWritebackBadgeVariant(
-  status: string | null
-): 'accent' | 'success' | 'warning' | 'neutral' | null {
-  if (!status) return null;
-  switch (status) {
-    case 'remediated':
-      return 'accent';
-    case 'approved':
-      return 'accent';
-    case 'written_back':
-      return 'success';
-    case 'stale':
-      return 'warning';
-    case 'rolled_back':
-      return 'neutral';
-    default:
-      return null;
-  }
-}
-
-function getWritebackBadgeLabel(status: string | null): string | null {
-  if (!status) return null;
-  switch (status) {
-    case 'remediated':   return 'Remediated';
-    case 'approved':     return 'Approved';
-    case 'written_back': return 'Written back';
-    case 'stale':        return 'Stale';
-    case 'rolled_back':  return 'Rolled back';
-    default:             return null;
-  }
 }
 
 function getContentTypeIcon(contentType: string): React.ReactElement {
@@ -109,8 +83,17 @@ const SCAN_POLL_INTERVAL_MS = 3000;
 // Component
 // ============================================================================
 
-export default function BrightspaceContentPage(): React.ReactElement {
-  const { orgUnitId } = useParams<{ orgUnitId: string }>();
+interface BrightspaceContentPageProps {
+  orgUnitIdOverride?: string;
+  isLTI?: boolean;
+}
+
+export default function BrightspaceContentPage({
+  orgUnitIdOverride,
+  isLTI = false,
+}: BrightspaceContentPageProps = {}): React.ReactElement {
+  const { orgUnitId: routeOrgUnitId } = useParams<{ orgUnitId: string }>();
+  const orgUnitId = orgUnitIdOverride || routeOrgUnitId;
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -243,7 +226,7 @@ export default function BrightspaceContentPage(): React.ReactElement {
               i.compliance_score < 100 &&
               !i.writeback_status
           );
-          if (!stillRemediating) {
+          if (!stillRemediating && !remediatingRef.current) {
             stopPolling();
             setScanning(false);
             setRemediatingAll(false);
@@ -270,8 +253,9 @@ export default function BrightspaceContentPage(): React.ReactElement {
       if (Date.now() - pollStartRef.current >= SCAN_POLL_TIMEOUT_MS) {
         stopPolling();
         setScanning(false);
-        setRemediatingAll(false);
-        remediatingRef.current = false;
+        if (!remediatingRef.current) {
+          setRemediatingAll(false);
+        }
         toast.warning(
           'Scan is taking longer than expected. Results will appear when ready - refresh to check.',
           'Scan Timeout'
@@ -317,31 +301,50 @@ export default function BrightspaceContentPage(): React.ReactElement {
   };
 
   const handleRemediateAll = async (): Promise<void> => {
-    if (!orgUnitId || isNaN(orgUnitIdNum)) return;
+    if (!orgUnitId || isNaN(orgUnitIdNum) || !data) return;
+
+    const eligibleIds = data.items
+      .filter(
+        (item) =>
+          item.compliance_score !== null &&
+          item.compliance_score < 100 &&
+          !item.writeback_status
+      )
+      .map((item) => item.cloud_file_id);
+    if (eligibleIds.length === 0) {
+      toast.info('No eligible items to remediate.', 'Nothing to Do');
+      return;
+    }
 
     setRemediatingAll(true);
     remediatingRef.current = true;
     try {
-      const result = await batchRemediateContent({ org_unit_id: orgUnitIdNum });
-      const hasMedia = data?.items.some(
-        (i) =>
-          i.content_type === 'Video' ||
-          i.content_type === 'Audio' ||
-          i.content_type === 'video' ||
-          i.content_type === 'audio'
+      const summary = await remediateAllInChunks(eligibleIds, (cloudFileIds) =>
+        batchRemediateContent({
+          org_unit_id: orgUnitIdNum,
+          cloud_file_ids: cloudFileIds,
+        })
       );
-      toast.info(
-        `Queued ${result.queued} item${result.queued !== 1 ? 's' : ''} for remediation.` +
-          (hasMedia
-            ? ' Video/audio files require transcription and may take several minutes.'
-            : ''),
-        'Remediation Started'
-      );
-      // Start polling to pick up progress
-      startPolling();
+      const message =
+        `Requested: ${summary.requestedCount}, Processed: ${summary.processedCount}, ` +
+        `Completed: ${summary.completedCount}, Fixed: ${summary.fixedCount}, ` +
+        `Manual: ${summary.manualCount}, Failed: ${summary.failedCount}` +
+        (summary.chunkFailures.length > 0
+          ? `, Chunk failures: ${summary.chunkFailures
+              .slice(0, 3)
+              .map((failure) => `#${failure.chunkNumber} ${failure.message}`)
+              .join('; ')} (${summary.unreportedCount} outcomes unavailable)`
+          : '');
+      if (summary.failedCount > 0 || summary.chunkFailures.length > 0) {
+        toast.warning(message, 'Remediation Complete');
+      } else {
+        toast.success(message, 'Remediation Complete');
+      }
+      await fetchStatus();
     } catch (err) {
       console.error('Failed to batch remediate:', err);
-      toast.error('Failed to start remediation.', 'Error');
+      toast.error('Remediation failed.', 'Error');
+    } finally {
       setRemediatingAll(false);
       remediatingRef.current = false;
     }
@@ -350,15 +353,7 @@ export default function BrightspaceContentPage(): React.ReactElement {
   const handleApproveAll = async (): Promise<void> => {
     if (!data) return;
 
-    // Get all items with scores that have been scanned but not yet approved/written back
-    const eligibleIds = data.items
-      .filter(
-        (item) =>
-          item.compliance_score !== null &&
-          item.issue_count >= 0 &&
-          (!item.writeback_status || item.writeback_status === 'remediated')
-      )
-      .map((item) => item.cloud_file_id);
+    const eligibleIds = brightspaceApprovalIds(data.items);
 
     if (eligibleIds.length === 0) {
       toast.info('No items to approve.', 'Nothing to Do');
@@ -368,10 +363,12 @@ export default function BrightspaceContentPage(): React.ReactElement {
     setApprovingAll(true);
     try {
       const result = await batchApproveContent({ cloud_file_ids: eligibleIds });
-      toast.success(
-        `Approved ${result.approved_count} item${result.approved_count !== 1 ? 's' : ''}.`,
-        'Batch Approve'
-      );
+      const summary = brightspaceApprovalSummary(result);
+      if (summary.status === 'success') {
+        toast.success(summary.message, 'Batch Approve');
+      } else {
+        toast.warning(summary.message, 'Batch Approve');
+      }
       // Refresh data
       await fetchStatus();
     } catch (err) {
@@ -450,6 +447,19 @@ export default function BrightspaceContentPage(): React.ReactElement {
       <ArrowDown className="w-3 h-3" />
     );
   };
+
+  const renderSortableHeader = (field: SortField, label: string): React.ReactElement => (
+    <th
+      scope="col"
+      aria-sort={sortField === field ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className="text-left px-6 py-3 text-xs font-semibold text-[var(--content-secondary)]"
+    >
+      <button type="button" onClick={() => toggleSort(field)} className="inline-flex items-center gap-1">
+        {label}
+        {renderSortIcon(field)}
+      </button>
+    </th>
+  );
 
   const filteredAndSortedItems = useMemo(() => {
     if (!data) return [];
@@ -531,7 +541,9 @@ export default function BrightspaceContentPage(): React.ReactElement {
   const handleItemClick = (item: ContentItemStatus): void => {
     if (item.content_type === 'html' || item.content_type === 'topic_html') {
       navigate(
-        `/brightspace/courses/${orgUnitId}/content/${item.cloud_file_id}/review`
+        isLTI
+          ? `/lti/course/${orgUnitId}/content/${item.cloud_file_id}/review`
+          : `/brightspace/courses/${orgUnitId}/content/${item.cloud_file_id}/review`
       );
     }
     // For file items, we could navigate to scan detail if a scan exists
@@ -545,7 +557,7 @@ export default function BrightspaceContentPage(): React.ReactElement {
     return (
       <div className="max-w-7xl mx-auto px-4 py-8">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-[var(--accent-primary)]" />
+          <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
         </div>
       </div>
     );
@@ -694,7 +706,7 @@ export default function BrightspaceContentPage(): React.ReactElement {
                 )
               }
             >
-              Remediate All
+              {remediatingAll ? 'Remediating All...' : 'Remediate All'}
             </Button>
             <Button
               variant="secondary"
@@ -884,42 +896,10 @@ export default function BrightspaceContentPage(): React.ReactElement {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[var(--border-primary)]">
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('title')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Name
-                      {renderSortIcon('title')}
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('module_path')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Module
-                      {renderSortIcon('module_path')}
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('compliance_score')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Score
-                      {renderSortIcon('compliance_score')}
-                    </span>
-                  </th>
-                  <th
-                    className="text-left px-6 py-3 text-xs font-semibold cursor-pointer select-none text-[var(--content-secondary)]"
-                    onClick={() => toggleSort('issue_count')}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      Issues
-                      {renderSortIcon('issue_count')}
-                    </span>
-                  </th>
+                  {renderSortableHeader('title', 'Name')}
+                  {renderSortableHeader('module_path', 'Module')}
+                  {renderSortableHeader('compliance_score', 'Score')}
+                  {renderSortableHeader('issue_count', 'Issues')}
                   <th className="text-left px-6 py-3 text-xs font-semibold text-[var(--content-secondary)]">
                     Status
                   </th>
@@ -987,8 +967,7 @@ export default function BrightspaceContentPage(): React.ReactElement {
                           items.map((item, idx) => {
                             const scoreBadgeVariant = getComplianceBadgeVariant(item.compliance_score);
                             const scoreBadgeLabel = getComplianceBadgeLabel(item.compliance_score);
-                            const wbVariant = getWritebackBadgeVariant(item.writeback_status);
-                            const wbLabel = getWritebackBadgeLabel(item.writeback_status);
+                            const statusBadge = resolveBrightspaceContentStatus(item);
 
                             return (
                               <tr
@@ -1056,12 +1035,12 @@ export default function BrightspaceContentPage(): React.ReactElement {
 
                                 {/* Status */}
                                 <td className="px-6 py-3">
-                                  {wbVariant && wbLabel ? (
-                                    <Badge variant={wbVariant}>
+                                  {statusBadge ? (
+                                    <Badge variant={statusBadge.variant}>
                                       {item.writeback_status === 'written_back' && (
                                         <Check className="w-3 h-3" />
                                       )}
-                                      {wbLabel}
+                                      {statusBadge.label}
                                     </Badge>
                                   ) : item.compliance_score !== null ? (
                                     <Badge variant="neutral">Scanned</Badge>
@@ -1079,7 +1058,9 @@ export default function BrightspaceContentPage(): React.ReactElement {
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             navigate(
-                                              `/brightspace/courses/${orgUnitId}/content/${item.cloud_file_id}/review`
+                                              isLTI
+                                                ? `/lti/course/${orgUnitId}/content/${item.cloud_file_id}/review`
+                                                : `/brightspace/courses/${orgUnitId}/content/${item.cloud_file_id}/review`
                                             );
                                           }}
                                           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-[var(--surface-tertiary)] text-[var(--content-primary)]"

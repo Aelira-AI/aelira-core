@@ -526,7 +526,9 @@ class XlsxProcessor:
             try:
                 from .image_alt_text import ImageAltTextGenerator
 
-                self.image_generator = ImageAltTextGenerator()
+                self.image_generator = ImageAltTextGenerator(
+                    allow_legacy_transport=True
+                )
             except Exception as e:
                 logger.warning(
                     f"[XlsxProcessor] Could not initialize ImageAltTextGenerator: {e}"

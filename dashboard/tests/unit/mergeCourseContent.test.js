@@ -1,6 +1,6 @@
 /**
  * Unit tests for the course-content merge helper — DB status rows + live
- * Canvas files, unified into one list keyed by provider_file_id.
+ * Canvas files, unified into one list keyed by composite Canvas identity.
  * Uses Node.js native test runner (same pattern as featureAccess.test.js).
  */
 
@@ -25,6 +25,7 @@ function statusItem(overrides = {}) {
     issue_count: 1,
     writeback_status: null,
     has_remediated_version: false,
+    remediation_origin: null,
     last_scanned_at: '2026-08-18T00:00:00Z',
     ...overrides,
   };
@@ -42,6 +43,94 @@ function liveFile(overrides = {}) {
 }
 
 describe('mergeCourseContent', () => {
+  it('keeps page, assignment, and file with the same native id distinct', () => {
+    const result = mergeCourseContent(
+      [
+        statusItem({
+          cloud_file_id: 'cf-page',
+          provider_file_id: '7',
+          content_type: 'page',
+        }),
+        statusItem({
+          cloud_file_id: 'cf-assignment',
+          provider_file_id: '7',
+          content_type: 'assignment',
+        }),
+      ],
+      [liveFile({ id: '7' })],
+      { provider: 'canvas', parentId: 'course-1' }
+    );
+
+    assert.equal(result.length, 3);
+    assert.deepEqual(
+      result.map((item) => item.content_type).sort(),
+      ['assignment', 'file', 'page']
+    );
+  });
+
+  it('keeps the same native id in different courses distinct', () => {
+    const result = mergeCourseContent(
+      [
+        statusItem({
+          cloud_file_id: 'cf-course-1',
+          provider_file_id: '7',
+          provider: 'canvas',
+          provider_parent_id: 'course-1',
+          content_type: 'page',
+        }),
+        statusItem({
+          cloud_file_id: 'cf-course-2',
+          provider_file_id: '7',
+          provider: 'canvas',
+          provider_parent_id: 'course-2',
+          content_type: 'page',
+        }),
+      ],
+      [],
+      { provider: 'canvas', parentId: 'course-1' }
+    );
+
+    assert.equal(result.length, 2);
+    assert.notEqual(result[0].identity_key, result[1].identity_key);
+  });
+
+  it('dedupes a matching live and DB file by composite identity', () => {
+    const result = mergeCourseContent(
+      [
+        statusItem({
+          provider_file_id: '7',
+          provider: 'canvas',
+          provider_parent_id: 'course-1',
+          content_type: 'file',
+          title: 'DB title',
+        }),
+      ],
+      [liveFile({ id: '7', display_name: 'Live title' })],
+      { provider: 'canvas', parentId: 'course-1' }
+    );
+
+    assert.equal(result.length, 1);
+    assert.equal(result[0].title, 'DB title');
+  });
+
+  it('treats a legacy null content source as file for safe dedupe', () => {
+    const result = mergeCourseContent(
+      [
+        statusItem({
+          provider_file_id: '7',
+          provider: 'canvas',
+          provider_parent_id: 'course-1',
+          content_type: null,
+        }),
+      ],
+      [liveFile({ id: '7' })],
+      { provider: 'canvas', parentId: 'course-1' }
+    );
+
+    assert.equal(result.length, 1);
+    assert.equal(result[0].content_type, 'file');
+  });
+
   it('passes DB-only items through unchanged, scan_status scanned', () => {
     const result = mergeCourseContent([statusItem()], []);
     assert.equal(result.length, 1);
@@ -73,7 +162,7 @@ describe('mergeCourseContent', () => {
 
   it('dedupes — a matched item never produces two rows', () => {
     const result = mergeCourseContent(
-      [statusItem({ provider_file_id: 'canvas-1' })],
+      [statusItem({ provider_file_id: 'canvas-1', content_type: 'file' })],
       [liveFile({ id: 'canvas-1' }), liveFile({ id: 'canvas-2' })]
     );
     assert.equal(result.length, 2);
@@ -140,6 +229,7 @@ function mergedItem(overrides = {}) {
     issue_count: 1,
     writeback_status: null,
     has_remediated_version: false,
+    remediation_origin: null,
     last_scanned_at: '2026-08-18T00:00:00Z',
     content_updated_at: null,
     scan_id: 'scan-1',
@@ -341,39 +431,54 @@ describe('contentItemState', () => {
     assert.equal(state.label, 'Scanned · needs remediation');
   });
 
-  it('is auto_remediated_pending_review for a remediated HTML item', () => {
-    const state = contentItemState(
-      mergedItem({
-        content_type: 'page',
-        has_remediated_version: true,
-        writeback_status: null,
-      })
-    );
-    assert.equal(state.key, 'auto_remediated_pending_review');
-    assert.equal(state.label, 'Auto-remediated · pending review');
-  });
-
-  it('is auto_remediated_pending_review with writeback_status pending_review too', () => {
-    const state = contentItemState(
-      mergedItem({
-        content_type: 'assignment',
-        has_remediated_version: true,
-        writeback_status: 'pending_review',
-      })
-    );
-    assert.equal(state.key, 'auto_remediated_pending_review');
-  });
-
-  it('is remediated_pending_review for a remediated file (manual path)', () => {
+  it('uses persisted automatic origin for a remediated file without content-type inference', () => {
     const state = contentItemState(
       mergedItem({
         content_type: 'file',
         has_remediated_version: true,
-        writeback_status: null,
+        remediation_origin: 'automatic',
       })
     );
-    assert.equal(state.key, 'remediated_pending_review');
-    assert.equal(state.label, 'Remediated · pending review');
+    assert.deepEqual(state, {
+      key: 'auto_remediated_pending_review',
+      label: 'Auto-remediated · pending review',
+    });
+  });
+
+  it('uses persisted manual origin for otherwise identical remediated content', () => {
+    const state = contentItemState(
+      mergedItem({
+        content_type: 'file',
+        has_remediated_version: true,
+        remediation_origin: 'manual',
+      })
+    );
+    assert.deepEqual(state, {
+      key: 'remediated_pending_review',
+      label: 'Manually remediated · pending review',
+    });
+  });
+
+  it('shows a neutral generic remediation label for legacy null origin', () => {
+    const state = contentItemState(
+      mergedItem({
+        content_type: 'page',
+        has_remediated_version: true,
+        remediation_origin: null,
+      })
+    );
+    assert.deepEqual(state, {
+      key: 'remediated_pending_review',
+      label: 'Remediated · pending review',
+    });
+  });
+
+  it('carries persisted remediation origin through the course-content merge', () => {
+    const [item] = mergeCourseContent(
+      [statusItem({ remediation_origin: 'automatic', has_remediated_version: true })],
+      []
+    );
+    assert.equal(item.remediation_origin, 'automatic');
   });
 
   it('is approved when writeback_status is approved', () => {
@@ -441,6 +546,11 @@ describe('contentItemState', () => {
     assert.equal(state.label, 'Rolled back');
   });
 
+  it('uses neutral styling for both pending-remediation states', () => {
+    assert.equal(CONTENT_ITEM_STATE_COLOR.auto_remediated_pending_review, 'neutral');
+    assert.equal(CONTENT_ITEM_STATE_COLOR.remediated_pending_review, 'neutral');
+  });
+
   it('has a color mapping for every possible state key', () => {
     const keys = [
       'unscanned',
@@ -456,5 +566,10 @@ describe('contentItemState', () => {
     for (const key of keys) {
       assert.ok(CONTENT_ITEM_STATE_COLOR[key], `missing color for ${key}`);
     }
+  });
+
+  it('uses neutral styling for both pending-remediation provenance states', () => {
+    assert.equal(CONTENT_ITEM_STATE_COLOR.auto_remediated_pending_review, 'neutral');
+    assert.equal(CONTENT_ITEM_STATE_COLOR.remediated_pending_review, 'neutral');
   });
 });

@@ -11,7 +11,7 @@ determined.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import fitz  # PyMuPDF
@@ -85,9 +85,17 @@ class TableTagger:
     confirm header identification.
     """
 
-    def __init__(self, use_ai: bool = True) -> None:
+    def __init__(
+        self,
+        use_ai: bool = True,
+        *,
+        ai_client: Any = None,
+        allow_legacy_provider_manager: bool = False,
+    ) -> None:
         self._confidence_calc = ConfidenceCalculator()
         self._use_ai = use_ai
+        self._ai_client = ai_client
+        self._allow_legacy_provider_manager = allow_legacy_provider_manager
 
     def tag_tables(self, pdf_path: str) -> TableTagResult:
         """Detect and tag all tables in a PDF.
@@ -324,12 +332,16 @@ class TableTagger:
 
     def _confirm_headers_with_ai(self, pdf_path: str, tables: List[TableInfo]) -> None:
         """Use AI vision to confirm or adjust header identification."""
-        try:
-            from src.ai.providers import get_provider_manager
+        ai_client = self._ai_client
+        if ai_client is None and self._allow_legacy_provider_manager:
+            try:
+                from src.ai.providers import get_provider_manager
 
-            ai_client = get_provider_manager()
-        except Exception:
-            return  # AI unavailable, keep heuristic results
+                ai_client = get_provider_manager()
+            except Exception:
+                return  # AI unavailable, keep heuristic results
+        if ai_client is None:
+            return
 
         doc = fitz.open(pdf_path)
         try:

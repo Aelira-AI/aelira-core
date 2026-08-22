@@ -14,13 +14,16 @@ Canvas API Documentation:
 """
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import re
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, BinaryIO
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
+from src.integrations.cloud_base import CloudUploadResult
 
 from src.utils.security import (
     prepare_canvas_outbound_url,
@@ -50,6 +53,32 @@ from .safe_http import create_canvas_safe_transport
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class CanvasImageDownloadResult:
+    """Observed bytes and type from a bounded course image download."""
+
+    success: bool
+    data: Optional[bytes] = None
+    content_type: Optional[str] = None
+    suffix: Optional[str] = None
+    error: Optional[str] = None
+
+
+def _sniff_image_type(data: bytes) -> Optional[tuple[str, str]]:
+    """Recognize only the image formats accepted by the vision pipeline."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ".jpg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif", ".gif"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp", ".webp"
+    if data.startswith(b"BM"):
+        return "image/bmp", ".bmp"
+    return None
+
+
 def _complete_origin(url: str) -> tuple[str, str, int]:
     """Return a complete, normalized origin tuple for an already validated URL."""
     parsed = urlparse(url)
@@ -69,6 +98,14 @@ class CanvasAPIClient:
     """
 
     MAX_PAGINATION_PAGES = 1000
+
+    # Canvas can definitively reject an upload body with these documented client
+    # errors. Every other post-body HTTP failure is conservative: Canvas, its
+    # object store, or an intermediary may have committed the bytes even though
+    # the client did not receive a usable success response.
+    DEFINITE_POST_BODY_REJECTION_STATUSES = frozenset(
+        {400, 401, 403, 404, 409, 413, 415, 422}
+    )
 
     def __init__(
         self,
@@ -408,6 +445,268 @@ class CanvasAPIClient:
                 error="Canvas file download failed",
             )
 
+    async def download_course_image(
+        self,
+        file_info: CanvasFileInfo,
+        *,
+        max_bytes: int,
+    ) -> CanvasImageDownloadResult:
+        """Download trusted course inventory image metadata with hard bounds.
+
+        Unlike ``download_file``, this method never performs an account-level
+        metadata lookup. The caller supplies the exact ``CanvasFileInfo`` from
+        a just-fetched course inventory, and the response bytes must prove the
+        same supported image MIME before they can reach vision.
+        """
+        allowed_mimes = {
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+        }
+        if (
+            type(file_info) is not CanvasFileInfo
+            or isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or max_bytes <= 0
+            or not isinstance(file_info.content_type, str)
+            or not isinstance(file_info.url, str)
+            or not file_info.url
+            or isinstance(file_info.size, bool)
+            or not isinstance(file_info.size, int)
+            or file_info.size <= 0
+            or file_info.size > max_bytes
+            or file_info.content_type.casefold() not in allowed_mimes
+        ):
+            return CanvasImageDownloadResult(
+                success=False, error="Invalid course image metadata"
+            )
+
+        def _prepare(url: str, base: str) -> str:
+            return prepare_canvas_outbound_url(
+                url,
+                base,
+                development_origin=self._canvas_origin,
+            )
+
+        try:
+            download_url = _prepare(file_info.url, self.canvas_url)
+            max_redirects = 10
+            async with httpx.AsyncClient(
+                timeout=60.0,
+                follow_redirects=False,
+                transport=create_canvas_safe_transport(self._canvas_origin),
+                trust_env=False,
+            ) as image_client:
+                for redirect_count in range(max_redirects + 1):
+                    download_url = _prepare(download_url, download_url)
+                    image_client.cookies.clear()
+                    async with image_client.stream(
+                        "GET",
+                        download_url,
+                        headers=self._authorization_headers(download_url),
+                        follow_redirects=False,
+                    ) as response:
+                        if response.status_code in (301, 302, 303, 307, 308):
+                            if redirect_count == max_redirects:
+                                raise ValueError("Too many Canvas image redirects")
+                            location = response.headers.get("location")
+                            if not location:
+                                raise ValueError(
+                                    "Canvas image redirect missing Location"
+                                )
+                            download_url = _prepare(location, download_url)
+                            continue
+
+                        response.raise_for_status()
+                        content_length = response.headers.get("content-length")
+                        if content_length is not None:
+                            try:
+                                declared_size = int(content_length)
+                            except ValueError as exc:
+                                raise ValueError("Invalid Content-Length") from exc
+                            if declared_size < 0 or declared_size > max_bytes:
+                                raise ValueError("Canvas image exceeds size limit")
+
+                        chunks = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(chunks) + len(chunk) > max_bytes:
+                                raise ValueError("Canvas image exceeds size limit")
+                            chunks.extend(chunk)
+                        data = bytes(chunks)
+                        observed = _sniff_image_type(data)
+                        if observed is None:
+                            raise ValueError("Unsupported Canvas image bytes")
+                        observed_mime, suffix = observed
+                        if observed_mime != file_info.content_type.casefold():
+                            raise ValueError("Canvas image MIME mismatch")
+                        return CanvasImageDownloadResult(
+                            success=True,
+                            data=data,
+                            content_type=observed_mime,
+                            suffix=suffix,
+                        )
+        except Exception:
+            return CanvasImageDownloadResult(
+                success=False, error="Canvas course image download failed"
+            )
+
+        return CanvasImageDownloadResult(
+            success=False, error="Canvas course image download failed"
+        )
+
+    async def upload_file_stream(
+        self,
+        *,
+        course_id: str,
+        stream: BinaryIO,
+        size_bytes: int,
+        mime_type: str,
+        file_name: str,
+        folder_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> CanvasUploadResult:
+        """Upload a verified stream and classify whether retry is safe."""
+        correlation_id = correlation_id or str(uuid.uuid4())
+        try:
+            parsed_correlation = uuid.UUID(correlation_id)
+            if (
+                parsed_correlation.version != 4
+                or str(parsed_correlation) != correlation_id
+            ):
+                raise ValueError("invalid correlation id")
+        except (AttributeError, ValueError):
+            return CanvasUploadResult(
+                success=False,
+                outcome="definite_failure",
+                error="Canvas file upload metadata is invalid",
+            )
+        body_started = False
+        provider_result: Dict[str, Any] = {"phase": "preaccept"}
+        try:
+            if size_bytes < 0 or not file_name:
+                raise ValueError("invalid upload metadata")
+            client = await self._get_client()
+            upload_params: Dict[str, Any] = {
+                "name": file_name,
+                "size": size_bytes,
+                "content_type": mime_type,
+            }
+            if folder_id:
+                upload_params["parent_folder_id"] = folder_id
+            response = await client.post(
+                f"{self.api_base}/courses/{course_id}/files", json=upload_params
+            )
+            response.raise_for_status()
+            upload_data = response.json()
+            upload_url = prepare_canvas_outbound_url(
+                upload_data["upload_url"],
+                self.canvas_url,
+                development_origin=self._canvas_origin,
+            )
+            provider_result = {"phase": "upload", "request_accepted": True}
+            async with httpx.AsyncClient(
+                timeout=60.0,
+                follow_redirects=False,
+                transport=create_canvas_safe_transport(self._canvas_origin),
+                trust_env=False,
+            ) as upload_client:
+                upload_client.cookies.clear()
+                body_started = True
+                upload_response = await upload_client.post(
+                    upload_url,
+                    data=upload_data["upload_params"],
+                    files={"file": (file_name, stream, mime_type)},
+                    headers=self._authorization_headers(upload_url),
+                    follow_redirects=False,
+                )
+                provider_result["upload_status"] = upload_response.status_code
+                if upload_response.status_code in (301, 302, 303, 307, 308):
+                    location = upload_response.headers.get("Location")
+                    if not location:
+                        raise RuntimeError(
+                            "accepted upload redirect lacks confirmation"
+                        )
+                    confirm_url = prepare_canvas_outbound_url(
+                        location,
+                        upload_url,
+                        development_origin=self._canvas_origin,
+                    )
+                    upload_client.cookies.clear()
+                    confirmed = await upload_client.get(
+                        confirm_url,
+                        headers=self._authorization_headers(confirm_url),
+                        follow_redirects=False,
+                    )
+                    provider_result["confirmation_status"] = confirmed.status_code
+                    confirmed.raise_for_status()
+                    file_info = confirmed.json()
+                else:
+                    upload_response.raise_for_status()
+                    file_info = upload_response.json()
+            provider_result.update(
+                {"phase": "complete", "canvas_file_id": str(file_info["id"])}
+            )
+            return CanvasUploadResult(
+                success=True,
+                outcome="success",
+                correlation_id=correlation_id,
+                provider_result=provider_result,
+                file_id=str(file_info["id"]),
+                file_name=file_info["filename"],
+                web_view_link=file_info.get("url"),
+            )
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if not body_started:
+                indeterminate = False
+            elif provider_result.get("upload_status") in {
+                301,
+                302,
+                303,
+                307,
+                308,
+            }:
+                # The upload service accepted the body and redirected to a
+                # confirmation endpoint; a confirmation rejection cannot prove
+                # that the upload itself was rolled back.
+                indeterminate = True
+            else:
+                indeterminate = (
+                    status_code not in self.DEFINITE_POST_BODY_REJECTION_STATUSES
+                )
+            provider_result.update({"status_code": status_code})
+            return CanvasUploadResult(
+                success=False,
+                outcome="indeterminate" if indeterminate else "definite_failure",
+                correlation_id=correlation_id if indeterminate else None,
+                provider_result=provider_result,
+                error=(
+                    "Canvas file upload outcome is indeterminate"
+                    if indeterminate
+                    else "Canvas file upload failed"
+                ),
+            )
+        except Exception as exc:
+            indeterminate = body_started
+            logger.warning(
+                "Canvas verified-stream upload failed (%s, indeterminate=%s)",
+                type(exc).__name__,
+                indeterminate,
+            )
+            return CanvasUploadResult(
+                success=False,
+                outcome="indeterminate" if indeterminate else "definite_failure",
+                correlation_id=correlation_id if indeterminate else None,
+                provider_result=provider_result,
+                error=(
+                    "Canvas file upload outcome is indeterminate"
+                    if indeterminate
+                    else "Canvas file upload failed"
+                ),
+            )
+
     async def upload_file(
         self,
         course_id: str,
@@ -528,9 +827,13 @@ class CanvasAPIClient:
                 course_id,
                 type(exc).__name__,
             )
+            failure = CloudUploadResult.from_exception(exc, body_started=True)
             return CanvasUploadResult(
                 success=False,
                 error="Canvas file upload failed",
+                failure_kind=failure.failure_kind,
+                status_code=failure.status_code,
+                retry_after=failure.retry_after,
             )
 
     # =========================================================================

@@ -30,20 +30,31 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
 
       - name: Validate stable version and release safety
         env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
           RELEASE_DENYLIST_JSON: ${{ secrets.RELEASE_DENYLIST_JSON }}
         run: |
           set -euo pipefail
+          TAG_OBJECT=$(git rev-parse "$TAG_NAME^{tag}") || {
+            echo "Release ref must be an annotated tag: $TAG_NAME" >&2
+            exit 1
+          }
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT" \
+            | jq -e '.verification.verified == true' >/dev/null || {
+              echo "Release tag must have a GitHub-verified signature: $TAG_NAME" >&2
+              exit 1
+            }
           POLICY_PATH="$RUNNER_TEMP/release-denylist.json"
           trap 'rm -f -- "$POLICY_PATH"' EXIT
           if [ -z "$RELEASE_DENYLIST_JSON" ]; then
@@ -57,6 +68,11 @@ jobs:
             echo "Release tag must be strict stable semver (vMAJOR.MINOR.PATCH): $TAG_NAME" >&2
             exit 1
           fi
+          RELEASE_BODY_PATH="docs/releases/$TAG_NAME.md"
+          [ -f "$RELEASE_BODY_PATH" ] && [ -s "$RELEASE_BODY_PATH" ] || {
+            echo "Missing or empty checked-in release body: $RELEASE_BODY_PATH" >&2
+            exit 1
+          }
           TAG_VERSION="${TAG_NAME#v}"
           PACKAGE_VERSION=$(node -p "require('./cli/package.json').version")
           LOCK_VERSION=$(node -p "require('./cli/package-lock.json').version")
@@ -73,12 +89,47 @@ jobs:
           rm -f -- "$POLICY_PATH"
           trap - EXIT
 
+      - name: Generate dependency CycloneDX JSON SBOMs
+        run: |
+          set -euo pipefail
+          test -f requirements.txt
+          test -f cli/package-lock.json
+          test -f dashboard/package-lock.json
+          mkdir dependency-sboms
+          python -m pip install cyclonedx-bom==7.3.1
+          cyclonedx-py requirements requirements.txt \
+            --output-format JSON \
+            --output-file dependency-sboms/python.cdx.json
+          (
+            cd cli
+            npx --yes @cyclonedx/cyclonedx-npm@6.0.1 \
+              --package-lock-only \
+              --output-file ../dependency-sboms/cli.cdx.json
+          )
+          (
+            cd dashboard
+            npx --yes @cyclonedx/cyclonedx-npm@6.0.1 \
+              --package-lock-only \
+              --output-file ../dependency-sboms/dashboard.cdx.json
+          )
+
+      - name: Upload dependency SBOMs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dependency-sboms-${{ github.run_attempt }}
+          path: dependency-sboms/*.cdx.json
+          retention-days: 90
+          if-no-files-found: error
+          overwrite: false
+
   docker-publish:
     needs: preflight
     uses: ./.github/workflows/publish-docker.yml
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
 
   npm-publish:
     needs: docker-publish
@@ -95,35 +146,66 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
-      - name: Generate release notes
-        id: notes
+      - name: Download dependency SBOMs
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: dependency-sboms-${{ github.run_attempt }}
+          path: release-assets
+
+      - name: Download image SBOMs
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: sbom-*-${{ github.run_attempt }}
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify exact release SBOM set
         run: |
           set -euo pipefail
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
-          if [ -z "$PREV_TAG" ]; then
-            echo "body=Initial release" >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo 'body<<RELEASE_EOF'
-              echo "## Changes since $PREV_TAG"
-              echo
-              git log "$PREV_TAG"..HEAD --pretty=format:"- %s" --no-merges
-              echo
-              echo 'RELEASE_EOF'
-            } >> "$GITHUB_OUTPUT"
-          fi
+          EXPECTED_CYCLONEDX=3
+          EXPECTED_SPDX=4
+          EXPECTED_FILES=(
+            release-assets/python.cdx.json
+            release-assets/cli.cdx.json
+            release-assets/dashboard.cdx.json
+            release-assets/aelira-core-api-amd64.spdx.json
+            release-assets/aelira-core-api-arm64.spdx.json
+            release-assets/aelira-core-dashboard-amd64.spdx.json
+            release-assets/aelira-core-dashboard-arm64.spdx.json
+          )
+          mapfile -t CYCLONEDX < <(find release-assets -maxdepth 1 -type f -name '*.cdx.json' -print | sort)
+          mapfile -t SPDX < <(find release-assets -maxdepth 1 -type f -name '*.spdx.json' -print | sort)
+          mapfile -t ALL_ASSETS < <(find release-assets -maxdepth 1 -type f -print | sort)
+          [ "${#CYCLONEDX[@]}" -eq "$EXPECTED_CYCLONEDX" ]
+          [ "${#SPDX[@]}" -eq "$EXPECTED_SPDX" ]
+          [ "${#ALL_ASSETS[@]}" -eq 7 ]
+          for asset in "${EXPECTED_FILES[@]}"; do
+            [ -f "$asset" ] || {
+              echo "Missing expected release SBOM: $asset" >&2
+              exit 1
+            }
+          done
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
-          RELEASE_BODY: ${{ steps.notes.outputs.body }}
         run: |
+          set -euo pipefail
+          RELEASE_BODY_PATH="docs/releases/$TAG_NAME.md"
+          [ -f "$RELEASE_BODY_PATH" ] && [ -s "$RELEASE_BODY_PATH" ] || {
+            echo "Missing or empty checked-in release body: $RELEASE_BODY_PATH" >&2
+            exit 1
+          }
+          mapfile -t CYCLONEDX < <(find release-assets -maxdepth 1 -type f -name '*.cdx.json' -print | sort)
+          mapfile -t SPDX < <(find release-assets -maxdepth 1 -type f -name '*.spdx.json' -print | sort)
           gh release create "$TAG_NAME" \
+            "${CYCLONEDX[@]}" \
+            "${SPDX[@]}" \
             --verify-tag \
             --title "$TAG_NAME" \
-            --notes "$RELEASE_BODY"
+            --notes-file "$RELEASE_BODY_PATH"

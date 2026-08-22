@@ -8,22 +8,31 @@ Provides endpoints for:
 - Quota status tracking
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import List, Optional, Tuple
 from datetime import datetime, timedelta
 import asyncio
+from dataclasses import dataclass
+import hashlib
 import logging
 import os
+from urllib.parse import urlencode
 
 from fastapi.responses import JSONResponse
 
 from ..db.database import get_db_dependency
 from ..db.models import APIKey, User, Department
-from ..auth.dependencies import get_required_api_key, resolve_access_token
-from ..auth.auth_service import AuthService, RateLimiter
+from ..auth.dependencies import (
+    AuthenticatedPrincipal,
+    get_key_management_principal,
+    get_required_api_key,
+    resolve_access_token,
+)
+from ..auth.auth_service import APIKeyQuotaError, AuthService, RateLimiter
+from ..auth.redis_rate_limiter import RateLimitStorageUnavailable
 from ..auth.session_service import get_session_service
 from ..auth.jwt_service import get_jwt_service
 from ..auth.lti_authorization import validate_lti_staff_token_payload
@@ -47,9 +56,11 @@ security = HTTPBearer(auto_error=False)
 
 
 class CreateAPIKeyRequest(BaseModel):
-    name: str
-    rate_limit_per_hour: int = 100
-    expires_days: Optional[int] = None
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=100)
+    rate_limit_per_hour: int = Field(default=100, ge=1, le=10000)
+    expires_days: Optional[int] = Field(default=None, ge=1, le=3650)
 
 
 class APIKeyResponse(BaseModel):
@@ -104,11 +115,39 @@ class QuotaStatusResponse(BaseModel):
 # ==================== Helper Functions ====================
 
 
+@dataclass(frozen=True)
+class SessionAccessIdentity:
+    """Non-persistent API-key-shaped identity for a validated normal session."""
+
+    id: str
+    user_id: str
+    department_id: str
+    rate_limit_per_hour: int = 10000
+    auth_method: str = "session"
+
+    @classmethod
+    def from_validated_session(
+        cls, *, user_id: str, department_id: str, payload: dict
+    ) -> "SessionAccessIdentity":
+        """Derive a stable, DB-column-bounded id from trusted session context."""
+        session_reference = payload.get("jti")
+        if not isinstance(session_reference, str) or not session_reference:
+            session_reference = user_id
+        digest = hashlib.sha256(
+            f"{session_reference}:{user_id}:{department_id}".encode("utf-8")
+        ).hexdigest()[:28]
+        return cls(
+            id=f"session_{digest}",
+            user_id=str(user_id),
+            department_id=str(department_id),
+        )
+
+
 def get_current_api_key(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db_dependency),
-) -> APIKey:
+) -> APIKey | SessionAccessIdentity:
     """
     Dependency to get and validate current API key.
 
@@ -116,7 +155,9 @@ def get_current_api_key(
     1. Bearer token: Authorization: Bearer <api_key> (for CLI/programmatic access)
     2. Session cookie: aelira_access cookie (for dashboard users after magic link login)
 
-    For session-based auth, looks up the user's API key from the database.
+    For normal session-based auth, returns a non-persistent identity derived only
+    from the validated user and session payload. It never selects a database API
+    key, so cookie authentication cannot inherit stale API-key tenant scope.
 
     Usage:
         @router.get("/protected")
@@ -154,6 +195,7 @@ def get_current_api_key(
     if access_token:
         session_service = get_session_service()
         result = session_service.validate_session(db, access_token)
+        is_normal_session = result is not None
 
         if result is None:
             # LTI-launch tokens arrive as this same cookie (lti_routes sets
@@ -171,44 +213,56 @@ def get_current_api_key(
         if result:
             user, payload = result
 
-            # Look up user's default API key
+            if is_normal_session:
+                return SessionAccessIdentity.from_validated_session(
+                    user_id=str(user.id),
+                    department_id=str(user.department_id),
+                    payload=payload,
+                )
+
+            # LTI cookie compatibility still requires an explicit API key in
+            # the validated user's current department. A user without a usable
+            # current department cannot safely resolve a tenant-bound key.
+            current_user_id = str(user.id)
+            current_department_id = getattr(user, "department_id", None)
+            if not isinstance(current_department_id, str) or not current_department_id:
+                logger.info(
+                    "LTI cookie user %s has no current department", current_user_id
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "No active API key. Create one in Settings for "
+                        "programmatic access."
+                    ),
+                )
+
             api_key = (
                 db.query(APIKey)
                 .filter(
-                    APIKey.user_id == user.id,
+                    APIKey.user_id == current_user_id,
+                    APIKey.department_id == current_department_id,
                     APIKey.is_active == True,  # noqa: E712 - SQLAlchemy comparison
                 )
-                .order_by(APIKey.created_at)  # Get the first (default) key
+                .order_by(APIKey.created_at)
                 .first()
             )
 
-            if api_key:
-                # Apply rate limiting for session users too
-                allowed, rate_headers = RateLimiter.check_rate_limit(
-                    api_key.id, api_key.rate_limit_per_hour
-                )
-
-                if not allowed:
-                    raise HTTPException(
-                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                        detail=f"Rate limit exceeded. Limit: {api_key.rate_limit_per_hour} requests/hour",
-                        headers=rate_headers,
-                    )
-
+            if (
+                api_key is not None
+                and getattr(api_key, "user_id", None) == current_user_id
+                and getattr(api_key, "department_id", None) == current_department_id
+            ):
                 return api_key
 
-            # User authenticated but no API key found (shouldn't happen normally)
-            logger.warning(f"Session user {user.id} has no API key - creating one")
-            # Create API key for the user
-            api_key, _ = AuthService.create_api_key(
-                db=db,
-                user_id=user.id,
-                department_id=user.department_id,
-                name="Default API Key",
-                rate_limit_per_hour=100,
-                expires_days=None,
+            logger.info("LTI cookie user %s has no active API key", current_user_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "No active API key. Create one in Settings for "
+                    "programmatic access."
+                ),
             )
-            return api_key
 
     # No valid authentication found
     raise HTTPException(
@@ -224,70 +278,106 @@ def get_current_api_key(
 @router.post("/keys", response_model=CreateAPIKeyResponse)
 def create_api_key(
     request: CreateAPIKeyRequest,
-    current_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_key_management_principal),
     db: Session = Depends(get_db_dependency),
 ):
     """
     Create a new API key
 
-    Requires a valid API key. New keys inherit the user_id and department_id
-    from the authenticating key.
+    Requires an authenticated dashboard session or API key. New keys inherit
+    the trusted user_id and department_id from that principal.
 
     Returns the full API key - **store it safely, it will only be shown once!**
     """
-    # Get user/department from authenticated API key
-    user_id = current_key.user_id
-    department_id = current_key.department_id
+    user_id = principal.user_id
+    department_id = principal.department_id
 
-    # Create API key
-    api_key, full_key = AuthService.create_api_key(
-        db=db,
-        user_id=user_id,
-        department_id=department_id,
-        name=request.name,
-        rate_limit_per_hour=request.rate_limit_per_hour,
-        expires_days=request.expires_days,
-    )
+    require_distributed = get_settings().env in {"production", "staging"}
+    try:
+        allowed, rate_headers = RateLimiter.check_rate_limit(
+            f"api-key-create:{user_id}",
+            5,
+            require_distributed=require_distributed,
+        )
+    except RateLimitStorageUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="API key creation rate limit is unavailable",
+        ) from None
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="API key creation rate limit exceeded (5/hour)",
+            headers=rate_headers,
+        )
 
-    # Audit log API key creation
-    audit = get_audit_service(db)
-    audit.log_api_key_create(
-        user_id=user_id,
-        department_id=department_id,
-        api_key_id=api_key.id,
-        key_name=request.name,
-    )
+    try:
+        api_key, full_key = AuthService.create_api_key(
+            db=db,
+            user_id=user_id,
+            department_id=department_id,
+            name=request.name,
+            rate_limit_per_hour=request.rate_limit_per_hour,
+            expires_days=request.expires_days,
+            commit=False,
+        )
+        audit = get_audit_service(db)
+        audit.log_api_key_create(
+            user_id=user_id,
+            department_id=department_id,
+            api_key_id=api_key.id,
+            key_name=request.name,
+            commit=False,
+        )
 
-    return {
-        "api_key": APIKeyResponse(
-            id=api_key.id,
-            name=api_key.name,
-            key_prefix=api_key.key_prefix,
-            rate_limit_per_hour=api_key.rate_limit_per_hour,
-            created_at=api_key.created_at,
-            last_used_at=api_key.last_used_at,
-            expires_at=api_key.expires_at,
-            is_active=api_key.is_active,
-        ),
-        "full_key": full_key,
-        "warning": "Store this key safely! It will only be shown once.",
-    }
+        response = {
+            "api_key": APIKeyResponse(
+                id=api_key.id,
+                name=api_key.name,
+                key_prefix=api_key.key_prefix,
+                rate_limit_per_hour=api_key.rate_limit_per_hour,
+                created_at=api_key.created_at,
+                last_used_at=api_key.last_used_at,
+                expires_at=api_key.expires_at,
+                is_active=api_key.is_active,
+            ),
+            "full_key": full_key,
+            "warning": "Store this key safely! It will only be shown once.",
+        }
+        db.commit()
+    except APIKeyQuotaError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except Exception:
+        db.rollback()
+        logger.exception("API key creation transaction failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="API key creation failed",
+        )
+
+    return response
 
 
 @router.get("/keys", response_model=List[APIKeyResponse])
 def list_api_keys(
-    current_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_key_management_principal),
     db: Session = Depends(get_db_dependency),
 ):
     """
     List all API keys for current user
 
-    Requires a valid API key. Returns all keys belonging to the same user.
+    Requires an authenticated dashboard session or API key. Returns keys
+    belonging to the same user in the principal's current department.
     """
-    # Get user_id from authenticated API key
-    user_id = current_key.user_id
-
-    keys = AuthService.list_api_keys(db, user_id)
+    keys = AuthService.list_api_keys(
+        db,
+        principal.user_id,
+        principal.department_id,
+    )
 
     return [
         APIKeyResponse(
@@ -306,35 +396,58 @@ def list_api_keys(
 
 @router.delete("/keys/{key_id}")
 def revoke_api_key(
-    key_id: str,
-    current_key: APIKey = Depends(get_current_api_key),
+    key_id: str = Path(min_length=1, max_length=128),
+    principal: AuthenticatedPrincipal = Depends(get_key_management_principal),
     db: Session = Depends(get_db_dependency),
 ):
     """
     Revoke (deactivate) an API key
 
-    Requires a valid API key. Can only revoke keys belonging to the same user.
+    Requires an authenticated dashboard session or API key. Can only revoke
+    keys belonging to the same user in the principal's current department.
     """
-    # Get user_id from authenticated API key
-    user_id = current_key.user_id
-
-    success = AuthService.revoke_api_key(db, key_id, user_id)
-
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API key not found or unauthorized",
+    try:
+        success = AuthService.revoke_api_key(
+            db,
+            key_id,
+            principal.user_id,
+            principal.department_id,
+            commit=False,
         )
 
-    # Audit log API key revocation
-    audit = get_audit_service(db)
-    audit.log_api_key_revoke(
-        user_id=user_id,
-        department_id=current_key.department_id,
-        api_key_id=key_id,
-    )
+        if not success:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="API key not found or unauthorized",
+            )
 
-    return {"success": True, "message": f"API key {key_id} revoked"}
+        audit = get_audit_service(db)
+        audit.log_api_key_revoke(
+            user_id=principal.user_id,
+            department_id=principal.department_id,
+            api_key_id=key_id,
+            commit=False,
+        )
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception("API key revocation transaction failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="API key revocation failed",
+        )
+
+    revoked_current_key = bool(
+        principal.api_key is not None and str(principal.api_key.id) == key_id
+    )
+    return {
+        "success": True,
+        "message": "API key revoked",
+        "revoked_current_key": revoked_current_key,
+    }
 
 
 @router.get("/validate")
@@ -394,12 +507,20 @@ def validate_api_key_dashboard(
 
 
 @router.get("/keys/validate")
-def validate_api_key(api_key: APIKey = Depends(get_current_api_key)):
+def validate_api_key(
+    api_key: APIKey | SessionAccessIdentity = Depends(get_current_api_key),
+):
     """
     Validate current API key (for testing authentication)
 
     This endpoint requires authentication and returns the API key details.
     """
+    if isinstance(api_key, SessionAccessIdentity):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A real API key is required for this endpoint",
+        )
+
     return {
         "valid": True,
         "api_key": {
@@ -646,6 +767,7 @@ class MagicLinkRequestModel(BaseModel):
     # (open-signup mode or first-run bootstrap), optional otherwise
     name: Optional[str] = Field(None, min_length=2, max_length=100)
     institution: Optional[str] = Field(None, min_length=2, max_length=200)
+    next: Optional[str] = Field(None, max_length=2048)
 
 
 class MagicLinkVerifyRequest(BaseModel):
@@ -807,10 +929,18 @@ async def request_magic_link(
         signup_institution=request_body.institution,
     )
 
-    # Build magic link URL
-    magic_link_url = (
-        f"{settings.magic_link_base_url}/auth/verify?email={email}&token={token}"
-    )
+    # Build a link with only a same-origin path continuation. Keep this policy
+    # aligned with dashboard/src/utils/safeNext.ts.
+    next_path = request_body.next
+    if (
+        not next_path
+        or not next_path.startswith("/")
+        or next_path.startswith("//")
+        or next_path.startswith("/\\")
+    ):
+        next_path = "/dashboard"
+    query = urlencode({"email": email, "token": token, "next": next_path})
+    magic_link_url = f"{settings.magic_link_base_url}/auth/verify?{query}"
 
     # Send email (non-blocking)
     try:
@@ -1044,6 +1174,7 @@ async def validate_session(
 
     return {
         "valid": True,
+        "auth_method": resolved.principal.auth_method,
         "user": {
             "id": user.id,
             "email": user.email,

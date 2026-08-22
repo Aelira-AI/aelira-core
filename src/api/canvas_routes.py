@@ -12,8 +12,8 @@ import logging
 import os
 from urllib.parse import quote
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -23,9 +23,7 @@ from ..db.models import (
     CloudOAuthCredentials,
     CloudProvider,
     CloudFile,
-    CloudJobQueue,
     CloudJobType,
-    CloudJobStatus,
 )
 from ..integrations.canvas import (
     CanvasOAuthService,
@@ -43,6 +41,14 @@ from ..auth.canvas_permissions import (
 )
 from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ..middleware.quota import require_feature
+from ..ai.lms_remediation_client import LMSRemediationClient
+from ..jobs.remediation_job import sanitize_execution_context
+from ..services.job_enqueue_service import enqueue_cloud_job
+from ..services.canvas_identity_service import (
+    add_or_get_canvas_cloud_file,
+    invalidate_canvas_derived_state,
+    load_canvas_file,
+)
 from ..utils.security import (
     require_canvas_oauth_allowed_origin,
     require_persisted_canvas_origin,
@@ -83,8 +89,13 @@ class CanvasRemediateRequest(BaseModel):
     file_id: str = Field(..., description="Canvas file ID")
     course_id: str = Field(..., description="Canvas course ID")
     department_id: Optional[str] = None
-    upload_back: bool = Field(True, description="Upload remediated file back to Canvas")
-    use_ai: bool = Field(True, description="Use AI for fix generation")
+    upload_back: bool = Field(
+        False, description="Automatic Canvas writeback is not available"
+    )
+    use_ai: bool = Field(False, description="Use policy-authorized AI for fixes")
+    generate_alt_text: bool = Field(
+        False, description="Use policy-authorized vision for image alt text"
+    )
 
 
 class CanvasRemediateResponse(BaseModel):
@@ -124,7 +135,7 @@ async def connect_canvas(
             request.canvas_instance_url
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="invalid_canvas_origin") from exc
 
     # Check feature access - Canvas integration requires lms_integration feature
     await require_feature(
@@ -539,110 +550,9 @@ async def list_canvas_course_folders(
 # =============================================================================
 
 
-async def _canvas_scan_then_remediate_task(
-    scan_job_id: str, remediation_job_id: str
-) -> None:
-    """Run the queued scan, then the queued remediation, in that order.
-
-    Job rows are records, not work: nothing polls the queue, so whoever
-    creates a row has to run it. The scan runs first because remediation
-    reads the scan's stored issues, and a failed scan fails its remediation
-    rather than leaving it pending forever.
-    """
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.cloud_scan_job import handle_scan_job
-    from ..jobs.remediation_job import handle_remediation_job
-
-    token_manager = OAuthTokenManager()
-
-    with _get_db_ctx() as db:
-        scan_job = (
-            db.query(CloudJobQueue).filter(CloudJobQueue.id == scan_job_id).first()
-        )
-        remediation_job = (
-            db.query(CloudJobQueue)
-            .filter(CloudJobQueue.id == remediation_job_id)
-            .first()
-        )
-        if not scan_job or not remediation_job:
-            logger.error(
-                f"Canvas remediation jobs not found: scan={scan_job_id}, "
-                f"remediate={remediation_job_id}"
-            )
-            return
-
-        try:
-            scan_job.status = CloudJobStatus.PROCESSING.value
-            scan_job.started_at = datetime.now(timezone.utc)
-            scan_job.progress = 10
-            scan_job.progress_message = "Downloading file from Canvas..."
-            db.commit()
-
-            scan_result = await handle_scan_job(scan_job, db, token_manager)
-
-            scan_job.status = CloudJobStatus.COMPLETED.value
-            scan_job.progress = 100
-            scan_job.progress_message = "Scan complete"
-            scan_job.result_data = scan_result
-            scan_job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-        except Exception as e:
-            logger.error(f"Canvas scan failed: job={scan_job_id}, error={e}")
-            now = datetime.now(timezone.utc)
-            scan_job.status = CloudJobStatus.FAILED.value
-            scan_job.progress = 100
-            scan_job.progress_message = f"Scan failed: {e}"
-            scan_job.error_message = str(e)
-            scan_job.completed_at = now
-            remediation_job.status = CloudJobStatus.FAILED.value
-            remediation_job.progress = 100
-            remediation_job.progress_message = "Not run: the scan it depends on failed"
-            remediation_job.error_message = str(e)
-            remediation_job.completed_at = now
-            db.commit()
-            return
-
-        try:
-            # handle_remediation_job reads the scan id off the remediation
-            # job's own result_data, so the completed scan's id goes there.
-            remediation_job.status = CloudJobStatus.PROCESSING.value
-            remediation_job.started_at = datetime.now(timezone.utc)
-            remediation_job.progress = 10
-            remediation_job.progress_message = "Remediating..."
-            remediation_job.result_data = {
-                "scan_id": (scan_result or {}).get("scan_id")
-            }
-            db.commit()
-
-            result = await handle_remediation_job(remediation_job, db, token_manager)
-
-            remediation_job.status = CloudJobStatus.COMPLETED.value
-            remediation_job.progress = 100
-            remediation_job.progress_message = "Remediation complete"
-            remediation_job.result_data = result
-            remediation_job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(
-                f"Canvas remediation complete: job={remediation_job_id}, "
-                f"fixed={result.get('fixed_count')}"
-            )
-        except Exception as e:
-            logger.error(
-                f"Canvas remediation failed: job={remediation_job_id}, error={e}"
-            )
-            remediation_job.status = CloudJobStatus.FAILED.value
-            remediation_job.progress = 100
-            remediation_job.progress_message = f"Remediation failed: {e}"
-            remediation_job.error_message = str(e)
-            remediation_job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-
 @router.post("/remediate")
 async def remediate_canvas_file(
     request: CanvasRemediateRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasRemediateResponse:
@@ -687,25 +597,62 @@ async def remediate_canvas_file(
         _, api_client = await _get_canvas_client(dept_id, db)
         try:
             canvas_files = await api_client.list_course_files(request.course_id)
-            if not any(
-                str(file_info.id) == str(request.file_id) for file_info in canvas_files
-            ):
+            file_info = next(
+                (item for item in canvas_files if str(item.id) == str(request.file_id)),
+                None,
+            )
+            if file_info is None:
                 raise HTTPException(status_code=404, detail="Canvas file not found")
         finally:
             await api_client.close()
 
-        # Get or create CloudFile record
-        cloud_file = (
-            db.query(CloudFile)
-            .filter(
-                CloudFile.provider == CloudProvider.CANVAS.value,
-                CloudFile.provider_file_id == request.file_id,
-                CloudFile.provider_parent_id == request.course_id,
-                CloudFile.department_id == dept_id,
-            )
-            .first()
+        provider_modified_at = getattr(file_info, "updated_at", None)
+        provider_version = (
+            provider_modified_at.isoformat() if provider_modified_at else None
         )
-        if not cloud_file:
+
+        if request.upload_back is True:
+            raise HTTPException(
+                status_code=400, detail="automatic_canvas_writeback_unsupported"
+            )
+
+        # Check policy only after course-file authorization to avoid exposing
+        # policy state for resources the caller cannot see.
+        policy_provider = None
+        ai_requested = request.use_ai is True
+        alt_text_requested = getattr(request, "generate_alt_text", False) is True
+        for purpose, requested in (
+            ("remediation", ai_requested),
+            ("alt_text", alt_text_requested),
+        ):
+            if not requested:
+                continue
+            policy_client = LMSRemediationClient.bind_if_allowed(
+                department_id=dept_id,
+                purpose=purpose,
+                actor_id=principal.user_id,
+            )
+            if policy_client is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"LMS AI {purpose} is not permitted",
+                )
+            policy_provider = policy_client.provider
+
+        # Get or create CloudFile record
+        cloud_file = load_canvas_file(
+            db,
+            department_id=dept_id,
+            course_id=request.course_id,
+            provider_file_id=request.file_id,
+        )
+        if cloud_file:
+            if cloud_file.provider_version != provider_version:
+                invalidate_canvas_derived_state(cloud_file)
+            cloud_file.provider_modified_at = provider_modified_at
+            cloud_file.provider_version = provider_version
+            cloud_file.content_source = "file"
+        else:
             cloud_file = CloudFile(
                 id=str(uuid.uuid4()),
                 department_id=dept_id,
@@ -716,54 +663,111 @@ async def remediate_canvas_file(
                 file_type="unknown",
                 mime_type="unknown",
                 file_size_bytes=0,
+                provider_modified_at=provider_modified_at,
+                provider_version=provider_version,
                 provider_parent_id=request.course_id,
+                content_source="file",
             )
-            db.add(cloud_file)
+            cloud_file = add_or_get_canvas_cloud_file(
+                db,
+                cloud_file,
+                lambda: load_canvas_file(
+                    db,
+                    department_id=dept_id,
+                    course_id=request.course_id,
+                    provider_file_id=request.file_id,
+                ),
+            )
 
-        # Create scan job
-        scan_job_id = str(uuid.uuid4())
-        scan_job = CloudJobQueue(
-            id=scan_job_id,
+        db.flush()
+        scan_payload = {
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.CANVAS.value,
+            "provider_file_id": str(request.file_id),
+            "course_id": str(request.course_id),
+        }
+        scan_job = enqueue_cloud_job(
+            db,
             department_id=dept_id,
             job_type=CloudJobType.SCAN.value,
+            payload=scan_payload,
+            dedupe_key=(
+                f"scan:canvas:{request.course_id}:file:{request.file_id}:"
+                f"{provider_version or 'current'}"
+            ),
             provider=CloudProvider.CANVAS.value,
-            status=CloudJobStatus.PENDING.value,
             priority=1,
             cloud_file_id=cloud_file.id,
             credential_id=credential.id,
+            execution_context=sanitize_execution_context(
+                {
+                    "originating_route": "/canvas/remediate",
+                    "resource_id": str(request.file_id),
+                    "course_id": str(request.course_id),
+                }
+            ),
         )
-        db.add(scan_job)
 
-        # Create remediation job (will execute after scan completes)
-        remediation_job_id = str(uuid.uuid4())
-        remediation_job = CloudJobQueue(
-            id=remediation_job_id,
+        remediation_payload = {
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.CANVAS.value,
+            "provider_file_id": str(request.file_id),
+            "course_id": str(request.course_id),
+            "scan_job_id": scan_job.id,
+            "ai_requested": ai_requested,
+            "alt_text_requested": alt_text_requested,
+            "upload_back": False,
+        }
+        remediation_job = enqueue_cloud_job(
+            db,
             department_id=dept_id,
             job_type=CloudJobType.REMEDIATE.value,
+            payload=remediation_payload,
+            dedupe_key=(
+                f"remediate:canvas:{request.course_id}:file:{request.file_id}:"
+                f"version={provider_version or 'current'}:"
+                f"ai={str(ai_requested).lower()}:"
+                f"alt={str(alt_text_requested).lower()}"
+            ),
+            depends_on_job_id=scan_job.id,
             provider=CloudProvider.CANVAS.value,
-            status=CloudJobStatus.PENDING.value,
             priority=2,
             cloud_file_id=cloud_file.id,
             credential_id=credential.id,
+            execution_context=sanitize_execution_context(
+                {
+                    "ai_requested": ai_requested,
+                    "alt_text_requested": alt_text_requested,
+                    "requested_purposes": [
+                        purpose
+                        for purpose, requested in (
+                            ("remediation", ai_requested),
+                            ("alt_text", alt_text_requested),
+                        )
+                        if requested
+                    ],
+                    "policy_version": "1",
+                    "policy_provider": policy_provider,
+                    "originating_route": "/canvas/remediate",
+                    "resource_id": str(request.file_id),
+                    "course_id": str(request.course_id),
+                }
+            ),
         )
-        db.add(remediation_job)
 
         db.commit()
 
-        # The queue has no processor: fire the work that satisfies the rows
-        # we just wrote, or this endpoint reports success for nothing.
-        background_tasks.add_task(
-            _canvas_scan_then_remediate_task, scan_job_id, remediation_job_id
-        )
-
         logger.info(
-            f"Started Canvas remediation for file {request.file_id}: scan={scan_job_id}, remediate={remediation_job_id}"
+            f"Queued Canvas remediation for file {request.file_id}: "
+            f"scan={scan_job.id}, remediate={remediation_job.id}"
         )
 
         return CanvasRemediateResponse(
             success=True,
             scan_id=None,  # Will be created by scan job
-            job_id=remediation_job_id,
+            job_id=remediation_job.id,
             message=(
                 "Remediation started. The file is downloaded, scanned, and "
                 "remediated; the remediated copy is not written back to "
@@ -773,11 +777,14 @@ async def remediate_canvas_file(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to queue Canvas remediation: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Failed to queue Canvas remediation",
+            extra={"error_type": type(exc).__name__, "department_id": dept_id},
+        )
         return CanvasRemediateResponse(
             success=False,
-            message=f"Failed to queue remediation: {str(e)}",
+            message="Failed to queue remediation (queue_unavailable)",
         )
 
 
@@ -842,8 +849,14 @@ async def _get_canvas_client(
             db.commit()
 
             logger.info(f"Refreshed Canvas token for department {department_id}")
-        except Exception as e:
-            logger.error(f"Failed to refresh Canvas token: {e}")
+        except Exception as exc:
+            logger.error(
+                "Failed to refresh Canvas token",
+                extra={
+                    "department_id": department_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
             raise HTTPException(
                 status_code=409,
                 detail="Canvas token expired and refresh failed. Please reconnect your Canvas account.",

@@ -166,6 +166,7 @@ def test_v2_lti_staff_token_accepted_as_bearer(
             "lti_staff_role": "Instructor",
             "lti_roles": ["Instructor"],
             "lti_account_wide": False,
+            "lti_platform": "canvas",
             "lti_authz_version": 2,
         },
     )
@@ -235,6 +236,7 @@ def test_v2_lti_staff_token_accepted_via_cookie(
             "lti_staff_role": "Instructor",
             "lti_roles": ["Instructor"],
             "lti_account_wide": False,
+            "lti_platform": "canvas",
             "lti_authz_version": 2,
         },
     )

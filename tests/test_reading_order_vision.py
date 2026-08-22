@@ -175,7 +175,7 @@ class TestVisionFixWithMockedAI:
 
     def test_fix_success_mocked(self):
         """Full pipeline with mocked AI returning correct order."""
-        strategy = VisionStrategy()
+        strategy = VisionStrategy(allow_legacy_provider_manager=True)
 
         # Create a test PDF with content
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
@@ -212,7 +212,7 @@ class TestVisionFixWithMockedAI:
 
     def test_fix_ai_failure(self):
         """AI failure should return unsuccessful result."""
-        strategy = VisionStrategy()
+        strategy = VisionStrategy(allow_legacy_provider_manager=True)
 
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
             import fitz

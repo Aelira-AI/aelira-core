@@ -4,12 +4,11 @@
  * (from GET /canvas/courses/{id}/files) into ONE list — files are course
  * content too, not a separate class of thing.
  *
- * Keyed by provider_file_id (every CloudFile row carries the Canvas item's
- * native id — page id, assignment id, file id, ... — regardless of type),
- * with the DB row winning whenever both sources describe the same item: it
- * carries scan state the live Canvas API doesn't know about. A live file
- * with no matching DB row (never scanned yet) is included as an
- * `unscanned` entry so it still shows up in the unified list.
+ * Keyed by provider + course/parent + content source + native id, with the
+ * DB row winning whenever both sources describe the same item: it carries
+ * scan state the live Canvas API doesn't know about. A live file with no
+ * matching DB row (never scanned yet) is included as an `unscanned` entry
+ * so it still shows up in the unified list.
  *
  * Pure function — no I/O, no React. Both callers (CanvasContentPage,
  * LTICourseView) fetch the two sources themselves and pass them in.
@@ -18,12 +17,15 @@
 export interface StatusContentItem {
   cloud_file_id: string;
   provider_file_id: string | null;
+  provider?: string | null;
+  provider_parent_id?: string | null;
   content_type: string | null;
   title: string;
   compliance_score: number | null;
   issue_count: number;
   writeback_status: string | null;
   has_remediated_version: boolean;
+  remediation_origin: 'automatic' | 'manual' | null;
   last_scanned_at: string | null;
   content_updated_at?: string | null;
   /** The scan whose results are current for this item — needed to call
@@ -44,7 +46,11 @@ export interface LiveCanvasFile {
 export type ScanStatus = 'scanned' | 'unscanned';
 
 export interface MergedContentItem {
-  /** Canvas's native id for this item — the merge key. */
+  /** Stable composite identity used for dedupe and UI state. */
+  identity_key: string;
+  provider: string;
+  provider_parent_id: string;
+  /** Canvas's native id for this item. */
   provider_file_id: string;
   /** null when the item has never been scanned (live-only, no DB row). */
   cloud_file_id: string | null;
@@ -55,22 +61,48 @@ export interface MergedContentItem {
   issue_count: number;
   writeback_status: string | null;
   has_remediated_version: boolean;
+  remediation_origin: 'automatic' | 'manual' | null;
   last_scanned_at: string | null;
   content_updated_at: string | null;
   scan_id: string | null;
   scan_status: ScanStatus;
 }
 
-function fromStatusItem(item: StatusContentItem): MergedContentItem {
+export interface CourseContentIdentityContext {
+  provider: string;
+  parentId: string;
+}
+
+function contentIdentity(
+  provider: string,
+  parentId: string,
+  contentSource: string,
+  nativeId: string
+): string {
+  return JSON.stringify([provider, parentId, contentSource, nativeId]);
+}
+
+function fromStatusItem(
+  item: StatusContentItem,
+  context: CourseContentIdentityContext
+): MergedContentItem {
+  const provider = item.provider ?? context.provider;
+  const providerParentId = item.provider_parent_id ?? context.parentId;
+  const contentType = item.content_type ?? 'file';
+  const providerFileId = item.provider_file_id ?? item.cloud_file_id;
   return {
-    provider_file_id: item.provider_file_id ?? item.cloud_file_id,
+    identity_key: contentIdentity(provider, providerParentId, contentType, providerFileId),
+    provider,
+    provider_parent_id: providerParentId,
+    provider_file_id: providerFileId,
     cloud_file_id: item.cloud_file_id,
     title: item.title,
-    content_type: item.content_type ?? 'unknown',
+    content_type: contentType,
     compliance_score: item.compliance_score,
     issue_count: item.issue_count,
     writeback_status: item.writeback_status,
     has_remediated_version: item.has_remediated_version,
+    remediation_origin: item.remediation_origin,
     last_scanned_at: item.last_scanned_at,
     content_updated_at: item.content_updated_at ?? null,
     scan_id: item.scan_id ?? null,
@@ -78,8 +110,14 @@ function fromStatusItem(item: StatusContentItem): MergedContentItem {
   };
 }
 
-function fromLiveFile(file: LiveCanvasFile): MergedContentItem {
+function fromLiveFile(
+  file: LiveCanvasFile,
+  context: CourseContentIdentityContext
+): MergedContentItem {
   return {
+    identity_key: contentIdentity(context.provider, context.parentId, 'file', file.id),
+    provider: context.provider,
+    provider_parent_id: context.parentId,
     provider_file_id: file.id,
     cloud_file_id: null,
     title: file.display_name || file.filename,
@@ -88,6 +126,7 @@ function fromLiveFile(file: LiveCanvasFile): MergedContentItem {
     issue_count: 0,
     writeback_status: null,
     has_remediated_version: false,
+    remediation_origin: null,
     last_scanned_at: null,
     content_updated_at: null,
     scan_id: null,
@@ -97,13 +136,14 @@ function fromLiveFile(file: LiveCanvasFile): MergedContentItem {
 
 /**
  * Merge DB status items with the live files list into one deduped,
- * provider_file_id-keyed list. Degrades gracefully: if the live files call
+ * composite-identity-keyed list. Degrades gracefully: if the live files call
  * failed (pass `null` or `undefined`), the DB list is returned untouched —
  * never blank the view because Canvas's live API had a bad moment.
  */
 export function mergeCourseContent(
   statusItems: StatusContentItem[] | null | undefined,
-  liveFiles: LiveCanvasFile[] | null | undefined
+  liveFiles: LiveCanvasFile[] | null | undefined,
+  context: CourseContentIdentityContext = { provider: 'canvas', parentId: '' }
 ): MergedContentItem[] {
   const items = statusItems ?? [];
   const files = liveFiles ?? [];
@@ -111,14 +151,15 @@ export function mergeCourseContent(
   const merged = new Map<string, MergedContentItem>();
 
   for (const item of items) {
-    const converted = fromStatusItem(item);
-    merged.set(converted.provider_file_id, converted);
+    const converted = fromStatusItem(item, context);
+    merged.set(converted.identity_key, converted);
   }
 
   for (const file of files) {
     if (!file || !file.id) continue;
-    if (merged.has(file.id)) continue; // DB row wins — already has scan state
-    merged.set(file.id, fromLiveFile(file));
+    const converted = fromLiveFile(file, context);
+    if (merged.has(converted.identity_key)) continue; // DB row wins — already has scan state
+    merged.set(converted.identity_key, converted);
   }
 
   return Array.from(merged.values());
@@ -193,14 +234,9 @@ export interface ContentItemState {
 }
 
 /**
- * The visible per-item state: the actual reason a demo watching "pending
- * review" on every single row looks broken. HTML content is
- * auto-remediated at scan time (CanvasContentScanner.remediate_content_item,
- * called during the same scan that finds the issues); files only get
- * remediated via the explicit POST /education/remediate/{scan_id} action
- * — which is exactly why "Remediate All" correctly targets only files.
- * Nothing on screen said so; every remediated-but-not-yet-approved row
- * just read "pending review" regardless of how it got there.
+ * The visible per-item state. Remediation provenance is persisted by the
+ * backend; content type must never be used to guess how remediation happened.
+ * Legacy rows intentionally have a null origin and receive a generic label.
  *
  * Priority order (checked top to bottom — terminal writeback states win
  * over remediation state, which wins over the raw issue count):
@@ -210,10 +246,7 @@ export interface ContentItemState {
  *      variant ('written_back'/'writtenback')
  *   4. writeback_status === 'rejected'     -> rejected
  *   5. writeback_status === 'rolled_back'  -> rolled_back
- *   6. has_remediated_version              -> auto_remediated_pending_review
- *                                              (content_type !== 'file')
- *                                           -> remediated_pending_review
- *                                              (content_type === 'file')
+ *   6. has_remediated_version              -> origin-specific pending review
  *   7. issue_count === 0                   -> compliant
  *   8. otherwise                           -> needs_remediation
  *
@@ -225,15 +258,6 @@ export interface ContentItemState {
  * so without this check it would misread as still pending review —
  * exactly the kind of state-legibility gap this task exists to close.
  *
- * Auto vs manual remediation can't be read off has_remediated_version
- * alone — both remediation paths set the exact same boolean, with no
- * field recording which one ran. content_type is the discriminator: HTML
- * types (page/assignment/announcement/quiz/discussion) only ever reach
- * has_remediated_version via the scan-time auto-remediation step; 'file'
- * rows only ever reach it via the explicit per-item/batch remediate
- * action. If a future content type breaks that assumption (e.g. an
- * HTML-bearing type gets a manual remediation path too), this inference
- * needs revisiting.
  */
 export function contentItemState(item: MergedContentItem): ContentItemState {
   if (item.compliance_score === null) {
@@ -252,9 +276,19 @@ export function contentItemState(item: MergedContentItem): ContentItemState {
     return { key: 'rolled_back', label: 'Rolled back' };
   }
   if (item.has_remediated_version) {
-    return item.content_type === 'file'
-      ? { key: 'remediated_pending_review', label: 'Remediated · pending review' }
-      : { key: 'auto_remediated_pending_review', label: 'Auto-remediated · pending review' };
+    if (item.remediation_origin === 'automatic') {
+      return {
+        key: 'auto_remediated_pending_review',
+        label: 'Auto-remediated · pending review',
+      };
+    }
+    if (item.remediation_origin === 'manual') {
+      return {
+        key: 'remediated_pending_review',
+        label: 'Manually remediated · pending review',
+      };
+    }
+    return { key: 'remediated_pending_review', label: 'Remediated · pending review' };
   }
   if (item.issue_count === 0) {
     return { key: 'compliant', label: 'Compliant' };
@@ -279,8 +313,8 @@ export const CONTENT_ITEM_STATE_COLOR: Record<
 > = {
   unscanned: 'neutral',
   needs_remediation: 'warning',
-  auto_remediated_pending_review: 'warning',
-  remediated_pending_review: 'warning',
+  auto_remediated_pending_review: 'neutral',
+  remediated_pending_review: 'neutral',
   approved: 'accent',
   written_back: 'success',
   rejected: 'danger',

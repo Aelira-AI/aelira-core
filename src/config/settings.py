@@ -5,10 +5,11 @@ Uses environment variables with sensible defaults.
 """
 
 from pydantic_settings import BaseSettings
-from pydantic import validator, field_validator, model_validator
+from pydantic import Field, validator, field_validator, model_validator
 from typing import List
 import logging
 import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class Settings(BaseSettings):
 
     # API Configuration
     api_title: str = "Aelira ADA Compliance API"
-    api_version: str = "0.9.4"
+    api_version: str = "0.9.5"
     api_host: str = os.getenv("API_HOST", "0.0.0.0")
 
     # Where this deployment is reachable. Everything user-facing derives from
@@ -395,13 +396,137 @@ class Settings(BaseSettings):
     # Canvas OAuth network trust boundary. Staging/production validation below
     # makes this mandatory; route-level validation canonicalizes every entry.
     canvas_oauth_allowed_origins: str = os.getenv("CANVAS_OAUTH_ALLOWED_ORIGINS", "")
+    # Blackboard OAuth network trust boundary. Required for executable
+    # Blackboard OAuth in staging/production and checked again on every use.
+    blackboard_oauth_allowed_origins: str = os.getenv(
+        "BLACKBOARD_OAUTH_ALLOWED_ORIGINS", ""
+    )
 
     # File Upload Limits (in bytes)
     max_file_size_pdf: int = 50 * 1024 * 1024  # 50MB
     max_file_size_pptx: int = 50 * 1024 * 1024  # 50MB
     max_file_size_image: int = 10 * 1024 * 1024  # 10MB
+    max_image_pixels: int = 40_000_000
     max_file_size_video: int = 500 * 1024 * 1024  # 500MB
     max_file_size_code: int = 10 * 1024 * 1024  # 10MB
+
+    # Managed remediation artifact storage. All processes serving or cleaning
+    # artifacts must mount the same durable root.
+    remediation_artifact_dir: str = os.getenv(
+        "REMEDIATION_ARTIFACT_DIR", "/app/uploads/remediation-artifacts"
+    )
+    remediation_artifact_retention_days: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_RETENTION_DAYS", "30")
+        ),
+        ge=1,
+        le=3650,
+    )
+    remediation_artifact_approved_retention_days: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS", "30")
+        ),
+        ge=1,
+        le=3650,
+    )
+    remediation_artifact_written_retention_days: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_WRITTEN_RETENTION_DAYS", "7")
+        ),
+        ge=1,
+        le=3650,
+    )
+    remediation_artifact_max_bytes: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_MAX_BYTES", str(500 * 1024 * 1024))
+        ),
+        ge=1024,
+        le=5 * 1024**3,
+    )
+    remediation_artifact_cleanup_batch_size: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_CLEANUP_BATCH_SIZE", "100")
+        ),
+        ge=1,
+        le=1000,
+    )
+    remediation_artifact_staging_grace_seconds: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_STAGING_GRACE_SECONDS", "3600")
+        ),
+        ge=60,
+        le=86400,
+    )
+    remediation_artifact_orphan_batch_size: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_BATCH_SIZE", "100")
+        ),
+        ge=1,
+        le=1000,
+    )
+    remediation_artifact_orphan_grace_seconds: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_GRACE_SECONDS", "86400")
+        ),
+        ge=60,
+        le=604800,
+    )
+    remediation_artifact_orphan_max_visited_entries: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_MAX_VISITED_ENTRIES", "2000")
+        ),
+        ge=10,
+        le=100000,
+    )
+    remediation_artifact_orphan_max_visited_directories: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_MAX_VISITED_DIRECTORIES", "500")
+        ),
+        ge=1,
+        le=10000,
+    )
+    remediation_artifact_orphan_max_directory_entries: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_MAX_DIRECTORY_ENTRIES", "1000")
+        ),
+        ge=1,
+        le=100000,
+    )
+    remediation_artifact_orphan_max_seconds: float = Field(
+        default_factory=lambda: float(
+            os.getenv("REMEDIATION_ARTIFACT_ORPHAN_MAX_SECONDS", "5")
+        ),
+        gt=0,
+        le=60,
+    )
+    remediation_artifact_quarantine_retention_days: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REMEDIATION_ARTIFACT_QUARANTINE_RETENTION_DAYS", "30")
+        ),
+        ge=1,
+        le=3650,
+    )
+    durable_maintenance_interval_seconds: int = Field(
+        default_factory=lambda: int(
+            os.getenv("DURABLE_MAINTENANCE_INTERVAL_SECONDS", "300")
+        ),
+        ge=10,
+        le=86400,
+    )
+
+    @field_validator("remediation_artifact_dir")
+    @classmethod
+    def validate_remediation_artifact_dir(cls, value: str) -> str:
+        """Require a bounded, normalized absolute artifact root."""
+        if not value or len(value) > 4096 or "\x00" in value:
+            raise ValueError("REMEDIATION_ARTIFACT_DIR is invalid")
+        path = Path(value)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ValueError("REMEDIATION_ARTIFACT_DIR must be an absolute path")
+        normalized = os.path.normpath(value)
+        if normalized != value or normalized == os.path.sep:
+            raise ValueError("REMEDIATION_ARTIFACT_DIR must be canonical")
+        return normalized
 
     # =====================================================
     # Document Processing Limits
@@ -425,6 +550,11 @@ class Settings(BaseSettings):
     # AI/LLM Processing Configuration
     # =====================================================
     llm_thread_pool_size: int = int(os.getenv("LLM_THREAD_POOL_SIZE", "4"))
+    job_worker_max_concurrency: int = Field(
+        default_factory=lambda: int(os.getenv("JOB_WORKER_MAX_CONCURRENCY", "4")),
+        ge=1,
+        le=64,
+    )
     llm_request_timeout: int = int(os.getenv("LLM_REQUEST_TIMEOUT", "120"))
     llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "3"))
     llm_cache_ttl_hours: int = int(os.getenv("LLM_CACHE_TTL_HOURS", "24"))
@@ -512,6 +642,19 @@ class Settings(BaseSettings):
                 "CANVAS_OAUTH_ALLOWED_ORIGINS must be set in staging and production"
             )
 
+        blackboard_oauth_enabled = bool(
+            os.getenv("BLACKBOARD_OAUTH_CLIENT_ID", "").strip()
+            and os.getenv("BLACKBOARD_OAUTH_CLIENT_SECRET", "").strip()
+        )
+        if (
+            self.env.lower() in {"staging", "production"}
+            and blackboard_oauth_enabled
+            and not self.blackboard_oauth_allowed_origins.strip()
+        ):
+            raise ValueError(
+                "BLACKBOARD_OAUTH_ALLOWED_ORIGINS must be set in staging and production"
+            )
+
         return self
 
     class Config:
@@ -524,12 +667,11 @@ class Settings(BaseSettings):
 # =============================================================================
 # Tier-based Quota Configuration
 # =============================================================================
-# These define the limits for each pricing tier.
+# These define capacity defaults for each compatible workspace shape.
 # -1 means unlimited for that metric.
 
 TIER_QUOTAS = {
-    # Aelira Core has no pricing tiers — everything is free. The two entries
-    # here are workspace shapes, not plans: "individual" is a personal
+    # The two entries here are workspace shapes, not plans: "individual" is a personal
     # single-user workspace, "department" is a shared multi-user one. The
     # quota mechanism is retained so an operator with capacity constraints
     # can tighten any limit by editing these values.
@@ -585,8 +727,8 @@ TIER_QUOTAS = {
 # Account Limits
 # =============================================================================
 # Caps the number of self-service individual signups a deployment will accept.
-# Everything in Aelira Core is free; this bound exists so a publicly reachable
-# deployment can't be flooded with workspace creations. Operators can raise or
+# This bound prevents a publicly reachable deployment from being flooded with
+# workspace creations. Operators can raise or
 # lower it.
 
 # Maximum number of individual (self-signup) workspaces allowed

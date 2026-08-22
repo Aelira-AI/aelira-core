@@ -83,6 +83,7 @@ from src.api.account_routes import (
     router as account_router,
 )  # Account deletion/deactivation
 from src.api.review_routes import router as review_router  # Remediation review workflow
+from src.api.job_worker_routes import router as job_worker_router
 from src.config.settings import get_settings
 from src.middleware.security import SecurityHeadersMiddleware, CSRFMiddleware
 from src.auth.dependencies import get_required_api_key
@@ -224,6 +225,7 @@ app.include_router(user_management_router)  # User management (admin only)
 app.include_router(invitation_accept_router)  # Invitation acceptance (public)
 app.include_router(account_router)  # Account deletion/deactivation
 app.include_router(review_router, prefix="/api")  # Remediation review workflow
+app.include_router(job_worker_router)  # Durable queue worker health/metrics only
 
 
 # Startup/Shutdown event handlers for RAG knowledge base and LLM providers
@@ -501,7 +503,7 @@ async def generate_image_alt_text(
         try:
             from ..education.image_alt_text import ImageAltTextGenerator
 
-            generator = ImageAltTextGenerator()
+            generator = ImageAltTextGenerator(allow_legacy_transport=True)
             result = await generator.generate_alt_text(
                 image_path=tmp_path,
                 context=f"Image from website ({image_url})",

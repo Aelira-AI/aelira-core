@@ -62,6 +62,7 @@ def _cloud_file(
     cloud_file.remediated_body = "<p>Fixed</p>"
     cloud_file.has_remediated_version = True
     cloud_file.writeback_status = "pending_review"
+    cloud_file.needs_rescan = False
     cloud_file.last_scan_id = None
     cloud_file.remediated_issues_fixed = None
     cloud_file.remediated_issues_remaining = None

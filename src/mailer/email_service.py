@@ -671,9 +671,9 @@ class EmailService:
         """
         Send welcome email to new user who signed up via magic link.
 
-        This does not include an API key
-        since magic link users get session-based auth. They can view
-        their API key in Settings if needed for programmatic access.
+        This does not include or create an API key because magic link users
+        get session-based auth. They can explicitly create an API key in
+        Settings if needed for programmatic access.
 
         Args:
             to_email: User's email address

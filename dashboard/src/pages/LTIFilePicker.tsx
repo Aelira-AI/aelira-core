@@ -155,7 +155,7 @@ function FileRowItem({
             disabled={isSelecting}
             className="text-xs font-medium px-3 py-1.5 rounded-md disabled:opacity-50"
             style={{
-              backgroundColor: 'var(--accent-primary)',
+              backgroundColor: 'var(--accent-solid)',
               color: '#fff',
             }}
           >
@@ -357,7 +357,7 @@ export function LTIFilePicker(): React.ReactElement {
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 font-medium"
-            style={{ color: 'var(--accent-primary)' }}
+            style={{ color: 'var(--accent)' }}
           >
             Aelira
             <ExternalLink className="w-3 h-3" />

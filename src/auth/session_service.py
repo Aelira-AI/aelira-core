@@ -28,7 +28,6 @@ from sqlalchemy.orm import Session as DBSession
 
 from ..db.models import User, UserSession, MagicLink, Department, AuthProvider
 from .jwt_service import get_jwt_service
-from .auth_service import AuthService
 from ..config.settings import get_settings
 from ..mailer.email_service import get_email_service
 
@@ -651,17 +650,7 @@ class SessionService:
             email_verified_at=datetime.now(timezone.utc),
         )
         db.add(user)
-        db.flush()  # Get user.id before creating API key
-
-        # Create an API key for the new user (for CLI/programmatic access)
-        AuthService.create_api_key(
-            db=db,
-            user_id=user.id,
-            department_id=department.id,
-            name="Default API Key",
-            rate_limit_per_hour=100,
-            expires_days=None,  # No expiration for individual tier
-        )
+        db.flush()  # Assign database-generated fields before commit.
 
         db.commit()
         db.refresh(user)

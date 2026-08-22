@@ -169,3 +169,40 @@ class TestCanvasOAuthAllowlistValidation:
         )
 
         assert settings.canvas_oauth_allowed_origins == ""
+
+
+class TestBlackboardOAuthAllowlistValidation:
+    @pytest.mark.parametrize("env", ["staging", "production"])
+    def test_deployed_environment_without_blackboard_oauth_does_not_require_allowlist(
+        self, env, monkeypatch
+    ):
+        monkeypatch.delenv("BLACKBOARD_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("BLACKBOARD_OAUTH_CLIENT_SECRET", raising=False)
+
+        settings = Settings(**_base_kwargs(env=env))
+
+        assert settings.blackboard_oauth_allowed_origins == ""
+
+    @pytest.mark.parametrize("env", ["staging", "production"])
+    def test_deployed_executable_blackboard_requires_allowlist(self, env, monkeypatch):
+        with monkeypatch.context() as context:
+            context.setenv("BLACKBOARD_OAUTH_CLIENT_ID", "client-id")
+            context.setenv("BLACKBOARD_OAUTH_CLIENT_SECRET", "client-secret")
+            with pytest.raises(ValueError, match="BLACKBOARD_OAUTH_ALLOWED_ORIGINS"):
+                Settings(
+                    **_base_kwargs(
+                        env=env,
+                        blackboard_oauth_allowed_origins="",
+                    )
+                )
+
+    @pytest.mark.parametrize("env", ["development", "test"])
+    def test_local_and_test_environments_do_not_require_blackboard_allowlist(self, env):
+        settings = Settings(
+            **_base_kwargs(
+                env=env,
+                blackboard_oauth_allowed_origins="",
+            )
+        )
+
+        assert settings.blackboard_oauth_allowed_origins == ""

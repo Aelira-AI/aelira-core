@@ -18,6 +18,7 @@ import { adminApi } from '../api/admin';
 import { unwrapResponse } from '../utils/apiUnwrap';
 import { useAuth } from '../context/auth-context';
 import { useToast } from '../context/toast-context';
+import { LMSAIPolicyCard } from '../components/admin/LMSAIPolicyCard';
 
 // Type definitions
 type UserRole = 'faculty' | 'admin' | 'super_admin';
@@ -226,39 +227,31 @@ export function AdminDashboard(): React.ReactElement {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64" role="status" aria-label="Loading admin dashboard">
-        <Loader className="w-8 h-8 animate-spin text-accent" aria-hidden="true" />
-        <span className="sr-only">Loading admin dashboard...</span>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-8">
-        <div className="max-w-7xl mx-auto">
-          <div
-            className="rounded-lg p-4"
-            style={{
-              backgroundColor: 'var(--surface-error-subtle)',
-              borderColor: 'var(--content-error)',
-              border: '1px solid',
-              color: 'var(--content-error)',
-            }}
-            role="alert"
-          >
-            Error: {error}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="p-8">
       <div className="max-w-7xl mx-auto">
+        {['admin', 'super_admin'].includes(currentUserRole) && <LMSAIPolicyCard />}
+        <section aria-label="Dashboard users and statistics" aria-busy={loading}>
+          {loading ? (
+            <div className="flex items-center justify-center h-64" role="status" aria-label="Loading admin dashboard">
+              <Loader className="w-8 h-8 animate-spin text-accent" aria-hidden="true" />
+              <span className="sr-only">Loading admin dashboard...</span>
+            </div>
+          ) : error ? (
+            <div
+              className="rounded-lg p-4"
+              style={{
+                backgroundColor: 'var(--surface-error-subtle)',
+                borderColor: 'var(--content-error)',
+                border: '1px solid',
+                color: 'var(--content-error)',
+              }}
+              role="alert"
+            >
+              Error: {error}
+            </div>
+          ) : (
+            <>
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-3xl font-bold text-primary">Admin Dashboard</h1>
           <button
@@ -506,6 +499,9 @@ export function AdminDashboard(): React.ReactElement {
             </div>
           </div>
         )}
+            </>
+          )}
+        </section>
       </div>
 
       {/* Invite User Modal */}

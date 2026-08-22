@@ -2,8 +2,8 @@
 Quota Enforcement Middleware
 
 Provides quota checking and enforcement driven by TIER_QUOTAS.
-This ensures that free tier users can only process a limited number of
-documents and pages per month.
+This enforces administrator-configured workspace processing capacity for
+documents and pages each month.
 """
 
 from datetime import datetime, timezone, timedelta
@@ -158,7 +158,7 @@ async def check_quota(
         return QuotaResult(
             allowed=False,
             message=f"Monthly scan limit reached ({scans_limit} scans/month). "
-            f"Ask your administrator to raise this department's tier or limits.",
+            "Ask your administrator to adjust this workspace's capacity.",
             remaining_scans=0,
             remaining_pages=remaining_pages,
             resets_at=department.quota_reset_at,
@@ -182,7 +182,7 @@ async def check_quota(
         return QuotaResult(
             allowed=False,
             message=f"Monthly page limit would be exceeded ({remaining_pages} pages remaining). "
-            f"Ask your administrator to raise this department's tier or limits.",
+            "Ask your administrator to adjust this workspace's capacity.",
             remaining_scans=remaining_scans,
             remaining_pages=remaining_pages,
             resets_at=department.quota_reset_at,

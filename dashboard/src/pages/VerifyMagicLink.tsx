@@ -5,6 +5,7 @@ import { apiClient } from '../api/client';
 import { Logo } from '../components/Logo';
 import { trackEvent } from '../utils/analytics';
 import { Loader2, CheckCircle, XCircle, Mail } from 'lucide-react';
+import { resolveSafeNext } from '../utils/safeNext';
 
 type VerificationStatus = 'ready' | 'verifying' | 'success' | 'error';
 
@@ -26,6 +27,7 @@ export function VerifyMagicLink(): React.ReactElement {
 
   const email = searchParams.get('email');
   const token = searchParams.get('token');
+  const nextPath = resolveSafeNext(searchParams.get('next'));
 
   // Check for missing params on render
   const hasValidParams = email && token;
@@ -47,10 +49,11 @@ export function VerifyMagicLink(): React.ReactElement {
     try {
       // Call the API to verify the magic link (POST to prevent prefetch consumption)
       // This endpoint sets session cookies on success
-      const response = await apiClient.post<VerifyResponse>('/auth/magic-link/verify', {
-        email,
-        token
-      });
+      const response = await apiClient.post<VerifyResponse>(
+        '/auth/magic-link/verify',
+        { email, token },
+        { _skipApiKeyAuth: true }
+      );
 
       if (response.data.success) {
         setStatus('success');
@@ -61,7 +64,7 @@ export function VerifyMagicLink(): React.ReactElement {
 
         // Redirect to dashboard after a brief delay
         setTimeout(() => {
-          navigate('/dashboard', { replace: true });
+          navigate(nextPath, { replace: true });
         }, 1500);
       } else {
         setStatus('error');
@@ -91,7 +94,7 @@ export function VerifyMagicLink(): React.ReactElement {
 
           {status === 'ready' && hasValidParams && (
             <>
-              <Mail className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--accent-primary)' }} />
+              <Mail className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--accent)' }} />
               <h1 className="text-xl font-bold text-primary mb-2">Complete Sign In</h1>
               <p className="text-secondary mb-6">Click below to verify your email and sign in to Aelira.</p>
               <button
@@ -120,7 +123,7 @@ export function VerifyMagicLink(): React.ReactElement {
 
           {status === 'verifying' && (
             <>
-              <Loader2 className="w-12 h-12 mx-auto mb-4 animate-spin" style={{ color: 'var(--accent-primary)' }} />
+              <Loader2 className="w-12 h-12 mx-auto mb-4 animate-spin" style={{ color: 'var(--accent)' }} />
               <h1 className="text-xl font-bold text-primary mb-2">Verifying...</h1>
               <p className="text-secondary">Please wait while we sign you in.</p>
             </>

@@ -23,6 +23,11 @@ import { useToast } from '../context/toast-context';
 import { FeatureGate } from '../components/FeatureGate';
 import { trackEvent } from '../utils/analytics';
 import { summarizeBatchOutcome } from '../utils/batchActionResult';
+import {
+  createBulkWorkerPool,
+  summarizeBulkPoolResult,
+  type BulkWorkerPool,
+} from '../hooks/bulkWorkerPool';
 
 // Type definitions
 type FileStatus = 'pending' | 'queued' | 'uploading' | 'processing' | 'complete' | 'error';
@@ -235,12 +240,13 @@ export function BulkUpload(): React.ReactElement {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [isStopping, setIsStopping] = useState<boolean>(false);
   const [options, setOptions] = useState<UploadOptions>({
     generateAltText: false,
     autoRemediate: false,
     concurrency: 3,
   });
-  const abortRef = useRef<boolean>(false);
+  const poolRef = useRef<BulkWorkerPool<FileItem, void> | null>(null);
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -286,7 +292,8 @@ export function BulkUpload(): React.ReactElement {
     setFiles([]);
     setIsProcessing(false);
     setIsPaused(false);
-    abortRef.current = false;
+    setIsStopping(false);
+    poolRef.current = null;
   };
 
   const processFile = async (fileItem: FileItem): Promise<void> => {
@@ -319,41 +326,37 @@ export function BulkUpload(): React.ReactElement {
 
         // Poll for completion
         let complete = false;
-        while (!complete && !abortRef.current) {
+        while (!complete) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
 
-          try {
-            const progress = await scansApi.getScanProgress(result.scan_id);
+          const progress = await scansApi.getScanProgress(result.scan_id);
+
+          setFiles((prev) =>
+            prev.map((f) =>
+              f.id === fileItem.id
+                ? { ...f, progress: progress.progress || 50 }
+                : f
+            )
+          );
+
+          if (progress.status?.toUpperCase() === 'COMPLETED') {
+            complete = true;
+            const scanDetails = await scansApi.getScan(result.scan_id);
 
             setFiles((prev) =>
               prev.map((f) =>
                 f.id === fileItem.id
-                  ? { ...f, progress: progress.progress || 50 }
+                  ? {
+                      ...f,
+                      status: 'complete' as FileStatus,
+                      progress: 100,
+                      result: scanDetails as ScanResult,
+                    }
                   : f
               )
             );
-
-            if (progress.status?.toUpperCase() === 'COMPLETED') {
-              complete = true;
-              const scanDetails = await scansApi.getScan(result.scan_id);
-
-              setFiles((prev) =>
-                prev.map((f) =>
-                  f.id === fileItem.id
-                    ? {
-                        ...f,
-                        status: 'complete' as FileStatus,
-                        progress: 100,
-                        result: scanDetails as ScanResult,
-                      }
-                    : f
-                )
-              );
-            } else if (progress.status?.toUpperCase() === 'FAILED') {
-              throw new Error(progress.error_message || 'Processing failed');
-            }
-          } catch (pollError) {
-            console.error('Poll error:', pollError);
+          } else if (progress.status?.toUpperCase() === 'FAILED') {
+            throw new Error(progress.error_message || 'Processing failed');
           }
         }
       } else {
@@ -382,7 +385,6 @@ export function BulkUpload(): React.ReactElement {
         }
       }
     } catch (error) {
-      console.error('File processing failed:', error);
       const err = error as { response?: { data?: { detail?: string } }; message?: string };
       setFiles((prev) =>
         prev.map((f) =>
@@ -395,97 +397,86 @@ export function BulkUpload(): React.ReactElement {
             : f
         )
       );
+      throw error;
     }
   };
 
-  const startProcessing = async (): Promise<void> => {
-    trackEvent('dash-bulk-upload-started', { file_count: pendingCount, concurrency: options.concurrency });
+  const startProcessing = async (requestedFiles?: FileItem[]): Promise<void> => {
+    if (poolRef.current) return;
+    const pendingFiles = requestedFiles ?? files.filter((file) => file.status === 'pending');
+    if (pendingFiles.length === 0) return;
+
+    trackEvent('dash-bulk-upload-started', {
+      file_count: pendingFiles.length,
+      concurrency: options.concurrency,
+    });
     setIsProcessing(true);
     setIsPaused(false);
-    abortRef.current = false;
+    setIsStopping(false);
 
-    const pendingFiles = files.filter((f) => f.status === 'pending');
+    const pool = createBulkWorkerPool({
+      items: pendingFiles,
+      concurrency: options.concurrency,
+      process: processFile,
+    });
+    poolRef.current = pool;
+    const result = await pool.run();
+    const counts = summarizeBulkPoolResult(result);
 
-    // Process files with concurrency limit
-    const queue = [...pendingFiles];
-    const running = new Set<string>();
-
-    const processNext = async (): Promise<void> => {
-      while (queue.length > 0 && running.size < options.concurrency && !abortRef.current) {
-        if (isPaused) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          continue;
-        }
-
-        const file = queue.shift();
-        if (!file) break;
-
-        setFiles((prev) =>
-          prev.map((f) => (f.id === file.id ? { ...f, status: 'queued' as FileStatus } : f))
-        );
-
-        running.add(file.id);
-        processFile(file).finally(() => {
-          running.delete(file.id);
-        });
-      }
-    };
-
-    // Start initial batch
-    const workers = Array(Math.min(options.concurrency, pendingFiles.length))
-      .fill(null)
-      .map(() => processNext());
-
-    await Promise.all(workers);
-
-    // Wait for all running tasks
-    while (running.size > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    if (poolRef.current === pool) {
+      poolRef.current = null;
+      setIsProcessing(false);
+      setIsPaused(false);
+      setIsStopping(false);
     }
-
-    setIsProcessing(false);
-
-    const complete = files.filter((f) => f.status === 'complete').length;
-    const failed = files.filter((f) => f.status === 'error').length;
 
     // A batch that processed nothing successfully is not a success, and a
     // partial batch is not either. The shared summariser is the single
     // place that decides, so this cannot drift back to always-green.
     const outcome = summarizeBatchOutcome({
       verb: 'Processed',
-      succeededCount: complete,
-      buckets: [{ label: 'failed', count: failed }],
+      succeededCount: counts.succeeded,
+      buckets: [
+        { label: 'failed', count: counts.failed },
+        { label: 'unstarted', count: counts.unstarted },
+      ],
       errors: [],
     });
-    if (outcome.status === 'success') {
+    if (outcome.status === 'success' && !counts.stopped) {
       toast.success(outcome.message, 'Batch Complete');
     } else {
-      toast.warning(outcome.message, 'Batch Finished');
+      toast.warning(outcome.message, counts.stopped ? 'Batch Stopped' : 'Batch Finished');
     }
   };
 
   const pauseProcessing = (): void => {
+    poolRef.current?.pause();
     setIsPaused(true);
     toast.info('Processing paused', 'Paused');
   };
 
   const resumeProcessing = (): void => {
+    poolRef.current?.resume();
     setIsPaused(false);
     toast.info('Processing resumed', 'Resumed');
   };
 
   const stopProcessing = (): void => {
-    abortRef.current = true;
-    setIsProcessing(false);
+    poolRef.current?.stop();
     setIsPaused(false);
-    toast.warning('Processing stopped', 'Stopped');
+    setIsStopping(true);
+    toast.warning('No new files will start; active files will finish.', 'Stopping');
   };
 
   const retryFailed = (): void => {
-    setFiles((prev) =>
-      prev.map((f) => (f.status === 'error' ? { ...f, status: 'pending' as FileStatus, error: null } : f))
-    );
-    startProcessing();
+    const retryFiles = files
+      .filter((file) => file.status === 'error')
+      .map((file) => ({ ...file, status: 'pending' as FileStatus, error: null }));
+    const retryIds = new Set(retryFiles.map((file) => file.id));
+    setFiles((prev) => prev.map((file) => retryIds.has(file.id)
+      ? { ...file, status: 'pending' as FileStatus, error: null }
+      : file));
+    void startProcessing(retryFiles);
   };
 
   const downloadReport = async (): Promise<void> => {
@@ -689,7 +680,7 @@ export function BulkUpload(): React.ReactElement {
             <div className="space-y-3">
               {!isProcessing && pendingCount > 0 && (
                 <button
-                  onClick={startProcessing}
+                  onClick={() => void startProcessing()}
                   className="btn-primary w-full flex items-center justify-center gap-2"
                 >
                   <Play className="w-4 h-4" />
@@ -697,7 +688,7 @@ export function BulkUpload(): React.ReactElement {
                 </button>
               )}
 
-              {isProcessing && !isPaused && (
+              {isProcessing && !isPaused && !isStopping && (
                 <button
                   onClick={pauseProcessing}
                   className="btn-secondary w-full flex items-center justify-center gap-2"
@@ -707,7 +698,7 @@ export function BulkUpload(): React.ReactElement {
                 </button>
               )}
 
-              {isProcessing && isPaused && (
+              {isProcessing && isPaused && !isStopping && (
                 <button
                   onClick={resumeProcessing}
                   className="btn-primary w-full flex items-center justify-center gap-2"
@@ -717,13 +708,23 @@ export function BulkUpload(): React.ReactElement {
                 </button>
               )}
 
-              {isProcessing && (
+              {isProcessing && !isStopping && (
                 <button
                   onClick={stopProcessing}
                   className="btn-secondary w-full flex items-center justify-center gap-2 text-[var(--feature-danger-content)]"
                 >
                   <X className="w-4 h-4" />
                   Stop All
+                </button>
+              )}
+
+              {isProcessing && isStopping && (
+                <button
+                  disabled
+                  className="btn-secondary w-full flex items-center justify-center gap-2"
+                >
+                  <Loader className="w-4 h-4 animate-spin" />
+                  Stopping active files
                 </button>
               )}
 

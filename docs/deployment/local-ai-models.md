@@ -1,5 +1,7 @@
 # Local AI models (Ollama)
 
+> LMS use additionally enforces loopback-only Ollama, no API key, finite readiness probes, required models, and explicit admin purposes. See [LMS AI policy and provider readiness](lms-ai-policy.md).
+
 How to run Aelira Core with fully local AI: which open models to use, what
 hardware they need, and what each one does. With the Ollama provider,
 document content never leaves your infrastructure.

@@ -113,7 +113,7 @@ function ProgressBar({ current, total, label }: ProgressBarProps): React.ReactEl
       </div>
       <div className="h-3 bg-[var(--surface-tertiary)] rounded-full overflow-hidden">
         <div
-          className="h-full bg-[var(--accent-primary)] transition-all duration-500 ease-out rounded-full"
+          className="h-full bg-[var(--accent-solid)] transition-all duration-500 ease-out rounded-full"
           style={{ width: `${percentage}%` }}
         />
       </div>

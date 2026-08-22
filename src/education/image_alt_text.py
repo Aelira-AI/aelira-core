@@ -2,31 +2,215 @@
 
 import base64
 import asyncio
+from functools import wraps
 import time
 import os
 import httpx
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
+from types import MappingProxyType
+from typing import Dict, Any, List, Optional
 from PIL import Image
 
 from src.config.settings import get_settings
+from src.education.alt_text_quality import normalize_usable_alt_text
 
 logger = logging.getLogger(__name__)
 
 
-class ImageAltTextGenerator:
-    """Generate accessible alt text for images using Gemini vision API."""
+def _tracked_analysis(method):
+    """Reset request-local usage once and aggregate nested analysis calls."""
 
-    def __init__(self):
-        """Initialize image alt text generator with settings."""
+    @wraps(method)
+    async def wrapped(self, *args, **kwargs):
+        outermost = self._analysis_depth == 0
+        if outermost:
+            self._reset_usage_metadata()
+        self._analysis_depth += 1
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            self._analysis_depth -= 1
+
+    return wrapped
+
+
+class ImageAltTextGenerator:
+    """Generate accessible alt text through an explicitly selected transport."""
+
+    def __init__(self, lms_client=None, *, allow_legacy_transport: bool = False):
+        """Create a generator without implicitly enabling any provider.
+
+        LMS callers inject a purpose-bound compatibility client. Legacy
+        non-LMS callers must opt in explicitly to the historical Gemini/
+        Ollama transport.
+        """
+        self.lms_client = lms_client
         self.settings = get_settings()
-        self.gemini_api_key = self.settings.gemini_api_key
-        self.gemini_api_base = self.settings.gemini_api_base
-        self.vision_model = self.settings.gemini_vision_model
-        self.use_gemini = self.settings.use_gemini and bool(self.gemini_api_key)
-        self.ollama_host = self.settings.ollama_host
-        self.ollama_fallback = self.settings.ollama_fallback_vision
+        self.allow_legacy_transport = allow_legacy_transport
+        self.gemini_api_key = None
+        self.gemini_api_base = ""
+        self.vision_model = ""
+        self.use_gemini = False
+        self.ollama_host = ""
+        self.ollama_fallback = ""
+        self._analysis_depth = 0
+        self._usage = {}
+        self._reset_usage_metadata()
+        if allow_legacy_transport:
+            self.gemini_api_key = self.settings.gemini_api_key
+            self.gemini_api_base = self.settings.gemini_api_base
+            self.vision_model = self.settings.gemini_vision_model
+            self.use_gemini = self.settings.use_gemini and bool(self.gemini_api_key)
+            self.ollama_host = self.settings.ollama_host
+            self.ollama_fallback = self.settings.ollama_fallback_vision
+
+    def _reset_usage_metadata(self) -> None:
+        self._usage = {
+            "ai_used": False,
+            "external_ai_used": False,
+            "providers_attempted": [],
+            "provider": None,
+            "model": None,
+            "outcome": "allowed_not_used",
+        }
+
+    @property
+    def usage_metadata(self):
+        """Return a bounded, immutable snapshot of the latest public analysis."""
+        return MappingProxyType(
+            {
+                **self._usage,
+                "providers_attempted": tuple(self._usage["providers_attempted"]),
+            }
+        )
+
+    def _record_attempt(self, provider: str, *, external: bool) -> None:
+        if provider not in {"gemini", "ollama", "anthropic", "openai", "xai", "local"}:
+            provider = "unknown"
+        if provider != "unknown" and provider not in self._usage["providers_attempted"]:
+            self._usage["providers_attempted"].append(provider)
+        self._usage["external_ai_used"] = self._usage["external_ai_used"] or external
+        self._usage["provider"] = provider if provider != "unknown" else None
+        self._usage["outcome"] = "attempted_failed"
+
+    def _record_result(self, *, provider: str, model: Any, success: bool) -> None:
+        self._usage["provider"] = provider if provider != "unknown" else None
+        self._usage["model"] = (
+            model
+            if isinstance(model, str)
+            and 0 < len(model) <= 200
+            and model.isprintable()
+            and "\x00" not in model
+            else None
+        )
+        if success:
+            self._usage["ai_used"] = True
+            self._usage["outcome"] = "used"
+
+    async def _generate_vision(
+        self, image_path: str, prompt: str, max_tokens: int = 300
+    ) -> tuple[str, float, str, str]:
+        """Dispatch vision through the injected LMS client or explicit legacy path."""
+        if self.lms_client is not None:
+            bound_provider = getattr(self.lms_client, "provider", None)
+            provider = (
+                bound_provider.casefold()
+                if isinstance(bound_provider, str)
+                and bound_provider.casefold()
+                in {"gemini", "ollama", "anthropic", "openai", "xai", "local"}
+                else "unknown"
+            )
+            self._record_attempt(provider, external=provider not in {"ollama", "local"})
+            try:
+                image_data = Path(image_path).read_bytes()
+                result = await asyncio.to_thread(
+                    self.lms_client.analyze_image_sync,
+                    image_data=image_data,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                )
+            except Exception:
+                self._record_result(provider=provider, model=None, success=False)
+                return "ERROR: provider_call_failed", 0.0, "none", ""
+            if not isinstance(result, dict):
+                self._record_result(provider=provider, model=None, success=False)
+                return "ERROR: invalid_provider_response", 0.0, provider, ""
+            if (
+                result.get("success") is False
+                and result.get("ai_used") is False
+                and result.get("external_ai_used") is False
+                and result.get("purpose_outcome") == "denied_at_dispatch"
+                and provider != "unknown"
+            ):
+                self._usage.update(
+                    {
+                        "ai_used": False,
+                        "external_ai_used": False,
+                        "providers_attempted": [],
+                        "provider": provider,
+                        "model": None,
+                        "outcome": "denied_at_dispatch",
+                    }
+                )
+                return (
+                    f"ERROR: {result.get('error', 'policy_denied')}",
+                    result.get("inference_time", 0.0),
+                    provider,
+                    "",
+                )
+            if provider == "unknown":
+                result_provider = result.get("provider")
+                if isinstance(result_provider, str) and result_provider.casefold() in {
+                    "gemini",
+                    "ollama",
+                    "anthropic",
+                    "openai",
+                    "xai",
+                    "local",
+                }:
+                    provider = result_provider.casefold()
+            model = result.get("model", "")
+            elapsed = result.get("inference_time", 0.0)
+            if not result.get("success"):
+                self._record_result(provider=provider, model=model, success=False)
+                return (
+                    f"ERROR: {result.get('error', 'provider_call_failed')}",
+                    elapsed,
+                    provider,
+                    model,
+                )
+            content = result.get("content")
+            if not isinstance(content, str) or not content.strip():
+                self._record_result(provider=provider, model=model, success=False)
+                return "ERROR: invalid_provider_response", elapsed, provider, model
+            self._record_result(provider=provider, model=model, success=True)
+            return content.strip(), elapsed, provider, model
+
+        if not self.allow_legacy_transport:
+            return "ERROR: AI transport not authorized", 0.0, "none", ""
+
+        provider = "gemini"
+        if self.use_gemini:
+            self._record_attempt("gemini", external=True)
+            content, elapsed = await self._generate_with_gemini(
+                image_path, prompt, max_tokens=max_tokens
+            )
+            if not content.startswith("ERROR:"):
+                self._record_result(
+                    provider="gemini", model=self.vision_model, success=True
+                )
+                return content, elapsed, provider, self.vision_model
+            logger.warning("Gemini vision failed; trying explicit legacy Ollama")
+        provider = "ollama"
+        self._record_attempt("ollama", external=False)
+        content, elapsed = await self._generate_with_ollama(image_path, prompt)
+        self._record_result(
+            provider="ollama",
+            model=self.ollama_fallback,
+            success=not content.startswith("ERROR:"),
+        )
+        return content, elapsed, provider, self.ollama_fallback
 
     def _encode_image(self, image_path: str) -> str:
         """Encode image to base64 for API calls."""
@@ -44,34 +228,83 @@ class ImageAltTextGenerator:
             ".webp": "image/webp",
             ".bmp": "image/bmp",
         }
-        return mime_types.get(ext, "image/png")
+        if ext not in mime_types:
+            raise ValueError("Unsupported image suffix")
+        return mime_types[ext]
 
-    def _validate_image(self, image_path: str) -> Dict[str, Any]:
+    def _validate_image(
+        self,
+        image_path: str,
+        *,
+        trusted_mime_type: Optional[str] = None,
+        trusted_suffix: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Validate image file and get metadata."""
         try:
             if not os.path.exists(image_path):
                 return {"valid": False, "error": "File not found"}
 
-            valid_extensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]
             ext = Path(image_path).suffix.lower()
-            if ext not in valid_extensions:
+            format_info = {
+                "PNG": ("image/png", {".png"}, ".png"),
+                "JPEG": ("image/jpeg", {".jpg", ".jpeg"}, ".jpg"),
+                "GIF": ("image/gif", {".gif"}, ".gif"),
+                "WEBP": ("image/webp", {".webp"}, ".webp"),
+                "BMP": ("image/bmp", {".bmp"}, ".bmp"),
+            }
+            supported_suffixes = {
+                suffix for _, suffixes, _ in format_info.values() for suffix in suffixes
+            }
+            if not ext:
+                return {"valid": False, "error": "Unsupported format: suffixless"}
+            if ext not in supported_suffixes:
                 return {"valid": False, "error": f"Unsupported format: {ext}"}
 
+            file_size = os.path.getsize(image_path)
+            max_file_size = getattr(
+                self.settings, "max_file_size_image", 10 * 1024 * 1024
+            )
+            if file_size > max_file_size:
+                return {"valid": False, "error": "Image too large"}
+
             with Image.open(image_path) as img:
-                width, height = img.size
                 format_name = img.format
+                img.verify()
 
-                file_size = os.path.getsize(image_path)
-                if file_size > 10 * 1024 * 1024:
-                    return {"valid": False, "error": "Image too large (max 10MB)"}
-
+            if format_name not in format_info:
+                return {"valid": False, "error": "Unsupported detected image format"}
+            detected_mime, allowed_suffixes, canonical_suffix = format_info[format_name]
+            if ext not in allowed_suffixes:
+                return {"valid": False, "error": "Image suffix does not match content"}
+            if trusted_suffix and trusted_suffix.lower() not in allowed_suffixes:
                 return {
-                    "valid": True,
-                    "width": width,
-                    "height": height,
-                    "format": format_name,
-                    "size_bytes": file_size,
+                    "valid": False,
+                    "error": "Trusted suffix does not match content",
                 }
+            if trusted_mime_type and trusted_mime_type.casefold() != detected_mime:
+                return {"valid": False, "error": "Trusted MIME does not match content"}
+
+            with Image.open(image_path) as img:
+                frame_count = getattr(img, "n_frames", 1)
+                if type(frame_count) is not int or frame_count != 1:
+                    return {
+                        "valid": False,
+                        "error": "Animated or multi-frame images are not supported",
+                    }
+                width, height = img.size
+            max_pixels = getattr(self.settings, "max_image_pixels", 40_000_000)
+            if width <= 0 or height <= 0 or width * height > max_pixels:
+                return {"valid": False, "error": "Image pixel limit exceeded"}
+
+            return {
+                "valid": True,
+                "width": width,
+                "height": height,
+                "format": format_name,
+                "size_bytes": file_size,
+                "content_type": detected_mime,
+                "suffix": canonical_suffix,
+            }
 
         except Exception as e:
             return {"valid": False, "error": f"Image validation failed: {str(e)}"}
@@ -205,8 +438,15 @@ class ImageAltTextGenerator:
             logger.error(f"Ollama fallback error: {e}")
             return f"ERROR: {e}", elapsed
 
+    @_tracked_analysis
     async def generate_alt_text(
-        self, image_path: str, context: str = None, educational_context: bool = True
+        self,
+        image_path: str,
+        context: str = None,
+        educational_context: bool = True,
+        *,
+        trusted_mime_type: Optional[str] = None,
+        trusted_suffix: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate accessible alt text for an image.
 
@@ -219,7 +459,11 @@ class ImageAltTextGenerator:
             Dict with alt_text, description, inference_time, and metadata
         """
         # Validate image
-        validation = self._validate_image(image_path)
+        validation = self._validate_image(
+            image_path,
+            trusted_mime_type=trusted_mime_type,
+            trusted_suffix=trusted_suffix,
+        )
         if not validation["valid"]:
             return {
                 "success": False,
@@ -241,36 +485,27 @@ Focus on what's important for understanding the educational content.{context_inf
 Be concise but accurate (1-2 sentences, under 125 characters).
 Focus on the main visual elements and purpose.{context_info}"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
-        if self.use_gemini:
-            alt_text, elapsed = await self._generate_with_gemini(image_path, prompt)
-
-            if alt_text.startswith("ERROR:"):
-                logger.warning(f"Gemini failed, trying Ollama fallback: {alt_text}")
-                provider = "ollama"
-                alt_text, elapsed = await self._generate_with_ollama(image_path, prompt)
-        else:
-            provider = "ollama"
-            alt_text, elapsed = await self._generate_with_ollama(image_path, prompt)
+        alt_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt
+        )
 
         # Check for errors
         if alt_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": alt_text,
+                "error": alt_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
 
-        # Clean up response
-        for prefix in ["Alt text:", "Description:", "Alt Text:", "Image description:"]:
-            if alt_text.startswith(prefix):
-                alt_text = alt_text[len(prefix) :].strip()
-
-        # Truncate if too long
-        if len(alt_text) > 500:
-            alt_text = alt_text[:497] + "..."
+        alt_text = normalize_usable_alt_text(alt_text)
+        if alt_text is None:
+            return {
+                "success": False,
+                "error": "Unusable or incomplete alt text response",
+                "inference_time": elapsed,
+                "provider": provider,
+            }
 
         return {
             "alt_text": alt_text,
@@ -282,9 +517,7 @@ Focus on the main visual elements and purpose.{context_info}"""
             "success": True,
             "inference_time": elapsed,
             "provider": provider,
-            "model": (
-                self.vision_model if provider == "gemini" else self.ollama_fallback
-            ),
+            "model": model,
             "image_metadata": {
                 "width": validation.get("width"),
                 "height": validation.get("height"),
@@ -293,6 +526,7 @@ Focus on the main visual elements and purpose.{context_info}"""
             },
         }
 
+    @_tracked_analysis
     async def batch_generate_alt_text(
         self,
         image_paths: List[str],
@@ -340,6 +574,7 @@ Focus on the main visual elements and purpose.{context_info}"""
             "results": results,
         }
 
+    @_tracked_analysis
     async def validate_alt_text(
         self, image_path: str, existing_alt_text: str, context: str = None
     ) -> Dict[str, Any]:
@@ -398,32 +633,15 @@ Common issues to check for:
 - Decorative images marked as informative or vice versa
 - Alt text that's too long or too short for the image complexity"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
-        if self.use_gemini:
-            response_text, elapsed = await self._generate_with_gemini(
-                image_path, prompt, max_tokens=500
-            )
-
-            if response_text.startswith("ERROR:"):
-                logger.warning(
-                    f"Gemini failed, trying Ollama fallback: {response_text}"
-                )
-                provider = "ollama"
-                response_text, elapsed = await self._generate_with_ollama(
-                    image_path, prompt
-                )
-        else:
-            provider = "ollama"
-            response_text, elapsed = await self._generate_with_ollama(
-                image_path, prompt
-            )
+        response_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt, max_tokens=500
+        )
 
         # Check for errors
         if response_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": response_text,
+                "error": response_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -454,9 +672,7 @@ Common issues to check for:
                 "existing_alt_text": existing_alt_text,
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
         except json.JSONDecodeError as e:
@@ -476,11 +692,10 @@ Common issues to check for:
                 "existing_alt_text": existing_alt_text,
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
+    @_tracked_analysis
     async def detect_image_type(
         self, image_path: str, context: str = None
     ) -> Dict[str, Any]:
@@ -555,32 +770,15 @@ Respond in this exact JSON format:
     "visual_elements": ["list", "of", "key", "elements", "detected"]
 }}"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
-        if self.use_gemini:
-            response_text, elapsed = await self._generate_with_gemini(
-                image_path, prompt, max_tokens=500
-            )
-
-            if response_text.startswith("ERROR:"):
-                logger.warning(
-                    f"Gemini failed, trying Ollama fallback: {response_text}"
-                )
-                provider = "ollama"
-                response_text, elapsed = await self._generate_with_ollama(
-                    image_path, prompt
-                )
-        else:
-            provider = "ollama"
-            response_text, elapsed = await self._generate_with_ollama(
-                image_path, prompt
-            )
+        response_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt, max_tokens=500
+        )
 
         # Check for errors
         if response_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": response_text,
+                "error": response_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -610,9 +808,7 @@ Respond in this exact JSON format:
                 "visual_elements": result.get("visual_elements", []),
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
         except json.JSONDecodeError as e:
@@ -628,11 +824,10 @@ Respond in this exact JSON format:
                 "visual_elements": [],
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
+    @_tracked_analysis
     async def describe_chart_or_graph(
         self, image_path: str, context: str = None, detail_level: str = "standard"
     ) -> Dict[str, Any]:
@@ -723,34 +918,16 @@ Important guidelines:
 - For infographics, describe the logical flow and key points
 - For maps, describe regions and what data is shown"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
         max_tokens = 1500 if detail_level == "detailed" else 1000
-
-        if self.use_gemini:
-            response_text, elapsed = await self._generate_with_gemini(
-                image_path, prompt, max_tokens=max_tokens
-            )
-
-            if response_text.startswith("ERROR:"):
-                logger.warning(
-                    f"Gemini failed, trying Ollama fallback: {response_text}"
-                )
-                provider = "ollama"
-                response_text, elapsed = await self._generate_with_ollama(
-                    image_path, prompt
-                )
-        else:
-            provider = "ollama"
-            response_text, elapsed = await self._generate_with_ollama(
-                image_path, prompt
-            )
+        response_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt, max_tokens=max_tokens
+        )
 
         # Check for errors
         if response_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": response_text,
+                "error": response_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -782,9 +959,7 @@ Important guidelines:
                 "accessibility_note": result.get("accessibility_note", ""),
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
         except json.JSONDecodeError as e:
@@ -802,11 +977,10 @@ Important guidelines:
                 "accessibility_note": "Manual review recommended",
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
+    @_tracked_analysis
     async def analyze_image_comprehensive(
         self, image_path: str, context: str = None, existing_alt_text: str = None
     ) -> Dict[str, Any]:
@@ -909,6 +1083,7 @@ Important guidelines:
         result["total_inference_time"] = time.perf_counter() - start_time
         return result
 
+    @_tracked_analysis
     async def batch_analyze_images(
         self,
         image_paths: List[str],
@@ -986,6 +1161,7 @@ Important guidelines:
             "results": results,
         }
 
+    @_tracked_analysis
     async def score_alt_text_quality(
         self, image_path: str, alt_text: str, context: str = None
     ) -> Dict[str, Any]:
@@ -1130,32 +1306,15 @@ Respond in this exact JSON format:
     "best_practice_violations": ["any WCAG violations"]
 }}"""
 
-        # Try Gemini first, then Ollama fallback
-        provider = "gemini"
-        if self.use_gemini:
-            response_text, elapsed = await self._generate_with_gemini(
-                image_path, prompt, max_tokens=800
-            )
-
-            if response_text.startswith("ERROR:"):
-                logger.warning(
-                    f"Gemini failed, trying Ollama fallback: {response_text}"
-                )
-                provider = "ollama"
-                response_text, elapsed = await self._generate_with_ollama(
-                    image_path, prompt
-                )
-        else:
-            provider = "ollama"
-            response_text, elapsed = await self._generate_with_ollama(
-                image_path, prompt
-            )
+        response_text, elapsed, provider, model = await self._generate_vision(
+            image_path, prompt, max_tokens=800
+        )
 
         # Check for errors
         if response_text.startswith("ERROR:"):
             return {
                 "success": False,
-                "error": response_text,
+                "error": response_text.removeprefix("ERROR: "),
                 "inference_time": elapsed,
                 "provider": provider,
             }
@@ -1238,9 +1397,7 @@ Respond in this exact JSON format:
                 "alt_text_analyzed": alt_text,
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": (
-                    self.vision_model if provider == "gemini" else self.ollama_fallback
-                ),
+                "model": model,
             }
 
         except json.JSONDecodeError as e:
@@ -1343,6 +1500,7 @@ Respond in this exact JSON format:
             "note": "Scored using heuristics (AI response parsing failed)",
         }
 
+    @_tracked_analysis
     async def batch_score_alt_text_quality(
         self,
         items: List[Dict[str, str]],
@@ -1426,7 +1584,29 @@ Respond in this exact JSON format:
         }
 
     def health_check(self) -> Dict[str, Any]:
-        """Check if vision models are available."""
+        """Check the explicitly configured vision transport."""
+        if self.lms_client is not None:
+            return {
+                "status": "healthy",
+                "provider": getattr(self.lms_client, "provider", None),
+                "transport": "policy_bound_lms",
+                "features": [
+                    "generate_alt_text",
+                    "validate_alt_text",
+                    "detect_image_type",
+                    "describe_chart_or_graph",
+                    "analyze_image_comprehensive",
+                    "batch_analyze_images",
+                ],
+            }
+        if not self.allow_legacy_transport:
+            return {
+                "status": "disabled",
+                "provider": None,
+                "transport": "none",
+                "features": [],
+            }
+
         health = {
             "status": "healthy",
             "gemini_configured": bool(self.gemini_api_key),

@@ -208,7 +208,7 @@ export function ReviewQueuePage(): React.ReactElement {
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <ClipboardCheck className="w-8 h-8 text-[var(--accent-primary)]" aria-hidden="true" />
+            <ClipboardCheck className="w-8 h-8 text-[var(--accent)]" aria-hidden="true" />
             <h1 className="text-3xl font-bold text-primary">Review Queue</h1>
           </div>
         </div>
@@ -331,7 +331,7 @@ export function ReviewQueuePage(): React.ReactElement {
               return (
                 <div
                   key={item.scan_id}
-                  className="flex items-center px-4 py-3 border-b border-[var(--border-primary)] last:border-b-0 hover:bg-[var(--surface-secondary)] focus:bg-[var(--surface-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-primary)] transition-colors cursor-pointer"
+                  className="flex items-center px-4 py-3 border-b border-[var(--border-primary)] last:border-b-0 hover:bg-[var(--surface-secondary)] focus:bg-[var(--surface-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] transition-colors cursor-pointer"
                   onClick={() => navigate(`/review/${item.scan_id}`)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {

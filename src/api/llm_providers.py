@@ -14,9 +14,16 @@ Users can switch models via PUT /llm/providers/gemini/models
 Users can bring their own API key via POST /llm/providers/add
 """
 
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from typing import Optional, Dict, Tuple
+from fastapi import APIRouter, HTTPException, Depends, status
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
+from typing import Literal, Optional, Dict, Tuple, Union
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 import logging
@@ -28,8 +35,14 @@ from src.ai.providers import (
 )
 from src.ai.providers.manager import get_rate_limiter
 from src.ai.cache import get_llm_cache
-from src.auth.dependencies import get_required_api_key
-from src.db.models import APIKey, Department, User, UserRole
+from src.ai.lms_policy import LMS_AI_POLICY_VERSION
+from src.ai.lms_readiness import ReadinessReason, resolve_lms_ai_readiness
+from src.auth.dependencies import (
+    AuthenticatedPrincipal,
+    get_authenticated_principal,
+    get_required_api_key,
+)
+from src.db.models import APIKey, AuditLog, AuditLogAction, Department, User, UserRole
 from src.db.database import get_db_dependency
 from src.utils.encryption import (
     encrypt_api_key,
@@ -98,6 +111,301 @@ class TestResponse(BaseModel):
     inference_time: float
     response_preview: Optional[str] = None
     error: Optional[str] = None
+
+
+class LMSAIProviderReadinessResponse(BaseModel):
+    """Bounded, secret-free readiness for one policy provider option."""
+
+    ready: bool
+    reason: ReadinessReason
+    locality: Literal["local", "remote"]
+    credential_source: Literal["local", "department_byok", "platform"] | None = None
+
+
+class LMSAIPolicyResponse(BaseModel):
+    """Secret-free persisted account policy and current provider readiness."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "schema_version": 1,
+                "policy_revision": 4,
+                "enabled": False,
+                "provider": None,
+                "remediation_enabled": False,
+                "alt_text_enabled": False,
+                "pilot_gemini_approved": False,
+                "provider_readiness": {},
+            }
+        }
+    )
+
+    schema_version: Literal[1] = Field(
+        default=LMS_AI_POLICY_VERSION, description="Response schema version."
+    )
+    policy_revision: int = Field(description="Optimistic concurrency revision.")
+    enabled: bool
+    provider: Literal["ollama", "gemini", "openai", "anthropic", "xai"] | None
+    remediation_enabled: bool
+    alt_text_enabled: bool
+    pilot_gemini_approved: bool = Field(
+        description="Read-only approval for the platform Gemini pilot lane."
+    )
+    provider_readiness: Dict[str, LMSAIProviderReadinessResponse]
+
+
+class LMSAIPolicyUpdate(BaseModel):
+    """A complete replacement for a department's explicit LMS AI policy."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "example": {
+                "enabled": True,
+                "provider": "ollama",
+                "remediation_enabled": True,
+                "alt_text_enabled": False,
+                "expected_revision": 4,
+            }
+        },
+    )
+
+    enabled: StrictBool
+    provider: Literal["ollama", "gemini", "openai", "anthropic", "xai"] | None
+    remediation_enabled: StrictBool
+    alt_text_enabled: StrictBool
+    expected_revision: StrictInt = Field(ge=0, description="Revision returned by GET.")
+
+    @model_validator(mode="after")
+    def validate_consistency(self):
+        has_purpose = self.remediation_enabled or self.alt_text_enabled
+        if self.enabled and (self.provider is None or not has_purpose):
+            raise ValueError("enabled policies require a provider and purpose")
+        if not self.enabled and (self.provider is not None or has_purpose):
+            raise ValueError("disabled policies cannot configure provider or purposes")
+        return self
+
+
+class LMSPolicyRevisionConflictDetail(BaseModel):
+    code: Literal["policy_revision_conflict"]
+    reason: Literal["stale_revision"]
+    current: LMSAIPolicyResponse
+
+
+class LMSProviderNotReadyDetail(BaseModel):
+    code: Literal["provider_not_ready"]
+    reason: ReadinessReason
+    current: LMSAIPolicyResponse
+
+
+class LMSPolicyConflictResponse(BaseModel):
+    detail: Union[LMSPolicyRevisionConflictDetail, LMSProviderNotReadyDetail] = Field(
+        discriminator="code"
+    )
+
+
+def _policy_response(department: Department) -> LMSAIPolicyResponse:
+    purposes = set(department.lms_ai_purposes or [])
+    readiness = resolve_lms_ai_readiness(department, decrypt_api_key=decrypt_api_key)
+    return LMSAIPolicyResponse(
+        policy_revision=department.lms_ai_policy_revision,
+        enabled=department.lms_ai_enabled,
+        provider=department.lms_ai_provider,
+        remediation_enabled="remediation" in purposes,
+        alt_text_enabled="alt_text" in purposes,
+        pilot_gemini_approved=department.pilot_gemini_approved is True,
+        provider_readiness={
+            name: LMSAIProviderReadinessResponse(
+                ready=value.ready,
+                reason=value.reason,
+                locality=value.locality,
+                credential_source=value.credential_source,
+            )
+            for name, value in readiness.items()
+        },
+    )
+
+
+def _get_own_department(
+    db: Session, department_id: str, *, for_update: bool = False
+) -> Department:
+    query = db.query(Department).filter(Department.id == department_id)
+    if for_update:
+        query = query.with_for_update()
+    department = query.first()
+    if department is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return department
+
+
+def _require_policy_admin(principal: AuthenticatedPrincipal) -> None:
+    # LTI authority comes only from the validated, immutable principal. Course
+    # roles cannot be promoted by a request body or a database role alone.
+    if principal.auth_method == "lti":
+        if not (
+            principal.lti_staff_role == "Administrator"
+            and principal.lti_account_wide is True
+            and principal.user_role is UserRole.ADMIN
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
+            )
+        return
+    if principal.user_role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+
+@router.get("/lms-policy", response_model=LMSAIPolicyResponse)
+def get_lms_ai_policy(
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
+):
+    """Return the admin's own account policy; never returns keys, hosts, or models."""
+
+    _require_policy_admin(principal)
+    return _policy_response(_get_own_department(db, principal.department_id))
+
+
+@router.put(
+    "/lms-policy",
+    response_model=LMSAIPolicyResponse,
+    responses={
+        409: {
+            "model": LMSPolicyConflictResponse,
+            "description": "Policy revision conflict or selected provider not ready.",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "revision_conflict": {
+                            "summary": "The submitted revision is stale",
+                            "value": {
+                                "detail": {
+                                    "code": "policy_revision_conflict",
+                                    "reason": "stale_revision",
+                                    "current": {
+                                        "schema_version": 1,
+                                        "policy_revision": 4,
+                                        "enabled": False,
+                                        "provider": None,
+                                        "remediation_enabled": False,
+                                        "alt_text_enabled": False,
+                                        "pilot_gemini_approved": False,
+                                        "provider_readiness": {},
+                                    },
+                                }
+                            },
+                        },
+                        "provider_not_ready": {
+                            "summary": "The selected provider is not ready",
+                            "value": {
+                                "detail": {
+                                    "code": "provider_not_ready",
+                                    "reason": "credential_invalid",
+                                    "current": {
+                                        "schema_version": 1,
+                                        "policy_revision": 4,
+                                        "enabled": False,
+                                        "provider": None,
+                                        "remediation_enabled": False,
+                                        "alt_text_enabled": False,
+                                        "pilot_gemini_approved": False,
+                                        "provider_readiness": {},
+                                    },
+                                }
+                            },
+                        },
+                    }
+                }
+            },
+        }
+    },
+)
+def update_lms_ai_policy(
+    update: LMSAIPolicyUpdate,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
+):
+    """Replace the caller's department policy and audit it in one transaction."""
+
+    _require_policy_admin(principal)
+    department = _get_own_department(db, principal.department_id, for_update=True)
+    old_revision = department.lms_ai_policy_revision
+    if update.expected_revision != old_revision:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "policy_revision_conflict",
+                "reason": "stale_revision",
+                "current": _policy_response(department).model_dump(),
+            },
+        )
+
+    old_policy = {
+        "enabled": department.lms_ai_enabled,
+        "provider": department.lms_ai_provider,
+        "remediation_enabled": "remediation" in (department.lms_ai_purposes or []),
+        "alt_text_enabled": "alt_text" in (department.lms_ai_purposes or []),
+    }
+    purposes = [
+        purpose
+        for purpose, selected in (
+            ("remediation", update.remediation_enabled),
+            ("alt_text", update.alt_text_enabled),
+        )
+        if selected
+    ]
+    new_policy = {
+        "enabled": update.enabled,
+        "provider": update.provider,
+        "remediation_enabled": update.remediation_enabled,
+        "alt_text_enabled": update.alt_text_enabled,
+    }
+
+    if update.enabled and update.provider is not None:
+        readiness = resolve_lms_ai_readiness(
+            department, decrypt_api_key=decrypt_api_key
+        )[update.provider]
+        if not readiness.ready:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "provider_not_ready",
+                    "reason": readiness.reason,
+                    "current": _policy_response(department).model_dump(),
+                },
+            )
+
+    department.lms_ai_enabled = update.enabled
+    department.lms_ai_provider = update.provider
+    department.lms_ai_purposes = purposes
+    department.lms_ai_policy_revision = old_revision + 1
+    db.add(
+        AuditLog(
+            user_id=principal.user_id,
+            department_id=principal.department_id,
+            action=AuditLogAction.LMS_AI_POLICY_UPDATE.value,
+            resource_type="department",
+            resource_id=principal.department_id,
+            details={
+                "old": old_policy,
+                "new": new_policy,
+                "old_revision": old_revision,
+                "new_revision": old_revision + 1,
+                "schema_version": LMS_AI_POLICY_VERSION,
+                "outcome": "updated",
+            },
+            status="success",
+        )
+    )
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Policy update failed",
+        ) from exc
+    return _policy_response(department)
 
 
 @router.get("/providers", response_model=ProviderListResponse)

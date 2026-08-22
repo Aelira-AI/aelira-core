@@ -29,11 +29,13 @@ SECURITY:
 """
 
 import logging
+import hashlib
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..auth import verify_department_access
@@ -42,9 +44,12 @@ from ..auth.canvas_permissions import (
     require_lti_course_access,
 )
 from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
+from ..ai.lms_remediation_client import LMSRemediationClient
 from ..db.database import get_db_dependency
 from ..db.models import (
     CloudFile,
+    CloudJobType,
+    CloudOAuthCredentials,
     CloudProvider,
     ContentWritebackLog,
     ScanResult,
@@ -52,13 +57,27 @@ from ..db.models import (
 from ..education.canvas_content_scanner import CanvasContentScanner
 from ..integrations.canvas.content_models import CanvasContentType
 from ..middleware.quota import require_feature
+from ..services.remediation_artifact_service import (
+    ArtifactError,
+    RemediationArtifactService,
+)
+from ..services.job_enqueue_service import enqueue_cloud_job
 from ..utils.security import require_persisted_canvas_origin
 from .canvas_routes import _get_canvas_client
-from .canvas_scan_routes import _canvas_scan_file_task
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/canvas/content", tags=["canvas-content"])
+
+
+def _is_canvas_file(cloud_file: CloudFile) -> bool:
+    """Normalize legacy NULL content sources to the documented file type."""
+    return cloud_file.content_source in (None, CanvasContentType.FILE.value)
+
+
+def _require_fresh_canvas_source(cloud_file: CloudFile) -> None:
+    if cloud_file.needs_rescan:
+        raise HTTPException(status_code=409, detail="Source changed; re-scan required")
 
 
 # =============================================================================
@@ -73,31 +92,42 @@ class CanvasContentScanRequest(BaseModel):
     department_id: Optional[str] = None
     # Scan options
     generate_alt_text: bool = Field(
-        default=True, description="Generate AI alt text for images"
+        default=False,
+        description="Legacy compatibility field; scans never generate alt text",
     )
     auto_remediate: bool = Field(
-        default=True, description="Automatically fix issues after scan"
+        default=False,
+        description="Legacy compatibility field; remediation is a separate operation",
     )
     detect_decorative: bool = Field(
-        default=True, description="Detect decorative images"
+        default=False,
+        description="Legacy compatibility field; scans do not run generative image analysis",
     )
 
     def to_scan_options(self) -> Dict[str, Any]:
         """Convert scan options to dict for CanvasContentScanner."""
+        # Request data cannot expand scan execution. These fields remain in
+        # the schema only so older clients do not receive validation errors.
         return {
-            "generate_alt_text": self.generate_alt_text,
-            "auto_remediate": self.auto_remediate,
-            "detect_decorative": self.detect_decorative,
+            "generate_alt_text": False,
+            "auto_remediate": False,
+            "detect_decorative": False,
         }
 
 
 class CanvasContentScanResponse(BaseModel):
     """Summary after queuing content scans."""
 
+    job_id: Optional[str] = None
+    status: str = "pending"
+    progress: int = 0
     total_items: int
     jobs_queued: int
     skipped: int
     by_type: Dict[str, int]
+    operation_kind: str = "deterministic_scan"
+    external_ai_used: bool = False
+    ai_used: bool = False
 
 
 class ContentItemStatus(BaseModel):
@@ -105,17 +135,22 @@ class ContentItemStatus(BaseModel):
 
     cloud_file_id: str
     provider_file_id: Optional[str] = None
+    provider: str
+    provider_parent_id: str
     content_type: Optional[str] = None
     title: str
     compliance_score: Optional[float] = None
     issue_count: int = 0
     writeback_status: Optional[str] = None
     has_remediated_version: bool = False
+    remediation_origin: Optional[str] = None
+    current_remediation_artifact_id: Optional[str] = None
     # The scan whose results are current for this item — the client needs
     # this to call POST /education/remediate/{scan_id} for a per-item
     # remediate action (the same endpoint the LTI Files tab already uses).
     scan_id: Optional[str] = None
     last_scanned_at: Optional[str] = None
+    content_updated_at: Optional[str] = None
 
 
 class ContentTypeStatus(BaseModel):
@@ -345,7 +380,6 @@ def _format_scan_issue(raw: Dict[str, Any]) -> ContentIssueDetail:
 @router.post("/scan", response_model=CanvasContentScanResponse)
 async def scan_course_content(
     request: CanvasContentScanRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasContentScanResponse:
@@ -365,77 +399,66 @@ async def scan_course_content(
     )
 
     try:
-        credential, api_client = await _get_canvas_client(dept_id, db)
-        try:
-            course_name, course_code = await _fetch_course_meta(
-                api_client, request.course_id
+        credential = (
+            db.query(CloudOAuthCredentials)
+            .filter(
+                CloudOAuthCredentials.department_id == dept_id,
+                CloudOAuthCredentials.provider == CloudProvider.CANVAS.value,
+                CloudOAuthCredentials.is_active,
             )
-
-            scan_options = request.to_scan_options()
-
-            scanner = CanvasContentScanner(
-                canvas_client=api_client,
-                db=db,
-                department_id=dept_id,
-                credential_id=credential.id,
-                course_name=course_name,
-                course_code=course_code,
-                scan_options=scan_options,
-            )
-            result = await scanner.scan_course_content(request.course_id)
-
-            counts = result.get("counts", {})
-            cloud_file_ids = result.get("cloud_file_ids", [])
-            # The scanner already created a CloudJobQueue row for each file
-            # (it needs the file-download pipeline, not the axe-core
-            # background task below) — but a CloudJobQueue row is a record
-            # only. Nothing in this app polls the queue (JobProcessor is
-            # never started), so the row sits PENDING forever unless a
-            # background task is actually fired for it here, exactly like
-            # canvas_scan_routes.py's single-file scan endpoint does.
-            file_scan_jobs = result.get("file_scan_jobs", [])
-            skipped = counts.get("skipped_empty", 0)
-
-            # Queue background scan jobs for each discovered HTML content item
-            for cf_id in cloud_file_ids:
-                background_tasks.add_task(
-                    _content_scan_task,
-                    cf_id,
-                    dept_id,
-                    credential.id,
-                    scan_options=scan_options,
-                )
-
-            # Fire the actual background task for each file's CloudJobQueue
-            # row — mirrors canvas_scan_routes.py's single-file scan
-            # endpoint's call signature exactly.
-            for job in file_scan_jobs:
-                background_tasks.add_task(
-                    _canvas_scan_file_task,
-                    job_id=job["job_id"],
-                    cloud_file_id=job["cloud_file_id"],
-                    credential_id=credential.id,
-                )
-
-            by_type = {k: v for k, v in counts.items() if k != "skipped_empty"}
-            total_items = len(cloud_file_ids) + len(file_scan_jobs)
-
-            return CanvasContentScanResponse(
-                total_items=total_items,
-                jobs_queued=total_items,
-                skipped=skipped,
-                by_type=by_type,
-            )
-        finally:
-            await api_client.close()
+            .first()
+        )
+        if credential is None:
+            raise HTTPException(status_code=404, detail="Canvas not connected")
+        require_persisted_canvas_origin(credential)
+        payload = {
+            "scan_kind": "canvas_course",
+            "credential_id": credential.id,
+            "provider": "canvas",
+            "course_id": request.course_id,
+            "content_types": [item.value for item in CanvasContentType],
+            "scan_options": request.to_scan_options(),
+        }
+        digest = hashlib.sha256(
+            ",".join(payload["content_types"]).encode()
+        ).hexdigest()[:16]
+        job = enqueue_cloud_job(
+            db,
+            department_id=dept_id,
+            job_type=CloudJobType.SCAN.value,
+            payload=payload,
+            dedupe_key=(
+                f"canvas-course-scan:{credential.id}:{request.course_id}:{digest}"
+            ),
+            provider="canvas",
+            credential_id=credential.id,
+            provider_file_id=request.course_id,
+        )
+        db.commit()
+        return CanvasContentScanResponse(
+            job_id=job.id,
+            status=job.status,
+            progress=job.progress,
+            total_items=0,
+            jobs_queued=1,
+            skipped=0,
+            by_type={},
+        )
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to scan course content: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Failed to scan course content",
+            extra={
+                "course_id": request.course_id,
+                "department_id": dept_id,
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to scan course content: {str(e)}",
+            detail="Failed to scan course content",
         )
 
 
@@ -458,7 +481,6 @@ class ContentTypeParam(str, Enum):
 async def scan_course_content_by_type(
     content_type: ContentTypeParam,
     request: CanvasContentScanRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CanvasContentScanResponse:
@@ -478,62 +500,65 @@ async def scan_course_content_by_type(
     )
 
     try:
-        credential, api_client = await _get_canvas_client(dept_id, db)
-        try:
-            course_name, course_code = await _fetch_course_meta(
-                api_client, request.course_id
+        credential = (
+            db.query(CloudOAuthCredentials)
+            .filter(
+                CloudOAuthCredentials.department_id == dept_id,
+                CloudOAuthCredentials.provider == CloudProvider.CANVAS.value,
+                CloudOAuthCredentials.is_active,
             )
-
-            scan_options = request.to_scan_options()
-
-            scanner = CanvasContentScanner(
-                canvas_client=api_client,
-                db=db,
-                department_id=dept_id,
-                credential_id=credential.id,
-                course_name=course_name,
-                course_code=course_code,
-                scan_options=scan_options,
-            )
-            result = await scanner.scan_course_content(
-                request.course_id,
-                content_types=[CanvasContentType(content_type.value)],
-            )
-
-            counts = result.get("counts", {})
-            cloud_file_ids = result.get("cloud_file_ids", [])
-            skipped = counts.get("skipped_empty", 0)
-
-            for cf_id in cloud_file_ids:
-                background_tasks.add_task(
-                    _content_scan_task,
-                    cf_id,
-                    dept_id,
-                    credential.id,
-                    scan_options=scan_options,
-                )
-
-            by_type = {k: v for k, v in counts.items() if k != "skipped_empty"}
-
-            return CanvasContentScanResponse(
-                total_items=len(cloud_file_ids),
-                jobs_queued=len(cloud_file_ids),
-                skipped=skipped,
-                by_type=by_type,
-            )
-        finally:
-            await api_client.close()
+            .first()
+        )
+        if credential is None:
+            raise HTTPException(status_code=404, detail="Canvas not connected")
+        require_persisted_canvas_origin(credential)
+        payload = {
+            "scan_kind": "canvas_course",
+            "credential_id": credential.id,
+            "provider": "canvas",
+            "course_id": request.course_id,
+            "content_types": [content_type.value],
+            "scan_options": request.to_scan_options(),
+        }
+        job = enqueue_cloud_job(
+            db,
+            department_id=dept_id,
+            job_type=CloudJobType.SCAN.value,
+            payload=payload,
+            dedupe_key=(
+                f"canvas-course-scan:{credential.id}:{request.course_id}:"
+                f"{content_type.value}"
+            ),
+            provider="canvas",
+            credential_id=credential.id,
+            provider_file_id=request.course_id,
+        )
+        db.commit()
+        return CanvasContentScanResponse(
+            job_id=job.id,
+            status=job.status,
+            progress=job.progress,
+            total_items=0,
+            jobs_queued=1,
+            skipped=0,
+            by_type={},
+        )
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as exc:
         logger.error(
-            f"Failed to scan course content type {content_type}: {e}",
-            exc_info=True,
+            "Failed to scan course content type",
+            extra={
+                "course_id": request.course_id,
+                "department_id": dept_id,
+                "content_type": content_type.value,
+                "error_type": type(exc).__name__,
+            },
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to scan content: {str(e)}",
+            detail="Failed to scan content",
         )
 
 
@@ -630,14 +655,25 @@ async def get_course_content_status(
         ContentItemStatus(
             cloud_file_id=cf.id,
             provider_file_id=cf.provider_file_id,
+            provider=cf.provider,
+            provider_parent_id=cf.provider_parent_id,
             content_type=cf.content_source,
             title=cf.file_name,
             compliance_score=cf.last_compliance_score,
             issue_count=issue_counts.get(cf.last_scan_id, 0) if cf.last_scan_id else 0,
             writeback_status=cf.writeback_status,
             has_remediated_version=cf.has_remediated_version or False,
+            remediation_origin=cf.remediation_origin,
+            current_remediation_artifact_id=(
+                cf.current_remediation_artifact_id
+                if isinstance(cf.current_remediation_artifact_id, str)
+                else None
+            ),
             last_scanned_at=(
                 cf.last_scanned_at.isoformat() if cf.last_scanned_at else None
+            ),
+            content_updated_at=(
+                cf.content_updated_at.isoformat() if cf.content_updated_at else None
             ),
             scan_id=cf.last_scan_id,
         )
@@ -910,15 +946,29 @@ class ContentRemediateResponse(BaseModel):
     success: bool
     verified: bool = False
     fixed_count: int = 0
+    manual_count: int = 0
     issues_remaining: int = 0
     issues_introduced: int = 0
     remediated_score: Optional[float] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
+    ai_used: bool = False
+    external_ai_used: bool = False
+    provider: Optional[str] = None
+    purpose_decisions: Dict[str, str] = Field(default_factory=dict)
+
+
+class ContentRemediateRequest(BaseModel):
+    """Explicit AI intent for Canvas HTML remediation."""
+
+    use_ai: bool = False
+    generate_alt_text: bool = False
 
 
 @router.post("/{cloud_file_id}/remediate", response_model=ContentRemediateResponse)
 async def remediate_content_item(
     cloud_file_id: str,
+    request: Optional[ContentRemediateRequest] = Body(default=None),
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> ContentRemediateResponse:
@@ -940,7 +990,7 @@ async def remediate_content_item(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
-    if cf.content_source == "file":
+    if _is_canvas_file(cf):
         return ContentRemediateResponse(
             success=False,
             error="Files are remediated through the scan-based endpoint",
@@ -952,6 +1002,53 @@ async def remediate_content_item(
             error="This item has no content to remediate",
         )
 
+    intent = request or ContentRemediateRequest()
+    remediation_client = None
+    alt_text_client = None
+    purpose_decisions = {
+        "remediation": "not_requested",
+        "alt_text": "not_requested",
+    }
+    if intent.use_ai:
+        remediation_client = LMSRemediationClient.bind_if_allowed(
+            department_id=auth_department_id,
+            purpose="remediation",
+            actor_id=principal.user_id,
+            cloud_file_id=str(cf.id),
+        )
+        if remediation_client is None:
+            raise HTTPException(
+                status_code=403,
+                detail="LMS AI remediation is not permitted",
+            )
+        purpose_decisions["remediation"] = "allowed_not_used"
+    if intent.generate_alt_text:
+        alt_text_client = LMSRemediationClient.bind_if_allowed(
+            department_id=auth_department_id,
+            purpose="alt_text",
+            actor_id=principal.user_id,
+            cloud_file_id=str(cf.id),
+        )
+        purpose_decisions["alt_text"] = (
+            "allowed_not_used" if alt_text_client is not None else "denied_at_dispatch"
+        )
+
+    requested_purposes = {
+        purpose
+        for purpose, requested in (
+            ("remediation", intent.use_ai),
+            ("alt_text", intent.generate_alt_text),
+        )
+        if requested
+    }
+    result: Dict[str, Any] = {
+        "success": False,
+        "ai_used": False,
+        "external_ai_used": False,
+        "provider": None,
+        "purpose_decisions": purpose_decisions,
+    }
+
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)
         try:
@@ -961,27 +1058,60 @@ async def remediate_content_item(
                 department_id=auth_department_id,
                 credential_id=credential.id,
             )
-            result = await scanner.remediate_content_item(cf)
+            result = await scanner.remediate_content_item(
+                cf,
+                remediation_client=remediation_client,
+                alt_text_client=alt_text_client,
+                requested_purposes=requested_purposes,
+                remediation_origin="manual",
+            )
         finally:
             await api_client.close()
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Content remediation failed: {e}", exc_info=True)
-        return ContentRemediateResponse(success=False, error=str(e))
+    except Exception as exc:
+        logger.error(
+            "Content remediation failed",
+            extra={
+                "cloud_file_id": str(cf.id),
+                "department_id": auth_department_id,
+                "error_type": type(exc).__name__,
+            },
+        )
+        return ContentRemediateResponse(
+            success=False,
+            error="Content remediation failed",
+            error_code="REMEDIATION_FAILED",
+            ai_used=bool(result.get("ai_used", False)),
+            external_ai_used=bool(result.get("external_ai_used", False)),
+            provider=result.get("provider"),
+            purpose_decisions=result.get("purpose_decisions", purpose_decisions),
+        )
 
     if not result.get("success"):
         return ContentRemediateResponse(
-            success=False, error=result.get("error", "Remediation failed")
+            success=False,
+            error="Content remediation failed",
+            error_code="REMEDIATION_FAILED",
+            manual_count=result.get("manual_count", 0),
+            ai_used=bool(result.get("ai_used", False)),
+            external_ai_used=bool(result.get("external_ai_used", False)),
+            provider=result.get("provider"),
+            purpose_decisions=result.get("purpose_decisions", purpose_decisions),
         )
 
     return ContentRemediateResponse(
         success=True,
         verified=bool(result.get("verified")),
         fixed_count=result.get("fixed_count", 0),
+        manual_count=result.get("manual_count", 0),
         issues_remaining=result.get("issues_remaining", 0),
         issues_introduced=result.get("issues_introduced", 0),
         remediated_score=result.get("remediated_score"),
+        ai_used=bool(result.get("ai_used", False)),
+        external_ai_used=bool(result.get("external_ai_used", False)),
+        provider=result.get("provider"),
+        purpose_decisions=result.get("purpose_decisions", purpose_decisions),
     )
 
 
@@ -1002,12 +1132,32 @@ async def approve_content(
     )
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
+    _require_fresh_canvas_source(cf)
 
-    # File-type rows are remediated as FILES (has_remediated_version set by
-    # POST /education/remediate/{scan_id}) — remediated_body stays NULL for
-    # them permanently, since they're real documents, not HTML fragments.
-    # Checking remediated_body alone made every file unapprovable.
-    if not cf.remediated_body and not cf.has_remediated_version:
+    if _is_canvas_file(cf):
+        if not cf.current_remediation_artifact_id:
+            raise HTTPException(status_code=400, detail="Managed artifact required")
+        try:
+            artifact = RemediationArtifactService.from_settings().approve(
+                db,
+                artifact_id=str(cf.current_remediation_artifact_id),
+                approved_by_id=user_id,
+                approved_by_ref=f"{principal.auth_method}:{user_id}",
+            )
+            cf.writeback_status = "approved"
+            db.commit()
+        except ArtifactError:
+            db.rollback()
+            raise HTTPException(
+                status_code=400, detail="Artifact cannot be approved"
+            ) from None
+        logger.info(
+            "Managed artifact approved for write-back",
+            extra={"cloud_file_id": cf.id, "artifact_id": artifact.id},
+        )
+        return ApproveRejectResponse(cloud_file_id=cf.id, writeback_status="approved")
+
+    if not cf.remediated_body:
         raise HTTPException(status_code=400, detail="No remediated content to approve")
 
     cf.writeback_status = "approved"
@@ -1051,8 +1201,26 @@ async def reject_content(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
-    cf.writeback_status = "rejected"
-    db.commit()
+    if _is_canvas_file(cf):
+        if not cf.current_remediation_artifact_id:
+            raise HTTPException(status_code=400, detail="Managed artifact required")
+        try:
+            RemediationArtifactService.from_settings().reject(
+                db,
+                artifact_id=str(cf.current_remediation_artifact_id),
+                rejected_by_id=user_id,
+                rejected_by_ref=f"{principal.auth_method}:{user_id}",
+            )
+            db.commit()
+        except ArtifactError:
+            db.rollback()
+            raise HTTPException(
+                status_code=400, detail="Artifact cannot be rejected"
+            ) from None
+    else:
+        cf.writeback_status = "rejected"
+        cf.remediation_origin = None
+        db.commit()
 
     logger.info(
         "Content rejected",
@@ -1121,21 +1289,37 @@ async def batch_approve_content(
     except HTTPException:
         raise HTTPException(status_code=404, detail="Content items not found") from None
 
-    approved = 0
+    invalid = [
+        cf.id
+        for cf in cloud_files
+        if cf.needs_rescan
+        or (_is_canvas_file(cf) and not cf.current_remediation_artifact_id)
+        or (not _is_canvas_file(cf) and not cf.remediated_body)
+    ]
+    if invalid:
+        raise HTTPException(
+            status_code=400, detail="Batch contains unapprovable content"
+        )
+
+    try:
+        for cf in cloud_files:
+            if _is_canvas_file(cf):
+                RemediationArtifactService.from_settings().approve(
+                    db,
+                    artifact_id=str(cf.current_remediation_artifact_id),
+                    approved_by_id=user_id,
+                    approved_by_ref=f"{principal.auth_method}:{user_id}",
+                )
+            else:
+                cf.writeback_status = "approved"
+        db.commit()
+    except ArtifactError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Batch approval failed") from None
+
+    approved = len(cloud_files)
     skipped = 0
     errors: List[str] = []
-
-    for cf in cloud_files:
-        # See approve_content's comment above — files carry
-        # has_remediated_version instead of remediated_body.
-        if not cf.remediated_body and not cf.has_remediated_version:
-            skipped += 1
-            errors.append(f"{cf.id}: no remediated content")
-            continue
-        cf.writeback_status = "approved"
-        approved += 1
-
-    db.commit()
 
     logger.info(
         "Batch approve complete",
@@ -1178,6 +1362,7 @@ async def writeback_content(
     )
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
+    _require_fresh_canvas_source(cf)
 
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)
@@ -1190,7 +1375,7 @@ async def writeback_content(
             )
             # Files are uploaded alongside the original; content items are
             # edited in place. Two mechanisms, one action to the user.
-            if cf.content_source == "file":
+            if _is_canvas_file(cf):
                 result = await scanner.write_back_file(cf, approved_by=user_id)
             else:
                 result = await scanner.write_back_content(cf, approved_by=user_id)
@@ -1244,6 +1429,7 @@ async def batch_writeback_content(
             CloudFile.department_id == auth_department_id,
             CloudFile.writeback_status == "approved",
             CloudFile.remediated_body.isnot(None),
+            CloudFile.needs_rescan.is_(False),
         )
         .all()
     )
@@ -1261,7 +1447,11 @@ async def batch_writeback_content(
             CloudFile.provider_parent_id == request.course_id,
             CloudFile.department_id == auth_department_id,
             CloudFile.writeback_status == "approved",
-            CloudFile.content_source == "file",
+            CloudFile.needs_rescan.is_(False),
+            or_(
+                CloudFile.content_source == CanvasContentType.FILE.value,
+                CloudFile.content_source.is_(None),
+            ),
         )
         .all()
     )
@@ -1304,6 +1494,9 @@ async def batch_writeback_content(
                 result = await scanner.write_back_file(cf, approved_by=user_id)
                 if result.get("success"):
                     written += 1
+                elif result.get("stale"):
+                    stale += 1
+                    errors.append(f"{cf.id}: content is stale")
                 else:
                     failed += 1
                     errors.append(f"{cf.id}: {result.get('error', 'unknown error')}")
@@ -1353,7 +1546,7 @@ async def rollback_content(
     # A file write-back adds a copy rather than editing anything, so there
     # is nothing in Canvas to restore. Undoing it means deleting the copy,
     # which is the owner's call to make in Canvas, not ours to do silently.
-    if cf.content_source == "file":
+    if _is_canvas_file(cf):
         return RollbackResponse(
             success=False,
             error=(
@@ -1443,91 +1636,3 @@ async def get_audit_log(
         cloud_file_id=cf.id,
         entries=entries,
     )
-
-
-# =============================================================================
-# Background task
-# =============================================================================
-
-
-async def _content_scan_task(
-    cloud_file_id: str,
-    department_id: str,
-    credential_id: str,
-    scan_options: Optional[Dict[str, Any]] = None,
-):
-    """
-    Background task to scan a single content item (axe-core + remediate).
-    """
-    from ..db.database import get_db as _get_db_ctx
-
-    logger.info(
-        f"Starting content scan: cloud_file={cloud_file_id}, dept={department_id}"
-    )
-
-    with _get_db_ctx() as db:
-        cloud_file = db.query(CloudFile).filter(CloudFile.id == cloud_file_id).first()
-        if not cloud_file:
-            logger.error(f"CloudFile not found: {cloud_file_id}")
-            return
-
-        try:
-            from ..integrations.canvas import CanvasAPIClient
-            from ..integrations.oauth_token_manager import OAuthTokenManager
-            from ..db.models import CloudOAuthCredentials
-
-            credential = (
-                db.query(CloudOAuthCredentials)
-                .filter(CloudOAuthCredentials.id == credential_id)
-                .first()
-            )
-            if not credential:
-                logger.error(f"Credential not found: {credential_id}")
-                return
-
-            canvas_url = require_persisted_canvas_origin(credential)
-            token_manager = OAuthTokenManager()
-            access_token = token_manager.decrypt_token(credential.access_token)
-
-            api_client = CanvasAPIClient(
-                canvas_instance_url=canvas_url,
-                access_token=access_token,
-                credential_id=credential_id,
-            )
-
-            try:
-                scanner = CanvasContentScanner(
-                    canvas_client=api_client,
-                    db=db,
-                    department_id=department_id,
-                    credential_id=credential_id,
-                    scan_options=scan_options,
-                )
-
-                # 1. Scan
-                scan_result = await scanner.scan_content_item(cloud_file)
-                logger.info(
-                    f"Content scan complete: {cloud_file_id}, "
-                    f"issues={scan_result.get('issues', 0)}"
-                )
-
-                # 2. Remediate if issues found and auto_remediate is enabled
-                if scan_result.get("issues", 0) > 0 and (scan_options or {}).get(
-                    "auto_remediate", True
-                ):
-                    remediation_result = await scanner.remediate_content_item(
-                        cloud_file
-                    )
-                    logger.info(
-                        f"Content remediation complete: {cloud_file_id}, "
-                        f"fixed={remediation_result.get('fixed_count', 0)}"
-                    )
-
-            finally:
-                await api_client.close()
-
-        except Exception as e:
-            logger.error(
-                f"Content scan task failed: {cloud_file_id}, error={e}",
-                exc_info=True,
-            )

@@ -581,7 +581,7 @@ export function CanvasCourses(): React.ReactElement {
               handleScanFile(file.id, courseId);
             }}
             className="px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-colors"
-            style={{ backgroundColor: 'var(--accent-primary)' }}
+            style={{ backgroundColor: 'var(--accent-solid)' }}
           >
             Scan
           </button>
@@ -627,7 +627,7 @@ export function CanvasCourses(): React.ReactElement {
             }}
             disabled={isPushing}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-colors disabled:opacity-50"
-            style={{ backgroundColor: 'var(--accent-primary)' }}
+            style={{ backgroundColor: 'var(--accent-solid)' }}
           >
             {isPushing ? (
               <Loader2 className="w-3 h-3 animate-spin" />
@@ -652,7 +652,7 @@ export function CanvasCourses(): React.ReactElement {
         description="Browse and scan files from your Canvas LMS courses for accessibility compliance."
       >
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent-primary)' }} />
+          <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} />
         </div>
       </FeatureGate>
     );
@@ -754,7 +754,7 @@ export function CanvasCourses(): React.ReactElement {
             <Link
               to="/integrations"
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white"
-              style={{ backgroundColor: 'var(--accent-primary)' }}
+              style={{ backgroundColor: 'var(--accent-solid)' }}
             >
               <ExternalLink className="w-4 h-4" />
               Connect Canvas
@@ -784,7 +784,7 @@ export function CanvasCourses(): React.ReactElement {
             <Link
               to="/integrations"
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white"
-              style={{ backgroundColor: 'var(--accent-primary)' }}
+              style={{ backgroundColor: 'var(--accent-solid)' }}
             >
               <ExternalLink className="w-4 h-4" />
               Check Integrations
@@ -915,7 +915,7 @@ export function CanvasCourses(): React.ReactElement {
                           <Link
                             to={`/canvas/courses/${course.id}/content`}
                             className="text-sm font-medium hover:underline"
-                            style={{ color: 'var(--accent-primary)' }}
+                            style={{ color: 'var(--accent)' }}
                           >
                             Show Course Content
                           </Link>
@@ -925,7 +925,7 @@ export function CanvasCourses(): React.ReactElement {
                           <div className="flex items-center justify-center py-12">
                             <Loader2
                               className="w-6 h-6 animate-spin"
-                              style={{ color: 'var(--accent-primary)' }}
+                              style={{ color: 'var(--accent)' }}
                             />
                           </div>
                         )}
@@ -975,7 +975,7 @@ export function CanvasCourses(): React.ReactElement {
                                   }}
                                   disabled={isBulkScanning}
                                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-colors disabled:opacity-50"
-                                  style={{ backgroundColor: 'var(--accent-primary)' }}
+                                  style={{ backgroundColor: 'var(--accent-solid)' }}
                                 >
                                   {isBulkScanning ? (
                                     <Loader2 className="w-3 h-3 animate-spin" />

@@ -52,6 +52,7 @@ class AuditService:
         user_agent: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
         request: Optional[Request] = None,
+        commit: bool = True,
     ) -> AuditLog:
         """
         Log an audit event.
@@ -91,6 +92,11 @@ class AuditService:
             details=details,
             status=status.value if isinstance(status, AuditLogStatus) else status,
         )
+
+        if not commit:
+            self.db.add(audit_log)
+            self.db.flush()
+            return audit_log
 
         try:
             self.db.add(audit_log)
@@ -164,6 +170,7 @@ class AuditService:
         api_key_id: str,
         key_name: Optional[str] = None,
         request: Optional[Request] = None,
+        commit: bool = True,
     ) -> AuditLog:
         """Log API key creation."""
         return self.log_action(
@@ -175,6 +182,7 @@ class AuditService:
             resource_id=api_key_id,
             details={"key_name": key_name},
             request=request,
+            commit=commit,
         )
 
     def log_api_key_revoke(
@@ -183,6 +191,7 @@ class AuditService:
         department_id: str,
         api_key_id: str,
         request: Optional[Request] = None,
+        commit: bool = True,
     ) -> AuditLog:
         """Log API key revocation."""
         return self.log_action(
@@ -193,6 +202,7 @@ class AuditService:
             resource_type="api_key",
             resource_id=api_key_id,
             request=request,
+            commit=commit,
         )
 
     def log_session_revoke(
@@ -351,11 +361,27 @@ class AuditService:
         total_issues: int,
         fixed_count: int,
         manual_count: int,
-        original_score: float,
-        remediated_score: float,
-        improvement: float,
-        duration_seconds: float,
+        original_score: Optional[float],
+        remediated_score: Optional[float],
+        improvement: Optional[float],
+        duration_seconds: Optional[float],
+        failed_count: int = 0,
+        skipped_count: int = 0,
+        remediation_ai_requested: Optional[bool] = None,
+        alt_text_requested: Optional[bool] = None,
+        remediation_ai_attempted: Optional[bool] = None,
+        alt_text_attempted: Optional[bool] = None,
+        remediation_ai_used: Optional[bool] = None,
+        alt_text_used: Optional[bool] = None,
+        remediation_external_ai_used: Optional[bool] = None,
+        alt_text_external_ai_used: Optional[bool] = None,
+        external_ai_used: Optional[bool] = None,
+        providers: Optional[dict] = None,
+        providers_attempted: Optional[dict] = None,
+        purpose_outcomes: Optional[dict] = None,
+        artifact_id: Optional[str] = None,
         request: Optional[Request] = None,
+        commit: bool = True,
     ) -> AuditLog:
         """Log successful document remediation."""
         return self.log_action(
@@ -372,12 +398,28 @@ class AuditService:
                 "total_issues": total_issues,
                 "fixed_count": fixed_count,
                 "manual_count": manual_count,
+                "failed_count": failed_count,
+                "skipped_count": skipped_count,
                 "original_score": original_score,
                 "remediated_score": remediated_score,
                 "improvement": improvement,
                 "duration_seconds": duration_seconds,
+                "remediation_ai_requested": remediation_ai_requested,
+                "alt_text_requested": alt_text_requested,
+                "remediation_ai_attempted": remediation_ai_attempted,
+                "alt_text_attempted": alt_text_attempted,
+                "remediation_ai_used": remediation_ai_used,
+                "alt_text_used": alt_text_used,
+                "remediation_external_ai_used": remediation_external_ai_used,
+                "alt_text_external_ai_used": alt_text_external_ai_used,
+                "external_ai_used": external_ai_used,
+                "providers": providers or {},
+                "providers_attempted": providers_attempted or {},
+                "purpose_outcomes": purpose_outcomes or {},
+                "artifact_id": artifact_id,
             },
             request=request,
+            commit=commit,
         )
 
     def log_remediation_failed(
@@ -389,8 +431,28 @@ class AuditService:
         use_ai: bool,
         error: str,
         request: Optional[Request] = None,
+        *,
+        total_issues: int = 0,
+        fixed_count: int = 0,
+        manual_count: int = 0,
+        failed_count: int = 0,
+        skipped_count: int = 0,
+        remediation_ai_requested: Optional[bool] = None,
+        alt_text_requested: Optional[bool] = None,
+        remediation_ai_attempted: Optional[bool] = None,
+        alt_text_attempted: Optional[bool] = None,
+        remediation_ai_used: Optional[bool] = None,
+        alt_text_used: Optional[bool] = None,
+        remediation_external_ai_used: Optional[bool] = None,
+        alt_text_external_ai_used: Optional[bool] = None,
+        external_ai_used: Optional[bool] = None,
+        providers: Optional[dict] = None,
+        providers_attempted: Optional[dict] = None,
+        purpose_outcomes: Optional[dict] = None,
+        artifact_id: Optional[str] = None,
+        commit: bool = True,
     ) -> AuditLog:
-        """Log failed document remediation."""
+        """Log a terminal remediation failure with bounded aggregate metadata."""
         return self.log_action(
             action=AuditLogAction.REMEDIATION_FAILED,
             status=AuditLogStatus.FAILURE,
@@ -403,8 +465,27 @@ class AuditService:
                 "file_type": file_type,
                 "use_ai": use_ai,
                 "error": error[:500],
+                "total_issues": total_issues,
+                "fixed_count": fixed_count,
+                "manual_count": manual_count,
+                "failed_count": failed_count,
+                "skipped_count": skipped_count,
+                "remediation_ai_requested": remediation_ai_requested,
+                "alt_text_requested": alt_text_requested,
+                "remediation_ai_attempted": remediation_ai_attempted,
+                "alt_text_attempted": alt_text_attempted,
+                "remediation_ai_used": remediation_ai_used,
+                "alt_text_used": alt_text_used,
+                "remediation_external_ai_used": remediation_external_ai_used,
+                "alt_text_external_ai_used": alt_text_external_ai_used,
+                "external_ai_used": external_ai_used,
+                "providers": providers or {},
+                "providers_attempted": providers_attempted or {},
+                "purpose_outcomes": purpose_outcomes or {},
+                "artifact_id": artifact_id,
             },
             request=request,
+            commit=commit,
         )
 
     def log_remediation_download(

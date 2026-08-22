@@ -30,6 +30,7 @@ def _payload(**overrides):
         "lti_staff_role": "Instructor",
         "lti_roles": ["Instructor"],
         "lti_account_wide": False,
+        "lti_platform": "canvas",
         "lti_authz_version": 2,
     }
     values.update(overrides)
@@ -66,6 +67,8 @@ def test_valid_v2_staff_payload_returns_database_identity():
         {"department_id": "claimed-dept"},
         {"role": "admin"},
         {"lti_account_wide": True},
+        {"lti_platform": None},
+        {"lti_platform": "moodle"},
         {"user_id": "other-user"},
     ],
 )

@@ -15,6 +15,7 @@ home. account_navigation launches are unaffected and still go straight to
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,6 +24,35 @@ from src.api import lti_launch_handler
 from src.api.lti_launch_handler import LTIStaffAccessDenied, handle_lti_launch
 from src.db.models import AuthProvider, User, UserRole
 from src.integrations.canvas_lti import CanvasLaunchData
+
+
+def test_local_launch_code_fallback_enforces_ttl(monkeypatch):
+    lti_launch_handler._code_store.clear()
+    monkeypatch.setattr(lti_launch_handler, "get_redis_client", lambda: None)
+    monkeypatch.setattr(
+        lti_launch_handler, "get_settings", lambda: SimpleNamespace(env="test")
+    )
+    now = iter([100.0, 106.0])
+    monkeypatch.setattr(lti_launch_handler.time, "monotonic", lambda: next(now))
+
+    lti_launch_handler._store_code("code", "payload", ttl=5)
+
+    assert lti_launch_handler._pop_code("code") is None
+
+
+def test_production_launch_code_storage_fails_closed_without_redis(monkeypatch):
+    lti_launch_handler._code_store.clear()
+    monkeypatch.setattr(lti_launch_handler, "get_redis_client", lambda: None)
+    monkeypatch.setattr(
+        lti_launch_handler, "get_settings", lambda: SimpleNamespace(env="production")
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Durable LTI launch-code storage unavailable"
+    ):
+        lti_launch_handler._store_code("code", "payload", ttl=120)
+
+    assert lti_launch_handler._code_store == {}
 
 
 def _make_launch_data(**overrides) -> CanvasLaunchData:
@@ -373,5 +403,6 @@ def test_staff_launch_mints_v2_authorization_claims(
     assert claims["lti_staff"] is True
     assert claims["lti_staff_role"] == staff_role
     assert claims["lti_account_wide"] is account_wide
+    assert claims["lti_platform"] == "canvas"
     assert claims["lti_authz_version"] == 2
     assert claims["course_id"] == "course-42"

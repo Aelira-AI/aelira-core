@@ -19,7 +19,11 @@ Important Notes:
 import asyncio
 import logging
 from typing import Optional, List, Dict, Any
+from urllib.parse import urljoin, urlsplit
 import httpx
+
+from ...utils.security import require_brightspace_oauth_allowed_origin
+from .safe_http import create_brightspace_safe_transport
 
 from .models import (
     BrightspaceUserInfo,
@@ -38,6 +42,8 @@ CONTENT_TYPE_MODULE = 0
 CONTENT_TYPE_TOPIC = 1
 
 logger = logging.getLogger(__name__)
+
+MAX_TOPIC_FILE_BYTES = 25 * 1024 * 1024
 
 
 class BrightspaceAPIClient:
@@ -67,7 +73,9 @@ class BrightspaceAPIClient:
             credential_id: Optional credential ID for tracking
             api_version: API version to use (default: "1.50")
         """
-        self.brightspace_url = brightspace_instance_url.rstrip("/")
+        self.brightspace_url = require_brightspace_oauth_allowed_origin(
+            brightspace_instance_url, _resolve_dns=False
+        )
         self.access_token = access_token
         self.credential_id = credential_id
         self.api_version = api_version
@@ -75,10 +83,30 @@ class BrightspaceAPIClient:
 
         self._client: Optional[httpx.AsyncClient] = None
 
+    def _bearer_url(self, url: str) -> str:
+        """Reject any bearer destination outside the constructor-bound origin."""
+        parsed = urlsplit(url)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("brightspace_bearer_origin_invalid")
+        try:
+            candidate_origin = require_brightspace_oauth_allowed_origin(
+                f"{parsed.scheme}://{parsed.netloc}", _resolve_dns=False
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("brightspace_bearer_origin_invalid") from exc
+        if candidate_origin != self.brightspace_url:
+            raise ValueError("brightspace_bearer_origin_invalid")
+        return url
+
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client"""
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=30.0)
+            self._client = httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=False,
+                transport=create_brightspace_safe_transport(),
+                trust_env=False,
+            )
         return self._client
 
     async def close(self):
@@ -109,10 +137,9 @@ class BrightspaceAPIClient:
         Raises:
             httpx.HTTPError: If API call fails
         """
-        client = await self._get_client()
-
         # Build full URL
-        url = f"{self.api_base}{endpoint}"
+        url = self._bearer_url(f"{self.api_base}{endpoint}")
+        client = await self._get_client()
 
         # Build headers with Bearer token
         headers = {
@@ -324,6 +351,8 @@ class BrightspaceAPIClient:
                     topic_type = item.get("TopicType")
                     item_url = item.get("Url")
                     item_description = item.get("Description")
+                    item_file_name = item.get("FileName")
+                    item_file_size = item.get("FileSize")
                 else:
                     item_id = item.Id
                     item_title = item.Title
@@ -332,6 +361,8 @@ class BrightspaceAPIClient:
                     topic_type = getattr(item, "TopicType", None)
                     item_url = getattr(item, "Url", None)
                     item_description = getattr(item, "Description", None)
+                    item_file_name = getattr(item, "FileName", None)
+                    item_file_size = getattr(item, "FileSize", None)
 
                 # Skip hidden items entirely
                 if is_hidden:
@@ -354,6 +385,8 @@ class BrightspaceAPIClient:
                                 module_id=parent_module_id,
                                 title=item_title,
                                 content_type="file",
+                                file_name=item_file_name,
+                                file_size=item_file_size,
                                 url=item_url,
                                 module_path=" / ".join(path_parts),
                             )
@@ -390,51 +423,98 @@ class BrightspaceAPIClient:
         Returns:
             Tuple of (file_bytes, content_type)
         """
+        if type(org_unit_id) is not int or type(topic_id) is not int:
+            raise ValueError("brightspace_download_scope_invalid")
+        instance = urlsplit(self.brightspace_url)
+        if (
+            instance.scheme != "https"
+            or not instance.hostname
+            or instance.username is not None
+            or instance.password is not None
+        ):
+            raise ValueError("brightspace_download_origin_invalid")
+
+        def validate_download_url(value: str) -> str:
+            candidate = urlsplit(value)
+            if (
+                candidate.scheme != "https"
+                or candidate.hostname != instance.hostname
+                or candidate.port != instance.port
+                or candidate.username is not None
+                or candidate.password is not None
+            ):
+                raise ValueError("brightspace_download_origin_invalid")
+            return value
+
+        url = self._bearer_url(
+            f"{self.api_base}/le/{self.api_version}/{org_unit_id}/content/topics/{topic_id}/file"
+        )
         client = await self._get_client()
         headers = {"Authorization": f"Bearer {self.access_token}"}
 
-        # Try official file download endpoint
-        url = f"{self.api_base}/le/{self.api_version}/{org_unit_id}/content/topics/{topic_id}/file"
-        response = await client.get(url, headers=headers)
+        async def stream_download(download_url: str) -> tuple[int, bytes, str]:
+            """Read at most the bounded body while retaining redirect control."""
+            async with client.stream(
+                "GET", download_url, headers=headers, follow_redirects=False
+            ) as response:
+                if 300 <= response.status_code < 400:
+                    await response.aclose()
+                    raise ValueError("brightspace_download_redirect_rejected")
+                if response.status_code in (403, 404):
+                    return response.status_code, b"", "application/octet-stream"
+                response.raise_for_status()
 
-        if response.status_code == 200:
-            content_type = (
-                response.headers.get("content-type", "application/octet-stream")
-                .split(";")[0]
-                .strip()
-            )
-            return response.content, content_type
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        declared_size = int(content_length)
+                    except (TypeError, ValueError):
+                        declared_size = -1
+                    if declared_size > MAX_TOPIC_FILE_BYTES:
+                        await response.aclose()
+                        raise ValueError("brightspace_download_too_large")
 
-        # If 403/404, try fetching via the topic's Url field
-        if response.status_code in (403, 404):
-            logger.info(
-                f"File endpoint returned {response.status_code} for topic {topic_id}, "
-                f"falling back to content URL"
-            )
-            topic_data = await self._call_api(
-                "GET",
-                f"/le/{self.api_version}/{org_unit_id}/content/topics/{topic_id}",
-            )
-            content_url = topic_data.get("Url", "")
-            if content_url:
-                # Content URLs are relative paths — prepend instance URL
-                if content_url.startswith("/"):
-                    content_url = f"{self.brightspace_url}{content_url}"
-                file_response = await client.get(
-                    content_url, headers=headers, follow_redirects=True
+                chunks = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > MAX_TOPIC_FILE_BYTES:
+                        await response.aclose()
+                        raise ValueError("brightspace_download_too_large")
+                    chunks.append(chunk)
+                content_type = (
+                    response.headers.get("content-type", "application/octet-stream")
+                    .split(";")[0]
+                    .strip()
                 )
-                if file_response.status_code == 200:
-                    content_type = (
-                        file_response.headers.get(
-                            "content-type", "application/octet-stream"
-                        )
-                        .split(";")[0]
-                        .strip()
-                    )
-                    return file_response.content, content_type
+                return response.status_code, b"".join(chunks), content_type
 
-        response.raise_for_status()
-        return response.content, "application/octet-stream"
+        # Try official file download endpoint.
+        url = validate_download_url(url)
+        status_code, content, content_type = await stream_download(url)
+        if status_code == 200:
+            return content, content_type
+
+        # If 403/404, try fetching via the topic's Url field. The fallback URL
+        # is validated before the bearer token is attached.
+        logger.info(
+            f"File endpoint returned {status_code} for topic {topic_id}, "
+            f"falling back to content URL"
+        )
+        topic_data = await self._call_api(
+            "GET",
+            f"/le/{self.api_version}/{org_unit_id}/content/topics/{topic_id}",
+        )
+        content_url = topic_data.get("Url", "")
+        if isinstance(content_url, str) and content_url:
+            content_url = validate_download_url(
+                urljoin(f"{self.brightspace_url}/", content_url)
+            )
+            fallback_status, content, content_type = await stream_download(content_url)
+            if fallback_status == 200:
+                return content, content_type
+
+        raise ValueError("brightspace_download_failed")
 
     async def get_topic_html(self, org_unit_id: int, topic_id: int) -> str:
         """
@@ -511,8 +591,10 @@ class BrightspaceAPIClient:
         Returns:
             Response data from Brightspace
         """
+        url = self._bearer_url(
+            f"{self.api_base}/le/{self.api_version}/{org_unit_id}/content/topics/{topic_id}/file"
+        )
         client = await self._get_client()
-        url = f"{self.api_base}/le/{self.api_version}/{org_unit_id}/content/topics/{topic_id}/file"
         response = await client.put(
             url,
             files={"file": (filename, file_bytes)},
@@ -533,42 +615,17 @@ class BrightspaceAPIClient:
     async def download_file(
         self, file_url: str, local_path: str
     ) -> BrightspaceDownloadResult:
+        """Fail closed for the deprecated caller-supplied URL transport.
+
+        Authenticated downloads must use :meth:`get_topic_file`, whose course and
+        topic identifiers construct the fixed API endpoint. Retaining this method
+        as an inert compatibility shim avoids ever attaching a bearer token to a
+        URL selected by a caller.
         """
-        Download a file from Brightspace.
-
-        Args:
-            file_url: File download URL (with token)
-            local_path: Local path to save file
-
-        Returns:
-            BrightspaceDownloadResult with download status
-        """
-        try:
-            client = await self._get_client()
-
-            # Download file (URL should include token)
-            response = await client.get(
-                file_url,
-                headers={"Authorization": f"Bearer {self.access_token}"},
-            )
-            response.raise_for_status()
-
-            # Save to local file
-            with open(local_path, "wb") as f:
-                f.write(response.content)
-
-            return BrightspaceDownloadResult(
-                success=True,
-                local_path=local_path,
-                file_size=len(response.content),
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to download Brightspace file {file_url}: {e}")
-            return BrightspaceDownloadResult(
-                success=False,
-                error=str(e),
-            )
+        return BrightspaceDownloadResult(
+            success=False,
+            error="brightspace_caller_url_download_unsupported",
+        )
 
     async def upload_file(
         self,
@@ -590,8 +647,6 @@ class BrightspaceAPIClient:
             BrightspaceUploadResult with upload status
         """
         try:
-            client = await self._get_client()
-
             # Prepare file upload
             with open(file_path, "rb") as f:
                 files = {"file": f}
@@ -602,6 +657,9 @@ class BrightspaceAPIClient:
                 else:
                     # Upload to root content
                     upload_url = f"{self.api_base}/le/{self.api_version}/{org_unit_id}/content/root/files"
+
+                upload_url = self._bearer_url(upload_url)
+                client = await self._get_client()
 
                 response = await client.post(
                     upload_url,

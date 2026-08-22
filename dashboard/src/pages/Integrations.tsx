@@ -216,7 +216,7 @@ function LMSUrlInputModal({ provider, isOpen, onSubmit, onCancel, isConnecting }
             onChange={(e: ChangeEvent<HTMLInputElement>) => setUrl(e.target.value)}
             placeholder={config.placeholder}
             required
-            className="w-full px-4 py-3 rounded-lg mb-4 focus-visible:outline-2 focus-visible:outline-[var(--accent-primary)] focus-visible:outline-offset-2"
+            className="w-full px-4 py-3 rounded-lg mb-4 focus-visible:outline-2 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-2"
             style={{
               backgroundColor: 'var(--surface-tertiary)',
               color: 'var(--content-primary)',
@@ -371,7 +371,7 @@ function IntegrationCard({
       className="rounded-xl border p-6"
       style={{
         backgroundColor: 'var(--surface-secondary)',
-        borderColor: connected ? 'var(--accent-primary)' : 'var(--border-primary)'
+        borderColor: connected ? 'var(--accent)' : 'var(--border-primary)'
       }}
     >
       <div className="flex items-start justify-between mb-4">
@@ -648,7 +648,7 @@ export function Integrations(): React.ReactElement {
         description="Connect Google Drive, Microsoft OneDrive, Canvas, Blackboard, and other platforms to automatically scan your documents."
       >
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent-primary)' }} />
+        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} />
       </div>
       </FeatureGate>
     );
@@ -833,23 +833,23 @@ export function Integrations(): React.ReactElement {
         </h3>
         <ul className="space-y-2 text-sm" style={{ color: 'var(--content-secondary)' }}>
           <li className="flex items-start gap-2">
-            <span className="font-bold" style={{ color: 'var(--accent-primary)' }}>1.</span>
+            <span className="font-bold" style={{ color: 'var(--accent)' }}>1.</span>
             Connect your cloud storage or LMS using OAuth 2.0 / LTI 1.3
           </li>
           <li className="flex items-start gap-2">
-            <span className="font-bold" style={{ color: 'var(--accent-primary)' }}>2.</span>
+            <span className="font-bold" style={{ color: 'var(--accent)' }}>2.</span>
             Aelira automatically discovers and syncs your files
           </li>
           <li className="flex items-start gap-2">
-            <span className="font-bold" style={{ color: 'var(--accent-primary)' }}>3.</span>
+            <span className="font-bold" style={{ color: 'var(--accent)' }}>3.</span>
             Files are scanned for accessibility issues using AI
           </li>
           <li className="flex items-start gap-2">
-            <span className="font-bold" style={{ color: 'var(--accent-primary)' }}>4.</span>
+            <span className="font-bold" style={{ color: 'var(--accent)' }}>4.</span>
             Auto-remediation fixes issues and uploads corrected files back
           </li>
           <li className="flex items-start gap-2">
-            <span className="font-bold" style={{ color: 'var(--accent-primary)' }}>5.</span>
+            <span className="font-bold" style={{ color: 'var(--accent)' }}>5.</span>
             Real-time webhooks detect changes and re-scan automatically
           </li>
         </ul>

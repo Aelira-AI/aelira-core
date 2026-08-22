@@ -10,7 +10,6 @@ import {
   User,
   Building2,
   Shield,
-  Key,
   LogOut,
   AlertCircle,
   CheckCircle,
@@ -28,6 +27,7 @@ import { apiClient } from '../api/client';
 import EmailPreferencesCard from '../components/EmailPreferencesCard';
 import { ActiveSessionsCard } from '../components/settings/ActiveSessionsCard';
 import { AIProvidersCard } from '../components/settings/AIProvidersCard';
+import { APIKeyManagementCard } from '../components/settings/APIKeyManagementCard';
 import { trackEvent } from '../utils/analytics';
 
 // Type definitions
@@ -86,7 +86,7 @@ const FeatureItem = ({ label, available }: FeatureItemProps): React.ReactElement
 
 
 export default function Settings(): React.ReactElement {
-  const { apiKey, department, logout } = useAuth();
+  const { authMethod, department, logout } = useAuth();
   const { showToast } = useToast();
   const {
     showAIProviderSettings,
@@ -101,8 +101,7 @@ export default function Settings(): React.ReactElement {
     showBulkUpload,
     showTeamFeatures,
   } = useFeatureAccess();
-  const [showApiKey, setShowApiKey] = useState<boolean>(false);
-  const [copied, setCopied] = useState<boolean>(false);
+
 
   // LLM Provider state
   const [providers, setProviders] = useState<Record<string, Provider>>({});
@@ -284,11 +283,6 @@ export default function Settings(): React.ReactElement {
     }
   };
 
-  const handleCopyApiKey = (): void => {
-    navigator.clipboard.writeText(apiKey || '');
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   const handleDeactivate = async (): Promise<void> => {
     if (!window.confirm('Are you sure you want to deactivate your account? This will immediately sign you out and block re-registration for 90 days.')) {
@@ -575,78 +569,18 @@ export default function Settings(): React.ReactElement {
         </div>
 
         {/* API Key Management */}
-        <div className="card mb-6">
-          <div className="px-6 py-4 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
-            <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
-              <Key className="w-5 h-5" />
-              API Key
-            </h2>
-          </div>
-          <div className="px-6 py-4 space-y-4">
-            <div>
-              <label className="text-sm font-medium text-tertiary mb-2 block">Your API Key</label>
-              {apiKey ? (
-                <>
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="flex-1 px-4 py-3 rounded-lg font-mono text-sm border"
-                      style={{
-                        backgroundColor: 'var(--surface-tertiary)',
-                        borderColor: 'var(--border-primary)',
-                        color: 'var(--content-primary)'
-                      }}
-                    >
-                      {showApiKey ? apiKey : '••••••••••••••••••••••••••••••••'}
-                    </div>
-                    <button
-                      onClick={() => setShowApiKey(!showApiKey)}
-                      className="btn-secondary px-4 py-3"
-                    >
-                      {showApiKey ? 'Hide' : 'Show'}
-                    </button>
-                    <button
-                      onClick={handleCopyApiKey}
-                      className="btn-primary px-4 py-3"
-                    >
-                      {copied ? 'Copied!' : 'Copy'}
-                    </button>
-                  </div>
-                  <p className="text-xs text-tertiary mt-2">
-                    Keep your API key secure. Do not share it with others.
-                  </p>
-                </>
-              ) : (
-                <div className="p-4 rounded-lg border" style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--surface-secondary)' }}>
-                  <p className="text-sm text-secondary mb-2">
-                    No API key loaded. API keys are shown only once at creation and are stored securely.
-                  </p>
-                  <p className="text-xs text-tertiary">
-                    You can generate a new API key for programmatic access. Your existing key (if any) will continue to work.
-                  </p>
-                </div>
-              )}
+        {authMethod === 'lti' ? (
+          <section className="card mb-6" aria-labelledby="api-key-management-unavailable-title">
+            <div className="px-6 py-5">
+              <h2 id="api-key-management-unavailable-title" className="text-xl font-semibold text-primary">
+                API Key Management
+              </h2>
+              <p className="text-sm text-tertiary mt-2">
+                API key management is unavailable in an LTI launch session.
+              </p>
             </div>
-
-            {import.meta.env.VITE_DEV_MODE === 'true' && (
-              <div
-                className="flex items-start gap-2 p-4 rounded-lg border"
-                style={{
-                  backgroundColor: 'var(--surface-warning-subtle)',
-                  borderColor: 'var(--content-warning)',
-                  color: 'var(--content-warning)'
-                }}
-              >
-                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium">Development Mode Active</p>
-                  <p className="text-xs mt-1 opacity-90">
-                    Development mode is on. This API key is for display only and will not work in production. Authentication is still enforced.
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+          </section>
+        ) : <APIKeyManagementCard />}
 
         {/* Security - Active Sessions */}
         <ActiveSessionsCard
@@ -697,7 +631,9 @@ export default function Settings(): React.ReactElement {
               Sign Out
             </button>
             <p className="text-xs text-tertiary mt-2">
-              You will need to enter your API key again to access the dashboard.
+              {authMethod === 'session'
+                ? 'You can sign in again with a new magic link.'
+                : 'You will need a valid API key to access the dashboard again.'}
             </p>
           </div>
         </div>

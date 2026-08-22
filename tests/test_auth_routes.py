@@ -29,6 +29,7 @@ pattern, extended for auth_routes' extra collaborators):
 
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -189,6 +190,22 @@ class TestCreateApiKey:
         response = client.post("/auth/keys", json={}, headers=AUTH_HEADERS)
         assert response.status_code == 422
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"name": ""},
+            {"name": "x" * 101},
+            {"name": "key", "rate_limit_per_hour": 0},
+            {"name": "key", "expires_days": 0},
+            {"name": "key", "unexpected": "secret"},
+        ],
+    )
+    def test_rejects_unbounded_or_extra_input(
+        self, client, mock_db, valid_api_key, payload
+    ):
+        response = client.post("/auth/keys", json=payload, headers=AUTH_HEADERS)
+        assert response.status_code == 422
+
     def test_happy_path_returns_full_key_once(
         self, client, mock_db, valid_api_key, monkeypatch
     ):
@@ -209,6 +226,48 @@ class TestCreateApiKey:
         assert body["api_key"]["id"] == "key-2"
         assert body["api_key"]["name"] == "My Key"
 
+    def test_session_with_no_existing_keys_creates_only_requested_visible_key(
+        self, client, mock_db, monkeypatch
+    ):
+        from src.auth import dependencies
+        from src.auth.dependencies import AuthenticatedPrincipal
+        from src.db.models import UserRole
+
+        principal = AuthenticatedPrincipal(
+            api_key=None,
+            user_id="session-user",
+            department_id="session-dept",
+            user_role=UserRole.FACULTY,
+            auth_method="session",
+        )
+        monkeypatch.setattr(
+            dependencies,
+            "resolve_access_token",
+            MagicMock(return_value=SimpleNamespace(principal=principal)),
+        )
+        created = _fake_api_key(
+            id="visible-key",
+            user_id="session-user",
+            department_id="session-dept",
+            name="Automation",
+        )
+        create = MagicMock(return_value=(created, "aelira_live_visible_once"))
+        monkeypatch.setattr(AuthService, "create_api_key", create)
+        client.cookies.set("aelira_access", "valid-session")
+
+        response = client.post(
+            "/auth/keys",
+            json={"name": "Automation"},
+            headers={"Authorization": "Bearer retired-local-key"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["full_key"] == "aelira_live_visible_once"
+        assert response.json()["api_key"]["id"] == "visible-key"
+        create.assert_called_once()
+        assert create.call_args.kwargs["name"] == "Automation"
+        assert create.call_args.kwargs["user_id"] == "session-user"
+
 
 class TestListApiKeys:
     """GET /auth/keys (L317-344)."""
@@ -220,13 +279,47 @@ class TestListApiKeys:
     def test_happy_path(self, client, mock_db, valid_api_key, monkeypatch):
         keys = [_fake_api_key(id="key-a"), _fake_api_key(id="key-b")]
         monkeypatch.setattr(
-            AuthService, "list_api_keys", staticmethod(lambda db, user_id: keys)
+            AuthService,
+            "list_api_keys",
+            staticmethod(lambda db, user_id, department_id: keys),
         )
         response = client.get("/auth/keys", headers=AUTH_HEADERS)
         assert response.status_code == 200
         # L332-344: one APIKeyResponse per key returned by AuthService.list_api_keys.
         ids = [k["id"] for k in response.json()]
         assert ids == ["key-a", "key-b"]
+
+    def test_valid_session_lists_keys_despite_retired_bearer(
+        self, client, mock_db, monkeypatch
+    ):
+        from src.auth import dependencies
+        from src.auth.dependencies import AuthenticatedPrincipal
+        from src.db.models import UserRole
+
+        principal = AuthenticatedPrincipal(
+            api_key=None,
+            user_id="session-user",
+            department_id="session-dept",
+            user_role=UserRole.FACULTY,
+            auth_method="session",
+        )
+        monkeypatch.setattr(
+            dependencies,
+            "resolve_access_token",
+            MagicMock(return_value=SimpleNamespace(principal=principal)),
+        )
+        listed = MagicMock(return_value=[])
+        monkeypatch.setattr(AuthService, "list_api_keys", listed)
+        client.cookies.set("aelira_access", "valid-session")
+
+        response = client.get(
+            "/auth/keys",
+            headers={"Authorization": "Bearer retired-local-key"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == []
+        listed.assert_called_once_with(mock_db, "session-user", "session-dept")
 
 
 class TestRevokeApiKey:
@@ -239,21 +332,26 @@ class TestRevokeApiKey:
     def test_not_found_returns_404(self, client, mock_db, valid_api_key, monkeypatch):
         # L361-367: AuthService.revoke_api_key returning False -> 404.
         monkeypatch.setattr(
-            AuthService, "revoke_api_key", staticmethod(lambda db, kid, uid: False)
+            AuthService,
+            "revoke_api_key",
+            staticmethod(lambda db, kid, uid, department_id, commit=True: False),
         )
         response = client.delete("/auth/keys/missing-key", headers=AUTH_HEADERS)
         assert response.status_code == 404
 
     def test_happy_path(self, client, mock_db, valid_api_key, monkeypatch):
         monkeypatch.setattr(
-            AuthService, "revoke_api_key", staticmethod(lambda db, kid, uid: True)
+            AuthService,
+            "revoke_api_key",
+            staticmethod(lambda db, kid, uid, department_id, commit=True: True),
         )
         response = client.delete("/auth/keys/key-1", headers=AUTH_HEADERS)
         assert response.status_code == 200
         # L377: success message echoes the key id.
         assert response.json() == {
             "success": True,
-            "message": "API key key-1 revoked",
+            "message": "API key revoked",
+            "revoked_current_key": True,
         }
 
 
@@ -589,6 +687,47 @@ class TestMagicLinkRequest:
         }
         assert session_service.create_magic_link.called
 
+    @pytest.mark.parametrize(
+        ("requested_next", "expected_next"),
+        [
+            (
+                "/canvas/courses/42/content?tab=files",
+                "/canvas/courses/42/content?tab=files",
+            ),
+            ("//evil.example", "/dashboard"),
+            ("https://evil.example/steal", "/dashboard"),
+            ("/\\\\evil.example", "/dashboard"),
+            ("\\\\evil.example", "/dashboard"),
+        ],
+    )
+    def test_generated_link_carries_only_safe_next(
+        self, client, monkeypatch, requested_next, expected_next
+    ):
+        from urllib.parse import parse_qs, urlparse
+
+        _allow_rate_limit(monkeypatch)
+        existing_user = MagicMock(is_active=True)
+        session_service = MagicMock()
+        session_service.create_magic_link.return_value = "tok-123"
+        monkeypatch.setattr(auth_routes, "get_session_service", lambda: session_service)
+        email_service = MagicMock()
+        email_service.is_configured.return_value = True
+        email_service.send_magic_link = AsyncMock(return_value={"success": True})
+        monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
+        _use_db(
+            _db_with({DeletedEmail: {"first": None}, User: {"first": existing_user}})
+        )
+
+        response = client.post(
+            "/auth/magic-link/request",
+            json={"email": EDU_EMAIL, "next": requested_next},
+        )
+
+        assert response.status_code == 200
+        email_service.send_magic_link.assert_awaited_once()
+        sent_url = email_service.send_magic_link.await_args.kwargs["magic_link_url"]
+        assert parse_qs(urlparse(sent_url).query)["next"] == [expected_next]
+
     def test_unknown_email_closed_signup_returns_generic_success(
         self, client, monkeypatch
     ):
@@ -808,6 +947,7 @@ class TestSessionValidate:
 
         assert response.status_code == 200
         session_service.validate_session.assert_not_called()
+        assert response.json()["auth_method"] == "lti"
 
     def test_happy_path_db_backed_session(self, client, monkeypatch):
         # L1296-1300, L1318-1338: DB-backed session resolves user + department.
@@ -836,6 +976,73 @@ class TestSessionValidate:
         assert body["user"]["id"] == "user-9"
         assert body["department"]["id"] == "dept-1"
         assert body["expires_at"] == 12345
+        assert body["auth_method"] == "session"
+
+    def test_validated_session_recovers_from_stale_bearer_and_creates_one_requested_key(
+        self, client, mock_db, monkeypatch
+    ):
+        """Exercise the complete browser recovery sequence at the HTTP boundary."""
+        from src.auth import dependencies
+        from src.auth.dependencies import AuthenticatedPrincipal
+        from src.db.models import UserRole
+
+        fake_user = MagicMock(
+            id="session-user",
+            email=EDU_EMAIL,
+            department_id="session-dept",
+            role=UserRole.FACULTY,
+            email_verified=True,
+            is_active=True,
+        )
+        fake_user.name = "Session User"
+        principal = AuthenticatedPrincipal(
+            api_key=None,
+            user_id="session-user",
+            department_id="session-dept",
+            user_role=UserRole.FACULTY,
+            auth_method="session",
+        )
+        resolved = SimpleNamespace(
+            principal=principal, user=fake_user, payload={"exp": 12345}
+        )
+        resolve = MagicMock(return_value=resolved)
+        monkeypatch.setattr(auth_routes, "resolve_access_token", resolve)
+        monkeypatch.setattr(dependencies, "resolve_access_token", resolve)
+        dept = MagicMock(id="session-dept", tier="trial")
+        dept.name = "Accessibility"
+        mock_db.query.return_value.filter.return_value.first.return_value = dept
+        listed = MagicMock(return_value=[])
+        monkeypatch.setattr(AuthService, "list_api_keys", listed)
+        created = _fake_api_key(
+            id="requested-key",
+            user_id="session-user",
+            department_id="session-dept",
+            name="Automation",
+        )
+        create = MagicMock(return_value=(created, "aelira_live_visible_once"))
+        monkeypatch.setattr(AuthService, "create_api_key", create)
+        client.cookies.set("aelira_access", "valid-session")
+        client.cookies.set("csrf_token", "matching-csrf")
+        stale_headers = {"Authorization": "Bearer retired-dashboard-key"}
+
+        validation = client.get("/auth/session/validate", headers=stale_headers)
+        keys = client.get("/auth/keys", headers=stale_headers)
+        creation = client.post(
+            "/auth/keys",
+            json={"name": "Automation"},
+            headers={**stale_headers, "X-CSRF-Token": "matching-csrf"},
+        )
+
+        assert validation.status_code == 200
+        assert validation.json()["auth_method"] == "session"
+        assert keys.status_code == 200
+        assert keys.json() == []
+        assert creation.status_code == 200
+        assert creation.json()["full_key"] == "aelira_live_visible_once"
+        assert creation.json()["api_key"]["id"] == "requested-key"
+        listed.assert_called_once_with(mock_db, "session-user", "session-dept")
+        create.assert_called_once()
+        assert create.call_args.kwargs["name"] == "Automation"
 
 
 class TestSessionRefresh:

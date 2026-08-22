@@ -42,9 +42,8 @@ export type {
   CloudFile,
   CloudFolder,
   SyncFolder,
-  // Billing
+  // Workspace capacity
   QuotaStatus,
-  BillingInfo,
   // AI/LLM
   LLMProvider,
   LLMProviderConfig,

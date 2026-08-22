@@ -15,8 +15,10 @@ Workflow:
 
 import logging
 import asyncio
+import json
 import uuid
 import tempfile
+from dataclasses import dataclass
 from html import escape
 import os
 from pathlib import Path
@@ -25,22 +27,36 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from bs4 import BeautifulSoup
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..db.models import (
     CloudFile,
-    CloudJobQueue,
-    CloudJobStatus,
     CloudJobType,
+    CloudOAuthCredentials,
     ContentWritebackLog,
+    RemediationArtifact,
     Scan,
     ScanResult,
     ScanType,
     ScanStatus,
 )
 from ..integrations.canvas.canvas_api import CanvasAPIClient
+from ..integrations.canvas.models import CanvasFileInfo
+from ..config.settings import get_settings
 from ..integrations.canvas.content_models import CanvasContentType
 from ..utils.sanitization import sanitize_for_postgres
+from ..services.remediation_artifact_service import (
+    ArtifactError,
+    RemediationArtifactService,
+)
+from ..services.job_enqueue_service import enqueue_cloud_job
+from ..services.canvas_identity_service import (
+    add_or_get_canvas_cloud_file,
+    invalidate_canvas_derived_state,
+)
+from ..utils.security import require_persisted_canvas_origin
+from .deterministic_axe import DeterministicScanUnavailable, run_deterministic_axe
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +190,182 @@ def _sanitize_html(html: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _canonical_issue_identifier(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+
+# Keep this explicit list aligned with the ALT_TEXT aliases accepted by
+# remediation_routes._map_category_string/BaseRemediator, plus axe-core image
+# rules and the scanner-specific IDs emitted elsewhere in this repository.
+# Exact canonical matching is intentional: substring matching would misroute
+# unrelated work such as image_contrast to the alt-text purpose.
+_ALT_TEXT_ISSUE_IDENTIFIERS = {
+    "alt_text",
+    "alternative_text",
+    "area_alt",
+    "figure_alt",
+    "image",
+    "image_alt",
+    "image_alt_text",
+    "image_description",
+    "image_of_text",
+    "input_image_alt",
+    "missing_alt_text",
+    "missing_figure_caption",
+    "missing_image_description",
+    "object_alt",
+    "role_img_alt",
+    "svg_img_alt",
+}
+
+
+_ALT_TEXT_CANDIDATE_FIELDS = (
+    "category",
+    "type",
+    "issue_type",
+    "id",  # axe-core's rule identifier
+    "rule",
+    "rule_id",
+    "axe_id",
+    "axe_rule_id",
+)
+
+
+def _is_alt_text_issue(
+    raw_issue: Dict[str, Any], normalized_issue: Dict[str, Any]
+) -> bool:
+    """Recognize image-description work across raw and normalized scanner shapes."""
+
+    candidates = [
+        issue.get(field)
+        for issue in (normalized_issue, raw_issue)
+        for field in _ALT_TEXT_CANDIDATE_FIELDS
+    ]
+    return any(
+        _canonical_issue_identifier(candidate) in _ALT_TEXT_ISSUE_IDENTIFIERS
+        for candidate in candidates
+    )
+
+
+def _issue_node_count(issue: Dict[str, Any]) -> int:
+    nodes = issue.get("nodes")
+    return max(1, len(nodes)) if isinstance(nodes, list) else 1
+
+
+class _AIUsageTracker:
+    """Transparent compatibility wrapper with an aggregate purpose outcome.
+
+    Outcomes describe the whole operation, not merely its final provider call.
+    Precedence is ``used`` (any successful AI contribution), then
+    ``attempted_failed`` (any failed call attempt), ``denied_at_dispatch``
+    (any dispatch denial), and finally ``allowed_not_used``. ``not_requested``
+    is reserved for operations where no tracker is constructed.
+    """
+
+    _OUTCOME_PRECEDENCE = {
+        "allowed_not_used": 0,
+        "denied_at_dispatch": 1,
+        "attempted_failed": 2,
+        "used": 3,
+    }
+
+    def __init__(self, wrapped_client: Any, *, requested: bool):
+        self.wrapped_client = wrapped_client
+        self.ai_used = False
+        self.external_ai_used = False
+        self.provider_used: Optional[str] = None
+        self.outcome = (
+            "allowed_not_used"
+            if wrapped_client is not None
+            else ("denied_at_dispatch" if requested else "not_requested")
+        )
+
+    @property
+    def provider(self) -> Any:
+        return getattr(self.wrapped_client, "provider", None)
+
+    def __getattr__(self, name: str) -> Any:
+        target = getattr(self.wrapped_client, name)
+        if name not in {
+            "generate_text_sync",
+            "generate_code_sync",
+            "analyze_image_sync",
+        }:
+            return target
+
+        def tracked(*args: Any, **kwargs: Any) -> Any:
+            result = target(*args, **kwargs)
+            if isinstance(result, dict):
+                used = result.get("ai_used") is True
+                self.ai_used = self.ai_used or used
+                self.external_ai_used = self.external_ai_used or (
+                    result.get("external_ai_used") is True
+                )
+                provider = result.get("provider")
+                if isinstance(provider, str):
+                    self.provider_used = provider
+                reported_outcome = result.get("purpose_outcome")
+                successful_contribution = result.get("success") is True and (
+                    used
+                    or result.get("call_made") is True
+                    or reported_outcome == "used"
+                )
+                attempted_failure = result.get("success") is False and (
+                    used
+                    or result.get("call_made") is True
+                    or reported_outcome in {"used", "attempted_failed"}
+                )
+                if successful_contribution:
+                    call_outcome = "used"
+                elif attempted_failure:
+                    call_outcome = "attempted_failed"
+                elif reported_outcome == "denied_at_dispatch" or (
+                    result.get("success") is False
+                ):
+                    call_outcome = "denied_at_dispatch"
+                else:
+                    call_outcome = "allowed_not_used"
+                if (
+                    self._OUTCOME_PRECEDENCE[call_outcome]
+                    > self._OUTCOME_PRECEDENCE[self.outcome]
+                ):
+                    self.outcome = call_outcome
+            return result
+
+        return tracked
+
+
+@dataclass(frozen=True)
+class _PendingVerification:
+    """Immutable verification data held until artifact cleanup succeeds."""
+
+    scan_id: str
+    score: float
+    fixed: int
+    remaining: int
+    introduced: int
+    axe_results_json: str
+    issues_json: str
+    critical_issues: int
+    high_issues: int
+    medium_issues: int
+    low_issues: int
+
+
+@dataclass(frozen=True)
+class _PendingRemediation:
+    """Immutable remediation result held outside persistent ORM state."""
+
+    body: str
+    fixed_count: int
+    manual_count: int
+    failed_count: int
+    remediated_score: Optional[float]
+    verification: Optional[_PendingVerification]
+
+
 class CanvasContentScanner:
     """
     Orchestrates scanning, remediation, and write-back of Canvas HTML content.
@@ -196,17 +388,23 @@ class CanvasContentScanner:
         course_name: str = "",
         course_code: str = "",
         scan_options: Optional[Dict[str, Any]] = None,
+        artifact_service: Optional[RemediationArtifactService] = None,
     ):
         self.canvas_client = canvas_client
         self.db = db
         self.department_id = department_id
         self.credential_id = credential_id
+        self.artifact_service = (
+            artifact_service or RemediationArtifactService.from_settings()
+        )
         self.course_name = course_name
         self.course_code = course_code
+        # Safe fallbacks are deterministic. Explicit options are retained for
+        # separate remediation operations; scan methods never consult them.
         self.scan_options = scan_options or {
-            "generate_alt_text": True,
-            "auto_remediate": True,
-            "detect_decorative": True,
+            "generate_alt_text": False,
+            "auto_remediate": False,
+            "detect_decorative": False,
         }
 
     # ------------------------------------------------------------------
@@ -416,21 +614,64 @@ class CanvasContentScanner:
         # fires the background task for it (see file_scan_jobs above).
         for file_info in files:
             cf = self._upsert_file_cloud_file(course_id=course_id, file_info=file_info)
-            job_id = str(uuid.uuid4())
             counts["file"] += 1
-            self.db.add(
-                CloudJobQueue(
-                    id=job_id,
-                    department_id=self.department_id,
-                    job_type=CloudJobType.SCAN.value,
-                    provider="canvas",
-                    provider_file_id=cf.provider_file_id,
-                    cloud_file_id=cf.id,
-                    credential_id=self.credential_id,
-                    status=CloudJobStatus.PENDING.value,
-                )
+            scan_job = enqueue_cloud_job(
+                self.db,
+                department_id=self.department_id,
+                job_type=CloudJobType.SCAN.value,
+                payload={
+                    "scan_kind": "cloud_file",
+                    "cloud_file_id": cf.id,
+                    "credential_id": self.credential_id,
+                    "provider": "canvas",
+                    "provider_file_id": cf.provider_file_id,
+                    "course_id": course_id,
+                },
+                dedupe_key=(
+                    f"canvas-file-scan:{self.credential_id}:"
+                    f"{course_id}:file:{cf.provider_file_id}:"
+                    f"{cf.provider_version or 'current'}"
+                ),
+                provider="canvas",
+                credential_id=self.credential_id,
+                cloud_file_id=cf.id,
+                provider_file_id=cf.provider_file_id,
             )
-            file_scan_jobs.append({"job_id": job_id, "cloud_file_id": cf.id})
+            file_scan_jobs.append({"job_id": scan_job.id, "cloud_file_id": cf.id})
+
+        for cloud_file_id in cloud_file_ids:
+            cloud_file = self.db.get(CloudFile, cloud_file_id)
+            if cloud_file is None:
+                continue
+            content_version = (
+                cloud_file.content_updated_at.isoformat()
+                if cloud_file.content_updated_at is not None
+                else "current"
+            )
+            enqueue_cloud_job(
+                self.db,
+                department_id=self.department_id,
+                job_type=CloudJobType.SCAN.value,
+                payload={
+                    "scan_kind": "canvas_content",
+                    "cloud_file_id": cloud_file.id,
+                    "credential_id": self.credential_id,
+                    "provider": "canvas",
+                    "provider_file_id": cloud_file.provider_file_id,
+                    "course_id": course_id,
+                    "content_source": cloud_file.content_source,
+                    "scan_options": self.scan_options,
+                },
+                dedupe_key=(
+                    f"canvas-content-scan:{self.credential_id}:"
+                    f"{course_id}:{cloud_file.content_source}:"
+                    f"{cloud_file.provider_file_id}:{content_version}"
+                ),
+                provider="canvas",
+                credential_id=self.credential_id,
+                cloud_file_id=cloud_file.id,
+                provider_file_id=cloud_file.provider_file_id,
+            )
 
         self.db.commit()
 
@@ -448,6 +689,9 @@ class CanvasContentScanner:
             "cloud_file_ids": cloud_file_ids,
             "file_scan_jobs": file_scan_jobs,
             "counts": counts,
+            "operation_kind": "deterministic_scan",
+            "external_ai_used": False,
+            "ai_used": False,
         }
 
     # ------------------------------------------------------------------
@@ -466,7 +710,17 @@ class CanvasContentScanner:
             Dict with scan_id and issue count
         """
         if not cloud_file.content_body:
-            return {"scan_id": None, "issues": 0, "error": "No content body"}
+            return {
+                "success": False,
+                "scan_id": None,
+                "issues": 0,
+                "compliance_score": None,
+                "error": "No content body",
+                "error_code": "EMPTY_CONTENT",
+                "operation_kind": "deterministic_scan",
+                "external_ai_used": False,
+                "ai_used": False,
+            }
 
         wrapped_html = _wrap_html_fragment(
             cloud_file.content_body, cloud_file.file_name
@@ -494,9 +748,9 @@ class CanvasContentScanner:
             # Calculate simple compliance score
             passes = len(axe_results.get("passes", []))
             total_rules = passes + len(violations)
-            compliance_score = (
-                round(passes / total_rules * 100, 1) if total_rules > 0 else 100.0
-            )
+            if total_rules <= 0:
+                raise DeterministicScanUnavailable()
+            compliance_score = round(passes / total_rules * 100, 1)
 
             # Store ScanResult
             scan_result = ScanResult(
@@ -538,27 +792,53 @@ class CanvasContentScanner:
             )
 
             return {
+                "success": True,
                 "scan_id": scan.id,
                 "issues": issue_count,
                 "compliance_score": compliance_score,
+                "operation_kind": "deterministic_scan",
+                "external_ai_used": False,
+                "ai_used": False,
             }
 
-        except Exception as e:
+        except Exception as exc:
             scan.status = ScanStatus.FAILED
-            scan.error_message = str(e)[:2000]
+            scan.error_message = "DETERMINISTIC_SCAN_UNAVAILABLE"
+            cloud_file.needs_rescan = True
             self.db.commit()
             logger.error(
-                "Content scan failed: %s",
-                e,
-                extra={"cloud_file_id": cloud_file.id},
+                "Content deterministic scan failed",
+                extra={
+                    "cloud_file_id": cloud_file.id,
+                    "error_code": "DETERMINISTIC_SCAN_UNAVAILABLE",
+                    "exception_type": type(exc).__name__,
+                },
             )
-            return {"scan_id": scan.id, "issues": 0, "error": str(e)}
+            return {
+                "success": False,
+                "scan_id": scan.id,
+                "issues": 0,
+                "compliance_score": None,
+                "error": "Deterministic accessibility scan unavailable",
+                "error_code": "DETERMINISTIC_SCAN_UNAVAILABLE",
+                "operation_kind": "deterministic_scan",
+                "external_ai_used": False,
+                "ai_used": False,
+            }
 
     # ------------------------------------------------------------------
     # 3. remediate_content_item — bridge to HtmlRemediator
     # ------------------------------------------------------------------
 
-    async def remediate_content_item(self, cloud_file: CloudFile) -> Dict[str, Any]:
+    async def remediate_content_item(
+        self,
+        cloud_file: CloudFile,
+        *,
+        remediation_client: Any = None,
+        alt_text_client: Any = None,
+        requested_purposes: Optional[set[str]] = None,
+        remediation_origin: str = "automatic",
+    ) -> Dict[str, Any]:
         """
         Load accessibility issues from the last scan, run HtmlRemediator
         on the content via a temporary file, sanitize the output, and
@@ -570,8 +850,41 @@ class CanvasContentScanner:
         Returns:
             Dict with remediation result summary
         """
+        if remediation_origin not in {"automatic", "manual"}:
+            raise ValueError("invalid remediation origin")
+        requested_purposes = requested_purposes or set()
+        remediation_tracker = _AIUsageTracker(
+            remediation_client,
+            requested="remediation" in requested_purposes,
+        )
+        alt_text_tracker = _AIUsageTracker(
+            alt_text_client,
+            requested="alt_text" in requested_purposes,
+        )
+
+        def usage_metadata() -> Dict[str, Any]:
+            trackers = (remediation_tracker, alt_text_tracker)
+            providers = [
+                tracker.provider_used for tracker in trackers if tracker.provider_used
+            ]
+            return {
+                "ai_used": any(tracker.ai_used for tracker in trackers),
+                "external_ai_used": any(
+                    tracker.external_ai_used for tracker in trackers
+                ),
+                "provider": providers[0] if providers else None,
+                "purpose_decisions": {
+                    "remediation": remediation_tracker.outcome,
+                    "alt_text": alt_text_tracker.outcome,
+                },
+            }
+
         if not cloud_file.content_body:
-            return {"success": False, "error": "No content body"}
+            return {
+                "success": False,
+                "error": "No content body",
+                **usage_metadata(),
+            }
 
         # Load issues from last scan
         issues = []
@@ -585,202 +898,255 @@ class CanvasContentScanner:
                 issues = scan_result.issues
 
         if not issues:
-            return {"success": True, "fixed_count": 0, "message": "No issues to fix"}
+            return {
+                "success": True,
+                "fixed_count": 0,
+                "message": "No issues to fix",
+                **usage_metadata(),
+            }
 
-        # Describe the images first, from the images themselves. The
-        # remediator cannot reach them, so anything it writes for an image is
-        # guesswork; this is the only place holding both the credential and
-        # the vision service.
-        source_html, images_described = await self._describe_images(
-            cloud_file, cloud_file.content_body
+        from ..api.education.remediation_routes import (
+            _normalize_issues_for_remediation,
         )
 
-        # Write wrapped HTML to temp file for HtmlRemediator
-        wrapped_html = _wrap_html_fragment(source_html, cloud_file.file_name)
-        temp_path = None
+        normalized_issues = _normalize_issues_for_remediation(issues)
+        alt_text_issues: List[Dict[str, Any]] = []
+        remediation_issues: List[Dict[str, Any]] = []
+        for raw_issue, normalized_issue in zip(issues, normalized_issues):
+            if _is_alt_text_issue(raw_issue, normalized_issue):
+                alt_text_issues.append(raw_issue)
+            else:
+                remediation_issues.append(normalized_issue)
+
+        # Image-description issues are isolated from HtmlRemediator because its
+        # text prompts cannot inspect Canvas images. Only the vision-bound
+        # alt-text client may handle them.
+        state_fields = (
+            "remediated_body",
+            "writeback_status",
+            "has_remediated_version",
+            "remediation_origin",
+            "remediated_compliance_score",
+            "remediated_issues_fixed",
+            "remediated_issues_remaining",
+        )
+        original_state = tuple(
+            getattr(cloud_file, field, None) for field in state_fields
+        )
+        durable_mutation_started = False
+
+        def failed_remediation() -> Dict[str, Any]:
+            return {
+                "success": False,
+                "error": "Content remediation failed",
+                "error_code": "REMEDIATION_FAILED",
+                **usage_metadata(),
+            }
 
         try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".html", delete=False, mode="w", encoding="utf-8"
-            ) as tmp:
-                tmp.write(wrapped_html)
-                temp_path = tmp.name
+            from ..education.remediation.base import RemediationConfig
+            from ..education.remediation.html_remediator import HtmlRemediator
 
-            # Bridge to HtmlRemediator
-            try:
-                from ..education.remediation.base import RemediationConfig
-                from ..education.remediation.html_remediator import HtmlRemediator
+            source_html = cloud_file.content_body
+            images_described = 0
+            if alt_text_issues and alt_text_client is not None:
+                source_html, images_described = await self._describe_images(
+                    cloud_file,
+                    source_html,
+                    alt_text_client=alt_text_tracker,
+                )
+            unresolved_alt_text = max(
+                0,
+                sum(_issue_node_count(issue) for issue in alt_text_issues)
+                - images_described,
+            )
 
-                # Without a model the remediator can only do the mechanical
-                # fixes, so a page whose problems are alt text, contrast and
-                # table headers came back untouched: correct, and useless.
-                # The provider manager is the same one the file path uses,
-                # and it degrades to mechanical fixes on its own when no
-                # provider is configured.
-                ai_client = None
-                try:
-                    from ..ai.providers.manager import get_provider_manager
-
-                    ai_client = get_provider_manager()
-                except Exception as e:  # pragma: no cover - provider optional
-                    logger.warning(
-                        "No AI provider available for content remediation: %s", e
-                    )
+            # The entire remediation, readback, sanitization, verification, and
+            # score calculation occurs while the owned directory exists. Only
+            # immutable pending values escape it. No ORM mutation or commit is
+            # permitted until TemporaryDirectory.__exit__ has succeeded.
+            wrapped_html = _wrap_html_fragment(source_html, cloud_file.file_name)
+            with tempfile.TemporaryDirectory(prefix="aelira-canvas-html-") as temp_dir:
+                artifact_root = Path(temp_dir)
+                source_path = artifact_root / "source.html"
+                source_path.write_text(wrapped_html, encoding="utf-8")
 
                 config = RemediationConfig(
-                    use_ai=bool(ai_client)
-                    and self.scan_options.get("generate_alt_text", True)
+                    use_ai=remediation_client is not None,
+                    create_backup=False,
+                    output_directory=str(artifact_root),
                 )
-
-                # Raw axe violations carry no category, and the remediator
-                # decides what it can fix by category, so every issue was
-                # classified as needing a human and nothing was attempted.
-                # This is the same normalisation the file path performs.
-                from ..api.education.remediation_routes import (
-                    _normalize_issues_for_remediation,
-                )
-
                 remediator = HtmlRemediator(
-                    temp_path,
-                    _normalize_issues_for_remediation(issues),
+                    str(source_path),
+                    remediation_issues,
                     config=config,
-                    ai_client=ai_client,
+                    ai_client=(
+                        remediation_tracker if remediation_client is not None else None
+                    ),
                 )
                 result = remediator.remediate()
+                if result.success is not True:
+                    return failed_remediation()
 
-                # Read the output file
-                output_path = result.output_file or temp_path
-                with open(output_path, "r", encoding="utf-8") as f:
-                    remediated_doc = f.read()
+                fixed_count = result.fixed_count + images_described
+                manual_count = result.manual_count + unresolved_alt_text
+                failed_count = getattr(result, "failed_count", 0)
 
-                # Strip document wrapper back to body fragment
+                output_path = Path(result.output_file or source_path).resolve()
+                if not output_path.is_relative_to(artifact_root.resolve()):
+                    return failed_remediation()
+                remediated_doc = output_path.read_text(encoding="utf-8")
                 body_fragment = _unwrap_html_fragment(remediated_doc)
-
-                # Sanitize output
                 sanitized = _sanitize_html(body_fragment)
 
-                cloud_file.remediated_body = sanitize_for_postgres(sanitized)
-                cloud_file.writeback_status = "pending_review"
-                cloud_file.has_remediated_version = True
-
-                # Verify the remediation by rescanning what we produced,
-                # rather than inferring a score from how many fixers ran.
                 verification = await self._verify_remediation(
                     cloud_file, sanitized, issues
                 )
-
-                if verification:
-                    cloud_file.remediated_compliance_score = verification["score"]
-                    cloud_file.remediated_issues_fixed = verification["fixed"]
-                    cloud_file.remediated_issues_remaining = verification["remaining"]
-                    self.db.commit()
-
-                    if verification["introduced"]:
-                        logger.warning(
-                            "Remediation introduced new issues",
-                            extra={
-                                "cloud_file_id": cloud_file.id,
-                                "introduced": verification["introduced"],
-                            },
-                        )
-
-                    logger.info(
-                        "Content remediation verified by rescan",
-                        extra={
-                            "cloud_file_id": cloud_file.id,
-                            "score": verification["score"],
-                            "fixed": verification["fixed"],
-                            "remaining": verification["remaining"],
-                            "introduced": verification["introduced"],
-                        },
-                    )
-
-                    return {
-                        "success": True,
-                        "verified": True,
-                        "fixed_count": verification["fixed"],
-                        "issues_remaining": verification["remaining"],
-                        "issues_introduced": verification["introduced"],
-                        "manual_count": result.manual_count,
-                        "remediated_score": verification["score"],
-                        "verification_scan_id": verification["scan_id"],
-                    }
-
-                # Rescan unavailable: fall back to the fixer-ratio estimate and
-                # say so, so nothing downstream reads it as a measured score.
                 remediated_score = getattr(result, "remediated_compliance_score", None)
                 if (
-                    remediated_score is None
+                    verification is None
+                    and remediated_score is None
                     and cloud_file.last_compliance_score is not None
                 ):
-                    # HtmlRemediator doesn't compute remediated_compliance_score,
-                    # so estimate from original score + fix ratio
-                    total = (
-                        result.fixed_count
-                        + result.manual_count
-                        + getattr(result, "failed_count", 0)
-                    )
+                    total = fixed_count + manual_count + failed_count
                     if total > 0:
-                        fix_ratio = result.fixed_count / total
+                        fix_ratio = fixed_count / total
                         original = cloud_file.last_compliance_score
                         remediated_score = min(
                             100.0, round(original + (100 - original) * fix_ratio, 1)
                         )
-                if remediated_score is not None:
-                    cloud_file.remediated_compliance_score = remediated_score
+                if verification is not None:
+                    remediated_score = verification.score
 
-                self.db.commit()
+                pending = _PendingRemediation(
+                    body=sanitize_for_postgres(sanitized),
+                    fixed_count=fixed_count,
+                    manual_count=manual_count,
+                    failed_count=failed_count,
+                    remediated_score=remediated_score,
+                    verification=verification,
+                )
 
+            # Cleanup has now completed successfully. Durable ORM state begins
+            # changing only after this boundary, followed by one commit.
+            durable_mutation_started = True
+            cloud_file.remediated_body = pending.body
+            cloud_file.writeback_status = "pending_review"
+            cloud_file.has_remediated_version = True
+            cloud_file.remediation_origin = remediation_origin
+            cloud_file.remediated_compliance_score = pending.remediated_score
+
+            verification = pending.verification
+            if verification is not None:
+                cloud_file.remediated_issues_fixed = verification.fixed
+                cloud_file.remediated_issues_remaining = verification.remaining
+                self.db.add(
+                    Scan(
+                        id=verification.scan_id,
+                        scan_type=ScanType.CANVAS_CONTENT,
+                        status=ScanStatus.COMPLETED,
+                        file_name=f"{cloud_file.file_name} (remediated)",
+                        user_id=None,
+                        department_id=self.department_id,
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                )
+                self.db.add(
+                    ScanResult(
+                        id=str(uuid.uuid4()),
+                        scan_id=verification.scan_id,
+                        compliance_score=verification.score,
+                        axe_results=json.loads(verification.axe_results_json),
+                        issues=json.loads(verification.issues_json),
+                        critical_issues=verification.critical_issues,
+                        high_issues=verification.high_issues,
+                        medium_issues=verification.medium_issues,
+                        low_issues=verification.low_issues,
+                    )
+                )
+
+            self.db.commit()
+
+            if verification is not None:
+                if verification.introduced:
+                    logger.warning(
+                        "Remediation introduced new issues",
+                        extra={
+                            "cloud_file_id": cloud_file.id,
+                            "introduced": verification.introduced,
+                        },
+                    )
                 logger.info(
-                    "Content remediation complete",
+                    "Content remediation verified by rescan",
                     extra={
                         "cloud_file_id": cloud_file.id,
-                        "fixed_count": result.fixed_count,
-                        "remediated_score": remediated_score,
+                        "score": verification.score,
+                        "fixed": verification.fixed,
+                        "remaining": verification.remaining,
+                        "introduced": verification.introduced,
                     },
                 )
-
                 return {
                     "success": True,
-                    "verified": False,
-                    "fixed_count": result.fixed_count,
-                    "manual_count": result.manual_count,
-                    "remediated_score": remediated_score,
+                    "verified": True,
+                    "fixed_count": verification.fixed,
+                    "issues_remaining": verification.remaining,
+                    "issues_introduced": verification.introduced,
+                    "manual_count": verification.remaining,
+                    "remediated_score": verification.score,
+                    "verification_scan_id": verification.scan_id,
+                    **usage_metadata(),
                 }
 
-            except ImportError:
-                logger.warning(
-                    "HtmlRemediator not available, skipping remediation",
-                    extra={"cloud_file_id": cloud_file.id},
-                )
-                return {
-                    "success": False,
-                    "error": "HtmlRemediator not available",
-                }
-
-        except Exception as e:
-            logger.error(
-                "Content remediation failed: %s",
-                e,
-                extra={"cloud_file_id": cloud_file.id},
+            logger.info(
+                "Content remediation complete",
+                extra={
+                    "cloud_file_id": cloud_file.id,
+                    "fixed_count": pending.fixed_count,
+                    "remediated_score": pending.remediated_score,
+                },
             )
-            return {"success": False, "error": str(e)}
+            return {
+                "success": True,
+                "verified": False,
+                "fixed_count": pending.fixed_count,
+                "manual_count": pending.manual_count,
+                "issues_remaining": pending.manual_count + pending.failed_count,
+                "remediated_score": pending.remediated_score,
+                **usage_metadata(),
+            }
 
-        finally:
-            # Clean up temp files
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
+        except Exception as exc:
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            if durable_mutation_started:
+                for field, value in zip(state_fields, original_state):
+                    setattr(cloud_file, field, value)
+            logger.error(
+                "Content remediation failed",
+                extra={
+                    "cloud_file_id": str(cloud_file.id),
+                    "error_type": type(exc).__name__,
+                    "error_code": "REMEDIATION_FAILED",
+                },
+            )
+            return failed_remediation()
 
     # ------------------------------------------------------------------
     # 3a. _describe_images — real alt text, from the actual image
     # ------------------------------------------------------------------
 
-    _FILE_ID_PATTERN = re.compile(r"/files/(\d+)")
+    _FILE_ID_PATTERN = re.compile(r"/files/(\d+)(?=$|[/?#])")
 
-    async def _describe_images(self, cloud_file: CloudFile, html: str) -> tuple:
+    async def _describe_images(
+        self,
+        cloud_file: CloudFile,
+        html: str,
+        *,
+        alt_text_client: Any,
+    ) -> tuple:
         """Write alt text for images that have none, from the image itself.
 
         The remediator's own alt-text path asks a text model to invent a
@@ -793,6 +1159,12 @@ class CanvasContentScanner:
         refers to images by URL, so the image has to be fetched first, with
         the credential, before the same vision service can look at it.
 
+        Canvas' course-scoped file inventory is authoritative for this
+        remediation operation: it is fetched immediately before downloads,
+        and only IDs present in that inventory may reach the account-level
+        download API or the vision client. This deliberately does not promise
+        authorization beyond the operation's inventory snapshot.
+
         Returns the HTML and the number of images actually described.
         """
         soup = BeautifulSoup(html, "html.parser")
@@ -804,59 +1176,192 @@ class CanvasContentScanner:
         if not targets:
             return html, 0
 
-        from ..education.image_alt_text import ImageAltTextGenerator
-        from ..education.remediation.html_remediator import HtmlRemediator
-
-        generator = ImageAltTextGenerator()
-        described = 0
-
-        for img in targets:
-            source = img.get("data-api-endpoint") or img.get("src", "")
+        cloud_file_id = str(getattr(cloud_file, "id", ""))
+        candidates = []
+        for index, img in enumerate(targets):
+            raw_source = img.get("data-api-endpoint") or img.get("src", "")
+            source = raw_source if isinstance(raw_source, str) else ""
             match = self._FILE_ID_PATTERN.search(source)
             if not match:
                 logger.info(
-                    "Image is not an LMS file, leaving its description to a human: %s",
-                    img.get("src", ""),
+                    "Image source is not an LMS file; manual review required",
+                    extra={
+                        "cloud_file_id": cloud_file_id,
+                        "error_code": "IMAGE_SOURCE_NOT_LMS_FILE",
+                    },
                 )
                 continue
+            candidates.append((index, img, str(int(match.group(1)))))
 
-            file_id = match.group(1)
-            tmp_path = None
-            try:
-                with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                    tmp_path = tmp.name
-                result = await self.canvas_client.download_file(file_id, tmp_path)
-                if not getattr(result, "success", False):
-                    logger.warning(
-                        "Could not fetch image %s, leaving it to a human", file_id
-                    )
-                    continue
+        if not candidates:
+            return html, 0
 
-                generated = await generator.generate_alt_text(
-                    tmp_path, context=f"Image in {cloud_file.file_name}"
-                )
-                alt_text = (generated or {}).get("alt_text", "")
-                if not generated.get(
-                    "success"
-                ) or not HtmlRemediator.is_usable_alt_text(alt_text):
-                    logger.info(
-                        "No usable description for image %s, leaving it to a human",
-                        file_id,
-                    )
-                    continue
-
-                img["alt"] = alt_text.strip()
-                described += 1
-            except Exception as e:
+        raw_course_id = getattr(cloud_file, "provider_parent_id", None)
+        course_id = str(raw_course_id).strip() if raw_course_id is not None else ""
+        if not course_id:
+            for _, _, file_id in candidates:
                 logger.warning(
-                    "Alt text generation failed for image %s: %s", file_id, e
+                    "Canvas image course binding unavailable; manual review required",
+                    extra={
+                        "cloud_file_id": cloud_file_id,
+                        "course_id": course_id,
+                        "file_id": file_id,
+                        "error_type": "MissingCourseId",
+                        "error_code": "IMAGE_COURSE_BINDING_MISSING",
+                    },
                 )
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
+            return html, 0
+
+        try:
+            inventory = await self.canvas_client.list_course_files(course_id)
+            if not isinstance(inventory, (list, tuple)):
+                raise TypeError("invalid Canvas course file inventory")
+
+            inventory_by_id: Dict[str, CanvasFileInfo] = {}
+            allowed_image_mimes = {
+                "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/webp",
+                "image/bmp",
+            }
+            max_image_bytes = get_settings().max_file_size_image
+            for entry in inventory:
+                if type(entry) is not CanvasFileInfo:
+                    continue
+                raw_id = entry.id
+                if isinstance(raw_id, bool):
+                    continue
+                normalized = str(raw_id).strip() if raw_id is not None else ""
+                if not normalized.isdecimal():
+                    continue
+                if (
+                    not isinstance(entry.content_type, str)
+                    or entry.content_type.casefold() not in allowed_image_mimes
+                    or isinstance(entry.size, bool)
+                    or not isinstance(entry.size, int)
+                    or entry.size <= 0
+                    or entry.size > max_image_bytes
+                ):
+                    continue
+                inventory_by_id[str(int(normalized))] = entry
+        except Exception as exc:
+            for _, _, file_id in candidates:
+                logger.warning(
+                    "Canvas course file inventory failed; manual review required",
+                    extra={
+                        "cloud_file_id": cloud_file_id,
+                        "course_id": course_id,
+                        "file_id": file_id,
+                        "error_type": type(exc).__name__,
+                        "error_code": "IMAGE_COURSE_INVENTORY_FAILED",
+                    },
+                )
+            return html, 0
+
+        from ..education.image_alt_text import ImageAltTextGenerator
+        from ..education.remediation.html_remediator import HtmlRemediator
+
+        generator = ImageAltTextGenerator(lms_client=alt_text_client)
+        described = 0
+
+        # One owned directory contains every downloaded image. Per-image
+        # failures remain manual work, but directory cleanup failure is outside
+        # their exception boundary and therefore propagates to remediation.
+        with tempfile.TemporaryDirectory(prefix="aelira-canvas-images-") as temp_dir:
+            artifact_root = Path(temp_dir)
+            for index, img, file_id in candidates:
+                # The course-scoped inventory snapshot above is authoritative
+                # at this point in the operation. Never infer membership from
+                # HTML course hints or fall back to Canvas' global get_file.
+                file_info = inventory_by_id.get(file_id)
+                if file_info is None:
+                    logger.warning(
+                        "Canvas image is not in course inventory; manual review required",
+                        extra={
+                            "cloud_file_id": cloud_file_id,
+                            "course_id": course_id,
+                            "file_id": file_id,
+                            "error_type": "CourseMembershipDenied",
+                            "error_code": "IMAGE_FILE_NOT_IN_COURSE",
+                        },
+                    )
+                    continue
+                try:
+                    result = await self.canvas_client.download_course_image(
+                        file_info,
+                        max_bytes=max_image_bytes,
+                    )
+                    image_data = getattr(result, "data", None)
+                    observed_mime = getattr(result, "content_type", None)
+                    observed_suffix = getattr(result, "suffix", None)
+                    if (
+                        not getattr(result, "success", False)
+                        or not isinstance(image_data, bytes)
+                        or not image_data
+                        or observed_mime != file_info.content_type.casefold()
+                        or observed_suffix
+                        not in {".png", ".jpg", ".gif", ".webp", ".bmp"}
+                    ):
+                        logger.warning(
+                            "Canvas image download failed; manual review required",
+                            extra={
+                                "cloud_file_id": cloud_file_id,
+                                "course_id": course_id,
+                                "file_id": file_id,
+                                "error_type": "DownloadUnsuccessful",
+                                "error_code": "IMAGE_DOWNLOAD_FAILED",
+                            },
+                        )
+                        continue
+
+                    partial_path = (artifact_root / f"image-{index}.part").resolve()
+                    image_path = (
+                        artifact_root / f"image-{index}{observed_suffix}"
+                    ).resolve()
+                    resolved_root = artifact_root.resolve()
+                    if not partial_path.is_relative_to(
+                        resolved_root
+                    ) or not image_path.is_relative_to(resolved_root):
+                        raise ValueError("Canvas image artifact escaped containment")
+                    partial_path.write_bytes(image_data)
+                    os.replace(partial_path, image_path)
+
+                    generated = await generator.generate_alt_text(
+                        str(image_path),
+                        context=f"Image in {cloud_file.file_name}",
+                        trusted_mime_type=observed_mime,
+                        trusted_suffix=observed_suffix,
+                    )
+                    alt_text = (generated or {}).get("alt_text", "")
+                    if not generated.get(
+                        "success"
+                    ) or not HtmlRemediator.is_usable_alt_text(alt_text):
+                        logger.info(
+                            "No usable image description; manual review required",
+                            extra={
+                                "cloud_file_id": cloud_file_id,
+                                "course_id": course_id,
+                                "file_id": file_id,
+                                "error_type": "UnusableDescription",
+                                "error_code": "IMAGE_DESCRIPTION_UNUSABLE",
+                            },
+                        )
+                        continue
+
+                    img["alt"] = alt_text.strip()
+                    described += 1
+                except Exception as exc:
+                    logger.warning(
+                        "Canvas image description failed; manual review required",
+                        extra={
+                            "cloud_file_id": cloud_file_id,
+                            "course_id": course_id,
+                            "file_id": file_id,
+                            "error_type": type(exc).__name__,
+                            "error_code": "IMAGE_DESCRIPTION_FAILED",
+                        },
+                    )
 
         return (str(soup) if described else html), described
 
@@ -869,7 +1374,7 @@ class CanvasContentScanner:
         cloud_file: CloudFile,
         remediated_fragment: str,
         original_issues: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[_PendingVerification]:
         """Rescan the remediated content and report what actually changed.
 
         Without this the remediated score is an estimate derived from how
@@ -897,11 +1402,15 @@ class CanvasContentScanner:
         try:
             wrapped = _wrap_html_fragment(remediated_fragment, cloud_file.file_name)
             axe_results = await self._run_axe_scan(wrapped)
-        except Exception as e:
+        except Exception as exc:
             logger.warning(
-                "Remediation rescan failed; falling back to the estimate: %s",
-                e,
-                extra={"cloud_file_id": cloud_file.id},
+                "Remediation rescan failed; falling back to the estimate",
+                extra={
+                    "cloud_file_id": cloud_file.id,
+                    "scan_id": cloud_file.last_scan_id,
+                    "error_type": type(exc).__name__,
+                    "error_code": "REMEDIATION_RESCAN_FAILED",
+                },
             )
             return None
 
@@ -927,202 +1436,347 @@ class CanvasContentScanner:
         for rule, was in before.items():
             fixed += max(0, was - after.get(rule, 0))
 
-        scan = Scan(
-            id=str(uuid.uuid4()),
-            scan_type=ScanType.CANVAS_CONTENT,
-            status=ScanStatus.COMPLETED,
-            file_name=f"{cloud_file.file_name} (remediated)",
-            user_id=None,
-            department_id=self.department_id,
-            completed_at=datetime.now(timezone.utc),
+        # Keep verification entirely local until the caller's owned artifact
+        # directory has cleaned up. JSON strings make the nested provider data
+        # immutable pending values rather than live mutable dictionaries.
+        return _PendingVerification(
+            scan_id=str(uuid.uuid4()),
+            score=score,
+            fixed=fixed,
+            remaining=remaining,
+            introduced=introduced,
+            axe_results_json=json.dumps(axe_results, sort_keys=True),
+            issues_json=json.dumps(violations, sort_keys=True),
+            critical_issues=sum(
+                1 for violation in violations if violation.get("impact") == "critical"
+            ),
+            high_issues=sum(
+                1 for violation in violations if violation.get("impact") == "serious"
+            ),
+            medium_issues=sum(
+                1 for violation in violations if violation.get("impact") == "moderate"
+            ),
+            low_issues=sum(
+                1 for violation in violations if violation.get("impact") == "minor"
+            ),
         )
-        self.db.add(scan)
-        self.db.flush()
-        self.db.add(
-            ScanResult(
-                id=str(uuid.uuid4()),
-                scan_id=scan.id,
-                compliance_score=score,
-                axe_results=axe_results,
-                issues=violations,
-                critical_issues=sum(
-                    1 for v in violations if v.get("impact") == "critical"
-                ),
-                high_issues=sum(1 for v in violations if v.get("impact") == "serious"),
-                medium_issues=sum(
-                    1 for v in violations if v.get("impact") == "moderate"
-                ),
-                low_issues=sum(1 for v in violations if v.get("impact") == "minor"),
-            )
-        )
-        # The verification scan is a record of the remediated copy, not the
-        # item's current state, so last_scan_id deliberately stays put.
-        self.db.commit()
-
-        return {
-            "scan_id": scan.id,
-            "score": score,
-            "fixed": fixed,
-            "remaining": remaining,
-            "introduced": introduced,
-        }
 
     # ------------------------------------------------------------------
     # 3c. write_back_file — upload a remediated file to the Canvas course
     # ------------------------------------------------------------------
 
-    def _find_remediated_file_path(self, cloud_file: CloudFile) -> Optional[str]:
-        """Path to the remediated artefact a remediation job produced.
-
-        The remediator writes to disk and records the path on its job row.
-        The file is not permanent, so a caller has to cope with it being
-        gone rather than assume it is there.
-        """
-        job = (
-            self.db.query(CloudJobQueue)
-            .filter(
-                CloudJobQueue.cloud_file_id == cloud_file.id,
-                CloudJobQueue.job_type == CloudJobType.REMEDIATE.value,
-                CloudJobQueue.status == CloudJobStatus.COMPLETED.value,
-            )
-            .order_by(CloudJobQueue.completed_at.desc())
-            .first()
+    def _lock_file_writeback_graph(
+        self, requested: CloudFile
+    ) -> tuple[CloudFile, Scan, RemediationArtifact]:
+        """Lock and revalidate the exact current Canvas artifact authority."""
+        artifact_id = requested.current_remediation_artifact_id
+        if not artifact_id:
+            raise ValueError("artifact_not_current")
+        _, scan, cloud_file, _, artifact = self.artifact_service.lock_current(
+            self.db,
+            artifact_id=artifact_id,
+            department_id=self.department_id,
+            cloud_file_id=requested.id,
+            provider="canvas",
         )
-        if not job or not isinstance(job.result_data, dict):
-            return None
-        path = job.result_data.get("output_file")
-        if path and os.path.exists(path):
-            return path
-        return None
+        if cloud_file is None or artifact is None:
+            raise ValueError("artifact_not_current")
+        credential = (
+            self.db.query(CloudOAuthCredentials)
+            .filter(CloudOAuthCredentials.id == self.credential_id)
+            .with_for_update()
+            .populate_existing()
+            .one_or_none()
+        )
+        if (
+            credential is None
+            or credential.id != cloud_file.credential_id
+            or credential.department_id != self.department_id
+            or credential.provider != "canvas"
+            or not credential.is_active
+        ):
+            raise ValueError("credential_not_current")
+        return cloud_file, scan, artifact
 
-    async def write_back_file(
+    def _persist_file_reconciliation(
         self,
+        *,
         cloud_file: CloudFile,
+        artifact: RemediationArtifact,
         approved_by: str,
-    ) -> Dict[str, Any]:
-        """Upload the remediated copy of a file to its Canvas course.
-
-        Canvas files are not edited in place. The remediated copy is
-        uploaded alongside the original with an _accessible suffix, the
-        same convention the standalone upload endpoint already uses, so
-        nothing anyone authored is overwritten. That also means there is no
-        body to stale-check: what has to be checked is that the remediated
-        artefact still exists, because it is written to disk and can be
-        cleaned up before anyone approves it.
-        """
-        if cloud_file.content_source != "file":
-            return {
-                "success": False,
-                "stale": False,
-                "error": "Not a file row; use write_back_content for content items",
-            }
-
-        if cloud_file.writeback_status != "approved":
-            return {
-                "success": False,
-                "stale": False,
-                "error": (
-                    f"Cannot write back: status is "
-                    f"'{cloud_file.writeback_status}', must be 'approved'"
-                ),
-            }
-
-        if not cloud_file.has_remediated_version:
-            return {
-                "success": False,
-                "stale": False,
-                "error": "No remediated version for this file",
-            }
-
-        course_id = cloud_file.provider_parent_id
-        if not course_id:
-            return {
-                "success": False,
-                "stale": False,
-                "error": "File has no course to upload into",
-            }
-
-        remediated_path = self._find_remediated_file_path(cloud_file)
-        if not remediated_path:
-            return {
-                "success": False,
-                "stale": False,
-                "error": (
-                    "The remediated file is no longer on disk. "
-                    "Remediate it again before writing back."
-                ),
-            }
-
-        original = Path(cloud_file.file_name)
-        accessible_name = f"{original.stem}_accessible{original.suffix}"
-
-        # For file rows these two columns hold references rather than
-        # bodies: an uploaded file has no HTML to keep, and what an auditor
-        # needs is a way to find both copies.
+        correlation_id: str,
+        provider_result: Dict[str, Any],
+        accessible_name: str,
+    ) -> None:
+        """Commit an ambiguity record after the main transaction rolled back."""
+        credential = self.db.get(CloudOAuthCredentials, cloud_file.credential_id)
+        if credential is None:
+            raise ValueError("credential_not_current")
+        canvas_origin = require_persisted_canvas_origin(credential)
+        durable_result = {
+            **provider_result,
+            "correlation_id": correlation_id,
+            "credential_id": credential.id,
+            "canvas_origin": canvas_origin,
+            "course_id": str(cloud_file.provider_parent_id),
+            "source_file_id": str(cloud_file.provider_file_id),
+            "expected_file_name": accessible_name,
+            "artifact_checksum": artifact.sha256,
+        }
         writeback_log = ContentWritebackLog(
             id=str(uuid.uuid4()),
             cloud_file_id=cloud_file.id,
             original_body=(
                 f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}"
             ),
-            remediated_body=f"local:{remediated_path}",
+            remediated_body=f"canvas-file:unknown {accessible_name}",
             approved_by=approved_by,
-            approved_at=datetime.now(timezone.utc),
+            approved_at=artifact.approved_at,
+            artifact_id=artifact.id,
+            artifact_checksum=artifact.sha256,
+            correlation_id=correlation_id,
+            reconciliation_status="reconciliation_required",
+            provider_result=durable_result,
         )
         self.db.add(writeback_log)
+        self.db.flush()
+        enqueue_cloud_job(
+            self.db,
+            department_id=cloud_file.department_id,
+            job_type=CloudJobType.RECONCILE.value,
+            payload={"writeback_log_id": writeback_log.id},
+            dedupe_key=f"canvas-reconcile:{writeback_log.id}",
+            provider="canvas",
+            credential_id=credential.id,
+            cloud_file_id=cloud_file.id,
+            provider_file_id=cloud_file.provider_file_id,
+        )
+        self.db.commit()
 
+    async def write_back_file(
+        self,
+        cloud_file: CloudFile,
+        approved_by: str,
+    ) -> Dict[str, Any]:
+        """Upload the exact current approved artifact from its verified descriptor."""
+        if cloud_file.content_source not in (None, CanvasContentType.FILE.value):
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Not a file row; use write_back_content for content items",
+            }
+        if cloud_file.needs_rescan:
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Source changed — re-scan required before write-back",
+                "error_code": "source_rescan_required",
+            }
         try:
-            upload = await self.canvas_client.upload_file(
-                course_id=course_id,
-                local_path=remediated_path,
-                file_name=accessible_name,
-            )
-        except Exception as e:
-            self.db.rollback()
-            logger.error(
-                "Canvas file upload raised: %s",
-                e,
-                extra={"cloud_file_id": cloud_file.id},
-            )
-            return {"success": False, "stale": False, "error": f"Canvas upload: {e}"}
-
-        if not getattr(upload, "success", False):
+            cloud_file, _scan, artifact = self._lock_file_writeback_graph(cloud_file)
+        except (ArtifactError, ValueError):
             self.db.rollback()
             return {
                 "success": False,
                 "stale": False,
-                "error": f"Canvas upload failed: {getattr(upload, 'error', 'unknown')}",
+                "error": "Managed remediation artifact is unavailable",
+                "error_code": "artifact_unavailable",
             }
+        if cloud_file.needs_rescan:
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Source changed — re-scan required before write-back",
+                "error_code": "source_rescan_required",
+            }
+        unresolved = (
+            self.db.query(ContentWritebackLog)
+            .filter(
+                ContentWritebackLog.artifact_id == artifact.id,
+                ContentWritebackLog.reconciliation_status == "reconciliation_required",
+            )
+            .first()
+        )
+        if isinstance(unresolved, ContentWritebackLog):
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Writeback reconciliation is unresolved",
+                "error_code": "writeback_reconciliation_required",
+                "retry_safe": False,
+            }
+        if cloud_file.writeback_status != "approved":
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Artifact is not approved",
+                "error_code": "artifact_not_approved",
+            }
+        if cloud_file.provider_modified_at is None:
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Canvas file version is unavailable; re-scan required",
+                "error_code": "source_version_unavailable",
+            }
+        course_id = cloud_file.provider_parent_id
+        if not course_id:
+            self.db.rollback()
+            return {"success": False, "stale": False, "error": "File has no course"}
+
+        original = Path(str(cloud_file.file_name))
+        accessible_name = f"{original.stem}_accessible{original.suffix}"
+        correlation_id = str(uuid.uuid4())
+        try:
+            with self.artifact_service.open_verified(
+                self.db,
+                artifact,
+                department_id=str(artifact.department_id),
+                scan_id=str(artifact.scan_id),
+                cloud_file_id=str(artifact.cloud_file_id),
+                require_approved=True,
+                approval_checksum=str(artifact.sha256),
+            ) as stream:
+                current_file = await self.canvas_client.get_file(
+                    str(cloud_file.provider_file_id)
+                )
+                current_updated_at = getattr(current_file, "updated_at", None)
+                if current_updated_at != cloud_file.provider_modified_at:
+                    self.db.rollback()
+                    return {
+                        "success": False,
+                        "stale": True,
+                        "error": "Canvas file changed since the scan",
+                        "error_code": "canvas_file_stale",
+                    }
+                upload = await self.canvas_client.upload_file_stream(
+                    course_id=str(course_id),
+                    stream=stream,
+                    size_bytes=int(artifact.size_bytes),
+                    mime_type=str(artifact.mime_type),
+                    file_name=accessible_name,
+                    correlation_id=correlation_id,
+                )
+        except ArtifactError:
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Managed remediation artifact is unavailable",
+                "error_code": "artifact_unavailable",
+            }
+        except Exception as exc:
+            self.db.rollback()
+            logger.warning(
+                "Canvas artifact upload failed",
+                extra={
+                    "cloud_file_id": str(cloud_file.id),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return {"success": False, "stale": False, "error": "Canvas upload failed"}
+
+        upload_outcome = getattr(upload, "outcome", None)
+        if upload_outcome == "indeterminate":
+            self.db.rollback()
+            durable_correlation = str(getattr(upload, "correlation_id", correlation_id))
+            ambiguous_result = getattr(upload, "provider_result", None) or {
+                "phase": "upload",
+                "outcome": "indeterminate",
+            }
+            self._persist_file_reconciliation(
+                cloud_file=cloud_file,
+                artifact=artifact,
+                approved_by=approved_by,
+                correlation_id=durable_correlation,
+                provider_result=ambiguous_result,
+                accessible_name=accessible_name,
+            )
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Canvas upload outcome requires reconciliation",
+                "error_code": "writeback_reconciliation_required",
+                "correlation_id": durable_correlation,
+                "retry_safe": False,
+            }
+        if not getattr(upload, "success", False):
+            self.db.rollback()
+            return {"success": False, "stale": False, "error": "Canvas upload failed"}
 
         now = datetime.now(timezone.utc)
-        writeback_log.written_back_at = now
-        writeback_log.canvas_revision = upload.file_id
-        writeback_log.remediated_body = (
-            f"canvas-file:{upload.file_id} {accessible_name}"
+        provider_result = {
+            "correlation_id": correlation_id,
+            "canvas_file_id": str(upload.file_id),
+            "file_name": accessible_name,
+            "url": getattr(upload, "web_view_link", None),
+        }
+        writeback_log = ContentWritebackLog(
+            id=str(uuid.uuid4()),
+            cloud_file_id=cloud_file.id,
+            original_body=f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}",
+            remediated_body=f"canvas-file:{upload.file_id} {accessible_name}",
+            approved_by=approved_by,
+            approved_at=artifact.approved_at,
+            written_back_at=now,
+            canvas_revision=str(upload.file_id),
+            artifact_id=artifact.id,
+            artifact_checksum=artifact.sha256,
+            correlation_id=correlation_id,
+            reconciliation_status="committed",
+            provider_result=getattr(upload, "provider_result", None),
         )
-        cloud_file.remediated_file_id = upload.file_id
+        self.db.add(writeback_log)
+        cloud_file.remediated_file_id = str(upload.file_id)
         cloud_file.writeback_status = "written_back"
         cloud_file.writeback_at = now
         if cloud_file.remediated_compliance_score is not None:
             cloud_file.last_compliance_score = cloud_file.remediated_compliance_score
-        self.db.commit()
-
-        logger.info(
-            "Remediated file uploaded to Canvas",
-            extra={
-                "cloud_file_id": cloud_file.id,
-                "course_id": course_id,
-                "canvas_file_id": upload.file_id,
-                "file_name": accessible_name,
-            },
+        self.artifact_service.mark_written(
+            self.db, artifact_id=str(artifact.id), provider_result=provider_result
         )
-
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            self._persist_file_reconciliation(
+                cloud_file=cloud_file,
+                artifact=artifact,
+                approved_by=approved_by,
+                correlation_id=correlation_id,
+                provider_result=provider_result,
+                accessible_name=accessible_name,
+            )
+            logger.error(
+                "Canvas writeback reconciliation required",
+                extra={
+                    "correlation_id": correlation_id,
+                    "artifact_id": str(artifact.id),
+                    "artifact_checksum": str(artifact.sha256),
+                    "canvas_file_id": str(upload.file_id),
+                    "retry_safe": False,
+                },
+            )
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Canvas accepted the file but reconciliation is required",
+                "error_code": "writeback_reconciliation_required",
+                "correlation_id": correlation_id,
+                "retry_safe": False,
+            }
         return {
             "success": True,
             "stale": False,
-            "canvas_file_id": upload.file_id,
+            "canvas_file_id": str(upload.file_id),
             "file_name": accessible_name,
             "url": getattr(upload, "web_view_link", None),
+            "artifact_id": str(artifact.id),
+            "artifact_checksum": str(artifact.sha256),
         }
 
     # ------------------------------------------------------------------
@@ -1159,6 +1813,13 @@ class CanvasContentScanner:
                 "error": f"Cannot write back: status is '{cloud_file.writeback_status}', must be 'approved'",
             }
 
+        if cloud_file.needs_rescan:
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Source changed — re-scan required before write-back",
+            }
+
         content_source = cloud_file.content_source
 
         # Fetch current Canvas state for stale check
@@ -1171,12 +1832,18 @@ class CanvasContentScanner:
                 "error": f"Failed to check Canvas state: {e}",
             }
 
-        # Stale check — Canvas content was modified since our scan
-        if (
-            cloud_file.content_updated_at
-            and current_updated_at
-            and current_updated_at > cloud_file.content_updated_at
-        ):
+        if cloud_file.content_updated_at is None or current_updated_at is None:
+            return {
+                "success": False,
+                "stale": True,
+                "error": (
+                    "Content version cannot be verified — re-scan required "
+                    "before write-back."
+                ),
+            }
+
+        # Stale check — Canvas content changed since the exact scanned version.
+        if current_updated_at != cloud_file.content_updated_at:
             logger.warning(
                 "Stale content detected — Canvas modified since scan",
                 extra={
@@ -1331,20 +1998,26 @@ class CanvasContentScanner:
 
         Returns the CloudFile (new or updated).
         """
-        existing = (
-            self.db.query(CloudFile)
-            .filter(
-                CloudFile.department_id == self.department_id,
-                CloudFile.provider == "canvas",
-                CloudFile.provider_file_id == provider_file_id,
-                CloudFile.content_source == content_source.value,
-                CloudFile.provider_parent_id == course_id,
+
+        def load_existing() -> CloudFile | None:
+            return (
+                self.db.query(CloudFile)
+                .filter(
+                    CloudFile.department_id == self.department_id,
+                    CloudFile.provider == "canvas",
+                    CloudFile.provider_file_id == provider_file_id,
+                    CloudFile.content_source == content_source.value,
+                    CloudFile.provider_parent_id == course_id,
+                )
+                .first()
             )
-            .first()
-        )
+
+        existing = load_existing()
 
         if existing:
             # Update existing record
+            if existing.content_updated_at != content_updated_at:
+                invalidate_canvas_derived_state(existing)
             existing.file_name = file_name
             existing.content_body = sanitize_for_postgres(content_body)
             existing.content_slug = content_slug
@@ -1387,30 +2060,37 @@ class CanvasContentScanner:
             needs_rescan=True,
             provider_metadata=metadata if metadata else None,
         )
-        self.db.add(cloud_file)
-        return cloud_file
+        return add_or_get_canvas_cloud_file(self.db, cloud_file, load_existing)
 
     def _upsert_file_cloud_file(self, course_id: str, file_info: Any) -> CloudFile:
         """
-        Find an existing CloudFile for this Canvas file (by department,
-        provider, provider_file_id — deliberately NOT scoped by
-        content_source) or create a new one.
+        Find an existing CloudFile for this Canvas file by its composite
+        provider/course/source/native identity or create a new one.
 
         Matches the lookup canvas_scan_routes.py's single-file scan
         endpoint uses, so a file scanned individually before a course scan
         (or vice versa) converges on the same row instead of duplicating —
-        content_source is only ever added/refreshed here, never used to
-        gate the lookup, since older rows may predate this field.
+        legacy rows with a NULL content_source are normalized to file for
+        this lookup.
         """
-        existing = (
-            self.db.query(CloudFile)
-            .filter(
-                CloudFile.department_id == self.department_id,
-                CloudFile.provider == "canvas",
-                CloudFile.provider_file_id == file_info.id,
+
+        def load_existing() -> CloudFile | None:
+            return (
+                self.db.query(CloudFile)
+                .filter(
+                    CloudFile.department_id == self.department_id,
+                    CloudFile.provider == "canvas",
+                    CloudFile.provider_parent_id == course_id,
+                    or_(
+                        CloudFile.content_source == CanvasContentType.FILE.value,
+                        CloudFile.content_source.is_(None),
+                    ),
+                    CloudFile.provider_file_id == file_info.id,
+                )
+                .first()
             )
-            .first()
-        )
+
+        existing = load_existing()
 
         # Short type code (pdf, docx, ...) for the file_type column — NOT
         # the full MIME type, which belongs in mime_type. Mirrors
@@ -1422,11 +2102,18 @@ class CanvasContentScanner:
         )
 
         if existing:
+            observed_version = (
+                file_info.updated_at.isoformat() if file_info.updated_at else None
+            )
+            if existing.provider_version != observed_version:
+                invalidate_canvas_derived_state(existing)
             existing.file_name = file_info.display_name or file_info.filename
             existing.file_type = file_type
             existing.mime_type = file_info.content_type
             existing.file_size_bytes = file_info.size
             existing.web_view_link = file_info.url
+            existing.provider_modified_at = file_info.updated_at
+            existing.provider_version = observed_version
             existing.provider_parent_id = course_id
             existing.content_source = CanvasContentType.FILE.value
             existing.needs_rescan = True
@@ -1444,11 +2131,14 @@ class CanvasContentScanner:
             mime_type=file_info.content_type,
             file_size_bytes=file_info.size,
             web_view_link=file_info.url,
+            provider_modified_at=file_info.updated_at,
+            provider_version=(
+                file_info.updated_at.isoformat() if file_info.updated_at else None
+            ),
             content_source=CanvasContentType.FILE.value,
             needs_rescan=True,
         )
-        self.db.add(cloud_file)
-        return cloud_file
+        return add_or_get_canvas_cloud_file(self.db, cloud_file, load_existing)
 
     async def _run_axe_scan(self, html: str) -> Dict[str, Any]:
         """
@@ -1463,45 +2153,7 @@ class CanvasContentScanner:
         Returns:
             axe-core results dict with violations, passes, etc.
         """
-        try:
-            from playwright.async_api import async_playwright
-
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                try:
-                    page = await browser.new_page()
-                    await page.set_content(html)
-
-                    # Inject and run axe-core
-                    axe_script_path = os.path.join(
-                        os.path.dirname(__file__),
-                        "..",
-                        "..",
-                        "node_modules",
-                        "axe-core",
-                        "axe.min.js",
-                    )
-                    if os.path.exists(axe_script_path):
-                        with open(axe_script_path, "r") as f:
-                            axe_script = f.read()
-                        await page.evaluate(axe_script)
-                    else:
-                        # Fallback: try CDN
-                        await page.add_script_tag(
-                            url="https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.7.2/axe.min.js"
-                        )
-
-                    results = await page.evaluate("axe.run()")
-                    return results
-                finally:
-                    await browser.close()
-
-        except ImportError:
-            logger.warning("Playwright not available, returning empty results")
-            return {"violations": [], "passes": []}
-        except Exception as e:
-            logger.error("axe-core scan failed: %s", e)
-            return {"violations": [], "passes": [], "error": str(e)}
+        return await run_deterministic_axe(html)
 
     async def _get_canvas_updated_at(self, cloud_file: CloudFile) -> Optional[datetime]:
         """

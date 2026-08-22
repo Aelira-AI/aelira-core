@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-08-22
+
+### Security
+
+- Canvas staff authorization remains bound to the authoritative tenant, account, course, content type, and object throughout launch, navigation, scan, remediation, approval, upload, and write-back paths.
+- API-key recovery and management remain tenant-scoped, LMS AI use is policy-bound and purpose-isolated, and release publication remains fail-closed behind signed-tag, protected-denylist, CI, four-receipt, dependency-audit, SBOM, and reproducibility gates.
+
+### Fixed
+
+- Canvas content identity now includes course and content type; inline image remediation preserves image type; LTI navigation exchanges launch codes once; dashboard review actions and labels reflect persisted state.
+- Standalone batches drain all requested work, including the verified 1,000-item boundary, instead of stopping after the first page.
+
+### Changed
+
+- Cloud scans, remediations, uploads, syncs, and Canvas reconciliation run through a bounded, fenced, multi-worker durable queue with heartbeats, retries, restart recovery, deduplication, and explicit managed artifacts.
+- The deterministic release browser gate covers the staff Canvas course, image remediation, review, write-back, rescan, restart, and artifact journey across the release Chromium set and compatibility matrix.
+
+### Operator action required
+
+- **Durable-job quarantine:** durable-worker activation quarantines every pre-v0.9.5 pending or processing job rather than executing it. Each row becomes terminal `failed` with exact reason `pre_v0_9_5_job_quarantined`; its original payload, result, and external-effect evidence remain available for review. Identify all affected rows with: `SELECT id, job_type, status, last_error_code, created_at FROM cloud_job_queue WHERE status = 'failed' AND last_error_code = 'pre_v0_9_5_job_quarantined' ORDER BY created_at, id;`
+- Review each quarantined row and its linked course, file, credential, managed artifact, and external-effect evidence. Do not edit the old row back to `pending`. After confirming current authorization and intent, deliberately resubmit scans, remediations, uploads, and syncs through the same authenticated dashboard action or API endpoint that initiates new work; retain the failed row as the audit record.
+- Preserve every v0.9.4 operator action below, back up PostgreSQL, run `alembic upgrade head` explicitly, and confirm API and worker health before accepting new work.
+
 ## [0.9.4] - 2026-08-19
 
 ### Security

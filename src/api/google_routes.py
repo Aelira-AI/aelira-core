@@ -8,10 +8,11 @@ Provides endpoints for:
 - Auto-remediation with upload back to Drive
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import RedirectResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 import logging
@@ -26,17 +27,23 @@ from ..db.models import (
     CloudJobQueue,
     CloudProvider,
     CloudJobType,
-    CloudJobStatus,
+    CloudWebhookSubscription,
 )
 from ..api.auth_routes import get_current_api_key
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..middleware.quota import require_feature
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
+from ..integrations.google_workspace.google_drive import IndeterminateProviderOutcome
 from ..integrations.google_workspace.google_oauth import GoogleOAuthService
 from ..integrations.google_workspace.google_docs import GoogleDocsService
 from ..integrations.google_workspace.google_slides import GoogleSlidesService
 from ..integrations.google_workspace.google_sheets import GoogleSheetsService
 from ..config.settings import get_settings
+from ..services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
+    RemediationArtifactService,
+)
+from ..services.job_enqueue_service import enqueue_cloud_job
 
 # Aliases for test compatibility
 get_db = get_db_dependency
@@ -157,6 +164,22 @@ class JobStatusResponse(BaseModel):
     completed_at: Optional[datetime]
 
 
+class GoogleWebhookSubscriptionRequest(BaseModel):
+    """Create a watch for one exact Google Drive resource."""
+
+    notification_url: str = Field(..., min_length=1, max_length=1024)
+    resource_id: str = Field(..., min_length=1, max_length=1024)
+
+    @field_validator("notification_url", "resource_id")
+    @classmethod
+    def validate_identity_field(cls, value: str) -> str:
+        """Reject whitespace-only provider identities before durable work."""
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
 # ==================== Helper Functions ====================
 
 
@@ -237,8 +260,261 @@ async def get_google_integration(
 
     return GoogleDriveIntegration(
         access_token=access_token,
-        department_id=credential.department_id,
+        credential_id=credential.id,
     )
+
+
+def _google_webhook_expiration(value: Any) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(int(value) / 1000, timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _google_webhook_manual_response(subscription: CloudWebhookSubscription) -> dict:
+    """Return the stable fail-closed response for a possibly-created channel."""
+    return {
+        "success": False,
+        "subscription_id": subscription.id,
+        "status": "manual_required",
+        "error_code": "webhook_provider_outcome_indeterminate",
+        "retry_safe": False,
+    }
+
+
+def _google_webhook_success_response(
+    subscription: CloudWebhookSubscription, *, replayed: bool
+) -> dict:
+    """Return the durable Google channel identity for initial-create replays."""
+    return {
+        "success": True,
+        "subscription_id": subscription.id,
+        "channel_id": subscription.subscription_id,
+        "resource_id": subscription.provider_channel_resource_id,
+        "expiration_time": subscription.expiration_time.isoformat(),
+        "replayed": replayed,
+    }
+
+
+_GOOGLE_WEBHOOK_ACTIVE_IDENTITY_STATUSES = (
+    "requesting",
+    "indeterminate",
+    "created",
+    "renewed",
+)
+
+
+def _google_webhook_existing_response(
+    subscription: CloudWebhookSubscription,
+) -> dict:
+    if subscription.renewal_status in {"created", "renewed"}:
+        return _google_webhook_success_response(subscription, replayed=True)
+    return _google_webhook_manual_response(subscription)
+
+
+def _get_google_webhook_credential_identity(
+    api_key: APIKey, db: Session
+) -> CloudOAuthCredentials:
+    """Load and validate credential identity without touching OAuth tokens."""
+    credential = (
+        db.query(CloudOAuthCredentials)
+        .filter(
+            CloudOAuthCredentials.department_id == api_key.department_id,
+            CloudOAuthCredentials.provider == CloudProvider.GOOGLE.value,
+            CloudOAuthCredentials.is_active.is_(True),
+        )
+        .first()
+    )
+    if (
+        credential is None
+        or getattr(credential, "department_id", None) != api_key.department_id
+        or getattr(credential, "provider", None) != CloudProvider.GOOGLE.value
+        or getattr(credential, "is_active", None) is not True
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Google Workspace not connected. Please connect first via /google/connect",
+        )
+    return credential
+
+
+@router.post("/webhooks")
+async def create_google_webhook_subscription(
+    request: GoogleWebhookSubscriptionRequest,
+    api_key: APIKey = Depends(get_current_api_key),
+    db: Session = Depends(get_db_dependency),
+):
+    """Durably record a channel intent before creating an exact Drive watch."""
+    raw_credential = _get_google_webhook_credential_identity(api_key, db)
+
+    existing = (
+        db.query(CloudWebhookSubscription)
+        .filter(
+            CloudWebhookSubscription.department_id == api_key.department_id,
+            CloudWebhookSubscription.credential_id == raw_credential.id,
+            CloudWebhookSubscription.provider == CloudProvider.GOOGLE.value,
+            CloudWebhookSubscription.provider_resource_id == request.resource_id,
+            CloudWebhookSubscription.notification_url == request.notification_url,
+            CloudWebhookSubscription.renewal_status.in_(
+                _GOOGLE_WEBHOOK_ACTIVE_IDENTITY_STATUSES
+            ),
+        )
+        .first()
+    )
+    if existing is not None:
+        return _google_webhook_existing_response(existing)
+
+    # A terminal row only permits explicit replacement once another path has
+    # durably marked the old provider channel inactive. Contradictory metadata
+    # is not proof that Google stopped delivering to the old channel.
+    unclear_terminal = (
+        db.query(CloudWebhookSubscription)
+        .filter(
+            CloudWebhookSubscription.department_id == api_key.department_id,
+            CloudWebhookSubscription.credential_id == raw_credential.id,
+            CloudWebhookSubscription.provider == CloudProvider.GOOGLE.value,
+            CloudWebhookSubscription.provider_resource_id == request.resource_id,
+            CloudWebhookSubscription.notification_url == request.notification_url,
+            CloudWebhookSubscription.is_active.is_(True),
+            CloudWebhookSubscription.renewal_status.notin_(
+                _GOOGLE_WEBHOOK_ACTIVE_IDENTITY_STATUSES
+            ),
+        )
+        .first()
+    )
+    if unclear_terminal is not None and getattr(unclear_terminal, "is_active", False):
+        return _google_webhook_manual_response(unclear_terminal)
+
+    credential = await get_google_credential(api_key, db)
+    if (
+        getattr(credential, "id", None) != raw_credential.id
+        or getattr(credential, "department_id", None) != api_key.department_id
+        or getattr(credential, "provider", None) != CloudProvider.GOOGLE.value
+        or getattr(credential, "is_active", None) is not True
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Google credential identity changed during webhook creation",
+        )
+
+    pending_channel_id = str(uuid.uuid4())
+    started_at = datetime.now(timezone.utc)
+    subscription = CloudWebhookSubscription(
+        id=str(uuid.uuid4()),
+        department_id=api_key.department_id,
+        credential_id=credential.id,
+        provider=CloudProvider.GOOGLE.value,
+        subscription_id=pending_channel_id,
+        provider_resource_id=request.resource_id,
+        expiration_time=started_at,
+        notification_url=request.notification_url,
+        is_active=False,
+        renewal_status="requesting",
+        renewal_result={
+            "provider": CloudProvider.GOOGLE.value,
+            "status": "requesting",
+            "pending_channel_id": pending_channel_id,
+        },
+        pending_renewal_channel_id=pending_channel_id,
+        pending_renewal_started_at=started_at,
+    )
+    db.add(subscription)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent = (
+            db.query(CloudWebhookSubscription)
+            .filter(
+                CloudWebhookSubscription.department_id == api_key.department_id,
+                CloudWebhookSubscription.credential_id == credential.id,
+                CloudWebhookSubscription.provider == CloudProvider.GOOGLE.value,
+                CloudWebhookSubscription.provider_resource_id == request.resource_id,
+                CloudWebhookSubscription.notification_url == request.notification_url,
+                CloudWebhookSubscription.renewal_status.in_(
+                    _GOOGLE_WEBHOOK_ACTIVE_IDENTITY_STATUSES
+                ),
+            )
+            .first()
+        )
+        if concurrent is not None:
+            return _google_webhook_existing_response(concurrent)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google webhook intent could not be persisted",
+        )
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google webhook intent could not be persisted",
+        )
+
+    integration = await get_google_integration(credential)
+    try:
+        provider_result = await integration.create_webhook(
+            notification_url=request.notification_url,
+            resource_id=request.resource_id,
+            channel_id=pending_channel_id,
+        )
+        channel_id = provider_result.get("channel_id")
+        channel_resource_id = provider_result.get("resource_id")
+        resource_uri = provider_result.get("resource_uri")
+        expiration = _google_webhook_expiration(provider_result.get("expiration"))
+        if not all(
+            isinstance(value, str) and value
+            for value in (channel_id, channel_resource_id, resource_uri)
+        ) or not isinstance(expiration, datetime):
+            raise ValueError("Google returned an incomplete webhook identity")
+        if channel_id != pending_channel_id:
+            raise IndeterminateProviderOutcome("webhook_provider_identity_mismatch")
+        subscription.subscription_id = channel_id
+        subscription.provider_channel_resource_id = channel_resource_id
+        subscription.resource_uri = resource_uri
+        subscription.expiration_time = expiration
+        subscription.is_active = True
+        subscription.renewal_status = "created"
+        subscription.renewal_result = {
+            "provider": CloudProvider.GOOGLE.value,
+            "subscription_id": channel_id,
+            "provider_resource_id": channel_resource_id,
+            "resource_uri": resource_uri,
+            "status": "created",
+        }
+        subscription.pending_renewal_channel_id = None
+        subscription.pending_renewal_started_at = None
+        try:
+            db.commit()
+        except Exception:
+            # The provider may have accepted the channel while the durable row
+            # remains at its already-committed requesting checkpoint.
+            db.rollback()
+            return _google_webhook_manual_response(subscription)
+        return _google_webhook_success_response(subscription, replayed=False)
+    except IndeterminateProviderOutcome as exc:
+        subscription.renewal_status = "indeterminate"
+        subscription.renewal_result = {
+            "provider": CloudProvider.GOOGLE.value,
+            "status": "indeterminate",
+            "code": exc.code,
+            "pending_channel_id": pending_channel_id,
+            "retry_safe": False,
+        }
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        return _google_webhook_manual_response(subscription)
+    except Exception:
+        # Never erase the committed requesting checkpoint: replay must stop
+        # rather than risk creating a second provider channel.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Google webhook creation failed",
+        )
+    finally:
+        await integration.close()
 
 
 # ==================== Helper Functions ====================
@@ -492,21 +768,38 @@ async def disconnect_google(
             detail="Google Workspace not connected",
         )
 
+    # Managed artifacts use RESTRICT parents and must be handled explicitly.
     try:
-        # Revoke token with Google
+        RemediationArtifactService.from_settings().delete_for_credential(
+            db,
+            department_id=api_key.department_id,
+            credential_id=credential.id,
+        )
+    except ArtifactAuthorizationError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_cleanup_required"
+        ) from None
+
+    try:
+        # Only revoke after the complete managed-child set is authorized.
         token_manager = get_token_manager()
         access_token = token_manager.decrypt_token(credential.access_token)
         await token_manager.revoke_google_token(access_token)
     except Exception as e:
         logger.warning(f"Failed to revoke Google token (may already be revoked): {e}")
 
-    # Delete credential and associated data
-    db.query(CloudFile).filter(CloudFile.credential_id == credential.id).delete()
-    db.query(CloudJobQueue).filter(
-        CloudJobQueue.credential_id == credential.id
-    ).delete()
-    db.delete(credential)
-    db.commit()
+    try:
+        # Finalize children and credential in the same transaction as artifact rows.
+        db.query(CloudJobQueue).filter(
+            CloudJobQueue.credential_id == credential.id
+        ).delete()
+        db.query(CloudFile).filter(CloudFile.credential_id == credential.id).delete()
+        db.delete(credential)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     logger.info(f"Disconnected Google Workspace for department {api_key.department_id}")
 
@@ -611,9 +904,7 @@ async def list_drive_files(
                     credential_id=credential.id,
                     provider=CloudProvider.GOOGLE.value,
                     provider_file_id=file_info.id,
-                    provider_parent_id=(
-                        file_info.parents[0] if file_info.parents else None
-                    ),
+                    provider_parent_id=file_info.parent_id,
                     file_name=file_info.name,
                     file_type=(
                         file_info.export_extension.lstrip(".")
@@ -621,10 +912,10 @@ async def list_drive_files(
                         else "unknown"
                     ),
                     mime_type=file_info.mime_type,
-                    file_size_bytes=file_info.size,
+                    file_size_bytes=file_info.size_bytes,
                     web_view_link=file_info.web_view_link,
                     provider_version=file_info.version,
-                    provider_modified_at=file_info.modified_time,
+                    provider_modified_at=file_info.modified_at,
                     needs_rescan=True,
                 )
                 db.add(cloud_file)
@@ -633,7 +924,7 @@ async def list_drive_files(
                 if file_info.version != cloud_file.provider_version:
                     cloud_file.file_name = file_info.name
                     cloud_file.provider_version = file_info.version
-                    cloud_file.provider_modified_at = file_info.modified_time
+                    cloud_file.provider_modified_at = file_info.modified_at
                     cloud_file.needs_rescan = True
 
             response_files.append(
@@ -751,7 +1042,6 @@ async def list_google_drive_folders(
 @router.post("/scan/file", response_model=ScanResultResponse)
 async def scan_file(
     request: ScanFileRequest,
-    background_tasks: BackgroundTasks,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
@@ -786,27 +1076,24 @@ async def scan_file(
     credential = await get_google_credential(api_key, db)
 
     # Create scan job
-    job = CloudJobQueue(
-        id=str(uuid.uuid4()),
+    job = enqueue_cloud_job(
+        db,
         department_id=api_key.department_id,
         job_type=CloudJobType.SCAN.value,
+        payload={
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.GOOGLE.value,
+            "provider_file_id": cloud_file.provider_file_id,
+        },
+        dedupe_key=f"scan:google:{cloud_file.id}:{cloud_file.provider_version or 'current'}",
         cloud_file_id=cloud_file.id,
         credential_id=credential.id,
         provider=CloudProvider.GOOGLE.value,
         provider_file_id=cloud_file.provider_file_id,
-        status=CloudJobStatus.PENDING.value,
         priority=5,
     )
-    db.add(job)
     db.commit()
-
-    # Queue background task
-    background_tasks.add_task(
-        _scan_file_task,
-        job_id=job.id,
-        cloud_file_id=cloud_file.id,
-        credential_id=credential.id,
-    )
 
     return ScanResultResponse(
         file_id=cloud_file.id,
@@ -821,7 +1108,6 @@ async def scan_file(
 @router.post("/scan/folder", response_model=Dict[str, Any])
 async def scan_folder(
     request: ScanFolderRequest,
-    background_tasks: BackgroundTasks,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
@@ -891,18 +1177,23 @@ async def scan_folder(
                 db.flush()
 
             # Create scan job
-            job = CloudJobQueue(
-                id=str(uuid.uuid4()),
+            enqueue_cloud_job(
+                db,
                 department_id=api_key.department_id,
                 job_type=CloudJobType.SCAN.value,
+                payload={
+                    "cloud_file_id": cloud_file.id,
+                    "credential_id": credential.id,
+                    "provider": CloudProvider.GOOGLE.value,
+                    "provider_file_id": cloud_file.provider_file_id,
+                },
+                dedupe_key=f"scan:google:{cloud_file.id}:{cloud_file.provider_version or 'current'}",
                 cloud_file_id=cloud_file.id,
                 credential_id=credential.id,
                 provider=CloudProvider.GOOGLE.value,
                 provider_file_id=cloud_file.provider_file_id,
-                status=CloudJobStatus.PENDING.value,
                 priority=5,
             )
-            db.add(job)
             jobs_created += 1
 
         db.commit()
@@ -929,7 +1220,6 @@ async def scan_folder(
 @router.post("/remediate", response_model=Dict[str, Any])
 async def remediate_file(
     request: RemediateFileRequest,
-    background_tasks: BackgroundTasks,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
@@ -970,29 +1260,29 @@ async def remediate_file(
     credential = await get_google_credential(api_key, db)
 
     # Create remediation job
-    job = CloudJobQueue(
-        id=str(uuid.uuid4()),
+    job = enqueue_cloud_job(
+        db,
         department_id=api_key.department_id,
         job_type=CloudJobType.REMEDIATE.value,
+        payload={
+            "cloud_file_id": cloud_file.id,
+            "credential_id": credential.id,
+            "provider": CloudProvider.GOOGLE.value,
+            "provider_file_id": cloud_file.provider_file_id,
+            "scan_id": cloud_file.last_scan_id,
+            "upload_as_new": request.upload_as_new,
+        },
+        dedupe_key=(
+            f"remediate:google:{cloud_file.id}:{cloud_file.last_scan_id}:"
+            f"upload-new={str(request.upload_as_new).lower()}"
+        ),
         cloud_file_id=cloud_file.id,
         credential_id=credential.id,
         provider=CloudProvider.GOOGLE.value,
         provider_file_id=cloud_file.provider_file_id,
-        status=CloudJobStatus.PENDING.value,
         priority=3,  # Higher priority than scans
-        result_data={"upload_as_new": request.upload_as_new},
     )
-    db.add(job)
     db.commit()
-
-    # Queue background task
-    background_tasks.add_task(
-        _remediate_file_task,
-        job_id=job.id,
-        cloud_file_id=cloud_file.id,
-        credential_id=credential.id,
-        upload_as_new=request.upload_as_new,
-    )
 
     return {
         "success": True,
@@ -1076,100 +1366,6 @@ async def list_jobs(
     ]
 
 
-# ==================== Background Task Functions ====================
-
-
-async def _scan_file_task(job_id: str, cloud_file_id: str, credential_id: str):
-    """Background task to scan a file from Google Drive."""
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.cloud_scan_job import handle_scan_job
-
-    logger.info(f"Starting cloud scan: job={job_id}, file={cloud_file_id}")
-
-    with _get_db_ctx() as db:
-        job = db.query(CloudJobQueue).filter(CloudJobQueue.id == job_id).first()
-        if not job:
-            logger.error(f"Scan job not found: {job_id}")
-            return
-
-        try:
-            job.status = CloudJobStatus.PROCESSING.value
-            job.started_at = datetime.now(timezone.utc)
-            job.progress = 10
-            job.progress_message = "Downloading file from Google Drive..."
-            db.commit()
-
-            token_manager = OAuthTokenManager()
-            result = await handle_scan_job(job, db, token_manager)
-
-            job.status = CloudJobStatus.COMPLETED.value
-            job.progress = 100
-            job.progress_message = "Scan complete"
-            job.result_data = result
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(
-                f"Cloud scan complete: job={job_id}, "
-                f"score={result.get('compliance_score')}, "
-                f"issues={result.get('issues_found', 0)}"
-            )
-        except Exception as e:
-            logger.error(f"Cloud scan failed: job={job_id}, error={e}")
-            job.status = CloudJobStatus.FAILED.value
-            job.progress = 100
-            job.progress_message = f"Scan failed: {e}"
-            job.error_message = str(e)
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-
-async def _remediate_file_task(
-    job_id: str,
-    cloud_file_id: str,
-    credential_id: str,
-    upload_as_new: bool,
-):
-    """Background task to remediate a file and upload back to Google Drive."""
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.remediation_job import handle_remediation_job
-
-    logger.info(f"Starting cloud remediation: job={job_id}, file={cloud_file_id}")
-
-    with _get_db_ctx() as db:
-        job = db.query(CloudJobQueue).filter(CloudJobQueue.id == job_id).first()
-        if not job:
-            logger.error(f"Remediation job not found: {job_id}")
-            return
-
-        try:
-            job.status = CloudJobStatus.PROCESSING.value
-            job.started_at = datetime.now(timezone.utc)
-            job.progress = 10
-            job.progress_message = "Starting remediation..."
-            db.commit()
-
-            token_manager = OAuthTokenManager()
-            result = await handle_remediation_job(job, db, token_manager)
-
-            job.status = CloudJobStatus.COMPLETED.value
-            job.progress = 100
-            job.progress_message = "Remediation complete"
-            job.result_data = result
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(f"Cloud remediation complete: job={job_id}")
-        except Exception as e:
-            logger.error(f"Cloud remediation failed: job={job_id}, error={e}")
-            job.status = CloudJobStatus.FAILED.value
-            job.progress = 100
-            job.progress_message = f"Remediation failed: {e}"
-            job.error_message = str(e)
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-
 # ==================== Account Management ====================
 
 
@@ -1237,7 +1433,9 @@ async def get_file_metadata(
     access_token = token_manager.decrypt_token(credential.access_token)
 
     # Get file metadata using Google Drive integration
-    drive_integration = GoogleDriveIntegration(access_token=access_token)
+    drive_integration = GoogleDriveIntegration(
+        access_token=access_token, credential_id=credential.id
+    )
 
     try:
         file_info = drive_integration.get_file_metadata(file_id)
@@ -1245,9 +1443,9 @@ async def get_file_metadata(
             "id": file_info.id,
             "name": file_info.name,
             "mime_type": file_info.mime_type,
-            "size": file_info.size,
-            "created_time": file_info.created_time,
-            "modified_time": file_info.modified_time,
+            "size": file_info.size_bytes,
+            "created_time": file_info.created_at,
+            "modified_time": file_info.modified_at,
             "web_view_link": file_info.web_view_link,
         }
     except Exception as e:
@@ -1294,7 +1492,9 @@ async def download_file(
     access_token = token_manager.decrypt_token(credential.access_token)
 
     # Download file using Google Drive integration
-    drive_integration = GoogleDriveIntegration(access_token=access_token)
+    drive_integration = GoogleDriveIntegration(
+        access_token=access_token, credential_id=credential.id
+    )
 
     try:
         file_content = drive_integration.download_file(file_id)
@@ -1548,7 +1748,7 @@ async def upload_file(
     access_token = token_manager.decrypt_token(credential.access_token)
 
     # Upload file using Google Drive integration
-    GoogleDriveIntegration(access_token=access_token)
+    GoogleDriveIntegration(access_token=access_token, credential_id=credential.id)
 
     try:
         # Check if file exists

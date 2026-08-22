@@ -5,7 +5,12 @@ Processes cloud file upload jobs.
 Uploads remediated files back to cloud storage (Google Drive, OneDrive, SharePoint).
 """
 
+import asyncio
 import logging
+import os
+import shutil
+import tempfile
+import httpx
 from typing import Dict, Any
 from sqlalchemy.orm import Session
 from pathlib import Path
@@ -14,24 +19,171 @@ from ..db.models import (
     CloudOAuthCredentials,
     CloudProvider,
     CloudFile,
+    RemediationArtifact,
 )
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
-from ..utils.security import (
-    PERSISTED_CANVAS_ORIGIN_ERROR,
-    require_persisted_canvas_origin,
+from .contracts import JobFailure, LostJobOwnership
+from ..integrations.cloud_base import (
+    CloudAuthError,
+    CloudNotFoundError,
+    CloudRateLimitError,
+)
+from ..services.remediation_artifact_service import (
+    ArtifactError,
+    RemediationArtifactService,
 )
 
 logger = logging.getLogger(__name__)
 
 
+class IndeterminateProviderOutcome(RuntimeError):
+    """The request body may have been accepted without an exact response."""
+
+
+def classify_upload_exception(exc: Exception, *, provider: str) -> JobFailure:
+    """Classify failures without persisting exception text, URLs, or paths."""
+    details: dict[str, Any] = {"provider": provider}
+    if isinstance(exc, IndeterminateProviderOutcome):
+        return JobFailure.indeterminate(
+            "provider_outcome_indeterminate", {**details, "retry_safe": False}
+        )
+    if isinstance(exc, CloudRateLimitError):
+        return JobFailure.retryable("provider_rate_limited", details)
+    if isinstance(exc, CloudAuthError):
+        return JobFailure.deterministic("provider_auth_failed", details)
+    if isinstance(exc, CloudNotFoundError):
+        return JobFailure.deterministic("provider_input_invalid", details)
+    if isinstance(exc, httpx.TimeoutException):
+        return JobFailure.retryable("provider_timeout", details)
+    if isinstance(exc, httpx.TransportError):
+        return JobFailure.retryable("provider_network_error", details)
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        retry_after = exc.response.headers.get("retry-after")
+        if status == 429 or status >= 500 or status in (408, 425):
+            try:
+                details["retry_after"] = max(0, min(3600, int(retry_after or 0)))
+            except ValueError:
+                details["retry_after"] = 0
+            code = "provider_rate_limited" if status == 429 else "provider_unavailable"
+            return JobFailure.retryable(code, details)
+        if status == 401:
+            return JobFailure.deterministic("provider_auth_failed", details)
+        if status == 403:
+            return JobFailure.deterministic("provider_permission_denied", details)
+        if 400 <= status < 500:
+            return JobFailure.deterministic("provider_input_invalid", details)
+    return JobFailure.indeterminate(
+        "provider_failure_unclassified", {**details, "retry_safe": False}
+    )
+
+
+def _failure_from_provider_result(result: Any, *, provider: str) -> JobFailure:
+    """Preserve structured adapter truth; an untyped failure is ambiguous."""
+    kind = getattr(result, "failure_kind", None)
+    status = getattr(result, "status_code", None)
+    details: dict[str, Any] = {"provider": provider}
+    retry_after = getattr(result, "retry_after", None)
+    if isinstance(retry_after, int):
+        details["retry_after"] = max(0, min(3600, retry_after))
+    if kind == "retryable":
+        code = "provider_rate_limited" if status == 429 else "provider_unavailable"
+        return JobFailure.retryable(code, details)
+    if kind == "deterministic":
+        code = {
+            401: "provider_auth_failed",
+            403: "provider_permission_denied",
+        }.get(status, "provider_upload_rejected")
+        return JobFailure.deterministic(code, details)
+    return JobFailure.indeterminate(
+        "provider_outcome_indeterminate", {**details, "retry_safe": False}
+    )
+
+
 async def process_upload_job(
     job_data: Dict[str, Any],
     db: Session,
-) -> Dict[str, Any]:
+    *,
+    assert_owned: Any = None,
+    begin_external_effect: Any = None,
+) -> Dict[str, Any] | JobFailure:
+    """Resolve an approved managed artifact and upload its verified bytes."""
+    if "file_path" in job_data or not isinstance(job_data.get("artifact_id"), str):
+        return JobFailure.deterministic("managed_artifact_id_required")
+
+    artifact = db.get(RemediationArtifact, job_data["artifact_id"])
+    if artifact is None:
+        return {
+            "success": False,
+            "uploaded": False,
+            "error": "managed_artifact_unavailable",
+        }
+    if (
+        artifact.department_id != job_data.get("department_id")
+        or artifact.cloud_file_id != job_data.get("cloud_file_id")
+        or artifact.provider != job_data.get("provider")
+    ):
+        return {
+            "success": False,
+            "uploaded": False,
+            "error": "managed_artifact_unavailable",
+        }
+
+    temp_path: str | None = None
+    try:
+        service = RemediationArtifactService.from_settings()
+        with service.open_verified(
+            db,
+            artifact,
+            department_id=artifact.department_id,
+            scan_id=artifact.scan_id,
+            cloud_file_id=artifact.cloud_file_id,
+            require_approved=True,
+            approval_checksum=job_data.get("artifact_checksum"),
+        ) as stream:
+            with tempfile.NamedTemporaryFile(
+                prefix="aelira-upload-",
+                suffix=Path(artifact.filename).suffix,
+                delete=False,
+            ) as temporary:
+                temp_path = temporary.name
+                shutil.copyfileobj(stream, temporary)
+        internal_data = dict(job_data)
+        internal_data.pop("artifact_id", None)
+        internal_data.pop("artifact_checksum", None)
+        internal_data["file_path"] = temp_path
+        return await _process_upload_path(
+            internal_data,
+            db,
+            assert_owned=assert_owned,
+            begin_external_effect=begin_external_effect,
+        )
+    except (ArtifactError, OSError):
+        db.rollback()
+        return {
+            "success": False,
+            "uploaded": False,
+            "error": "managed_artifact_unavailable",
+        }
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+
+async def _process_upload_path(
+    job_data: Dict[str, Any],
+    db: Session,
+    *,
+    assert_owned: Any = None,
+    begin_external_effect: Any = None,
+) -> Dict[str, Any] | JobFailure:
     """
-    Process an upload job.
+    Upload a service-materialized managed artifact path.
 
     Uploads a file to cloud storage, creating a new version with "_remediated" suffix.
 
@@ -66,7 +218,7 @@ async def process_upload_job(
         )
 
         # Validate file exists
-        if not file_path or not Path(file_path).exists():
+        if not file_path or not await asyncio.to_thread(Path(file_path).exists):
             return {
                 "success": False,
                 "uploaded": False,
@@ -86,7 +238,6 @@ async def process_upload_job(
         provider_map = {
             "google": CloudProvider.GOOGLE,
             "microsoft": CloudProvider.MICROSOFT,
-            "canvas": CloudProvider.CANVAS,
             "blackboard": CloudProvider.BLACKBOARD,
         }
         provider_enum = provider_map.get(provider)
@@ -101,6 +252,7 @@ async def process_upload_job(
         credential = (
             db.query(CloudOAuthCredentials)
             .filter(
+                CloudOAuthCredentials.id == cloud_file.credential_id,
                 CloudOAuthCredentials.department_id == department_id,
                 CloudOAuthCredentials.provider == provider_enum.value,
                 CloudOAuthCredentials.is_active,
@@ -116,8 +268,6 @@ async def process_upload_job(
             }
 
         # Refresh token if needed (with distributed lock to prevent races)
-        if provider == "canvas":
-            require_persisted_canvas_origin(credential)
         token_manager = OAuthTokenManager()
         access_token = await token_manager.refresh_if_expired(credential, db)
 
@@ -128,7 +278,13 @@ async def process_upload_job(
         else:
             new_file_name = original_path.name
 
-        # Upload file based on provider
+        # The durable checkpoint commits in a separate short transaction. It must
+        # be the final operation before any provider can receive request bytes.
+        if assert_owned is not None:
+            await assert_owned()
+        if begin_external_effect is None:
+            return JobFailure.deterministic("external_effect_checkpoint_unavailable")
+        external_effect_token = await begin_external_effect()
         if provider == "google":
             result = await _upload_to_google(
                 file_path=file_path,
@@ -136,6 +292,7 @@ async def process_upload_job(
                 parent_folder_id=cloud_file.provider_parent_id,
                 file_name=new_file_name,
                 department_id=department_id,
+                external_effect_token=external_effect_token,
             )
         elif provider == "microsoft":
             result = await _upload_to_microsoft(
@@ -144,14 +301,7 @@ async def process_upload_job(
                 parent_folder_id=cloud_file.provider_parent_id,
                 file_name=new_file_name,
                 department_id=department_id,
-            )
-        elif provider == "canvas":
-            result = await _upload_to_canvas(
-                file_path=file_path,
-                access_token=access_token,
-                credential=credential,
-                cloud_file=cloud_file,
-                file_name=new_file_name,
+                external_effect_token=external_effect_token,
             )
         elif provider == "blackboard":
             result = await _upload_to_blackboard(
@@ -160,6 +310,7 @@ async def process_upload_job(
                 credential=credential,
                 cloud_file=cloud_file,
                 file_name=new_file_name,
+                external_effect_token=external_effect_token,
             )
         else:
             return {
@@ -168,6 +319,8 @@ async def process_upload_job(
                 "error": f"Unsupported provider for upload: {provider}",
             }
 
+        if isinstance(result, JobFailure):
+            return result
         if result.get("success"):
             logger.info(
                 f"Successfully uploaded file to {provider}: {result.get('new_file_name')} "
@@ -176,18 +329,24 @@ async def process_upload_job(
 
             # Update cloud file record to track remediated version
             cloud_file.has_remediated_version = True
+            cloud_file.remediation_origin = "manual"
             cloud_file.remediated_file_id = result.get("new_file_id")
+            if assert_owned is not None:
+                await assert_owned()
             db.commit()
 
         return result
 
-    except Exception as e:
-        logger.error(f"Error processing upload job: {e}", exc_info=True)
-        return {
-            "success": False,
-            "uploaded": False,
-            "error": str(e),
-        }
+    except LostJobOwnership:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.warning(
+            "Upload provider operation failed",
+            extra={"provider": provider, "error_type": type(exc).__name__},
+        )
+        return classify_upload_exception(exc, provider=str(provider or "unknown"))
 
 
 async def _upload_to_google(
@@ -196,7 +355,8 @@ async def _upload_to_google(
     parent_folder_id: str = None,
     file_name: str = None,
     department_id: str = None,
-) -> Dict[str, Any]:
+    external_effect_token: str | None = None,
+) -> Dict[str, Any] | JobFailure:
     """
     Upload file to Google Drive.
 
@@ -233,23 +393,13 @@ async def _upload_to_google(
                     "web_view_link": result.web_view_link,
                     "provider": "google",
                 }
-            else:
-                return {
-                    "success": False,
-                    "uploaded": False,
-                    "error": result.error or "Upload failed",
-                }
+            return _failure_from_provider_result(result, provider="google")
 
         finally:
             await integration.close()
 
-    except Exception as e:
-        logger.error(f"Error uploading to Google Drive: {e}", exc_info=True)
-        return {
-            "success": False,
-            "uploaded": False,
-            "error": str(e),
-        }
+    except Exception as exc:
+        return classify_upload_exception(exc, provider="google")
 
 
 async def _upload_to_microsoft(
@@ -258,7 +408,8 @@ async def _upload_to_microsoft(
     parent_folder_id: str = None,
     file_name: str = None,
     department_id: str = None,
-) -> Dict[str, Any]:
+    external_effect_token: str | None = None,
+) -> Dict[str, Any] | JobFailure:
     """
     Upload file to Microsoft OneDrive/SharePoint.
 
@@ -274,8 +425,8 @@ async def _upload_to_microsoft(
     """
     try:
         integration = OneDriveIntegration(
-            credential_id=department_id,
             access_token=access_token,
+            credential_id=department_id,
         )
 
         try:
@@ -295,107 +446,13 @@ async def _upload_to_microsoft(
                     "web_view_link": result.web_view_link,
                     "provider": "microsoft",
                 }
-            else:
-                return {
-                    "success": False,
-                    "uploaded": False,
-                    "error": result.error or "Upload failed",
-                }
+            return _failure_from_provider_result(result, provider="microsoft")
 
         finally:
             await integration.close()
 
-    except Exception as e:
-        logger.error(f"Error uploading to Microsoft OneDrive: {e}", exc_info=True)
-        return {
-            "success": False,
-            "uploaded": False,
-            "error": str(e),
-        }
-
-
-async def _upload_to_canvas(
-    file_path: str,
-    access_token: str,
-    credential: Any,  # CloudOAuthCredentials
-    cloud_file: Any,  # CloudFile
-    file_name: str = None,
-) -> Dict[str, Any]:
-    """
-    Upload file to Canvas LMS.
-
-    Args:
-        file_path: Local file path
-        access_token: Canvas OAuth access token
-        credential: Canvas OAuth credential (contains canvas_instance_url)
-        cloud_file: CloudFile record (contains course_id in metadata)
-        file_name: Name for uploaded file
-
-    Returns:
-        Dict with upload results
-    """
-    try:
-        from ..integrations.canvas import CanvasAPIClient
-
-        try:
-            canvas_instance_url = require_persisted_canvas_origin(credential)
-        except ValueError:
-            return {
-                "success": False,
-                "uploaded": False,
-                "error": PERSISTED_CANVAS_ORIGIN_ERROR,
-            }
-
-        # Get course_id from cloud file metadata
-        course_id = cloud_file.metadata.get("course_id")
-        if not course_id:
-            return {
-                "success": False,
-                "uploaded": False,
-                "error": "Canvas course ID not found in file metadata",
-            }
-
-        api_client = CanvasAPIClient(
-            canvas_instance_url=canvas_instance_url,
-            access_token=access_token,
-            credential_id=credential.id,
-        )
-
-        try:
-            # Upload file to Canvas course (creates new file with _remediated suffix)
-            result = await api_client.upload_file(
-                course_id=course_id,
-                local_path=file_path,
-                folder_id=cloud_file.provider_parent_id,
-                file_name=file_name,
-            )
-
-            if result.success:
-                return {
-                    "success": True,
-                    "uploaded": True,
-                    "new_file_id": result.file_id,
-                    "new_file_name": result.file_name,
-                    "web_view_link": result.web_view_link,
-                    "provider": "canvas",
-                }
-            else:
-                return {
-                    "success": False,
-                    "uploaded": False,
-                    "error": result.error or "Upload failed",
-                }
-
-        finally:
-            await api_client.close()
-
-    except Exception as e:
-        logger.error(f"Error uploading to Canvas: {e}", exc_info=True)
-        return {
-            "success": False,
-            "uploaded": False,
-            "error": str(e),
-        }
+    except Exception as exc:
+        return classify_upload_exception(exc, provider="microsoft")
 
 
 async def _upload_to_blackboard(
@@ -404,7 +461,8 @@ async def _upload_to_blackboard(
     credential: Any,  # CloudOAuthCredentials
     cloud_file: Any,  # CloudFile
     file_name: str = None,
-) -> Dict[str, Any]:
+    external_effect_token: str | None = None,
+) -> Dict[str, Any] | JobFailure:
     """
     Upload file to Blackboard Learn.
 
@@ -464,30 +522,20 @@ async def _upload_to_blackboard(
                     "web_view_link": result.web_view_link,
                     "provider": "blackboard",
                 }
-            else:
-                return {
-                    "success": False,
-                    "uploaded": False,
-                    "error": result.error or "Upload failed",
-                }
+            return _failure_from_provider_result(result, provider="blackboard")
 
         finally:
             await api_client.close()
 
-    except Exception as e:
-        logger.error(f"Error uploading to Blackboard: {e}", exc_info=True)
-        return {
-            "success": False,
-            "uploaded": False,
-            "error": str(e),
-        }
+    except Exception as exc:
+        return classify_upload_exception(exc, provider="blackboard")
 
 
 async def handle_upload_job(
     job: Any,  # CloudJobQueue
     db: Session,
     token_manager: Any,  # OAuthTokenManager
-) -> Dict[str, Any]:
+) -> Dict[str, Any] | JobFailure:
     """
     Job handler for upload jobs (matches JobProcessor signature).
 
@@ -499,18 +547,33 @@ async def handle_upload_job(
     Returns:
         Upload results
     """
-    # Build job_data from direct CloudJobQueue columns — the model has no
-    # job_data column.  file_path comes from result_data of the prior
-    # remediation job (stored by handle_remediation_job as "output_file").
+    # Queue input is immutable. Filesystem paths are resolved only inside
+    # process_upload_job from a managed artifact identifier.
     job_data: Dict[str, Any] = {
         "id": job.id,
         "cloud_file_id": job.cloud_file_id,
         "department_id": job.department_id,
         "provider": job.provider,
     }
-    if job.result_data and isinstance(job.result_data, dict):
-        job_data["file_path"] = job.result_data.get("output_file")
-    return await process_upload_job(job_data, db)
+    payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
+    if any(
+        payload.get(field) not in (None, getattr(job, field))
+        for field in ("cloud_file_id", "department_id", "provider")
+    ):
+        return {
+            "success": False,
+            "uploaded": False,
+            "error": "invalid_job_scope",
+        }
+    for field in ("artifact_id", "artifact_checksum"):
+        if field in payload:
+            job_data[field] = payload[field]
+    return await process_upload_job(
+        job_data,
+        db,
+        assert_owned=getattr(job, "_assert_owned", None),
+        begin_external_effect=getattr(job, "_begin_external_effect", None),
+    )
 
 
 __all__ = ["process_upload_job", "handle_upload_job"]

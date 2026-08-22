@@ -9,7 +9,7 @@ Tests verify that Moodle routes:
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
 
 from src.api.main import app
@@ -232,10 +232,14 @@ class TestMoodleDisconnect:
             mock_moodle_credential
         )
 
-        response = client.delete(
-            "/moodle/disconnect",
-            headers=auth_headers,
-        )
+        with patch(
+            "src.api.moodle_routes.RemediationArtifactService.from_settings"
+        ) as cleanup:
+            cleanup.return_value.delete_for_credential.return_value.count = 0
+            response = client.delete(
+                "/moodle/disconnect",
+                headers=auth_headers,
+            )
 
         assert response.status_code == 200
         assert "disconnected successfully" in response.json()["message"]

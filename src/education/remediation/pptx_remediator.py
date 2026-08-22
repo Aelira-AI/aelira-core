@@ -70,9 +70,13 @@ class PptxRemediator(BaseRemediator):
         issues: List[Dict[str, Any]],
         config: Optional[RemediationConfig] = None,
         ai_client: Optional[Any] = None,
+        *,
+        alt_text_client: Optional[Any] = None,
     ):
         """Initialize the PowerPoint remediator."""
-        super().__init__(file_path, issues, config, ai_client)
+        super().__init__(
+            file_path, issues, config, ai_client, alt_text_client=alt_text_client
+        )
         self._presentation: Optional[Presentation] = None
 
     def _load_document(self) -> Presentation:
@@ -554,14 +558,14 @@ class PptxRemediator(BaseRemediator):
             if issue.metadata.get("is_decorative"):
                 return ""
             # Use pre-generated alt text from the scanner if available
-            generated_alt = issue.metadata.get(
-                "suggested_alt_text"
-            ) or issue.metadata.get("generated_alt_text")
-            if generated_alt:
-                return generated_alt
-            # Use fix_suggestion if available
-            if issue.fix_suggestion:
-                return issue.fix_suggestion
+            if self.config.allow_legacy_nested_ai:
+                generated_alt = issue.metadata.get(
+                    "suggested_alt_text"
+                ) or issue.metadata.get("generated_alt_text")
+                if generated_alt:
+                    return generated_alt
+                if issue.fix_suggestion:
+                    return issue.fix_suggestion
             # Return None to let AI generation handle it in _generate_fix()
             return None
 
@@ -580,20 +584,17 @@ class PptxRemediator(BaseRemediator):
         return None
 
     def _get_ai_generated_fix(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Get an AI-generated fix for an issue."""
-        if not self.ai_client:
-            return None
-
         try:
             self.result.ai_calls_made += 1
 
             if issue.category == IssueCategory.ALT_TEXT:
-                return self._generate_alt_text_with_ai(issue, document)
+                return self._generate_alt_text_with_ai(issue, document, client=client)
 
             if issue.category == IssueCategory.STRUCTURE:
-                return self._generate_title_with_ai(issue, document)
+                return self._generate_title_with_ai(issue, document, client=client)
 
             return None
 
@@ -602,7 +603,7 @@ class PptxRemediator(BaseRemediator):
             return None
 
     def _generate_alt_text_with_ai(
-        self, issue: RemediationIssue, document: Presentation
+        self, issue: RemediationIssue, document: Presentation, *, client: Any
     ) -> Optional[str]:
         """Generate alt text for a shape using AI vision.
 
@@ -643,7 +644,7 @@ class PptxRemediator(BaseRemediator):
             except Exception:
                 pass  # Shape may not have an image blob
 
-        if image_bytes and hasattr(self.ai_client, "analyze_image_sync"):
+        if image_bytes and hasattr(client, "analyze_image_sync"):
             from ...utils.security import sanitize_for_prompt
 
             safe_context = (
@@ -663,7 +664,7 @@ class PptxRemediator(BaseRemediator):
                 "Generate only the alt text, nothing else:"
             )
             try:
-                result = self.ai_client.analyze_image_sync(
+                result = client.analyze_image_sync(
                     image_data=image_bytes,
                     prompt=prompt,
                     max_tokens=200,
@@ -676,7 +677,7 @@ class PptxRemediator(BaseRemediator):
                 logger.warning(f"Vision-based alt text generation failed: {e}")
 
         # Fallback: text-based generation using slide context
-        if hasattr(self.ai_client, "generate_text_sync"):
+        if hasattr(client, "generate_text_sync"):
             from ...utils.security import sanitize_for_prompt
 
             safe_context = (
@@ -699,7 +700,7 @@ class PptxRemediator(BaseRemediator):
                 "Generate only the alt text, nothing else:"
             )
             try:
-                result = self.ai_client.generate_text_sync(
+                result = client.generate_text_sync(
                     prompt=prompt,
                     max_tokens=200,
                     temperature=0.3,
@@ -716,7 +717,7 @@ class PptxRemediator(BaseRemediator):
         return None
 
     def _generate_title_with_ai(
-        self, issue: RemediationIssue, document: Presentation
+        self, issue: RemediationIssue, document: Presentation, *, client: Any
     ) -> Optional[str]:
         """Generate a slide title using AI."""
         slide_index = issue.metadata.get("slide_index", 0)
@@ -742,8 +743,8 @@ class PptxRemediator(BaseRemediator):
         )
 
         try:
-            if hasattr(self.ai_client, "generate_text_sync"):
-                result = self.ai_client.generate_text_sync(
+            if hasattr(client, "generate_text_sync"):
+                result = client.generate_text_sync(
                     prompt=prompt,
                     max_tokens=100,
                     temperature=0.3,

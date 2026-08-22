@@ -6,6 +6,7 @@ without sending data to external servers.
 """
 
 import base64
+import math
 import time
 import logging
 import asyncio
@@ -50,6 +51,28 @@ class OllamaProvider(LLMProvider):
         self.timeout = config.timeout
 
         self._available_models: List[str] = []
+        self._client = None
+
+    def _get_client(self):
+        """Create this provider's client bound to its configured host."""
+        if self._client is None:
+            import ollama
+
+            configured_timeout = self.timeout
+            if (
+                isinstance(configured_timeout, bool)
+                or not isinstance(configured_timeout, (int, float))
+                or not math.isfinite(configured_timeout)
+            ):
+                configured_timeout = 120
+            timeout = max(1, min(120, configured_timeout))
+            self._client = ollama.Client(
+                host=self.host,
+                trust_env=False,
+                follow_redirects=False,
+                timeout=timeout,
+            )
+        return self._client
 
     @property
     def name(self) -> str:
@@ -72,9 +95,7 @@ class OllamaProvider(LLMProvider):
     def is_available(self) -> bool:
         """Check if Ollama is running and has models."""
         try:
-            import ollama
-
-            models_response = ollama.list()
+            models_response = self._get_client().list()
             if hasattr(models_response, "models"):
                 return len(models_response.models) > 0
             elif isinstance(models_response, dict) and "models" in models_response:
@@ -90,10 +111,8 @@ class OllamaProvider(LLMProvider):
     async def initialize(self) -> bool:
         """Initialize Ollama provider."""
         try:
-            import ollama
-
             # Check if Ollama is running
-            models_response = ollama.list()
+            models_response = self._get_client().list()
 
             if hasattr(models_response, "models"):
                 self._available_models = [m.model for m in models_response.models]
@@ -121,6 +140,11 @@ class OllamaProvider(LLMProvider):
 
     async def close(self) -> None:
         """Close Ollama provider."""
+        client = self._client
+        self._client = None
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
         self._initialized = False
         self._available_models = []
 
@@ -163,8 +187,6 @@ class OllamaProvider(LLMProvider):
         start_time = time.perf_counter()
 
         try:
-            import ollama
-
             options = {
                 "temperature": temperature,
                 "num_predict": max_tokens,
@@ -178,7 +200,7 @@ class OllamaProvider(LLMProvider):
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: ollama.chat(
+                lambda: self._get_client().chat(
                     model=model,
                     messages=messages,
                     options=options,
@@ -345,12 +367,10 @@ class OllamaProvider(LLMProvider):
         start_time = time.perf_counter()
 
         try:
-            import ollama
-
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: ollama.embeddings(
+                lambda: self._get_client().embeddings(
                     model=self.embedding_model,
                     prompt=text,
                 ),
@@ -379,9 +399,7 @@ class OllamaProvider(LLMProvider):
     def health_check(self) -> Dict[str, Any]:
         """Check Ollama provider health."""
         try:
-            import ollama
-
-            models_response = ollama.list()
+            models_response = self._get_client().list()
 
             if hasattr(models_response, "models"):
                 available = [m.model for m in models_response.models]

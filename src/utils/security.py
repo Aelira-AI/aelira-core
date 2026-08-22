@@ -30,6 +30,8 @@ _HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECAS
 PERSISTED_CANVAS_ORIGIN_ERROR = (
     "Canvas connection origin is invalid or no longer authorized; reconnect Canvas"
 )
+PERSISTED_BRIGHTSPACE_ORIGIN_ERROR = "Brightspace connection origin is invalid or no longer authorized; reconnect Brightspace"
+PERSISTED_BLACKBOARD_ORIGIN_ERROR = "Blackboard connection origin is invalid or no longer authorized; reconnect Blackboard"
 _SENSITIVE_URL_QUERY_MARKERS = (
     "token",
     "signature",
@@ -243,6 +245,205 @@ def validate_canvas_instance_origin(
     default_port = 443 if parsed.scheme == "https" else 80
     port_suffix = f":{port}" if port is not None and port != default_port else ""
     return f"{parsed.scheme}://{host_for_url}{port_suffix}"
+
+
+def validate_brightspace_instance_origin(
+    url: str,
+    *,
+    _resolve_dns: bool = True,
+) -> str:
+    """Return a canonical HTTPS, publicly routable Brightspace root origin."""
+    canonical = _canonical_canvas_root_origin(url, label="Brightspace instance")
+    parsed = urlparse(canonical)
+    if parsed.scheme != "https":
+        raise ValueError("Brightspace instance must use HTTPS")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Brightspace instance must contain a valid hostname")
+    try:
+        literal_ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        literal_ip = None
+    if literal_ip is not None and _is_forbidden_address(literal_ip):
+        raise ValueError("Brightspace instance target is not allowed")
+    if literal_ip is None and len(hostname.split(".")) < 2:
+        raise ValueError("Brightspace instance must contain a public hostname")
+
+    if _resolve_dns:
+        try:
+            addr_infos = socket.getaddrinfo(
+                hostname, parsed.port, type=socket.SOCK_STREAM
+            )
+        except socket.gaierror as exc:
+            raise ValueError("Could not resolve Brightspace instance hostname") from exc
+        if not addr_infos:
+            raise ValueError("Could not resolve Brightspace instance hostname")
+        for addr_info in addr_infos:
+            address = ipaddress.ip_address(str(addr_info[4][0]).split("%", 1)[0])
+            if _is_forbidden_address(address):
+                raise ValueError("Brightspace instance target is not allowed")
+    return canonical
+
+
+def require_brightspace_oauth_allowed_origin(
+    url: str,
+    configured_origins: str | None = None,
+    *,
+    _resolve_dns: bool = True,
+) -> str:
+    """Apply the exact-origin operator allowlist to Brightspace.
+
+    Production and staging fail closed when the allowlist is absent. Development
+    and test retain validated public fixture support, while any configured list
+    remains authoritative in every environment.
+    """
+    requested = validate_brightspace_instance_origin(url, _resolve_dns=False)
+    raw_origins = (
+        os.getenv("BRIGHTSPACE_OAUTH_ALLOWED_ORIGINS", "")
+        if configured_origins is None
+        else configured_origins
+    )
+    entries = [entry.strip() for entry in raw_origins.split(",") if entry.strip()]
+    environment = os.getenv("ENV", "development").lower()
+    if not entries and environment in {"production", "staging"}:
+        raise ValueError("Brightspace OAuth origin allowlist is required")
+    if entries:
+        allowed = {
+            validate_brightspace_instance_origin(entry, _resolve_dns=False)
+            for entry in entries
+        }
+        if requested not in allowed:
+            raise ValueError(
+                "Brightspace instance origin is not authorized by the operator"
+            )
+    return validate_brightspace_instance_origin(requested, _resolve_dns=_resolve_dns)
+
+
+def require_persisted_brightspace_origin(persisted_value: object) -> str:
+    """Validate untrusted persisted Brightspace metadata on every use."""
+    if isinstance(persisted_value, str):
+        origin = persisted_value
+    else:
+        metadata = (
+            persisted_value
+            if isinstance(persisted_value, Mapping)
+            else getattr(persisted_value, "provider_metadata", None)
+        )
+        origin = (
+            metadata.get("brightspace_instance_url")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+    if not isinstance(origin, str) or not origin.strip():
+        raise ValueError(PERSISTED_BRIGHTSPACE_ORIGIN_ERROR)
+    try:
+        return require_brightspace_oauth_allowed_origin(origin)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(PERSISTED_BRIGHTSPACE_ORIGIN_ERROR) from exc
+
+
+def validate_blackboard_instance_origin(
+    url: str,
+    environment: str | None = None,
+    *,
+    _resolve_dns: bool = True,
+) -> str:
+    """Return a canonical, publicly routable Blackboard root origin."""
+    canonical = _canonical_canvas_root_origin(url, label="Blackboard instance")
+    parsed = urlparse(canonical)
+    env = (environment or os.getenv("ENV", "development")).lower()
+    is_test_localhost = (
+        env in {"development", "test"} and parsed.hostname == "localhost"
+    )
+    if parsed.scheme != "https" and not is_test_localhost:
+        raise ValueError("Blackboard instance must use HTTPS")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Blackboard instance must contain a valid hostname")
+    try:
+        literal_ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        literal_ip = None
+    if literal_ip is not None and _is_forbidden_address(literal_ip):
+        raise ValueError("Blackboard instance target is not allowed")
+    if literal_ip is None and not is_test_localhost and len(hostname.split(".")) < 2:
+        raise ValueError("Blackboard instance must contain a public hostname")
+
+    if _resolve_dns and not is_test_localhost:
+        try:
+            addr_infos = socket.getaddrinfo(
+                hostname, parsed.port, type=socket.SOCK_STREAM
+            )
+        except socket.gaierror as exc:
+            raise ValueError("Could not resolve Blackboard instance hostname") from exc
+        if not addr_infos:
+            raise ValueError("Could not resolve Blackboard instance hostname")
+        for addr_info in addr_infos:
+            address = ipaddress.ip_address(str(addr_info[4][0]).split("%", 1)[0])
+            if _is_forbidden_address(address):
+                raise ValueError("Blackboard instance target is not allowed")
+    return canonical
+
+
+def require_blackboard_oauth_allowed_origin(
+    url: str,
+    environment: str | None = None,
+    configured_origins: str | None = None,
+    *,
+    _resolve_dns: bool = True,
+) -> str:
+    """Apply the exact current operator allowlist to a Blackboard origin."""
+    env = (environment or os.getenv("ENV", "development")).lower()
+    requested = validate_blackboard_instance_origin(
+        url, environment=env, _resolve_dns=False
+    )
+    raw_origins = (
+        os.getenv("BLACKBOARD_OAUTH_ALLOWED_ORIGINS", "")
+        if configured_origins is None
+        else configured_origins
+    )
+    entries = [entry.strip() for entry in raw_origins.split(",") if entry.strip()]
+    if not entries and env in {"production", "staging"}:
+        raise ValueError("Blackboard OAuth origin allowlist is required")
+    if entries:
+        allowed = {
+            validate_blackboard_instance_origin(
+                entry, environment=env, _resolve_dns=False
+            )
+            for entry in entries
+        }
+        if requested not in allowed:
+            raise ValueError(
+                "Blackboard instance origin is not authorized by the operator"
+            )
+    return validate_blackboard_instance_origin(
+        requested, environment=env, _resolve_dns=_resolve_dns
+    )
+
+
+def require_persisted_blackboard_origin(persisted_value: object) -> str:
+    """Validate untrusted persisted Blackboard metadata on every use."""
+    if isinstance(persisted_value, str):
+        origin = persisted_value
+    else:
+        metadata = (
+            persisted_value
+            if isinstance(persisted_value, Mapping)
+            else getattr(persisted_value, "provider_metadata", None)
+        )
+        origin = (
+            metadata.get("blackboard_instance_url")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+    if not isinstance(origin, str) or not origin.strip():
+        raise ValueError(PERSISTED_BLACKBOARD_ORIGIN_ERROR)
+    try:
+        return require_blackboard_oauth_allowed_origin(origin)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(PERSISTED_BLACKBOARD_ORIGIN_ERROR) from exc
 
 
 def validate_canvas_outbound_url(

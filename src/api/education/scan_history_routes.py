@@ -14,6 +14,10 @@ from ...auth.canvas_permissions import require_lti_account_access
 from ...auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ...db.models import CloudFile, CloudProvider, Scan, ScanStatus, ScanType
 from ...db.scan_service import ScanService
+from ...services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
+    RemediationArtifactService,
+)
 from ._scope import authorize_scan_access
 
 logger = logging.getLogger(__name__)
@@ -276,18 +280,28 @@ async def cancel_scan(
 
     authorize_scan_access(db, scan, principal)
 
-    # Mark as cancelled (background task will check this)
-    scan.status = ScanStatus.FAILED
-    scan.error_message = "Cancelled by user"
-    scan.progress_message = "Scan cancelled"
+    try:
+        RemediationArtifactService.from_settings().delete_for_scan(
+            db, department_id=department_id, scan_id=scan_id
+        )
+    except ArtifactAuthorizationError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_cleanup_required"
+        ) from None
 
-    # Delete associated result if it exists
-    if scan.result:
-        db.delete(scan.result)
-
-    # Delete the scan
-    db.delete(scan)
-    db.commit()
+    try:
+        # The artifact row deletes are already staged; commit them with the parent.
+        scan.status = ScanStatus.FAILED
+        scan.error_message = "Cancelled by user"
+        scan.progress_message = "Scan cancelled"
+        if scan.result:
+            db.delete(scan.result)
+        db.delete(scan)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     logger.info(f"[CANCEL] Scan {scan_id} cancelled by user")
 

@@ -66,7 +66,7 @@ export function Upload(): React.ReactElement {
               setScanType(type as ScanType);
             }} />
 
-            {/* Bulk Upload Link or Upgrade Prompt */}
+            {/* Bulk Upload link or workspace-configuration guidance */}
             <div className="mt-8 pt-6 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
               {showBulkUpload ? (
                 <Link
@@ -98,7 +98,7 @@ export function Upload(): React.ReactElement {
                   </div>
                   <div className="flex-1">
                     <p className="font-medium text-primary">Need to scan multiple files?</p>
-                    <p className="text-sm text-secondary">Ask your administrator to raise this department's tier for bulk upload capabilities.</p>
+                    <p className="text-sm text-secondary">Ask your administrator to enable bulk upload in this workspace's configuration.</p>
                   </div>
                 </div>
               )}

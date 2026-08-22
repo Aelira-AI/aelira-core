@@ -6,15 +6,28 @@ Handles OAuth 2.0 authentication and file operations with Brightspace LMS.
 Market Impact: +15% US, +10% Australia (community colleges)
 """
 
+import asyncio
+import functools
+import importlib
 import os
 import logging
+import tempfile
 import uuid
-from typing import Dict, Any, Optional, List, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, List, Tuple, Literal
 from datetime import datetime, timezone
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+)
 
 from ..db.database import get_db_dependency
 from ..db.models import (
@@ -34,12 +47,67 @@ from ..integrations.brightspace import (
 )
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..api.auth_routes import get_current_api_key
-from ..auth import get_required_api_key, verify_department_access
+from ..auth import verify_department_access
+from ..auth.canvas_permissions import (
+    require_account_management,
+    require_lti_course_access,
+    require_lti_platform_access,
+)
+from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ..auth.redis_rate_limiter import OAuthStateManager
+from ..ai.lms_remediation_client import LMSRemediationClient
+from ..services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
+    ArtifactError,
+    ArtifactPublicationResult,
+    RemediationArtifactService,
+)
+from ..services.job_enqueue_service import enqueue_cloud_job
+from ..utils.security import (
+    PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
+    require_brightspace_oauth_allowed_origin,
+    require_persisted_brightspace_origin,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/brightspace", tags=["brightspace"])
+
+BRIGHTSPACE_ITEM_SIZE_LIMIT_BYTES = 25 * 1024 * 1024
+BRIGHTSPACE_BATCH_SIZE_LIMIT_BYTES = 100 * 1024 * 1024
+BRIGHTSPACE_WORKER_MAX_GLOBAL = 4
+BRIGHTSPACE_WORKER_MAX_PER_DEPARTMENT = 1
+_BRIGHTSPACE_WORKER_EXECUTOR = ThreadPoolExecutor(
+    max_workers=BRIGHTSPACE_WORKER_MAX_GLOBAL,
+    thread_name_prefix="brightspace-remediation",
+)
+_BRIGHTSPACE_WORKER_GLOBAL_SLOTS = asyncio.Semaphore(BRIGHTSPACE_WORKER_MAX_GLOBAL)
+_BRIGHTSPACE_WORKER_DEPARTMENT_SLOTS: Dict[str, asyncio.Semaphore] = {}
+BRIGHTSPACE_DOWNLOAD_EXTENSIONS = frozenset(
+    {
+        "jpg",
+        "jpeg",
+        "png",
+        "gif",
+        "bmp",
+        "webp",
+        "svg",
+        "tiff",
+        "docx",
+        "doc",
+        "pptx",
+        "ppt",
+        "xlsx",
+        "xls",
+        "pdf",
+        "mp4",
+        "mp3",
+        "wav",
+        "avi",
+        "mov",
+        "webm",
+    }
+)
 
 # =============================================================================
 # Request/Response Models
@@ -72,15 +140,99 @@ class BrightspaceConnectionStatus(BaseModel):
 
 
 class BrightspaceRemediateRequest(BaseModel):
-    """Request to remediate a Brightspace file"""
+    """Deprecated queue request retained only for a stable fail-closed response."""
+
+    model_config = ConfigDict(extra="forbid")
 
     file_url: str = Field(..., description="Brightspace file URL")
-    org_unit_id: int = Field(..., description="Brightspace course ID (OrgUnitId)")
-    department_id: str
-    upload_back: bool = Field(
-        True, description="Upload remediated file back to Brightspace"
+    org_unit_id: StrictInt = Field(
+        ..., gt=0, description="Brightspace course ID (OrgUnitId)"
     )
-    use_ai: bool = Field(True, description="Use AI for fix generation")
+    department_id: str
+    upload_back: StrictBool = False
+    use_ai: StrictBool = False
+    generate_alt_text: StrictBool = False
+
+
+class BrightspaceContentRemediateRequest(BaseModel):
+    """Explicit, purpose-separated intent for one tracked content item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    use_ai: StrictBool = False
+    generate_alt_text: StrictBool = False
+
+
+class BrightspaceBatchRemediateRequest(BrightspaceContentRemediateRequest):
+    """Bounded explicit course batch; implicit course-wide mutation is forbidden."""
+
+    org_unit_id: StrictInt = Field(gt=0)
+    cloud_file_ids: List[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("cloud_file_ids")
+    @classmethod
+    def validate_cloud_file_ids(cls, values: List[str]) -> List[str]:
+        import re
+
+        if any(
+            type(value) is not str
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value) is None
+            for value in values
+        ):
+            raise ValueError("invalid cloud file id")
+        return list(dict.fromkeys(values))
+
+
+class RemediationOutcome(BaseModel):
+    """Sanitized terminal state returned by synchronous Brightspace remediation."""
+
+    cloud_file_id: str
+    status: Literal["completed", "manual_required", "no_op", "failed"]
+    fixed_count: int = Field(default=0, ge=0)
+    manual_count: int = Field(default=0, ge=0)
+    failed_count: int = Field(default=0, ge=0)
+    skipped_count: int = Field(default=0, ge=0)
+    has_remediated_version: bool = False
+    artifact_id: Optional[str] = None
+    artifact_mime_type: Optional[str] = None
+    artifact_size_bytes: Optional[int] = Field(default=None, ge=0)
+    artifact_sha256: Optional[str] = None
+    artifact_expires_at: Optional[datetime] = None
+    artifact_review_status: Optional[str] = None
+    ai_used: bool = False
+    external_ai_used: bool = False
+    providers: List[str] = Field(default_factory=list, max_length=2)
+    purpose_decisions: Dict[str, str] = Field(default_factory=dict)
+    error_code: Optional[str] = None
+
+
+class BrightspaceBatchRemediateResponse(BaseModel):
+    status: Literal["completed"] = "completed"
+    requested_count: int
+    completed_count: int
+    manual_count: int
+    failed_count: int
+    fixed_count: int
+    results: List[RemediationOutcome]
+
+
+class BrightspaceBatchContentRequest(BaseModel):
+    """Bounded complete-set request for object-level batch actions."""
+
+    model_config = ConfigDict(extra="forbid")
+    cloud_file_ids: List[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("cloud_file_ids")
+    @classmethod
+    def validate_cloud_file_ids(cls, values: List[str]) -> List[str]:
+        return BrightspaceBatchRemediateRequest.validate_cloud_file_ids(values)
+
+
+class BrightspaceCourseActionRequest(BaseModel):
+    """Strict Brightspace course identity for course-wide actions."""
+
+    model_config = ConfigDict(extra="forbid")
+    org_unit_id: StrictInt = Field(gt=0)
 
 
 class BrightspaceRemediateResponse(BaseModel):
@@ -95,10 +247,12 @@ class BrightspaceRemediateResponse(BaseModel):
 class BrightspaceContentScanRequest(BaseModel):
     """Request to scan Brightspace course content"""
 
-    org_unit_id: int = Field(..., description="Brightspace OrgUnit (course) ID")
+    org_unit_id: StrictInt = Field(
+        ..., gt=0, description="Brightspace OrgUnit (course) ID"
+    )
     scan_types: str = Field("both", description="files, html, or both")
-    module_id: Optional[int] = Field(
-        None, description="Optional: scan only this module"
+    module_id: Optional[StrictInt] = Field(
+        None, gt=0, description="Optional: scan only this module"
     )
 
 
@@ -113,6 +267,32 @@ class BrightspaceContentScanResponse(BaseModel):
 # =============================================================================
 # Helpers
 # =============================================================================
+
+
+async def _run_brightspace_worker(
+    department_id: str, worker: Any, /, *args: Any, **kwargs: Any
+) -> Any:
+    """Run one bounded worker and await its real completion on cancellation.
+
+    Remediators have no cooperative cancellation, so this makes no timeout
+    claim. Count/byte budgets bound admission and provider calls retain their
+    finite internal timeouts.
+    """
+    department_slot = _BRIGHTSPACE_WORKER_DEPARTMENT_SLOTS.setdefault(
+        department_id,
+        asyncio.Semaphore(BRIGHTSPACE_WORKER_MAX_PER_DEPARTMENT),
+    )
+    async with _BRIGHTSPACE_WORKER_GLOBAL_SLOTS, department_slot:
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            _BRIGHTSPACE_WORKER_EXECUTOR,
+            functools.partial(worker, *args, **kwargs),
+        )
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            await asyncio.shield(future)
+            raise
 
 
 def _get_credential(db: Session, dept_id: str) -> CloudOAuthCredentials:
@@ -131,42 +311,47 @@ def _get_credential(db: Session, dept_id: str) -> CloudOAuthCredentials:
 
 
 async def _ensure_valid_token(credential: CloudOAuthCredentials, db: Session) -> str:
-    """Check if Brightspace token is expired and refresh if needed. Returns decrypted access token."""
+    """Refresh under the shared lock, then reload the exact active credential."""
+    try:
+        expected_origin = require_persisted_brightspace_origin(credential)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409, detail=PERSISTED_BRIGHTSPACE_ORIGIN_ERROR
+        ) from exc
+
+    expected_id = credential.id
+    expected_department = credential.department_id
     token_manager = OAuthTokenManager()
+    try:
+        await token_manager.refresh_if_expired(credential, db)
+    except Exception as exc:
+        logger.error("Failed to refresh Brightspace token: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=409,
+            detail="Brightspace token expired and refresh failed. Please reconnect.",
+        ) from exc
 
-    if token_manager.is_token_expired(credential.token_expires_at):
-        refresh_token = token_manager.decrypt_token(credential.refresh_token)
-        instance_url = (credential.provider_metadata or {}).get(
-            "brightspace_instance_url", ""
+    fresh = db.get(CloudOAuthCredentials, expected_id, populate_existing=True)
+    if (
+        fresh is None
+        or fresh.id != expected_id
+        or fresh.department_id != expected_department
+        or fresh.provider != CloudProvider.BRIGHTSPACE.value
+        or fresh.is_active is not True
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Brightspace credential is no longer active. Please reconnect.",
         )
-
-        try:
-            from ..integrations.brightspace.brightspace_oauth import (
-                refresh_brightspace_token,
-            )
-
-            new_access, new_refresh, new_expires = await refresh_brightspace_token(
-                brightspace_instance_url=instance_url,
-                refresh_token=refresh_token,
-            )
-
-            credential.access_token = token_manager.encrypt_token(new_access)
-            if new_refresh:
-                credential.refresh_token = token_manager.encrypt_token(new_refresh)
-            credential.token_expires_at = new_expires
-            db.commit()
-
-            logger.info("Refreshed Brightspace token")
-            return new_access
-
-        except Exception as e:
-            logger.error(f"Failed to refresh Brightspace token: {e}")
-            raise HTTPException(
-                status_code=409,
-                detail="Brightspace token expired and refresh failed. Please reconnect.",
-            )
-
-    return token_manager.decrypt_token(credential.access_token)
+    try:
+        fresh_origin = require_persisted_brightspace_origin(fresh)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409, detail=PERSISTED_BRIGHTSPACE_ORIGIN_ERROR
+        ) from exc
+    if fresh_origin != expected_origin:
+        raise HTTPException(status_code=409, detail=PERSISTED_BRIGHTSPACE_ORIGIN_ERROR)
+    return token_manager.decrypt_token(fresh.access_token)
 
 
 # =============================================================================
@@ -178,23 +363,30 @@ async def _ensure_valid_token(credential: CloudOAuthCredentials, db: Session) ->
 async def connect_brightspace(
     request: BrightspaceConnectRequest,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> Dict[str, str]:
     """
     Initiate Brightspace OAuth 2.0 flow.
 
-    Requires API key authentication to prevent unauthorized OAuth initiations.
+    Requires account-management authorization before OAuth state creation.
     Returns authorization URL to redirect user to.
     """
-    _, user_id, auth_department_id = api_key_info
-    dept_id = request.department_id or auth_department_id
-    verify_department_access(dept_id, auth_department_id)
+    require_account_management(principal, platform="brightspace")
+    dept_id = request.department_id or principal.department_id
+    verify_department_access(dept_id, principal.department_id)
+
+    try:
+        instance_origin = require_brightspace_oauth_allowed_origin(
+            request.brightspace_instance_url
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Generate secure CSRF state token with metadata (stored server-side with TTL)
     state = OAuthStateManager.create_state(
         metadata={
             "department_id": dept_id,
-            "brightspace_instance_url": request.brightspace_instance_url,
+            "brightspace_instance_url": instance_origin,
             "provider": "brightspace",
         }
     )
@@ -208,13 +400,13 @@ async def connect_brightspace(
     try:
         # Generate authorization URL
         auth_url = get_brightspace_authorization_url(
-            brightspace_instance_url=request.brightspace_instance_url,
+            brightspace_instance_url=instance_origin,
             redirect_uri=redirect_uri,
             state=state,
         )
 
         logger.info(
-            f"Initiated Brightspace OAuth for department {request.department_id} at {request.brightspace_instance_url}"
+            f"Initiated Brightspace OAuth for department {request.department_id} at {instance_origin}"
         )
 
         return {
@@ -257,6 +449,15 @@ async def brightspace_oauth_callback(
             status_code=400,
             detail="Invalid OAuth state metadata. Please restart the connection flow.",
         )
+
+    try:
+        brightspace_instance_url = require_brightspace_oauth_allowed_origin(
+            brightspace_instance_url
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail="Invalid OAuth state metadata"
+        ) from exc
 
     token_manager = OAuthTokenManager()
 
@@ -408,14 +609,12 @@ async def get_brightspace_status(
 
 @router.get("/courses")
 async def list_brightspace_courses(
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> List[Dict[str, Any]]:
-    """List all Brightspace courses the user has access to.
-
-    Requires API key authentication.
-    """
-    department_id = api_key.department_id
+    """List Brightspace courses within the authenticated launch scope."""
+    require_lti_platform_access(principal, "brightspace")
+    department_id = principal.department_id
 
     credential = (
         db.query(CloudOAuthCredentials)
@@ -446,6 +645,12 @@ async def list_brightspace_courses(
 
     try:
         courses = await api_client.get_my_enrollments()
+        if principal.auth_method == "lti" and not principal.lti_account_wide:
+            courses = [
+                course
+                for course in courses
+                if str(course.OrgUnitId) == principal.lti_course_id
+            ]
 
         return [
             {
@@ -469,14 +674,12 @@ async def list_brightspace_courses(
 @router.get("/courses/{org_unit_id}/content")
 async def list_brightspace_course_content(
     org_unit_id: int,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> List[Dict[str, Any]]:
-    """List all content modules in a Brightspace course.
-
-    Requires API key authentication.
-    """
-    department_id = api_key.department_id
+    """List content modules in an authorized Brightspace course."""
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
+    department_id = principal.department_id
 
     credential = (
         db.query(CloudOAuthCredentials)
@@ -532,16 +735,16 @@ async def list_brightspace_course_content(
 @router.get("/courses/{org_unit_id}/files")
 async def list_brightspace_course_files(
     org_unit_id: int,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> List[Dict[str, Any]]:
     """List all scannable content items in a Brightspace course.
 
     Recursively walks the course content tree and returns files and HTML topics.
-
-    Requires API key authentication.
+    LTI course staff are limited to the exact launch course.
     """
-    department_id = api_key.department_id
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
+    department_id = principal.department_id
     credential = _get_credential(db, department_id)
 
     # Ensure token is valid (refresh if expired)
@@ -573,52 +776,6 @@ async def list_brightspace_course_files(
 
     finally:
         await api_client.close()
-
-
-async def _brightspace_scan_file_task(
-    job_id: str, cloud_file_id: str, credential_id: str
-):
-    """Background task to scan and auto-remediate a file from Brightspace LMS."""
-    from ..db.database import get_db as _get_db_ctx
-    from ..jobs.cloud_scan_job import handle_scan_job
-
-    logger.info(f"Starting Brightspace scan: job={job_id}, file={cloud_file_id}")
-
-    with _get_db_ctx() as db:
-        job = db.query(CloudJobQueue).filter(CloudJobQueue.id == job_id).first()
-        if not job:
-            logger.error(f"Scan job not found: {job_id}")
-            return
-
-        try:
-            job.status = CloudJobStatus.PROCESSING.value
-            job.started_at = datetime.now(timezone.utc)
-            job.progress = 10
-            db.commit()
-
-            token_manager = OAuthTokenManager()
-            result = await handle_scan_job(job, db, token_manager)
-
-            job.status = CloudJobStatus.COMPLETED.value
-            job.progress = 100
-            job.result_data = result
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(
-                f"Brightspace scan complete: job={job_id}, "
-                f"score={result.get('compliance_score')}"
-            )
-
-            # Store content_body reference for later remediation
-            # (remediation is triggered separately by the user)
-
-        except Exception as e:
-            logger.error(f"Brightspace scan failed: job={job_id}, error={e}")
-            job.status = CloudJobStatus.FAILED.value
-            job.error_message = str(e)[:500]
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
 
 
 def _convert_axe_issues(axe_violations: list) -> list:
@@ -700,73 +857,611 @@ def _convert_axe_issues(axe_violations: list) -> list:
     return converted
 
 
-async def _remediate_file(cloud_file: CloudFile, db):
-    """Remediate a content item using the appropriate remediator for its file type."""
-    import tempfile
-    from ..db.models import ScanResult
+async def _client_for_fresh_credential(
+    db: Session,
+    *,
+    credential_id: str,
+    department_id: str,
+) -> Tuple[CloudOAuthCredentials, BrightspaceAPIClient]:
+    """Reload and validate the exact active credential before any token use."""
+    credential = db.get(CloudOAuthCredentials, credential_id, populate_existing=True)
+    if (
+        credential is None
+        or credential.id != credential_id
+        or credential.department_id != department_id
+        or credential.provider != CloudProvider.BRIGHTSPACE.value
+        or credential.is_active is not True
+    ):
+        raise HTTPException(status_code=404, detail="Content item not found")
+    metadata = credential.provider_metadata
+    if not isinstance(metadata, dict):
+        raise HTTPException(status_code=404, detail="Content item not found")
+    try:
+        instance_url = require_persisted_brightspace_origin(metadata)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409, detail=PERSISTED_BRIGHTSPACE_ORIGIN_ERROR
+        ) from exc
+    access_token = await _ensure_valid_token(credential, db)
+    return credential, BrightspaceAPIClient(
+        brightspace_instance_url=instance_url,
+        access_token=access_token,
+        credential_id=credential.id,
+    )
 
-    # Load issues from last scan
+
+def _validate_brightspace_file_scope(
+    cloud_file: CloudFile,
+    *,
+    department_id: str,
+    org_unit_id: int,
+) -> bool:
+    """Defensively validate every trusted relation used by remediation."""
+    metadata = cloud_file.provider_metadata
+    return bool(
+        cloud_file.id
+        and cloud_file.department_id == department_id
+        and cloud_file.provider == CloudProvider.BRIGHTSPACE.value
+        and cloud_file.credential_id
+        and cloud_file.provider_parent_id == str(org_unit_id)
+        and isinstance(metadata, dict)
+        and type(metadata.get("org_unit_id")) is int
+        and metadata["org_unit_id"] == org_unit_id
+        and isinstance(cloud_file.provider_file_id, str)
+        and cloud_file.provider_file_id.isdigit()
+    )
+
+
+class _PurposeUsageTracker:
+    """Track bounded transport facts for one injected Brightspace AI purpose."""
+
+    _TRACKED_METHODS = frozenset(
+        {"generate_text_sync", "generate_code_sync", "analyze_image_sync"}
+    )
+    _KNOWN_PROVIDERS = frozenset(
+        {"anthropic", "gemini", "local", "ollama", "openai", "xai"}
+    )
+    _LOCAL_PROVIDERS = frozenset({"local", "ollama"})
+    _OUTCOME_PRECEDENCE = {
+        "allowed_not_used": 0,
+        "denied_at_dispatch": 1,
+        "attempted_failed": 2,
+        "used": 3,
+    }
+
+    def __init__(self, client: Any, *, purpose: str):
+        self.client = client
+        self.purpose = purpose
+        self.outcome = "allowed_not_used"
+        self.ai_used = False
+        self.external_ai_used = False
+        self.provider_used: Optional[str] = None
+
+    @property
+    def provider(self) -> Any:
+        return getattr(self.client, "provider", None)
+
+    @classmethod
+    def _safe_provider(cls, value: object) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        provider = value.casefold()
+        return provider if provider in cls._KNOWN_PROVIDERS else None
+
+    def _record_provider(self) -> None:
+        provider = self._safe_provider(getattr(self.client, "provider", None))
+        if provider is not None:
+            self.provider_used = provider
+
+    def _promote_outcome(self, outcome: str) -> None:
+        if self._OUTCOME_PRECEDENCE[outcome] > self._OUTCOME_PRECEDENCE[self.outcome]:
+            self.outcome = outcome
+
+    def __getattr__(self, name: str) -> Any:
+        target = getattr(self.client, name)
+        if name not in self._TRACKED_METHODS or not callable(target):
+            return target
+
+        def tracked(*args: Any, **kwargs: Any) -> Any:
+            self._record_provider()
+            try:
+                result = target(*args, **kwargs)
+            except Exception:
+                self.external_ai_used = self.provider_used not in self._LOCAL_PROVIDERS
+                self._promote_outcome("attempted_failed")
+                raise
+
+            if (
+                isinstance(result, dict)
+                and result.get("success") is False
+                and result.get("ai_used") is False
+                and result.get("external_ai_used") is False
+                and result.get("purpose_outcome") == "denied_at_dispatch"
+            ):
+                self._promote_outcome("denied_at_dispatch")
+                return result
+            if isinstance(result, dict) and result.get("success") is True:
+                self.ai_used = True
+                self.external_ai_used = self.provider_used not in self._LOCAL_PROVIDERS
+                self._promote_outcome("used")
+            else:
+                self.external_ai_used = self.provider_used not in self._LOCAL_PROVIDERS
+                self._promote_outcome("attempted_failed")
+            return result
+
+        return tracked
+
+
+def _usage_fields(
+    remediation_client: Any,
+    alt_text_client: Any,
+    decisions: Dict[str, str],
+) -> Dict[str, Any]:
+    """Derive the response's complete usage statement from both purposes."""
+    trackers = [
+        tracker
+        for tracker in (remediation_client, alt_text_client)
+        if isinstance(tracker, _PurposeUsageTracker)
+    ]
+    purpose_decisions = dict(decisions)
+    for tracker in trackers:
+        purpose_decisions[tracker.purpose] = tracker.outcome
+    providers = list(
+        dict.fromkeys(
+            tracker.provider_used
+            for tracker in trackers
+            if tracker.provider_used is not None
+        )
+    )[:2]
+    return {
+        "ai_used": any(tracker.ai_used for tracker in trackers),
+        "external_ai_used": any(tracker.external_ai_used for tracker in trackers),
+        "providers": providers,
+        "purpose_decisions": purpose_decisions,
+    }
+
+
+async def _authorize_brightspace_files(
+    *,
+    db: Session,
+    principal: AuthenticatedPrincipal,
+    org_unit_id: int,
+    cloud_file_ids: List[str],
+) -> List[CloudFile]:
+    """Resolve the entire graph and prove topic membership before policy checks."""
+    requested_ids = list(dict.fromkeys(cloud_file_ids))
+    rows = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.id.in_(requested_ids),
+            CloudFile.department_id == principal.department_id,
+            CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
+        )
+        .all()
+    )
+    if (
+        len(rows) != len(requested_ids)
+        or {str(row.id) for row in rows} != set(requested_ids)
+        or any(
+            not _validate_brightspace_file_scope(
+                row,
+                department_id=principal.department_id,
+                org_unit_id=org_unit_id,
+            )
+            for row in rows
+        )
+        or len({row.credential_id for row in rows}) != 1
+    ):
+        raise HTTPException(status_code=404, detail="Content item not found")
+
+    try:
+        require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Content item not found") from None
+
+    credential_id = rows[0].credential_id
+    _, inventory_client = await _client_for_fresh_credential(
+        db,
+        credential_id=credential_id,
+        department_id=principal.department_id,
+    )
+    try:
+        inventory = await inventory_client.get_course_content_recursive(org_unit_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Content item not found") from None
+    finally:
+        await inventory_client.close()
+
+    inventory_topic_ids = {
+        str(item.topic_id)
+        for item in inventory
+        if getattr(item, "org_unit_id", None) == org_unit_id
+    }
+    if any(row.provider_file_id not in inventory_topic_ids for row in rows):
+        raise HTTPException(status_code=404, detail="Content item not found")
+
+    by_id = {str(row.id): row for row in rows}
+    return [by_id[value] for value in requested_ids]
+
+
+def _bind_brightspace_clients(
+    *,
+    principal: AuthenticatedPrincipal,
+    cloud_file: CloudFile,
+    intent: BrightspaceContentRemediateRequest,
+) -> Tuple[Any, Any, Dict[str, str]]:
+    """Independently bind only explicitly requested current policy clients."""
+    remediation_client = None
+    alt_text_client = None
+    decisions = {"remediation": "not_requested", "alt_text": "not_requested"}
+    binding = {
+        "department_id": principal.department_id,
+        "actor_id": principal.user_id,
+        "cloud_file_id": str(cloud_file.id),
+    }
+    if intent.use_ai is True:
+        remediation_client = LMSRemediationClient.bind_if_allowed(
+            purpose="remediation", **binding
+        )
+        if remediation_client is None:
+            raise HTTPException(
+                status_code=403, detail="LMS AI remediation is not permitted"
+            )
+        remediation_client = _PurposeUsageTracker(
+            remediation_client, purpose="remediation"
+        )
+        decisions["remediation"] = "allowed_not_used"
+    if intent.generate_alt_text is True:
+        alt_text_client = LMSRemediationClient.bind_if_allowed(
+            purpose="alt_text", **binding
+        )
+        decisions["alt_text"] = (
+            "allowed_not_used" if alt_text_client is not None else "manual_required"
+        )
+        if alt_text_client is not None:
+            alt_text_client = _PurposeUsageTracker(alt_text_client, purpose="alt_text")
+    return remediation_client, alt_text_client, decisions
+
+
+def _bounded_count(value: object) -> int:
+    return value if type(value) is int and 0 <= value <= 1_000_000 else 0
+
+
+def _brightspace_file_extension(cloud_file: CloudFile) -> str:
+    metadata = cloud_file.provider_metadata
+    candidates = []
+    if isinstance(metadata, dict):
+        candidates.extend([metadata.get("file_name"), metadata.get("url")])
+    candidates.append(getattr(cloud_file, "file_name", ""))
+    fallback = ""
+    for source_name in candidates:
+        if not isinstance(source_name, str):
+            continue
+        ext = source_name.rsplit(".", 1)[-1].lower().split("?", 1)[0]
+        fallback = fallback or ext
+        if ext in BRIGHTSPACE_DOWNLOAD_EXTENSIONS or ext in {"html", "htm"}:
+            return ext
+    return fallback
+
+
+def _is_inline_html_content(cloud_file: CloudFile, ext: str) -> bool:
+    if ext in {"html", "htm"}:
+        return True
+    metadata = cloud_file.provider_metadata
+    if isinstance(metadata, dict) and metadata.get("topic_type") == "file":
+        return False
+    return ext not in BRIGHTSPACE_DOWNLOAD_EXTENSIONS and isinstance(
+        getattr(cloud_file, "content_body", None), str
+    )
+
+
+def _preflight_brightspace_file_sizes(
+    cloud_files: List[CloudFile],
+) -> Dict[str, str]:
+    """Return item-level manual outcomes after enforcing the aggregate cap."""
+    manual: Dict[str, str] = {}
+    aggregate_size = 0
+    for cloud_file in cloud_files:
+        file_id = str(cloud_file.id)
+        ext = _brightspace_file_extension(cloud_file)
+        content_body = getattr(cloud_file, "content_body", None)
+        if _is_inline_html_content(cloud_file, ext):
+            if not isinstance(content_body, str) or not content_body:
+                manual[file_id] = "content_size_unknown"
+                continue
+            trusted_size = len(content_body.encode("utf-8"))
+        else:
+            trusted_size = getattr(cloud_file, "file_size_bytes", None)
+            if type(trusted_size) is not int or trusted_size <= 0:
+                manual[file_id] = "content_size_unknown"
+                continue
+        aggregate_size += trusted_size
+        if trusted_size > BRIGHTSPACE_ITEM_SIZE_LIMIT_BYTES:
+            manual[file_id] = "content_too_large"
+            continue
+
+    if aggregate_size > BRIGHTSPACE_BATCH_SIZE_LIMIT_BYTES:
+        raise HTTPException(
+            status_code=413, detail="brightspace_batch_size_limit_exceeded"
+        )
+    return manual
+
+
+@dataclass(frozen=True)
+class _WorkerRemediationResult:
+    result: Any
+    remediated_text: Optional[str] = None
+    remediated_bytes: Optional[bytes] = None
+
+
+def _run_remediator_worker(
+    *,
+    ext: str,
+    raw_issues: List[Dict[str, Any]],
+    config: Any,
+    remediation_client: Any,
+    alt_text_client: Any = None,
+    source_text: Optional[str] = None,
+    source_bytes: Optional[bytes] = None,
+) -> _WorkerRemediationResult:
+    """Construct, run, verify, and read one remediator without ORM state."""
+    remediator_map = {
+        "docx": ("..education.remediation.docx_remediator", "DocxRemediator"),
+        "doc": ("..education.remediation.docx_remediator", "DocxRemediator"),
+        "pptx": ("..education.remediation.pptx_remediator", "PptxRemediator"),
+        "ppt": ("..education.remediation.pptx_remediator", "PptxRemediator"),
+        "xlsx": ("..education.remediation.xlsx_remediator", "XlsxRemediator"),
+        "xls": ("..education.remediation.xlsx_remediator", "XlsxRemediator"),
+        "pdf": ("..education.remediation.pdf_remediator", "PdfRemediator"),
+        "mp4": (
+            "..education.remediation.multimedia_remediator",
+            "MultimediaRemediator",
+        ),
+        "mp3": (
+            "..education.remediation.multimedia_remediator",
+            "MultimediaRemediator",
+        ),
+        "wav": (
+            "..education.remediation.multimedia_remediator",
+            "MultimediaRemediator",
+        ),
+        "avi": (
+            "..education.remediation.multimedia_remediator",
+            "MultimediaRemediator",
+        ),
+        "mov": (
+            "..education.remediation.multimedia_remediator",
+            "MultimediaRemediator",
+        ),
+        "webm": (
+            "..education.remediation.multimedia_remediator",
+            "MultimediaRemediator",
+        ),
+    }
+    with tempfile.TemporaryDirectory() as temp_dir:
+        file_path = os.path.join(temp_dir, f"source.{ext}")
+        if source_text is not None:
+            with open(file_path, "w", encoding="utf-8") as source:
+                source.write(source_text)
+            from ..education.remediation.html_remediator import HtmlRemediator
+
+            remediator = HtmlRemediator(
+                file_path, raw_issues, config, remediation_client
+            )
+        elif source_bytes is not None and ext in remediator_map:
+            with open(file_path, "wb") as source:
+                source.write(source_bytes)
+            module_path, class_name = remediator_map[ext]
+            remediator_class = getattr(
+                importlib.import_module(module_path, package="src.api"), class_name
+            )
+            try:
+                remediator = remediator_class(
+                    file_path,
+                    raw_issues,
+                    config,
+                    remediation_client,
+                    alt_text_client=alt_text_client,
+                )
+            except TypeError:
+                remediator = remediator_class(
+                    file_path, raw_issues, config, remediation_client
+                )
+        else:
+            raise ValueError("unsupported_remediation_worker_input")
+
+        result = remediator.remediate()
+        output_path = getattr(result, "output_file", None)
+        complete = (
+            getattr(result, "success", None) is True
+            and _bounded_count(getattr(result, "fixed_count", 0)) > 0
+            and _bounded_count(getattr(result, "manual_count", 0)) == 0
+            and _bounded_count(getattr(result, "failed_count", 0)) == 0
+            and getattr(result, "verification_passed", None) is True
+        )
+        if not complete or not output_path or not os.path.isfile(output_path):
+            return _WorkerRemediationResult(result=result)
+        if source_text is not None:
+            with open(output_path, "r", encoding="utf-8") as output:
+                return _WorkerRemediationResult(
+                    result=result, remediated_text=output.read()
+                )
+        with open(output_path, "rb") as output:
+            return _WorkerRemediationResult(
+                result=result, remediated_bytes=output.read()
+            )
+
+
+def _persist_remediated_bytes(path: str, content: bytes) -> bool:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as output:
+        output.write(content)
+    return os.path.isfile(path)
+
+
+async def _remediate_file_impl(
+    cloud_file: CloudFile,
+    db: Session,
+    *,
+    remediation_client: Any = None,
+    alt_text_client: Any = None,
+    api_client: BrightspaceAPIClient,
+    purpose_decisions: Optional[Dict[str, str]] = None,
+) -> RemediationOutcome:
+    """Synchronously remediate using injected purpose-bound clients only."""
+    import html
+
+    from ..db.models import ScanResult
+    from ..education.remediation.base import RemediationConfig
+
+    decisions = dict(
+        purpose_decisions
+        or {"remediation": "not_requested", "alt_text": "not_requested"}
+    )
     scan_result = (
         db.query(ScanResult)
         .filter(ScanResult.scan_id == cloud_file.last_scan_id)
         .first()
     )
-    if not scan_result or not scan_result.issues:
-        return
-
-    raw_issues = scan_result.issues
-
-    # Determine file type from URL extension
-    metadata = cloud_file.provider_metadata or {}
-    url = metadata.get("url", "")
-    ext = url.rsplit(".", 1)[-1].lower() if "." in url else ""
-
-    # HTML remediation (content stored in content_body)
-    if ext in ("html", "htm") or cloud_file.content_body:
-        if not cloud_file.content_body:
-            return
-        from ..education.canvas_content_scanner import (
-            _wrap_html_fragment,
-            _unwrap_html_fragment,
-            _sanitize_html,
+    raw_issues = scan_result.issues if scan_result is not None else None
+    if not isinstance(raw_issues, list) or not raw_issues:
+        return RemediationOutcome(
+            cloud_file_id=str(cloud_file.id),
+            status="no_op",
+            purpose_decisions=decisions,
         )
-        from ..education.remediation.html_remediator import HtmlRemediator
-        from ..education.remediation.base import RemediationConfig
-        from ..ai.providers import get_provider_manager
 
-        try:
-            ai_client = get_provider_manager()
-        except Exception:
-            ai_client = None
+    metadata = cloud_file.provider_metadata
+    if not isinstance(metadata, dict):
+        return RemediationOutcome(
+            cloud_file_id=str(cloud_file.id),
+            status="failed",
+            failed_count=len(raw_issues),
+            purpose_decisions=decisions,
+            error_code="invalid_content_scope",
+        )
+    size_errors = _preflight_brightspace_file_sizes([cloud_file])
+    if str(cloud_file.id) in size_errors:
+        return RemediationOutcome(
+            cloud_file_id=str(cloud_file.id),
+            status="manual_required",
+            manual_count=len(raw_issues),
+            purpose_decisions=decisions,
+            error_code=size_errors[str(cloud_file.id)],
+        )
+    ext = _brightspace_file_extension(cloud_file)
+    config = RemediationConfig(
+        use_ai=remediation_client is not None,
+        allow_legacy_nested_ai=False,
+        verify_fixes=True,
+        create_backup=False,
+        fix_alt_text=alt_text_client is not None,
+    )
+    result = None
+    durable_output = False
+    artifact = None
+    artifact_publication = None
 
-        config = RemediationConfig(use_ai=True, verify_fixes=False, create_backup=False)
-        wrapped_html = _wrap_html_fragment(cloud_file.content_body)
+    inline_html = _is_inline_html_content(cloud_file, ext)
+    if inline_html:
+        if not isinstance(cloud_file.content_body, str) or not cloud_file.content_body:
+            return RemediationOutcome(
+                cloud_file_id=str(cloud_file.id),
+                status="manual_required",
+                manual_count=len(raw_issues),
+                purpose_decisions=decisions,
+                error_code="manual_required",
+            )
+        from ..education.canvas_content_scanner import (
+            _sanitize_html,
+            _unwrap_html_fragment,
+            _wrap_html_fragment,
+        )
+
+        worker_result = await _run_brightspace_worker(
+            str(getattr(cloud_file, "department_id", "unknown")),
+            _run_remediator_worker,
+            ext="html",
+            raw_issues=_convert_axe_issues(raw_issues),
+            config=config,
+            remediation_client=remediation_client,
+            source_text=_wrap_html_fragment(cloud_file.content_body),
+        )
+        result = worker_result.result
+        if worker_result.remediated_text is not None:
+            cloud_file.remediated_body = _sanitize_html(
+                _unwrap_html_fragment(worker_result.remediated_text)
+            )
+            durable_output = bool(cloud_file.remediated_body)
+    elif ext in {"jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tiff"}:
+        if alt_text_client is None:
+            return RemediationOutcome(
+                cloud_file_id=str(cloud_file.id),
+                status="manual_required",
+                manual_count=len(raw_issues),
+                purpose_decisions=decisions,
+                error_code="alt_text_manual_required",
+            )
+        from ..education.image_alt_text import ImageAltTextGenerator
+
         temp_path = None
         try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".html", delete=False, mode="w", encoding="utf-8"
-            ) as tmp:
-                tmp.write(wrapped_html)
-                temp_path = tmp.name
-
-            # HTML issues come from axe-core — convert to remediator format
-            issues = _convert_axe_issues(raw_issues)
-            remediator = HtmlRemediator(temp_path, issues, config, ai_client)
-            result = remediator.remediate()
-
-            output_path = result.output_file or temp_path
-            with open(output_path, "r", encoding="utf-8") as f:
-                remediated_doc = f.read()
-
-            cloud_file.remediated_body = _sanitize_html(
-                _unwrap_html_fragment(remediated_doc)
+            file_bytes, _ = await api_client.get_topic_file(
+                metadata["org_unit_id"], int(cloud_file.provider_file_id)
             )
+            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+                tmp.write(file_bytes)
+                temp_path = tmp.name
+            image_result = await ImageAltTextGenerator(
+                lms_client=alt_text_client, allow_legacy_transport=False
+            ).analyze_image_comprehensive(
+                image_path=temp_path,
+                context="Educational course content",
+            )
+            description = image_result.get("description")
+            alt_text = (
+                description.get("alt_text") if isinstance(description, dict) else None
+            )
+            if not isinstance(alt_text, str) or not alt_text.strip():
+                return RemediationOutcome(
+                    cloud_file_id=str(cloud_file.id),
+                    status="manual_required",
+                    manual_count=len(raw_issues),
+                    purpose_decisions={**decisions, "alt_text": "attempted_failed"},
+                    error_code="alt_text_manual_required",
+                    ai_used=True,
+                    external_ai_used=getattr(alt_text_client, "provider", None)
+                    != "ollama",
+                    providers=[getattr(alt_text_client, "provider", "unknown")][:1],
+                )
+            if len(raw_issues) != 1:
+                return RemediationOutcome(
+                    cloud_file_id=str(cloud_file.id),
+                    status="manual_required",
+                    manual_count=len(raw_issues),
+                    purpose_decisions=decisions,
+                    error_code="manual_required",
+                )
+            cloud_file.remediated_body = (
+                f'<img src="" alt="{html.escape(alt_text.strip(), quote=True)}" />'
+            )
+            durable_output = True
+            result = type(
+                "ImageResult",
+                (),
+                {
+                    "success": True,
+                    "fixed_count": 1,
+                    "manual_count": 0,
+                    "failed_count": 0,
+                    "verification_passed": True,
+                },
+            )()
+            decisions["alt_text"] = "used"
         finally:
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
-
-    # Document/media remediation (download → remediate → store file)
-    elif ext in (
+    elif ext in {
         "docx",
         "doc",
         "pptx",
@@ -780,243 +1475,210 @@ async def _remediate_file(cloud_file: CloudFile, db):
         "avi",
         "mov",
         "webm",
-    ):
-        # Download the file from Brightspace
-        credential = (
-            db.query(CloudOAuthCredentials)
-            .filter(CloudOAuthCredentials.id == cloud_file.credential_id)
-            .first()
+    }:
+        file_bytes, _ = await api_client.get_topic_file(
+            metadata["org_unit_id"], int(cloud_file.provider_file_id)
         )
-        if not credential:
-            raise Exception("Credential not found")
-
-        token_manager = OAuthTokenManager()
-        access_token = token_manager.decrypt_token(credential.access_token)
-        instance_url = (credential.provider_metadata or {}).get(
-            "brightspace_instance_url", ""
+        worker_result = await _run_brightspace_worker(
+            str(getattr(cloud_file, "department_id", "unknown")),
+            _run_remediator_worker,
+            ext=ext,
+            raw_issues=raw_issues,
+            config=config,
+            remediation_client=remediation_client,
+            alt_text_client=alt_text_client,
+            source_bytes=file_bytes,
         )
-        org_unit_id = metadata.get("org_unit_id")
-        topic_id = int(cloud_file.provider_file_id)
-
-        api_client = BrightspaceAPIClient(
-            brightspace_instance_url=instance_url,
-            access_token=access_token,
+        result = worker_result.result
+        complete = (
+            getattr(result, "success", None) is True
+            and _bounded_count(getattr(result, "fixed_count", 0)) > 0
+            and _bounded_count(getattr(result, "manual_count", 0)) == 0
+            and _bounded_count(getattr(result, "failed_count", 0)) == 0
+            and getattr(result, "verification_passed", None) is True
         )
-
-        temp_dir = None
-        try:
-            temp_dir = tempfile.mkdtemp()
-            file_path = os.path.join(temp_dir, f"file.{ext}")
-            file_bytes, _ = await api_client.get_topic_file(int(org_unit_id), topic_id)
-            with open(file_path, "wb") as f:
-                f.write(file_bytes)
-
-            # Select remediator
-            _remediator_map = {
-                "docx": ("..education.remediation.docx_remediator", "DocxRemediator"),
-                "doc": ("..education.remediation.docx_remediator", "DocxRemediator"),
-                "pptx": ("..education.remediation.pptx_remediator", "PptxRemediator"),
-                "ppt": ("..education.remediation.pptx_remediator", "PptxRemediator"),
-                "xlsx": ("..education.remediation.xlsx_remediator", "XlsxRemediator"),
-                "xls": ("..education.remediation.xlsx_remediator", "XlsxRemediator"),
-                "pdf": ("..education.remediation.pdf_remediator", "PdfRemediator"),
-                "mp4": (
-                    "..education.remediation.multimedia_remediator",
-                    "MultimediaRemediator",
-                ),
-                "mp3": (
-                    "..education.remediation.multimedia_remediator",
-                    "MultimediaRemediator",
-                ),
-                "wav": (
-                    "..education.remediation.multimedia_remediator",
-                    "MultimediaRemediator",
-                ),
-                "avi": (
-                    "..education.remediation.multimedia_remediator",
-                    "MultimediaRemediator",
-                ),
-                "mov": (
-                    "..education.remediation.multimedia_remediator",
-                    "MultimediaRemediator",
-                ),
-                "webm": (
-                    "..education.remediation.multimedia_remediator",
-                    "MultimediaRemediator",
-                ),
+        if (
+            complete
+            and worker_result.remediated_bytes is not None
+            and ext
+            in {
+                "docx",
+                "pptx",
+                "xlsx",
+                "pdf",
             }
-            module_path, class_name = _remediator_map[ext]
-            import importlib
-
-            mod = importlib.import_module(module_path, package="src.api")
-            RemediatorClass = getattr(mod, class_name)
-
-            from ..education.remediation.base import RemediationConfig
-            from ..ai.providers import get_provider_manager
-
-            try:
-                ai_client = get_provider_manager()
-            except Exception:
-                ai_client = None
-            config = RemediationConfig(
-                use_ai=True, verify_fixes=False, create_backup=False
-            )
-            # Document/media issues are already in the correct format from their processors
-            remediator = RemediatorClass(file_path, raw_issues, config, ai_client)
-            result = remediator.remediate()
-
-            # Persist remediated file to uploads volume (survives container restarts)
-            output_path = result.output_file or file_path
-            if output_path and os.path.exists(output_path):
-                import shutil
-
-                persist_dir = f"/app/uploads/remediated/{cloud_file.id}"
-                os.makedirs(persist_dir, exist_ok=True)
-                persist_name = f"remediated.{ext}"
-                persist_path = os.path.join(persist_dir, persist_name)
-                shutil.copy2(output_path, persist_path)
-                cloud_file.remediated_file_id = persist_path
-                cloud_file.remediated_body = (
-                    f"[Remediated {ext.upper()} document]\n"
-                    f"Fixed: {result.fixed_count} issues\n"
-                    f"Manual review needed: {result.manual_count} issues"
+        ):
+            with tempfile.TemporaryDirectory(
+                prefix="aelira_brightspace_artifact_"
+            ) as artifact_temp_dir:
+                artifact_path = os.path.join(artifact_temp_dir, f"remediated.{ext}")
+                durable_output = await _run_brightspace_worker(
+                    str(getattr(cloud_file, "department_id", "unknown")),
+                    _persist_remediated_bytes,
+                    artifact_path,
+                    worker_result.remediated_bytes,
                 )
-        finally:
-            await api_client.close()
-            # Clean up temp dir now that file is persisted
-            if temp_dir and os.path.exists(temp_dir):
-                import shutil
-
-                shutil.rmtree(temp_dir, ignore_errors=True)
-    # Image remediation (generate alt text via vision AI)
-    elif ext in ("jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tiff"):
-        credential = (
-            db.query(CloudOAuthCredentials)
-            .filter(CloudOAuthCredentials.id == cloud_file.credential_id)
-            .first()
-        )
-        if not credential:
-            raise Exception("Credential not found")
-
-        token_manager = OAuthTokenManager()
-        access_token = token_manager.decrypt_token(credential.access_token)
-        instance_url = (credential.provider_metadata or {}).get(
-            "brightspace_instance_url", ""
-        )
-        org_unit_id = metadata.get("org_unit_id")
-        topic_id = int(cloud_file.provider_file_id)
-
-        api_client = BrightspaceAPIClient(
-            brightspace_instance_url=instance_url,
-            access_token=access_token,
-        )
-
-        temp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
-                file_bytes, _ = await api_client.get_topic_file(
-                    int(org_unit_id), topic_id
-                )
-                tmp.write(file_bytes)
-                temp_path = tmp.name
-
-            from ..education.image_alt_text import ImageAltTextGenerator
-
-            generator = ImageAltTextGenerator()
-            result = await generator.analyze_image_comprehensive(
-                image_path=temp_path,
-                context=f"Educational course content: {cloud_file.file_name}",
-            )
-
-            # Build remediation summary with generated alt text
-            alt_text = result.get("description", {}).get("alt_text", "")
-            long_desc = result.get("description", {}).get("long_description", "")
-            image_type = result.get("type_detection", {}).get(
-                "image_purpose", "informative"
-            )
-            is_decorative = result.get("type_detection", {}).get("is_decorative", False)
-
-            if is_decorative:
-                cloud_file.remediated_body = (
-                    f'<img src="{cloud_file.file_name}" alt="" role="presentation" />\n\n'
-                    f"Image classified as decorative — empty alt text applied."
-                )
-            else:
-                cloud_file.remediated_body = (
-                    f'<img src="{cloud_file.file_name}" alt="{alt_text}" />\n\n'
-                    f"**Generated Alt Text:** {alt_text}\n\n"
-                    f"**Long Description:** {long_desc}\n\n"
-                    f"**Image Purpose:** {image_type}"
-                )
-        finally:
-            await api_client.close()
-            if temp_path and os.path.exists(temp_path):
-                os.unlink(temp_path)
-
-        cloud_file.writeback_status = "remediated"
-        cloud_file.has_remediated_version = True
-        remediated_score = 100.0
-        cloud_file.remediated_compliance_score = remediated_score
-        cloud_file.last_compliance_score = remediated_score
-        cloud_file.remediated_issues_fixed = len(raw_issues)
-        cloud_file.remediated_issues_remaining = 0
-        db.commit()
-        logger.info(f"Image remediation complete: {cloud_file.id}, alt_text generated")
-        return
-
+                if durable_output:
+                    artifact = (
+                        RemediationArtifactService.from_settings().claim_and_publish(
+                            db,
+                            source_path=artifact_path,
+                            trusted_temp_root=artifact_temp_dir,
+                            department_id=str(cloud_file.department_id),
+                            scan_id=str(cloud_file.last_scan_id),
+                            cloud_file_id=str(cloud_file.id),
+                            remediation_job_id=None,
+                            created_by_id=None,
+                            provider=CloudProvider.BRIGHTSPACE.value,
+                            scan_type={
+                                "docx": "WORD",
+                                "pptx": "POWERPOINT",
+                                "xlsx": "EXCEL",
+                                "pdf": "PDF",
+                            }[ext],
+                            filename=f"remediated.{ext}",
+                            provider_result={"verification_passed": True},
+                            commit=False,
+                        )
+                    )
+                    if isinstance(artifact, ArtifactPublicationResult):
+                        artifact_publication = artifact
+                    durable_output = artifact.lifecycle_status == "available"
     else:
-        logger.info(f"No remediator available for file type: {ext}")
-        return
+        return RemediationOutcome(
+            cloud_file_id=str(cloud_file.id),
+            status="manual_required",
+            manual_count=len(raw_issues),
+            purpose_decisions=decisions,
+            error_code="manual_required",
+        )
 
-    cloud_file.writeback_status = "remediated"
-    cloud_file.has_remediated_version = True
-
-    cloud_file.remediated_issues_fixed = result.fixed_count
-    cloud_file.remediated_issues_remaining = result.manual_count + getattr(
-        result, "failed_count", 0
+    if result is None:
+        return RemediationOutcome(
+            cloud_file_id=str(cloud_file.id),
+            status="failed",
+            failed_count=len(raw_issues),
+            purpose_decisions=decisions,
+            error_code="remediation_failed",
+        )
+    fixed = _bounded_count(getattr(result, "fixed_count", 0))
+    manual = _bounded_count(getattr(result, "manual_count", 0))
+    failed = _bounded_count(getattr(result, "failed_count", 0))
+    cloud_file.has_remediated_version = bool(durable_output and fixed > 0)
+    cloud_file.remediation_origin = (
+        ("automatic" if inline_html else "manual")
+        if cloud_file.has_remediated_version
+        else None
+    )
+    cloud_file.remediated_issues_fixed = fixed
+    cloud_file.remediated_issues_remaining = manual + failed
+    cloud_file.writeback_status = (
+        "pending_review" if cloud_file.has_remediated_version else None
+    )
+    if cloud_file.has_remediated_version is True:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            if artifact_publication is not None:
+                try:
+                    RemediationArtifactService.from_settings().abort_staging(
+                        db,
+                        artifact_id=artifact_publication.artifact_id,
+                        publication_token=artifact_publication.publication_token,
+                    )
+                except Exception:
+                    db.rollback()
+                    logger.warning(
+                        "Failed to clean aborted Brightspace artifact",
+                    )
+            return RemediationOutcome(
+                cloud_file_id=str(cloud_file.id),
+                status="failed",
+                failed_count=max(1, fixed),
+                purpose_decisions=decisions,
+                error_code="remediation_failed",
+            )
+    if cloud_file.has_remediated_version is True:
+        status = "completed"
+    elif getattr(result, "success", None) is not True or failed > 0:
+        status = "failed"
+    else:
+        status = "manual_required"
+    return RemediationOutcome(
+        cloud_file_id=str(cloud_file.id),
+        status=status,
+        fixed_count=fixed if cloud_file.has_remediated_version else 0,
+        manual_count=(
+            manual + fixed if not cloud_file.has_remediated_version else manual
+        ),
+        failed_count=failed,
+        has_remediated_version=bool(cloud_file.has_remediated_version),
+        artifact_id=str(artifact.id) if artifact is not None else None,
+        artifact_mime_type=artifact.mime_type if artifact is not None else None,
+        artifact_size_bytes=artifact.size_bytes if artifact is not None else None,
+        artifact_sha256=artifact.sha256 if artifact is not None else None,
+        artifact_expires_at=artifact.expires_at if artifact is not None else None,
+        artifact_review_status=artifact.review_status if artifact is not None else None,
+        ai_used=decisions.get("alt_text") == "used",
+        external_ai_used=(
+            decisions.get("alt_text") == "used"
+            and getattr(alt_text_client, "provider", None) != "ollama"
+        ),
+        providers=(
+            [getattr(alt_text_client, "provider")]
+            if decisions.get("alt_text") == "used"
+            and isinstance(getattr(alt_text_client, "provider", None), str)
+            else []
+        ),
+        purpose_decisions=decisions,
+        error_code=None if status == "completed" else "manual_required",
     )
 
-    # Estimate remediated score and update displayed score
-    if cloud_file.last_compliance_score is not None:
-        total = (
-            result.fixed_count
-            + result.manual_count
-            + getattr(result, "failed_count", 0)
-        )
-        if total > 0 and result.fixed_count > 0:
-            fix_ratio = result.fixed_count / total
-            original = cloud_file.last_compliance_score
-            remediated_score = min(
-                100.0, round(original + (100 - original) * fix_ratio, 1)
-            )
-            cloud_file.remediated_compliance_score = remediated_score
-            cloud_file.last_compliance_score = remediated_score
-        else:
-            # Remediator ran but no auto-fixes applied — keep current score
-            cloud_file.remediated_compliance_score = cloud_file.last_compliance_score
 
-    db.commit()
-    logger.info(
-        f"Remediation complete: {cloud_file.id} ({ext}), "
-        f"fixed={result.fixed_count}, manual={result.manual_count}"
+async def _remediate_file(
+    cloud_file: CloudFile,
+    db: Session,
+    *,
+    remediation_client: Any = None,
+    alt_text_client: Any = None,
+    api_client: BrightspaceAPIClient,
+    purpose_decisions: Optional[Dict[str, str]] = None,
+) -> RemediationOutcome:
+    """Run remediation and overlay usage facts observed by both trackers."""
+    decisions = dict(
+        purpose_decisions
+        or {"remediation": "not_requested", "alt_text": "not_requested"}
+    )
+    outcome = await _remediate_file_impl(
+        cloud_file,
+        db,
+        remediation_client=remediation_client,
+        alt_text_client=alt_text_client,
+        api_client=api_client,
+        purpose_decisions=decisions,
+    )
+    return outcome.model_copy(
+        update=_usage_fields(remediation_client, alt_text_client, decisions)
     )
 
 
 @router.post("/content/scan")
 async def scan_brightspace_content(
     request: BrightspaceContentScanRequest,
-    background_tasks: BackgroundTasks,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> BrightspaceContentScanResponse:
     """Queue scan jobs for Brightspace course content.
 
     Recursively discovers content items and creates scan jobs for each.
     Filter by scan_types: 'files', 'html', or 'both' (default).
-
-    Requires API key authentication.
+    LTI course staff are limited to the exact launch course.
     """
-    department_id = api_key.department_id
+    require_lti_course_access(
+        principal, str(request.org_unit_id), platform="brightspace"
+    )
+    department_id = principal.department_id
     credential = _get_credential(db, department_id)
 
     # Ensure token is valid (refresh if expired)
@@ -1070,14 +1732,19 @@ async def scan_brightspace_content(
                 provider=CloudProvider.BRIGHTSPACE.value,
                 provider_file_id=str(item.topic_id),
                 provider_parent_id=str(request.org_unit_id),
-                file_name=item.title,
+                file_name=item.file_name or item.title,
                 file_type=item.content_type,
                 mime_type="text/html" if item.content_type == "html" else "unknown",
-                file_size_bytes=0,
+                file_size_bytes=(
+                    item.file_size
+                    if type(item.file_size) is int and item.file_size > 0
+                    else None
+                ),
                 provider_metadata={
                     "org_unit_id": request.org_unit_id,
                     "module_id": item.module_id,
                     "topic_type": item.content_type,
+                    "file_name": item.file_name,
                     "module_path": item.module_path,
                     "url": item.url,
                 },
@@ -1087,10 +1754,18 @@ async def scan_brightspace_content(
         else:
             # Update module_path if missing from earlier scans
             metadata = cloud_file.provider_metadata or {}
+            if item.file_name:
+                cloud_file.file_name = item.file_name
+                metadata["file_name"] = item.file_name
             if not metadata.get("module_path"):
                 metadata["module_path"] = item.module_path
                 metadata["url"] = item.url
-                cloud_file.provider_metadata = metadata
+            cloud_file.provider_metadata = metadata
+            cloud_file.file_size_bytes = (
+                item.file_size
+                if type(item.file_size) is int and item.file_size > 0
+                else None
+            )
 
         # Check if there's already a pending/processing scan job for this file
         existing_job = (
@@ -1112,28 +1787,28 @@ async def scan_brightspace_content(
             skipped += 1
             continue
 
-        # Create scan job
-        job_id = str(uuid.uuid4())
-        scan_job = CloudJobQueue(
-            id=job_id,
+        db.flush()
+        enqueue_cloud_job(
+            db,
             department_id=department_id,
             job_type=CloudJobType.SCAN.value,
+            payload={
+                "cloud_file_id": cloud_file.id,
+                "credential_id": credential.id,
+                "provider": CloudProvider.BRIGHTSPACE.value,
+                "provider_file_id": str(item.topic_id),
+                "course_id": str(request.org_unit_id),
+            },
+            dedupe_key=(
+                f"scan:brightspace:{request.org_unit_id}:{item.topic_id}:"
+                f"{getattr(item, 'modified_at', None) or 'current'}"
+            ),
             provider=CloudProvider.BRIGHTSPACE.value,
-            status=CloudJobStatus.PENDING.value,
             priority=1,
             cloud_file_id=cloud_file.id,
             credential_id=credential.id,
         )
-        db.add(scan_job)
         jobs_queued += 1
-
-        # Queue background task to execute the scan
-        background_tasks.add_task(
-            _brightspace_scan_file_task,
-            job_id=job_id,
-            cloud_file_id=cloud_file.id,
-            credential_id=credential.id,
-        )
 
     db.commit()
 
@@ -1152,16 +1827,16 @@ async def scan_brightspace_content(
 @router.get("/content/courses/{org_unit_id}/status")
 async def get_brightspace_content_status(
     org_unit_id: int,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Get scan status for all content items in a Brightspace course.
 
     Returns compliance scores and scan status for each tracked content item.
-
-    Requires API key authentication.
+    LTI course staff are limited to the exact launch course.
     """
-    department_id = api_key.department_id
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
+    department_id = principal.department_id
 
     # Query all CloudFile records for this course
     cloud_files = (
@@ -1254,6 +1929,8 @@ async def get_brightspace_content_status(
                 ),
                 "scan_status": latest_scan.status.value if latest_scan else None,
                 "has_remediated_version": cf.has_remediated_version,
+                "approval_eligible": _brightspace_approval_eligibility(cf).eligible,
+                "remediation_origin": cf.remediation_origin,
                 "needs_rescan": cf.needs_rescan,
             }
         )
@@ -1274,103 +1951,14 @@ async def get_brightspace_content_status(
 @router.post("/remediate")
 async def remediate_brightspace_content(
     request: BrightspaceRemediateRequest,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
-) -> BrightspaceRemediateResponse:
-    """Queue remediation job for a Brightspace file.
-
-    Downloads file, scans, remediates, and optionally uploads back to Brightspace.
-
-    Requires API key authentication.
-    """
-    department_id = api_key.department_id
-
-    try:
-        credential = _get_credential(db, department_id)
-
-        # Find or create CloudFile record
-        # Extract a topic_id from the file_url or use it directly
-        cloud_file = (
-            db.query(CloudFile)
-            .filter(
-                CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
-                CloudFile.department_id == department_id,
-                CloudFile.provider_parent_id == str(request.org_unit_id),
-                CloudFile.download_link == request.file_url,
-            )
-            .first()
-        )
-
-        if not cloud_file:
-            cloud_file = CloudFile(
-                id=str(uuid.uuid4()),
-                department_id=department_id,
-                credential_id=credential.id,
-                provider=CloudProvider.BRIGHTSPACE.value,
-                provider_file_id=str(uuid.uuid4()),  # Placeholder until scan resolves
-                provider_parent_id=str(request.org_unit_id),
-                file_name=request.file_url.split("/")[-1] or "brightspace_file",
-                file_type="unknown",
-                mime_type="unknown",
-                file_size_bytes=0,
-                download_link=request.file_url,
-                provider_metadata={
-                    "org_unit_id": request.org_unit_id,
-                },
-            )
-            db.add(cloud_file)
-            db.flush()
-
-        # Create scan job (priority 1 — runs first)
-        scan_job_id = str(uuid.uuid4())
-        scan_job = CloudJobQueue(
-            id=scan_job_id,
-            department_id=department_id,
-            job_type=CloudJobType.SCAN.value,
-            provider=CloudProvider.BRIGHTSPACE.value,
-            status=CloudJobStatus.PENDING.value,
-            priority=1,
-            cloud_file_id=cloud_file.id,
-            credential_id=credential.id,
-        )
-        db.add(scan_job)
-
-        # Create remediation job (priority 2 — runs after scan)
-        remediation_job_id = str(uuid.uuid4())
-        remediation_job = CloudJobQueue(
-            id=remediation_job_id,
-            department_id=department_id,
-            job_type=CloudJobType.REMEDIATE.value,
-            provider=CloudProvider.BRIGHTSPACE.value,
-            status=CloudJobStatus.PENDING.value,
-            priority=2,
-            cloud_file_id=cloud_file.id,
-            credential_id=credential.id,
-        )
-        db.add(remediation_job)
-
-        db.commit()
-
-        logger.info(
-            f"Queued Brightspace remediation jobs for {request.file_url}: "
-            f"scan={scan_job_id}, remediate={remediation_job_id}"
-        )
-
-        return BrightspaceRemediateResponse(
-            success=True,
-            scan_id=None,  # Will be created by scan job
-            job_id=remediation_job_id,
-            message="Remediation job queued. File will be downloaded, scanned, and remediated.",
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to queue Brightspace remediation: {e}", exc_info=True)
-        return BrightspaceRemediateResponse(
-            success=False,
-            message=f"Failed to queue remediation: {str(e)}",
-        )
+) -> None:
+    """Reject the non-executable legacy queued remediation contract."""
+    raise HTTPException(
+        status_code=501,
+        detail="brightspace_queued_remediation_unsupported",
+    )
 
 
 # =============================================================================
@@ -1380,14 +1968,15 @@ async def remediate_brightspace_content(
 
 @router.delete("/disconnect")
 async def disconnect_brightspace(
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, str]:
-    """Disconnect Brightspace integration for a department.
+    """Disconnect Brightspace integration for the principal's department.
 
-    Requires API key authentication.
+    Requires account-management authorization.
     """
-    department_id = api_key.department_id
+    require_account_management(principal, platform="brightspace")
+    department_id = principal.department_id
 
     credential = (
         db.query(CloudOAuthCredentials)
@@ -1404,9 +1993,28 @@ async def disconnect_brightspace(
             detail="Brightspace not connected for this department",
         )
 
-    # Delete credential
-    db.delete(credential)
-    db.commit()
+    try:
+        RemediationArtifactService.from_settings().delete_for_credential(
+            db,
+            department_id=department_id,
+            credential_id=credential.id,
+        )
+    except ArtifactAuthorizationError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_cleanup_required"
+        ) from None
+
+    try:
+        db.query(CloudJobQueue).filter(
+            CloudJobQueue.credential_id == credential.id
+        ).delete()
+        db.query(CloudFile).filter(CloudFile.credential_id == credential.id).delete()
+        db.delete(credential)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     logger.info(f"Disconnected Brightspace for department {department_id}")
 
@@ -1416,6 +2024,55 @@ async def disconnect_brightspace(
 # =============================================================================
 # Content Review & Writeback
 # =============================================================================
+
+
+@dataclass(frozen=True)
+class _BrightspaceApprovalEligibility:
+    eligible: bool
+    authority: Optional[Literal["html", "artifact"]] = None
+    reason: Optional[str] = None
+
+
+def _brightspace_approval_eligibility(
+    cloud_file: CloudFile, *, now: Optional[datetime] = None
+) -> _BrightspaceApprovalEligibility:
+    """Return the server-authoritative durable approval authority for an item."""
+    terminal_statuses = {
+        "approved",
+        "written_back",
+        "writtenback",
+        "rejected",
+        "rolled_back",
+    }
+    if cloud_file.writeback_status in terminal_statuses:
+        return _BrightspaceApprovalEligibility(False, reason="already_terminal")
+    if cloud_file.remediated_body:
+        return _BrightspaceApprovalEligibility(True, authority="html")
+
+    artifact_id = cloud_file.current_remediation_artifact_id
+    artifact = cloud_file.current_remediation_artifact
+    effective_now = now or datetime.now(timezone.utc)
+    artifact_is_current = (
+        bool(artifact_id)
+        and artifact is not None
+        and artifact.id == artifact_id
+        and artifact.cloud_file_id == cloud_file.id
+        and artifact.department_id == cloud_file.department_id
+        and artifact.provider == CloudProvider.BRIGHTSPACE.value
+    )
+    artifact_is_approvable = artifact_is_current and (
+        artifact.lifecycle_status == "available"
+        and artifact.review_status == "pending"
+        and artifact.cleanup_claimed_at is None
+        and artifact.written_back_at is None
+        and artifact.published_at is not None
+        and artifact.expires_at > effective_now
+    )
+    if artifact_is_approvable:
+        return _BrightspaceApprovalEligibility(True, authority="artifact")
+    return _BrightspaceApprovalEligibility(
+        False, reason="no_durable_remediation_authority"
+    )
 
 
 def _get_cloud_file_or_404(
@@ -1436,103 +2093,224 @@ def _get_cloud_file_or_404(
     return cf
 
 
-@router.post("/content/{cloud_file_id}/remediate")
+def _get_authorized_cloud_file_or_404(
+    db: Session,
+    cloud_file_id: str,
+    principal: AuthenticatedPrincipal,
+) -> CloudFile:
+    """Resolve a tenant-owned Brightspace item and enforce its launch course."""
+    cloud_file = _get_cloud_file_or_404(db, cloud_file_id, principal.department_id)
+    try:
+        org_unit_id = int(cloud_file.provider_parent_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="Content item not found") from None
+    if not _validate_brightspace_file_scope(
+        cloud_file,
+        department_id=principal.department_id,
+        org_unit_id=org_unit_id,
+    ):
+        raise HTTPException(status_code=404, detail="Content item not found")
+    try:
+        require_lti_course_access(
+            principal, cloud_file.provider_parent_id, platform="brightspace"
+        )
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Content item not found") from None
+    return cloud_file
+
+
+@router.post("/content/{cloud_file_id}/remediate", response_model=RemediationOutcome)
 async def remediate_content(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    request: Optional[BrightspaceContentRemediateRequest] = Body(default=None),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
-) -> Dict[str, Any]:
-    """Remediate a single content item's accessibility issues."""
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
-
-    if cf.last_compliance_score is None:
-        raise HTTPException(
-            status_code=400, detail="Content must be scanned before remediation"
+) -> RemediationOutcome:
+    """Authorize, bind current policy, and synchronously remediate one item."""
+    candidate = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.id == cloud_file_id,
+            CloudFile.department_id == principal.department_id,
+            CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
         )
-    if cf.last_compliance_score == 100:
-        return {"success": True, "message": "No issues to remediate", "fixed_count": 0}
-
-    try:
-        await _remediate_file(cf, db)
-        return {
-            "success": True,
-            "message": "Remediation complete",
-            "fixed_count": 1,
-            "has_remediated_version": cf.has_remediated_version,
-        }
-    except Exception as e:
-        logger.error(f"Remediation failed for {cloud_file_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Remediation failed: {str(e)}")
-
-
-@router.post("/content/batch-remediate")
-async def batch_remediate_content(
-    request: Dict[str, Any],
-    background_tasks: BackgroundTasks,
-    api_key: APIKey = Depends(get_current_api_key),
-    db: Session = Depends(get_db_dependency),
-) -> Dict[str, Any]:
-    """Remediate all scanned content items with issues for a course."""
-    org_unit_id = request.get("org_unit_id")
-    cloud_file_ids = request.get("cloud_file_ids")
-
-    query = db.query(CloudFile).filter(
-        CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
-        CloudFile.department_id == api_key.department_id,
-        CloudFile.last_compliance_score.isnot(None),
-        CloudFile.last_compliance_score < 100,
-        CloudFile.has_remediated_version == False,
+        .first()
     )
+    if candidate is None or not isinstance(candidate.provider_parent_id, str):
+        raise HTTPException(status_code=404, detail="Content item not found")
+    try:
+        org_unit_id = int(candidate.provider_parent_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="Content item not found") from None
 
-    if cloud_file_ids:
-        query = query.filter(CloudFile.id.in_(cloud_file_ids))
-    elif org_unit_id:
-        query = query.filter(CloudFile.provider_parent_id == str(org_unit_id))
+    cloud_file = (
+        await _authorize_brightspace_files(
+            db=db,
+            principal=principal,
+            org_unit_id=org_unit_id,
+            cloud_file_ids=[cloud_file_id],
+        )
+    )[0]
+    size_errors = _preflight_brightspace_file_sizes([cloud_file])
+    if str(cloud_file.id) in size_errors:
+        return RemediationOutcome(
+            cloud_file_id=str(cloud_file.id),
+            status="manual_required",
+            manual_count=1,
+            error_code=size_errors[str(cloud_file.id)],
+        )
+    intent = request or BrightspaceContentRemediateRequest()
+    remediation_client, alt_text_client, decisions = _bind_brightspace_clients(
+        principal=principal,
+        cloud_file=cloud_file,
+        intent=intent,
+    )
+    _, api_client = await _client_for_fresh_credential(
+        db,
+        credential_id=cloud_file.credential_id,
+        department_id=principal.department_id,
+    )
+    try:
+        return await _remediate_file(
+            cloud_file,
+            db,
+            remediation_client=remediation_client,
+            alt_text_client=alt_text_client,
+            api_client=api_client,
+            purpose_decisions=decisions,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Brightspace remediation failed",
+            extra={
+                "cloud_file_id": str(cloud_file.id)[:64],
+                "error_type": type(exc).__name__[:64],
+            },
+        )
+        return RemediationOutcome(
+            cloud_file_id=str(cloud_file.id),
+            status="failed",
+            failed_count=1,
+            error_code="remediation_failed",
+            **_usage_fields(remediation_client, alt_text_client, decisions),
+        )
+    finally:
+        await api_client.close()
 
-    eligible_files = query.all()
 
-    if not eligible_files:
-        return {
-            "remediated_count": 0,
-            "failed_count": 0,
-            "message": "No eligible items to remediate",
-        }
+@router.post(
+    "/content/batch-remediate", response_model=BrightspaceBatchRemediateResponse
+)
+async def batch_remediate_content(
+    request: BrightspaceBatchRemediateRequest,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
+) -> BrightspaceBatchRemediateResponse:
+    """Authorize the complete bounded set, then process each terminally in order."""
+    requested_ids = list(dict.fromkeys(request.cloud_file_ids))
+    cloud_files = await _authorize_brightspace_files(
+        db=db,
+        principal=principal,
+        org_unit_id=request.org_unit_id,
+        cloud_file_ids=requested_ids,
+    )
+    size_errors = _preflight_brightspace_file_sizes(cloud_files)
 
-    # Collect IDs and return immediately — process in background
-    file_ids = [cf.id for cf in eligible_files]
-    queued = len(file_ids)
+    results: List[RemediationOutcome] = []
+    for cloud_file in cloud_files:
+        size_error = size_errors.get(str(cloud_file.id))
+        if size_error is not None:
+            results.append(
+                RemediationOutcome(
+                    cloud_file_id=str(cloud_file.id),
+                    status="manual_required",
+                    manual_count=1,
+                    error_code=size_error,
+                )
+            )
+            continue
 
-    async def _batch_remediate_background(file_ids: list):
-        from ..db.database import get_db as _get_db_ctx
+        decisions = {"remediation": "not_requested", "alt_text": "not_requested"}
+        remediation_client = None
+        alt_text_client = None
+        api_client = None
+        try:
+            remediation_client, alt_text_client, decisions = _bind_brightspace_clients(
+                principal=principal,
+                cloud_file=cloud_file,
+                intent=request,
+            )
+            _, api_client = await _client_for_fresh_credential(
+                db,
+                credential_id=cloud_file.credential_id,
+                department_id=principal.department_id,
+            )
+            outcome = await _remediate_file(
+                cloud_file,
+                db,
+                remediation_client=remediation_client,
+                alt_text_client=alt_text_client,
+                api_client=api_client,
+                purpose_decisions=decisions,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            if exc.status_code == 403:
+                if request.use_ai is True:
+                    decisions["remediation"] = "denied_at_dispatch"
+                outcome = RemediationOutcome(
+                    cloud_file_id=str(cloud_file.id),
+                    status="failed",
+                    failed_count=1,
+                    error_code="policy_not_permitted",
+                    **_usage_fields(remediation_client, alt_text_client, decisions),
+                )
+            else:
+                raise
+        except Exception as exc:
+            db.rollback()
+            logger.error(
+                "Brightspace batch item failed",
+                extra={
+                    "cloud_file_id": str(cloud_file.id)[:64],
+                    "error_type": type(exc).__name__[:64],
+                },
+            )
+            outcome = RemediationOutcome(
+                cloud_file_id=str(cloud_file.id),
+                status="failed",
+                failed_count=1,
+                error_code="remediation_failed",
+                **_usage_fields(remediation_client, alt_text_client, decisions),
+            )
+        finally:
+            if api_client is not None:
+                await api_client.close()
+        results.append(outcome)
 
-        with _get_db_ctx() as bg_db:
-            for fid in file_ids:
-                cf = bg_db.query(CloudFile).filter(CloudFile.id == fid).first()
-                if not cf:
-                    continue
-                try:
-                    await _remediate_file(cf, bg_db)
-                except Exception as e:
-                    logger.error(f"Background remediation failed for {fid}: {e}")
-
-    background_tasks.add_task(_batch_remediate_background, file_ids)
-
-    return {
-        "queued": queued,
-        "message": f"Queued {queued} items for remediation",
-    }
+    return BrightspaceBatchRemediateResponse(
+        requested_count=len(requested_ids),
+        completed_count=sum(item.status == "completed" for item in results),
+        manual_count=sum(item.manual_count for item in results),
+        failed_count=sum(item.status == "failed" for item in results),
+        fixed_count=sum(item.fixed_count for item in results),
+        results=results,
+    )
 
 
 @router.get("/content/{cloud_file_id}/diff")
 async def get_content_diff(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Get original vs remediated content for review."""
     from ..db.models import ScanResult
 
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
 
     issues_fixed = 0
     issues_remaining = 0
@@ -1571,55 +2349,167 @@ async def get_content_diff(
 @router.post("/content/{cloud_file_id}/approve")
 async def approve_content(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Approve remediated content for write-back."""
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
-    if not cf.remediated_body:
-        raise HTTPException(status_code=400, detail="No remediated content to approve")
-    cf.writeback_status = "approved"
-    db.commit()
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
+    eligibility = _brightspace_approval_eligibility(cf)
+    if not eligibility.eligible:
+        raise HTTPException(status_code=400, detail=eligibility.reason)
+    try:
+        if eligibility.authority == "artifact":
+            RemediationArtifactService.from_settings().approve(
+                db,
+                artifact_id=cf.current_remediation_artifact_id,
+                approved_by_id=principal.user_id,
+                approved_by_ref=f"{principal.auth_method}:{principal.user_id}",
+            )
+        else:
+            cf.writeback_status = "approved"
+        db.commit()
+    except ArtifactError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_approval_validation_failed"
+        ) from None
     return {"success": True, "message": "Content approved"}
 
 
 @router.post("/content/{cloud_file_id}/reject")
 async def reject_content(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Reject remediated content."""
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
-    cf.writeback_status = "rejected"
-    db.commit()
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
+    eligibility = _brightspace_approval_eligibility(cf)
+    if not eligibility.eligible:
+        raise HTTPException(status_code=400, detail=eligibility.reason)
+    try:
+        if eligibility.authority == "artifact":
+            RemediationArtifactService.from_settings().reject(
+                db,
+                artifact_id=cf.current_remediation_artifact_id,
+                rejected_by_id=principal.user_id,
+                rejected_by_ref=f"{principal.auth_method}:{principal.user_id}",
+            )
+        else:
+            cf.writeback_status = "rejected"
+            cf.has_remediated_version = False
+            cf.remediation_origin = None
+        db.commit()
+    except ArtifactError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="artifact_rejection_validation_failed"
+        ) from None
     return {"success": True, "message": "Content rejected"}
 
 
 @router.post("/content/batch-approve")
 async def batch_approve_content(
-    request: Dict[str, Any],
-    api_key: APIKey = Depends(get_current_api_key),
+    request: BrightspaceBatchContentRequest,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Approve multiple content items at once."""
-    cloud_file_ids = request.get("cloud_file_ids", [])
+    cloud_file_ids = request.cloud_file_ids
     cloud_files = (
         db.query(CloudFile)
         .filter(
             CloudFile.id.in_(cloud_file_ids),
-            CloudFile.department_id == api_key.department_id,
+            CloudFile.department_id == principal.department_id,
             CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
         )
         .all()
     )
-    approved = 0
-    for cf in cloud_files:
-        if cf.remediated_body:
-            cf.writeback_status = "approved"
-            approved += 1
+    if len(cloud_files) != len(cloud_file_ids):
+        raise HTTPException(status_code=404, detail="Content item not found")
+    for cloud_file in cloud_files:
+        try:
+            org_unit_id = int(cloud_file.provider_parent_id)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=404, detail="Content item not found"
+            ) from None
+        if not _validate_brightspace_file_scope(
+            cloud_file,
+            department_id=principal.department_id,
+            org_unit_id=org_unit_id,
+        ):
+            raise HTTPException(status_code=404, detail="Content item not found")
+        try:
+            require_lti_course_access(
+                principal, cloud_file.provider_parent_id, platform="brightspace"
+            )
+        except HTTPException:
+            raise HTTPException(
+                status_code=404, detail="Content item not found"
+            ) from None
+
+    by_id = {str(cloud_file.id): cloud_file for cloud_file in cloud_files}
+    outcomes: List[Dict[str, Optional[str]]] = []
+    artifact_service: Optional[RemediationArtifactService] = None
+    for cloud_file_id in cloud_file_ids:
+        cloud_file = by_id[cloud_file_id]
+        eligibility = _brightspace_approval_eligibility(cloud_file)
+        if not eligibility.eligible:
+            outcomes.append(
+                {
+                    "cloud_file_id": cloud_file_id,
+                    "status": "skipped",
+                    "reason": eligibility.reason,
+                }
+            )
+            continue
+        try:
+            with db.begin_nested():
+                if eligibility.authority == "artifact":
+                    if artifact_service is None:
+                        artifact_service = RemediationArtifactService.from_settings()
+                    artifact_service.approve(
+                        db,
+                        artifact_id=cloud_file.current_remediation_artifact_id,
+                        approved_by_id=principal.user_id,
+                        approved_by_ref=f"{principal.auth_method}:{principal.user_id}",
+                    )
+                else:
+                    cloud_file.writeback_status = "approved"
+            outcomes.append(
+                {
+                    "cloud_file_id": cloud_file_id,
+                    "status": "approved",
+                    "reason": None,
+                }
+            )
+        except ArtifactError:
+            outcomes.append(
+                {
+                    "cloud_file_id": cloud_file_id,
+                    "status": "failed",
+                    "reason": "artifact_approval_validation_failed",
+                }
+            )
+
     db.commit()
-    return {"approved_count": approved}
+    approved = sum(item["status"] == "approved" for item in outcomes)
+    skipped = sum(item["status"] == "skipped" for item in outcomes)
+    failed = sum(item["status"] == "failed" for item in outcomes)
+    errors = [
+        f'{item["cloud_file_id"]}: {item["reason"]}'
+        for item in outcomes
+        if item["reason"] is not None
+    ]
+    return {
+        "requested_count": len(cloud_file_ids),
+        "approved_count": approved,
+        "skipped_count": skipped,
+        "failed_count": failed,
+        "outcomes": outcomes,
+        "errors": errors,
+    }
 
 
 async def _writeback_single(api_client, cf: CloudFile, org_unit_id, topic_id, db=None):
@@ -1722,11 +2612,17 @@ async def _writeback_single(api_client, cf: CloudFile, org_unit_id, topic_id, db
 @router.post("/content/{cloud_file_id}/writeback")
 async def writeback_content(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Write approved remediated content back to Brightspace."""
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
+
+    if cf.current_remediation_artifact_id:
+        raise HTTPException(
+            status_code=501,
+            detail="Managed artifact automatic write-back is unsupported for Brightspace; use authenticated download",
+        )
 
     if cf.writeback_status != "approved":
         raise HTTPException(
@@ -1737,7 +2633,7 @@ async def writeback_content(
             status_code=400, detail="No remediated content to write back"
         )
 
-    credential = _get_credential(db, api_key.department_id)
+    credential = _get_credential(db, principal.department_id)
     access_token = await _ensure_valid_token(credential, db)
     metadata = cf.provider_metadata or {}
     org_unit_id = metadata.get("org_unit_id")
@@ -1767,19 +2663,20 @@ async def writeback_content(
 
 @router.post("/content/batch-writeback")
 async def batch_writeback_content(
-    request: Dict[str, Any],
-    api_key: APIKey = Depends(get_current_api_key),
+    request: BrightspaceCourseActionRequest,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Write back all approved content items for a course."""
-    org_unit_id = request.get("org_unit_id")
+    org_unit_id = request.org_unit_id
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
 
     approved_files = (
         db.query(CloudFile)
         .filter(
             CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
             CloudFile.provider_parent_id == str(org_unit_id),
-            CloudFile.department_id == api_key.department_id,
+            CloudFile.department_id == principal.department_id,
             CloudFile.writeback_status == "approved",
             CloudFile.remediated_body.isnot(None),
         )
@@ -1789,7 +2686,17 @@ async def batch_writeback_content(
     if not approved_files:
         return {"written_count": 0, "failed_count": 0, "stale_count": 0}
 
-    credential = _get_credential(db, api_key.department_id)
+    if any(
+        not _validate_brightspace_file_scope(
+            cloud_file,
+            department_id=principal.department_id,
+            org_unit_id=org_unit_id,
+        )
+        for cloud_file in approved_files
+    ):
+        raise HTTPException(status_code=404, detail="Content item not found")
+
+    credential = _get_credential(db, principal.department_id)
     access_token = await _ensure_valid_token(credential, db)
 
     api_client = BrightspaceAPIClient(
@@ -1826,11 +2733,11 @@ async def batch_writeback_content(
 @router.post("/content/{cloud_file_id}/rollback")
 async def rollback_content(
     cloud_file_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Roll back a written-back item to its original content in Brightspace."""
-    cf = _get_cloud_file_or_404(db, cloud_file_id, api_key.department_id)
+    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
 
     if cf.writeback_status != "written_back":
         raise HTTPException(
@@ -1841,7 +2748,7 @@ async def rollback_content(
             status_code=400, detail="Original content not available for rollback"
         )
 
-    credential = _get_credential(db, api_key.department_id)
+    credential = _get_credential(db, principal.department_id)
     access_token = await _ensure_valid_token(credential, db)
     metadata = cf.provider_metadata or {}
     org_unit_id = metadata.get("org_unit_id")
@@ -1900,19 +2807,20 @@ async def rollback_content(
 
 @router.post("/content/batch-rollback")
 async def batch_rollback_content(
-    request: Dict[str, Any],
-    api_key: APIKey = Depends(get_current_api_key),
+    request: BrightspaceCourseActionRequest,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Roll back all written-back items for a course to their originals."""
-    org_unit_id = request.get("org_unit_id")
+    org_unit_id = request.org_unit_id
+    require_lti_course_access(principal, str(org_unit_id), platform="brightspace")
 
     written_files = (
         db.query(CloudFile)
         .filter(
             CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
             CloudFile.provider_parent_id == str(org_unit_id),
-            CloudFile.department_id == api_key.department_id,
+            CloudFile.department_id == principal.department_id,
             CloudFile.writeback_status == "written_back",
             CloudFile.content_body.isnot(None),
         )
@@ -1922,7 +2830,17 @@ async def batch_rollback_content(
     if not written_files:
         return {"rolled_back_count": 0, "failed_count": 0}
 
-    credential = _get_credential(db, api_key.department_id)
+    if any(
+        not _validate_brightspace_file_scope(
+            cloud_file,
+            department_id=principal.department_id,
+            org_unit_id=org_unit_id,
+        )
+        for cloud_file in written_files
+    ):
+        raise HTTPException(status_code=404, detail="Content item not found")
+
+    credential = _get_credential(db, principal.department_id)
     access_token = await _ensure_valid_token(credential, db)
 
     api_client = BrightspaceAPIClient(

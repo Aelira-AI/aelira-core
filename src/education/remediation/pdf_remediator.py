@@ -108,6 +108,8 @@ class PdfRemediator(BaseRemediator):
         issues: List[Dict[str, Any]],
         config: Optional[RemediationConfig] = None,
         ai_client: Optional[Any] = None,
+        *,
+        alt_text_client: Optional[Any] = None,
     ):
         """Initialize the PDF remediator."""
         if not HAS_PYMUPDF:
@@ -120,7 +122,9 @@ class PdfRemediator(BaseRemediator):
                 "pikepdf not available - PDF structure manipulation disabled. "
                 "Install with: pip install pikepdf"
             )
-        super().__init__(file_path, issues, config, ai_client)
+        super().__init__(
+            file_path, issues, config, ai_client, alt_text_client=alt_text_client
+        )
         self._pdf: Optional[Any] = None  # PyMuPDF document for reading
         self._pikepdf_doc: Optional[Any] = None  # pikepdf document for writing
         self._struct_tree: Optional[PDFStructureTree] = None  # Structure tree helper
@@ -578,7 +582,7 @@ class PdfRemediator(BaseRemediator):
                     self._pikepdf_doc,
                     self._pdf,
                     struct_tree=self._struct_tree,
-                    ai_client=self.ai_client,
+                    ai_client=None,
                 )
                 results = specialist.fix(issues)
                 for i, result in enumerate(results):
@@ -753,9 +757,10 @@ class PdfRemediator(BaseRemediator):
         # --- AI categories ---
         if issue.category == IssueCategory.ALT_TEXT:
             # Check if alt text came from AI or was pre-existing
-            pre_existing = issue.metadata.get(
-                "suggested_alt_text"
-            ) or issue.metadata.get("generated_alt_text")
+            pre_existing = self.config.allow_legacy_nested_ai and (
+                issue.metadata.get("suggested_alt_text")
+                or issue.metadata.get("generated_alt_text")
+            )
             if pre_existing:
                 # Pre-generated alt text — treat as AI text (we trust it somewhat)
                 confidence = self._confidence.calculate(
@@ -763,7 +768,7 @@ class PdfRemediator(BaseRemediator):
                 )
                 return FixMethod.AI_TEXT, confidence, None
 
-            if self.config.use_ai and self.ai_client:
+            if self.config.fix_alt_text and self.alt_text_client:
                 # We used AI to generate the alt text
                 has_context = bool(
                     self._pdf
@@ -1611,7 +1616,10 @@ class PdfRemediator(BaseRemediator):
                             e,
                         )
 
-                tagger = TableTagger(use_ai=self.config.use_ai)
+                tagger = TableTagger(
+                    use_ai=(self.config.use_ai and self.config.allow_legacy_nested_ai),
+                    allow_legacy_provider_manager=self.config.allow_legacy_nested_ai,
+                )
                 result = tagger.tag_tables(self.file_path)
 
                 if result.success and result.tables_tagged > 0:
@@ -1897,14 +1905,14 @@ class PdfRemediator(BaseRemediator):
             ):
                 return ""
             # Use pre-generated alt text from the scanner if available
-            generated_alt = issue.metadata.get(
-                "suggested_alt_text"
-            ) or issue.metadata.get("generated_alt_text")
-            if generated_alt:
-                return generated_alt
-            # Use fix_suggestion if available
-            if issue.fix_suggestion:
-                return issue.fix_suggestion
+            if self.config.allow_legacy_nested_ai:
+                generated_alt = issue.metadata.get(
+                    "suggested_alt_text"
+                ) or issue.metadata.get("generated_alt_text")
+                if generated_alt:
+                    return generated_alt
+                if issue.fix_suggestion:
+                    return issue.fix_suggestion
             # Return None to let AI generation handle it in _generate_fix()
             return None
 
@@ -1988,17 +1996,15 @@ class PdfRemediator(BaseRemediator):
         return None
 
     def _get_ai_generated_fix(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Get an AI-generated fix for an issue."""
-        if not self.ai_client:
-            return None
 
         try:
             self.result.ai_calls_made += 1
 
             if issue.category == IssueCategory.ALT_TEXT:
-                return self._generate_alt_text_with_ai(issue, document)
+                return self._generate_alt_text_with_ai(issue, document, client=client)
 
             return None
 
@@ -2007,7 +2013,7 @@ class PdfRemediator(BaseRemediator):
             return None
 
     def _generate_alt_text_with_ai(
-        self, issue: RemediationIssue, document: Any
+        self, issue: RemediationIssue, document: Any, *, client: Any
     ) -> Optional[str]:
         """Generate alt text for a PDF image using AI (vision first, text fallback)."""
         page_num = issue.metadata.get("page_number", 1)
@@ -2018,7 +2024,7 @@ class PdfRemediator(BaseRemediator):
             try:
                 img_info = self._pdf.extract_image(image_xref)
                 image_bytes = img_info.get("image") if img_info else None
-                if image_bytes and hasattr(self.ai_client, "analyze_image_sync"):
+                if image_bytes and hasattr(client, "analyze_image_sync"):
                     vision_prompt = (
                         f"Generate concise, descriptive alt text for this image from a PDF document "
                         f"(page {page_num}). Be concise (under 125 characters). "
@@ -2027,7 +2033,7 @@ class PdfRemediator(BaseRemediator):
                         "Focus on what's important for understanding the document. "
                         "Generate only the alt text, nothing else."
                     )
-                    result = self.ai_client.analyze_image_sync(
+                    result = client.analyze_image_sync(
                         image_data=image_bytes,
                         prompt=vision_prompt,
                         max_tokens=200,
@@ -2061,8 +2067,8 @@ Requirements:
 Generate only the alt text, nothing else:"""
 
         try:
-            if hasattr(self.ai_client, "generate_text_sync"):
-                result = self.ai_client.generate_text_sync(
+            if hasattr(client, "generate_text_sync"):
+                result = client.generate_text_sync(
                     prompt=prompt,
                     max_tokens=200,
                     temperature=0.3,

@@ -1,43 +1,60 @@
-"""The Canvas remediate endpoint must run the work it queues.
+"""Durable-queue contract for the Canvas remediation endpoint."""
 
-Nothing polls CloudJobQueue in this application, so an endpoint that writes
-job rows and returns success is reporting work that will never happen. This
-endpoint did exactly that: it created a scan row and a remediation row, took
-a BackgroundTasks parameter, and never used it.
-"""
-
-from contextlib import contextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from src.api.canvas_routes import (
-    _canvas_scan_then_remediate_task,
-    remediate_canvas_file,
-)
+from src.api.canvas_routes import remediate_canvas_file
 from src.auth.dependencies import AuthenticatedPrincipal
-from src.db.models import CloudJobStatus, UserRole
+from src.db.models import UserRole
+
+
+def _principal() -> AuthenticatedPrincipal:
+    return AuthenticatedPrincipal(
+        api_key=None,
+        user_id="u1",
+        department_id="d1",
+        user_role=UserRole.FACULTY,
+        auth_method="session",
+    )
 
 
 def _db_with_credential_and_file():
     db = MagicMock()
     chain = MagicMock()
     chain.filter.return_value = chain
-    chain.order_by.return_value = chain
-    chain.first.return_value = MagicMock(id="cred-1")
+    cloud_file = SimpleNamespace(id="cloud-file-1", provider_version=None)
+    chain.first.side_effect = [
+        SimpleNamespace(id="cred-1"),
+        cloud_file,
+    ]
     db.query.return_value = chain
+    db.cloud_file = cloud_file
     return db
 
 
 @pytest.mark.asyncio
-async def test_remediate_endpoint_fires_the_background_task():
-    background_tasks = MagicMock()
-    request = MagicMock(file_id="f-1", course_id="101", department_id="d1")
+async def test_remediate_endpoint_enqueues_exact_durable_scan_and_remediation():
+    request = MagicMock(
+        file_id="f-1",
+        course_id="101",
+        department_id="d1",
+        upload_back=False,
+        use_ai=False,
+        generate_alt_text=False,
+    )
     canvas = AsyncMock()
-    canvas.list_course_files.return_value = [SimpleNamespace(id="f-1")]
-
+    updated_at = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
+    canvas.list_course_files.return_value = [
+        SimpleNamespace(id="f-1", updated_at=updated_at)
+    ]
     db = _db_with_credential_and_file()
+    enqueue = MagicMock(
+        side_effect=[SimpleNamespace(id="scan-1"), SimpleNamespace(id="rem-1")]
+    )
+
     with (
         patch("src.api.canvas_routes.require_feature", new=AsyncMock()),
         patch("src.api.canvas_routes.verify_department_access"),
@@ -45,56 +62,109 @@ async def test_remediate_endpoint_fires_the_background_task():
             "src.api.canvas_routes._get_canvas_client",
             new=AsyncMock(return_value=(SimpleNamespace(id="cred-1"), canvas)),
         ),
+        patch("src.api.canvas_routes.enqueue_cloud_job", enqueue),
     ):
         response = await remediate_canvas_file(
             request=request,
-            background_tasks=background_tasks,
             db=db,
-            principal=AuthenticatedPrincipal(
-                api_key=None,
-                user_id="u1",
-                department_id="d1",
-                user_role=UserRole.FACULTY,
-                auth_method="session",
-            ),
+            principal=_principal(),
         )
 
     assert response.success is True
-    cloud_file_predicates = " ".join(
-        str(predicate)
-        for call in db.query.return_value.filter.call_args_list
-        for predicate in call.args
-        if "cloud_files." in str(predicate)
-    )
-    assert "cloud_files.provider_parent_id" in cloud_file_predicates
-    background_tasks.add_task.assert_called_once()
-    fired, *ids = background_tasks.add_task.call_args[0]
-    assert fired is _canvas_scan_then_remediate_task
-    assert len(ids) == 2 and all(ids)
+    assert response.job_id == "rem-1"
+    assert enqueue.call_args_list == [
+        call(
+            db,
+            department_id="d1",
+            job_type="scan",
+            payload={
+                "cloud_file_id": "cloud-file-1",
+                "credential_id": "cred-1",
+                "provider": "canvas",
+                "provider_file_id": "f-1",
+                "course_id": "101",
+            },
+            dedupe_key="scan:canvas:101:file:f-1:2026-03-01T10:00:00+00:00",
+            provider="canvas",
+            priority=1,
+            cloud_file_id="cloud-file-1",
+            credential_id="cred-1",
+            execution_context={
+                "originating_route": "/canvas/remediate",
+                "resource_id": "f-1",
+                "course_id": "101",
+            },
+        ),
+        call(
+            db,
+            department_id="d1",
+            job_type="remediate",
+            payload={
+                "cloud_file_id": "cloud-file-1",
+                "credential_id": "cred-1",
+                "provider": "canvas",
+                "provider_file_id": "f-1",
+                "course_id": "101",
+                "scan_job_id": "scan-1",
+                "ai_requested": False,
+                "alt_text_requested": False,
+                "upload_back": False,
+            },
+            dedupe_key=(
+                "remediate:canvas:101:file:f-1:"
+                "version=2026-03-01T10:00:00+00:00:ai=false:alt=false"
+            ),
+            depends_on_job_id="scan-1",
+            provider="canvas",
+            priority=2,
+            cloud_file_id="cloud-file-1",
+            credential_id="cred-1",
+            execution_context={
+                "ai_requested": False,
+                "alt_text_requested": False,
+                "requested_purposes": [],
+                "policy_version": "1",
+                "originating_route": "/canvas/remediate",
+                "resource_id": "f-1",
+                "course_id": "101",
+            },
+        ),
+    ]
+    assert db.cloud_file.provider_version == "2026-03-01T10:00:00+00:00"
+    assert db.cloud_file.provider_modified_at == updated_at
+    db.commit.assert_called_once_with()
 
 
 @pytest.mark.asyncio
-async def test_a_failed_scan_fails_its_remediation_instead_of_stranding_it():
-    scan_job, remediation_job = MagicMock(), MagicMock()
-    db = MagicMock()
-    chain = MagicMock()
-    chain.filter.return_value = chain
-    chain.first.side_effect = [scan_job, remediation_job]
-    db.query.return_value = chain
-
-    @contextmanager
-    def fake_db():
-        yield db
+async def test_remediation_dependency_is_persisted_before_endpoint_acknowledges():
+    request = MagicMock(
+        file_id="f-1",
+        course_id="101",
+        department_id="d1",
+        upload_back=False,
+        use_ai=False,
+        generate_alt_text=False,
+    )
+    canvas = AsyncMock()
+    canvas.list_course_files.return_value = [SimpleNamespace(id="f-1")]
+    db = _db_with_credential_and_file()
+    enqueue = MagicMock(
+        side_effect=[SimpleNamespace(id="scan-1"), SimpleNamespace(id="rem-1")]
+    )
 
     with (
-        patch("src.db.database.get_db", fake_db),
+        patch("src.api.canvas_routes.require_feature", new=AsyncMock()),
+        patch("src.api.canvas_routes.verify_department_access"),
         patch(
-            "src.jobs.cloud_scan_job.handle_scan_job",
-            new=AsyncMock(side_effect=RuntimeError("download refused")),
+            "src.api.canvas_routes._get_canvas_client",
+            new=AsyncMock(return_value=(SimpleNamespace(id="cred-1"), canvas)),
         ),
+        patch("src.api.canvas_routes.enqueue_cloud_job", enqueue),
     ):
-        await _canvas_scan_then_remediate_task("scan-1", "rem-1")
+        response = await remediate_canvas_file(request, db, _principal())
 
-    assert scan_job.status == CloudJobStatus.FAILED.value
-    assert remediation_job.status == CloudJobStatus.FAILED.value
-    assert "scan" in remediation_job.progress_message.lower()
+    remediation_call = enqueue.call_args_list[1]
+    assert remediation_call.kwargs["depends_on_job_id"] == "scan-1"
+    assert remediation_call.kwargs["payload"]["scan_job_id"] == "scan-1"
+    assert response.job_id == "rem-1"
+    db.commit.assert_called_once_with()

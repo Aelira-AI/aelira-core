@@ -18,7 +18,7 @@ import {
   ArrowLeft,
   Wrench,
 } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { LTILayout } from '../components/LTILayout';
 import { useLTISession } from '../hooks/useLTISession';
 import { apiClient } from '../api/client';
@@ -34,6 +34,7 @@ import {
   type MergedContentItem,
 } from '../utils/mergeCourseContent';
 import { summarizeBatchOutcome } from '../utils/batchActionResult';
+import { remediateAllAccounting } from '../utils/remediateAllAccounting';
 import { useToast } from '../context/toast-context';
 import type { BatchApproveResponse, BatchWritebackResponse } from '../api/canvasContent';
 
@@ -85,12 +86,15 @@ interface ContentTypeStatus {
 interface ContentItemStatus {
   cloud_file_id: string;
   provider_file_id: string | null;
+  provider: string;
+  provider_parent_id: string;
   title: string;
   content_type: string;
   compliance_score: number | null;
   issue_count: number;
   writeback_status: string | null;
   has_remediated_version: boolean;
+  remediation_origin: 'automatic' | 'manual' | null;
   last_scanned_at: string | null;
   content_updated_at: string | null;
   scan_id: string | null;
@@ -207,7 +211,9 @@ function contentItemStateStyle(key: ContentItemStateKey): { bg: string; color: s
 // ============================================================================
 
 export function LTICourseView(): React.ReactElement {
-  const { accessToken, courseId: sessionCourseId, courseName: sessionCourseName, platform, loading: sessionLoading, error: sessionError } = useLTISession();
+  const { accessToken, courseId: launchCourseId, courseName: sessionCourseName, platform, accountWide, loading: sessionLoading, error: sessionError } = useLTISession();
+  const { courseId: routeCourseId } = useParams<{ courseId: string }>();
+  const sessionCourseId = routeCourseId || launchCourseId;
   const navigate = useNavigate();
   const toast = useToast();
   const [searchParams] = useSearchParams();
@@ -216,11 +222,17 @@ export function LTICourseView(): React.ReactElement {
   // Provider-aware API prefix for Canvas vs Brightspace
   const apiPrefix = platform === 'brightspace' ? '/brightspace' : '/canvas';
 
-  // A launch that resolved without a usable course id (e.g. an
-  // account-level placement, or a Canvas launch that didn't send course
-  // custom params) has nothing to render here. Rather than fall through to
-  // a blank/broken view, hand off to the LTI overview — the access token is
-  // already in localStorage from the exchange, so no code is needed.
+  const routeScopeError =
+    accessToken &&
+    !accountWide &&
+    launchCourseId &&
+    routeCourseId &&
+    launchCourseId !== routeCourseId
+      ? 'This LTI session is limited to its launch course.'
+      : null;
+
+  // Account launches select a route course from the overview. A route with
+  // neither an explicit course nor launch course has nothing to render.
   useEffect(() => {
     if (!sessionLoading && !sessionError && accessToken && !sessionCourseId) {
       navigate('/lti/overview', { replace: true });
@@ -241,6 +253,7 @@ export function LTICourseView(): React.ReactElement {
   // Files action states
   const [scanningFiles, setScanningFiles] = useState<Set<string>>(new Set());
   const [remediatingFiles, setRemediatingFiles] = useState<Set<string>>(new Set());
+  const [remediatingContentIds, setRemediatingContentIds] = useState<Set<string>>(new Set());
   const [openingAelira, setOpeningAelira] = useState(false);
 
   // Content tab state
@@ -307,8 +320,12 @@ export function LTICourseView(): React.ReactElement {
   // header counters drifted from the table (files counted in the table,
   // not in the header) in the first place.
   const mergedItems = useMemo(
-    () => mergeCourseContent(contentData?.items, files),
-    [contentData, files]
+    () =>
+      mergeCourseContent(contentData?.items, files, {
+        provider: 'canvas',
+        parentId: sessionCourseId ?? '',
+      }),
+    [contentData, files, sessionCourseId]
   );
 
   // Content summary stats — unscanned merged rows (live-only files with no
@@ -383,7 +400,7 @@ export function LTICourseView(): React.ReactElement {
   // Fetch files data
   // --------------------------------------------------
   const fetchData = useCallback(async (isRefresh = false): Promise<void> => {
-    if (!accessToken || !sessionCourseId) return;
+    if (!accessToken || !sessionCourseId || routeScopeError) return;
 
     const client = clientRef.current;
     if (!client) return;
@@ -429,13 +446,13 @@ export function LTICourseView(): React.ReactElement {
       setLoadingData(false);
       setRefreshing(false);
     }
-  }, [accessToken, sessionCourseId, apiPrefix]);
+  }, [accessToken, sessionCourseId, apiPrefix, routeScopeError]);
 
   // --------------------------------------------------
   // Fetch content data
   // --------------------------------------------------
   const fetchContentData = useCallback(async (): Promise<void> => {
-    if (!accessToken || !sessionCourseId) return;
+    if (!accessToken || !sessionCourseId || routeScopeError) return;
 
     const client = clientRef.current;
     if (!client) return;
@@ -452,11 +469,11 @@ export function LTICourseView(): React.ReactElement {
     } finally {
       setContentLoading(false);
     }
-  }, [accessToken, sessionCourseId, apiPrefix]);
+  }, [accessToken, sessionCourseId, apiPrefix, routeScopeError]);
 
   // Fetch course name if not available from LTI session
   useEffect(() => {
-    if (!sessionCourseName && sessionCourseId && clientRef.current) {
+    if (!routeScopeError && !sessionCourseName && sessionCourseId && clientRef.current) {
       clientRef.current.get(`${apiPrefix}/courses`)
         .then((res) => {
           const courses = Array.isArray(res.data) ? res.data : res.data?.courses || [];
@@ -467,16 +484,16 @@ export function LTICourseView(): React.ReactElement {
         })
         .catch(() => { /* ignore — fallback to Course ID */ });
     }
-  }, [sessionCourseName, sessionCourseId, apiPrefix]);
+  }, [sessionCourseName, sessionCourseId, apiPrefix, routeScopeError]);
 
   // Initial data fetch
   useEffect(() => {
-    if (accessToken && sessionCourseId) {
+    if (accessToken && sessionCourseId && !routeScopeError) {
       clientRef.current = apiClient;
       fetchData();
       fetchContentData();
     }
-  }, [accessToken, sessionCourseId, fetchData, fetchContentData]);
+  }, [accessToken, sessionCourseId, fetchData, fetchContentData, routeScopeError]);
 
   // --------------------------------------------------
   // Files Polling
@@ -816,8 +833,7 @@ export function LTICourseView(): React.ReactElement {
     const client = clientRef.current;
     if (!client) return;
 
-    const providerFileId = item.provider_file_id;
-    setRemediatingFiles((prev) => new Set(prev).add(providerFileId));
+    setRemediatingContentIds((prev) => new Set(prev).add(item.identity_key));
     try {
       const res = await postRemediate(client, item);
       const fixed = res.data?.fixed_count ?? 0;
@@ -835,9 +851,9 @@ export function LTICourseView(): React.ReactElement {
     } catch {
       toast.error('Failed to remediate item.', 'Error');
     } finally {
-      setRemediatingFiles((prev) => {
+      setRemediatingContentIds((prev) => {
         const next = new Set(prev);
-        next.delete(providerFileId);
+        next.delete(item.identity_key);
         return next;
       });
     }
@@ -853,15 +869,14 @@ export function LTICourseView(): React.ReactElement {
     const client = clientRef.current;
     if (!client || remediableItems.length === 0) return;
 
-    const scannedCount = mergedItems.filter((item) => item.compliance_score !== null).length;
-    const skippedCount = scannedCount - remediableItems.length;
-    const total = remediableItems.length;
+    const accounting = remediateAllAccounting(mergedItems.length, remediableItems.length);
+    const { total, skipped: skippedCount } = accounting;
 
     setRemediatingAll(true);
-    setRemediateAllProgress({ done: 0, total });
-    setRemediatingFiles((prev) => {
+    setRemediateAllProgress({ done: skippedCount, total });
+    setRemediatingContentIds((prev) => {
       const next = new Set(prev);
-      remediableItems.forEach((item) => next.add(item.provider_file_id));
+      remediableItems.forEach((item) => next.add(item.identity_key));
       return next;
     });
 
@@ -882,12 +897,12 @@ export function LTICourseView(): React.ReactElement {
         failed += 1;
         errors.push(`${item.provider_file_id}: request failed`);
       } finally {
-        setRemediatingFiles((prev) => {
+        setRemediatingContentIds((prev) => {
           const next = new Set(prev);
-          next.delete(item.provider_file_id);
+          next.delete(item.identity_key);
           return next;
         });
-        setRemediateAllProgress({ done: index + 1, total });
+        setRemediateAllProgress({ done: skippedCount + index + 1, total });
       }
     }
 
@@ -1013,7 +1028,7 @@ export function LTICourseView(): React.ReactElement {
           <button
             onClick={() => handleScanFile(file.id)}
             className="px-3 py-2.5 rounded-lg text-xs font-medium text-white transition-colors hover:opacity-90 min-h-[44px] min-w-[44px]"
-            style={{ backgroundColor: 'var(--accent-primary)' }}
+            style={{ backgroundColor: 'var(--accent-solid)' }}
           >
             Scan
           </button>
@@ -1039,7 +1054,7 @@ export function LTICourseView(): React.ReactElement {
             <button
               onClick={() => handleRemediateFile(scanInfo.scan_id!, file.id)}
               className="px-3 py-2.5 rounded-lg text-xs font-medium text-white transition-colors hover:opacity-90 min-h-[44px]"
-              style={{ backgroundColor: 'var(--accent-primary)' }}
+              style={{ backgroundColor: 'var(--accent-solid)' }}
             >
               Remediate
             </button>
@@ -1197,7 +1212,7 @@ export function LTICourseView(): React.ReactElement {
 
               return (
                 <tr
-                  key={item.provider_file_id}
+                  key={item.identity_key}
                   className="transition-colors"
                   style={{ borderBottom: '1px solid var(--border-primary)' }}
                 >
@@ -1279,11 +1294,11 @@ export function LTICourseView(): React.ReactElement {
                             onClick={() =>
                               handleRemediateContentItem(item)
                             }
-                            disabled={remediatingFiles.has(item.provider_file_id)}
+                            disabled={remediatingContentIds.has(item.identity_key)}
                             className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 hover:opacity-90 min-h-[44px]"
-                            style={{ backgroundColor: 'var(--accent-primary)', color: 'white' }}
+                            style={{ backgroundColor: 'var(--accent-solid)', color: 'white' }}
                           >
-                            {remediatingFiles.has(item.provider_file_id) ? (
+                            {remediatingContentIds.has(item.identity_key) ? (
                               <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
                             ) : (
                               <Wrench className="w-3 h-3" aria-hidden="true" />
@@ -1318,13 +1333,13 @@ export function LTICourseView(): React.ReactElement {
   // --------------------------------------------------
   // Render
   // --------------------------------------------------
-  const isLoading = sessionLoading || (loadingData && !dataError);
+  const isLoading = sessionLoading || (!routeScopeError && loadingData && !dataError);
 
   return (
-    <LTILayout loading={isLoading} error={sessionError}>
+    <LTILayout loading={isLoading} error={sessionError || routeScopeError}>
       <div className="max-w-6xl mx-auto">
         {/* Data error (distinct from session error which LTILayout handles) */}
-        {dataError && !sessionError && (
+        {dataError && !sessionError && !routeScopeError && (
           <div
             className="mb-6 p-4 rounded-lg flex items-center gap-3"
             style={{ backgroundColor: 'var(--surface-error-subtle)', color: 'var(--content-error)' }}
@@ -1354,7 +1369,7 @@ export function LTICourseView(): React.ReactElement {
         <div className="flex items-start justify-between mb-6">
           <div>
             <div className="flex items-center gap-3 mb-1">
-              <Shield className="w-5 h-5" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
+              <Shield className="w-5 h-5" style={{ color: 'var(--accent)' }} aria-hidden="true" />
               <h1
                 className="text-xl font-semibold"
                 style={{ color: 'var(--content-primary)' }}
@@ -1386,7 +1401,7 @@ export function LTICourseView(): React.ReactElement {
                     onClick={handleScanContent}
                     disabled={contentScanning}
                     className="flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 min-h-[44px]"
-                    style={{ backgroundColor: 'var(--accent-primary)' }}
+                    style={{ backgroundColor: 'var(--accent-solid)' }}
                   >
                     {contentScanning ? (
                       <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
@@ -1466,7 +1481,7 @@ export function LTICourseView(): React.ReactElement {
               onClick={handleOpenInAelira}
               disabled={openingAelira}
               className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 min-h-[44px]"
-              style={{ backgroundColor: 'var(--accent-primary)' }}
+              style={{ backgroundColor: 'var(--accent-solid)' }}
             >
               {openingAelira ? (
                 <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
@@ -1510,7 +1525,7 @@ export function LTICourseView(): React.ReactElement {
             className={`flex-1 px-4 py-2.5 rounded-md text-sm font-medium transition-colors min-h-[44px] ${
               activeTab === 'content' ? 'text-white' : ''
             }`}
-            style={activeTab === 'content' ? { backgroundColor: 'var(--accent-primary)' } : { color: 'var(--content-secondary)' }}
+            style={activeTab === 'content' ? { backgroundColor: 'var(--accent-solid)' } : { color: 'var(--content-secondary)' }}
           >
             Content ({contentStats.total})
           </button>
@@ -1524,7 +1539,7 @@ export function LTICourseView(): React.ReactElement {
             className={`flex-1 px-4 py-2.5 rounded-md text-sm font-medium transition-colors min-h-[44px] ${
               activeTab === 'files' ? 'text-white' : ''
             }`}
-            style={activeTab === 'files' ? { backgroundColor: 'var(--accent-primary)' } : { color: 'var(--content-secondary)' }}
+            style={activeTab === 'files' ? { backgroundColor: 'var(--accent-solid)' } : { color: 'var(--content-secondary)' }}
           >
             Files ({stats.total})
           </button>
@@ -1562,7 +1577,7 @@ export function LTICourseView(): React.ReactElement {
               >
                 <Loader2
                   className="w-8 h-8 mx-auto mb-3 animate-spin"
-                  style={{ color: 'var(--accent-primary)' }}
+                  style={{ color: 'var(--accent)' }}
                   aria-hidden="true"
                 />
                 <p className="text-sm" style={{ color: 'var(--content-secondary)' }}>
@@ -1595,7 +1610,7 @@ export function LTICourseView(): React.ReactElement {
                   onClick={handleScanContent}
                   disabled={contentScanning}
                   className="inline-flex items-center gap-2 px-5 py-3 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 min-h-[44px]"
-                  style={{ backgroundColor: 'var(--accent-primary)' }}
+                  style={{ backgroundColor: 'var(--accent-solid)' }}
                 >
                   {contentScanning ? (
                     <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
@@ -1647,7 +1662,7 @@ export function LTICourseView(): React.ReactElement {
                     onClick={handleBatchWriteback}
                     disabled={batchWritingBack || contentStats.scanned === 0}
                     className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 min-h-[44px]"
-                    style={{ backgroundColor: 'var(--accent-primary)' }}
+                    style={{ backgroundColor: 'var(--accent-solid)' }}
                   >
                     {batchWritingBack ? (
                       <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />

@@ -42,12 +42,16 @@ export interface ContentTypeStatus {
 export interface ContentItemStatus {
   cloud_file_id: string;
   provider_file_id: string | null;
+  provider: string;
+  provider_parent_id: string;
   title: string;
   content_type: string;
   compliance_score: number | null;
   issue_count: number;
   writeback_status: string | null;
   has_remediated_version: boolean;
+  remediation_origin: 'automatic' | 'manual' | null;
+  current_remediation_artifact_id: string | null;
   last_scanned_at: string | null;
   content_updated_at: string | null;
   scan_id: string | null;

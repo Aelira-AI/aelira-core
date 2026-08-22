@@ -1,377 +1,879 @@
-"""
-Background Job Processor
+"""Atomic, lease-fenced durable database job processor."""
 
-Processes jobs from the cloud_job_queue table:
-- Fetches pending jobs in priority order
-- Executes job handlers
-- Updates job status and results
-- Handles retries and error recovery
-
-Can run as:
-1. Background thread within FastAPI
-2. Standalone worker process
-3. Celery task (if using Celery)
-"""
+from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Optional, Callable
-from sqlalchemy.orm import Session
-
-from ..db.database import get_db
-from ..db.models import (
-    CloudJobQueue,
-    CloudJobStatus,
-    CloudJobType,
-)
-from ..integrations.oauth_token_manager import OAuthTokenManager
 import os
+import random
+import socket
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
+
+from sqlalchemy import and_, or_, select, update
+from sqlalchemy.orm import Session, aliased
+
+from ..db.database import SessionLocal
+from ..db.models import CloudJobQueue, CloudJobStatus, WorkerHeartbeat
+from ..integrations.oauth_token_manager import OAuthTokenManager
+from .contracts import (
+    FailureKind,
+    JobContext,
+    JobFailure,
+    JobResult,
+    JobSuccess,
+    LostJobOwnership,
+)
+from .registry import JobRegistry, adapt_legacy_handler, build_default_registry
 
 logger = logging.getLogger(__name__)
 
-# Stale job recovery settings
-STALE_JOB_THRESHOLD_MINUTES = int(os.getenv("STALE_JOB_THRESHOLD_MINUTES", "30"))
-STALE_JOB_RECOVERY_INTERVAL = int(
-    os.getenv("STALE_JOB_RECOVERY_INTERVAL", "300")
-)  # 5 minutes
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def build_claim_query(registered_types: set[str] | frozenset[str], *, limit: int):
+    """Build the dependency-gated PostgreSQL claim selection."""
+    dependency = aliased(CloudJobQueue)
+    return (
+        select(CloudJobQueue)
+        .outerjoin(dependency, CloudJobQueue.depends_on_job_id == dependency.id)
+        .where(
+            CloudJobQueue.status == CloudJobStatus.PENDING.value,
+            CloudJobQueue.scheduled_for <= utcnow(),
+            CloudJobQueue.job_type.in_(sorted(registered_types)),
+            or_(
+                CloudJobQueue.depends_on_job_id.is_(None),
+                dependency.status == CloudJobStatus.COMPLETED.value,
+            ),
+        )
+        .order_by(CloudJobQueue.priority.asc(), CloudJobQueue.created_at.asc())
+        .limit(limit)
+        .with_for_update(of=CloudJobQueue, skip_locked=True)
+    )
+
+
+@dataclass(frozen=True)
+class ClaimedJob:
+    job_id: str
+    job_type: str
+    payload: dict[str, Any]
+    claim_token: str
+    worker_id: str
+    attempt_count: int
+    max_retries: int
 
 
 class JobProcessor:
-    """
-    Background job processor for cloud integration tasks.
-
-    Processes jobs from the cloud_job_queue table in priority order.
-    """
+    """Multi-worker-safe durable queue processor with lease fencing."""
 
     def __init__(
         self,
         batch_size: int = 10,
         poll_interval: float = 5.0,
         max_retries: int = 3,
-    ):
-        """
-        Initialize job processor.
-
-        Args:
-            batch_size: Number of jobs to process per batch
-            poll_interval: Seconds between polling for new jobs
-            max_retries: Maximum retry attempts for failed jobs
-        """
+        *,
+        max_concurrency: int | None = None,
+        worker_id: str | None = None,
+        lease_seconds: int = 90,
+        heartbeat_interval: float = 15.0,
+        reaper_interval: float = 30.0,
+        session_factory: Callable[[], Session] = SessionLocal,
+        registry: JobRegistry | None = None,
+        max_execution_seconds: float | None = None,
+    ) -> None:
         self.batch_size = batch_size
+        if max_concurrency is None:
+            raw_max_concurrency = os.environ.get("JOB_WORKER_MAX_CONCURRENCY", "4")
+            try:
+                max_concurrency = int(raw_max_concurrency)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "max_concurrency must be an integer from 1 to 64"
+                ) from exc
+        if type(max_concurrency) is not int or not 1 <= max_concurrency <= 64:
+            raise ValueError("max_concurrency must be an integer from 1 to 64")
+        self.max_concurrency = max_concurrency
         self.poll_interval = poll_interval
         self.max_retries = max_retries
+        self.worker_id = (
+            worker_id
+            or os.environ.get("JOB_WORKER_ID")
+            or (f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4()}")
+        )
+        self.lease_seconds = lease_seconds
+        self.heartbeat_interval = min(heartbeat_interval, max(1.0, lease_seconds / 3))
+        self.reaper_interval = reaper_interval
+        if max_execution_seconds is None:
+            raw_max_execution = os.environ.get(
+                "JOB_WORKER_MAX_EXECUTION_SECONDS", "3600"
+            )
+            try:
+                max_execution_seconds = float(raw_max_execution)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "max_execution_seconds must be from 1 to 86400"
+                ) from exc
+        if (
+            isinstance(max_execution_seconds, bool)
+            or not isinstance(max_execution_seconds, (int, float))
+            or not 1 <= max_execution_seconds <= 86400
+        ):
+            raise ValueError("max_execution_seconds must be from 1 to 86400")
+        self.max_execution_seconds = float(max_execution_seconds)
+        self.session_factory = session_factory
+        self.registry = registry or JobRegistry()
+        self._legacy_handlers: dict[str, Callable[..., Any]] = {}
+        self._token_manager: OAuthTokenManager | None = None
         self._running = False
-        self._handlers: Dict[str, Callable] = {}
-        self._token_manager = None
+        self._draining = False
+        self._stop_event = asyncio.Event()
+        self._inflight: set[asyncio.Task[Any]] = set()
+        self._last_reaper = utcnow() - timedelta(seconds=reaper_interval)
 
     def _get_token_manager(self) -> OAuthTokenManager:
-        """Get OAuth token manager (lazy initialization)."""
         if self._token_manager is None:
-            encryption_key = os.environ.get("TOKEN_ENCRYPTION_KEY")
-            if encryption_key:
-                self._token_manager = OAuthTokenManager(encryption_key)
-            else:
+            key = os.environ.get("TOKEN_ENCRYPTION_KEY")
+            if not key:
                 raise ValueError("TOKEN_ENCRYPTION_KEY not configured")
+            self._token_manager = OAuthTokenManager(key)
         return self._token_manager
 
-    def register_handler(self, job_type: str, handler: Callable):
-        """
-        Register a handler function for a job type.
+    def register_handler(self, job_type: str, handler: Callable[..., Any]) -> None:
+        self._legacy_handlers[job_type] = handler
+        self.registry.register(job_type, adapt_legacy_handler(handler))
 
-        Args:
-            job_type: Job type (from CloudJobType enum)
-            handler: Async function that processes the job
-        """
-        self._handlers[job_type] = handler
-        logger.info(f"Registered handler for job type: {job_type}")
-
-    async def start(self):
-        """Start the job processor loop."""
-        self._running = True
-        self._last_recovery_check = datetime.now(timezone.utc)
-        logger.info("Job processor started")
-
-        # Recover any stale jobs from previous runs on startup
-        await self.recover_stale_jobs()
-
-        while self._running:
-            try:
-                # Periodically check for stale jobs
-                now = datetime.now(timezone.utc)
-                if (
-                    now - self._last_recovery_check
-                ).total_seconds() >= STALE_JOB_RECOVERY_INTERVAL:
-                    await self.recover_stale_jobs()
-                    self._last_recovery_check = now
-
-                # Process a batch of pending jobs
-                processed = await self._process_batch()
-
-                if processed == 0:
-                    # No jobs found, wait before polling again
-                    await asyncio.sleep(self.poll_interval)
-
-            except Exception as e:
-                logger.error(f"Job processor error: {e}")
-                await asyncio.sleep(self.poll_interval)
-
-    def stop(self):
-        """Stop the job processor loop."""
-        self._running = False
-        logger.info("Job processor stopping")
-
-    async def recover_stale_jobs(self, stale_threshold_minutes: int = None) -> int:
-        """
-        Recover jobs stuck in 'processing' state for too long.
-
-        This handles scenarios where:
-        - The server crashed while processing a job
-        - A job hung and never completed
-        - Network issues caused the processor to lose track of a job
-
-        Jobs are either reset to 'pending' for retry (if under max_retries)
-        or marked as 'failed' (if max retries exceeded).
-
-        Args:
-            stale_threshold_minutes: Minutes after which a processing job is considered stale.
-                                    Defaults to STALE_JOB_THRESHOLD_MINUTES env var (30 min).
-
-        Returns:
-            Number of stale jobs recovered
-        """
-        if stale_threshold_minutes is None:
-            stale_threshold_minutes = STALE_JOB_THRESHOLD_MINUTES
-
-        stale_time = datetime.now(timezone.utc) - timedelta(
-            minutes=stale_threshold_minutes
-        )
-        recovered_count = 0
-
-        with get_db() as db:
-            # Find jobs stuck in 'processing' state
-            stale_jobs = (
-                db.query(CloudJobQueue)
-                .filter(
-                    CloudJobQueue.status == CloudJobStatus.PROCESSING.value,
-                    CloudJobQueue.started_at < stale_time,
-                )
-                .all()
-            )
-
-            if not stale_jobs:
-                return 0
-
-            logger.warning(f"Found {len(stale_jobs)} stale jobs to recover")
-
-            for job in stale_jobs:
-                try:
-                    if job.retry_count < job.max_retries:
-                        # Reset to pending for retry
-                        job.status = CloudJobStatus.PENDING.value
-                        job.retry_count += 1
-                        job.error_message = (
-                            f"Job timed out after {stale_threshold_minutes} minutes "
-                            f"(retry {job.retry_count}/{job.max_retries})"
-                        )
-                        # Schedule retry with exponential backoff
-                        backoff_minutes = min(5 * (2 ** (job.retry_count - 1)), 30)
-                        job.scheduled_for = datetime.now(timezone.utc) + timedelta(
-                            minutes=backoff_minutes
-                        )
-                        job.progress = 0
-
-                        logger.warning(
-                            f"Recovered stale job {job.id} (type={job.job_type}), "
-                            f"retry {job.retry_count}/{job.max_retries}, "
-                            f"scheduled in {backoff_minutes} minutes"
-                        )
-                        recovered_count += 1
-                    else:
-                        # Max retries exceeded, mark as failed
-                        job.status = CloudJobStatus.FAILED.value
-                        job.completed_at = datetime.now(timezone.utc)
-                        job.error_message = (
-                            f"Job failed after {job.max_retries} retries. "
-                            f"Last failure: timed out after {stale_threshold_minutes} minutes"
-                        )
-
-                        logger.error(
-                            f"Job {job.id} (type={job.job_type}) failed after "
-                            f"{job.max_retries} retries"
-                        )
-                        recovered_count += 1
-
-                except Exception as e:
-                    logger.error(f"Failed to recover stale job {job.id}: {e}")
-
-            db.commit()
-
-        if recovered_count > 0:
-            logger.info(f"Recovered {recovered_count} stale jobs")
-
-        return recovered_count
-
-    async def _process_batch(self) -> int:
-        """
-        Process a batch of pending jobs.
-
-        Returns:
-            Number of jobs processed
-        """
-        with get_db() as db:
-            # Fetch pending jobs in priority order
-            jobs = (
-                db.query(CloudJobQueue)
-                .filter(
-                    CloudJobQueue.status == CloudJobStatus.PENDING.value,
-                    CloudJobQueue.scheduled_for <= datetime.now(timezone.utc),
-                )
-                .order_by(
-                    CloudJobQueue.priority.asc(),
-                    CloudJobQueue.created_at.asc(),
-                )
-                .limit(self.batch_size)
-                .with_for_update(skip_locked=True)
-                .all()
-            )
-
-            if not jobs:
-                return 0
-
-            processed = 0
-            for job in jobs:
-                try:
-                    await self._process_job(job, db)
-                    processed += 1
-                except Exception as e:
-                    logger.error(f"Failed to process job {job.id}: {e}")
-
-            return processed
-
-    async def _process_job(self, job: CloudJobQueue, db: Session):
-        """
-        Process a single job.
-
-        Args:
-            job: Job to process
-            db: Database session
-        """
-        # Mark as processing
+    async def _process_job(self, job: Any, db: Session) -> None:
+        """Legacy direct-call test seam; standalone workers use claimed jobs only."""
         job.status = CloudJobStatus.PROCESSING.value
-        job.started_at = datetime.now(timezone.utc)
+        job.started_at = utcnow()
         job.progress = 0
         db.commit()
-
-        logger.info(f"Processing job {job.id} (type={job.job_type})")
-
         try:
-            # Get handler for job type
-            handler = self._handlers.get(job.job_type)
-            if not handler:
-                raise ValueError(f"No handler registered for job type: {job.job_type}")
-
-            # Execute handler
+            handler = self._legacy_handlers.get(job.job_type)
+            if handler is None:
+                raise ValueError("unregistered_job_type")
             result = await handler(job, db, self._get_token_manager())
-
-            # Mark as completed
+            if getattr(result, "handler_committed", False) is True:
+                return
+            if not isinstance(result, dict) or result.get("success") is False:
+                raise ValueError("malformed_handler_result")
             job.status = CloudJobStatus.COMPLETED.value
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = utcnow()
             job.progress = 100
             job.result_data = result
             db.commit()
+        except Exception as exc:
+            from .remediation_job import (
+                RemediationJobFailed,
+                RetryableRemediationJobError,
+                transition_retryable_remediation_job,
+            )
 
-            logger.info(f"Job {job.id} completed successfully")
-
-        except Exception as e:
-            logger.error(f"Job {job.id} failed: {e}")
-
-            # Update retry count
+            if (
+                isinstance(exc, RemediationJobFailed)
+                and exc.terminal_state_committed is True
+            ):
+                return
+            if isinstance(exc, RetryableRemediationJobError):
+                transition_retryable_remediation_job(job, db, exc)
+                return
+            db.rollback()
+            try:
+                db.refresh(job)
+            except Exception:
+                logger.warning("Could not refresh legacy job after rollback")
+            deterministic = (
+                isinstance(exc, RemediationJobFailed) and exc.__cause__ is None
+            )
+            code = (
+                exc.code
+                if isinstance(exc, RemediationJobFailed)
+                else "job_processing_failed"
+            )
             job.retry_count += 1
-            job.error_message = str(e)
-
-            if job.retry_count >= job.max_retries:
-                # Max retries exceeded, mark as failed
+            job.error_message = code
+            if deterministic or job.retry_count >= job.max_retries:
                 job.status = CloudJobStatus.FAILED.value
-                job.completed_at = datetime.now(timezone.utc)
-                logger.warning(f"Job {job.id} failed after {job.retry_count} retries")
+                job.completed_at = utcnow()
             else:
-                # Reset to pending for retry
                 job.status = CloudJobStatus.PENDING.value
+                job.completed_at = None
                 job.progress = 0
-                logger.info(
-                    f"Job {job.id} will retry ({job.retry_count}/{job.max_retries})"
-                )
-
             db.commit()
 
-    async def process_single_job(self, job_id: str) -> Dict[str, Any]:
-        """
-        Process a single job by ID (for manual processing).
+    def _set_worker_state(self, state: str) -> None:
+        now = utcnow()
+        with self.session_factory() as db:
+            heartbeat = db.get(WorkerHeartbeat, self.worker_id)
+            if heartbeat is None:
+                heartbeat = WorkerHeartbeat(
+                    worker_id=self.worker_id,
+                    status=state,
+                    started_at=now,
+                    heartbeat_at=now,
+                    metadata_json={"pid": os.getpid(), "host": socket.gethostname()},
+                )
+                db.add(heartbeat)
+            else:
+                heartbeat.status = state
+                heartbeat.heartbeat_at = now
+                heartbeat.stopped_at = now if state == "stopped" else None
+            db.commit()
 
-        Args:
-            job_id: Job ID to process
+    def _fail_blocked_dependencies(self, db: Session, *, limit: int) -> int:
+        """Fail a bounded set of children whose dependency cannot succeed."""
+        dependency = aliased(CloudJobQueue)
+        now = utcnow()
+        blocked = list(
+            db.scalars(
+                select(CloudJobQueue)
+                .outerjoin(dependency, CloudJobQueue.depends_on_job_id == dependency.id)
+                .where(
+                    CloudJobQueue.status == CloudJobStatus.PENDING.value,
+                    CloudJobQueue.depends_on_job_id.is_not(None),
+                    or_(
+                        dependency.id.is_(None),
+                        dependency.status == CloudJobStatus.FAILED.value,
+                    ),
+                )
+                .order_by(CloudJobQueue.created_at.asc())
+                .limit(limit)
+                .with_for_update(of=CloudJobQueue, skip_locked=True)
+            ).all()
+        )
+        for job in blocked:
+            job.status = CloudJobStatus.FAILED.value
+            job.completed_at = now
+            job.error_message = "dependency_failed"
+            job.last_error_code = "dependency_failed"
+            job.last_error_retryable = False
+            job.progress_message = "Failed"
+            job.updated_at = now
+        return len(blocked)
 
-        Returns:
-            Job result data
-        """
-        with get_db() as db:
-            job = db.query(CloudJobQueue).filter(CloudJobQueue.id == job_id).first()
+    def _fail_dependency_cycles(self, db: Session, *, limit: int) -> int:
+        """Detect cycles within one bounded locked dependency window."""
+        now = utcnow()
+        candidates = list(
+            db.scalars(
+                select(CloudJobQueue)
+                .where(
+                    CloudJobQueue.status == CloudJobStatus.PENDING.value,
+                    CloudJobQueue.depends_on_job_id.is_not(None),
+                )
+                .order_by(CloudJobQueue.created_at.asc())
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            ).all()
+        )
+        by_id = {str(job.id): job for job in candidates}
+        cycle_ids: set[str] = set()
+        for start_id in by_id:
+            path: list[str] = []
+            positions: dict[str, int] = {}
+            current_id: str | None = start_id
+            while current_id is not None and current_id in by_id:
+                if current_id in positions:
+                    cycle_ids.update(path[positions[current_id] :])
+                    break
+                positions[current_id] = len(path)
+                path.append(current_id)
+                dependency_id = by_id[current_id].depends_on_job_id
+                current_id = str(dependency_id) if dependency_id is not None else None
+        for job_id in cycle_ids:
+            job = by_id[job_id]
+            job.status = CloudJobStatus.FAILED.value
+            job.completed_at = now
+            job.error_message = "dependency_failed"
+            job.last_error_code = "dependency_failed"
+            job.last_error_retryable = False
+            job.progress_message = "Failed"
+            job.updated_at = now
+        return len(cycle_ids)
 
-            if not job:
-                raise ValueError(f"Job not found: {job_id}")
+    def claim_batch(self, *, limit: int | None = None) -> list[ClaimedJob]:
+        """Claim every selected row in one transaction, then return detached data."""
+        registered = self.registry.job_types
+        if not registered or self._draining:
+            return []
+        now = utcnow()
+        lease = now + timedelta(seconds=self.lease_seconds)
+        claims: list[ClaimedJob] = []
+        claim_limit = min(
+            self.batch_size, limit if limit is not None else self.batch_size
+        )
+        if claim_limit <= 0:
+            return []
+        with self.session_factory() as db:
+            self._fail_dependency_cycles(
+                db, limit=max(self.batch_size, claim_limit, 100)
+            )
+            self._fail_blocked_dependencies(db, limit=max(self.batch_size, claim_limit))
+            jobs = list(
+                db.scalars(build_claim_query(registered, limit=claim_limit)).all()
+            )
+            for job in jobs:
+                if type(job.payload) is not dict:
+                    job.status = CloudJobStatus.FAILED.value
+                    job.completed_at = now
+                    job.error_message = "invalid_job_payload"
+                    job.last_error_code = "invalid_job_payload"
+                    job.last_error_retryable = False
+                    job.progress_message = "Failed"
+                    job.updated_at = now
+                    continue
+                token = str(uuid.uuid4())
+                job.status = CloudJobStatus.PROCESSING.value
+                job.claim_token = token
+                job.worker_id = self.worker_id
+                job.claimed_at = now
+                job.heartbeat_at = now
+                job.lease_expires_at = lease
+                job.started_at = job.started_at or now
+                job.completed_at = None
+                job.progress = 0
+                job.progress_message = None
+                job.error_message = None
+                job.last_error_code = None
+                job.last_error_retryable = None
+                job.attempt_count = (job.attempt_count or 0) + 1
+                job.retry_count = max(0, job.attempt_count - 1)
+                claims.append(
+                    ClaimedJob(
+                        str(job.id),
+                        str(job.job_type),
+                        dict(job.payload),
+                        token,
+                        self.worker_id,
+                        job.attempt_count,
+                        (
+                            job.max_retries
+                            if job.max_retries is not None
+                            else self.max_retries
+                        ),
+                    )
+                )
+            if jobs:
+                heartbeat = db.get(WorkerHeartbeat, self.worker_id)
+                if heartbeat is not None:
+                    heartbeat.jobs_claimed = (heartbeat.jobs_claimed or 0) + len(claims)
+                    heartbeat.heartbeat_at = now
+            db.commit()
+        return claims
 
-            await self._process_job(job, db)
+    @staticmethod
+    def _fence(claim: ClaimedJob):
+        return and_(
+            CloudJobQueue.id == claim.job_id,
+            CloudJobQueue.status == CloudJobStatus.PROCESSING.value,
+            CloudJobQueue.claim_token == claim.claim_token,
+            CloudJobQueue.worker_id == claim.worker_id,
+        )
 
+    def _fenced_update(self, claim: ClaimedJob, values: dict[str, Any]) -> bool:
+        with self.session_factory() as db:
+            result = db.execute(
+                update(CloudJobQueue).where(self._fence(claim)).values(**values)
+            )
+            if result.rowcount != 1:
+                db.rollback()
+                return False
+            db.commit()
+            return True
+
+    def _owns_claim(self, claim: ClaimedJob) -> bool:
+        with self.session_factory() as db:
+            return (
+                db.scalar(select(CloudJobQueue.id).where(self._fence(claim)))
+                is not None
+            )
+
+    async def report_progress(
+        self, claim: ClaimedJob, progress: int, message: str | None = None
+    ) -> bool:
+        bounded = max(0, min(99, int(progress)))
+        return await asyncio.to_thread(
+            self._fenced_update,
+            claim,
+            {"progress": bounded, "progress_message": message, "updated_at": utcnow()},
+        )
+
+    async def _assert_owned(self, claim: ClaimedJob) -> None:
+        if not await asyncio.to_thread(self._owns_claim, claim):
+            raise LostJobOwnership("job ownership lost")
+
+    def _begin_external_effect_sync(self, claim: ClaimedJob) -> str:
+        """Commit a stable request token before provider bytes can leave."""
+        with self.session_factory() as db:
+            job = db.scalar(
+                select(CloudJobQueue).where(self._fence(claim)).with_for_update()
+            )
+            if job is None or job.job_type != "upload":
+                db.rollback()
+                raise LostJobOwnership("external effect fence unavailable")
+            if job.external_effect_state == "requesting":
+                token = str(job.external_effect_token)
+                db.commit()
+                return token
+            if job.external_effect_state is not None:
+                db.rollback()
+                raise LostJobOwnership("external effect requires reconciliation")
+            token = str(uuid.uuid4())
+            now = utcnow()
+            job.external_effect_state = "requesting"
+            job.external_effect_token = token
+            job.external_effect_started_at = now
+            job.updated_at = now
+            db.commit()
+            return token
+
+    async def begin_external_effect(self, claim: ClaimedJob) -> str:
+        return await asyncio.to_thread(self._begin_external_effect_sync, claim)
+
+    async def _claim_heartbeat(
+        self, claim: ClaimedJob, ownership_lost: asyncio.Event
+    ) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self.heartbeat_interval)
+                now = utcnow()
+                if not await asyncio.to_thread(
+                    self._fenced_update,
+                    claim,
+                    {
+                        "heartbeat_at": now,
+                        "lease_expires_at": now + timedelta(seconds=self.lease_seconds),
+                        "updated_at": now,
+                    },
+                ):
+                    ownership_lost.set()
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "Claim heartbeat failed closed",
+                extra={"job_id": claim.job_id, "error_type": type(exc).__name__},
+            )
+            ownership_lost.set()
+
+    @staticmethod
+    def _clear_claim_values() -> dict[str, Any]:
+        return {
+            "claim_token": None,
+            "worker_id": None,
+            "claimed_at": None,
+            "heartbeat_at": None,
+            "lease_expires_at": None,
+        }
+
+    def _backoff(self, attempt_count: int) -> timedelta:
+        base = min(300.0, 5.0 * (2 ** max(0, attempt_count - 1)))
+        return timedelta(seconds=base * random.SystemRandom().uniform(0.8, 1.2))
+
+    def _external_effect_state(self, claim: ClaimedJob) -> str | None:
+        if claim.job_type != "upload":
+            return None
+        with self.session_factory() as db:
+            return db.scalar(
+                select(CloudJobQueue.external_effect_state).where(self._fence(claim))
+            )
+
+    def _finish_values(
+        self,
+        claim: ClaimedJob,
+        result: JobResult,
+        *,
+        external_effect_state: str | None,
+    ) -> dict[str, Any]:
+        now = utcnow()
+        clear = self._clear_claim_values()
+        effect_not_applied = (
+            isinstance(result, JobFailure)
+            and result.details.get("external_effect_not_applied") is True
+        )
+        effect_values: dict[str, Any] = {}
+        if external_effect_state in {"requesting", "indeterminate", "confirmed"}:
+            if isinstance(result, JobSuccess) and external_effect_state in {
+                "requesting",
+                "confirmed",
+            }:
+                effect_values["external_effect_state"] = "confirmed"
+            elif effect_not_applied and external_effect_state == "requesting":
+                effect_values = {
+                    "external_effect_state": None,
+                    "external_effect_token": None,
+                    "external_effect_started_at": None,
+                }
+            else:
+                return {
+                    **clear,
+                    "status": CloudJobStatus.FAILED.value,
+                    "completed_at": now,
+                    "progress_message": "Failed",
+                    "result_data": {"retry_safe": False, "manual_required": True},
+                    "error_message": "upload_outcome_indeterminate",
+                    "last_error_code": "upload_outcome_indeterminate",
+                    "last_error_retryable": False,
+                    "external_effect_state": (
+                        "confirmed"
+                        if external_effect_state == "confirmed"
+                        else "indeterminate"
+                    ),
+                    "updated_at": now,
+                }
+        if isinstance(result, JobSuccess):
             return {
-                "job_id": job.id,
-                "status": job.status,
-                "result": job.result_data,
-                "error": job.error_message,
+                **clear,
+                **effect_values,
+                "status": CloudJobStatus.COMPLETED.value,
+                "completed_at": now,
+                "progress": 100,
+                "progress_message": "Completed",
+                "result_data": result.result,
+                "error_message": None,
+                "last_error_code": None,
+                "last_error_retryable": None,
+                "updated_at": now,
             }
+        retryable_kind = result.kind in {
+            FailureKind.RETRYABLE,
+            FailureKind.INDETERMINATE,
+        }
+        retry_safe = result.details.get("retry_safe") is not False
+        retryable = retryable_kind and retry_safe
+        exhausted = claim.attempt_count >= claim.max_retries
+        if retryable and not exhausted:
+            return {
+                **clear,
+                **effect_values,
+                "status": CloudJobStatus.PENDING.value,
+                "scheduled_for": now + self._backoff(claim.attempt_count),
+                "completed_at": None,
+                "progress": 0,
+                "progress_message": "Queued for retry",
+                "result_data": result.details,
+                "error_message": result.code,
+                "last_error_code": result.code,
+                "last_error_retryable": True,
+                "updated_at": now,
+            }
+        terminal_result = (
+            {**result.details, "retry_safe": False, "manual_required": True}
+            if retryable_kind and not retry_safe
+            else None
+        )
+        return {
+            **clear,
+            **effect_values,
+            "status": CloudJobStatus.FAILED.value,
+            "completed_at": now,
+            "progress_message": "Failed",
+            "result_data": terminal_result,
+            "error_message": result.code,
+            "last_error_code": result.code,
+            "last_error_retryable": retryable,
+            "updated_at": now,
+        }
+
+    def _finish(self, claim: ClaimedJob, result: JobResult) -> bool:
+        state = self._external_effect_state(claim)
+        return self._fenced_update(
+            claim,
+            self._finish_values(claim, result, external_effect_state=state),
+        )
+
+    def _handler_terminal_committed(self, job_id: str) -> bool:
+        with self.session_factory() as db:
+            job = db.get(CloudJobQueue, job_id)
+            return bool(
+                job is not None
+                and job.status
+                in {
+                    CloudJobStatus.COMPLETED.value,
+                    CloudJobStatus.FAILED.value,
+                }
+                and job.claim_token is None
+                and job.worker_id is None
+            )
+
+    def _record_outcome(self, *, completed: bool) -> None:
+        with self.session_factory() as db:
+            heartbeat = db.get(WorkerHeartbeat, self.worker_id)
+            if heartbeat is None:
+                return
+            field = "jobs_completed" if completed else "jobs_failed"
+            setattr(heartbeat, field, (getattr(heartbeat, field) or 0) + 1)
+            heartbeat.heartbeat_at = utcnow()
+            db.commit()
+
+    async def process_claim(self, claim: ClaimedJob) -> bool:
+        if not await asyncio.to_thread(self._owns_claim, claim):
+            return False
+        ownership_lost = asyncio.Event()
+        heartbeat = asyncio.create_task(self._claim_heartbeat(claim, ownership_lost))
+        result: JobResult
+        try:
+            handler = self.registry.get(claim.job_type)
+            if handler is None:
+                result = JobFailure.deterministic("unregistered_job_type")
+            else:
+                context = JobContext(
+                    job_id=claim.job_id,
+                    job_type=claim.job_type,
+                    payload=claim.payload,
+                    claim_token=claim.claim_token,
+                    worker_id=claim.worker_id,
+                    attempt_count=claim.attempt_count,
+                    report_progress=lambda progress, message=None: self.report_progress(
+                        claim, progress, message
+                    ),
+                    assert_owned=lambda: self._assert_owned(claim),
+                    begin_external_effect=lambda: self.begin_external_effect(claim),
+                )
+                try:
+                    with self.session_factory() as db:
+                        handler_task = asyncio.ensure_future(
+                            handler(context, db, self._get_token_manager())
+                        )
+                        lost_task = asyncio.create_task(ownership_lost.wait())
+                        try:
+                            async with asyncio.timeout(self.max_execution_seconds):
+                                done, _ = await asyncio.wait(
+                                    {handler_task, lost_task},
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                        except TimeoutError:
+                            handler_task.cancel()
+                            await asyncio.gather(handler_task, return_exceptions=True)
+                            db.rollback()
+                            result = JobFailure.retryable("job_execution_timeout")
+                        else:
+                            if ownership_lost.is_set():
+                                handler_task.cancel()
+                                await asyncio.gather(
+                                    handler_task, return_exceptions=True
+                                )
+                                db.rollback()
+                                return False
+                            result = await handler_task
+                            try:
+                                await context.assert_owned()
+                            except LostJobOwnership:
+                                db.rollback()
+                                return False
+                        finally:
+                            lost_task.cancel()
+                            await asyncio.gather(lost_task, return_exceptions=True)
+                except LostJobOwnership:
+                    return False
+                except Exception as exc:
+                    if getattr(exc, "terminal_state_committed", False) is True:
+                        committed = self._handler_terminal_committed(claim.job_id)
+                        if committed:
+                            self._record_outcome(completed=False)
+                        return committed
+                    logger.exception(
+                        "Job handler raised",
+                        extra={
+                            "job_id": claim.job_id,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                    result = JobFailure.indeterminate("job_handler_exception")
+            if not isinstance(result, JobSuccess | JobFailure):
+                result = JobFailure.indeterminate("malformed_handler_result")
+            if isinstance(result, JobSuccess) and result.handler_committed:
+                committed = self._handler_terminal_committed(claim.job_id)
+                if committed:
+                    self._record_outcome(completed=True)
+                return committed
+            finished = self._finish(claim, result)
+            if finished:
+                self._record_outcome(completed=isinstance(result, JobSuccess))
+            return finished
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
+    def _inflight_done(self, task: asyncio.Task[Any]) -> None:
+        self._inflight.discard(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.error(
+                "Inflight job task failed",
+                extra={"error_type": type(exc).__name__},
+            )
+
+    def reap_stale_jobs(self, *, limit: int = 100) -> int:
+        now = utcnow()
+        recovered = 0
+        with self.session_factory() as db:
+            jobs = list(
+                db.scalars(
+                    select(CloudJobQueue)
+                    .where(
+                        CloudJobQueue.status == CloudJobStatus.PROCESSING.value,
+                        CloudJobQueue.lease_expires_at < now,
+                    )
+                    .order_by(CloudJobQueue.lease_expires_at.asc())
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                ).all()
+            )
+            for job in jobs:
+                if job.external_effect_state in {
+                    "requesting",
+                    "indeterminate",
+                    "confirmed",
+                }:
+                    job.status = CloudJobStatus.FAILED.value
+                    job.completed_at = now
+                    job.error_message = "upload_outcome_indeterminate"
+                    job.last_error_code = "upload_outcome_indeterminate"
+                    job.last_error_retryable = False
+                    job.result_data = {
+                        "retry_safe": False,
+                        "manual_required": True,
+                    }
+                    if job.external_effect_state != "confirmed":
+                        job.external_effect_state = "indeterminate"
+                    job.progress = 0
+                    job.progress_message = "Failed"
+                    for key, value in self._clear_claim_values().items():
+                        setattr(job, key, value)
+                    recovered += 1
+                    continue
+                exhausted = (job.attempt_count or 0) >= (
+                    job.max_retries if job.max_retries is not None else self.max_retries
+                )
+                job.status = (
+                    CloudJobStatus.FAILED.value
+                    if exhausted
+                    else CloudJobStatus.PENDING.value
+                )
+                job.completed_at = now if exhausted else None
+                job.scheduled_for = now if not exhausted else job.scheduled_for
+                job.error_message = "job_lease_expired"
+                job.last_error_code = "job_lease_expired"
+                job.last_error_retryable = True
+                job.progress = 0
+                for key, value in self._clear_claim_values().items():
+                    setattr(job, key, value)
+                recovered += 1
+            db.commit()
+        return recovered
+
+    async def _heartbeat_worker(self) -> None:
+        try:
+            while self._running:
+                await asyncio.sleep(self.heartbeat_interval)
+                self._set_worker_state("draining" if self._draining else "running")
+        except asyncio.CancelledError:
+            raise
+
+    async def start(self) -> None:
+        self.registry.validate()
+        self._running = True
+        self._draining = False
+        self._stop_event.clear()
+        self._set_worker_state("running")
+        worker_heartbeat = asyncio.create_task(self._heartbeat_worker())
+        try:
+            while self._running:
+                now = utcnow()
+                if (now - self._last_reaper).total_seconds() >= self.reaper_interval:
+                    self.reap_stale_jobs()
+                    self._last_reaper = now
+                available = self.max_concurrency - len(self._inflight)
+                claims = (
+                    self.claim_batch(limit=min(self.batch_size, available))
+                    if not self._draining and available > 0
+                    else []
+                )
+                for claim in claims:
+                    task = asyncio.create_task(self.process_claim(claim))
+                    self._inflight.add(task)
+                    task.add_done_callback(self._inflight_done)
+                if claims:
+                    # Start handlers and their claim heartbeats before claiming again.
+                    await asyncio.sleep(0)
+                if self._draining and not self._inflight:
+                    break
+                if self._inflight and (available <= 0 or not claims or self._draining):
+                    stop_waiter = asyncio.create_task(self._stop_event.wait())
+                    try:
+                        await asyncio.wait(
+                            {*self._inflight, stop_waiter},
+                            timeout=self.poll_interval,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        stop_waiter.cancel()
+                        await asyncio.gather(stop_waiter, return_exceptions=True)
+                elif not claims:
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(), self.poll_interval
+                        )
+                    except TimeoutError:
+                        pass
+        finally:
+            if self._inflight:
+                await asyncio.gather(*tuple(self._inflight), return_exceptions=True)
+            self._running = False
+            worker_heartbeat.cancel()
+            await asyncio.gather(worker_heartbeat, return_exceptions=True)
+            self._set_worker_state("stopped")
+
+    def request_drain(self) -> None:
+        self._draining = True
+        self._stop_event.set()
+        if self._running:
+            self._set_worker_state("draining")
+
+    async def drain(self) -> None:
+        self.request_drain()
+        if self._inflight:
+            await asyncio.gather(*tuple(self._inflight), return_exceptions=True)
+        self._running = False
+        self._stop_event.set()
+
+    def stop(self) -> None:
+        self.request_drain()
+
+    async def _process_batch(self) -> int:
+        claims = self.claim_batch()
+        if claims:
+            await asyncio.gather(*(self.process_claim(claim) for claim in claims))
+        return len(claims)
 
 
-# Global job processor instance
-_job_processor: Optional[JobProcessor] = None
+_job_processor: JobProcessor | None = None
 
 
 def get_job_processor() -> JobProcessor:
-    """Get or create the global job processor instance."""
     global _job_processor
     if _job_processor is None:
-        _job_processor = JobProcessor()
-        # Register default handlers
-        from .cloud_sync_job import handle_sync_job
-        from .cloud_scan_job import handle_scan_job
-        from .remediation_job import handle_remediation_job
-        from .upload_job import handle_upload_job
-
-        _job_processor.register_handler(CloudJobType.SYNC.value, handle_sync_job)
-        _job_processor.register_handler(CloudJobType.SCAN.value, handle_scan_job)
-        _job_processor.register_handler(
-            CloudJobType.REMEDIATE.value, handle_remediation_job
-        )
-        _job_processor.register_handler(CloudJobType.UPLOAD.value, handle_upload_job)
+        _job_processor = JobProcessor(registry=build_default_registry())
     return _job_processor
 
 
 async def process_pending_jobs(batch_size: int = 10) -> int:
-    """
-    Process pending jobs (convenience function for manual invocation).
-
-    Args:
-        batch_size: Number of jobs to process
-
-    Returns:
-        Number of jobs processed
-    """
     processor = get_job_processor()
     processor.batch_size = batch_size
     return await processor._process_batch()
 
 
-# Background task runner for FastAPI
-async def start_job_processor_background():
-    """Start job processor as a background task."""
-    processor = get_job_processor()
-    await processor.start()
+async def start_job_processor_background() -> None:
+    """Compatibility hook; API startup intentionally does not invoke this."""
+    await get_job_processor().start()

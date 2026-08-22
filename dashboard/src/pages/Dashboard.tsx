@@ -559,7 +559,7 @@ export function Dashboard(): React.ReactElement {
                           ? 'var(--feature-success-content)'
                           : reviewSummary.reviewed_percent >= 50
                             ? 'var(--feature-warning-content)'
-                            : 'var(--accent-primary)',
+                            : 'var(--accent-solid)',
                       }}
                     />
                   </div>

@@ -12,13 +12,14 @@ Security:
 - Tokens are encrypted before database storage
 """
 
+import asyncio
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta, timezone
 from cryptography.fernet import Fernet
 import httpx
 import logging
 import os
-import time
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +295,9 @@ class OAuthTokenManager:
         """
         Refresh the credential's access token if expired, with distributed locking.
 
-        Uses Redis SET NX EX to prevent concurrent refresh attempts for the same
-        credential. If Redis is unavailable, falls back to unlocked refresh.
+        Uses an owner-bound renewable Redis lease to prevent concurrent refresh
+        attempts for the same credential. Brightspace fails closed if refresh
+        coordination is unavailable; historical providers retain unlocked fallback.
 
         Args:
             credential: CloudOAuthCredentials ORM object
@@ -309,8 +311,10 @@ class OAuthTokenManager:
             TokenRefreshError: If refresh fails after acquiring lock
         """
         from ..db.models import CloudProvider
+        from ..utils.security import require_persisted_brightspace_origin
 
         canvas_instance_url = None
+        brightspace_instance_url = None
         if credential.provider == CloudProvider.CANVAS.value:
             from ..utils.security import (
                 require_persisted_canvas_origin,
@@ -320,44 +324,139 @@ class OAuthTokenManager:
             canvas_instance_url = resolve_canvas_network_origin(
                 require_persisted_canvas_origin(credential)
             )
+        elif credential.provider == CloudProvider.BRIGHTSPACE.value:
+            brightspace_instance_url = require_persisted_brightspace_origin(credential)
+
+        expected_id = credential.id
+        expected_department = getattr(credential, "department_id", None)
+        expected_provider = credential.provider
+
+        def reload_exact_brightspace():
+            current = db.get(credential.__class__, expected_id, populate_existing=True)
+            if (
+                current is None
+                or current.id != expected_id
+                or current.department_id != expected_department
+                or current.provider != expected_provider
+                or current.provider != CloudProvider.BRIGHTSPACE.value
+                or current.is_active is not True
+            ):
+                raise TokenRefreshError("Brightspace credential is no longer active")
+            current_origin = require_persisted_brightspace_origin(current)
+            if current_origin != brightspace_instance_url:
+                raise TokenRefreshError("Brightspace credential origin changed")
+            return current
 
         if not self.is_token_expired(credential.token_expires_at):
+            if expected_provider == CloudProvider.BRIGHTSPACE.value:
+                credential = reload_exact_brightspace()
             return self.decrypt_token(credential.access_token)
 
-        # Try to acquire distributed lock via Redis
+        # Coordinate refreshes with an owner-bound renewable Redis lease.
         lock_key = f"token_refresh:{credential.id}"
+        lease_seconds = max(1, int(lock_timeout))
+        owner_token = secrets.token_urlsafe(32)
         redis_client = None
         lock_acquired = False
+        heartbeat = None
+        lock_lost = asyncio.Event()
+        is_brightspace = expected_provider == CloudProvider.BRIGHTSPACE.value
+        release_script = """
+            if redis.call('get', KEYS[1]) == ARGV[1] then
+                return redis.call('del', KEYS[1])
+            end
+            return 0
+        """
+        renew_script = """
+            if redis.call('get', KEYS[1]) == ARGV[1] then
+                return redis.call('pexpire', KEYS[1], ARGV[2])
+            end
+            return 0
+        """
 
         try:
             from ..auth.redis_rate_limiter import get_redis_client
 
             redis_client = get_redis_client()
         except Exception:
-            pass
+            if is_brightspace:
+                raise TokenRefreshError(
+                    "Brightspace token refresh coordination unavailable"
+                ) from None
+
+        if redis_client is None and is_brightspace:
+            raise TokenRefreshError(
+                "Brightspace token refresh coordination unavailable"
+            )
 
         if redis_client is not None:
-            # Spin-wait up to lock_timeout seconds for the lock
-            for _ in range(lock_timeout * 2):
-                lock_acquired = redis_client.set(
-                    lock_key, "1", nx=True, ex=lock_timeout
-                )
+            # Spin-wait up to lock_timeout seconds for the lock. Every acquisition
+            # has a cryptographically unique owner so an expired holder can never
+            # release a successor's lease.
+            for _ in range(max(1, lock_timeout * 2)):
+                try:
+                    lock_acquired = bool(
+                        redis_client.set(
+                            lock_key, owner_token, nx=True, ex=lease_seconds
+                        )
+                    )
+                except Exception:
+                    if is_brightspace:
+                        raise TokenRefreshError(
+                            "Brightspace token refresh coordination unavailable"
+                        ) from None
+                    redis_client = None
+                    break
                 if lock_acquired:
                     break
-                # Another worker is refreshing — wait and re-check expiry
-                time.sleep(0.5)
-                db.refresh(credential)
+                await asyncio.sleep(0.5)
+                if is_brightspace:
+                    credential = reload_exact_brightspace()
+                else:
+                    db.refresh(credential)
                 if not self.is_token_expired(credential.token_expires_at):
                     return self.decrypt_token(credential.access_token)
 
-            if not lock_acquired:
-                # Timed out waiting; try to return current token anyway
-                db.refresh(credential)
+            if redis_client is not None and not lock_acquired:
+                if is_brightspace:
+                    credential = reload_exact_brightspace()
+                    if self.is_token_expired(credential.token_expires_at):
+                        raise TokenRefreshError(
+                            "Timed out waiting for Brightspace token refresh"
+                        )
+                else:
+                    db.refresh(credential)
                 return self.decrypt_token(credential.access_token)
 
+        async def renew_lease() -> None:
+            assert redis_client is not None
+            interval = max(0.1, lease_seconds / 3)
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    renewed = redis_client.eval(
+                        renew_script,
+                        1,
+                        lock_key,
+                        owner_token,
+                        lease_seconds * 1000,
+                    )
+                except Exception:
+                    lock_lost.set()
+                    return
+                if renewed != 1:
+                    lock_lost.set()
+                    return
+
+        if redis_client is not None and lock_acquired:
+            heartbeat = asyncio.create_task(renew_lease())
+
         try:
-            # Re-check after acquiring lock (another worker may have refreshed)
-            db.refresh(credential)
+            # Re-check the exact row after acquiring the lock.
+            if is_brightspace:
+                credential = reload_exact_brightspace()
+            else:
+                db.refresh(credential)
             if not self.is_token_expired(credential.token_expires_at):
                 return self.decrypt_token(credential.access_token)
 
@@ -385,6 +484,16 @@ class OAuthTokenManager:
                         refresh_token=refresh_token,
                     )
                 )
+            elif credential.provider == CloudProvider.BRIGHTSPACE.value:
+                from ..integrations.brightspace.brightspace_oauth import (
+                    refresh_brightspace_token,
+                )
+
+                assert brightspace_instance_url is not None
+                new_access, new_refresh, new_expires = await refresh_brightspace_token(
+                    brightspace_instance_url=brightspace_instance_url,
+                    refresh_token=refresh_token,
+                )
             elif credential.provider == CloudProvider.BLACKBOARD.value:
                 from ..integrations.blackboard import BlackboardOAuthService
 
@@ -401,7 +510,29 @@ class OAuthTokenManager:
             else:
                 raise TokenRefreshError(f"Unsupported provider: {credential.provider}")
 
-            # Persist encrypted tokens
+            # The HTTP call may outlive or lose its lease. Revalidate ownership
+            # atomically and reload the exact Brightspace credential before any
+            # ORM mutation, so a stale result can never be persisted.
+            if redis_client is not None and lock_acquired:
+                try:
+                    still_owned = redis_client.eval(
+                        renew_script,
+                        1,
+                        lock_key,
+                        owner_token,
+                        lease_seconds * 1000,
+                    )
+                except Exception:
+                    still_owned = 0
+                if lock_lost.is_set() or still_owned != 1:
+                    if is_brightspace:
+                        raise TokenRefreshError("Brightspace token refresh lock lost")
+                    raise TokenRefreshError("OAuth token refresh lock lost")
+            if is_brightspace:
+                credential = reload_exact_brightspace()
+                if not self.is_token_expired(credential.token_expires_at):
+                    return self.decrypt_token(credential.access_token)
+
             credential.access_token = self.encrypt_token(new_access)
             if new_refresh:
                 credential.refresh_token = self.encrypt_token(new_refresh)
@@ -412,15 +543,23 @@ class OAuthTokenManager:
                 f"Refreshed OAuth token for credential {credential.id} "
                 f"(provider={credential.provider})"
             )
+            if is_brightspace:
+                credential = reload_exact_brightspace()
+                return self.decrypt_token(credential.access_token)
             return new_access
 
         finally:
-            # Release lock
+            if heartbeat is not None:
+                heartbeat.cancel()
+                try:
+                    await heartbeat
+                except asyncio.CancelledError:
+                    pass
             if redis_client is not None and lock_acquired:
                 try:
-                    redis_client.delete(lock_key)
+                    redis_client.eval(release_script, 1, lock_key, owner_token)
                 except Exception:
-                    pass  # Lock will expire via TTL
+                    pass  # The owner-bound lease will expire via TTL.
 
     async def revoke_google_token(self, token: str) -> bool:
         """

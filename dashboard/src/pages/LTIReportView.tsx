@@ -63,7 +63,7 @@ function severityColor(severity: string): string {
     case 'high':
       return 'var(--status-warning-text)';
     case 'medium':
-      return 'var(--accent-primary)';
+      return 'var(--accent)';
     default:
       return 'var(--content-secondary)';
   }
@@ -298,7 +298,7 @@ export function LTIReportView(): React.ReactElement {
               href={downloadHref}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium"
               style={{
-                backgroundColor: 'var(--accent-primary)',
+                backgroundColor: 'var(--accent-solid)',
                 color: '#fff',
               }}
             >
@@ -355,7 +355,7 @@ export function LTIReportView(): React.ReactElement {
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 font-medium"
-            style={{ color: 'var(--accent-primary)' }}
+            style={{ color: 'var(--accent)' }}
           >
             Aelira
             <ExternalLink className="w-3 h-3" />

@@ -10,6 +10,7 @@ from typing import Tuple, Optional, Dict, Any
 from datetime import datetime, timedelta
 import logging
 import json
+import threading
 
 from ..config.settings import get_settings
 from ..utils.security import redact_url_credentials
@@ -19,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 class OAuthStateStorageError(RuntimeError):
     """Raised when durable OAuth state storage is required but unavailable."""
+
+
+class RateLimitStorageUnavailable(RuntimeError):
+    """Raised when required distributed rate-limit storage is unavailable."""
 
 
 _settings = get_settings()
@@ -55,15 +60,11 @@ def get_redis_client() -> Optional[redis.Redis]:
             # Redacted: the URL carries the password inline, and logging it
             # verbatim wrote the credential to stdout, Loki and Sentry.
             logger.info(f"Connected to Redis at {redact_url_credentials(redis_url)}")
-        except redis.ConnectionError as e:
-            logger.warning(
-                f"Failed to connect to Redis: {e}. Rate limiting will use in-memory fallback."
-            )
+        except redis.ConnectionError:
+            logger.warning("Failed to connect to Redis; storage fallback may be used")
             _redis_client = None
-        except Exception as e:
-            logger.warning(
-                f"Redis error: {e}. Rate limiting will use in-memory fallback."
-            )
+        except Exception:
+            logger.warning("Redis initialization failed; storage fallback may be used")
             _redis_client = None
 
     return _redis_client
@@ -72,8 +73,25 @@ def get_redis_client() -> Optional[redis.Redis]:
 class RedisRateLimiter:
     """Redis-based rate limiter for API keys."""
 
+    WINDOW_SECONDS = 3600
+    _RATE_LIMIT_SCRIPT = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+local ttl = redis.call('TTL', KEYS[1])
+return {count, ttl}
+"""
+    _memory_lock = threading.Lock()
+    _rate_limits: Dict[str, Dict[str, Any]] = {}
+
     @staticmethod
-    def check_rate_limit(api_key_id: str, limit_per_hour: int) -> Tuple[bool, dict]:
+    def check_rate_limit(
+        api_key_id: str,
+        limit_per_hour: int,
+        *,
+        require_distributed: bool = False,
+    ) -> Tuple[bool, dict]:
         """
         Check if API key has exceeded rate limit using Redis.
 
@@ -89,7 +107,10 @@ class RedisRateLimiter:
         redis_client = get_redis_client()
 
         if redis_client is None:
-            # Fallback to in-memory rate limiting
+            if require_distributed:
+                raise RateLimitStorageUnavailable(
+                    "Distributed rate limit storage is unavailable"
+                )
             return RedisRateLimiter._check_rate_limit_memory(api_key_id, limit_per_hour)
 
         try:
@@ -97,29 +118,19 @@ class RedisRateLimiter:
             hour_key = current_time.strftime("%Y-%m-%d-%H")
             redis_key = f"rate_limit:{api_key_id}:{hour_key}"
 
-            # Get current count
-            current_count = redis_client.get(redis_key)
-
-            if current_count is None:
-                # First request in this hour window
-                redis_client.setex(redis_key, 3600, 1)  # Expire in 1 hour
-                allowed = True
-                remaining = limit_per_hour - 1
-            else:
-                current_count = int(current_count)
-
-                if current_count >= limit_per_hour:
-                    allowed = False
-                    remaining = 0
-                else:
-                    # Increment count
-                    redis_client.incr(redis_key)
-                    allowed = True
-                    remaining = limit_per_hour - current_count - 1
-
-            # Get expiration time
-            ttl = redis_client.ttl(redis_key)
-            reset_at = datetime.utcnow() + timedelta(seconds=ttl if ttl > 0 else 3600)
+            current_count, ttl = redis_client.eval(
+                RedisRateLimiter._RATE_LIMIT_SCRIPT,
+                1,
+                redis_key,
+                RedisRateLimiter.WINDOW_SECONDS,
+            )
+            current_count = int(current_count)
+            ttl = int(ttl)
+            allowed = current_count <= limit_per_hour
+            remaining = max(0, limit_per_hour - current_count)
+            reset_at = datetime.utcnow() + timedelta(
+                seconds=ttl if ttl > 0 else RedisRateLimiter.WINDOW_SECONDS
+            )
 
             # Build headers
             headers = {
@@ -129,20 +140,24 @@ class RedisRateLimiter:
             }
 
             logger.debug(
-                f"Rate limit check for {api_key_id}: {current_count or 0}/{limit_per_hour}, allowed={allowed}"
+                f"Rate limit check for {api_key_id}: {current_count}/{limit_per_hour}, allowed={allowed}"
             )
 
             return allowed, headers
 
-        except redis.RedisError as e:
-            logger.error(
-                f"Redis error during rate limit check: {e}, falling back to in-memory"
-            )
+        except redis.RedisError:
+            logger.error("Redis rate-limit storage operation failed")
+            if require_distributed:
+                raise RateLimitStorageUnavailable(
+                    "Distributed rate limit storage is unavailable"
+                ) from None
             return RedisRateLimiter._check_rate_limit_memory(api_key_id, limit_per_hour)
-        except Exception as e:
-            logger.error(
-                f"Unexpected error during rate limit check: {e}, falling back to in-memory"
-            )
+        except Exception:
+            logger.error("Unexpected rate-limit storage operation failure")
+            if require_distributed:
+                raise RateLimitStorageUnavailable(
+                    "Distributed rate limit storage is unavailable"
+                ) from None
             return RedisRateLimiter._check_rate_limit_memory(api_key_id, limit_per_hour)
 
     @staticmethod
@@ -154,44 +169,36 @@ class RedisRateLimiter:
 
         This is not production-ready for multi-instance deployments.
         """
-        # In-memory storage (fallback)
-        if not hasattr(RedisRateLimiter, "_rate_limits"):
-            RedisRateLimiter._rate_limits = {}
-
         current_time = datetime.utcnow()
         hour_key = current_time.strftime("%Y-%m-%d-%H")
         key = f"{api_key_id}:{hour_key}"
 
-        # Get current count
-        if key not in RedisRateLimiter._rate_limits:
-            RedisRateLimiter._rate_limits[key] = {
-                "count": 0,
-                "reset_at": current_time + timedelta(hours=1),
+        with RedisRateLimiter._memory_lock:
+            if key not in RedisRateLimiter._rate_limits:
+                RedisRateLimiter._rate_limits[key] = {
+                    "count": 0,
+                    "reset_at": current_time + timedelta(hours=1),
+                }
+
+            rate_data = RedisRateLimiter._rate_limits[key]
+            if current_time >= rate_data["reset_at"]:
+                rate_data["count"] = 0
+                rate_data["reset_at"] = current_time + timedelta(hours=1)
+
+            allowed = rate_data["count"] < limit_per_hour
+            if allowed:
+                rate_data["count"] += 1
+
+            count = rate_data["count"]
+            reset_at = rate_data["reset_at"]
+            headers = {
+                "X-RateLimit-Limit": str(limit_per_hour),
+                "X-RateLimit-Remaining": str(max(0, limit_per_hour - count)),
+                "X-RateLimit-Reset": str(int(reset_at.timestamp())),
             }
 
-        rate_data = RedisRateLimiter._rate_limits[key]
-
-        # Check if window has reset
-        if current_time >= rate_data["reset_at"]:
-            rate_data["count"] = 0
-            rate_data["reset_at"] = current_time + timedelta(hours=1)
-
-        # Check limit
-        if rate_data["count"] >= limit_per_hour:
-            allowed = False
-        else:
-            allowed = True
-            rate_data["count"] += 1
-
-        # Build headers
-        headers = {
-            "X-RateLimit-Limit": str(limit_per_hour),
-            "X-RateLimit-Remaining": str(max(0, limit_per_hour - rate_data["count"])),
-            "X-RateLimit-Reset": str(int(rate_data["reset_at"].timestamp())),
-        }
-
         logger.debug(
-            f"Rate limit check (memory) for {api_key_id}: {rate_data['count']}/{limit_per_hour}, allowed={allowed}"
+            f"Rate limit check (memory) for {api_key_id}: {count}/{limit_per_hour}, allowed={allowed}"
         )
 
         return allowed, headers
@@ -219,11 +226,11 @@ class RedisRateLimiter:
                     )
                 else:
                     logger.debug(f"No rate limit keys found for {api_key_id}")
-            except redis.RedisError as e:
-                logger.error(f"Failed to reset rate limit in Redis: {e}")
+            except redis.RedisError:
+                logger.error("Failed to reset rate limit in Redis")
 
         # Also clear in-memory fallback
-        if hasattr(RedisRateLimiter, "_rate_limits"):
+        with RedisRateLimiter._memory_lock:
             keys_to_delete = [
                 k
                 for k in RedisRateLimiter._rate_limits.keys()

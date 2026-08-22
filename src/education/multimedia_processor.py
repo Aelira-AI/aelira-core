@@ -142,7 +142,9 @@ class MultimediaProcessor:
             try:
                 from .image_alt_text import ImageAltTextGenerator
 
-                self._image_generator = ImageAltTextGenerator()
+                self._image_generator = ImageAltTextGenerator(
+                    allow_legacy_transport=True
+                )
                 logger.info(
                     "[MultimediaProcessor] ImageAltTextGenerator loaded for smart image analysis"
                 )

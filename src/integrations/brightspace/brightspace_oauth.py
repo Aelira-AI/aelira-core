@@ -13,11 +13,68 @@ Brightspace OAuth Documentation:
 import os
 import logging
 import httpx
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 logger = logging.getLogger(__name__)
+
+BRIGHTSPACE_TOKEN_URL = "https://auth.brightspace.com/core/connect/token"
+BRIGHTSPACE_TOKEN_TIMEOUT_SECONDS = 15.0
+
+
+class BrightspaceOAuthError(Exception):
+    """Sanitized Brightspace OAuth transport or response failure."""
+
+
+def _validated_token_endpoint() -> str:
+    """Return the one approved centralized Brightspace token endpoint."""
+    try:
+        parsed = urlsplit(BRIGHTSPACE_TOKEN_URL)
+        port = parsed.port
+    except (TypeError, ValueError):
+        raise BrightspaceOAuthError(
+            "Invalid Brightspace OAuth token endpoint"
+        ) from None
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "auth.brightspace.com"
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path != "/core/connect/token"
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise BrightspaceOAuthError("Invalid Brightspace OAuth token endpoint")
+    return "https://auth.brightspace.com/core/connect/token"
+
+
+async def _post_token(data: Dict[str, str]) -> Dict[str, Any]:
+    """POST secrets only to the fixed endpoint with a hardened HTTP client."""
+    token_url = _validated_token_endpoint()
+    try:
+        async with httpx.AsyncClient(
+            timeout=BRIGHTSPACE_TOKEN_TIMEOUT_SECONDS,
+            trust_env=False,
+            follow_redirects=False,
+        ) as client:
+            response = await client.post(
+                token_url,
+                data=data,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("invalid token response")
+            return payload
+    except Exception:
+        logger.warning("Brightspace OAuth token request failed")
+        raise BrightspaceOAuthError("Brightspace OAuth token request failed") from None
 
 
 def get_brightspace_authorization_url(
@@ -90,39 +147,30 @@ async def exchange_brightspace_code_for_token(
     if not client_id or not client_secret:
         raise ValueError("Brightspace OAuth credentials not configured")
 
-    # Brightspace cloud uses centralized token endpoint at auth.brightspace.com
-    token_url = "https://auth.brightspace.com/core/connect/token"
+    data = await _post_token(
+        {
+            "grant_type": "authorization_code",
+            "code": authorization_code,
+            "redirect_uri": redirect_uri,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }
+    )
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            token_url,
-            data={
-                "grant_type": "authorization_code",
-                "code": authorization_code,
-                "redirect_uri": redirect_uri,
-                "client_id": client_id,
-                "client_secret": client_secret,
-            },
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        )
-
-        response.raise_for_status()
-        data = response.json()
-
-        # Extract tokens
+    try:
         access_token = data["access_token"]
         refresh_token = data.get("refresh_token", "")
-
-        # Calculate expiration (default 1 hour if not specified)
         expires_in = data.get("expires_in", 3600)
+        if not isinstance(access_token, str) or not isinstance(refresh_token, str):
+            raise ValueError("invalid token response")
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+    except Exception:
+        raise BrightspaceOAuthError(
+            "Invalid Brightspace OAuth token response"
+        ) from None
 
-        logger.info(f"Brightspace OAuth token obtained, expires at {expires_at}")
-
-        return access_token, refresh_token, expires_at
+    logger.info("Brightspace OAuth token obtained")
+    return access_token, refresh_token, expires_at
 
 
 async def refresh_brightspace_token(
@@ -149,34 +197,28 @@ async def refresh_brightspace_token(
     if not client_id or not client_secret:
         raise ValueError("Brightspace OAuth credentials not configured")
 
-    # Brightspace cloud uses centralized token endpoint at auth.brightspace.com
-    token_url = "https://auth.brightspace.com/core/connect/token"
+    data = await _post_token(
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }
+    )
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            token_url,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": client_id,
-                "client_secret": client_secret,
-            },
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        )
-
-        response.raise_for_status()
-        data = response.json()
-
+    try:
         new_access_token = data["access_token"]
-        new_refresh_token = data.get("refresh_token")  # May be None if not rotated
-
-        # Calculate expiration
+        new_refresh_token = data.get("refresh_token")
         expires_in = data.get("expires_in", 3600)
+        if not isinstance(new_access_token, str) or (
+            new_refresh_token is not None and not isinstance(new_refresh_token, str)
+        ):
+            raise ValueError("invalid token response")
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+    except Exception:
+        raise BrightspaceOAuthError(
+            "Invalid Brightspace OAuth token response"
+        ) from None
 
-        logger.info(f"Brightspace OAuth token refreshed, expires at {expires_at}")
-
-        return new_access_token, new_refresh_token, expires_at
+    logger.info("Brightspace OAuth token refreshed")
+    return new_access_token, new_refresh_token, expires_at

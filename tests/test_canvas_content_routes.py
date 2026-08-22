@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import uuid
 
 from src.api.main import app
@@ -99,7 +100,7 @@ def override_deps(mock_api_key, mock_session, patch_require_feature):
 def _make_cloud_file(
     *,
     cloud_file_id=None,
-    content_source="page",
+    content_source: str | None = "page",
     file_name="Test Page",
     content_body="<p>Hello</p>",
     remediated_body=None,
@@ -108,6 +109,8 @@ def _make_cloud_file(
     compliance_score=None,
     last_scan_id=None,
     has_remediated_version=None,
+    remediation_origin=None,
+    current_remediation_artifact_id=None,
     remediated_issues_fixed=None,
     remediated_issues_remaining=None,
 ):
@@ -132,6 +135,8 @@ def _make_cloud_file(
         if has_remediated_version is None
         else has_remediated_version
     )
+    cf.remediation_origin = remediation_origin
+    cf.current_remediation_artifact_id = current_remediation_artifact_id
     # Explicitly None unless a test sets them: a bare MagicMock attribute
     # is truthy and coerces to an int, which would let the "was this
     # verified by a rescan" check pass silently in every fixture.
@@ -250,119 +255,109 @@ class TestAuthRequired:
 class TestScanCourseContent:
     """Tests for POST /canvas/content/scan."""
 
-    @patch("src.api.canvas_content_routes._content_scan_task", new_callable=AsyncMock)
-    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_scan_returns_summary(
-        self, mock_get_client, mock_scan_task, client, mock_session, override_deps
+    def test_scan_enqueues_one_durable_course_discovery(
+        self, client, mock_session, override_deps
     ):
-        """Successful scan returns total_items, jobs_queued, skipped, by_type."""
-        mock_credential = MagicMock()
-        mock_credential.id = "cred-1"
-        mock_canvas = AsyncMock()
-        mock_get_client.return_value = (mock_credential, mock_canvas)
+        """The route persists immutable discovery input for the worker."""
+        credential = SimpleNamespace(id="cred-1")
+        mock_session.query.return_value.filter.return_value.first.return_value = (
+            credential
+        )
+        queued_job = SimpleNamespace(id="job-course", status="pending", progress=0)
+        enqueue = MagicMock(return_value=queued_job)
+        scanner = MagicMock()
+        get_client = AsyncMock()
 
-        scan_result = {
-            "course_id": "101",
-            "cloud_file_ids": ["cf-1", "cf-2", "cf-3"],
-            "counts": {
-                "page": 2,
-                "assignment": 1,
-                "announcement": 0,
-                "quiz": 0,
-                "discussion": 0,
-                "skipped_empty": 3,
-            },
-        }
-
-        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
-            scanner_instance = AsyncMock()
-            scanner_instance.scan_course_content.return_value = scan_result
-            MockScanner.return_value = scanner_instance
-
+        with (
+            patch("src.api.canvas_content_routes.require_persisted_canvas_origin"),
+            patch("src.api.canvas_content_routes.enqueue_cloud_job", enqueue),
+            patch("src.api.canvas_content_routes.CanvasContentScanner", scanner),
+            patch("src.api.canvas_content_routes._get_canvas_client", get_client),
+        ):
             response = client.post(
                 "/canvas/content/scan",
                 json={"course_id": "101"},
             )
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["total_items"] == 3
-        assert data["jobs_queued"] == 3
-        assert data["skipped"] == 3
-        assert data["by_type"]["page"] == 2
-        assert data["by_type"]["assignment"] == 1
-
-    @patch(
-        "src.api.canvas_content_routes._canvas_scan_file_task", new_callable=AsyncMock
-    )
-    @patch("src.api.canvas_content_routes._content_scan_task", new_callable=AsyncMock)
-    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_scan_fires_background_task_per_file_job(
-        self,
-        mock_get_client,
-        mock_content_task,
-        mock_file_task,
-        client,
-        mock_session,
-        override_deps,
-    ):
-        """Each file_scan_job the scanner returns must get its own
-        _canvas_scan_file_task background task fired. A CloudJobQueue row
-        the scanner created but nobody fires a task for sits PENDING
-        forever — nothing in this app polls the queue (JobProcessor is
-        never started)."""
-        mock_credential = MagicMock()
-        mock_credential.id = "cred-1"
-        mock_canvas = AsyncMock()
-        mock_get_client.return_value = (mock_credential, mock_canvas)
-
-        scan_result = {
-            "course_id": "101",
-            "cloud_file_ids": ["cf-1"],
-            "file_scan_jobs": [
-                {"job_id": "job-1", "cloud_file_id": "file-cf-1"},
-                {"job_id": "job-2", "cloud_file_id": "file-cf-2"},
-            ],
-            "counts": {
-                "page": 1,
-                "assignment": 0,
-                "announcement": 0,
-                "quiz": 0,
-                "discussion": 0,
-                "file": 2,
-                "skipped_empty": 0,
-            },
+        assert response.json() == {
+            "job_id": "job-course",
+            "status": "pending",
+            "progress": 0,
+            "total_items": 0,
+            "jobs_queued": 1,
+            "skipped": 0,
+            "by_type": {},
+            "operation_kind": "deterministic_scan",
+            "external_ai_used": False,
+            "ai_used": False,
         }
+        enqueue.assert_called_once_with(
+            mock_session,
+            department_id="test-dept-456",
+            job_type="scan",
+            payload={
+                "scan_kind": "canvas_course",
+                "credential_id": "cred-1",
+                "provider": "canvas",
+                "course_id": "101",
+                "content_types": [
+                    "page",
+                    "assignment",
+                    "announcement",
+                    "quiz",
+                    "discussion",
+                    "file",
+                ],
+                "scan_options": {
+                    "generate_alt_text": False,
+                    "auto_remediate": False,
+                    "detect_decorative": False,
+                },
+            },
+            dedupe_key="canvas-course-scan:cred-1:101:68549e4fec25e6f7",
+            provider="canvas",
+            credential_id="cred-1",
+            provider_file_id="101",
+        )
+        scanner.assert_not_called()
+        get_client.assert_not_awaited()
 
-        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
-            scanner_instance = AsyncMock()
-            scanner_instance.scan_course_content.return_value = scan_result
-            MockScanner.return_value = scanner_instance
+    def test_scan_legacy_true_flags_cannot_expand_inline_execution(
+        self, client, mock_session, override_deps
+    ):
+        """Legacy generative flags are frozen false in the durable payload."""
+        credential = SimpleNamespace(id="cred-1")
+        mock_session.query.return_value.filter.return_value.first.return_value = (
+            credential
+        )
+        queued_job = SimpleNamespace(id="job-course", status="pending", progress=0)
+        enqueue = MagicMock(return_value=queued_job)
+        scanner = MagicMock()
 
+        with (
+            patch("src.api.canvas_content_routes.require_persisted_canvas_origin"),
+            patch("src.api.canvas_content_routes.enqueue_cloud_job", enqueue),
+            patch("src.api.canvas_content_routes.CanvasContentScanner", scanner),
+        ):
             response = client.post(
                 "/canvas/content/scan",
-                json={"course_id": "101"},
+                json={
+                    "course_id": "101",
+                    "generate_alt_text": True,
+                    "auto_remediate": True,
+                    "detect_decorative": True,
+                },
             )
 
         assert response.status_code == 200
-        data = response.json()
-        # 1 HTML item + 2 files — files must be counted, not just queued.
-        assert data["total_items"] == 3
-        assert data["jobs_queued"] == 3
-        assert data["by_type"]["file"] == 2
-
-        assert mock_file_task.await_count == 2
-        called_kwargs = [call.kwargs for call in mock_file_task.await_args_list]
-        assert {
-            "job_id": "job-1",
-            "cloud_file_id": "file-cf-1",
-            "credential_id": "cred-1",
-        } in called_kwargs
-        assert {
-            "job_id": "job-2",
-            "cloud_file_id": "file-cf-2",
-            "credential_id": "cred-1",
-        } in called_kwargs
+        assert enqueue.call_args.kwargs["payload"]["scan_options"] == {
+            "generate_alt_text": False,
+            "auto_remediate": False,
+            "detect_decorative": False,
+        }
+        assert enqueue.call_count == 1
+        scanner.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -373,43 +368,50 @@ class TestScanCourseContent:
 class TestScanSingleContentType:
     """Tests for POST /canvas/content/scan/{content_type}."""
 
-    @patch("src.api.canvas_content_routes._content_scan_task", new_callable=AsyncMock)
-    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_scan_single_type(
-        self, mock_get_client, mock_scan_task, client, mock_session, override_deps
-    ):
-        """Scanning a single content type returns filtered results."""
-        mock_credential = MagicMock()
-        mock_credential.id = "cred-1"
-        mock_canvas = AsyncMock()
-        mock_get_client.return_value = (mock_credential, mock_canvas)
+    def test_scan_single_type(self, client, mock_session, override_deps):
+        """A type-scoped request persists that exact worker scope."""
+        credential = SimpleNamespace(id="cred-1")
+        mock_session.query.return_value.filter.return_value.first.return_value = (
+            credential
+        )
+        queued_job = SimpleNamespace(id="job-page", status="pending", progress=0)
+        enqueue = MagicMock(return_value=queued_job)
+        scanner = MagicMock()
 
-        scan_result = {
-            "course_id": "101",
-            "cloud_file_ids": ["cf-1"],
-            "counts": {
-                "page": 1,
-                "assignment": 0,
-                "announcement": 0,
-                "quiz": 0,
-                "discussion": 0,
-                "skipped_empty": 0,
-            },
-        }
-
-        with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
-            scanner_instance = AsyncMock()
-            scanner_instance.scan_course_content.return_value = scan_result
-            MockScanner.return_value = scanner_instance
-
+        with (
+            patch("src.api.canvas_content_routes.require_persisted_canvas_origin"),
+            patch("src.api.canvas_content_routes.enqueue_cloud_job", enqueue),
+            patch("src.api.canvas_content_routes.CanvasContentScanner", scanner),
+        ):
             response = client.post(
                 "/canvas/content/scan/page",
                 json={"course_id": "101"},
             )
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["by_type"]["page"] == 1
+        assert response.json()["job_id"] == "job-page"
+        enqueue.assert_called_once_with(
+            mock_session,
+            department_id="test-dept-456",
+            job_type="scan",
+            payload={
+                "scan_kind": "canvas_course",
+                "credential_id": "cred-1",
+                "provider": "canvas",
+                "course_id": "101",
+                "content_types": ["page"],
+                "scan_options": {
+                    "generate_alt_text": False,
+                    "auto_remediate": False,
+                    "detect_decorative": False,
+                },
+            },
+            dedupe_key="canvas-course-scan:cred-1:101:page",
+            provider="canvas",
+            credential_id="cred-1",
+            provider_file_id="101",
+        )
+        scanner.assert_not_called()
 
     def test_scan_invalid_content_type(self, client, override_deps):
         """Invalid content type returns 422."""
@@ -455,6 +457,44 @@ class TestCourseContentStatus:
         data = response.json()
         assert data["course_id"] == "101"
         assert isinstance(data["items"], list)
+        assert data["items"][0]["provider"] == "canvas"
+        assert data["items"][0]["provider_parent_id"] == "course-101"
+        assert (
+            data["items"][0]["content_updated_at"] == cf1.content_updated_at.isoformat()
+        )
+
+    def test_status_returns_persisted_remediation_origin(
+        self, client, mock_session, override_deps
+    ):
+        automatic = _make_cloud_file(
+            cloud_file_id="automatic",
+            has_remediated_version=True,
+            remediation_origin="automatic",
+        )
+        manual = _make_cloud_file(
+            cloud_file_id="manual",
+            has_remediated_version=True,
+            remediation_origin="manual",
+        )
+        legacy = _make_cloud_file(
+            cloud_file_id="legacy",
+            has_remediated_version=True,
+            remediation_origin=None,
+        )
+        mock_session.query.return_value.filter.return_value.all.return_value = [
+            automatic,
+            manual,
+            legacy,
+        ]
+
+        response = client.get("/canvas/content/courses/101/status")
+
+        assert response.status_code == 200
+        assert [item["remediation_origin"] for item in response.json()["items"]] == [
+            "automatic",
+            "manual",
+            None,
+        ]
 
     def test_status_counts_files_with_no_content_source(
         self, client, mock_session, override_deps
@@ -712,13 +752,26 @@ class TestApproveContent:
         assert response.status_code == 400
         assert "remediated" in response.json()["detail"].lower()
 
-    def test_approve_accepts_file_row_with_no_remediated_body(
+    def test_approve_rejects_source_that_requires_rescan(
         self, client, mock_session, override_deps
     ):
-        """A file-type row remediated as a file (has_remediated_version=True,
-        remediated_body=None — files never get an HTML body) must still be
-        approvable. Checking remediated_body alone made every file
-        unapprovable even after a successful remediation."""
+        cf = _make_cloud_file(
+            writeback_status="pending_review",
+            remediated_body="<p>Old remediation</p>",
+        )
+        cf.needs_rescan = True
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        response = client.post(f"/canvas/content/{cf.id}/approve")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Source changed; re-scan required"
+        mock_session.commit.assert_not_called()
+
+    def test_approve_rejects_legacy_file_flag_without_managed_artifact(
+        self, client, mock_session, override_deps
+    ):
+        """A legacy boolean cannot authorize file approval without byte identity."""
         cf = _make_cloud_file(
             content_source="file",
             writeback_status=None,
@@ -729,9 +782,8 @@ class TestApproveContent:
 
         response = client.post(f"/canvas/content/{cf.id}/approve")
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["writeback_status"] == "approved"
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Managed artifact required"
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +799,7 @@ class TestRejectContent:
         cf = _make_cloud_file(
             writeback_status="pending_review",
             remediated_body="<p>Fixed</p>",
+            remediation_origin="automatic",
         )
         mock_session.query.return_value.filter.return_value.first.return_value = cf
 
@@ -755,6 +808,7 @@ class TestRejectContent:
         assert response.status_code == 200
         data = response.json()
         assert data["writeback_status"] == "rejected"
+        assert cf.remediation_origin is None
 
     def test_reject_not_found(self, client, mock_session, override_deps):
         """Reject for missing cloud_file_id returns 404."""
@@ -797,12 +851,10 @@ class TestBatchApprove:
         data = response.json()
         assert data["approved_count"] == 2
 
-    def test_batch_approve_accepts_files_and_skips_unremediated(
+    def test_batch_approve_is_atomic_when_any_item_is_unapprovable(
         self, client, mock_session, override_deps
     ):
-        """A body-only item and a has_remediated_version-only (file) item
-        both approve; an item with neither is still skipped with the
-        existing 'no remediated content' error."""
+        """No item mutates when the complete set is not approvable."""
         html_item = _make_cloud_file(
             writeback_status="pending_review",
             remediated_body="<p>Fixed</p>",
@@ -830,13 +882,9 @@ class TestBatchApprove:
             json={"cloud_file_ids": [html_item.id, file_item.id, unremediated_item.id]},
         )
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["approved_count"] == 2
-        assert data["skipped_count"] == 1
-        assert any("no remediated content" in e for e in data["errors"])
-        assert html_item.writeback_status == "approved"
-        assert file_item.writeback_status == "approved"
+        assert response.status_code == 400
+        assert html_item.writeback_status == "pending_review"
+        assert file_item.writeback_status is None
 
 
 # ---------------------------------------------------------------------------
@@ -894,12 +942,10 @@ class TestBatchWriteback:
         assert scanner_instance.write_back_content.call_count == 2
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_batch_writeback_uploads_approved_file_rows(
+    def test_batch_writeback_counts_stale_file_rows(
         self, mock_get_client, client, mock_session, override_deps
     ):
-        """A course whose only approved item is a file still writes back:
-        files are uploaded alongside the original rather than edited in
-        place, and the count reflects the upload."""
+        """A stale managed file is reported as stale rather than failed."""
         file_item = _make_cloud_file(
             content_source="file",
             writeback_status="approved",
@@ -920,9 +966,9 @@ class TestBatchWriteback:
         with patch("src.api.canvas_content_routes.CanvasContentScanner") as MockScanner:
             scanner_instance = AsyncMock()
             scanner_instance.write_back_file.return_value = {
-                "success": True,
-                "stale": False,
-                "canvas_file_id": "canvas-77",
+                "success": False,
+                "stale": True,
+                "error": "Canvas file changed since the scan",
             }
             MockScanner.return_value = scanner_instance
 
@@ -933,10 +979,11 @@ class TestBatchWriteback:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["written_count"] == 1
+        assert data["written_count"] == 0
         assert data["failed_count"] == 0
+        assert data["stale_count"] == 1
         assert data["skipped_count"] == 0
-        assert data["errors"] == []
+        assert data["errors"] == [f"{file_item.id}: content is stale"]
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_batch_writeback_mixed_html_and_file_rows(
@@ -1092,6 +1139,197 @@ class TestWriteback:
         assert data["issues_introduced"] == 0
         scanner_instance.remediate_content_item.assert_awaited_once()
 
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_content_remediation_defaults_to_deterministic_without_policy_lookup(
+        self, mock_get_client, client, mock_session, override_deps
+    ):
+        cf = _make_cloud_file(content_source="page", content_body="<p>Hi</p>")
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+        credential = MagicMock(id="cred-1")
+        mock_get_client.return_value = (credential, AsyncMock())
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                side_effect=AssertionError("policy lookup forbidden without intent"),
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            scanner = AsyncMock()
+            scanner.remediate_content_item.return_value = {
+                "success": True,
+                "fixed_count": 1,
+            }
+            scanner_cls.return_value = scanner
+            response = client.post(f"/canvas/content/{cf.id}/remediate")
+
+        assert response.status_code == 200
+        assert response.json()["ai_used"] is False
+        assert response.json()["external_ai_used"] is False
+        scanner.remediate_content_item.assert_awaited_once_with(
+            cf,
+            remediation_client=None,
+            alt_text_client=None,
+            requested_purposes=set(),
+            remediation_origin="manual",
+        )
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_requested_html_ai_denied_returns_403_before_canvas_or_remediation(
+        self, mock_get_client, client, mock_session, override_deps
+    ):
+        cf = _make_cloud_file(content_source="page", content_body="<p>Hi</p>")
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                return_value=None,
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            response = client.post(
+                f"/canvas/content/{cf.id}/remediate", json={"use_ai": True}
+            )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "LMS AI remediation is not permitted"
+        mock_get_client.assert_not_awaited()
+        scanner_cls.assert_not_called()
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_alt_text_policy_is_independent_and_denial_remains_manual(
+        self, mock_get_client, client, mock_session, override_deps
+    ):
+        cf = _make_cloud_file(
+            content_source="page", content_body="<img src='/files/1'>"
+        )
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+        mock_get_client.return_value = (MagicMock(id="cred-1"), AsyncMock())
+        remediation_client = MagicMock(provider="ollama", purpose="remediation")
+
+        def bind(**kwargs):
+            return remediation_client if kwargs["purpose"] == "remediation" else None
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                side_effect=bind,
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            scanner = AsyncMock()
+            scanner.remediate_content_item.return_value = {
+                "success": True,
+                "fixed_count": 0,
+            }
+            scanner_cls.return_value = scanner
+            response = client.post(
+                f"/canvas/content/{cf.id}/remediate",
+                json={"use_ai": True, "generate_alt_text": True},
+            )
+
+        assert response.status_code == 200
+        call = scanner.remediate_content_item.await_args
+        assert call.kwargs["remediation_client"] is remediation_client
+        assert call.kwargs["alt_text_client"] is None
+        decisions = response.json()["purpose_decisions"]
+        assert decisions == {
+            "remediation": "allowed_not_used",
+            "alt_text": "denied_at_dispatch",
+        }
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_dispatch_revocation_and_canvas_close_failure_preserve_authoritative_truth(
+        self, mock_get_client, client, mock_session, override_deps, caplog
+    ):
+        cf = _make_cloud_file(content_source="page", content_body="<p>Hi</p>")
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+        remediation_client = MagicMock(provider="gemini", purpose="remediation")
+        api_client = AsyncMock()
+        api_client.close.side_effect = RuntimeError("SENSITIVE CLOSE DETAIL")
+        mock_get_client.return_value = (MagicMock(id="cred-1"), api_client)
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                return_value=remediation_client,
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            scanner = AsyncMock()
+            scanner.remediate_content_item.return_value = {
+                "success": False,
+                "error": "policy_denied",
+                "ai_used": False,
+                "external_ai_used": False,
+                "provider": None,
+                "purpose_decisions": {
+                    "remediation": "denied_at_dispatch",
+                    "alt_text": "not_requested",
+                },
+            }
+            scanner_cls.return_value = scanner
+            response = client.post(
+                f"/canvas/content/{cf.id}/remediate", json={"use_ai": True}
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is False
+        assert data["error"] == "Content remediation failed"
+        assert data["error_code"] == "REMEDIATION_FAILED"
+        assert data["ai_used"] is False
+        assert data["external_ai_used"] is False
+        assert data["purpose_decisions"]["remediation"] == "denied_at_dispatch"
+        assert "SENSITIVE" not in str(data)
+        assert "SENSITIVE CLOSE DETAIL" not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_provider_attempt_and_canvas_close_failure_preserve_usage_truth(
+        self, mock_get_client, client, mock_session, override_deps, caplog
+    ):
+        cf = _make_cloud_file(content_source="page", content_body="<p>Hi</p>")
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+        api_client = AsyncMock()
+        api_client.close.side_effect = RuntimeError("raw close secret")
+        mock_get_client.return_value = (MagicMock(id="cred-1"), api_client)
+
+        with (
+            patch(
+                "src.api.canvas_content_routes.LMSRemediationClient.bind_if_allowed",
+                return_value=MagicMock(provider="gemini", purpose="remediation"),
+            ),
+            patch("src.api.canvas_content_routes.CanvasContentScanner") as scanner_cls,
+        ):
+            scanner = AsyncMock()
+            scanner.remediate_content_item.return_value = {
+                "success": False,
+                "error": "provider_call_failed",
+                "ai_used": True,
+                "external_ai_used": True,
+                "provider": "gemini",
+                "purpose_decisions": {
+                    "remediation": "attempted_failed",
+                    "alt_text": "not_requested",
+                },
+            }
+            scanner_cls.return_value = scanner
+            response = client.post(
+                f"/canvas/content/{cf.id}/remediate", json={"use_ai": True}
+            )
+
+        data = response.json()
+        assert data["success"] is False
+        assert data["ai_used"] is True
+        assert data["external_ai_used"] is True
+        assert data["provider"] == "gemini"
+        assert data["purpose_decisions"]["remediation"] == "attempted_failed"
+        assert "secret" not in str(data).lower()
+        assert "raw close secret" not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
     def test_remediating_a_file_row_is_refused_with_a_reason(
         self, client, mock_session, override_deps
     ):
@@ -1108,14 +1346,14 @@ class TestWriteback:
         assert "scan-based" in data["error"]
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
-    def test_writeback_file_row_uses_the_upload_path(
+    def test_writeback_legacy_null_file_row_uses_the_upload_path(
         self, mock_get_client, client, mock_session, override_deps
     ):
         """A file row is written back by uploading the remediated copy, not
         by the HTML path, which would report the technically-true but
         useless "No remediated body" for a file that was remediated."""
         cf = _make_cloud_file(
-            content_source="file",
+            content_source=None,
             writeback_status="approved",
             remediated_body=None,
             has_remediated_version=True,

@@ -1,5 +1,7 @@
 # Self-hosting
 
+> Using AI for LMS remediation is a separate account-wide authorization boundary. Read [LMS AI policy and provider readiness](lms-ai-policy.md) before enabling a cloud or Ollama lane.
+
 Aelira Core is built to run entirely on infrastructure you control:
 PostgreSQL, Redis, and either a cloud LLM provider or a local one (Ollama).
 
@@ -79,6 +81,9 @@ is `.env.example`):
 | `SESSION_REPLAY_ENCRYPTION_KEY` | Encrypts the short-lived cached token pair used to tolerate one concurrent refresh replay | Required in staging and production. Generate a Fernet key with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Give every API worker the same value. |
 | `SESSION_REFRESH_GRACE_SECONDS` | Window for returning the exact cached replacement pair once | Defaults to `10`. Keep this short; increase it only to cover measured concurrent refresh latency. |
 | `TOKEN_ENCRYPTION_KEY` | Encrypts stored OAuth tokens | Required if you enable any cloud integration (Google Workspace, Microsoft 365, Canvas OAuth). Generate with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. |
+| `BLACKBOARD_OAUTH_ALLOWED_ORIGINS` | Exact Blackboard OAuth and bearer trust boundary | Required in staging/production when both Blackboard OAuth client credentials are configured. Use comma-separated canonical HTTPS root origins only, such as `https://blackboard.university.edu`; paths, userinfo, query strings, fragments, wildcards, private DNS, and foreign response origins are rejected. Removing an origin revokes persisted credentials on their next use. Development/test may omit the list only for the explicit localhost/test convention. |
+| `REMEDIATION_ARTIFACT_DIR` | Durable root for managed remediation outputs | Defaults to `/app/uploads/remediation-artifacts`. Mount this path on persistent storage. Every API and worker replica must see the same bytes at the same path. |
+| `REMEDIATION_ARTIFACT_RETENTION_DAYS`, `REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS`, `REMEDIATION_ARTIFACT_WRITTEN_RETENTION_DAYS` | Artifact retention windows | Defaults to 30 days while pending, a 30-day writeback deadline after approval, and 7 days after writeback. Approval sets the artifact expiry to the approved-retention deadline; an idempotent approval retry does not extend it. See `.env.example` for all bounded cleanup and size settings. |
 | `ALLOW_MOCK_AUTH` | Dev-only auth bypass | Must **not** be `true` in `production`/`staging` — `Settings` raises at startup if it is (`validate_mock_auth`). Leave unset. |
 | SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `FROM_EMAIL`, `FROM_NAME` | Transactional email (magic links, alerts) | Read in `src/mailer/email_service.py`. Defaults assume SendGrid (`smtp.sendgrid.net`); any SMTP provider works. If `SMTP_HOST` is set, the mailer treats it as a trusted network target for its own connection handling. |
 | One LLM provider's credentials | AI-generated explanations/remediation | `LLM_PROVIDER` (`gemini`/`ollama`/`openai`/`anthropic`) plus that provider's key (`GEMINI_API_KEY`, etc.), or `OLLAMA_HOST` if running the Ollama profile below. |
@@ -164,9 +169,34 @@ docker compose -f docker-compose.prod.yml exec postgres pg_dump -U ${POSTGRES_US
 ```
 
 Restore with `psql -U <user> -d <db> < backup.sql` against a fresh database.
-Uploaded/remediated files live outside Postgres on whatever storage path
-`save_uploaded_file()` writes to — include that path in your backup scope
-too if you're relying on local disk rather than object storage.
+Uploaded and remediated files live outside Postgres. Include `/app/uploads`
+and `REMEDIATION_ARTIFACT_DIR` in your backup and restore verification. Managed
+remediation output is claimed in Postgres as `staging` before bytes are
+published, so an interrupted worker leaves a database-known row that bounded
+cleanup can recover; do not delete unknown files by scanning this directory.
+Consumers must use the service's descriptor-bound `open_verified(...)` context
+rather than retaining a resolved path. A multi-replica deployment must mount
+durable shared storage at the artifact path for all API and worker replicas;
+container-local filesystems will split the database authority from the bytes.
+The normal retention window is reset to
+`REMEDIATION_ARTIFACT_WRITTEN_RETENTION_DAYS` when writeback is durably marked
+complete.
+
+Approval is a bounded writeback authorization, not indefinite retention. An
+approved but unwritten artifact is held only until its
+`REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS` deadline. Writeback is rejected
+at or after that instant, and cleanup deletes the expired row and managed bytes,
+which releases the row's parent `RESTRICT` references. The approval audit
+metadata and checksum remain unchanged for the lifetime of the row; retries do
+not silently move the deadline. After expiry, generate a new remediation
+artifact and obtain a new approval before attempting writeback.
+
+Managed artifact rows deliberately restrict deletion of their owning
+department, scan, cloud file, or remediation job. Until Task16B wires lifecycle
+orchestration into those parent operations, disconnect and scan deletion must
+first invoke the artifact service cleanup, verify that the managed bytes were
+removed, and delete the artifact row. The current foundation blocks parent
+deletion rather than silently orphaning bytes.
 
 ## Upgrade procedure
 
@@ -197,6 +227,9 @@ responses as an application failure.
 Existing LTI-provisioned users must relaunch from an authorized staff Canvas
 placement to complete reauthorization. Canvas OAuth credentials whose stored
 origin is no longer in `CANVAS_OAUTH_ALLOWED_ORIGINS` must reconnect.
+Blackboard OAuth credentials whose stored origin is no longer in
+`BLACKBOARD_OAUTH_ALLOWED_ORIGINS` must likewise reconnect; validation runs
+before token refresh or bearer-client construction.
 
 There is no supported in-place downgrade to v0.9.3. Keep the pre-upgrade database backup:
 returning to v0.9.3 requires restoring that backup together
