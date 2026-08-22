@@ -251,6 +251,28 @@ def test_trivy_inventory_ignore_is_tracked_and_contains_no_cve_entries() -> None
     )
 
 
+def test_trivy_blocking_ignore_is_tracked_cve_free_and_documented() -> None:
+    blocking_ignore = ROOT / ".trivyignore"
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", blocking_ignore.name],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert tracked.returncode == 0
+    assert blocking_ignore.is_file()
+    assert not re.search(
+        r"(?m)^\s*CVE-[0-9]{4}-[0-9]{4,}\s*$", blocking_ignore.read_text()
+    )
+    documentation = (ROOT / "docs" / "RELEASE_INTEGRITY.md").read_text()
+    assert (
+        "The checked-in v0.9.5 `.trivyignore` currently contains no CVE entries "
+        "and applies no vulnerability exemptions." in documentation
+    )
+
+
 def test_release_requires_verified_annotated_tag_and_attaches_exact_sboms() -> None:
     workflow = (WORKFLOWS / "release.yml").read_text()
 
