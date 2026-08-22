@@ -100,7 +100,7 @@ pycairo==1.29.1
 pycparser==3.0
 pydantic==2.13.4
 pydantic-settings==2.15.0
-pyee==13.0.0
+pyee==14.0.0
 Pygments==2.20.0
 PyJWT==2.13.0
 PyLTI1p3==2.0.0
