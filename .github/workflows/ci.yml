@@ -7,6 +7,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # A newer push supersedes any still-running CI for the same ref — saves
 # Actions minutes and keeps the queue honest during rapid iteration.
 concurrency:
@@ -14,12 +17,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency-security:
+    name: Shipped dependency security
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+      - name: Validate Trivy exemption governance
+        run: python scripts/verify_trivy_allowlist.py .trivyignore
+      - name: Audit Python runtime dependencies
+        run: |
+          python -m pip install 'pip-audit==2.10.0'
+          pip-audit --requirement requirements.txt --strict
+      - name: Audit shipped npm surfaces
+        run: |
+          npm --prefix cli audit --audit-level=high
+          npm --prefix dashboard audit --audit-level=high
+      - name: Review pull-request dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
       - name: Install linters
@@ -56,8 +89,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
       - name: Install system dependencies
@@ -92,8 +125,8 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           # 22+: the unit tests import .ts files directly and rely on
           # Node's native type stripping (unavailable on Node 20)
@@ -119,8 +152,8 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "22"
           cache: "npm"
@@ -139,8 +172,8 @@ jobs:
       run:
         working-directory: cli
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           # Deliberately the CLI's supported floor (engines >=20) — the publish
           # workflow runs Node 22; testing at 20 proves the floor still holds.
@@ -169,8 +202,8 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
-      - name: Build representative API image
-        run: docker build --platform ${{ matrix.platform }} -t aelira-core-api:test -f Dockerfile .
-      - name: Build representative dashboard image
-        run: docker build --platform ${{ matrix.platform }} -t aelira-core-dashboard:test -f dashboard/Dockerfile dashboard
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Build and verify reproducible API image
+        run: scripts/verify_reproducible_image.sh . Dockerfile ${{ matrix.platform }}
+      - name: Build and verify reproducible dashboard image
+        run: scripts/verify_reproducible_image.sh dashboard dashboard/Dockerfile ${{ matrix.platform }}

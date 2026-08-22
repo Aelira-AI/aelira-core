@@ -26,7 +26,8 @@ def test_authoritative_release_versions_are_0_9_4():
     assert cli_lock["version"] == VERSION
     assert cli_lock["packages"][""]["version"] == VERSION
     assert f"**Version:** {VERSION}" in cli_readme
-    assert compose.count(f"${{AELIRA_VERSION:-{VERSION}}}") == 2
+    # API, worker, and dashboard are all shipped from versioned images.
+    assert compose.count(f"${{AELIRA_VERSION:-{VERSION}}}") == 3
 
 
 def test_security_policy_supports_only_current_patch():

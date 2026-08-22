@@ -239,7 +239,12 @@ def test_release_critical_jobs_are_bounded_and_permissions_are_least_privilege()
         {"contents": "read"},
     )
     assert release["jobs"]["github-release"]["permissions"] == {"contents": "write"}
-    assert docker["permissions"] == {"contents": "read", "packages": "write"}
+    assert docker["permissions"] == {
+        "contents": "read",
+        "packages": "write",
+        "id-token": "write",
+        "attestations": "write",
+    }
 
 
 def test_ci_builds_both_images_on_every_released_architecture_with_timeouts() -> None:

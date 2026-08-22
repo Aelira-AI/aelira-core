@@ -6,12 +6,19 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
     name: Build ${{ matrix.image }} for ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -45,13 +52,13 @@ jobs:
             timeout: 30
             arch: arm64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -59,7 +66,7 @@ jobs:
 
       - name: Build and push immutable digest
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -72,6 +79,68 @@ jobs:
           outputs: type=image,name=ghcr.io/aelira-ai/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+      - name: Generate SPDX JSON SBOM for immutable image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ghcr.io/aelira-ai/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ matrix.image }}-${{ matrix.arch }}.spdx.json
+
+      - name: Scan immutable image for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ghcr.io/aelira-ai/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          trivyignores: .trivyignore
+
+      - name: Attest immutable image provenance
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-name: ghcr.io/aelira-ai/${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify immutable image provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          IMAGE: ghcr.io/aelira-ai/${{ matrix.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        with:
+          cosign-release: 'v3.1.3'
+
+      - name: Sign and verify immutable image
+        env:
+          IMAGE: ghcr.io/aelira-ai/${{ matrix.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/publish-docker.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$IMAGE@$DIGEST"
+          cosign verify \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            "$IMAGE@$DIGEST"
+
+      - name: Upload SPDX JSON SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ matrix.image }}-${{ matrix.arch }}.spdx.json
+          retention-days: 90
+          if-no-files-found: error
+          overwrite: false
 
       - name: Write digest receipt
         env:
@@ -91,9 +160,9 @@ jobs:
             > "$RECEIPT"
 
       - name: Upload digest receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: receipt-${{ matrix.image }}-${{ matrix.arch }}
+          name: receipt-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_attempt }}
           path: ${{ matrix.image }}-${{ matrix.arch }}.json
           retention-days: 1
           if-no-files-found: error
@@ -108,19 +177,19 @@ jobs:
       packages: read
     steps:
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
       - name: Download all receipts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          pattern: receipt-*
+          pattern: receipt-*-${{ github.run_attempt }}
           path: receipts
           merge-multiple: true
 
@@ -151,9 +220,9 @@ jobs:
           done
 
       - name: Upload verified receipts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: verified-digest-receipts
+          name: verified-digest-receipts-${{ github.run_attempt }}
           path: receipts/*.json
           retention-days: 1
           if-no-files-found: error
@@ -167,21 +236,22 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
       - name: Download verified receipts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: verified-digest-receipts
+          name: verified-digest-receipts-${{ github.run_attempt }}
           path: receipts
 
       - name: Promote both images from exact verified digests
@@ -224,4 +294,26 @@ jobs:
                   (any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64" and .digest == $arm64))
                 ' <<<"$manifest" >/dev/null
             done
+          done
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        with:
+          cosign-release: 'v3.1.3'
+
+      - name: Sign and verify exact version indexes
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/publish-docker.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_NAME#v}"
+          for image_name in aelira-core-api aelira-core-dashboard; do
+            image="ghcr.io/aelira-ai/$image_name"
+            VERSION_DIGEST=$(docker buildx imagetools inspect "$image:$VERSION" --format '{{json .Manifest.Digest}}' | jq -r .)
+            [[ "$VERSION_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+            cosign sign --yes "$image@$VERSION_DIGEST"
+            cosign verify "$image@$VERSION_DIGEST" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --certificate-identity "$CERTIFICATE_IDENTITY"
           done
