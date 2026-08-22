@@ -32,6 +32,7 @@ build_archive() {
     --pull=false \
     --provenance=false \
     --sbom=false \
+    --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --platform "$platform" \
     --file "$dockerfile" \
     --output "type=oci,dest=$destination,rewrite-timestamp=true" \

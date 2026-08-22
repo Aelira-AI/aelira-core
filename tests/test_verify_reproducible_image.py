@@ -27,6 +27,9 @@ if sys.argv[1:3] != ["buildx", "build"] or not required.issubset(sys.argv):
     raise SystemExit(64)
 if os.environ.get("SOURCE_DATE_EPOCH") != "0":
     raise SystemExit(66)
+build_arg = sys.argv[sys.argv.index("--build-arg") + 1]
+if build_arg != "SOURCE_DATE_EPOCH=0":
+    raise SystemExit(68)
 platform = sys.argv[sys.argv.index("--platform") + 1]
 dockerfile = sys.argv[sys.argv.index("--file") + 1]
 if platform != os.environ["EXPECTED_PLATFORM"] or dockerfile != os.environ["EXPECTED_DOCKERFILE"]:

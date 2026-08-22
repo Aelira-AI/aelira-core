@@ -4,6 +4,8 @@
 # Stage 1: Builder
 FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS builder
 
+ARG SOURCE_DATE_EPOCH=0
+
 # Install system dependencies for building Python packages
 RUN apt-get update && apt-get install -y \
     gcc \
@@ -20,15 +22,22 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
+RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
+    pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir piper-tts==1.6.0
 
 # Stage 2: Runtime
 FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
 
-# Install runtime dependencies + Playwright system dependencies + LaTeXML stack + Node.js for Pa11y
-RUN apt-get update && apt-get install -y \
+ARG SOURCE_DATE_EPOCH=0
+
+# Install runtime dependencies + Playwright system dependencies + LaTeXML stack + Node.js for Pa11y.
+# TeX format dumps are content-nondeterministic even with a fixed epoch, so
+# omit them; Kpathsea recreates only the requested format in the user's cache.
+RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
+        PYTHONHASHSEED=0 PERL_HASH_SEED=0 PERL_PERTURB_KEYS=0; \
+    apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     poppler-utils \
@@ -70,7 +79,13 @@ RUN apt-get update && apt-get install -y \
     texlive-fonts-recommended \
     texlive-science \
     pandoc \
-    && rm -rf /var/lib/apt/lists/*
+    && update-language \
+    && rm -rf /var/lib/apt/lists/* /var/cache/fontconfig/* /var/log/apt/* \
+    && rm -f /etc/machine-id /var/lib/dbus/machine-id \
+        /var/cache/ldconfig/aux-cache /var/lib/texmf/ls-R \
+        /var/log/alternatives.log /var/log/dpkg.log \
+    && find /var/lib/texmf -type f -name '*.log' -delete \
+    && find /var/lib/texmf/web2c -type f -name '*.fmt' -delete
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -87,7 +102,9 @@ COPY . .
 
 # Install Pa11y globally for multi-engine accessibility testing (as root)
 # Pa11y can run both axe-core and HTML_CodeSniffer engines
-RUN npm install -g pa11y@9.0.1
+RUN npm install -g pa11y@9.0.1 && \
+    npm cache clean --force && \
+    rm -rf /root/.npm
 
 # Download Piper voice model for TTS accessibility (as root, before user switch)
 RUN mkdir -p /app/data/piper-voices && \

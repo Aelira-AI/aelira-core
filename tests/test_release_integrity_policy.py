@@ -76,6 +76,30 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
     ) in dashboard
 
 
+def test_api_dockerfile_normalizes_content_level_build_nondeterminism() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+
+    assert api.count("ARG SOURCE_DATE_EPOCH=0") == 2
+    assert api.count("PYTHONHASHSEED=0") == 2
+    assert api.count("FORCE_SOURCE_DATE=1") == 1
+    assert api.count("PERL_HASH_SEED=0") == 1
+    assert api.count("PERL_PERTURB_KEYS=0") == 1
+    assert api.count('export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH"') == 2
+    assert "apt-get install -y --no-install-recommends" in api
+    assert "&& update-language" in api
+    assert "find /var/lib/texmf/web2c -type f -name '*.fmt' -delete" in api
+    assert "/var/cache/fontconfig/*" in api
+    assert "/var/cache/ldconfig/aux-cache" in api
+    assert "/var/lib/texmf/ls-R" in api
+    assert "/var/log/apt/*" in api
+    assert "/var/log/alternatives.log" in api
+    assert "/var/log/dpkg.log" in api
+    assert "find /var/lib/texmf -type f -name '*.log' -delete" in api
+    assert "npm cache clean --force" in api
+    assert "rm -rf /root/.npm" in api
+    assert "ENV SOURCE_DATE_EPOCH" not in api
+
+
 def test_immutable_image_gate_precedes_receipts_and_signs_version_index() -> None:
     workflow = (WORKFLOWS / "publish-docker.yml").read_text()
 
