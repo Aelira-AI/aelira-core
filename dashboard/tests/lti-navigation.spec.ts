@@ -80,7 +80,7 @@ test.describe('stable LTI overview navigation', () => {
     });
   });
 
-  test('account launch exchanges once across overview, course, and return navigation', async ({ page }) => {
+  test('@release account launch exchanges once across overview, course, and return navigation', async ({ page }) => {
     const getExchangeCount = await stubCanvasNavigation(
       page,
       jwtWithExpiry(Math.floor(Date.now() / 1000) + 300, {

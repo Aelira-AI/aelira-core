@@ -51,9 +51,11 @@ def mock_brightspace_credential():
     cred.id = "cred-brightspace-123"
     cred.department_id = "dept-123"
     cred.provider = CloudProvider.BRIGHTSPACE.value
-    cred.provider_instance_url = "https://brightspace.university.edu"
-    cred.provider_user_email = "instructor@university.edu"
-    cred.provider_user_name = "Dr. Test Instructor"
+    cred.provider_metadata = {
+        "brightspace_instance_url": "https://brightspace.university.edu",
+        "user_email": "instructor@university.edu",
+        "user_name": "Dr. Test Instructor",
+    }
     cred.access_token = "encrypted-token"
     cred.created_at = datetime.now(timezone.utc)
     return cred

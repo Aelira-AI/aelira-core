@@ -16,48 +16,15 @@ from sqlalchemy.orm import sessionmaker
 # get fixed instead of forgotten. Delete an entry the moment its test
 # passes again, and never add one to make a red build green without saying
 # here what is broken.
-KNOWN_BROKEN = {
-    "tests/test_brightspace_api_auth.py::TestBrightspaceDepartmentIsolation"
-    "::test_status_uses_api_key_department": "Brightspace status returns 404 to a mocked session; Brightspace is beta here and out of scope",
-    "tests/test_brightspace_api_auth.py::TestBrightspaceStatusResponse"
-    "::test_status_response_format": "Brightspace status returns 404 to a mocked session; Brightspace is beta here and out of scope",
-    "tests/test_brightspace_api_auth.py::TestQueryParamsIgnored"
-    "::test_query_param_department_id_ignored": "Brightspace status returns 404 to a mocked session; Brightspace is beta here and out of scope",
-    "tests/test_image_alt_text.py::test_generate_alt_text_chart": "Alt-text generation returns no result without a configured model",
-    "tests/test_image_alt_text.py::test_batch_generate_alt_text": "Alt-text generation returns no result without a configured model",
-}
+KNOWN_BROKEN = {}
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip the tests CI genuinely cannot run, and only those.
-
-    Browser and end-to-end tests need a running dashboard and a full
-    environment, which CI does not have.
-
-    Integration tests used to be skipped here too, on the grounds that
-    they require external services. They do not: the CI test job provisions
-    Postgres and Redis exactly as a local run does. Skipping them meant
-    hundreds of tests, including every API route test, were verified
-    nowhere but a developer's machine while CI reported green. A green
-    check that covers less than it appears to is worse than a red one.
-    """
+    """Apply only explicit, individually named quarantines."""
     for item in items:
         reason = KNOWN_BROKEN.get(item.nodeid)
         if reason:
             item.add_marker(pytest.mark.skip(reason=f"Known broken: {reason}"))
-
-    if os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true":
-        skip_browser = pytest.mark.skip(
-            reason="Browser tests skipped in CI - require running dashboard"
-        )
-        skip_e2e = pytest.mark.skip(
-            reason="E2E tests skipped in CI - require full environment"
-        )
-        for item in items:
-            if "browser" in item.keywords:
-                item.add_marker(skip_browser)
-            elif "e2e" in item.keywords:
-                item.add_marker(skip_e2e)
 
 
 # Add the backend directory to Python path

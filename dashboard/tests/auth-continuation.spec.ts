@@ -7,7 +7,7 @@ const sessionBody = {
 };
 
 test.describe('authentication continuation', () => {
-  test('magic verification navigates to a safe next path after success', async ({ page }) => {
+  test('@release magic verification navigates to a safe next path after success', async ({ page }) => {
     let verified = false;
     await page.route('**/auth/session/validate', async (route) => {
       await route.fulfill(
@@ -24,6 +24,13 @@ test.describe('authentication continuation', () => {
         body: '{"success":true}',
       });
     });
+    await page.route('**/canvas/content/courses/42/status', (route) =>
+      route.fulfill({ json: { course_id: '42', overall_compliance: null, by_type: [], items: [] } })
+    );
+    await page.route('**/canvas/courses/42/files', (route) => route.fulfill({ json: [] }));
+    await page.route('**/canvas/courses', (route) =>
+      route.fulfill({ json: [{ id: '42', name: 'Deep Link Course' }] })
+    );
 
     await page.goto(
       '/auth/verify?email=prof%40example.edu&token=token&next=%2Fcanvas%2Fcourses%2F42%2Fcontent'

@@ -50,7 +50,7 @@ test.describe('standalone bounded bulk upload pool', () => {
     await installAuth(page);
   });
 
-  test('drains more files than concurrency without exceeding the selected bound', async ({ page }) => {
+  test('@release drains more files than concurrency without exceeding the selected bound', async ({ page }) => {
     let requests = 0;
     let active = 0;
     let maximum = 0;

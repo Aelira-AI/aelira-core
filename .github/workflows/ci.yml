@@ -111,6 +111,27 @@ jobs:
       - name: Build
         run: npm run build
 
+  e2e-release:
+    name: Deterministic Chromium release smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dashboard dependencies
+        run: npm ci
+      - name: Install deterministic release browser
+        run: npx playwright install --with-deps chromium
+      - name: Run release smoke
+        run: npm run test:e2e:release
+
   cli:
     runs-on: ubuntu-latest
     timeout-minutes: 30

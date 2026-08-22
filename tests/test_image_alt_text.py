@@ -15,6 +15,38 @@ def generator():
     return ImageAltTextGenerator(allow_legacy_transport=True)
 
 
+class DeterministicVisionProvider:
+    """Offline provider/model double for behavior tests that need vision."""
+
+    provider = "local"
+    model = "task22-deterministic-vision-v1"
+
+    def __init__(self):
+        self.calls = []
+
+    def analyze_image_sync(self, *, image_data, prompt, max_tokens):
+        self.calls.append(
+            {
+                "image_data": image_data,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+            }
+        )
+        return {
+            "success": True,
+            "content": "Bar chart comparing student performance by assessment.",
+            "inference_time": 0.01,
+            "provider": self.provider,
+            "model": self.model,
+        }
+
+
+@pytest.fixture
+def configured_test_generator():
+    provider = DeterministicVisionProvider()
+    return ImageAltTextGenerator(lms_client=provider), provider
+
+
 def _image(tmp_path):
     from PIL import Image
 
@@ -324,16 +356,9 @@ async def test_image_validation_invalid_format(generator, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.integration  # needs a live vision provider (Gemini/Ollama)
-@pytest.mark.skipif(
-    os.getenv("SKIP_VISION_TESTS"),
-    reason="SKIP_VISION_TESTS set; vision tests opted out",
-)
-async def test_generate_alt_text_chart(generator):
-    """Test alt text generation for chart image.
-
-    Note: Requires a sample chart image at tests/fixtures/sample_chart.png
-    """
+async def test_generate_alt_text_chart(configured_test_generator):
+    """Generate chart alt text through an explicit offline provider/model double."""
+    generator, provider = configured_test_generator
     image_path = "tests/fixtures/sample_chart.png"
 
     if not os.path.exists(image_path):
@@ -358,19 +383,16 @@ async def test_generate_alt_text_chart(generator):
     assert "alt_text" in result
     assert "long_description" in result
     assert len(result["alt_text"]) <= 125  # WCAG recommendation
+    assert result["provider"] == "local"
+    assert result["model"] == provider.model
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["image_data"].startswith(b"\x89PNG")
 
 
 @pytest.mark.asyncio
-@pytest.mark.integration  # needs a live vision provider (Gemini/Ollama)
-@pytest.mark.skipif(
-    os.getenv("SKIP_VISION_TESTS"),
-    reason="SKIP_VISION_TESTS set; vision tests opted out",
-)
-async def test_batch_generate_alt_text(generator):
-    """Test batch alt text generation.
-
-    Note: Requires sample images in tests/fixtures/
-    """
+async def test_batch_generate_alt_text(configured_test_generator):
+    """Batch generation remains deterministic and offline."""
+    generator, provider = configured_test_generator
     image_paths = [
         "tests/fixtures/sample_chart.png",
         "tests/fixtures/sample_diagram.png",
@@ -395,7 +417,10 @@ async def test_batch_generate_alt_text(generator):
     print(f"Average Time: {result['average_time_per_image']:.2f}s")
 
     assert result["total_images"] == len(existing_images)
-    assert result["success_count"] > 0
+    assert result["success_count"] == len(existing_images)
+    assert result["failed_count"] == 0
+    assert len(provider.calls) == len(existing_images)
+    assert all(item["result"]["model"] == provider.model for item in result["results"])
 
 
 def test_encode_image(generator, tmp_path):
