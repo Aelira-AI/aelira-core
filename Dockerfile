@@ -24,6 +24,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.txt .
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir --upgrade pip && \
+    python -m pip uninstall --yes setuptools && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir piper-tts==1.6.0
 
@@ -87,11 +88,16 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
         /var/cache/ldconfig/aux-cache /var/lib/texmf/ls-R \
         /var/log/alternatives.log /var/log/dpkg.log \
     && find /var/lib/texmf -type f -name '*.log' -delete \
-    && find /var/lib/texmf/web2c -type f -name '*.fmt' -delete
+    && find /var/lib/texmf/web2c -type f -name '*.fmt' -delete \
+    && /usr/local/bin/python -m pip uninstall --yes msgpack \
+    && /usr/local/bin/python -m pip install --no-cache-dir msgpack==1.2.1
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+RUN /usr/local/bin/python -c "import importlib.metadata as m; assert m.version('msgpack') == '1.2.1'" && \
+    /opt/venv/bin/python -c "import importlib.metadata as m; assert m.version('msgpack') == '1.2.1'; assert m.version('setuptools') == '84.0.0'"
 
 # Set working directory
 WORKDIR /app
