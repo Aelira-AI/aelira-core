@@ -33,20 +33,11 @@ The four immutable image legs create **SPDX JSON** assets:
 
 The GitHub Release verifies this exact seven-file set and attaches all seven assets. Missing or additional files fail the release.
 
-## Vulnerability policy and Trivy exemptions
+## Vulnerability policy and Trivy findings
 
-Trivy scans each immutable image digest with `severity: HIGH,CRITICAL`, `ignore-unfixed: false`, and a nonzero exit code on findings. `.trivyignore` is an exception allowlist, not a backlog. Comments and blank lines are allowed. Every CVE exemption must immediately follow this schema:
+The runtime image upgrades all available Debian packages before installing its runtime package set. Trivy then scans each immutable image digest with `severity: HIGH,CRITICAL`, `ignore-unfixed: true`, and a nonzero exit code; fixed/actionable HIGH/CRITICAL findings block publication.
 
-```text
-# owner: security@example.com
-# justification: Upstream fix is unavailable; compensating control is documented in ISSUE-123.
-# expires: 2026-09-30
-CVE-2026-12345
-```
-
-The owner and justification must be nonempty, `expires` must be an ISO `YYYY-MM-DD` date in the future, and the exemption identifier must be a CVE ID. `scripts/verify_trivy_allowlist.py` rejects malformed, incomplete, orphaned, duplicate, or expired entries in the CI dependency-security job.
-
-The named owner reviews the exemption before expiry. Renewal requires a fresh risk review, an updated nonempty justification and follow-up issue, and a new bounded expiry; merely extending the date is not approval. Remove the entry as soon as the vulnerable dependency or base is upgraded. If renewal or removal is not completed before expiry, CI blocks the release.
+HIGH/CRITICAL findings that are currently-unfixed remain visible: affected components are recorded in the attached SBOMs and their vulnerability status remains available through scanner intelligence as fixes become available. Each image/platform leg also uploads a non-blocking JSON inventory of all HIGH/CRITICAL findings as a 90-day workflow artifact. These inventories are not part of the exact seven GitHub Release SBOM assets. Findings are not silently exempted. The publication workflow supplies no `.trivyignore` exemptions, `.trivyignore` contains no CVE entries, and `scripts/verify_trivy_allowlist.py` enforces that policy in CI.
 
 ## Signing, identity, provenance, and tags
 

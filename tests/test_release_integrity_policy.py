@@ -109,6 +109,20 @@ def test_api_dockerfile_normalizes_content_level_build_nondeterminism() -> None:
     assert "ENV SOURCE_DATE_EPOCH" not in api
 
 
+def test_api_runtime_upgrades_available_debian_packages_before_install() -> None:
+    api = (ROOT / "Dockerfile").read_text()
+    runtime = api.split("# Stage 2: Runtime", 1)[1]
+    update = "apt-get update"
+    bounded_upgrade = (
+        "timeout 10m apt-get -o Acquire::Retries=2 "
+        "-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 upgrade -y"
+    )
+    install = "apt-get install -y --no-install-recommends"
+
+    assert runtime.count(bounded_upgrade) == 1
+    assert runtime.index(update) < runtime.index(bounded_upgrade) < runtime.index(install)
+
+
 def test_ci_reproducibility_jobs_use_an_oci_capable_buildx_driver() -> None:
     workflow = (WORKFLOWS / "ci.yml").read_text()
     docker_job = workflow.split("  docker:\n", 1)[1]
@@ -137,14 +151,14 @@ def test_immutable_image_gate_precedes_receipts_and_signs_version_index() -> Non
         "uses: sigstore/cosign-installer@"
         "7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1\n"
         "        with:\n"
-        "          cosign-release: 'v3.1.3'"
+        "          cosign-release: 'v2.6.1'"
     )
     assert workflow.count(pinned_cosign_install) == 2
     assert "format: spdx-json" in workflow
     assert "exit-code: '1'" in workflow
     assert "severity: HIGH,CRITICAL" in workflow
-    assert "ignore-unfixed: false" in workflow
-    assert "trivyignores: .trivyignore" in workflow
+    assert "ignore-unfixed: true" in workflow
+    assert "trivyignores:" not in workflow
     assert "subject-digest: ${{ steps.build.outputs.digest }}" in workflow
     assert "push-to-registry: true" in workflow
     assert "GH_TOKEN: ${{ github.token }}" in workflow
@@ -167,6 +181,48 @@ def test_immutable_image_gate_precedes_receipts_and_signs_version_index() -> Non
     assert "VERSION_DIGEST=" in workflow
     assert 'cosign sign --yes "$image@$VERSION_DIGEST"' in workflow
     assert 'cosign verify "$image@$VERSION_DIGEST"' in workflow
+
+
+def test_trivy_preserves_unfixed_inventory_and_blocks_actionable_findings() -> None:
+    workflow = (WORKFLOWS / "publish-docker.yml").read_text()
+    inventory = workflow.split(
+        "      - name: Inventory all high and critical vulnerabilities\n", 1
+    )[1].split("\n      - name: Upload Trivy vulnerability inventory", 1)[0]
+    upload = workflow.split(
+        "      - name: Upload Trivy vulnerability inventory\n", 1
+    )[1].split("\n      - name: Scan immutable image", 1)[0]
+    blocking = workflow.split(
+        "      - name: Scan immutable image for fixed high and critical vulnerabilities\n",
+        1,
+    )[1].split("\n      - name: Attest immutable image provenance", 1)[0]
+
+    for expected in (
+        "format: json",
+        "output: ${{ matrix.image }}-${{ matrix.arch }}.trivy.json",
+        "exit-code: '0'",
+        "severity: HIGH,CRITICAL",
+        "ignore-unfixed: false",
+    ):
+        assert expected in inventory
+    for expected in (
+        "name: trivy-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_attempt }}",
+        "path: ${{ matrix.image }}-${{ matrix.arch }}.trivy.json",
+        "retention-days: 90",
+        "if-no-files-found: error",
+        "overwrite: false",
+    ):
+        assert expected in upload
+    for expected in (
+        "format: table",
+        "exit-code: '1'",
+        "severity: HIGH,CRITICAL",
+        "ignore-unfixed: true",
+    ):
+        assert expected in blocking
+    assert "trivyignores:" not in workflow
+    assert workflow.index("Inventory all high and critical vulnerabilities") < workflow.index(
+        "Scan immutable image for fixed high and critical vulnerabilities"
+    )
 
 
 def test_release_requires_verified_annotated_tag_and_attaches_exact_sboms() -> None:
@@ -223,7 +279,7 @@ def test_release_artifact_names_are_isolated_by_run_attempt() -> None:
         r"(?=^      - |\Z)",
         docker + "\n" + release,
     )
-    assert len(artifact_blocks) == 8
+    assert len(artifact_blocks) == 9
     for block in artifact_blocks:
         selectors = re.findall(
             r"^          (?:name|pattern): (.+)$", block, re.MULTILINE
@@ -287,9 +343,12 @@ def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
         "CycloneDX JSON",
         "SPDX JSON",
         "HIGH,CRITICAL",
-        "owner",
-        "justification",
-        "expires",
+        "fixed/actionable",
+        "currently-unfixed",
+        "remain visible",
+        "not silently exempted",
+        "90-day",
+        "not part of the exact seven",
         "https://token.actions.githubusercontent.com",
         "signed annotated tag",
         "four receipts",
