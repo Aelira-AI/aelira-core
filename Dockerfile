@@ -37,7 +37,9 @@ ARG SOURCE_DATE_EPOCH=0
 # omit them; Kpathsea recreates only the requested format in the user's cache.
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
         PYTHONHASHSEED=0 PERL_HASH_SEED=0 PERL_PERTURB_KEYS=0; \
-    apt-get update && apt-get install -y --no-install-recommends \
+    apt-get update && \
+    timeout 10m apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 upgrade -y && \
+    apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     poppler-utils \
