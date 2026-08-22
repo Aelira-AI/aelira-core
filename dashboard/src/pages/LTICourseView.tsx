@@ -1028,7 +1028,7 @@ export function LTICourseView(): React.ReactElement {
           <button
             onClick={() => handleScanFile(file.id)}
             className="px-3 py-2.5 rounded-lg text-xs font-medium text-white transition-colors hover:opacity-90 min-h-[44px] min-w-[44px]"
-            style={{ backgroundColor: 'var(--accent-primary)' }}
+            style={{ backgroundColor: 'var(--accent-solid)' }}
           >
             Scan
           </button>
@@ -1054,7 +1054,7 @@ export function LTICourseView(): React.ReactElement {
             <button
               onClick={() => handleRemediateFile(scanInfo.scan_id!, file.id)}
               className="px-3 py-2.5 rounded-lg text-xs font-medium text-white transition-colors hover:opacity-90 min-h-[44px]"
-              style={{ backgroundColor: 'var(--accent-primary)' }}
+              style={{ backgroundColor: 'var(--accent-solid)' }}
             >
               Remediate
             </button>
@@ -1296,7 +1296,7 @@ export function LTICourseView(): React.ReactElement {
                             }
                             disabled={remediatingContentIds.has(item.identity_key)}
                             className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 hover:opacity-90 min-h-[44px]"
-                            style={{ backgroundColor: 'var(--accent-primary)', color: 'white' }}
+                            style={{ backgroundColor: 'var(--accent-solid)', color: 'white' }}
                           >
                             {remediatingContentIds.has(item.identity_key) ? (
                               <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
@@ -1369,7 +1369,7 @@ export function LTICourseView(): React.ReactElement {
         <div className="flex items-start justify-between mb-6">
           <div>
             <div className="flex items-center gap-3 mb-1">
-              <Shield className="w-5 h-5" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
+              <Shield className="w-5 h-5" style={{ color: 'var(--accent)' }} aria-hidden="true" />
               <h1
                 className="text-xl font-semibold"
                 style={{ color: 'var(--content-primary)' }}
@@ -1401,7 +1401,7 @@ export function LTICourseView(): React.ReactElement {
                     onClick={handleScanContent}
                     disabled={contentScanning}
                     className="flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 min-h-[44px]"
-                    style={{ backgroundColor: 'var(--accent-primary)' }}
+                    style={{ backgroundColor: 'var(--accent-solid)' }}
                   >
                     {contentScanning ? (
                       <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
@@ -1481,7 +1481,7 @@ export function LTICourseView(): React.ReactElement {
               onClick={handleOpenInAelira}
               disabled={openingAelira}
               className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 min-h-[44px]"
-              style={{ backgroundColor: 'var(--accent-primary)' }}
+              style={{ backgroundColor: 'var(--accent-solid)' }}
             >
               {openingAelira ? (
                 <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
@@ -1525,7 +1525,7 @@ export function LTICourseView(): React.ReactElement {
             className={`flex-1 px-4 py-2.5 rounded-md text-sm font-medium transition-colors min-h-[44px] ${
               activeTab === 'content' ? 'text-white' : ''
             }`}
-            style={activeTab === 'content' ? { backgroundColor: 'var(--accent-primary)' } : { color: 'var(--content-secondary)' }}
+            style={activeTab === 'content' ? { backgroundColor: 'var(--accent-solid)' } : { color: 'var(--content-secondary)' }}
           >
             Content ({contentStats.total})
           </button>
@@ -1539,7 +1539,7 @@ export function LTICourseView(): React.ReactElement {
             className={`flex-1 px-4 py-2.5 rounded-md text-sm font-medium transition-colors min-h-[44px] ${
               activeTab === 'files' ? 'text-white' : ''
             }`}
-            style={activeTab === 'files' ? { backgroundColor: 'var(--accent-primary)' } : { color: 'var(--content-secondary)' }}
+            style={activeTab === 'files' ? { backgroundColor: 'var(--accent-solid)' } : { color: 'var(--content-secondary)' }}
           >
             Files ({stats.total})
           </button>
@@ -1577,7 +1577,7 @@ export function LTICourseView(): React.ReactElement {
               >
                 <Loader2
                   className="w-8 h-8 mx-auto mb-3 animate-spin"
-                  style={{ color: 'var(--accent-primary)' }}
+                  style={{ color: 'var(--accent)' }}
                   aria-hidden="true"
                 />
                 <p className="text-sm" style={{ color: 'var(--content-secondary)' }}>
@@ -1610,7 +1610,7 @@ export function LTICourseView(): React.ReactElement {
                   onClick={handleScanContent}
                   disabled={contentScanning}
                   className="inline-flex items-center gap-2 px-5 py-3 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 min-h-[44px]"
-                  style={{ backgroundColor: 'var(--accent-primary)' }}
+                  style={{ backgroundColor: 'var(--accent-solid)' }}
                 >
                   {contentScanning ? (
                     <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
@@ -1662,7 +1662,7 @@ export function LTICourseView(): React.ReactElement {
                     onClick={handleBatchWriteback}
                     disabled={batchWritingBack || contentStats.scanned === 0}
                     className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 min-h-[44px]"
-                    style={{ backgroundColor: 'var(--accent-primary)' }}
+                    style={{ backgroundColor: 'var(--accent-solid)' }}
                   >
                     {batchWritingBack ? (
                       <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />

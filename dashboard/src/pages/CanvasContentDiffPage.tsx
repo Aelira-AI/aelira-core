@@ -277,7 +277,7 @@ export function CanvasContentDiffPage(): React.ReactElement {
         role="status"
         aria-label="Loading content review"
       >
-        <Loader2 className="w-8 h-8 animate-spin text-[var(--accent-primary)]" aria-hidden="true" />
+        <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" aria-hidden="true" />
         <span className="sr-only">Loading content review...</span>
       </div>
     );
@@ -328,7 +328,7 @@ export function CanvasContentDiffPage(): React.ReactElement {
           >
             <ArrowLeft className="w-5 h-5" aria-hidden="true" />
           </button>
-          <FileText className="w-5 h-5 shrink-0 text-[var(--accent-primary)]" aria-hidden="true" />
+          <FileText className="w-5 h-5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
           <h1 className="text-lg font-semibold truncate text-[var(--content-primary)]">
             {diff.title}
           </h1>
@@ -376,7 +376,7 @@ export function CanvasContentDiffPage(): React.ReactElement {
               onClick={() => setViewMode('preview')}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors ${
                 viewMode === 'preview'
-                  ? 'bg-[var(--accent-primary)] text-[var(--interactive-primary-fg)]'
+                  ? 'bg-[var(--accent-solid)] text-[var(--interactive-primary-fg)]'
                   : 'bg-[var(--surface-primary)] text-[var(--content-secondary)]'
               }`}
             >
@@ -389,7 +389,7 @@ export function CanvasContentDiffPage(): React.ReactElement {
               onClick={() => setViewMode('diff')}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors border-l border-[var(--border-primary)] ${
                 viewMode === 'diff'
-                  ? 'bg-[var(--accent-primary)] text-[var(--interactive-primary-fg)]'
+                  ? 'bg-[var(--accent-solid)] text-[var(--interactive-primary-fg)]'
                   : 'bg-[var(--surface-primary)] text-[var(--content-secondary)]'
               }`}
             >

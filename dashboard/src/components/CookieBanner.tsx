@@ -252,7 +252,7 @@ export function CookieBanner(): React.ReactElement | null {
               onClick={handleSavePreferences}
               className="flex-1 px-4 py-2.5 rounded-lg font-medium transition-opacity hover:opacity-90"
               style={{
-                backgroundColor: 'var(--accent-primary)',
+                backgroundColor: 'var(--accent-solid)',
                 color: 'white',
               }}
             >
@@ -337,7 +337,7 @@ export function CookieBanner(): React.ReactElement | null {
                   onClick={handleAcceptAll}
                   className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg transition-opacity hover:opacity-90"
                   style={{
-                    backgroundColor: 'var(--accent-primary)',
+                    backgroundColor: 'var(--accent-solid)',
                     color: 'white',
                   }}
                 >

@@ -126,7 +126,7 @@ export function IntegrationsSettings(): React.ReactElement {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64" role="status" aria-label="Loading alert settings">
-        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
+        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} aria-hidden="true" />
         <span className="sr-only">Loading alert settings...</span>
       </div>
     );
@@ -148,7 +148,7 @@ export function IntegrationsSettings(): React.ReactElement {
       <div className="flex items-center gap-4 mb-8">
         <div
           className="w-12 h-12 rounded-xl flex items-center justify-center"
-          style={{ backgroundColor: 'var(--accent-primary)' }}
+          style={{ backgroundColor: 'var(--accent-solid)' }}
         >
           <Bell className="w-6 h-6 text-white" aria-hidden="true" />
         </div>
@@ -204,7 +204,7 @@ export function IntegrationsSettings(): React.ReactElement {
           <button
             onClick={togglePause}
             className="relative w-12 h-6 rounded-full transition-colors"
-            style={{ backgroundColor: settings.is_paused ? 'var(--content-tertiary)' : 'var(--accent-primary)' }}
+            style={{ backgroundColor: settings.is_paused ? 'var(--content-tertiary)' : 'var(--accent-solid)' }}
           >
             <span
               className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
@@ -232,7 +232,7 @@ export function IntegrationsSettings(): React.ReactElement {
                 checked={settings.alert_on_scan_complete}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setSettings(prev => ({ ...prev, alert_on_scan_complete: e.target.checked }))}
                 className="w-5 h-5 rounded"
-                style={{ accentColor: 'var(--accent-primary)' }}
+                style={{ accentColor: 'var(--accent)' }}
               />
             </label>
 
@@ -248,7 +248,7 @@ export function IntegrationsSettings(): React.ReactElement {
                 checked={settings.alert_on_critical_issues}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setSettings(prev => ({ ...prev, alert_on_critical_issues: e.target.checked }))}
                 className="w-5 h-5 rounded"
-                style={{ accentColor: 'var(--accent-primary)' }}
+                style={{ accentColor: 'var(--accent)' }}
               />
             </label>
 
@@ -264,7 +264,7 @@ export function IntegrationsSettings(): React.ReactElement {
                 checked={settings.alert_weekly_summary}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setSettings(prev => ({ ...prev, alert_weekly_summary: e.target.checked }))}
                 className="w-5 h-5 rounded"
-                style={{ accentColor: 'var(--accent-primary)' }}
+                style={{ accentColor: 'var(--accent)' }}
               />
             </label>
           </div>
@@ -364,7 +364,7 @@ export function IntegrationsSettings(): React.ReactElement {
               <button
                 onClick={handleAddEmail}
                 className="px-4 py-2 rounded-lg text-white"
-                style={{ backgroundColor: 'var(--accent-primary)' }}
+                style={{ backgroundColor: 'var(--accent-solid)' }}
               >
                 <Plus className="w-4 h-4" />
               </button>
@@ -379,7 +379,7 @@ export function IntegrationsSettings(): React.ReactElement {
           onClick={handleSave}
           disabled={saving}
           className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-white font-medium disabled:opacity-50"
-          style={{ backgroundColor: 'var(--accent-primary)' }}
+          style={{ backgroundColor: 'var(--accent-solid)' }}
         >
           {saving ? (
             <>

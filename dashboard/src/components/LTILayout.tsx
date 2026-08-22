@@ -44,7 +44,7 @@ export function LTILayout({ children, error, loading }: LTILayoutProps): React.R
            style={{ backgroundColor: 'var(--surface-primary)' }}>
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 mx-auto mb-4"
-               style={{ borderColor: 'var(--accent-primary)' }} />
+               style={{ borderColor: 'var(--accent)' }} />
           <p className="text-sm" style={{ color: 'var(--content-secondary)' }}>Loading...</p>
         </div>
       </div>

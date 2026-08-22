@@ -90,7 +90,7 @@ function ScopeSelector({
           }}
           className={`w-full text-left px-3 py-1.5 text-sm transition-colors ${
             currentScope === value
-              ? 'bg-[var(--accent-primary)] text-white'
+              ? 'bg-[var(--accent-solid)] text-white'
               : 'text-[var(--content-primary)] hover:bg-[var(--surface-secondary)]'
           }`}
           role="menuitem"
@@ -112,7 +112,7 @@ function ScopeBadge({ scope }: { scope: CellScope }): React.ReactElement | null 
 
   const label = scope === 'Column' ? 'Col' : 'Row';
   return (
-    <span className="block text-[10px] font-medium text-[var(--accent-primary)] opacity-80 mt-0.5">
+    <span className="block text-[10px] font-medium text-[var(--accent)] opacity-80 mt-0.5">
       {label}
     </span>
   );
@@ -178,10 +178,10 @@ function TableCellEditor({
   // Build cell class names
   const baseClasses = 'px-3 py-2 text-sm border border-[var(--border-secondary)] transition-all duration-100 select-none';
   const headerClasses = isHeader
-    ? 'bg-[var(--accent-primary)]/10 font-semibold text-[var(--content-primary)]'
+    ? 'bg-[var(--accent)]/10 font-semibold text-[var(--content-primary)]'
     : 'bg-[var(--surface-primary)] text-[var(--content-secondary)]';
   const selectedClasses = isSelected
-    ? 'ring-2 ring-[var(--accent-primary)] ring-inset'
+    ? 'ring-2 ring-[var(--accent)] ring-inset'
     : '';
   const interactiveClasses = readOnly
     ? ''
@@ -418,7 +418,7 @@ export function TableStructureEditor({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Table2
-            className="w-4 h-4 text-[var(--accent-primary)]"
+            className="w-4 h-4 text-[var(--accent)]"
             aria-hidden="true"
           />
           <span className="text-sm font-medium text-[var(--content-primary)]">
@@ -428,12 +428,12 @@ export function TableStructureEditor({
             {editedStructure.rows} rows, {editedStructure.cols} cols
           </span>
           {editedStructure.header_rows > 0 && (
-            <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--accent-primary)]/10 text-[var(--accent-primary)]">
+            <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--accent)]/10 text-[var(--accent)]">
               {editedStructure.header_rows} header row{editedStructure.header_rows > 1 ? 's' : ''}
             </span>
           )}
           {editedStructure.header_cols > 0 && (
-            <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--accent-primary)]/10 text-[var(--accent-primary)]">
+            <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--accent)]/10 text-[var(--accent)]">
               {editedStructure.header_cols} header col{editedStructure.header_cols > 1 ? 's' : ''}
             </span>
           )}
@@ -454,7 +454,7 @@ export function TableStructureEditor({
             <button
               onClick={handleSave}
               disabled={!hasChanges}
-              className="text-xs py-1 px-2 flex items-center gap-1 rounded bg-[var(--accent-primary)] text-white hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+              className="text-xs py-1 px-2 flex items-center gap-1 rounded bg-[var(--accent-solid)] text-white hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
               aria-label="Save table structure changes"
             >
               <Save className="w-3 h-3" aria-hidden="true" />
@@ -503,7 +503,7 @@ export function TableStructureEditor({
       {/* Legend */}
       <div className="flex items-center gap-4 text-xs text-[var(--content-tertiary)]">
         <div className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded-sm bg-[var(--accent-primary)]/10 border border-[var(--accent-primary)]/30" />
+          <span className="inline-block w-3 h-3 rounded-sm bg-[var(--accent)]/10 border border-[var(--accent)]/30" />
           <span>Header (TH)</span>
         </div>
         <div className="flex items-center gap-1.5">
@@ -511,11 +511,11 @@ export function TableStructureEditor({
           <span>Data (TD)</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="text-[var(--accent-primary)] font-medium">Col</span>
+          <span className="text-[var(--accent)] font-medium">Col</span>
           <span>= Column scope</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="text-[var(--accent-primary)] font-medium">Row</span>
+          <span className="text-[var(--accent)] font-medium">Row</span>
           <span>= Row scope</span>
         </div>
       </div>

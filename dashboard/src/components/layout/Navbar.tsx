@@ -43,7 +43,7 @@ export function Navbar(): React.ReactElement {
 
             <button
               onClick={logout}
-              className="flex items-center space-x-2 text-secondary hover:text-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)] focus-visible:ring-offset-2 rounded-md px-2 py-1"
+              className="flex items-center space-x-2 text-secondary hover:text-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 rounded-md px-2 py-1"
               aria-label="Sign out of your account"
             >
               <LogOut className="w-4 h-4" aria-hidden="true" />

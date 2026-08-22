@@ -57,7 +57,7 @@ function BlockBadge({
       className={`absolute -top-2 -left-2 z-10 flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold border ${
         isDimmed
           ? 'border-[var(--border-secondary)] bg-[var(--surface-tertiary)] text-[var(--content-tertiary)]'
-          : 'border-[var(--accent-primary)] bg-[var(--accent-primary)] text-white'
+          : 'border-[var(--accent)] bg-[var(--accent-solid)] text-white'
       }`}
     >
       {sequenceNumber}
@@ -106,8 +106,8 @@ function PositionedBlock({
       className={`absolute rounded border transition-all duration-100 ${
         artifact
           ? 'border-[var(--border-secondary)] bg-[var(--surface-tertiary)]/40'
-          : 'border-[var(--accent-primary)]/40 bg-[var(--accent-primary)]/5'
-      } ${isDragOver ? 'ring-2 ring-[var(--accent-primary)] ring-offset-1' : ''} ${
+          : 'border-[var(--accent)]/40 bg-[var(--accent)]/5'
+      } ${isDragOver ? 'ring-2 ring-[var(--accent)] ring-offset-1' : ''} ${
         isDraggable ? 'cursor-grab active:cursor-grabbing' : ''
       }`}
       style={{
@@ -185,14 +185,14 @@ function ArrowOverlay({
           y1={arrow.y1}
           x2={arrow.x2}
           y2={arrow.y2}
-          stroke="var(--accent-primary)"
+          stroke="var(--accent)"
           strokeWidth="1.5"
           strokeOpacity="0.5"
           strokeDasharray="4 2"
         />
         <path
           d={arrow.path}
-          fill="var(--accent-primary)"
+          fill="var(--accent)"
           fillOpacity="0.5"
         />
       </g>,
@@ -247,7 +247,7 @@ function OrderList({
             key={block.index}
             className={`flex items-center gap-2 px-2 py-1 rounded text-xs transition-colors ${
               dragOverIndex === i
-                ? 'bg-[var(--accent-primary)]/10 border border-[var(--accent-primary)]/30'
+                ? 'bg-[var(--accent)]/10 border border-[var(--accent)]/30'
                 : 'border border-transparent hover:bg-[var(--surface-secondary)]'
             } ${isDraggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
             draggable={isDraggable}
@@ -266,7 +266,7 @@ function OrderList({
               className={`flex-shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold ${
                 artifact
                   ? 'bg-[var(--surface-tertiary)] text-[var(--content-tertiary)] border border-[var(--border-secondary)]'
-                  : 'bg-[var(--accent-primary)] text-white'
+                  : 'bg-[var(--accent-solid)] text-white'
               }`}
             >
               {artifactLabel ?? i + 1}
@@ -411,7 +411,7 @@ export function ReadingOrderOverlay({
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Layers
-            className="w-4 h-4 text-[var(--accent-primary)]"
+            className="w-4 h-4 text-[var(--accent)]"
             aria-hidden="true"
           />
           <span className="text-sm font-medium text-[var(--content-primary)]">
@@ -439,7 +439,7 @@ export function ReadingOrderOverlay({
             onClick={() => setViewMode('original')}
             className={`px-3 py-1 text-xs font-medium transition-colors ${
               viewMode === 'original'
-                ? 'bg-[var(--accent-primary)] text-white'
+                ? 'bg-[var(--accent-solid)] text-white'
                 : 'bg-[var(--surface-primary)] text-[var(--content-secondary)] hover:bg-[var(--surface-secondary)]'
             }`}
           >
@@ -451,7 +451,7 @@ export function ReadingOrderOverlay({
             onClick={() => setViewMode('remediated')}
             className={`px-3 py-1 text-xs font-medium transition-colors ${
               viewMode === 'remediated'
-                ? 'bg-[var(--accent-primary)] text-white'
+                ? 'bg-[var(--accent-solid)] text-white'
                 : 'bg-[var(--surface-primary)] text-[var(--content-secondary)] hover:bg-[var(--surface-secondary)]'
             }`}
           >
@@ -531,7 +531,7 @@ export function ReadingOrderOverlay({
       {/* Legend */}
       <div className="flex items-center gap-4 text-xs text-[var(--content-tertiary)]">
         <div className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded-full bg-[var(--accent-primary)]" />
+          <span className="inline-block w-3 h-3 rounded-full bg-[var(--accent-solid)]" />
           <span>Content block</span>
         </div>
         <div className="flex items-center gap-1.5">
@@ -539,7 +539,7 @@ export function ReadingOrderOverlay({
           <span>Artifact (H/F/#)</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="inline-block w-6 border-t border-dashed border-[var(--accent-primary)]" />
+          <span className="inline-block w-6 border-t border-dashed border-[var(--accent)]" />
           <span>Reading flow</span>
         </div>
       </div>

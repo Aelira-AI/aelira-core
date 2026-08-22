@@ -142,7 +142,7 @@ export function CloudFiles(): React.ReactElement {
         description="View and manage files synced from your connected cloud storage providers."
       >
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent-primary)' }} />
+        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} />
       </div>
       </FeatureGate>
     );
@@ -178,7 +178,7 @@ export function CloudFiles(): React.ReactElement {
           <Link
             to="/integrations"
             className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors"
-            style={{ backgroundColor: 'var(--accent-primary)' }}
+            style={{ backgroundColor: 'var(--accent-solid)' }}
           >
             <Cloud className="w-4 h-4" />
             Manage Integrations
@@ -203,7 +203,7 @@ export function CloudFiles(): React.ReactElement {
                 providerFilter === filter ? 'text-white' : ''
               }`}
               style={{
-                backgroundColor: providerFilter === filter ? 'var(--accent-primary)' : 'var(--surface-tertiary)',
+                backgroundColor: providerFilter === filter ? 'var(--accent-solid)' : 'var(--surface-tertiary)',
                 color: providerFilter === filter ? 'white' : 'var(--content-primary)',
               }}
             >
@@ -244,7 +244,7 @@ export function CloudFiles(): React.ReactElement {
           <Link
             to="/integrations"
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white"
-            style={{ backgroundColor: 'var(--accent-primary)' }}
+            style={{ backgroundColor: 'var(--accent-solid)' }}
           >
             <Cloud className="w-4 h-4" />
             Connect Provider

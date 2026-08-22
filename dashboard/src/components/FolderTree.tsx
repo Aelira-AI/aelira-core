@@ -122,7 +122,7 @@ function FolderTreeNode({
         </button>
 
         {/* Folder icon */}
-        <div style={{ color: 'var(--accent-primary)' }} aria-hidden="true">
+        <div style={{ color: 'var(--accent)' }} aria-hidden="true">
           {isExpanded ? <FolderOpen className="w-4 h-4" /> : <FolderIcon className="w-4 h-4" />}
         </div>
 
@@ -135,7 +135,7 @@ function FolderTreeNode({
             onChange={handleSelect}
             className="w-4 h-4 rounded transition-colors"
             style={{
-              accentColor: 'var(--accent-primary)',
+              accentColor: 'var(--accent)',
               cursor: isSynced ? 'not-allowed' : 'pointer',
             }}
           />
@@ -300,7 +300,7 @@ export function FolderTree({ provider, onClose, onSave }: FolderTreeProps): Reac
             color: 'var(--content-secondary)',
           }}
         >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: 'var(--accent-primary)' }}>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: 'var(--accent)' }}>
             <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
           </svg>
           <span>
@@ -335,7 +335,7 @@ export function FolderTree({ provider, onClose, onSave }: FolderTreeProps): Reac
           <div className="flex items-center justify-center h-32">
             <Loader2
               className="w-6 h-6 animate-spin"
-              style={{ color: 'var(--accent-primary)' }}
+              style={{ color: 'var(--accent)' }}
               aria-label="Loading folders"
             />
           </div>

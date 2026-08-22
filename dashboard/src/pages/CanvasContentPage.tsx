@@ -593,7 +593,7 @@ export default function CanvasContentPage(): React.ReactElement {
     return (
       <div className="max-w-7xl mx-auto px-4 py-8">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-[var(--accent-primary)]" />
+          <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
         </div>
       </div>
     );

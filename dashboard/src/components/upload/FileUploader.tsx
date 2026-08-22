@@ -971,7 +971,7 @@ export function FileUploader({
           role: 'button',
           'aria-label': `Upload ${config.label} files. Drag and drop or press Enter to browse.`,
         })}
-        className={`border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-[var(--accent-primary)] focus-visible:outline-offset-2 ${
+        className={`border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-2 ${
           isDragActive
             ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
             : 'border-[var(--border-primary)] hover:border-[var(--border-accent)]'
@@ -1037,7 +1037,7 @@ export function FileUploader({
                         >
                           <div
                             className="h-2 rounded-full transition-all"
-                            style={{ width: `${fileItem.progress}%`, backgroundColor: 'var(--accent-primary)' }}
+                            style={{ width: `${fileItem.progress}%`, backgroundColor: 'var(--accent-solid)' }}
                           />
                         </div>
                         <span className="text-sm text-secondary">{fileItem.progress}%</span>

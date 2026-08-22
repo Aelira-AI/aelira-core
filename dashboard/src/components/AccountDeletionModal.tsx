@@ -263,7 +263,7 @@ export function AccountDeletionModal({
             <div className="text-center mb-4">
               <Mail
                 className="w-10 h-10 mx-auto mb-2"
-                style={{ color: 'var(--accent-primary)' }}
+                style={{ color: 'var(--accent)' }}
               />
               <p className="text-sm text-secondary">
                 Enter the 6-digit code sent to your email.

@@ -216,7 +216,7 @@ export function Login(): React.ReactElement {
         {theme === 'dark' ? (
           <Sun className="w-5 h-5" style={{ color: 'var(--content-warning)' }} />
         ) : (
-          <Moon className="w-5 h-5" style={{ color: 'var(--accent-primary)' }} />
+          <Moon className="w-5 h-5" style={{ color: 'var(--accent)' }} />
         )}
       </button>
 

@@ -97,7 +97,7 @@ const NavContent: React.FC<NavContentProps> = ({ onItemClick, navigation }) => (
             color: isActive ? 'var(--content-accent)' : 'var(--content-secondary)',
             fontWeight: isActive ? '500' : 'normal',
           })}
-          className="flex items-center space-x-3 px-4 py-3 rounded-lg transition-all duration-200 hover:bg-surface-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)] focus-visible:ring-offset-2"
+          className="flex items-center space-x-3 px-4 py-3 rounded-lg transition-all duration-200 hover:bg-surface-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
           onMouseEnter={(e) => {
             if (!e.currentTarget.classList.contains('active')) {
               e.currentTarget.style.backgroundColor = 'var(--surface-tertiary)';
@@ -121,7 +121,7 @@ const NavContent: React.FC<NavContentProps> = ({ onItemClick, navigation }) => (
       target="_blank"
       rel="noopener noreferrer"
       onClick={onItemClick}
-      className="flex items-center space-x-3 px-4 py-3 rounded-lg transition-all duration-200 hover:bg-surface-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)] focus-visible:ring-offset-2"
+      className="flex items-center space-x-3 px-4 py-3 rounded-lg transition-all duration-200 hover:bg-surface-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
       style={{ color: 'var(--content-secondary)' }}
     >
       <HelpCircle className="w-5 h-5" aria-hidden="true" />
@@ -227,7 +227,7 @@ export function Sidebar(): React.ReactElement {
         onClick={() => setMobileOpen(!mobileOpen)}
         className="lg:hidden fixed bottom-4 right-4 z-50 p-4 rounded-full shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2"
         style={{
-          backgroundColor: 'var(--accent-primary)',
+          backgroundColor: 'var(--accent-solid)',
           color: 'white',
         }}
         aria-label={mobileOpen ? 'Close navigation menu' : 'Open navigation menu'}

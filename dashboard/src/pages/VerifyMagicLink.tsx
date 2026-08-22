@@ -94,7 +94,7 @@ export function VerifyMagicLink(): React.ReactElement {
 
           {status === 'ready' && hasValidParams && (
             <>
-              <Mail className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--accent-primary)' }} />
+              <Mail className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--accent)' }} />
               <h1 className="text-xl font-bold text-primary mb-2">Complete Sign In</h1>
               <p className="text-secondary mb-6">Click below to verify your email and sign in to Aelira.</p>
               <button
@@ -123,7 +123,7 @@ export function VerifyMagicLink(): React.ReactElement {
 
           {status === 'verifying' && (
             <>
-              <Loader2 className="w-12 h-12 mx-auto mb-4 animate-spin" style={{ color: 'var(--accent-primary)' }} />
+              <Loader2 className="w-12 h-12 mx-auto mb-4 animate-spin" style={{ color: 'var(--accent)' }} />
               <h1 className="text-xl font-bold text-primary mb-2">Verifying...</h1>
               <p className="text-secondary">Please wait while we sign you in.</p>
             </>
