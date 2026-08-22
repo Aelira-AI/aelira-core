@@ -20,7 +20,7 @@ def _validate(path: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_allowlist_accepts_governed_entries_and_rejects_bad_or_expired_entries(
+def test_allowlist_accepts_governed_cve_and_ghsa_entries(
     tmp_path: Path,
 ) -> None:
     comments_only = tmp_path / "comments-only"
@@ -31,13 +31,23 @@ def test_allowlist_accepts_governed_entries_and_rejects_bad_or_expired_entries(
         "# justification: Upstream fix is not yet released.\n"
         "# expires: 2999-12-31\n"
         "CVE-2026-12345\n"
+        "# owner: security@example.com\n"
+        "# justification: Scanner reports a removed lower layer.\n"
+        "# expires: 2999-12-31\n"
+        "GHSA-6v7p-g79w-8964\n"
     )
+
+    assert _validate(comments_only).returncode == 0
+    assert _validate(valid).returncode == 0
+
+
+def test_allowlist_rejects_malformed_and_expired_entries(tmp_path: Path) -> None:
     malformed = tmp_path / "malformed"
     malformed.write_text(
         "# owner: security@example.com\n"
         "# justification: Temporary exemption.\n"
-        "# expires: tomorrow\n"
-        "GHSA-abcd-efgh-ijkl\n"
+        "# expires: 2999-12-31\n"
+        "GHSA-abcd-efgh-ijk\n"
     )
     expired = tmp_path / "expired"
     expired.write_text(
@@ -47,8 +57,6 @@ def test_allowlist_accepts_governed_entries_and_rejects_bad_or_expired_entries(
         "CVE-2020-1234\n"
     )
 
-    assert _validate(comments_only).returncode == 0
-    assert _validate(valid).returncode == 0
     malformed_result = _validate(malformed)
     expired_result = _validate(expired)
     assert malformed_result.returncode != 0
@@ -73,19 +81,24 @@ def test_allowlist_rejects_interrupted_metadata_record(
     result = _validate(allowlist)
 
     assert result.returncode != 0
-    assert "metadata is not followed by a CVE exemption" in result.stderr
+    assert "metadata is not followed by a vulnerability exemption" in result.stderr
 
 
-def test_allowlist_rejects_duplicate_cve(tmp_path: Path) -> None:
+@pytest.mark.parametrize("vulnerability_id", ["CVE-2026-12345", "GHSA-6v7p-g79w-8964"])
+def test_allowlist_rejects_duplicate_vulnerability_id(
+    tmp_path: Path, vulnerability_id: str
+) -> None:
     metadata = (
         "# owner: security@example.com\n"
         "# justification: Upstream fix is not yet released.\n"
         "# expires: 2999-12-31\n"
     )
     allowlist = tmp_path / "duplicate"
-    allowlist.write_text(f"{metadata}CVE-2026-12345\n{metadata}CVE-2026-12345\n")
+    allowlist.write_text(
+        f"{metadata}{vulnerability_id}\n{metadata}{vulnerability_id}\n"
+    )
 
     result = _validate(allowlist)
 
     assert result.returncode != 0
-    assert "duplicate CVE exemption" in result.stderr
+    assert "duplicate vulnerability exemption" in result.stderr

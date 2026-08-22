@@ -1,1 +1,8 @@
-# No vulnerability exemptions are approved.
+# owner: security@aelira.ai
+# justification: Issue #160 documents final filesystem fixed-version evidence: msgpack==1.2.1, with the stale finding attributed only to a lower layer.
+# expires: 2026-09-30
+GHSA-6v7p-g79w-8964
+# owner: security@aelira.ai
+# justification: Issue #160 documents final filesystem fixed-version evidence: venv setuptools==84.0.0 and no global setuptools, with the stale finding attributed only to a lower layer.
+# expires: 2026-09-30
+CVE-2025-47273

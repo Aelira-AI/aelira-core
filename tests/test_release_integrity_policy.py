@@ -295,7 +295,7 @@ def test_trivy_inventory_ignore_is_tracked_and_contains_no_cve_entries() -> None
     )
 
 
-def test_trivy_blocking_ignore_is_tracked_cve_free_and_documented() -> None:
+def test_trivy_blocking_ignore_has_exact_bounded_layer_false_positives() -> None:
     blocking_ignore = ROOT / ".trivyignore"
     tracked = subprocess.run(
         ["git", "ls-files", "--error-unmatch", blocking_ignore.name],
@@ -307,14 +307,30 @@ def test_trivy_blocking_ignore_is_tracked_cve_free_and_documented() -> None:
 
     assert tracked.returncode == 0
     assert blocking_ignore.is_file()
-    assert not re.search(
-        r"(?m)^\s*CVE-[0-9]{4}-[0-9]{4,}\s*$", blocking_ignore.read_text()
+    allowlist = blocking_ignore.read_text()
+    vulnerability_ids = re.findall(
+        r"(?m)^\s*((?:CVE-[0-9]{4}-[0-9]{4,}|GHSA-[0-9a-z]{4}(?:-[0-9a-z]{4}){2}))\s*$",
+        allowlist,
+    )
+    assert vulnerability_ids == ["GHSA-6v7p-g79w-8964", "CVE-2025-47273"]
+    assert allowlist.count("# owner: security@aelira.ai") == 2
+    assert allowlist.count("# expires: 2026-09-30") == 2
+    justifications = re.findall(r"(?m)^# justification: (.+)$", allowlist)
+    assert len(justifications) == 2
+    assert all("#160" in justification for justification in justifications)
+    assert all(
+        "final filesystem" in justification.lower()
+        and "fixed" in justification.lower()
+        and "version" in justification.lower()
+        for justification in justifications
     )
     documentation = (ROOT / "docs" / "RELEASE_INTEGRITY.md").read_text()
-    assert (
-        "The checked-in v0.9.5 `.trivyignore` currently contains no CVE entries "
-        "and applies no vulnerability exemptions." in documentation
-    )
+    assert "two active bounded false-positive exemptions" in documentation
+    assert "GHSA-6v7p-g79w-8964" in documentation
+    assert "CVE-2025-47273" in documentation
+    assert "2026-09-30" in documentation
+    assert "issue #160" in documentation
+    assert "complete unsuppressed inventory" in documentation
 
 
 def test_release_requires_verified_annotated_tag_and_attaches_exact_sboms() -> None:
