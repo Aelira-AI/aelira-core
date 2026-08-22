@@ -120,7 +120,9 @@ def test_api_runtime_upgrades_available_debian_packages_before_install() -> None
     install = "apt-get install -y --no-install-recommends"
 
     assert runtime.count(bounded_upgrade) == 1
-    assert runtime.index(update) < runtime.index(bounded_upgrade) < runtime.index(install)
+    assert (
+        runtime.index(update) < runtime.index(bounded_upgrade) < runtime.index(install)
+    )
 
 
 def test_ci_reproducibility_jobs_use_an_oci_capable_buildx_driver() -> None:
@@ -188,9 +190,9 @@ def test_trivy_preserves_unfixed_inventory_and_blocks_actionable_findings() -> N
     inventory = workflow.split(
         "      - name: Inventory all high and critical vulnerabilities\n", 1
     )[1].split("\n      - name: Upload Trivy vulnerability inventory", 1)[0]
-    upload = workflow.split(
-        "      - name: Upload Trivy vulnerability inventory\n", 1
-    )[1].split("\n      - name: Scan immutable image", 1)[0]
+    upload = workflow.split("      - name: Upload Trivy vulnerability inventory\n", 1)[
+        1
+    ].split("\n      - name: Scan immutable image", 1)[0]
     blocking = workflow.split(
         "      - name: Scan immutable image for fixed high and critical vulnerabilities\n",
         1,
@@ -220,7 +222,9 @@ def test_trivy_preserves_unfixed_inventory_and_blocks_actionable_findings() -> N
     ):
         assert expected in blocking
     assert "trivyignores:" not in workflow
-    assert workflow.index("Inventory all high and critical vulnerabilities") < workflow.index(
+    assert workflow.index(
+        "Inventory all high and critical vulnerabilities"
+    ) < workflow.index(
         "Scan immutable image for fixed high and critical vulnerabilities"
     )
 
