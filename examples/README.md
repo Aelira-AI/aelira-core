@@ -4,6 +4,10 @@ Working examples for the three ways to drive Aelira Core: the engine as a
 library, the HTTP API, and the CLI. Each example is runnable as-is and is
 verified against the code in this repository.
 
+For format-by-format scan/remediation boundaries, dependencies, current API and
+CLI entry points, output expectations, and human-review guidance, start with the
+[document remediation hub](../docs/document-remediation/README.md).
+
 | Example | What it shows | Needs a running server? |
 |---------|---------------|-------------------------|
 | [`scan_pdf_direct.py`](scan_pdf_direct.py) | Scan a PDF by importing the engine directly — embed the processors in your own batch job or CI check | No |
@@ -54,7 +58,7 @@ use the same pattern: `/education/word/scan`, `/education/powerpoint/scan`,
 The CLI wraps the API flow above with progress display and formatted output:
 
 ```console
-$ npx @aelira/cli scan syllabus.pdf
+$ npx @aelira/cli scan pdf syllabus.pdf
 ```
 
 See [`cli/README.md`](../cli/README.md) for authentication and the full
