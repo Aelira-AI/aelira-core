@@ -63,6 +63,27 @@ def test_release_dag_orders_ci_preflight_docker_npm_and_github_release() -> None
     assert workflow["permissions"] == {"contents": "read"}
 
 
+def test_github_release_downloads_sboms_from_any_run_attempt() -> None:
+    workflow = load_workflow(RELEASE)
+    github_release = workflow["jobs"]["github-release"]
+    downloads = {
+        step["name"]: step["with"]
+        for step in github_release["steps"]
+        if str(step.get("uses", "")).startswith("actions/download-artifact@")
+    }
+
+    assert set(downloads) == {
+        "Download dependency SBOMs",
+        "Download image SBOMs",
+    }
+    assert downloads["Download dependency SBOMs"]["pattern"] == "dependency-sboms-*"
+    assert downloads["Download image SBOMs"]["pattern"] == "sbom-*-*"
+    for options in downloads.values():
+        assert options["merge-multiple"] is True
+        assert "name" not in options
+        assert "github.run_attempt" not in options["pattern"]
+
+
 def test_preflight_requires_stable_semver_matching_package_and_lock() -> None:
     text = RELEASE.read_text()
 
