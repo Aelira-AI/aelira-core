@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import Path
 
 VULNERABILITY_ID = re.compile(
-    r"(?:CVE-[0-9]{4}-[0-9]{4,}|GHSA-[0-9a-z]{4}(?:-[0-9a-z]{4}){2})"
+    r"(?:CVE-[0-9]{4}-[0-9]{4,}|GHSA-[23456789cfghjmpqrvwx]{4}(?:-[23456789cfghjmpqrvwx]{4}){2})"
 )
 METADATA = re.compile(r"#\s*(owner|justification|expires)\s*:\s*(.*?)\s*$", re.I)
 REQUIRED = {"owner", "justification", "expires"}

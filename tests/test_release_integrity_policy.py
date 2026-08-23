@@ -278,7 +278,7 @@ def test_trivy_preserves_unfixed_inventory_and_blocks_actionable_findings() -> N
     )
 
 
-def test_trivy_inventory_ignore_is_tracked_and_contains_no_cve_entries() -> None:
+def test_trivy_inventory_ignore_contains_no_vulnerability_ids() -> None:
     inventory_ignore = ROOT / ".trivyignore.inventory"
     tracked = subprocess.run(
         ["git", "ls-files", "--error-unmatch", inventory_ignore.name],
@@ -291,7 +291,8 @@ def test_trivy_inventory_ignore_is_tracked_and_contains_no_cve_entries() -> None
     assert tracked.returncode == 0
     assert inventory_ignore.is_file()
     assert not re.search(
-        r"(?m)^\s*CVE-[0-9]{4}-[0-9]{4,}\s*$", inventory_ignore.read_text()
+        r"(?m)^\s*(?:CVE-[0-9]{4}-[0-9]{4,}|GHSA-[23456789cfghjmpqrvwx]{4}(?:-[23456789cfghjmpqrvwx]{4}){2})\s*$",
+        inventory_ignore.read_text(),
     )
 
 
@@ -309,7 +310,7 @@ def test_trivy_blocking_ignore_has_exact_bounded_layer_false_positives() -> None
     assert blocking_ignore.is_file()
     allowlist = blocking_ignore.read_text()
     vulnerability_ids = re.findall(
-        r"(?m)^\s*((?:CVE-[0-9]{4}-[0-9]{4,}|GHSA-[0-9a-z]{4}(?:-[0-9a-z]{4}){2}))\s*$",
+        r"(?m)^\s*((?:CVE-[0-9]{4}-[0-9]{4,}|GHSA-[23456789cfghjmpqrvwx]{4}(?:-[23456789cfghjmpqrvwx]{4}){2}))\s*$",
         allowlist,
     )
     assert vulnerability_ids == ["GHSA-6v7p-g79w-8964", "CVE-2025-47273"]

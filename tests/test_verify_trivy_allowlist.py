@@ -41,6 +41,21 @@ def test_allowlist_accepts_governed_cve_and_ghsa_entries(
     assert _validate(valid).returncode == 0
 
 
+def test_allowlist_rejects_ghsa_outside_github_alphabet(tmp_path: Path) -> None:
+    allowlist = tmp_path / "invalid-ghsa-alphabet"
+    allowlist.write_text(
+        "# owner: security@example.com\n"
+        "# justification: Temporary exemption.\n"
+        "# expires: 2999-12-31\n"
+        "GHSA-abcd-efgh-ijkl\n"
+    )
+
+    result = _validate(allowlist)
+
+    assert result.returncode != 0
+    assert "malformed" in result.stderr.lower()
+
+
 def test_allowlist_rejects_malformed_and_expired_entries(tmp_path: Path) -> None:
     malformed = tmp_path / "malformed"
     malformed.write_text(
