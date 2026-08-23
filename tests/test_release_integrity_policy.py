@@ -364,8 +364,13 @@ def test_release_requires_verified_annotated_tag_and_attaches_exact_sboms() -> N
         "actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5"
         in workflow
     )
-    assert "pattern: dependency-sboms-*" in workflow
-    assert "pattern: sbom-*-*" in workflow
+    assert "pattern: dependency-sboms-+([0-9])" in workflow
+    assert (
+        "pattern: sbom-@(aelira-core-api|aelira-core-dashboard)-"
+        "@(amd64|arm64)-+([0-9])" in workflow
+    )
+    assert "pattern: dependency-sboms-*\n" not in workflow
+    assert "pattern: sbom-*-*" not in workflow
     assert "EXPECTED_CYCLONEDX=3" in workflow
     assert "EXPECTED_SPDX=4" in workflow
     assert "${#CYCLONEDX[@]}" in workflow

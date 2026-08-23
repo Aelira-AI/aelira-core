@@ -63,7 +63,7 @@ def test_release_dag_orders_ci_preflight_docker_npm_and_github_release() -> None
     assert workflow["permissions"] == {"contents": "read"}
 
 
-def test_github_release_downloads_sboms_from_any_run_attempt() -> None:
+def test_github_release_downloads_only_canonical_sboms_from_any_run_attempt() -> None:
     workflow = load_workflow(RELEASE)
     github_release = workflow["jobs"]["github-release"]
     downloads = {
@@ -76,12 +76,46 @@ def test_github_release_downloads_sboms_from_any_run_attempt() -> None:
         "Download dependency SBOMs",
         "Download image SBOMs",
     }
-    assert downloads["Download dependency SBOMs"]["pattern"] == "dependency-sboms-*"
-    assert downloads["Download image SBOMs"]["pattern"] == "sbom-*-*"
+    assert (
+        downloads["Download dependency SBOMs"]["pattern"] == "dependency-sboms-+([0-9])"
+    )
+    assert (
+        downloads["Download image SBOMs"]["pattern"]
+        == "sbom-@(aelira-core-api|aelira-core-dashboard)-@(amd64|arm64)-+([0-9])"
+    )
     for options in downloads.values():
         assert options["merge-multiple"] is True
         assert "name" not in options
         assert "github.run_attempt" not in options["pattern"]
+
+    patterns = {options["pattern"] for options in downloads.values()}
+    assert "dependency-sboms-*" not in patterns
+    assert "sbom-*-*" not in patterns
+
+
+def test_github_release_retains_exact_seven_file_check() -> None:
+    workflow = load_workflow(RELEASE)
+    github_release = workflow["jobs"]["github-release"]
+    verification = next(
+        step["run"]
+        for step in github_release["steps"]
+        if step.get("name") == "Verify exact release SBOM set"
+    )
+    expected_files = {
+        "release-assets/python.cdx.json",
+        "release-assets/cli.cdx.json",
+        "release-assets/dashboard.cdx.json",
+        "release-assets/aelira-core-api-amd64.spdx.json",
+        "release-assets/aelira-core-api-arm64.spdx.json",
+        "release-assets/aelira-core-dashboard-amd64.spdx.json",
+        "release-assets/aelira-core-dashboard-arm64.spdx.json",
+    }
+
+    assert "EXPECTED_CYCLONEDX=3" in verification
+    assert "EXPECTED_SPDX=4" in verification
+    assert '[ "${#ALL_ASSETS[@]}" -eq 7 ]' in verification
+    for expected_file in expected_files:
+        assert expected_file in verification
 
 
 def test_preflight_requires_stable_semver_matching_package_and_lock() -> None:
