@@ -17,13 +17,23 @@ Note: Uses pikepdf for structure tree manipulation (the key for PDF/UA
 compliance) and PyMuPDF (fitz) for text/image extraction during analysis.
 """
 
+import base64
+import binascii
+import html
 import logging
 import os
+import re
 import shutil
 import stat
 import tempfile
-from typing import Any, Dict, List, Optional
+import warnings
+from html.parser import HTMLParser
+from io import BytesIO
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
+
+from PIL import Image, UnidentifiedImageError
 
 try:
     import fitz  # PyMuPDF - for reading/analyzing PDFs
@@ -69,6 +79,351 @@ from .math_fixer import MathFixer
 from .contrast_flagger import ContrastFlagger
 
 logger = logging.getLogger(__name__)
+
+
+_ALLOWED_PYMUPDF_HTML_TAGS = frozenset(
+    {
+        "a",
+        "b",
+        "br",
+        "div",
+        "em",
+        "i",
+        "img",
+        "p",
+        "span",
+        "strong",
+        "sub",
+        "sup",
+    }
+)
+_BLOCKED_PYMUPDF_HTML_CONTAINER_TAGS = frozenset(
+    {"script", "style", "iframe", "object"}
+)
+_BLOCKED_PYMUPDF_HTML_VOID_TAGS = frozenset({"embed", "meta", "link"})
+_VOID_PYMUPDF_HTML_TAGS = frozenset({"br", "img"})
+_PAGE_ID_RE = re.compile(r"page[0-9]+\Z")
+_IMAGE_DATA_RE = re.compile(
+    r"data:image/(?P<format>png|jpeg);base64,(?P<payload>.*)\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+_BASE64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}\Z")
+_MAX_IMAGE_DATA_BYTES = 10 * 1024 * 1024
+_MAX_IMAGE_WIDTH = 10_000
+_MAX_IMAGE_HEIGHT = 10_000
+_MAX_IMAGE_PIXELS = 25_000_000
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _is_complete_png_file(image_bytes: bytes) -> bool:
+    """Require valid PNG chunk framing ending at a zero-length IEND."""
+    if not image_bytes.startswith(_PNG_SIGNATURE):
+        return False
+
+    offset = len(_PNG_SIGNATURE)
+    while offset < len(image_bytes):
+        if len(image_bytes) - offset < 12:
+            return False
+
+        chunk_length = int.from_bytes(image_bytes[offset : offset + 4], "big")
+        chunk_type = image_bytes[offset + 4 : offset + 8]
+        chunk_end = offset + 12 + chunk_length
+        if chunk_end > len(image_bytes):
+            return False
+        if chunk_type == b"IEND":
+            return chunk_length == 0 and chunk_end == len(image_bytes)
+        offset = chunk_end
+
+    return False
+
+
+def _is_complete_jpeg_file(image_bytes: bytes) -> bool:
+    """Require a framed JPEG whose first real EOI marker is at exact EOF."""
+    if (
+        len(image_bytes) < 4
+        or len(image_bytes) > _MAX_IMAGE_DATA_BYTES
+        or image_bytes[:2] != b"\xff\xd8"
+    ):
+        return False
+
+    offset = 2
+    in_entropy_data = False
+    while offset < len(image_bytes):
+        marker_from_entropy = in_entropy_data
+        if in_entropy_data:
+            while offset < len(image_bytes) and image_bytes[offset] != 0xFF:
+                offset += 1
+            if offset == len(image_bytes):
+                return False
+        elif image_bytes[offset] != 0xFF:
+            return False
+
+        while offset < len(image_bytes) and image_bytes[offset] == 0xFF:
+            offset += 1
+        if offset == len(image_bytes):
+            return False
+
+        marker = image_bytes[offset]
+        offset += 1
+        if marker_from_entropy and (marker == 0x00 or 0xD0 <= marker <= 0xD7):
+            continue
+        if marker == 0x00 or marker == 0xD8:
+            return False
+        if marker == 0xD9:
+            return offset == len(image_bytes)
+        if 0xD0 <= marker <= 0xD7:
+            return False
+        if marker == 0x01:
+            in_entropy_data = marker_from_entropy
+            continue
+
+        if offset + 2 > len(image_bytes):
+            return False
+        segment_length = int.from_bytes(image_bytes[offset : offset + 2], "big")
+        if segment_length < 2:
+            return False
+        segment_end = offset + segment_length
+        if segment_end > len(image_bytes):
+            return False
+
+        offset = segment_end
+        in_entropy_data = marker == 0xDA
+
+    return False
+
+
+def _has_safe_image_dimensions(image: Image.Image) -> bool:
+    """Return whether an opened image fits every configured dimension bound."""
+    width, height = image.size
+    return (
+        width > 0
+        and height > 0
+        and width <= _MAX_IMAGE_WIDTH
+        and height <= _MAX_IMAGE_HEIGHT
+        and width * height <= _MAX_IMAGE_PIXELS
+    )
+
+
+def _is_verified_image(image_bytes: bytes, declared_format: str) -> bool:
+    """Decode and structurally verify a bounded PNG or JPEG payload."""
+    expected_format = {"png": "PNG", "jpeg": "JPEG"}[declared_format]
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(image_bytes)) as image:
+                if image.format != expected_format or not _has_safe_image_dimensions(
+                    image
+                ):
+                    return False
+                image.verify()
+
+            with Image.open(BytesIO(image_bytes)) as image:
+                if image.format != expected_format or not _has_safe_image_dimensions(
+                    image
+                ):
+                    return False
+                image.load()
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        UnidentifiedImageError,
+        EOFError,
+        OSError,
+        SyntaxError,
+        ValueError,
+    ):
+        return False
+
+    if declared_format == "png":
+        return _is_complete_png_file(image_bytes)
+    return _is_complete_jpeg_file(image_bytes)
+
+
+def _normalize_untrusted_html_text(value: Any) -> str:
+    """Replace characters that cannot safely occur in UTF-8 HTML."""
+    return "".join(
+        "\ufffd" if char == "\x00" or 0xD800 <= ord(char) <= 0xDFFF else char
+        for char in str(value)
+    )
+
+
+def _escape_html_interpolation(value: Any, *, quote: bool) -> str:
+    """Normalize untrusted text to valid UTF-8, then escape it for HTML."""
+    return html.escape(_normalize_untrusted_html_text(value), quote=quote)
+
+
+def _safe_fragment_href(value: str) -> Optional[str]:
+    """Return a canonical passive link target, or None for unsafe input."""
+    if not value or "\\" in value:
+        return None
+    if any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        return None
+    if value.startswith("#"):
+        return value
+
+    try:
+        parsed = urlsplit(value)
+        scheme = parsed.scheme.lower()
+        if scheme in {"http", "https"}:
+            if not value[len(parsed.scheme) :].startswith("://") or not parsed.hostname:
+                return None
+        elif scheme == "mailto":
+            if not parsed.path:
+                return None
+        else:
+            return None
+    except ValueError:
+        return None
+
+    return scheme + value[len(parsed.scheme) :]
+
+
+def _safe_image_data_source(value: str) -> Optional[str]:
+    """Return a canonical PNG/JPEG data URL after strict base64 validation."""
+    match = _IMAGE_DATA_RE.fullmatch(value)
+    if not match:
+        return None
+
+    raw_payload = match.group("payload")
+    max_encoded_length = 4 * ((_MAX_IMAGE_DATA_BYTES + 2) // 3)
+    max_raw_payload_length = max_encoded_length + 2 * ((max_encoded_length + 75) // 76)
+    if len(raw_payload) > max_raw_payload_length:
+        return None
+
+    payload = "".join(raw_payload.split())
+    if not _BASE64_RE.fullmatch(payload) or len(payload) % 4:
+        return None
+    if len(payload) > max_encoded_length:
+        return None
+
+    try:
+        decoded = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not decoded or len(decoded) > _MAX_IMAGE_DATA_BYTES:
+        return None
+
+    image_format = match.group("format").lower()
+    if not _is_verified_image(decoded, image_format):
+        return None
+
+    canonical_payload = base64.b64encode(decoded).decode("ascii")
+    return f"data:image/{image_format};base64,{canonical_payload}"
+
+
+class _PyMuPdfHtmlFragmentSanitizer(HTMLParser):
+    """Rebuild a PyMuPDF fragment from a small passive HTML allowlist."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._output: List[str] = []
+        self._open_tags: List[str] = []
+        self._blocked_tags: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+        tag = tag.lower()
+        if self._blocked_tags:
+            if tag in _BLOCKED_PYMUPDF_HTML_CONTAINER_TAGS:
+                self._blocked_tags.append(tag)
+            return
+        if tag in _BLOCKED_PYMUPDF_HTML_CONTAINER_TAGS:
+            self._blocked_tags.append(tag)
+            return
+        if tag in _BLOCKED_PYMUPDF_HTML_VOID_TAGS:
+            return
+        if tag not in _ALLOWED_PYMUPDF_HTML_TAGS:
+            return
+
+        source_attributes: Dict[str, str] = {}
+        for name, value in attrs:
+            normalized_name = name.lower()
+            if normalized_name not in source_attributes and value is not None:
+                source_attributes[normalized_name] = _normalize_untrusted_html_text(
+                    value
+                )
+
+        safe_attributes: Dict[str, str] = {}
+        element_id = source_attributes.get("id")
+        if element_id is not None and _PAGE_ID_RE.fullmatch(element_id):
+            safe_attributes["id"] = element_id
+
+        if tag == "a" and "href" in source_attributes:
+            href = _safe_fragment_href(source_attributes["href"])
+            if href is not None:
+                safe_attributes["href"] = href
+
+        if tag == "img":
+            if "src" in source_attributes:
+                src = _safe_image_data_source(source_attributes["src"])
+                if src is not None:
+                    safe_attributes["src"] = src
+            for name in ("alt", "title"):
+                if name in source_attributes:
+                    safe_attributes[name] = source_attributes[name]
+
+        attribute_order = (
+            ("id", "href")
+            if tag == "a"
+            else ("id", "src", "alt", "title") if tag == "img" else ("id",)
+        )
+        rendered_attributes = "".join(
+            f' {name}="{html.escape(safe_attributes[name], quote=True)}"'
+            for name in attribute_order
+            if name in safe_attributes
+        )
+        self._output.append(f"<{tag}{rendered_attributes}>")
+        if tag not in _VOID_PYMUPDF_HTML_TAGS:
+            self._open_tags.append(tag)
+
+    def handle_startendtag(
+        self, tag: str, attrs: List[tuple[str, Optional[str]]]
+    ) -> None:
+        if self._blocked_tags or tag.lower() in (
+            _BLOCKED_PYMUPDF_HTML_CONTAINER_TAGS | _BLOCKED_PYMUPDF_HTML_VOID_TAGS
+        ):
+            return
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._blocked_tags:
+            if tag in self._blocked_tags:
+                blocked_index = (
+                    len(self._blocked_tags) - 1 - self._blocked_tags[::-1].index(tag)
+                )
+                del self._blocked_tags[blocked_index:]
+            return
+        if tag in _VOID_PYMUPDF_HTML_TAGS or tag not in self._open_tags:
+            return
+
+        open_index = len(self._open_tags) - 1 - self._open_tags[::-1].index(tag)
+        for open_tag in reversed(self._open_tags[open_index:]):
+            self._output.append(f"</{open_tag}>")
+        del self._open_tags[open_index:]
+
+    def handle_data(self, data: str) -> None:
+        if not self._blocked_tags:
+            self._output.append(
+                html.escape(_normalize_untrusted_html_text(data), quote=False)
+            )
+
+    def sanitized_html(self) -> str:
+        for tag in reversed(self._open_tags):
+            self._output.append(f"</{tag}>")
+        self._open_tags.clear()
+        return "".join(self._output)
+
+
+def _sanitize_pymupdf_html_fragment(fragment: str) -> str:
+    """Return canonical passive HTML rebuilt from an untrusted page fragment."""
+    normalized = _normalize_untrusted_html_text(fragment)
+    sanitizer = _PyMuPdfHtmlFragmentSanitizer()
+    try:
+        sanitizer.feed(normalized)
+        sanitizer.close()
+    except Exception:
+        return html.escape(normalized, quote=False)
+    return sanitizer.sanitized_html()
 
 
 class PdfRemediator(BaseRemediator):
@@ -2381,7 +2736,7 @@ class PdfRemediator(BaseRemediator):
                 "<head>",
                 '<meta charset="UTF-8">',
                 '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-                f"<title>{self._get_document_title(document)}</title>",
+                f"<title>{_escape_html_interpolation(self._get_document_title(document), quote=False)}</title>",
                 "<style>",
                 "body { font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }",
                 "h1, h2, h3 { color: #1a1a1a; margin-top: 1.5em; }",
@@ -2405,7 +2760,7 @@ class PdfRemediator(BaseRemediator):
                     )
 
                 # Extract text with structure
-                text = page.get_text("html")
+                text = _sanitize_pymupdf_html_fragment(page.get_text("html"))
 
                 # Clean and add to output
                 html_parts.append(f'<section aria-label="Page {page_num + 1}">')
@@ -2416,7 +2771,7 @@ class PdfRemediator(BaseRemediator):
                 for img_index, img in enumerate(images):
                     alt = self._get_alt_text_for_image(page_num + 1, img_index)
                     html_parts.append(
-                        f'<img src="[Image {img_index + 1}]" alt="{alt}" />'
+                        f'<img alt="{_escape_html_interpolation(alt, quote=True)}">'
                     )
 
                 html_parts.append("</section>")
