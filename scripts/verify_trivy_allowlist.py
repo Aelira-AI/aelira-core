@@ -9,7 +9,9 @@ import sys
 from datetime import date
 from pathlib import Path
 
-CVE_ID = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}")
+VULNERABILITY_ID = re.compile(
+    r"(?:CVE-[0-9]{4}-[0-9]{4,}|GHSA-[23456789cfghjmpqrvwx]{4}(?:-[23456789cfghjmpqrvwx]{4}){2})"
+)
 METADATA = re.compile(r"#\s*(owner|justification|expires)\s*:\s*(.*?)\s*$", re.I)
 REQUIRED = {"owner", "justification", "expires"}
 
@@ -17,14 +19,14 @@ REQUIRED = {"owner", "justification", "expires"}
 def validate(path: Path, *, today: date | None = None) -> list[str]:
     errors: list[str] = []
     pending: dict[str, tuple[str, int]] = {}
-    seen_cves: set[str] = set()
+    seen_ids: set[str] = set()
     current_date = today or date.today()
 
     def reject_pending() -> None:
         if pending:
             first_line = min(line_number for _, line_number in pending.values())
             errors.append(
-                f"line {first_line}: metadata is not followed by a CVE exemption"
+                f"line {first_line}: metadata is not followed by a vulnerability exemption"
             )
             pending.clear()
 
@@ -46,14 +48,18 @@ def validate(path: Path, *, today: date | None = None) -> list[str]:
             pending[key] = (value, line_number)
             continue
 
-        if not CVE_ID.fullmatch(line):
-            errors.append(f"line {line_number}: malformed exemption; expected a CVE ID")
+        if not VULNERABILITY_ID.fullmatch(line):
+            errors.append(
+                f"line {line_number}: malformed exemption; expected a CVE or GHSA ID"
+            )
             pending.clear()
             continue
 
-        if line in seen_cves:
-            errors.append(f"line {line_number}: duplicate CVE exemption: {line}")
-        seen_cves.add(line)
+        if line in seen_ids:
+            errors.append(
+                f"line {line_number}: duplicate vulnerability exemption: {line}"
+            )
+        seen_ids.add(line)
 
         missing = REQUIRED - pending.keys()
         if missing:
