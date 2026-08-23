@@ -18,6 +18,10 @@ compliance) and PyMuPDF (fitz) for text/image extraction during analysis.
 """
 
 import logging
+import os
+import shutil
+import stat
+import tempfile
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -35,6 +39,14 @@ try:
 except ImportError:
     HAS_PIKEPDF = False
     pikepdf = None
+
+try:
+    import ocrmypdf  # OCR engine for image-only (scanned) PDFs
+
+    HAS_OCRMYPDF = True
+except ImportError:
+    HAS_OCRMYPDF = False
+    ocrmypdf = None
 
 from .base import (
     BaseRemediator,
@@ -125,6 +137,19 @@ class PdfRemediator(BaseRemediator):
         super().__init__(
             file_path, issues, config, ai_client, alt_text_client=alt_text_client
         )
+        # Working-copy state: every remediation runs against a staged copy in
+        # a private temp directory so no in-place pass (TableTagger flushes,
+        # reading-order rewrites) can ever mutate the original bytes.
+        # self.file_path stays the immutable original for naming and backup;
+        # image-only inputs additionally get an OCR'd searchable working copy
+        # so the delivered output keeps a text layer.
+        self._work_dir: Optional[str] = None
+        self._working_file_path: Optional[str] = None
+        self._ocr_applied: bool = False
+        # Set when the input's own text layer is below the searchable
+        # threshold: the delivered output must then carry at least the
+        # minimum usable text layer or delivery fails closed.
+        self._require_output_text_layer: bool = False
         self._pdf: Optional[Any] = None  # PyMuPDF document for reading
         self._pikepdf_doc: Optional[Any] = None  # pikepdf document for writing
         self._struct_tree: Optional[PDFStructureTree] = None  # Structure tree helper
@@ -171,9 +196,14 @@ class PdfRemediator(BaseRemediator):
         try:
             logger.info("Starting two-phase remediation of %s", self.file_path)
 
-            # Create backup if configured
+            # Create backup if configured (always from the untouched original)
             if self.config.create_backup:
                 self.result.backup_path = self._create_backup()
+
+            # Stage a private working copy (and OCR it if the input is
+            # image-only) so every in-place pass mutates the copy, never
+            # the original. Fails closed on signed input or OCR failure.
+            self._stage_working_copy()
 
             # Load the document
             document = self._load_document()
@@ -433,6 +463,8 @@ class PdfRemediator(BaseRemediator):
             self.result.success = False
             self.result.error_message = str(e)
             self.result.complete()
+        finally:
+            self._cleanup_working_copy()
 
         return self.result
 
@@ -792,18 +824,377 @@ class PdfRemediator(BaseRemediator):
         confidence = self._confidence.calculate(FixMethod.HEURISTIC)
         return FixMethod.HEURISTIC, confidence, None
 
+    # ------------------------------------------------------------------
+    # Working-copy staging and OCR preprocessing
+    # ------------------------------------------------------------------
+
+    # Below this many extractable characters the input is treated as
+    # image-only and OCR'd (mirrors the scanner's threshold in
+    # PDFProcessor.process_pdf).
+    _MIN_SEARCHABLE_TEXT_CHARS = 100
+    # Minimum extractable text the OCR derivative (and the delivered
+    # output) must carry to count as searchable (mirrors the scanner's
+    # empty-output threshold in _ocr_pdf_enhanced).
+    _MIN_OCR_TEXT_CHARS = 50
+
+    @property
+    def _working_path(self) -> str:
+        """Path all remediation passes operate on.
+
+        The staged working copy once _stage_working_copy has run; the
+        original path before staging (analysis-only contexts).
+        """
+        return self._working_file_path or self.file_path
+
+    @staticmethod
+    def _extract_all_text(path: str) -> str:
+        """Extract the full text layer of a PDF with fitz (no OCR)."""
+        with fitz.open(path) as doc:
+            return "".join(page.get_text() for page in doc)
+
+    @classmethod
+    def _field_tree_has_signature(cls, fields, inherited_ft=None, seen=None) -> bool:
+        """Recursively scan an AcroForm field tree for signature fields.
+
+        /FT is inheritable: a terminal widget may carry no /FT of its own
+        and take it from an ancestor, so the inherited value is threaded
+        down through /Kids. Visited indirect objects are tracked to stay
+        safe on malformed PDFs with /Kids cycles.
+        """
+        if seen is None:
+            seen = set()
+        for field in fields:
+            objgen = getattr(field, "objgen", (0, 0))
+            if objgen != (0, 0):
+                if objgen in seen:
+                    continue
+                seen.add(objgen)
+            ft = field.get("/FT")
+            ft_str = str(ft) if ft is not None else inherited_ft
+            if ft_str == "/Sig":
+                return True
+            kids = field.get("/Kids")
+            if kids is not None and cls._field_tree_has_signature(kids, ft_str, seen):
+                return True
+        return False
+
+    def _signature_preflight(self, path: str) -> None:
+        """Fail closed unless the exact staged PDF is confirmed unsigned.
+
+        Remediation rewrites the document, which invalidates digital
+        signatures. Signature evidence (AcroForm /SigFlags bit 1 or any
+        /FT /Sig anywhere in the field tree) rejects the input, and so
+        does anything indeterminate: pikepdf unavailable, an AcroForm we
+        cannot parse, or an XFA form (which can embed signatures opaquely).
+        """
+        if not HAS_PIKEPDF:
+            raise RuntimeError(
+                "Signature preflight failed: pikepdf is unavailable, so the "
+                "input cannot be confirmed unsigned. Failing closed rather "
+                "than risking silent signature invalidation."
+            )
+        try:
+            with pikepdf.open(path) as pdf:
+                acroform = pdf.Root.get("/AcroForm")
+                if acroform is None:
+                    has_xfa = False
+                    signed = False
+                else:
+                    has_xfa = acroform.get("/XFA") is not None
+                    sig_flags = acroform.get("/SigFlags")
+                    signed = bool(sig_flags is not None and int(sig_flags) & 1)
+                    if not signed:
+                        signed = self._field_tree_has_signature(
+                            acroform.get("/Fields", [])
+                        )
+        except Exception as e:
+            raise RuntimeError(
+                "Signature preflight failed: could not inspect the AcroForm "
+                f"({e}). Failing closed rather than risking silent signature "
+                "invalidation."
+            ) from e
+        if has_xfa:
+            raise RuntimeError(
+                "Signature preflight failed: input is an XFA form, which "
+                "can embed signatures this scan cannot see. Failing closed "
+                "rather than risking silent signature invalidation."
+            )
+        if signed:
+            raise RuntimeError(
+                "Input PDF contains digital signature fields; remediation "
+                "would rewrite the document and invalidate the signature. "
+                "Failing closed — remediate a signature-free copy or handle "
+                "this document manually."
+            )
+
+    def _stage_working_copy(self) -> None:
+        """Stage the input into a private temp dir; OCR it if image-only.
+
+        The scan pipeline builds an OCR'd searchable derivative and then
+        deletes it, so remediation receives the original image-only bytes.
+        Remediating those directly would deliver a PDF with no text layer.
+        This stages a copy (so in-place passes never touch the original)
+        and, for image-only inputs, runs OCRmyPDF to produce a searchable
+        working PDF whose text layer survives into the delivered output.
+
+        Fails closed (raises) on signed input, OCR engine failure, or an
+        OCR result with no genuinely extractable text.
+        """
+        self._work_dir = tempfile.mkdtemp(prefix="aelira_pdf_remediation_")
+        staged_path = str(Path(self._work_dir) / Path(self.file_path).name)
+        shutil.copy2(self.file_path, staged_path)
+        self._working_file_path = staged_path
+        self._signature_preflight(staged_path)
+
+        page_texts, page_has_images = self._page_text_profile(staged_path)
+        total_text = "".join(page_texts).strip()
+        # Mixed-safe OCR can recognize image-only pages while preserving pages
+        # that already have a usable text layer. It cannot safely repair an
+        # image page with a short direct layer: skip_text would silently skip
+        # it, while forced OCR could destroy existing text and structure.
+        partial_text_pages = [
+            i
+            for i, page_text in enumerate(page_texts)
+            if page_has_images[i]
+            and 0 < len(page_text.strip()) < self._MIN_OCR_TEXT_CHARS
+        ]
+        if partial_text_pages:
+            partial_page_numbers = [i + 1 for i in partial_text_pages]
+            raise RuntimeError(
+                "Image page(s) "
+                f"{partial_page_numbers} contain partial direct text below "
+                f"{self._MIN_OCR_TEXT_CHARS} characters; mixed-safe OCR would "
+                "skip them. Failing closed for manual remediation."
+            )
+
+        # Only zero-text image pages are safe to send through skip_text OCR.
+        # Blank pages with no images remain exempt.
+        needy_pages = [
+            i
+            for i, page_text in enumerate(page_texts)
+            if page_has_images[i] and not page_text.strip()
+        ]
+        # Any input that has some text but less than a searchable layer
+        # (or needs OCR at all) must deliver a genuinely searchable output.
+        if needy_pages or (
+            total_text and len(total_text) < self._MIN_SEARCHABLE_TEXT_CHARS
+        ):
+            self._require_output_text_layer = True
+
+        if not needy_pages:
+            logger.info(
+                "No pages need OCR (%d chars direct text across %d pages)",
+                len(total_text),
+                len(page_texts),
+            )
+            return
+
+        if not HAS_OCRMYPDF:
+            raise RuntimeError(
+                "Input PDF has pages without a text layer and OCRmyPDF is "
+                "not installed; failing closed rather than delivering an "
+                "unsearchable remediated file."
+            )
+
+        self._assert_ocr_language_supported(staged_path)
+
+        ocr_path = str(Path(self._work_dir) / f"{Path(self.file_path).stem}_ocr.pdf")
+        try:
+            logger.info(
+                "Running OCRmyPDF on %d/%d pages lacking text: %s",
+                len(needy_pages),
+                len(page_texts),
+                staged_path,
+            )
+            ocrmypdf.ocr(
+                input_file=staged_path,
+                output_file=ocr_path,
+                force_ocr=False,
+                # Mixed-safe: pages that already have text are passed
+                # through untouched; only image pages are OCR'd.
+                skip_text=True,
+                redo_ocr=False,
+                optimize=1,
+                language=["eng"],
+                output_type="pdf",
+                progress_bar=False,
+                use_threads=True,
+            )
+        except (
+            ocrmypdf.exceptions.PriorOcrFoundError,
+            ocrmypdf.exceptions.TaggedPDFError,
+        ) as e:
+            # The engine refuses tagged/prior-OCR input. Forcing OCR would
+            # rasterize pages and may strip structure, while continuing would
+            # leave the pages that triggered OCR without a usable text layer.
+            # Fail closed and report the exact 1-based pages instead.
+            needy_page_numbers = [i + 1 for i in needy_pages]
+            raise RuntimeError(
+                "OCR cannot run for unsearchable page(s) "
+                f"{needy_page_numbers} because the input is tagged or reports "
+                "prior OCR. Failing closed rather than delivering an "
+                "unsearchable remediated file."
+            ) from e
+
+        derivative_texts, _ = self._page_text_profile(ocr_path)
+        missing_pages = [
+            i + 1
+            for i in needy_pages
+            if i >= len(derivative_texts)
+            or len(derivative_texts[i].strip()) < self._MIN_OCR_TEXT_CHARS
+        ]
+        if missing_pages:
+            raise RuntimeError(
+                "OCR produced no usable text layer for page(s) "
+                f"{missing_pages}; failing closed rather than delivering an "
+                "unsearchable remediated file."
+            )
+
+        self._working_file_path = ocr_path
+        self._ocr_applied = True
+        self._ocr_pages = list(needy_pages)
+        self.result.warnings.append(
+            "Input PDF had pages without a text layer; an OCR text layer "
+            "was added and preserved in the remediated output."
+        )
+        logger.info(
+            "OCR working copy ready (%d pages recognized): %s",
+            len(needy_pages),
+            ocr_path,
+        )
+
+    @staticmethod
+    def _page_text_profile(path: str) -> tuple:
+        """Per-page direct text and image presence for a PDF (no OCR)."""
+        texts: List[str] = []
+        has_images: List[bool] = []
+        with fitz.open(path) as doc:
+            for page in doc:
+                texts.append(page.get_text())
+                has_images.append(bool(page.get_images(full=True)))
+        return texts, has_images
+
+    def _assert_ocr_language_supported(self, path: str) -> None:
+        """Fail closed on a declared non-English document language.
+
+        The OCR pass currently runs tesseract with eng only (matching the
+        scanner). Applying English OCR to a document that declares another
+        language would produce garbage text presented as accessibility.
+        """
+        lang = ""
+        try:
+            with pikepdf.open(path) as pdf:
+                raw = pdf.Root.get("/Lang")
+                lang = str(raw).strip() if raw is not None else ""
+        except Exception as e:
+            raise RuntimeError(
+                "Could not determine the document language before OCR "
+                f"({e}); failing closed."
+            ) from e
+        if lang and not lang.lower().startswith("en"):
+            raise RuntimeError(
+                f"Input PDF declares document language '{lang}', but only "
+                "English (eng) OCR is currently supported. Failing closed "
+                "rather than applying English OCR to a non-English document."
+            )
+
+    def _ensure_output_text_layer(self, output_path: str) -> None:
+        """Fail closed if an output candidate lost a required text layer.
+
+        Inspects the candidate with direct text extraction — never OCR —
+        so a missing text layer cannot be masked by the verification
+        re-scan's on-the-fly OCR.
+        """
+        if getattr(self, "_ocr_pages", []):
+            page_texts, _ = self._page_text_profile(output_path)
+            missing_pages = [
+                page_index + 1
+                for page_index in self._ocr_pages
+                if page_index >= len(page_texts)
+                or len(page_texts[page_index].strip()) < self._MIN_OCR_TEXT_CHARS
+            ]
+            if missing_pages:
+                raise RuntimeError(
+                    "Remediated output lost the OCR text layer for page(s) "
+                    f"{missing_pages}; refusing to deliver an unsearchable file."
+                )
+            return
+
+        text = self._extract_all_text(output_path)
+        if len(text.strip()) < self._MIN_OCR_TEXT_CHARS:
+            raise RuntimeError(
+                "Remediated output lost the OCR text layer; refusing to "
+                "deliver an unsearchable file for an image-only input."
+            )
+
+    def _cleanup_working_copy(self) -> None:
+        """Close open handles and remove the temp working directory.
+
+        Runs in remediate()'s finally block on both success and failure.
+        Any cleanup failure is returned explicitly with the retained path.
+        """
+        cleanup_errors = []
+        for attr in ("_pdf", "_pikepdf_doc"):
+            handle = getattr(self, attr, None)
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception as e:
+                    cleanup_errors.append(f"could not close {attr}: {e}")
+                setattr(self, attr, None)
+        if self._work_dir:
+            work_dir = self._work_dir
+            try:
+                shutil.rmtree(work_dir)
+            except Exception as e:
+                cleanup_errors.append(
+                    f"could not remove remediation work directory '{work_dir}': {e}; "
+                    "remove this directory manually"
+                )
+            else:
+                self._work_dir = None
+                self._working_file_path = None
+
+        if cleanup_errors:
+            cleanup_message = "Remediation cleanup failed: " + "; ".join(cleanup_errors)
+            logger.error(cleanup_message)
+            self.result.success = False
+            self.result.warnings.append(cleanup_message)
+            if self.result.error_message:
+                self.result.error_message = (
+                    f"{self.result.error_message}; {cleanup_message}"
+                )
+            else:
+                self.result.error_message = cleanup_message
+            self.result.complete()
+
+    def _get_output_path(self) -> str:
+        """Resolve the output path from the original name, never the copy.
+
+        self.file_path stays the immutable original, so the base logic
+        already names the output after it; this override only guards
+        against a configuration that would overwrite the original.
+        """
+        output_path = super()._get_output_path()
+        if os.path.realpath(output_path) == os.path.realpath(self.file_path):
+            raise RuntimeError(
+                "Refusing to write remediation output over the original file: "
+                f"{self.file_path}"
+            )
+        return output_path
+
     def _load_document(self) -> Any:
-        """Load the PDF document for editing with both fitz and pikepdf."""
-        logger.info(f"Loading PDF: {self.file_path}")
+        """Load the working-copy PDF for editing with both fitz and pikepdf."""
+        logger.info(f"Loading PDF working copy: {self._working_path}")
 
         # Open with PyMuPDF for reading/analysis
-        self._pdf = fitz.open(self.file_path)
+        self._pdf = fitz.open(self._working_path)
 
         # Open with pikepdf for structure manipulation
         if HAS_PIKEPDF:
             try:
                 self._pikepdf_doc = pikepdf.open(
-                    self.file_path, allow_overwriting_input=True
+                    self._working_path, allow_overwriting_input=True
                 )
                 self._struct_tree = PDFStructureTree(self._pikepdf_doc)
                 logger.info(
@@ -817,12 +1208,198 @@ class PdfRemediator(BaseRemediator):
         return self._pdf
 
     def _save_document(self, document: Any) -> str:
-        """Save the remediated PDF document."""
+        """Prepare artifacts privately, then atomically publish final paths."""
         output_path = self._get_output_path()
         logger.info(f"Saving remediated PDF to: {output_path}")
 
-        # Ensure output directory exists
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        output_dir = Path(output_path).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        candidate_dir = tempfile.mkdtemp(
+            prefix=f".{Path(output_path).stem}.candidate-",
+            dir=str(output_dir),
+        )
+        candidate_path = str(Path(candidate_dir) / "candidate.pdf")
+        html_path: Optional[str] = None
+        html_candidate_path: Optional[str] = None
+        html_existed = False
+
+        try:
+            os.chmod(candidate_dir, 0o700)
+            self._write_pdf_output(document, candidate_path)
+            close_error = self._close_document_handles(document)
+            if close_error:
+                raise RuntimeError(close_error)
+            self._validate_output_candidate(candidate_path)
+
+            if self._html_output is not None:
+                html_path = str(
+                    Path(output_path).with_name(
+                        f"{Path(output_path).stem}_accessible.html"
+                    )
+                )
+                html_existed = os.path.lexists(html_path)
+                html_candidate_path = str(Path(candidate_dir) / "candidate.html")
+                self._write_html_candidate(html_candidate_path)
+                self._validate_html_candidate(html_candidate_path)
+
+            os.replace(candidate_path, output_path)
+            logger.info("Atomically published validated PDF: %s", output_path)
+
+            if html_path and html_candidate_path:
+                try:
+                    os.replace(html_candidate_path, html_path)
+                except Exception as e:
+                    if html_existed:
+                        html_state = f"prior HTML retained at: {html_path}"
+                    else:
+                        html_state = "no HTML final was published"
+                    warning = (
+                        "Accessible HTML publication failed after PDF commit; "
+                        f"valid PDF retained at: {output_path}; {html_state}: {e}"
+                    )
+                    logger.warning(warning)
+                    self.result.warnings.append(warning)
+                else:
+                    logger.info("Atomically published accessible HTML: %s", html_path)
+                    self.result.warnings.append(
+                        f"HTML alternative saved to: {html_path}"
+                    )
+        except Exception as e:
+            close_error = self._close_document_handles(document)
+            cleanup_error = self._remove_candidate_directory(candidate_dir)
+            additional_errors = [
+                error for error in (close_error, cleanup_error) if error
+            ]
+            if additional_errors:
+                raise RuntimeError(f"{e}; {'; '.join(additional_errors)}") from e
+            raise
+
+        cleanup_error = self._remove_candidate_directory(candidate_dir)
+        if cleanup_error:
+            raise RuntimeError(cleanup_error)
+        return output_path
+
+    def _write_html_candidate(self, candidate_path: str) -> None:
+        """Exclusively create the HTML candidate without following symlinks."""
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(candidate_path, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                descriptor = None
+                stream.write(self._html_output or "")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _validate_html_candidate(candidate_path: str) -> None:
+        """Require a non-empty UTF-8 regular file before publication."""
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(candidate_path, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError(
+                    "HTML candidate validation failed: not a regular file"
+                )
+            with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+                descriptor = None
+                content = stream.read()
+        except UnicodeDecodeError as e:
+            raise RuntimeError(
+                f"HTML candidate validation failed: content is not valid UTF-8 ({e})"
+            ) from e
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        if not content:
+            raise RuntimeError("HTML candidate validation failed: content is empty")
+
+    def _close_document_handles(self, document: Any) -> Optional[str]:
+        """Close save-time handles; final cleanup remains a safety net."""
+        close_errors = []
+        handles = [("PDF document", document)]
+        if self._pikepdf_doc is not None and self._pikepdf_doc is not document:
+            handles.append(("pikepdf document", self._pikepdf_doc))
+        for label, handle in handles:
+            try:
+                if not getattr(handle, "is_closed", False):
+                    handle.close()
+            except Exception as e:
+                close_errors.append(f"could not close {label}: {e}")
+        self._pdf = None
+        self._pikepdf_doc = None
+        if close_errors:
+            return "Save handle cleanup failed: " + "; ".join(close_errors)
+        return None
+
+    def _validate_output_candidate(self, candidate_path: str) -> None:
+        """Validate the exact candidate bytes before atomic publication."""
+        try:
+            with fitz.open(candidate_path) as candidate:
+                if not candidate.is_pdf or candidate.page_count < 1:
+                    raise RuntimeError("candidate is not a non-empty PDF")
+                candidate_pages = candidate.page_count
+                for page in candidate:
+                    page.get_text()
+            with fitz.open(self._working_path) as source:
+                source_pages = source.page_count
+            if candidate_pages != source_pages:
+                raise RuntimeError(
+                    f"candidate page count changed from {source_pages} to "
+                    f"{candidate_pages}"
+                )
+            with pikepdf.open(candidate_path) as candidate_pdf:
+                if len(candidate_pdf.pages) != source_pages:
+                    raise RuntimeError("candidate page tree is inconsistent")
+        except Exception as e:
+            raise RuntimeError(
+                f"Remediated output candidate failed PDF validation: {e}"
+            ) from e
+
+        if self._require_output_text_layer:
+            self._ensure_output_text_layer(candidate_path)
+        if self._files_are_identical(candidate_path, self.file_path):
+            raise RuntimeError(
+                "Remediated output is byte-identical to the original input; "
+                "refusing to publish a no-op remediation."
+            )
+
+    @staticmethod
+    def _files_are_identical(first_path: str, second_path: str) -> bool:
+        """Compare two files byte-for-byte without loading them into memory."""
+        if os.path.getsize(first_path) != os.path.getsize(second_path):
+            return False
+        with open(first_path, "rb") as first, open(second_path, "rb") as second:
+            while True:
+                first_chunk = first.read(1024 * 1024)
+                second_chunk = second.read(1024 * 1024)
+                if first_chunk != second_chunk:
+                    return False
+                if not first_chunk:
+                    return True
+
+    def _remove_candidate_directory(self, candidate_dir: str) -> Optional[str]:
+        """Remove a candidate directory and report any retained private data."""
+        if not os.path.lexists(candidate_dir):
+            return None
+        try:
+            shutil.rmtree(candidate_dir)
+        except Exception as e:
+            cleanup_error = (
+                "Candidate cleanup failed; private candidate directory retained at "
+                f"'{candidate_dir}' for operator cleanup: {e}"
+            )
+            logger.error(cleanup_error)
+            self.result.warnings.append(cleanup_error)
+            return cleanup_error
+        return None
+
+    def _write_pdf_output(self, document: Any, output_path: str) -> None:
+        """Write the current PDF state to ``output_path``."""
 
         # If we modified the structure tree with pikepdf, save with pikepdf
         # This is critical because PyMuPDF cannot save structure tree changes
@@ -885,24 +1462,6 @@ class PdfRemediator(BaseRemediator):
         else:
             # Use PyMuPDF for non-structure changes (metadata, bookmarks)
             document.save(output_path, garbage=4, deflate=True)
-
-        # Also save HTML alternative if generated
-        if self._html_output:
-            html_path = output_path.replace(".pdf", "_accessible.html")
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(self._html_output)
-            logger.info(f"Saved accessible HTML to: {html_path}")
-            self.result.warnings.append(f"HTML alternative saved to: {html_path}")
-
-        # Close both documents
-        document.close()
-        if self._pikepdf_doc:
-            try:
-                self._pikepdf_doc.close()
-            except Exception:
-                pass
-
-        return output_path
 
     # Issue types ContentTaggerV2 always resolves when it completes, and
     # those it only resolves when it actually tagged content blocks
@@ -968,9 +1527,9 @@ class PdfRemediator(BaseRemediator):
         """Reload the pikepdf document handle from disk.
 
         Called after an external tool (e.g. TableTagger) has saved changes
-        directly to self.file_path with its own pikepdf handle. Without this
-        reload, _save_document() would overwrite those changes with the stale
-        in-memory state.
+        directly to the working copy with its own pikepdf handle. Without
+        this reload, _save_document() would overwrite those changes with the
+        stale in-memory state.
         """
         if self._pikepdf_doc:
             try:
@@ -979,7 +1538,7 @@ class PdfRemediator(BaseRemediator):
                 pass
 
         try:
-            self._pikepdf_doc = pikepdf.open(self.file_path)
+            self._pikepdf_doc = pikepdf.open(self._working_path)
             self._struct_tree = PDFStructureTree(self._pikepdf_doc)
             logger.debug("Reloaded pikepdf document after external modification")
         except Exception as e:
@@ -1545,7 +2104,7 @@ class PdfRemediator(BaseRemediator):
         """
         try:
             strategy = HeuristicStrategy()
-            result: ReadingOrderFixResult = strategy.fix(self.file_path)
+            result: ReadingOrderFixResult = strategy.fix(self._working_path)
 
             if not result.success:
                 logger.error("Reading order fix failed: %s", result.error)
@@ -1606,7 +2165,7 @@ class PdfRemediator(BaseRemediator):
                 # Flush pending pikepdf changes so TableTagger sees them
                 if self._structure_modified and self._pikepdf_doc:
                     try:
-                        self._pikepdf_doc.save(self.file_path)
+                        self._pikepdf_doc.save(self._working_path)
                         logger.debug(
                             "Flushed pending pikepdf changes before table tagging"
                         )
@@ -1620,7 +2179,7 @@ class PdfRemediator(BaseRemediator):
                     use_ai=(self.config.use_ai and self.config.allow_legacy_nested_ai),
                     allow_legacy_provider_manager=self.config.allow_legacy_nested_ai,
                 )
-                result = tagger.tag_tables(self.file_path)
+                result = tagger.tag_tables(self._working_path)
 
                 if result.success and result.tables_tagged > 0:
                     self._table_tagger_found = True
@@ -1743,7 +2302,7 @@ class PdfRemediator(BaseRemediator):
                 return False
 
             # Use PyMuPDF to find list items on each page
-            with fitz.open(self.file_path) as doc:
+            with fitz.open(self._working_path) as doc:
                 lists_added = 0
                 for page_num in range(len(doc)):
                     page = doc[page_num]
