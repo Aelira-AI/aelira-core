@@ -314,7 +314,9 @@ def test_trivy_blocking_ignore_has_exact_bounded_layer_false_positives() -> None
         allowlist,
     )
     assert vulnerability_ids == ["GHSA-6v7p-g79w-8964", "CVE-2025-47273"]
-    assert allowlist.count("# owner: security@aelira.ai") == 2
+    owners = re.findall(r"(?m)^# owner: (.+)$", allowlist)
+    assert owners == ["security-team", "security-team"]
+    assert all("@" not in owner for owner in owners)
     assert allowlist.count("# expires: 2026-09-30") == 2
     justifications = re.findall(r"(?m)^# justification: (.+)$", allowlist)
     assert len(justifications) == 2
