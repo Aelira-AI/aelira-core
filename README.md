@@ -33,18 +33,29 @@ No `.env` file, no configuration. When it comes up:
 
 That gets you scanning immediately. AI-generated fixes need a model, which is the one thing you have to choose — and it is genuinely your choice: bring your own key for Gemini, OpenAI, Anthropic, or xAI, point the OpenAI provider at any OpenAI-compatible endpoint, or run models locally with `--profile ollama` and keep every document on your own hardware. Nothing is sent anywhere you did not configure.
 
+## Four equal product pillars
+
+For document work, upload a file and get back a remediated file rather than only a problem list. The public core treats **documents**, **LMS**, **web**, and **media** as four equal product pillars, each with its own implementation and evidence boundaries.
+
+| Pillar | Scope | Start here |
+|---|---|---|
+| **Documents** | PDF, DOCX, PPTX, XLSX, and LaTeX scanning, bounded remediation, review artifacts | [Document remediation hub](docs/document-remediation/README.md) |
+| **LMS** | Course discovery, scanning, remediation policy, and provider-specific write-back | [LMS integration status](#lms-integration-status) |
+| **Web** | Browser-based accessibility detection and code remediation | [`src/education/web_scanner.py`](src/education/web_scanner.py) |
+| **Media** | Audio/video transcription, captions, and related review outputs | [`src/education/multimedia_processor.py`](src/education/multimedia_processor.py) |
+
 ## What it handles
 
 | Content | What it does |
 |---|---|
-| **PDF** | Tags structure, fixes reading order, adds alt text, OCRs scans, repairs tables |
-| **Word, PowerPoint, Excel** | Heading structure, alt text, contrast, table headers, slide reading order |
-| **LaTeX** | Remediates and returns `.tex` source directly, generates context-aware figure descriptions, converts equations to accessible MathML/ARIA descriptions, and optionally produces PDF/HTML |
+| **PDF** | Scans text/OCR and structure; applies bounded metadata, tag, bookmark, table, and alt-text fixes where the file exposes a safe target |
+| **Word, PowerPoint, Excel** | Format-specific structure, alternative-text, contrast, table, slide, and workbook checks with partial original-format remediation |
+| **LaTeX** | Remediates and returns `.tex` source directly, converts supported equations to MathML/ARIA descriptions, and can optionally produce PDF/HTML |
 | **Web pages** | axe-core and Pa11y detection, with generated code fixes |
 | **Video and audio** | Transcription and WebVTT captions |
 | **Images** | Context-aware alt text, not filename echoes |
 
-MathML is one stage of the LaTeX pipeline; the source remains first-class. Source-level remediation can improve accessibility metadata and language, figures, tables, equations, and links, depending on the issues found. With AI configured, figure descriptions use the issue, location, and original LaTeX context rather than the filename alone, with a filename-based fallback when richer context is unavailable.
+MathML is one stage of the LaTeX pipeline; the source remains first-class. Source-level remediation can improve accessibility metadata and language, figures, tables, equations, and links, depending on the issues found. With AI configured, figure descriptions use the issue, location, and original LaTeX context rather than the filename alone, with a filename-based fallback when richer context is unavailable. Capabilities, dependencies, evidence level, and review limits for every document format are in the [document remediation hub](docs/document-remediation/README.md).
 
 It reads course content directly from your LMS, plus **Google Drive** and **Microsoft 365**, so faculty do not have to download and re-upload anything.
 
@@ -157,7 +168,7 @@ aelira --help
 
 It lives in [`cli/`](cli/) if you prefer to run it from source (`npm ci && npm run build && ./bin/run.js`).
 
-Every API-backed command takes `--api-url` (default `http://localhost:8000`, matching the quickstart), or set it once with `aelira config set api-url <url>`:
+The current document scan and remediation commands take `--api-url` with a command-local default of `http://localhost:8000`, matching the quickstart. Although `aelira config set api-url <url>` stores a profile value, these command sources currently use their own flag default rather than that stored value. Pass `--api-url` on each invocation for another deployment:
 
 ```bash
 ./bin/run.js report analytics --api-url http://localhost:8000
