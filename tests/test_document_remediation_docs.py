@@ -3,7 +3,6 @@
 from pathlib import Path
 import re
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs" / "document-remediation"
 REQUIRED_DOCS = {
@@ -55,7 +54,9 @@ def _text(path: Path) -> str:
 def test_required_document_remediation_files_and_sections_exist():
     for name, sections in REQUIRED_DOCS.items():
         path = DOCS / name
-        assert path.is_file(), f"missing canonical documentation file: {path.relative_to(ROOT)}"
+        assert (
+            path.is_file()
+        ), f"missing canonical documentation file: {path.relative_to(ROOT)}"
         text = _text(path)
         for section in sections:
             assert section in text, f"{path.relative_to(ROOT)} missing {section!r}"
@@ -220,6 +221,8 @@ def test_authorization_header_inline_code_is_well_formed():
 
 def test_office_output_does_not_claim_artifacts_with_manual_or_failed_work():
     office = _section(_text(DOCS / "office.md"), "## Output and review").lower()
-    assert "managed artifact for review and may also report manual or failed" not in office
+    assert (
+        "managed artifact for review and may also report manual or failed" not in office
+    )
     assert "zero manual" in office
     assert "zero failed" in office
