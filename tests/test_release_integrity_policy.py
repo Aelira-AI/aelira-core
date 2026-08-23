@@ -364,7 +364,13 @@ def test_release_requires_verified_annotated_tag_and_attaches_exact_sboms() -> N
         "actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5"
         in workflow
     )
-    assert "pattern: sbom-*-${{ github.run_attempt }}" in workflow
+    assert "pattern: dependency-sboms-+([0-9])" in workflow
+    assert (
+        "pattern: sbom-@(aelira-core-api|aelira-core-dashboard)-"
+        "@(amd64|arm64)-+([0-9])" in workflow
+    )
+    assert "pattern: dependency-sboms-*\n" not in workflow
+    assert "pattern: sbom-*-*" not in workflow
     assert "EXPECTED_CYCLONEDX=3" in workflow
     assert "EXPECTED_SPDX=4" in workflow
     assert "${#CYCLONEDX[@]}" in workflow
@@ -379,24 +385,22 @@ def test_release_requires_verified_annotated_tag_and_attaches_exact_sboms() -> N
     assert workflow.index("npm-publish:") < workflow.index("github-release:")
 
 
-def test_release_artifact_names_are_isolated_by_run_attempt() -> None:
+def test_release_artifact_producer_names_are_isolated_by_run_attempt() -> None:
     docker = (WORKFLOWS / "publish-docker.yml").read_text()
     release = (WORKFLOWS / "release.yml").read_text()
     attempt = "${{ github.run_attempt }}"
 
-    artifact_blocks = re.findall(
+    upload_pattern = re.compile(
         r"(?ms)^      - name: .+?\n"
-        r"        uses: actions/(?:upload|download)-artifact@.+?"
-        r"(?=^      - |\Z)",
-        docker + "\n" + release,
+        r"        uses: actions/upload-artifact@.+?"
+        r"(?=^      - |^  [a-zA-Z0-9_-]+:|\Z)"
     )
-    assert len(artifact_blocks) == 9
-    for block in artifact_blocks:
-        selectors = re.findall(
-            r"^          (?:name|pattern): (.+)$", block, re.MULTILINE
-        )
-        assert len(selectors) == 1
-        assert attempt in selectors[0]
+    upload_blocks = upload_pattern.findall(docker) + upload_pattern.findall(release)
+    assert len(upload_blocks) == 5
+    for block in upload_blocks:
+        names = re.findall(r"^          name: (.+)$", block, re.MULTILINE)
+        assert len(names) == 1
+        assert attempt in names[0]
 
     for expected in (
         "name: sbom-${{ matrix.image }}-${{ matrix.arch }}-" + attempt,
@@ -406,8 +410,7 @@ def test_release_artifact_names_are_isolated_by_run_attempt() -> None:
     ):
         assert expected in docker
     assert docker.count(f"name: verified-digest-receipts-{attempt}") == 2
-    assert f"pattern: sbom-*-{attempt}" in release
-    assert release.count(f"name: dependency-sboms-{attempt}") == 2
+    assert release.count(f"name: dependency-sboms-{attempt}") == 1
 
     # Attempt isolation belongs to the artifact namespace, not release payload names.
     for canonical_payload in (
