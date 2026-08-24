@@ -204,3 +204,33 @@ def test_real_renderer_is_stable_and_blocks_network(monkeypatch):
     assert first == second
     assert first.startswith(b"\x89PNG\r\n\x1a\n")
     assert renderer.network_requests == 0
+
+
+def test_pinned_renderer_calibration_separates_supported_math_near_misses():
+    from latex2mathml.converter import convert
+
+    from src.education.remediation.equation_verifier import (
+        EquationVerifier,
+        OfflineMathMLRenderer,
+    )
+
+    positives = ["x+1", "x^2", "x_1", r"\frac{x}{2}", "x=1"]
+    near_misses = [
+        ("x+1", "x-1"),
+        ("x^2", "x^3"),
+        ("x_1", "x_2"),
+        (r"\frac{x}{2}", r"\frac{x}{3}"),
+        ("x=1", r"x\ne1"),
+        (r"\sqrt{x}", "x"),
+    ]
+    renderer = OfflineMathMLRenderer()
+    verifier = EquationVerifier(renderer=renderer.render)
+    try:
+        for latex in positives:
+            source = _validated(renderer.render(convert(latex)))
+            assert verifier.verify(source, latex).passed is True
+        for source_latex, changed_latex in near_misses:
+            source = _validated(renderer.render(convert(source_latex)))
+            assert verifier.verify(source, changed_latex).passed is False
+    except RuntimeError as exc:
+        pytest.skip(f"pinned Chromium unavailable in this developer environment: {exc}")
