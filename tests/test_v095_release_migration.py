@@ -15,7 +15,8 @@ from sqlalchemy.engine import make_url
 
 ROOT = Path(__file__).parents[1]
 PREVIOUS_HEAD = "20260822_task21_provenance"
-HEAD = "20260822_v095_job_quarantine"
+V095_HEAD = "20260822_v095_job_quarantine"
+HEAD = "20260824_task8_review"
 REASON = "pre_v0_9_5_job_quarantined"
 MIGRATION = ROOT / "alembic/versions/2026_08_22_v095_job_quarantine.py"
 
@@ -24,7 +25,8 @@ def test_v095_quarantine_is_single_head_after_v094_invariants():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
 
     assert scripts.get_heads() == [HEAD]
-    assert scripts.get_revision(HEAD).down_revision == PREVIOUS_HEAD
+    assert scripts.get_revision(HEAD).down_revision == V095_HEAD
+    assert scripts.get_revision(V095_HEAD).down_revision == PREVIOUS_HEAD
 
 
 def test_v095_quarantine_sql_is_terminal_complete_and_downgrade_safe(monkeypatch):

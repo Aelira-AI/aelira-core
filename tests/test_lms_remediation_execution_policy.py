@@ -22,6 +22,7 @@ from src.db.models import (
     CloudProvider,
     RemediationOutcome,
     Scan,
+    ScanFix,
     ScanResult,
     ScanStatus,
     ScanType,
@@ -171,8 +172,16 @@ class CloudFileQuery:
         for criterion in criteria:
             key = criterion.left.key
             expected = criterion.right.value
-            self.rows = [row for row in self.rows if getattr(row, key) == expected]
+            self.rows = [
+                row for row in self.rows if getattr(row, key, row) == expected
+            ]
         return self
+
+    def with_for_update(self):
+        return self
+
+    def scalar(self):
+        return self.rows[0] if self.rows else None
 
     def limit(self, value):
         self.limit_value = value
@@ -192,6 +201,10 @@ class CloudFileDB:
         self.commits = 0
 
     def query(self, model):
+        if model is Scan.id:
+            return CloudFileQuery(["scan-1"])
+        if model is ScanFix:
+            return CloudFileQuery([])
         assert model is CloudFile
         return CloudFileQuery(self.rows)
 
@@ -3016,6 +3029,15 @@ class _ProcessQuery:
     def first(self):
         return self.value
 
+    def all(self):
+        return [] if self.value is None else [self.value]
+
+    def with_for_update(self):
+        return self
+
+    def scalar(self):
+        return self.value
+
     def delete(self):
         return 0
 
@@ -3031,6 +3053,9 @@ class _ProcessDB:
         self.queried_models = []
 
     def query(self, model):
+        if model is Scan.id:
+            self.queried_models.append("Scan.id")
+            return _ProcessQuery(self.scan.id)
         self.queried_models.append(model.__name__)
         values = {
             "Scan": self.scan,
