@@ -168,6 +168,46 @@ def test_foreign_element_namespaces_reject_before_render(mathml):
         verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
 
 
+@pytest.mark.parametrize(
+    "mathml",
+    [
+        '<math><?x <style>body{display:none}</style> ?><mi>x</mi></math>',
+        '<math><!-- <img src="data:image/png;base64,AAAA"> --><mi>x</mi></math>',
+        '<!DOCTYPE math [<!ENTITY injected "x">]><math><mi>&injected;</mi></math>',
+    ],
+)
+def test_non_element_xml_constructs_reject_before_render(mathml):
+    from src.education.remediation.equation_verifier import EquationVerificationRejected
+    from src.education.remediation.equation_verifier import EquationVerifier
+
+    verifier = EquationVerifier(
+        converter=lambda latex: mathml,
+        renderer=lambda value: (_ for _ in ()).throw(
+            AssertionError("non-element XML must not reach renderer")
+        ),
+    )
+    with pytest.raises(EquationVerificationRejected, match="invalid_mathml"):
+        verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
+
+
+def test_renderer_receives_only_canonical_allowlisted_tree():
+    from src.education.remediation.equation_verifier import EquationVerifier
+
+    payload = _png(lambda pen: pen.line((20, 45, 220, 45), fill="black", width=5))
+    rendered_inputs = []
+    verifier = EquationVerifier(
+        converter=lambda latex: (
+            '<math xmlns="http://www.w3.org/1998/Math/MathML">'
+            '<mi mathvariant="italic">x</mi></math>'
+        ),
+        renderer=lambda value: rendered_inputs.append(value) or payload,
+    )
+
+    verifier.verify(_validated(payload), "x")
+
+    assert rendered_inputs == ['<math><mi mathvariant="italic">x</mi></math>']
+
+
 def test_converter_renderer_blank_and_comparator_failures_close():
     from src.education.remediation.equation_verifier import EquationVerificationRejected
     from src.education.remediation.equation_verifier import EquationVerifier

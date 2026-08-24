@@ -222,7 +222,7 @@ class EquationVerifier:
             mathml = self.converter(latex)
         except Exception:
             raise EquationVerificationRejected("conversion_failed") from None
-        self._validate_mathml(mathml)
+        mathml = self.canonicalize_mathml(mathml)
         try:
             rendered = self.renderer(mathml)
         except Exception:
@@ -262,8 +262,11 @@ class EquationVerifier:
             required_pixel_similarity=self.config.required_pixel_similarity,
         )
 
-    def _validate_mathml(self, mathml: Any) -> None:
+    def canonicalize_mathml(self, mathml: Any) -> str:
         if not isinstance(mathml, str) or not mathml or len(mathml) > self.config.max_mathml_chars:
+            raise EquationVerificationRejected("invalid_mathml")
+        lowered = mathml.lower()
+        if "<?" in lowered or "<!" in lowered:
             raise EquationVerificationRejected("invalid_mathml")
         try:
             root = ElementTree.fromstring(mathml)
@@ -305,6 +308,22 @@ class EquationVerifier:
             stack.extend((child, depth + 1) for child in list(node))
         if nodes <= 1:
             raise EquationVerificationRejected("invalid_mathml")
+        return self._canonical_element(root)
+
+    def _canonical_element(self, node: ElementTree.Element) -> str:
+        _, name = self._expanded_name(node.tag)
+        canonical = ElementTree.Element(name)
+        for key in sorted(node.attrib):
+            canonical.set(key, node.attrib[key])
+        canonical.text = node.text
+        for child in list(node):
+            child_xml = self._canonical_element(child)
+            child_element = ElementTree.fromstring(child_xml)
+            child_element.tail = child.tail
+            canonical.append(child_element)
+        return ElementTree.tostring(
+            canonical, encoding="unicode", short_empty_elements=True
+        )
 
     @staticmethod
     def _local_name(tag: str) -> str:

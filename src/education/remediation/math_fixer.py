@@ -464,6 +464,23 @@ class MathFixer:
                 error="image_equation_conversion_failed",
                 page_number=page_number,
             )
+        canonicalize = getattr(self.equation_verifier, "canonicalize_mathml", None)
+        if callable(canonicalize):
+            try:
+                canonical_mathml = canonicalize(mathml_string)
+            except Exception:
+                return MathFixResult(
+                    success=False,
+                    error="image_equation_conversion_failed",
+                    page_number=page_number,
+                )
+            if not isinstance(canonical_mathml, str) or not canonical_mathml:
+                return MathFixResult(
+                    success=False,
+                    error="image_equation_conversion_failed",
+                    page_number=page_number,
+                )
+            mathml_string = canonical_mathml
         expected_mathml_sha256 = getattr(verification, "mathml_sha256", None)
         actual_mathml_sha256 = hashlib.sha256(mathml_string.encode("utf-8")).hexdigest()
         if expected_mathml_sha256 != actual_mathml_sha256:
