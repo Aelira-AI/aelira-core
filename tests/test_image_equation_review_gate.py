@@ -373,7 +373,13 @@ def test_review_graph_invalidation_clears_every_approved_current_sink():
 
     assert graph.scan is scan
     assert graph.fixes == (fix,)
-    assert calls[:4] == [Scan, ScanFix, RemediationArtifact, CloudFile]
+    assert calls == [
+        Scan,
+        RemediationArtifact,
+        CloudFile,
+        RemediationArtifact,
+        ScanFix,
+    ]
     for artifact in (local, cloud_artifact):
         assert artifact.review_status == "pending"
         assert artifact.approval_checksum is None

@@ -35,10 +35,7 @@ from src.db.models import (
     ScanType,
     User,
 )
-from src.services.scan_fix_service import (
-    artifact_review_blockers,
-    lock_scan_review_graph,
-)
+from src.services.scan_fix_service import artifact_review_blockers
 
 
 class ArtifactError(Exception):
@@ -1617,7 +1614,6 @@ class RemediationArtifactService:
         approval_checksum: str | None = None,
     ) -> Iterator[BinaryIO]:
         """Lock current authority and yield a descriptor-bound verified stream."""
-        lock_scan_review_graph(db, scan_id)
         _, locked_scan, locked_cloud, _, locked_artifact = self._lock_existing_artifact(
             db, artifact.id
         )
@@ -1698,8 +1694,6 @@ class RemediationArtifactService:
     def _lock_mutable_graph(
         self, db: Any, artifact_id: str
     ) -> tuple[Any, Any, RemediationArtifact]:
-        metadata = self._artifact_metadata(db, artifact_id)
-        lock_scan_review_graph(db, metadata.scan_id)
         _, scan, cloud_file, _, artifact = self._lock_existing_artifact(db, artifact_id)
         assert artifact is not None
         if artifact.cleanup_claimed_at is not None:

@@ -154,22 +154,21 @@ def test_review_mutations_and_artifact_consumption_share_public_lock_graph():
     from src.services.scan_fix_service import lock_scan_review_graph
 
     helper_source = inspect.getsource(lock_scan_review_graph)
-    assert helper_source.index("db.query(Scan)") < helper_source.index(
-        "db.query(ScanFix)"
-    )
-    assert helper_source.index("db.query(ScanFix)") < helper_source.index(
-        "db.query(RemediationArtifact)"
-    )
-    assert helper_source.index("db.query(RemediationArtifact)") < helper_source.index(
-        "db.query(CloudFile)"
-    )
+    scan_lock = helper_source.index("db.query(Scan)")
+    artifact_discovery = helper_source.index("db.query(RemediationArtifact)")
+    cloud_lock = helper_source.index("db.query(CloudFile)")
+    artifact_lock = helper_source.rindex("db.query(RemediationArtifact)")
+    fix_lock = helper_source.index("db.query(ScanFix)")
+    assert scan_lock < artifact_discovery < cloud_lock < artifact_lock < fix_lock
+    for callable_ in (review_routes.review_fix, review_routes.batch_review):
+        assert "lock_scan_review_graph" in inspect.getsource(callable_)
     for callable_ in (
-        review_routes.review_fix,
-        review_routes.batch_review,
         module.RemediationArtifactService._lock_mutable_graph,
         module.RemediationArtifactService.open_verified,
     ):
-        assert "lock_scan_review_graph" in inspect.getsource(callable_)
+        source = inspect.getsource(callable_)
+        assert "lock_scan_review_graph" not in source
+        assert "_lock_existing_artifact" in source
 
 
 @pytest.mark.asyncio

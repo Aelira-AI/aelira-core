@@ -107,7 +107,7 @@ def invalidate_current_artifact_approvals(
 def lock_scan_review_graph(
     db: Any, scan_id: str, *, invalidate_approvals: bool = False
 ) -> ScanReviewGraph:
-    """Acquire the shared review graph without artifact-first circular locks."""
+    """Lock the review subset in global Scan→Cloud→Artifact→Fix order."""
     scan = (
         db.query(Scan)
         .options(
@@ -124,13 +124,43 @@ def lock_scan_review_graph(
     )
     if scan is None:
         raise ValueError("scan does not exist")
-    fixes = tuple(
-        db.query(ScanFix)
-        .filter(ScanFix.scan_id == scan_id)
-        .order_by(ScanFix.id.asc())
+    artifact_metadata = tuple(
+        db.query(RemediationArtifact)
+        .options(
+            load_only(
+                RemediationArtifact.id,
+                RemediationArtifact.cloud_file_id,
+            )
+        )
+        .filter(RemediationArtifact.scan_id == scan_id)
+        .order_by(RemediationArtifact.id.asc())
+        .all()
+    )
+    cloud_ids = sorted(
+        {
+            artifact.cloud_file_id
+            for artifact in artifact_metadata
+            if artifact.cloud_file_id
+        }
+    )
+    cloud_files = tuple(
+        db.query(CloudFile)
+        .options(
+            load_only(
+                CloudFile.id,
+                CloudFile.current_remediation_artifact_id,
+                CloudFile.writeback_status,
+                CloudFile.has_remediated_version,
+                CloudFile.remediation_origin,
+            )
+        )
+        .filter(CloudFile.id.in_(cloud_ids))
+        .order_by(CloudFile.id.asc())
         .with_for_update()
         .populate_existing()
         .all()
+        if cloud_ids
+        else ()
     )
     artifacts = tuple(
         db.query(RemediationArtifact)
@@ -153,27 +183,13 @@ def lock_scan_review_graph(
         .populate_existing()
         .all()
     )
-    cloud_ids = sorted(
-        {artifact.cloud_file_id for artifact in artifacts if artifact.cloud_file_id}
-    )
-    cloud_files = tuple(
-        db.query(CloudFile)
-        .options(
-            load_only(
-                CloudFile.id,
-                CloudFile.current_remediation_artifact_id,
-                CloudFile.writeback_status,
-                CloudFile.has_remediated_version,
-                CloudFile.remediation_origin,
-            )
-        )
-        .filter(CloudFile.id.in_(cloud_ids))
-        .order_by(CloudFile.id.asc())
+    fixes = tuple(
+        db.query(ScanFix)
+        .filter(ScanFix.scan_id == scan_id)
+        .order_by(ScanFix.id.asc())
         .with_for_update()
         .populate_existing()
         .all()
-        if cloud_ids
-        else ()
     )
     graph = ScanReviewGraph(scan, fixes, artifacts, cloud_files)
     if invalidate_approvals:
