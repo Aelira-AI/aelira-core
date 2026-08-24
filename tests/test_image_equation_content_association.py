@@ -923,3 +923,45 @@ def test_association_rolls_back_when_append_sabotaged(tmp_path, monkeypatch):
         pdf.save(after_serialized)
         assert after_serialized.getvalue() == before_serialized.getvalue()
     fitz_doc.close()
+
+
+def test_association_rolls_back_replaced_number_tree_after_stream_failure(
+    tmp_path, monkeypatch
+):
+    import src.education.remediation.content_tagger_v2 as module
+    from src.education.remediation.pdf_structure import PDFStructureTree
+
+    source = tmp_path / "source.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 1)
+    with pikepdf.open(source) as pdf:
+        tree = PDFStructureTree(pdf)
+        owner_42 = pdf.make_indirect(Dictionary({"/Type": Name.StructElem, "/S": Name.P}))
+        owner_99 = pdf.make_indirect(Dictionary({"/Type": Name.StructElem, "/S": Name.P}))
+        leaf = pdf.make_indirect(
+            Dictionary(
+                {
+                    "/Nums": Array([42, owner_42, 99, owner_99]),
+                    "/Limits": Array([42, 99]),
+                }
+            )
+        )
+        tree.struct_root[Name.ParentTree] = Dictionary(
+            {"/Kids": Array([leaf]), "/Limits": Array([42, 99])}
+        )
+        before = BytesIO()
+        pdf.save(before)
+        monkeypatch.setattr(
+            module.pikepdf,
+            "unparse_content_stream",
+            lambda ops: (_ for _ in ()).throw(RuntimeError("stream sabotage")),
+        )
+
+        result = module.associate_image_formula(pdf, fitz_doc, pending)
+
+        assert result.success is False
+        after = BytesIO()
+        pdf.save(after)
+        assert after.getvalue() == before.getvalue()
+    fitz_doc.close()

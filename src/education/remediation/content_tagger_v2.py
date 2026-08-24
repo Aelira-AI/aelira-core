@@ -1270,7 +1270,7 @@ def associate_image_formula(
             "contents": page.obj.get(Name.Contents),
             "root_kids_object": existing_kids,
             "root_kids": list(existing_kids) if isinstance(existing_kids, Array) else None,
-            "number_arrays": [],
+            "number_nodes": [],
             "value_arrays": [],
             "structure_arrays": [],
         }
@@ -1296,12 +1296,39 @@ def associate_image_formula(
             def snapshot_number_arrays(node: Any) -> None:
                 kids = node.get(Name("/Kids"))
                 if kids is not None:
+                    limits = node.get(Name("/Limits"))
+                    rollback["number_nodes"].append(
+                        {
+                            "node": node,
+                            "nums_existed": False,
+                            "nums_object": None,
+                            "nums_values": None,
+                            "limits_existed": Name("/Limits") in node,
+                            "limits_object": limits,
+                            "limits_values": (
+                                list(limits) if isinstance(limits, Array) else None
+                            ),
+                        }
+                    )
                     for kid in kids:
                         snapshot_number_arrays(kid)
                 else:
                     nums = node.get(Name.Nums)
+                    limits = node.get(Name("/Limits"))
+                    rollback["number_nodes"].append(
+                        {
+                            "node": node,
+                            "nums_existed": Name.Nums in node,
+                            "nums_object": nums,
+                            "nums_values": list(nums) if isinstance(nums, Array) else None,
+                            "limits_existed": Name("/Limits") in node,
+                            "limits_object": limits,
+                            "limits_values": (
+                                list(limits) if isinstance(limits, Array) else None
+                            ),
+                        }
+                    )
                     if isinstance(nums, Array):
-                        rollback["number_arrays"].append((nums, list(nums)))
                         for index in range(1, len(nums), 2):
                             if isinstance(nums[index], Array):
                                 rollback["value_arrays"].append(
@@ -1402,11 +1429,29 @@ def associate_image_formula(
                     del root[Name.K]
                 else:
                     root[Name.K] = old_kids
-                for nums, values in rollback["number_arrays"]:
-                    while len(nums):
-                        nums.pop()
-                    for value in values:
-                        nums.append(value)
+                for state in rollback["number_nodes"]:
+                    node = state["node"]
+                    if state["nums_existed"]:
+                        nums = state["nums_object"]
+                        if isinstance(nums, Array):
+                            while len(nums):
+                                nums.pop()
+                            for value in state["nums_values"]:
+                                nums.append(value)
+                        node[Name.Nums] = nums
+                    elif Name.Nums in node:
+                        del node[Name.Nums]
+                    limits_name = Name("/Limits")
+                    if state["limits_existed"]:
+                        limits = state["limits_object"]
+                        if isinstance(limits, Array):
+                            while len(limits):
+                                limits.pop()
+                            for value in state["limits_values"]:
+                                limits.append(value)
+                        node[limits_name] = limits
+                    elif limits_name in node:
+                        del node[limits_name]
                 for array, values in (
                     rollback["value_arrays"] + rollback["structure_arrays"]
                 ):
