@@ -1024,10 +1024,6 @@ def _form_xobject_reaches_image(
         return False
     for xobject in xobjects.values():
         try:
-            identity = tuple(xobject.objgen)
-            if identity in seen:
-                continue
-            seen.add(identity)
             subtype = str(xobject.get(Name.Subtype, ""))
             if (
                 inside_form
@@ -1036,6 +1032,10 @@ def _form_xobject_reaches_image(
             ):
                 return True
             if subtype == "/Form":
+                identity = tuple(xobject.objgen)
+                if identity in seen:
+                    continue
+                seen.add(identity)
                 nested = xobject.get(Name.Resources) or resources
                 if _form_xobject_reaches_image(
                     nested, image_xref, seen, inside_form=True
@@ -1054,23 +1054,54 @@ def _number_tree_entries(struct_root: Any) -> tuple[Any, List[tuple[int, Any]]]:
     entries: List[tuple[int, Any]] = []
     seen: set[int] = set()
 
-    def visit(node: Any) -> None:
+    def visit(node: Any, *, require_limits: bool = False) -> List[tuple[int, Any]]:
         kids = node.get(Name("/Kids"))
         if kids is not None:
-            if not isinstance(kids, Array):
+            if not isinstance(kids, Array) or not kids:
                 raise ValueError("invalid_parent_tree")
+            node_entries: List[tuple[int, Any]] = []
+            previous_max: Optional[int] = None
             for kid in kids:
-                visit(kid)
-            return
+                child_entries = visit(kid, require_limits=True)
+                child_min = child_entries[0][0]
+                child_max = child_entries[-1][0]
+                if previous_max is not None and child_min <= previous_max:
+                    raise ValueError("invalid_parent_tree")
+                previous_max = child_max
+                node_entries.extend(child_entries)
+            limits = node.get(Name("/Limits"))
+            if limits is not None and (
+                not isinstance(limits, Array)
+                or len(limits) != 2
+                or int(limits[0]) != node_entries[0][0]
+                or int(limits[1]) != node_entries[-1][0]
+            ):
+                raise ValueError("invalid_parent_tree")
+            return node_entries
         nums = node.get(Name.Nums, Array([]))
         if not isinstance(nums, Array) or len(nums) % 2:
             raise ValueError("invalid_parent_tree")
+        node_entries: List[tuple[int, Any]] = []
+        previous_key: Optional[int] = None
         for index in range(0, len(nums), 2):
             key = int(nums[index])
-            if key in seen:
+            if key in seen or (previous_key is not None and key <= previous_key):
                 raise ValueError("parent_tree_collision")
+            previous_key = key
             seen.add(key)
-            entries.append((key, nums[index + 1]))
+            item = (key, nums[index + 1])
+            entries.append(item)
+            node_entries.append(item)
+        limits = node.get(Name("/Limits"))
+        if require_limits and (
+            not node_entries
+            or not isinstance(limits, Array)
+            or len(limits) != 2
+            or int(limits[0]) != node_entries[0][0]
+            or int(limits[1]) != node_entries[-1][0]
+        ):
+            raise ValueError("invalid_parent_tree")
+        return node_entries
 
     visit(parent_tree)
     return parent_tree, entries
@@ -1080,24 +1111,43 @@ def _set_number_tree_value(parent_tree: Any, key: int, value: Any) -> None:
     """Replace an existing number-tree value without flattening legal /Kids."""
     kids = parent_tree.get(Name("/Kids"))
     if kids is not None:
+        if not isinstance(kids, Array) or not kids:
+            raise ValueError("invalid_parent_tree")
         for kid in kids:
             before = dict(_number_tree_node_entries(kid))
             if key in before:
                 _set_number_tree_value(kid, key, value)
+                _update_number_tree_limits(parent_tree)
                 return
-        if not kids:
-            raise ValueError("invalid_parent_tree")
-        _set_number_tree_value(kids[-1], key, value)
+        selected = kids[-1]
+        for kid in kids:
+            entries = _number_tree_node_entries(kid)
+            if entries and key <= max(item[0] for item in entries):
+                selected = kid
+                break
+        _set_number_tree_value(selected, key, value)
+        _update_number_tree_limits(parent_tree)
         return
     nums = parent_tree.get(Name.Nums)
     if nums is None:
         nums = Array([])
-        parent_tree[Name.Nums] = nums
-    for index in range(0, len(nums), 2):
-        if int(nums[index]) == key:
-            nums[index + 1] = value
-            return
-    nums.extend([key, value])
+    if not isinstance(nums, Array) or len(nums) % 2:
+        raise ValueError("invalid_parent_tree")
+    entries = {int(nums[index]): nums[index + 1] for index in range(0, len(nums), 2)}
+    entries[key] = value
+    ordered = sorted(entries.items())
+    flattened: List[Any] = []
+    for entry_key, entry_value in ordered:
+        flattened.extend((entry_key, entry_value))
+    parent_tree[Name.Nums] = Array(flattened)
+    parent_tree[Name("/Limits")] = Array([ordered[0][0], ordered[-1][0]])
+
+
+def _update_number_tree_limits(node: Any) -> None:
+    entries = sorted(_number_tree_node_entries(node), key=lambda item: item[0])
+    if not entries:
+        raise ValueError("invalid_parent_tree")
+    node[Name("/Limits")] = Array([entries[0][0], entries[-1][0]])
 
 
 def _number_tree_node_entries(node: Any) -> List[tuple[int, Any]]:

@@ -785,6 +785,34 @@ def test_form_xobject_image_fails_closed_before_mutation(tmp_path):
     fitz_doc.close()
 
 
+def test_form_detection_is_not_hidden_by_earlier_direct_image_alias():
+    from src.education.remediation.content_tagger_v2 import (
+        _form_xobject_reaches_image,
+    )
+
+    pdf = pikepdf.new()
+    image = pdf.make_stream(b"\x00")
+    image[Name.Type] = Name.XObject
+    image[Name.Subtype] = Name.Image
+    image[Name.Width] = 1
+    image[Name.Height] = 1
+    image[Name.ColorSpace] = Name.DeviceGray
+    image[Name.BitsPerComponent] = 8
+    image = pdf.make_indirect(image)
+    form = pdf.make_stream(b"/Nested Do")
+    form[Name.Type] = Name.XObject
+    form[Name.Subtype] = Name.Form
+    form[Name.Resources] = Dictionary({"/XObject": Dictionary({"/Nested": image})})
+    form = pdf.make_indirect(form)
+    resources = Dictionary(
+        {"/XObject": Dictionary({"/Direct": image, "/Form": form})}
+    )
+
+    assert _form_xobject_reaches_image(
+        resources, int(image.objgen[0]), set()
+    ) is True
+
+
 def test_parent_tree_kids_preserve_unrelated_direct_entry(tmp_path):
     """Legal /Kids trees are updated in place and annotation mappings survive."""
     from src.education.remediation.content_tagger_v2 import associate_image_formula
@@ -801,9 +829,16 @@ def test_parent_tree_kids_preserve_unrelated_direct_entry(tmp_path):
             Dictionary({"/Type": Name.StructElem, "/S": Name.P})
         )
         leaf = pdf.make_indirect(
-            Dictionary({"/Nums": Array([42, page_array, 99, annotation_owner])})
+            Dictionary(
+                {
+                    "/Nums": Array([42, page_array, 99, annotation_owner]),
+                    "/Limits": Array([42, 99]),
+                }
+            )
         )
-        tree.struct_root[Name.ParentTree] = Dictionary({"/Kids": Array([leaf])})
+        tree.struct_root[Name.ParentTree] = Dictionary(
+            {"/Kids": Array([leaf]), "/Limits": Array([42, 99])}
+        )
         pdf.pages[0].obj[Name.StructParents] = 42
 
         result = associate_image_formula(pdf, fitz_doc, pending)
@@ -815,6 +850,44 @@ def test_parent_tree_kids_preserve_unrelated_direct_entry(tmp_path):
         assert entries[99].objgen == annotation_owner.objgen
         assert isinstance(entries[42], Array)
         assert entries[42][result.mcid] is not None
+    fitz_doc.close()
+
+
+def test_parent_tree_kids_insert_new_key_sorted_and_update_limits(tmp_path):
+    from src.education.remediation.content_tagger_v2 import associate_image_formula
+    from src.education.remediation.pdf_structure import PDFStructureTree
+
+    source = tmp_path / "source.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 1)
+    with pikepdf.open(source) as pdf:
+        tree = PDFStructureTree(pdf)
+        owner_42 = pdf.make_indirect(Dictionary({"/Type": Name.StructElem, "/S": Name.P}))
+        owner_99 = pdf.make_indirect(Dictionary({"/Type": Name.StructElem, "/S": Name.P}))
+        leaf = pdf.make_indirect(
+            Dictionary(
+                {
+                    "/Nums": Array([42, owner_42, 99, owner_99]),
+                    "/Limits": Array([42, 99]),
+                }
+            )
+        )
+        tree.struct_root[Name.ParentTree] = Dictionary(
+            {"/Kids": Array([leaf]), "/Limits": Array([42, 99])}
+        )
+
+        result = associate_image_formula(pdf, fitz_doc, pending)
+
+        assert result.success
+        nums = leaf[Name.Nums]
+        keys = [int(nums[index]) for index in range(0, len(nums), 2)]
+        assert keys == [result.struct_parent, 42, 99]
+        assert list(leaf[Name("/Limits")]) == [result.struct_parent, 99]
+        assert list(tree.struct_root[Name.ParentTree][Name("/Limits")]) == [
+            result.struct_parent,
+            99,
+        ]
     fitz_doc.close()
 
 
