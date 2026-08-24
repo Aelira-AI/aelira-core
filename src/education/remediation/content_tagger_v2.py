@@ -1057,6 +1057,8 @@ def _number_tree_entries(struct_root: Any) -> tuple[Any, List[tuple[int, Any]]]:
     def visit(node: Any, *, require_limits: bool = False) -> List[tuple[int, Any]]:
         kids = node.get(Name("/Kids"))
         if kids is not None:
+            if Name.Nums in node:
+                raise ValueError("invalid_parent_tree")
             if not isinstance(kids, Array) or not kids:
                 raise ValueError("invalid_parent_tree")
             node_entries: List[tuple[int, Any]] = []
@@ -1296,13 +1298,16 @@ def associate_image_formula(
             def snapshot_number_arrays(node: Any) -> None:
                 kids = node.get(Name("/Kids"))
                 if kids is not None:
+                    nums = node.get(Name.Nums)
                     limits = node.get(Name("/Limits"))
                     rollback["number_nodes"].append(
                         {
                             "node": node,
-                            "nums_existed": False,
-                            "nums_object": None,
-                            "nums_values": None,
+                            "nums_existed": Name.Nums in node,
+                            "nums_object": nums,
+                            "nums_values": (
+                                list(nums) if isinstance(nums, Array) else None
+                            ),
                             "limits_existed": Name("/Limits") in node,
                             "limits_object": limits,
                             "limits_values": (
@@ -1310,6 +1315,12 @@ def associate_image_formula(
                             ),
                         }
                     )
+                    if isinstance(nums, Array):
+                        for index in range(1, len(nums), 2):
+                            if isinstance(nums[index], Array):
+                                rollback["value_arrays"].append(
+                                    (nums[index], list(nums[index]))
+                                )
                     for kid in kids:
                         snapshot_number_arrays(kid)
                 else:

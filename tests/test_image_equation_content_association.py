@@ -965,3 +965,36 @@ def test_association_rolls_back_replaced_number_tree_after_stream_failure(
         pdf.save(after)
         assert after.getvalue() == before.getvalue()
     fitz_doc.close()
+
+
+def test_hybrid_parent_tree_kids_and_nums_rejects_without_mutation(tmp_path):
+    from src.education.remediation.content_tagger_v2 import associate_image_formula
+    from src.education.remediation.pdf_structure import PDFStructureTree
+
+    source = tmp_path / "source.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 1)
+    with pikepdf.open(source) as pdf:
+        tree = PDFStructureTree(pdf)
+        owner = pdf.make_indirect(Dictionary({"/Type": Name.StructElem, "/S": Name.P}))
+        leaf = pdf.make_indirect(
+            Dictionary({"/Nums": Array([42, owner]), "/Limits": Array([42, 42])})
+        )
+        tree.struct_root[Name.ParentTree] = Dictionary(
+            {
+                "/Kids": Array([leaf]),
+                "/Nums": Array([99, owner]),
+                "/Limits": Array([42, 42]),
+            }
+        )
+        before = BytesIO()
+        pdf.save(before)
+
+        result = associate_image_formula(pdf, fitz_doc, pending)
+
+        assert result.success is False
+        after = BytesIO()
+        pdf.save(after)
+        assert after.getvalue() == before.getvalue()
+    fitz_doc.close()
