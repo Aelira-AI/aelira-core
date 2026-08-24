@@ -51,16 +51,17 @@ def test_exact_formula_association_contract():
     assert callable(associate_image_formula)
 
 
-@pytest.mark.xfail(strict=True, reason="approved plan Tasks 8-10 are deferred")
-def test_deferred_durable_review_and_claim_parity_contract():
+def test_durable_review_contract_is_implemented():
     from src.education.remediation.base import FixedIssue
+    from src.services.scan_fix_service import artifact_review_blockers
 
     assert {"source_kind", "verification_evidence"} <= FixedIssue.model_fields.keys()
-    assert all(
-        (Path(__file__).parent / filename).exists()
-        for filename in (
-            "test_direct_pdf_claim_publication.py",
-            "test_queued_pdf_output_claim.py",
-            "test_brightspace_pdf_output_claim.py",
-        )
-    )
+    assert callable(artifact_review_blockers)
+
+
+@pytest.mark.xfail(strict=True, reason="approved plan Tasks 9-10 are deferred")
+def test_deferred_brightspace_scanfix_publication_parity_contract():
+    source = (
+        Path(__file__).parents[1] / "src" / "api" / "brightspace_routes.py"
+    ).read_text()
+    assert "persist_scan_fixes" in source
