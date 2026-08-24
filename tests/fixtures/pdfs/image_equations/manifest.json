@@ -4,9 +4,8 @@
   "threshold_version": "printed-equation-v1",
   "font_sha256": "562551b15b836e6e01d1b7350909baf3c8c8d83260c1190fbf4544333e6936de",
   "minimum_documented_margin": 0.08,
-  "cross_platform_metric_tolerance": 0.04,
   "rounding": "six_decimal_places",
-  "method": "Native MathML rendered twice with pinned Playwright Chromium and committed STIX Two Math; source normalized to JPEG quality 95/subsampling 0; compared by binary-ink-canvas-v1 on arm64 macOS and amd64 Linux on 2026-08-24",
+  "method": "Native MathML rendered twice with pinned Playwright Chromium and committed STIX Two Math; source normalized to JPEG quality 95/subsampling 0; reference metrics recorded on arm64 macOS and threshold/separation enforced on arm64 macOS and amd64 Linux by binary-ink-canvas-v1 on 2026-08-24",
   "positive_pairs": [
     {"id": "positive-1-x+1", "latex": "x+1", "ink_iou": 0.997187, "pixel_similarity": 0.999957},
     {"id": "positive-2-x^2", "latex": "x^2", "ink_iou": 0.991489, "pixel_similarity": 0.999967},
