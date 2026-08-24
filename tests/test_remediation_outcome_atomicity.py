@@ -128,9 +128,7 @@ class _CloudQuery:
         for criterion in criteria:
             key = criterion.left.key
             expected = criterion.right.value
-            self.rows = [
-                row for row in self.rows if getattr(row, key, row) == expected
-            ]
+            self.rows = [row for row in self.rows if getattr(row, key, row) == expected]
         return self
 
     def with_for_update(self):

@@ -174,7 +174,9 @@ def test_open_verified_yields_descriptor_bound_stream_after_canonical_lock(tmp_p
     service._lock_existing_artifact.assert_called_once_with(db, artifact.id)
 
 
-def test_approved_consumption_revalidates_fixes_and_invalidates_stale_approval(tmp_path):
+def test_approved_consumption_revalidates_fixes_and_invalidates_stale_approval(
+    tmp_path,
+):
     service = _service(tmp_path)
     artifact = _artifact(service)
     db, cloud = _db(service, artifact)

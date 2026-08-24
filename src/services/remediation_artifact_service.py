@@ -1780,9 +1780,14 @@ class RemediationArtifactService:
         try:
             self._require_approvable_review(db, artifact, scan)
         except ArtifactAuthorizationError as exc:
-            if artifact.review_status == "approved" and artifact.written_back_at is None:
+            if (
+                artifact.review_status == "approved"
+                and artifact.written_back_at is None
+            ):
                 self._invalidate_stale_approval(db, artifact, cloud_file)
-                raise ArtifactApprovalStaleError("artifact approval became stale") from exc
+                raise ArtifactApprovalStaleError(
+                    "artifact approval became stale"
+                ) from exc
             raise
 
     def approve(

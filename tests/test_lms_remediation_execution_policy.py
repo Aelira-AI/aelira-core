@@ -172,9 +172,7 @@ class CloudFileQuery:
         for criterion in criteria:
             key = criterion.left.key
             expected = criterion.right.value
-            self.rows = [
-                row for row in self.rows if getattr(row, key, row) == expected
-            ]
+            self.rows = [row for row in self.rows if getattr(row, key, row) == expected]
         return self
 
     def with_for_update(self):
@@ -3715,7 +3713,9 @@ async def test_exact_revoked_credential_is_not_replaced_by_active_sibling():
     db.get.side_effect = lambda model, identifier, **kwargs: (
         cloud_file
         if model is CloudFile
-        else revoked if model is CloudOAuthCredentials else None
+        else revoked
+        if model is CloudOAuthCredentials
+        else None
     )
     db.query.side_effect = lambda model: (
         cloud_query if model is CloudFile else sibling_query

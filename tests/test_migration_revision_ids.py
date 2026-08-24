@@ -98,9 +98,7 @@ def test_image_equation_review_upgrade_preserves_sqlite_audit_links():
             )
         )
         connection.execute(
-            text(
-                "INSERT INTO scan_fixes (id, scan_id) VALUES ('fix-1', 'scan-1')"
-            )
+            text("INSERT INTO scan_fixes (id, scan_id) VALUES ('fix-1', 'scan-1')")
         )
         connection.execute(
             text(
@@ -166,9 +164,11 @@ def test_review_upgrade_reconciles_legacy_duplicates_and_enforces_occurrence_uni
                 "FROM scan_fixes ORDER BY id"
             )
         ).all()
-        links = connection.execute(
-            text("SELECT fix_id FROM review_audit_log ORDER BY id")
-        ).scalars().all()
+        links = (
+            connection.execute(text("SELECT fix_id FROM review_audit_log ORDER BY id"))
+            .scalars()
+            .all()
+        )
         assert rows[0][0] == "fix-a"
         assert rows[0][2:] == ("pending", None)
         assert rows[1][0] == "fix-c"
@@ -271,9 +271,12 @@ def test_review_migration_uses_jsonb_and_survives_postgres_replay_cycle():
                 ),
                 {"evidence": '{"passed":true}'},
             )
-            assert connection.execute(
-                text("SELECT verification_evidence->>'passed' FROM scan_fixes")
-            ).scalar_one() == "true"
+            assert (
+                connection.execute(
+                    text("SELECT verification_evidence->>'passed' FROM scan_fixes")
+                ).scalar_one()
+                == "true"
+            )
 
             module.downgrade()
             assert {
@@ -290,14 +293,17 @@ def test_review_migration_uses_jsonb_and_survives_postgres_replay_cycle():
                 }
             )
             module.upgrade()
-            assert connection.execute(
-                text(
-                    "SELECT data_type FROM information_schema.columns "
-                    "WHERE table_schema = :schema AND table_name = 'scan_fixes' "
-                    "AND column_name = 'verification_evidence'"
-                ),
-                {"schema": schema},
-            ).scalar_one() == "jsonb"
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT data_type FROM information_schema.columns "
+                        "WHERE table_schema = :schema AND table_name = 'scan_fixes' "
+                        "AND column_name = 'verification_evidence'"
+                    ),
+                    {"schema": schema},
+                ).scalar_one()
+                == "jsonb"
+            )
     finally:
         with engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))

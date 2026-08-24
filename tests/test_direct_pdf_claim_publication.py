@@ -30,9 +30,7 @@ class _CloudFileQuery:
             key = criterion.left.key
             expected = criterion.right.value
             self.rows = [
-                row
-                for row in self.rows
-                if (getattr(row, key, row) == expected)
+                row for row in self.rows if (getattr(row, key, row) == expected)
             ]
         return self
 

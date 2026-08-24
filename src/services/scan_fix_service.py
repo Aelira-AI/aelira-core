@@ -153,10 +153,7 @@ def persist_scan_fixes(
     if len(set(occurrence_keys)) != len(occurrence_keys):
         raise ValueError("ambiguous duplicate fix occurrence")
     locked_scan_id = (
-        db.query(Scan.id)
-        .filter(Scan.id == scan_id)
-        .with_for_update()
-        .scalar()
+        db.query(Scan.id).filter(Scan.id == scan_id).with_for_update().scalar()
     )
     if locked_scan_id is None:
         raise ValueError("scan does not exist")

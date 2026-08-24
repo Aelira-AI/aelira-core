@@ -102,9 +102,7 @@ def _backfill_occurrences(existing: set[str]) -> None:
                 {"stale": stale},
             )
         bind.execute(
-            sa.text(
-                "UPDATE scan_fixes SET occurrence_key = :key WHERE id = :keeper"
-            ),
+            sa.text("UPDATE scan_fixes SET occurrence_key = :key WHERE id = :keeper"),
             {"key": key, "keeper": keeper},
         )
 
