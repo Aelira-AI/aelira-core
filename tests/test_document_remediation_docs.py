@@ -300,6 +300,17 @@ def test_operator_cleanup_recovery_names_the_real_maintenance_loop():
     assert "bounded artifact cleanup workflow" not in self_hosting
 
 
+def test_operator_docs_describe_current_parent_cleanup_fence():
+    self_hosting = _text(ROOT / "docs" / "deployment" / "self-hosting.md")
+    assert "Until Task16B" not in self_hosting
+    for contract in (
+        "database cleanup fence",
+        "publication and cleanup cannot both own",
+        "do not scan the artifact directory",
+    ):
+        assert contract in self_hosting
+
+
 def test_post_v095_pdf_hardening_is_not_claimed_as_released():
     pages = (
         ROOT / "README.md",

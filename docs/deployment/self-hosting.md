@@ -223,11 +223,13 @@ not silently move the deadline. After expiry, generate a new remediation
 artifact and obtain a new approval before attempting writeback.
 
 Managed artifact rows deliberately restrict deletion of their owning
-department, scan, cloud file, or remediation job. Until Task16B wires lifecycle
-orchestration into those parent operations, disconnect and scan deletion must
-first invoke the artifact service cleanup, verify that the managed bytes were
-removed, and delete the artifact row. The current foundation blocks parent
-deletion rather than silently orphaning bytes.
+department, scan, cloud file, or remediation job. Parent deletion first acquires
+a database cleanup fence, then re-locks and revalidates the parent and its
+artifacts before descriptor-confined byte deletion and row removal. The
+publication and cleanup cannot both own the same artifact. If the fence or byte cleanup
+cannot complete, parent deletion remains blocked rather than orphaning bytes.
+Use the service-managed maintenance path above; do not scan the artifact directory or
+manually delete artifact rows to force progress.
 
 ## Upgrade procedure
 
