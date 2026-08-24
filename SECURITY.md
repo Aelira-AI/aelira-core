@@ -81,7 +81,8 @@ If you self-host Aelira, please ensure:
 
 ### Document Processing
 
-- **PDF processing** - Uses Tesseract OCR; ensure PDFs are from trusted sources
+- **PDF processing** - Uses Tesseract OCR; ensure PDFs are from trusted sources. On `main`, remediation keeps the original immutable, refuses signed/XFA/indeterminate and unsafe OCR cases, sanitizes PDF-derived accessible HTML and embedded images, and publishes managed PDFs from a private exact-byte output claim rather than reopening a mutable pathname.
+- **Release boundary** - This PDF hardening is present on `main` after v0.9.5, is not part of v0.9.5, and may enter a future release only after release gates. Its merge created no release or deployment.
 - **PowerPoint processing** - Uses python-pptx; macro execution is disabled
 - **File uploads** - Size limits enforced; validate file types before processing
 

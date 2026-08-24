@@ -4,6 +4,8 @@ Aelira Core scans and can remediate PDF, DOCX, PPTX, XLSX, and LaTeX content. Th
 
 > **Beta, not a compliance certificate.** A completed scan or remediated file is evidence from Aelira's checks, not proof that a document satisfies every applicable WCAG or format-specific requirement. Review and test the output with assistive technology and any validator required by your organization.
 
+> **Release boundary (24 August 2026):** The PDF hardening described below is present on `main`, after the immutable v0.9.5 release. It is not part of v0.9.5. It can become part of a future release only after that release's gates pass; merging it created no release or deployment.
+
 Choose a format guide: [PDF](pdf.md), [Office: DOCX, PPTX, XLSX](office.md), or [LaTeX](latex.md).
 
 ## Format support and maturity
@@ -51,7 +53,7 @@ The same source can therefore have deterministic findings but different drafted 
 
 ## Format preservation
 
-PDF, DOCX, PPTX, and XLSX remediators save the same primary format as their input. LaTeX preserves remediated `.tex` source as the default and can additionally request HTML or PDF.
+PDF, DOCX, PPTX, and XLSX remediators save the same primary format as their input. LaTeX preserves remediated `.tex` source as the default and can additionally request HTML or PDF. PDF remediation works from a private copy and refuses an output path that resolves to the input, so the original PDF remains immutable.
 
 “Same format” does not mean byte-for-byte preservation. The format libraries rewrite packages/objects, and unsupported or uncommon constructs may be normalized or lost. Compare the original and output visually and structurally, retain the original, and pay particular attention to signatures, forms, embedded objects/media, macros, formulas, pivots, animations, and complex layout.
 
@@ -69,6 +71,12 @@ A typical review is:
 6. Call `POST /education/scans/{scan_id}/artifacts/{artifact_id}/approve` only when the fix review is terminal, at least one fix is accepted, and `can_approve` is true; otherwise call `POST /education/scans/{scan_id}/artifacts/{artifact_id}/reject`.
 
 The legacy scan download routes remain implemented: `GET /education/scans/{scan_id}/remediated` and `GET /education/scans/{scan_id}/remediated/formats`. Prefer managed artifact metadata when the remediation response supplies an artifact ID because it carries integrity and review state.
+
+Managed PDF publication has a stricter byte-identity boundary on `main`. The remediator creates PDF and optional HTML candidates in a private directory opened through retained directory descriptors, validates those candidates, and snapshots the exact validated PDF into a private, unlinked output claim before exposing the final pathname. The claim owns one read-only, non-inheritable descriptor; it has a single owner, is not serialized, and rejects copy, deep-copy, and pickle operations while live. Internal PDF verification and direct, queued, and Brightspace managed publication consume the exact claimed stream instead of reopening `output_file`.
+
+`RemediationArtifactService` recomputes and checks size, SHA-256, MIME type, scan type, and filename while publishing that stream. Publication remains DB-first: a `staging` row and private publication token identify the exact attempt before bytes become `available`. Cancellation, ownership-fence loss, and completion-commit failure abort only that staging publication by artifact ID plus publication token. These controls narrow pathname races; they do not promise one-and-only-one external effects. Path-oriented compatibility remains for non-PDF formats and library consumers, but a managed PDF treats the output claim as authoritative.
+
+Cleanup is part of the outcome. Candidate, serialization, working-copy, descriptor-close, or staging-abort failures produce an explicit cleanup warning or failed result, with a retained path or artifact ID when manual recovery is needed; no such failure is reported as success. See the self-hosting guide for recovery and platform limits.
 
 See the [artifact service](../../src/services/remediation_artifact_service.py), [artifact route implementation](../../src/api/education/remediation_routes.py), and [artifact service tests](../../tests/test_remediation_artifact_service.py).
 
@@ -131,9 +139,9 @@ Only the PDF direct-library path has a maintained runnable example: [`examples/s
 
 | Area | Source | Tests |
 |---|---|---|
-| PDF | [processor](../../src/education/pdf_processor.py), [remediator](../../src/education/remediation/pdf_remediator.py), [structure writer](../../src/education/remediation/pdf_structure.py) | [processor E2E](../../tests/test_pdf_processor_e2e.py), [scan/remediate/re-scan](../../tests/test_pdf_remediation_integration.py), [structure](../../tests/test_pdf_structure.py), [table headers](../../tests/test_pdf_table_headers.py) |
+| PDF | [processor](../../src/education/pdf_processor.py), [remediator](../../src/education/remediation/pdf_remediator.py), [structure writer](../../src/education/remediation/pdf_structure.py), [output claim](../../src/education/remediation/output_claim.py) | [processor E2E](../../tests/test_pdf_processor_e2e.py), [scan/remediate/re-scan](../../tests/test_pdf_remediation_integration.py), [OCR delivery](../../tests/test_pdf_ocr_remediation.py), [accessible HTML](../../tests/test_pdf_accessible_html_escaping.py), [output claim](../../tests/test_remediation_output_claim.py), [structure](../../tests/test_pdf_structure.py), [table headers](../../tests/test_pdf_table_headers.py) |
 | DOCX | [processor](../../src/education/docx_processor.py), [remediator](../../src/education/remediation/docx_remediator.py) | [no-default-style](../../tests/test_docx_no_default_style.py), [SmartArt](../../tests/test_docx_smartart.py), [embedded objects](../../tests/test_docx_embedded_objects.py) |
 | PPTX | [processor](../../src/education/pptx_processor.py), [remediator](../../src/education/remediation/pptx_remediator.py) | [processor E2E](../../tests/test_pptx_processor_e2e.py), [animations](../../tests/test_pptx_animations.py), [embedded media](../../tests/test_pptx_embedded_media.py) |
 | XLSX | [processor](../../src/education/xlsx_processor.py), [remediator](../../src/education/remediation/xlsx_remediator.py) | [pivot tables](../../tests/test_xlsx_pivot_tables.py), [conditional formatting](../../tests/test_xlsx_conditional_formatting.py), [small-document scoring](../../tests/test_small_doc_scoring.py) |
 | LaTeX | [processor](../../src/education/latex_processor.py), [remediator](../../src/education/remediation/latex_remediator.py), [converter](../../src/education/remediation/latex_converter.py) | [processor E2E (opt-in)](../../tests/test_latex_processor_e2e.py), [PDF/UA pipeline](../../tests/test_latex_pdf_ua.py), [download formats](../../tests/test_remediation_downloads.py), [siunitx](../../tests/test_latex_siunitx.py) |
-| API/CLI | [scan routes](../../src/api/education/scan_routes.py), [remediation routes](../../src/api/education/remediation_routes.py), [CLI command sources](../../cli/src/commands) | [artifact service](../../tests/test_remediation_artifact_service.py), [outcome atomicity](../../tests/test_remediation_outcome_atomicity.py), [purpose-bound clients](../../tests/test_remediation_purpose_clients.py), [fail-closed alt text](../../tests/test_alt_text_fail_closed.py) |
+| API/CLI | [scan routes](../../src/api/education/scan_routes.py), [remediation routes](../../src/api/education/remediation_routes.py), [artifact service](../../src/services/remediation_artifact_service.py), [CLI command sources](../../cli/src/commands) | [artifact service](../../tests/test_remediation_artifact_service.py), [direct PDF publication](../../tests/test_direct_pdf_claim_publication.py), [queued PDF publication](../../tests/test_queued_pdf_output_claim.py), [Brightspace PDF publication](../../tests/test_brightspace_pdf_output_claim.py), [outcome atomicity](../../tests/test_remediation_outcome_atomicity.py), [purpose-bound clients](../../tests/test_remediation_purpose_clients.py), [fail-closed alt text](../../tests/test_alt_text_fail_closed.py) |

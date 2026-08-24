@@ -84,6 +84,7 @@ is `.env.example`):
 | `BLACKBOARD_OAUTH_ALLOWED_ORIGINS` | Exact Blackboard OAuth and bearer trust boundary | Required in staging/production when both Blackboard OAuth client credentials are configured. Use comma-separated canonical HTTPS root origins only, such as `https://blackboard.university.edu`; paths, userinfo, query strings, fragments, wildcards, private DNS, and foreign response origins are rejected. Removing an origin revokes persisted credentials on their next use. Development/test may omit the list only for the explicit localhost/test convention. |
 | `REMEDIATION_ARTIFACT_DIR` | Durable root for managed remediation outputs | Defaults to `/app/uploads/remediation-artifacts`. Mount this path on persistent storage. Every API and worker replica must see the same bytes at the same path. |
 | `REMEDIATION_ARTIFACT_RETENTION_DAYS`, `REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS`, `REMEDIATION_ARTIFACT_WRITTEN_RETENTION_DAYS` | Artifact retention windows | Defaults to 30 days while pending, a 30-day writeback deadline after approval, and 7 days after writeback. Approval sets the artifact expiry to the approved-retention deadline; an idempotent approval retry does not extend it. See `.env.example` for all bounded cleanup and size settings. |
+| `REMEDIATION_ARTIFACT_CLEANUP_BATCH_SIZE`, `REMEDIATION_ARTIFACT_STAGING_GRACE_SECONDS`, `DURABLE_MAINTENANCE_INTERVAL_SECONDS` | Bounded artifact recovery | Defaults to 100 artifacts per batch, a 3,600-second staging grace period, and a 300-second maintenance interval. At least one `python -m src.jobs.worker` process must remain running; its singleton maintenance loop claims and cleans eligible stale staging rows after the grace period. |
 | `ALLOW_MOCK_AUTH` | Dev-only auth bypass | Must **not** be `true` in `production`/`staging` — `Settings` raises at startup if it is (`validate_mock_auth`). Leave unset. |
 | SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `FROM_EMAIL`, `FROM_NAME` | Transactional email (magic links, alerts) | Read in `src/mailer/email_service.py`. Defaults assume SendGrid (`smtp.sendgrid.net`); any SMTP provider works. If `SMTP_HOST` is set, the mailer treats it as a trusted network target for its own connection handling. |
 | One LLM provider's credentials | AI-generated explanations/remediation | `LLM_PROVIDER` (`gemini`/`ollama`/`openai`/`anthropic`) plus that provider's key (`GEMINI_API_KEY`, etc.), or `OLLAMA_HOST` if running the Ollama profile below. |
@@ -175,12 +176,42 @@ remediation output is claimed in Postgres as `staging` before bytes are
 published, so an interrupted worker leaves a database-known row that bounded
 cleanup can recover; do not delete unknown files by scanning this directory.
 Consumers must use the service's descriptor-bound `open_verified(...)` context
-rather than retaining a resolved path. A multi-replica deployment must mount
+rather than retaining a resolved path. Managed PDF producers likewise publish
+the exact claimed stream, not a later reopen of `output_file`: the service
+recomputes size, SHA-256, MIME type, scan type, and filename before the DB-first
+`staging` row becomes `available`. A multi-replica deployment must mount
 durable shared storage at the artifact path for all API and worker replicas;
 container-local filesystems will split the database authority from the bytes.
 The normal retention window is reset to
 `REMEDIATION_ARTIFACT_WRITTEN_RETENTION_DAYS` when writeback is durably marked
 complete.
+
+Cancellation, ownership-fence loss, and completion-commit failure abort only
+the exact staging publication identified by its artifact ID and private
+publication token. If abort or filesystem cleanup fails, the API or durable job
+keeps the failure explicit: inspect operator logs and, for durable jobs, the
+returned `publication_cleanup_pending`/artifact ID state. Keep at least one
+`python -m src.jobs.worker` process healthy. Its singleton maintenance loop runs
+every `DURABLE_MAINTENANCE_INTERVAL_SECONDS`, waits at least
+`REMEDIATION_ARTIFACT_STAGING_GRACE_SECONDS` before treating a staging row as
+stale, and removes at most `REMEDIATION_ARTIFACT_CLEANUP_BATCH_SIZE` eligible
+artifacts per batch. Monitor worker logs and the artifact row after the grace
+period plus a maintenance interval. Do not delete unknown files or rows by hand;
+if the same artifact remains pending, preserve its artifact ID, lifecycle state,
+and sanitized worker logs for investigation. PDF candidate and working-copy
+cleanup warnings include a retained path when manual removal is required. Do not
+report or treat these warnings as a successful publication, and never copy
+publication tokens into support tickets or public logs.
+
+The descriptor-bound managed PDF implementation uses Unix directory-descriptor
+and `fcntl` semantics and is supported on macOS/Linux/other compatible Unix
+hosts. It is not a Windows filesystem portability promise. Path-oriented
+compatibility remains for non-PDF formats and direct library callers, but the
+managed PDF output claim is authoritative.
+
+This PDF publication hardening is present on `main` after v0.9.5 and is not part
+of v0.9.5. It may ship in a future release after release verification; merging
+it created no release or deployment.
 
 Approval is a bounded writeback authorization, not indefinite retention. An
 approved but unwritten artifact is held only until its

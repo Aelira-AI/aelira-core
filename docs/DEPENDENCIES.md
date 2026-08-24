@@ -46,6 +46,7 @@ the human-readable map; the lockfiles are the truth.
 | `pypdf` | General PDF manipulation |
 | `ocrmypdf` | OCR layer for scanned documents (drives Tesseract) |
 | `img2pdf` / `reportlab` | Image-to-PDF conversion and PDF report generation |
+| `Pillow` | Structural verification, bounded decoding, and full pixel loading for PNG/JPEG data URLs embedded in PDF-derived accessible HTML |
 
 ### Document processing — Office and LaTeX
 
