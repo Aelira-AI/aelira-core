@@ -58,6 +58,10 @@ class ArtifactAuthorizationError(ArtifactError):
     """Artifact authority or state does not permit the requested operation."""
 
 
+class ArtifactApprovalStaleError(ArtifactAuthorizationError):
+    """Approved bytes no longer match the locked fix-review state."""
+
+
 class ArtifactExpiredError(ArtifactAuthorizationError):
     """The artifact is no longer available for use."""
 
@@ -1621,6 +1625,8 @@ class RemediationArtifactService:
             and locked_scan.current_remediation_artifact_id != artifact.id
         ):
             raise ArtifactAuthorizationError("artifact is not the exact current output")
+        if require_approved:
+            self._require_current_approval(db, artifact, locked_scan, locked_cloud)
         self._validate_record_state(
             artifact,
             department_id=department_id,
@@ -1685,7 +1691,9 @@ class RemediationArtifactService:
         )
         return artifact
 
-    def _lock_mutable(self, db: Any, artifact_id: str) -> RemediationArtifact:
+    def _lock_mutable_graph(
+        self, db: Any, artifact_id: str
+    ) -> tuple[Any, Any, RemediationArtifact]:
         _, scan, cloud_file, _, artifact = self._lock_existing_artifact(db, artifact_id)
         assert artifact is not None
         if artifact.cleanup_claimed_at is not None:
@@ -1698,6 +1706,10 @@ class RemediationArtifactService:
             raise ArtifactAuthorizationError("artifact is not the exact current output")
         if cloud_file is None and scan.current_remediation_artifact_id != artifact.id:
             raise ArtifactAuthorizationError("artifact is not the exact current output")
+        return scan, cloud_file, artifact
+
+    def _lock_mutable(self, db: Any, artifact_id: str) -> RemediationArtifact:
+        _, _, artifact = self._lock_mutable_graph(db, artifact_id)
         return artifact
 
     @staticmethod
@@ -1711,18 +1723,10 @@ class RemediationArtifactService:
         return actor_ref.strip()
 
     def _require_approvable_review(
-        self, db: Any, artifact: RemediationArtifact
+        self, db: Any, artifact: RemediationArtifact, scan: Any
     ) -> None:
-        scan = (
-            db.query(Scan)
-            .filter(Scan.id == artifact.scan_id)
-            .with_for_update()
-            .populate_existing()
-            .one_or_none()
-        )
         if (
-            scan is None
-            or scan.status != ScanStatus.COMPLETED
+            scan.status != ScanStatus.COMPLETED
             or scan.remediation_outcome != RemediationOutcome.COMPLETED.value
         ):
             raise ArtifactAuthorizationError("artifact verification has not passed")
@@ -1743,6 +1747,44 @@ class RemediationArtifactService:
                 raise ArtifactAuthorizationError("scan fixes are not all terminal")
             raise ArtifactAuthorizationError("artifact has no accepted fix")
 
+    @staticmethod
+    def _invalidate_stale_approval(
+        db: Any, artifact: RemediationArtifact, cloud_file: Any
+    ) -> None:
+        artifact.review_status = "pending"
+        artifact.approval_checksum = None
+        artifact.approved_by_id = None
+        artifact.approved_by_ref = None
+        artifact.approved_at = None
+        if cloud_file is not None:
+            cloud_file.writeback_status = "pending_review"
+            cloud_file.has_remediated_version = False
+            cloud_file.remediation_origin = None
+        db.add(
+            ReviewAuditLog(
+                scan_id=artifact.scan_id,
+                user_id=None,
+                action="artifact_approval_invalidated",
+                details={"artifact_id": artifact.id, "reason": "fix_review_changed"},
+            )
+        )
+        db.flush()
+
+    def _require_current_approval(
+        self,
+        db: Any,
+        artifact: RemediationArtifact,
+        scan: Any,
+        cloud_file: Any,
+    ) -> None:
+        try:
+            self._require_approvable_review(db, artifact, scan)
+        except ArtifactAuthorizationError as exc:
+            if artifact.review_status == "approved" and artifact.written_back_at is None:
+                self._invalidate_stale_approval(db, artifact, cloud_file)
+                raise ArtifactApprovalStaleError("artifact approval became stale") from exc
+            raise
+
     def approve(
         self,
         db: Any,
@@ -1753,7 +1795,7 @@ class RemediationArtifactService:
         now: datetime | None = None,
     ) -> RemediationArtifact:
         approved_by_ref = self._review_actor_ref(approved_by_ref)
-        artifact = self._lock_mutable(db, artifact_id)
+        scan, cloud_file, artifact = self._lock_mutable_graph(db, artifact_id)
         effective_now = _utc(now or datetime.now(timezone.utc))
         if _utc(artifact.expires_at) <= effective_now:
             raise ArtifactExpiredError("artifact has expired")
@@ -1769,7 +1811,7 @@ class RemediationArtifactService:
                 and artifact.rejected_by_ref is None
                 and artifact.rejected_at is None
             ):
-                self._require_approvable_review(db, artifact)
+                self._require_approvable_review(db, artifact, scan)
                 return artifact
             raise ArtifactAuthorizationError(
                 "approval retry conflicts with durable state"
@@ -1787,7 +1829,7 @@ class RemediationArtifactService:
             or artifact.rejected_at is not None
         ):
             raise ArtifactAuthorizationError("artifact is not pending approval")
-        self._require_approvable_review(db, artifact)
+        self._require_approvable_review(db, artifact, scan)
         with self.open_verified(
             db,
             artifact,
@@ -1805,13 +1847,6 @@ class RemediationArtifactService:
             days=self.approved_retention_days
         )
         if artifact.cloud_file_id is not None:
-            cloud_file = (
-                db.query(CloudFile)
-                .filter(CloudFile.id == artifact.cloud_file_id)
-                .with_for_update()
-                .populate_existing()
-                .one_or_none()
-            )
             if (
                 cloud_file is None
                 or cloud_file.current_remediation_artifact_id != artifact.id
@@ -1924,7 +1959,7 @@ class RemediationArtifactService:
         provider_result: dict[str, Any] | None = None,
         now: datetime | None = None,
     ) -> RemediationArtifact:
-        artifact = self._lock_mutable(db, artifact_id)
+        scan, cloud_file, artifact = self._lock_mutable_graph(db, artifact_id)
         sanitized_result = _sanitize_provider_result(provider_result)
         written_at = _utc(now or datetime.now(timezone.utc))
         if _utc(artifact.expires_at) <= written_at:
@@ -1953,6 +1988,7 @@ class RemediationArtifactService:
             or artifact.rejected_at is not None
         ):
             raise ArtifactAuthorizationError("artifact is not approved for writeback")
+        self._require_current_approval(db, artifact, scan, cloud_file)
         artifact.written_back_at = written_at
         artifact.provider_result = sanitized_result
         artifact.expires_at = written_at + timedelta(days=self.written_retention_days)

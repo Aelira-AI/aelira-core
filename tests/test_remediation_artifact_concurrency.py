@@ -122,6 +122,14 @@ def test_lock_order_static_guard_has_no_artifact_then_parent_path():
     assert "with_for_update" not in before_canonical_lock
 
 
+def test_review_gate_never_relocks_scan_after_artifact_lock():
+    source = inspect.getsource(
+        module.RemediationArtifactService._require_approvable_review
+    )
+    assert "db.query(Scan)" not in source
+    assert "db.query(ScanFix)" in source
+
+
 def test_cleanup_candidate_selection_is_unlocked_and_heartbeat_based():
     source = inspect.getsource(module.RemediationArtifactCleanup.run_batch)
     candidate_source = source.split("for candidate", 1)[0]
