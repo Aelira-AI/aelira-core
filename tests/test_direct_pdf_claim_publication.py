@@ -9,7 +9,7 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -32,6 +32,7 @@ from src.education.remediation.base import (
     VerificationEvidence,
 )
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
+from src.services.remediation_artifact_service import ArtifactPublicationResult
 
 CLAIMED_BYTES = b"%PDF-1.7\nexact descriptor-bound remediation\n%%EOF\n"
 
@@ -244,6 +245,10 @@ async def _run_route(
     tamper=None,
     publication_error: Exception | None = None,
     matterhorn_error: Exception | None = None,
+    matterhorn_result=None,
+    cloud_file=None,
+    publication_hook=None,
+    artifact_service=None,
 ):
     from src.api.education.remediation_routes import remediate_scan
 
@@ -259,7 +264,7 @@ async def _run_route(
         return result
 
     remediator.remediate.side_effect = remediate
-    artifact_service = MagicMock()
+    artifact_service = artifact_service or MagicMock()
     publication = {}
 
     def publish(db_arg, **kwargs):
@@ -268,7 +273,14 @@ async def _run_route(
         publication["kwargs"] = kwargs
         if publication_error is not None:
             raise publication_error
-        return _artifact()
+        artifact = _artifact()
+        if publication_hook is not None:
+            publication_hook(artifact)
+        return ArtifactPublicationResult(
+            artifact=artifact,
+            artifact_id=str(artifact.id),
+            publication_token="direct-exact-token",
+        )
 
     artifact_service.claim_and_publish_stream.side_effect = publish
     artifact_service.claim_and_publish.side_effect = AssertionError(
@@ -283,7 +295,19 @@ async def _run_route(
         validation["exists_during_validation"] = Path(path).exists()
         if matterhorn_error is not None:
             raise matterhorn_error
-        return SimpleNamespace(checkpoints=[], passed=0, total=0)
+        if matterhorn_result is not None:
+            return matterhorn_result
+        checkpoint = SimpleNamespace(
+            id="01-003",
+            name="Structure tree present",
+            status=SimpleNamespace(value="pass"),
+            severity="error",
+            details=None,
+            page_number=None,
+        )
+        return SimpleNamespace(
+            checkpoints=[checkpoint], passed=1, failed=0, warnings=0, total=1
+        )
 
     matterhorn.validate.side_effect = validate
     audit = MagicMock()
@@ -292,6 +316,12 @@ async def _run_route(
             patch(
                 "src.api.education.remediation_routes.ScanService.get_scan_with_result",
                 return_value=scan,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "src.api.education.remediation_routes._resolve_bound_scan_cloud_file",
+                return_value=cloud_file,
             )
         )
         stack.enter_context(
@@ -463,10 +493,75 @@ async def test_direct_pdf_claim_closes_when_publication_raises(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_direct_pdf_claim_closes_when_matterhorn_raises(tmp_path):
+@pytest.mark.parametrize(
+    ("matterhorn_result", "matterhorn_error"),
+    [
+        (None, RuntimeError("Matterhorn unavailable")),
+        (
+            SimpleNamespace(checkpoints=[], total=0, passed=0, failed=0, warnings=0),
+            None,
+        ),
+        (
+            SimpleNamespace(
+                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="fail"))],
+                total=1,
+                passed=0,
+                failed=1,
+                warnings=0,
+            ),
+            None,
+        ),
+        (
+            SimpleNamespace(
+                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="pass"))],
+                total=2,
+                passed=1,
+                failed=0,
+                warnings=0,
+            ),
+            None,
+        ),
+    ],
+    ids=["exception", "unavailable", "disqualifying", "integrity"],
+)
+async def test_direct_image_equation_matterhorn_failure_rolls_back(
+    tmp_path, matterhorn_result, matterhorn_error
+):
     output = tmp_path / "fixed.pdf"
     output.write_bytes(CLAIMED_BYTES)
     result = _DirectPdfResult(output)
+    service = MagicMock()
+
+    with pytest.raises(HTTPException):
+        await _run_route(
+            tmp_path,
+            result,
+            matterhorn_result=matterhorn_result,
+            matterhorn_error=matterhorn_error,
+            artifact_service=service,
+        )
+
+    service.abort_staging.assert_called_once_with(
+        ANY,
+        artifact_id="66666666-6666-4666-8666-666666666666",
+        publication_token="direct-exact-token",
+    )
+    assert result.close_calls == 1
+    assert result.has_output_claim() is False
+
+
+@pytest.mark.asyncio
+async def test_direct_non_image_equation_matterhorn_exception_remains_advisory(
+    tmp_path,
+):
+    output = tmp_path / "fixed.pdf"
+    output.write_bytes(CLAIMED_BYTES)
+    result = _DirectPdfResult(output)
+    result.fixed_issues[0].source_kind = None
+    result.fixed_issues[0].verification_evidence = None
+    result.fixed_issues[0].provider_used = None
+    result.fixed_issues[0].model_used = None
+    result.fixed_issues[0].fix_method = "rule"
 
     run = await _run_route(
         tmp_path,
@@ -476,9 +571,46 @@ async def test_direct_pdf_claim_closes_when_matterhorn_raises(tmp_path):
 
     assert run.response["success"] is True
     assert run.publication["bytes"] == CLAIMED_BYTES
-    assert run.validation["bytes"] == CLAIMED_BYTES
     assert result.close_calls == 1
-    assert result.has_output_claim() is False
+
+
+@pytest.mark.asyncio
+async def test_direct_failure_restores_complete_cloud_file_publication_state(tmp_path):
+    output = tmp_path / "fixed.pdf"
+    output.write_bytes(CLAIMED_BYTES)
+    result = _DirectPdfResult(output)
+    cloud_file = SimpleNamespace(
+        id="cloud-direct",
+        provider="local",
+        credential_id=None,
+        current_remediation_artifact_id="prior-artifact",
+        has_remediated_version=True,
+        remediation_origin="prior-origin",
+        remediated_issues_fixed=7,
+        remediated_issues_remaining=2,
+        writeback_status="prior-status",
+    )
+    prior_state = dict(vars(cloud_file))
+
+    def mutate_cloud(artifact):
+        cloud_file.current_remediation_artifact_id = artifact.id
+        cloud_file.has_remediated_version = False
+        cloud_file.remediation_origin = "mutated"
+        cloud_file.remediated_issues_fixed = 99
+        cloud_file.remediated_issues_remaining = 0
+        cloud_file.writeback_status = "mutated-status"
+
+    with pytest.raises(HTTPException):
+        await _run_route(
+            tmp_path,
+            result,
+            cloud_file=cloud_file,
+            publication_hook=mutate_cloud,
+            matterhorn_error=RuntimeError("Matterhorn unavailable"),
+        )
+
+    assert vars(cloud_file) == prior_state
+    assert result.close_calls == 1
 
 
 @pytest.mark.asyncio

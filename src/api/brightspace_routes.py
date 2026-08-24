@@ -1334,8 +1334,21 @@ def _validate_brightspace_pdf_claim(
             metadata=metadata,
         ) as validation_path:
             try:
-                MatterhornValidator().validate(validation_path)
+                matterhorn = MatterhornValidator().validate(str(validation_path))
+                from ..education.remediation.image_equation_gate import (
+                    contains_image_equation_fixes,
+                    require_image_equation_matterhorn_result,
+                )
+
+                if contains_image_equation_fixes(getattr(result, "fixed_issues", ())):
+                    require_image_equation_matterhorn_result(matterhorn)
             except Exception as exc:
+                from ..education.remediation.image_equation_gate import (
+                    contains_image_equation_fixes,
+                )
+
+                if contains_image_equation_fixes(getattr(result, "fixed_issues", ())):
+                    raise
                 logger.warning(
                     "Brightspace PDF Matterhorn validation was unavailable",
                     extra={"error_type": type(exc).__name__},
@@ -1393,8 +1406,15 @@ def _run_remediator_worker(
                 source.write(source_text)
             from ..education.remediation.html_remediator import HtmlRemediator
 
+            authoritative_config = config.model_copy(
+                update={"allow_legacy_nested_ai": False}
+            )
             remediator = HtmlRemediator(
-                file_path, raw_issues, config, remediation_client
+                file_path,
+                raw_issues,
+                authoritative_config,
+                remediation_client,
+                alt_text_client=alt_text_client,
             )
         elif source_bytes is not None and ext in remediator_map:
             with open(file_path, "wb") as source:

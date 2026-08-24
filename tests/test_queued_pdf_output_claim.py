@@ -143,6 +143,10 @@ def _context(tmp_path: Path):
         provider=CloudProvider.CANVAS.value,
         current_remediation_artifact_id=None,
         has_remediated_version=False,
+        remediation_origin=None,
+        remediated_issues_fixed=None,
+        remediated_issues_remaining=None,
+        writeback_status=None,
     )
     db = _DB(scan, SimpleNamespace(issues=[{"category": "heading"}]), cloud_file)
     job_data = {
@@ -244,13 +248,21 @@ async def test_queued_pdf_publishes_and_validates_exact_claim_bytes(
         assert validation_path != output_path
         assert validation_path.is_file()
         matterhorn_bytes.append(validation_path.read_bytes())
+        checkpoint = SimpleNamespace(
+            id="01-003",
+            name="Structure tree present",
+            status=SimpleNamespace(value="pass"),
+            severity="error",
+            details=None,
+            page_number=None,
+        )
         return SimpleNamespace(
-            checkpoints=[],
-            total=0,
-            passed=0,
+            checkpoints=[checkpoint],
+            total=1,
+            passed=1,
             failed=0,
             warnings=0,
-            compliance_level="unknown",
+            compliance_level="compliant",
         )
 
     validator.validate.side_effect = validate
@@ -283,7 +295,11 @@ async def test_queued_pdf_publishes_and_validates_exact_claim_bytes(
     assert remediation_result.has_output_claim() is False
     assert "output_file" not in result
     assert "source_stream" not in result
-    audit_details = [getattr(row, "details", {}) for row in db.added]
+    audit_details = [
+        details
+        for row in db.added
+        if isinstance((details := getattr(row, "details", None)), dict)
+    ]
     assert all("output_file" not in details for details in audit_details)
     assert all("source_stream" not in details for details in audit_details)
     assert scan.remediation_outcome == RemediationOutcome.COMPLETED.value
@@ -704,4 +720,120 @@ async def test_queued_pdf_cancellation_after_publication_aborts_exact_claim(
     assert scan.status == ScanStatus.FAILED
     assert scan.remediation_outcome == RemediationOutcome.ARTIFACT_UNAVAILABLE.value
     assert close_output_claim.call_count == 1
+    assert remediation_result.has_output_claim() is False
+
+
+@pytest.mark.parametrize(
+    "matterhorn",
+    [
+        RuntimeError("validator unavailable"),
+        SimpleNamespace(checkpoints=[], total=0, passed=0, failed=0, warnings=0),
+        SimpleNamespace(
+            checkpoints=[SimpleNamespace(status=SimpleNamespace(value="fail"))],
+            total=1,
+            passed=0,
+            failed=1,
+            warnings=0,
+        ),
+        SimpleNamespace(
+            checkpoints=[SimpleNamespace(status=SimpleNamespace(value="pass"))],
+            total=2,
+            passed=1,
+            failed=0,
+            warnings=0,
+        ),
+    ],
+    ids=["exception", "unavailable", "disqualifying", "integrity"],
+)
+async def test_queued_image_equation_matterhorn_failure_aborts_exact_staging(
+    tmp_path, matterhorn
+):
+    from src.jobs.remediation_job import (
+        RetryableRemediationJobError,
+        process_remediation_job,
+    )
+
+    payload = b"%PDF-queued-image-equation-gate"
+    _, output_path, scan, cloud_file, db, job_data = _context(tmp_path)
+    prior_state = dict(vars(cloud_file))
+    remediation_result = _result(Path(job_data["file_path"]), output_path, payload)
+    remediation_result.fixed_issues = [
+        FixedIssue(
+            issue_id="equation-1",
+            category=IssueCategory.STRUCTURE,
+            severity=IssueSeverity.HIGH,
+            description="verified equation",
+            fixed_content="Formula and MathML",
+            fix_method="ai_vision",
+            source_kind="image_equation",
+            provider_used="ollama",
+            model_used="vision-test",
+            verification_evidence=VerificationEvidence(
+                passed=True,
+                source_sha256="1" * 64,
+                rendered_sha256="2" * 64,
+                mathml_sha256="3" * 64,
+                renderer_version="chromium-test",
+                comparator_version="pixel-test",
+                font_sha256="4" * 64,
+                threshold_version="printed-equation-v1",
+                ink_iou=0.95,
+                pixel_similarity=0.99,
+                required_ink_iou=0.90,
+                required_pixel_similarity=0.98,
+            ),
+        )
+    ]
+    remediator = MagicMock(remediate=MagicMock(return_value=remediation_result))
+    artifact = _artifact(payload)
+    publication = ArtifactPublicationResult(
+        artifact=artifact,
+        artifact_id=str(artifact.id),
+        publication_token="queued-matterhorn-token",
+    )
+    service = MagicMock()
+
+    def publish(*_args, **_kwargs):
+        cloud_file.current_remediation_artifact_id = artifact.id
+        cloud_file.has_remediated_version = True
+        return publication
+
+    service.claim_and_publish_stream.side_effect = publish
+    validator = MagicMock()
+    if isinstance(matterhorn, BaseException):
+        validator.validate.side_effect = matterhorn
+    else:
+        validator.validate.return_value = matterhorn
+
+    with (
+        patch(
+            "src.jobs.remediation_job._get_remediator_for_scan_type",
+            return_value=remediator,
+        ),
+        patch(
+            "src.jobs.remediation_job.RemediationArtifactService.from_settings",
+            return_value=service,
+        ),
+        patch(
+            "src.jobs.remediation_job._download_cloud_file",
+            new=AsyncMock(
+                return_value={"success": True, "local_path": job_data["file_path"]}
+            ),
+        ),
+        patch(
+            "src.education.validation.matterhorn.MatterhornValidator",
+            return_value=validator,
+        ),
+    ):
+        with pytest.raises(RetryableRemediationJobError):
+            await process_remediation_job(job_data, db)
+
+    service.abort_staging.assert_called_once_with(
+        db,
+        artifact_id=publication.artifact_id,
+        publication_token=publication.publication_token,
+    )
+    assert vars(cloud_file) == prior_state
+    assert scan.status == ScanStatus.PROCESSING
+    assert scan.remediation_outcome is None
     assert remediation_result.has_output_claim() is False

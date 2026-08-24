@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -185,6 +186,50 @@ def test_brightspace_worker_never_retries_without_purpose_client_on_constructor_
 
     assert len(calls) == 1
     assert calls[0]["alt_text_client"] is alt_text_client
+
+
+def test_brightspace_inline_html_forwards_distinct_clients_and_disables_legacy_fallback(
+    monkeypatch,
+):
+    from src.api.brightspace_routes import _run_remediator_worker
+
+    remediation_client = SimpleNamespace(purpose="remediation")
+    alt_text_client = SimpleNamespace(purpose="alt_text")
+    captured = {}
+
+    class RecordingHtmlRemediator:
+        def __init__(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+        def remediate(self):
+            return SimpleNamespace(
+                success=True,
+                fixed_count=0,
+                manual_count=1,
+                failed_count=0,
+                verification_passed=True,
+                output_file=None,
+            )
+
+    monkeypatch.setattr(
+        "src.education.remediation.html_remediator.HtmlRemediator",
+        RecordingHtmlRemediator,
+    )
+
+    worker = _run_remediator_worker(
+        ext="html",
+        raw_issues=[{"category": "alt_text", "description": "missing alt"}],
+        config=RemediationConfig(allow_legacy_nested_ai=True),
+        remediation_client=remediation_client,
+        alt_text_client=alt_text_client,
+        source_text='<img src="equation.png">',
+    )
+
+    assert captured["args"][3] is remediation_client
+    assert captured["kwargs"]["alt_text_client"] is alt_text_client
+    assert captured["args"][2].allow_legacy_nested_ai is False
+    assert worker.result.manual_count == 1
 
 
 def test_explicit_legacy_mode_may_alias_remediation_client_for_alt(probe_path):

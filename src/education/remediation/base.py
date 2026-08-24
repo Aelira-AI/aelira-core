@@ -670,11 +670,35 @@ class BaseRemediator(ABC):
             ai_client: Purpose-bound client for non-alt remediation (optional)
             alt_text_client: Purpose-bound client for image/chart descriptions
         """
+        from src.education.math_contracts import (
+            IMAGE_EQUATION_ISSUE_TYPE,
+            math_issue_type_from,
+        )
+
         self.file_path = file_path
-        self.config = config or RemediationConfig()
+        configured = config or RemediationConfig()
+        has_image_equation = any(
+            isinstance(raw_issue, dict)
+            and math_issue_type_from(raw_issue) == IMAGE_EQUATION_ISSUE_TYPE
+            for raw_issue in issues
+        )
+        # Exact image-equation recognition is never a legacy/ambient AI
+        # operation.  Copy rather than mutate the caller's configuration so a
+        # mixed batch cannot silently alter a subsequently constructed legacy
+        # remediator.
+        self.config = (
+            configured.model_copy(update={"allow_legacy_nested_ai": False})
+            if has_image_equation
+            else configured
+        )
         self.issues = self._normalize_issues(issues)
         self.ai_client = ai_client
-        self.alt_text_client = alt_text_client
+        self.alt_text_client = (
+            alt_text_client
+            if not has_image_equation
+            or getattr(alt_text_client, "purpose", None) == "alt_text"
+            else None
+        )
         if self.alt_text_client is None and self.config.allow_legacy_nested_ai:
             self.alt_text_client = ai_client
 

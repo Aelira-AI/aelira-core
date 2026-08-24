@@ -1793,12 +1793,19 @@ async def remediate_scan(
 
     original_status = scan.status
     original_outcome = scan.remediation_outcome
-    original_cloud_remediated = (
-        resolved_cloud_file.has_remediated_version if resolved_cloud_file else None
-    )
-    original_remediation_origin = (
-        getattr(resolved_cloud_file, "remediation_origin", None)
-        if resolved_cloud_file
+    original_cloud_state = (
+        {
+            field: getattr(resolved_cloud_file, field, None)
+            for field in (
+                "current_remediation_artifact_id",
+                "has_remediated_version",
+                "remediation_origin",
+                "remediated_issues_fixed",
+                "remediated_issues_remaining",
+                "writeback_status",
+            )
+        }
+        if resolved_cloud_file is not None
         else None
     )
     artifact = None
@@ -2052,6 +2059,13 @@ async def remediate_scan(
                     ) as validation_path:
                         validator = MatterhornValidator()
                         mh_result = validator.validate(validation_path)
+                        from ...education.remediation.image_equation_gate import (
+                            contains_image_equation_fixes,
+                            require_image_equation_matterhorn_result,
+                        )
+
+                        if contains_image_equation_fixes(result.fixed_issues):
+                            require_image_equation_matterhorn_result(mh_result)
             elif successful_complete_result and not pdf_claim_required:
                 output_path = result.output_file
                 if (
@@ -2084,6 +2098,12 @@ async def remediate_scan(
                     f"{mh_result.passed}/{mh_result.total} passed"
                 )
         except Exception as mh_err:
+            from ...education.remediation.image_equation_gate import (
+                contains_image_equation_fixes,
+            )
+
+            if contains_image_equation_fixes(result.fixed_issues):
+                raise
             logger.warning(f"Matterhorn validation skipped for {scan_id}: {mh_err}")
 
         terminal_success = successful_complete_result
@@ -2213,10 +2233,10 @@ async def remediate_scan(
             shutil.rmtree(artifact_temp_dir, ignore_errors=True)
         scan.status = original_status
         scan.remediation_outcome = original_outcome
-        if resolved_cloud_file is not None:
+        if resolved_cloud_file is not None and original_cloud_state is not None:
             try:
-                resolved_cloud_file.has_remediated_version = original_cloud_remediated
-                resolved_cloud_file.remediation_origin = original_remediation_origin
+                for field, value in original_cloud_state.items():
+                    setattr(resolved_cloud_file, field, value)
             except Exception:
                 logger.warning(
                     "Failed to restore in-memory CloudFile remediation status",

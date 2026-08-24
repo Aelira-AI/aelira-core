@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from src.education.remediation.base import (
     BaseRemediator,
@@ -120,8 +121,6 @@ def test_pdf_specialist_routing_imports_the_central_concrete_contract():
 
 
 def test_image_candidate_fails_closed_until_recognition_pipeline_exists():
-    from types import SimpleNamespace
-
     from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
     from src.education.remediation.math_fixer import MathFixer
 
@@ -146,3 +145,69 @@ def test_image_candidate_fails_closed_until_recognition_pipeline_exists():
 
     assert not result.success
     assert result.error == "alt_text_client_unavailable"
+
+
+def test_image_equation_disables_legacy_manager_alias_and_keeps_one_manual(tmp_path):
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from src.education.remediation.pdf_remediator import PdfRemediator
+
+    class Manager:
+        def __init__(self):
+            self.calls = 0
+
+        def recognize_image_equation(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("legacy manager must not recognize image equations")
+
+    path = tmp_path / "equation.pdf"
+    path.write_bytes(b"%PDF-probe")
+    manager = Manager()
+    remediator = PdfRemediator(
+        str(path),
+        [_raw(IMAGE_EQUATION_ISSUE_TYPE)],
+        RemediationConfig(allow_legacy_nested_ai=True),
+        manager,
+    )
+    remediator._pikepdf_doc = SimpleNamespace(pages=[object()])
+    remediator._pdf = SimpleNamespace()
+    remediator._struct_tree = SimpleNamespace()
+
+    remediator._run_specialist("math", remediator.issues, object())
+
+    assert remediator.config.allow_legacy_nested_ai is False
+    assert remediator.alt_text_client is None
+    assert manager.calls == 0
+    assert remediator.result.manual_count == 1
+    assert len(remediator.result.manual_issues) == 1
+    assert remediator.result.manual_issues[0].reason == "alt_text_client_unavailable"
+
+
+def test_image_equation_accepts_only_explicit_alt_text_purpose_client(tmp_path):
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+
+    path = tmp_path / "equation.pdf"
+    path.write_bytes(b"%PDF-probe")
+    explicit = SimpleNamespace(purpose="alt_text")
+    manager = SimpleNamespace(purpose="remediation")
+
+    allowed = _ProbeRemediator(
+        str(path),
+        [_raw(IMAGE_EQUATION_ISSUE_TYPE)],
+        RemediationConfig(allow_legacy_nested_ai=True),
+        manager,
+        alt_text_client=explicit,
+    )
+    rejected = _ProbeRemediator(
+        str(path),
+        [_raw(IMAGE_EQUATION_ISSUE_TYPE)],
+        RemediationConfig(allow_legacy_nested_ai=True),
+        manager,
+        alt_text_client=manager,
+    )
+
+    assert allowed.config.allow_legacy_nested_ai is False
+    assert (
+        allowed.ai_client is manager
+    )  # non-equation legacy behavior remains available
+    assert allowed.alt_text_client is explicit
+    assert rejected.alt_text_client is None

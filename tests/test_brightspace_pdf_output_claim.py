@@ -163,6 +163,8 @@ async def _run_pdf_outer(
     publication_error: BaseException | None = None,
     publication_hook=None,
     commit_error: Exception | None = None,
+    matterhorn_result=None,
+    matterhorn_error: Exception | None = None,
 ):
     from src.api.brightspace_routes import (
         _WorkerRemediationResult,
@@ -196,7 +198,21 @@ async def _run_pdf_outer(
         assert validation_path != Path(result.output_file)
         assert validation_path.is_file()
         validated.append(validation_path.read_bytes())
-        return SimpleNamespace(checkpoints=[], passed=0, failed=0, total=0)
+        if matterhorn_error is not None:
+            raise matterhorn_error
+        if matterhorn_result is not None:
+            return matterhorn_result
+        checkpoint = SimpleNamespace(
+            id="01-003",
+            name="Structure tree present",
+            status=SimpleNamespace(value="pass"),
+            severity="error",
+            details=None,
+            page_number=None,
+        )
+        return SimpleNamespace(
+            checkpoints=[checkpoint], passed=1, failed=0, warnings=0, total=1
+        )
 
     validator.validate.side_effect = validate
 
@@ -332,6 +348,60 @@ async def test_brightspace_pdf_persists_real_image_equation_review_evidence(
     assert row.review_status == "pending"
     assert row.verification_evidence["threshold_version"] == "printed-equation-v1"
     assert row.verification_evidence["source_sha256"] == "1" * 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("matterhorn_result", "matterhorn_error"),
+    [
+        (None, RuntimeError("validator unavailable")),
+        (
+            SimpleNamespace(checkpoints=[], total=0, passed=0, failed=0, warnings=0),
+            None,
+        ),
+        (
+            SimpleNamespace(
+                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="fail"))],
+                total=1,
+                passed=0,
+                failed=1,
+                warnings=0,
+            ),
+            None,
+        ),
+        (
+            SimpleNamespace(
+                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="pass"))],
+                total=2,
+                passed=1,
+                failed=0,
+                warnings=0,
+            ),
+            None,
+        ),
+    ],
+    ids=["exception", "unavailable", "disqualifying", "integrity"],
+)
+async def test_brightspace_image_equation_matterhorn_failure_preserves_prior_state(
+    tmp_path, matterhorn_result, matterhorn_error
+):
+    result = _image_equation_result(tmp_path / "fixed.pdf")
+
+    run = await _run_pdf_outer(
+        tmp_path,
+        result,
+        matterhorn_result=matterhorn_result,
+        matterhorn_error=matterhorn_error,
+    )
+
+    assert run.outcome.status == "failed"
+    assert run.outcome.error_code == "artifact_unavailable"
+    assert run.published == []
+    assert run.cloud_file.has_remediated_version is False
+    assert run.cloud_file.remediation_origin is None
+    assert run.cloud_file.remediated_issues_fixed == 0
+    assert run.cloud_file.remediated_issues_remaining == 0
+    assert result.has_output_claim() is False
 
 
 @pytest.mark.asyncio
