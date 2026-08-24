@@ -45,8 +45,7 @@ def test_verifier_contract_is_implemented():
     __import__("src.education.remediation.equation_verifier")
 
 
-@pytest.mark.xfail(strict=True, reason="approved plan Task 7 is deferred")
-def test_deferred_exact_formula_association_contract():
+def test_exact_formula_association_contract():
     from src.education.remediation.content_tagger_v2 import associate_image_formula
 
     assert callable(associate_image_formula)

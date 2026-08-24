@@ -562,6 +562,14 @@ def test_add_formula():
             formula_found = True
             assert str(kid["/Alt"]) == "x squared plus 2 x plus 1 equals 0"
             assert "/AF" in kid
+            assert len(kid["/AF"]) == 1
+            filespec = kid["/AF"][0]
+            assert str(filespec["/AFRelationship"]) == "/Supplement"
+            embedded = filespec["/EF"]["/F"]
+            assert str(embedded["/Subtype"]) == "/application#2Fmathml+xml"
+            assert embedded.read_bytes() == (
+                b"<math><msup><mi>x</mi><mn>2</mn></msup></math>"
+            )
             break
     assert formula_found, "Formula element not found in structure tree"
 

@@ -21,6 +21,7 @@ import base64
 import binascii
 import hashlib
 import html
+import json
 import logging
 import os
 import re
@@ -30,6 +31,7 @@ import stat
 import tempfile
 import warnings
 from contextlib import contextmanager
+from dataclasses import asdict
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
@@ -72,7 +74,11 @@ from .confidence import ConfidenceCalculator, FixMethod
 from .pdf_structure import PDFStructureTree
 from .reading_order import HeuristicStrategy, ReadingOrderFixResult
 from .content_tagger import ContentTagger
-from .content_tagger_v2 import ContentTaggerV2
+from .content_tagger_v2 import (
+    ContentTaggerV2,
+    associate_image_formula,
+    verify_image_formula_association,
+)
 from .table_tagger import TableTagger
 from .form_fixer import FormFixer
 from .link_fixer import LinkFixer
@@ -531,6 +537,7 @@ class PdfRemediator(BaseRemediator):
         # None means the tagger did not run (or fell back to v1/failed).
         self._content_tagger_stats: Optional[Dict[str, int]] = None
         self._pending_image_equations: List[tuple[Any, Any]] = []
+        self._verified_image_equations: List[tuple[Any, Any, Any]] = []
 
         # WCAG criteria mapping per issue category
         self._wcag_map: Dict[IssueCategory, str] = {
@@ -806,6 +813,8 @@ class PdfRemediator(BaseRemediator):
             # 17. Save + verify
             output_path = self._save_document(document)
             self.result.output_file = output_path
+
+            self._reconcile_verified_image_equations()
 
             # ContentTagger v2 (inside _save_document) fixes the document-
             # level structure issues Phase 1 had to file as manual; move
@@ -2474,6 +2483,11 @@ class PdfRemediator(BaseRemediator):
                             stats.get("pages_processed", 0),
                         )
                 except Exception as e:
+                    if self._pending_image_equations:
+                        raise RuntimeError(
+                            "ContentTaggerV2 failed before exact image-equation "
+                            "association"
+                        ) from e
                     logger.warning(f"ContentTaggerV2 failed, falling back to v1: {e}")
                     try:
                         tagger_v1 = ContentTagger(self._pikepdf_doc)
@@ -2486,10 +2500,38 @@ class PdfRemediator(BaseRemediator):
                             f"Content stream tagging failed (non-fatal): {e2}"
                         )
 
+                staged_associations = []
+                for issue, staged in self._pending_image_equations:
+                    pending = staged.pending_association
+                    if pending is None:
+                        raise RuntimeError(
+                            "Missing typed image-equation association request"
+                        )
+                    association = associate_image_formula(
+                        self._pikepdf_doc, self._pdf, pending
+                    )
+                    if not association.success:
+                        raise RuntimeError(
+                            "Exact image-equation association failed: "
+                            f"{association.error or 'unknown'}"
+                        )
+                    staged_associations.append((issue, staged, association))
+
                 self._pikepdf_doc.save(output_path)
+                for issue, staged, association in staged_associations:
+                    if not verify_image_formula_association(
+                        output_path, staged.pending_association, association
+                    ):
+                        raise RuntimeError(
+                            "Post-save image-equation association verification failed"
+                        )
+                self._verified_image_equations = staged_associations
                 logger.info("Successfully saved PDF with structure tree modifications")
             except Exception as e:
                 logger.error(f"Failed to save with pikepdf: {e}")
+                if self._pending_image_equations:
+                    self._verified_image_equations = []
+                    raise
                 # Fall back to PyMuPDF
                 document.save(output_path, garbage=4, deflate=True)
         else:
@@ -2553,6 +2595,44 @@ class PdfRemediator(BaseRemediator):
                 "Reclassified manual issue as fixed by ContentTagger: %s (%s)",
                 manual.issue_id,
                 issue_type,
+            )
+        self.result.manual_issues = remaining_manual
+
+    def _reconcile_verified_image_equations(self) -> None:
+        """Promote only image equations proven in the reopened saved candidate."""
+        if not self._verified_image_equations:
+            return
+        remaining_manual = list(self.result.manual_issues)
+        for issue, staged, association in self._verified_image_equations:
+            if not getattr(association, "success", False):
+                continue
+            matching = [
+                manual for manual in remaining_manual if manual.issue_id == issue.id
+            ]
+            if len(matching) != 1:
+                continue
+            remaining_manual.remove(matching[0])
+            self.result.manual_count -= 1
+            evidence = asdict(staged.verification_evidence)
+            notes = json.dumps(
+                {
+                    "provider": staged.provider_used,
+                    "source_kind": "image_equation",
+                    "verification_evidence": evidence,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            self._add_fixed_issue(
+                issue,
+                fixed_content=staged.aria_label,
+                fix_method="ai_vision",
+                confidence=min(float(staged.confidence), 0.55),
+                needs_review=True,
+                model_used=staged.model_used,
+                notes=notes,
+                wcag_criteria="1.1.1",
+                page_number=staged.page_number,
             )
         self.result.manual_issues = remaining_manual
 
