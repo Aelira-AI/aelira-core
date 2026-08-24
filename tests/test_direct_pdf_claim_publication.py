@@ -15,7 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from src.auth.dependencies import AuthenticatedPrincipal
-from src.db.models import CloudFile, ScanStatus, ScanType, UserRole
+from src.db.models import CloudFile, ScanFix, ScanStatus, ScanType, UserRole
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 
 CLAIMED_BYTES = b"%PDF-1.7\nexact descriptor-bound remediation\n%%EOF\n"
@@ -42,6 +42,10 @@ class _CloudFileQuery:
     def first(self):
         return self.rows[0] if self.rows else None
 
+    def delete(self):
+        self.rows.clear()
+        return 0
+
 
 class _RouteDB:
     def __init__(self):
@@ -50,7 +54,7 @@ class _RouteDB:
         self.rollbacks = 0
 
     def query(self, model):
-        assert model is CloudFile
+        assert model in {CloudFile, ScanFix}
         return _CloudFileQuery([])
 
     def add(self, value):

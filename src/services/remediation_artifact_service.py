@@ -35,6 +35,7 @@ from src.db.models import (
     ScanType,
     User,
 )
+from src.services.scan_fix_service import artifact_review_blockers
 
 
 class ArtifactError(Exception):
@@ -1732,11 +1733,14 @@ class RemediationArtifactService:
             .populate_existing()
             .all()
         )
-        terminal = {"auto_approved", "approved", "rejected"}
-        accepted = {"auto_approved", "approved"}
-        if not fixes or any(fix.review_status not in terminal for fix in fixes):
-            raise ArtifactAuthorizationError("scan fixes are not all terminal")
-        if not any(fix.review_status in accepted for fix in fixes):
+        blockers = artifact_review_blockers(fixes)
+        if blockers:
+            if any(blocker.startswith("image_equation_") for blocker in blockers):
+                raise ArtifactAuthorizationError(
+                    "image equation human review is incomplete or invalid"
+                )
+            if "fixes_pending_review" in blockers:
+                raise ArtifactAuthorizationError("scan fixes are not all terminal")
             raise ArtifactAuthorizationError("artifact has no accepted fix")
 
     def approve(
@@ -1765,6 +1769,7 @@ class RemediationArtifactService:
                 and artifact.rejected_by_ref is None
                 and artifact.rejected_at is None
             ):
+                self._require_approvable_review(db, artifact)
                 return artifact
             raise ArtifactAuthorizationError(
                 "approval retry conflicts with durable state"

@@ -35,6 +35,9 @@ class _Query:
     def first(self):
         return self.value
 
+    def all(self):
+        return [] if self.value is None else [self.value]
+
     def delete(self):
         return 0
 

@@ -43,6 +43,10 @@ from ...services.remediation_artifact_service import (
     ArtifactPublicationResult,
     RemediationArtifactService,
 )
+from ...services.scan_fix_service import (
+    artifact_review_blockers as scan_fix_review_blockers,
+    persist_scan_fixes,
+)
 from ...jobs.remediation_job import _partition_authoritative_document_issues
 from ...utils.sanitization import sanitize_for_postgres
 from ...utils.security import (
@@ -151,14 +155,7 @@ def _artifact_review_blockers(
     if scan.remediation_outcome != RemediationOutcome.COMPLETED.value:
         blockers.append("verification_not_passed")
     fixes = db.query(ScanFix).filter(ScanFix.scan_id == scan.id).all()
-    terminal = {"auto_approved", "approved", "rejected"}
-    accepted = {"auto_approved", "approved"}
-    if not fixes:
-        blockers.append("no_fixes")
-    elif any(fix.review_status not in terminal for fix in fixes):
-        blockers.append("fixes_pending_review")
-    if fixes and not any(fix.review_status in accepted for fix in fixes):
-        blockers.append("no_accepted_fix")
+    blockers.extend(scan_fix_review_blockers(fixes))
     return blockers
 
 
@@ -2031,44 +2028,10 @@ async def remediate_scan(
                 shutil.rmtree(artifact_temp_dir, ignore_errors=True)
                 artifact_temp_dir = None
 
-        # Persist fixes to scan_fixes table for the review workflow
-        import uuid as _uuid
+        # Direct and queued flows share one canonical, idempotent writer.
+        persist_scan_fixes(db, scan_id, result.fixed_issues)
 
-        for fix in result.fixed_issues:
-            db.add(
-                ScanFix(
-                    id=str(_uuid.uuid4()),
-                    scan_id=scan_id,
-                    issue_id=fix.issue_id,
-                    category=(
-                        fix.category.value
-                        if hasattr(fix.category, "value")
-                        else fix.category
-                    ),
-                    severity=(
-                        fix.severity.value
-                        if hasattr(fix.severity, "value")
-                        else fix.severity
-                    ),
-                    description=_sanitize_str(fix.description),
-                    location=_sanitize_str(getattr(fix, "location", None)),
-                    original_content=_sanitize_str(
-                        getattr(fix, "original_content", None)
-                    ),
-                    fixed_content=_sanitize_str(getattr(fix, "fixed_content", None)),
-                    fix_method=_sanitize_str(getattr(fix, "fix_method", None)),
-                    model_used=getattr(fix, "model_used", None),
-                    confidence=getattr(fix, "confidence", 0.5),
-                    needs_review=getattr(fix, "needs_review", True),
-                    review_status=(
-                        "auto_approved"
-                        if not getattr(fix, "needs_review", True)
-                        else "pending"
-                    ),
-                    wcag_criteria=getattr(fix, "wcag_criteria", None),
-                    page_number=getattr(fix, "page_number", None),
-                )
-            )
+        import uuid as _uuid
 
         # Run Matterhorn only for a complete result with eligible output bytes.
         try:

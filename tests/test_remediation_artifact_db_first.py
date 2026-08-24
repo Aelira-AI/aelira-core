@@ -120,6 +120,34 @@ def _db(service, artifact, *, locked_scan_type="WORD"):
     return db, cloud
 
 
+def test_approved_retry_rechecks_image_equation_human_review(tmp_path):
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, _ = _db(service, artifact)
+    original_query = db.query.side_effect
+    forged = SimpleNamespace(
+        source_kind="image_equation",
+        review_status="auto_approved",
+        reviewed_by=None,
+        reviewed_at=None,
+        verification_evidence={"passed": True},
+    )
+
+    def query(model):
+        chain = original_query(model)
+        if model is ScanFix:
+            chain.all.return_value = [forged]
+        return chain
+
+    db.query.side_effect = query
+    with pytest.raises(ArtifactAuthorizationError, match="human review"):
+        service.approve(
+            db,
+            artifact_id=artifact.id,
+            approved_by_ref="admin@example.com",
+        )
+
+
 def test_open_verified_yields_descriptor_bound_stream_after_canonical_lock(tmp_path):
     service = _service(tmp_path)
     artifact = _artifact(service)

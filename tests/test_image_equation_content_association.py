@@ -235,9 +235,14 @@ def test_reconciliation_promotes_only_postsave_verified_staged_result():
     assert fixed.fix_method == "ai_vision"
     assert fixed.confidence == 0.55
     assert fixed.needs_review is True
+    assert fixed.source_kind == "image_equation"
+    assert fixed.provider_used == "gemini"
     assert fixed.model_used == "vision-model"
-    assert "gemini" in (fixed.notes or "")
-    assert pending.verification_evidence.mathml_sha256 in (fixed.notes or "")
+    assert fixed.verification_evidence is not None
+    assert (
+        fixed.verification_evidence.mathml_sha256
+        == pending.verification_evidence.mathml_sha256
+    )
 
 
 def test_pdf_writer_consumes_pending_after_generic_tagger_and_postverifies(tmp_path):
@@ -647,7 +652,9 @@ def test_verifier_rejects_additional_semantic_owner(tmp_path, owner_operator):
         )
         ops.insert(
             start + 1,
-            pikepdf.ContentStreamInstruction(operands, pikepdf.Operator(owner_operator)),
+            pikepdf.ContentStreamInstruction(
+                operands, pikepdf.Operator(owner_operator)
+            ),
         )
         do_index = next(
             index
@@ -695,7 +702,9 @@ def test_generic_tagger_excludes_exact_pending_equation_draw(tmp_path):
     fitz_doc.close()
 
 
-def test_duplicate_pending_occurrence_rejected_before_tagger_mutation(tmp_path, monkeypatch):
+def test_duplicate_pending_occurrence_rejected_before_tagger_mutation(
+    tmp_path, monkeypatch
+):
     """Two pending requests for one occurrence fail before generic tagging."""
     from types import SimpleNamespace
 
@@ -729,7 +738,9 @@ def test_duplicate_pending_occurrence_rejected_before_tagger_mutation(tmp_path, 
         raise AssertionError("tagger must not run")
 
     monkeypatch.setattr(ContentTaggerV2, "tag_all_pages", sabotaged_tagger)
-    with pytest.raises(RuntimeError, match="Duplicate pending image-equation occurrence"):
+    with pytest.raises(
+        RuntimeError, match="Duplicate pending image-equation occurrence"
+    ):
         remediator._write_pdf_output(fitz_doc, str(output))
     assert called is False
     remediator._pikepdf_doc.close()
@@ -804,13 +815,9 @@ def test_form_detection_is_not_hidden_by_earlier_direct_image_alias():
     form[Name.Subtype] = Name.Form
     form[Name.Resources] = Dictionary({"/XObject": Dictionary({"/Nested": image})})
     form = pdf.make_indirect(form)
-    resources = Dictionary(
-        {"/XObject": Dictionary({"/Direct": image, "/Form": form})}
-    )
+    resources = Dictionary({"/XObject": Dictionary({"/Direct": image, "/Form": form})})
 
-    assert _form_xobject_reaches_image(
-        resources, int(image.objgen[0]), set()
-    ) is True
+    assert _form_xobject_reaches_image(resources, int(image.objgen[0]), set()) is True
 
 
 def test_parent_tree_kids_preserve_unrelated_direct_entry(tmp_path):
@@ -863,8 +870,12 @@ def test_parent_tree_kids_insert_new_key_sorted_and_update_limits(tmp_path):
     pending = _pending(fitz_doc, 1, 1)
     with pikepdf.open(source) as pdf:
         tree = PDFStructureTree(pdf)
-        owner_42 = pdf.make_indirect(Dictionary({"/Type": Name.StructElem, "/S": Name.P}))
-        owner_99 = pdf.make_indirect(Dictionary({"/Type": Name.StructElem, "/S": Name.P}))
+        owner_42 = pdf.make_indirect(
+            Dictionary({"/Type": Name.StructElem, "/S": Name.P})
+        )
+        owner_99 = pdf.make_indirect(
+            Dictionary({"/Type": Name.StructElem, "/S": Name.P})
+        )
         leaf = pdf.make_indirect(
             Dictionary(
                 {
@@ -937,8 +948,12 @@ def test_association_rolls_back_replaced_number_tree_after_stream_failure(
     pending = _pending(fitz_doc, 1, 1)
     with pikepdf.open(source) as pdf:
         tree = PDFStructureTree(pdf)
-        owner_42 = pdf.make_indirect(Dictionary({"/Type": Name.StructElem, "/S": Name.P}))
-        owner_99 = pdf.make_indirect(Dictionary({"/Type": Name.StructElem, "/S": Name.P}))
+        owner_42 = pdf.make_indirect(
+            Dictionary({"/Type": Name.StructElem, "/S": Name.P})
+        )
+        owner_99 = pdf.make_indirect(
+            Dictionary({"/Type": Name.StructElem, "/S": Name.P})
+        )
         leaf = pdf.make_indirect(
             Dictionary(
                 {

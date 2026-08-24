@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from src.education.math_contracts import MATH_ISSUE_TYPES
 
@@ -273,6 +273,34 @@ class RemediationIssue(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class VerificationEvidence(BaseModel):
+    """Allowlisted, bounded evidence safe for durable review records."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    passed: bool
+    source_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    rendered_sha256: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    mathml_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    renderer_version: str = Field(min_length=1, max_length=128)
+    comparator_version: str = Field(min_length=1, max_length=128)
+    font_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    threshold_version: str = Field(min_length=1, max_length=128)
+    ink_iou: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    pixel_similarity: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    required_ink_iou: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    required_pixel_similarity: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+
+    @field_validator("renderer_version", "comparator_version", "threshold_version")
+    @classmethod
+    def _printable_version(cls, value: str) -> str:
+        if value != value.strip() or not value.isprintable():
+            raise ValueError("evidence version must be bounded printable text")
+        return value
+
+
 class FixedIssue(BaseModel):
     """Represents a successfully fixed issue."""
 
@@ -284,9 +312,12 @@ class FixedIssue(BaseModel):
     original_content: Optional[str] = None
     fixed_content: str
     fix_method: str  # "rule", "heuristic", "ai_text", "ai_vision"
-    confidence: float = 1.0  # 0.0-1.0
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, allow_inf_nan=False)
     needs_review: bool = False
-    model_used: Optional[str] = None  # "gemini", "ollama", etc.
+    provider_used: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    model_used: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    source_kind: Optional[str] = Field(default=None, min_length=1, max_length=32)
+    verification_evidence: Optional[VerificationEvidence] = None
     verification_passed: bool = True
     notes: Optional[str] = None
     wcag_criteria: Optional[str] = None
@@ -1007,7 +1038,10 @@ class BaseRemediator(ABC):
         confidence: float = 1.0,
         notes: Optional[str] = None,
         needs_review: bool = False,
+        provider_used: Optional[str] = None,
         model_used: Optional[str] = None,
+        source_kind: Optional[str] = None,
+        verification_evidence: Optional[Dict[str, Any]] = None,
         wcag_criteria: Optional[str] = None,
         page_number: Optional[int] = None,
     ) -> None:
@@ -1024,7 +1058,10 @@ class BaseRemediator(ABC):
                 fix_method=fix_method,
                 confidence=confidence,
                 needs_review=needs_review,
+                provider_used=provider_used,
                 model_used=model_used,
+                source_kind=source_kind,
+                verification_evidence=verification_evidence,
                 notes=notes,
                 wcag_criteria=wcag_criteria,
                 page_number=page_number,

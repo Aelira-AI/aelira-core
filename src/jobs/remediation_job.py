@@ -24,7 +24,6 @@ from ..db.models import (
     ScanStatus,
     ScanType,
     ScanResult,
-    ScanFix,
     ReviewAuditLog,
     MatterhornResult as MatterhornResultModel,
     CloudFile,
@@ -55,6 +54,7 @@ from ..services.remediation_artifact_service import (
     ArtifactPublicationRetryable,
     RemediationArtifactService,
 )
+from ..services.scan_fix_service import persist_scan_fixes
 from .contracts import LostJobOwnership
 
 logger = logging.getLogger(__name__)
@@ -928,36 +928,7 @@ async def process_remediation_job(
         }
         scan.metadata = metadata
 
-        # Persist individual fixes to scan_fixes table (delete existing for idempotency on retry)
-        db.query(ScanFix).filter(ScanFix.scan_id == scan_id).delete()
-        for fix in remediation_result.fixed_issues:
-            scan_fix = ScanFix(
-                id=str(uuid.uuid4()),
-                scan_id=scan_id,
-                issue_id=fix.issue_id,
-                category=(
-                    fix.category.value
-                    if hasattr(fix.category, "value")
-                    else fix.category
-                ),
-                severity=(
-                    fix.severity.value
-                    if hasattr(fix.severity, "value")
-                    else fix.severity
-                ),
-                description=fix.description,
-                location=fix.location,
-                original_content=fix.original_content,
-                fixed_content=fix.fixed_content,
-                fix_method=fix.fix_method,
-                model_used=fix.model_used,
-                confidence=fix.confidence,
-                needs_review=fix.needs_review,
-                review_status="auto_approved" if not fix.needs_review else "pending",
-                wcag_criteria=fix.wcag_criteria,
-                page_number=fix.page_number,
-            )
-            db.add(scan_fix)
+        persist_scan_fixes(db, scan_id, remediation_result.fixed_issues)
 
         # Log remediation completion to audit trail
         auto_approved = sum(

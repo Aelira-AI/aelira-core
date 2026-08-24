@@ -34,6 +34,10 @@ from ..db.models import (
     User,
 )
 from ..education.reports.compliance_report import AuditReportGenerator
+from ..services.scan_fix_service import (
+    apply_authenticated_batch_review,
+    validate_fix_review_action,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +475,11 @@ def review_fix(
     if not fix:
         raise HTTPException(status_code=404, detail="Fix not found")
 
+    try:
+        validate_fix_review_action(fix, body.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
     now = datetime.now(timezone.utc)
 
     if body.action == "edit":
@@ -531,11 +540,15 @@ def batch_review(
     fixes = query.all()
     now = datetime.now(timezone.utc)
 
-    for fix in fixes:
-        fix.review_status = "approved" if body.action == "approve" else "rejected"
-        fix.reviewed_by = user_id
-        fix.reviewed_at = now
-        fix.review_notes = body.notes
+    apply_authenticated_batch_review(
+        db,
+        scan_id=scan_id,
+        fixes=fixes,
+        action=body.action,
+        user_id=user_id,
+        reviewed_at=now,
+        notes=body.notes,
+    )
 
     db.add(
         ReviewAuditLog(

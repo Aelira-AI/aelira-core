@@ -21,7 +21,6 @@ import base64
 import binascii
 import hashlib
 import html
-import json
 import logging
 import os
 import re
@@ -2698,23 +2697,16 @@ class PdfRemediator(BaseRemediator):
             remaining_manual.remove(matching[0])
             self.result.manual_count -= 1
             evidence = asdict(staged.verification_evidence)
-            notes = json.dumps(
-                {
-                    "provider": staged.provider_used,
-                    "source_kind": "image_equation",
-                    "verification_evidence": evidence,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
             self._add_fixed_issue(
                 issue,
                 fixed_content=staged.aria_label,
                 fix_method="ai_vision",
                 confidence=min(float(staged.confidence), 0.55),
                 needs_review=True,
+                provider_used=staged.provider_used,
                 model_used=staged.model_used,
-                notes=notes,
+                source_kind="image_equation",
+                verification_evidence=evidence,
                 wcag_criteria="1.1.1",
                 page_number=staged.page_number,
             )
