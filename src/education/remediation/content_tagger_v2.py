@@ -453,7 +453,9 @@ class ContentTaggerV2:
 
         return page_stats
 
-    def _excluded_do_indices(self, page_idx: int, page: Any, ops: List[Any]) -> set[int]:
+    def _excluded_do_indices(
+        self, page_idx: int, page: Any, ops: List[Any]
+    ) -> set[int]:
         """Resolve exact direct image draws reserved for Formula association."""
         excluded = self._excluded_image_occurrences.get(page_idx, set())
         if not excluded:
@@ -898,7 +900,9 @@ class ContentTaggerV2:
         for struct_parent, new_entries in sorted(self._parent_tree_entries.items()):
             preserved = self._preserved_parent_tree_entries.get(struct_parent)
             if preserved is not None and not isinstance(preserved, Array):
-                raise ValueError("Existing selected-page ParentTree entry is not an array")
+                raise ValueError(
+                    "Existing selected-page ParentTree entry is not an array"
+                )
             page_array: List[Any] = list(preserved) if preserved is not None else []
             for mcid_val, elem in sorted(new_entries, key=lambda entry: entry[0]):
                 while len(page_array) <= mcid_val:
@@ -1271,7 +1275,9 @@ def associate_image_formula(
             "struct_parents": page.obj.get(Name.StructParents),
             "contents": page.obj.get(Name.Contents),
             "root_kids_object": existing_kids,
-            "root_kids": list(existing_kids) if isinstance(existing_kids, Array) else None,
+            "root_kids": (
+                list(existing_kids) if isinstance(existing_kids, Array) else None
+            ),
             "number_nodes": [],
             "value_arrays": [],
             "structure_arrays": [],
@@ -1283,13 +1289,12 @@ def associate_image_formula(
                 if isinstance(kids, Array):
                     rollback["structure_arrays"].append((kids, list(kids)))
                     for child in kids:
-                        if hasattr(child, "keys") and str(
-                            child.get(Name.Type, "")
-                        ) != "/MCR":
+                        if (
+                            hasattr(child, "keys")
+                            and str(child.get(Name.Type, "")) != "/MCR"
+                        ):
                             snapshot_structure_arrays(child)
-                elif hasattr(kids, "keys") and str(
-                    kids.get(Name.Type, "")
-                ) != "/MCR":
+                elif hasattr(kids, "keys") and str(kids.get(Name.Type, "")) != "/MCR":
                     snapshot_structure_arrays(kids)
 
             snapshot_structure_arrays(existing_root)
@@ -1331,7 +1336,9 @@ def associate_image_formula(
                             "node": node,
                             "nums_existed": Name.Nums in node,
                             "nums_object": nums,
-                            "nums_values": list(nums) if isinstance(nums, Array) else None,
+                            "nums_values": (
+                                list(nums) if isinstance(nums, Array) else None
+                            ),
                             "limits_existed": Name("/Limits") in node,
                             "limits_object": limits,
                             "limits_values": (
@@ -1561,7 +1568,9 @@ def verify_image_formula_association(
                 and tuple(sibling.objgen) == tuple(formula.objgen)
             )
             attributes = formula.get(Name.A)
-            saved_bbox = attributes.get(Name("/BBox")) if hasattr(attributes, "keys") else None
+            saved_bbox = (
+                attributes.get(Name("/BBox")) if hasattr(attributes, "keys") else None
+            )
             if (
                 not hasattr(mcr, "keys")
                 or str(mcr.get(Name.Type, "")) != "/MCR"
@@ -1592,13 +1601,14 @@ def verify_image_formula_association(
             if (
                 embedded is None
                 or str(embedded.get(Name.Type, "")) != "/EmbeddedFile"
-                or str(embedded.get(Name.Subtype, ""))
-                != "/application#2Fmathml+xml"
+                or str(embedded.get(Name.Subtype, "")) != "/application#2Fmathml+xml"
             ):
                 raise ValueError("saved_embedded_file_contract_mismatch")
             embedded_bytes = embedded.read_bytes()
             params = embedded.get(Name("/Params"))
-            checksum = params.get(Name("/CheckSum")) if hasattr(params, "keys") else None
+            checksum = (
+                params.get(Name("/CheckSum")) if hasattr(params, "keys") else None
+            )
             if (
                 not hasattr(params, "keys")
                 or int(params.get(Name("/Size"), -1)) != len(embedded_bytes)
@@ -1606,8 +1616,7 @@ def verify_image_formula_association(
                 or checksum is None
                 or bytes(checksum)
                 != hashlib.md5(embedded_bytes, usedforsecurity=False).digest()
-                or hashlib.sha256(embedded_bytes).hexdigest()
-                != expected.mathml_sha256
+                or hashlib.sha256(embedded_bytes).hexdigest() != expected.mathml_sha256
             ):
                 raise ValueError("saved_mathml_mismatch")
             parent_tree, entries = _number_tree_entries(pdf.Root[Name.StructTreeRoot])
@@ -1648,7 +1657,9 @@ def verify_image_formula_association(
                 elif operator == "Do":
                     formula_owner = ("/Formula", expected.mcid)
                     has_formula = stack.count(formula_owner) == 1
-                    semantic_owners = [owner for owner in stack if owner[0] != "/Artifact"]
+                    semantic_owners = [
+                        owner for owner in stack if owner[0] != "/Artifact"
+                    ]
                     if has_formula and semantic_owners != [formula_owner]:
                         raise ValueError("saved_draw_has_additional_semantic_owner")
                     formula_marked_draws += int(has_formula)

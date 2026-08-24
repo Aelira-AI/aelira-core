@@ -7,7 +7,6 @@ from PIL import Image
 
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 
-
 BBOX = (10.0, 20.0, 90.0, 55.0)
 
 
@@ -188,7 +187,9 @@ def test_decompression_bomb_warning_is_rejected(monkeypatch):
 
     monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
     with pytest.raises(ImageSourceRejected, match="decompression_bomb"):
-        EquationImageSource().extract(Document(encoded("PNG", size=(24, 12)), "png"), IDENTITY)
+        EquationImageSource().extract(
+            Document(encoded("PNG", size=(24, 12)), "png"), IDENTITY
+        )
 
 
 def test_webp_unknown_chunk_is_rejected_even_when_riff_length_is_adjusted():

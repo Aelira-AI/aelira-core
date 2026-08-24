@@ -25,20 +25,67 @@ FONT_SHA256 = "562551b15b836e6e01d1b7350909baf3c8c8d83260c1190fbf4544333e6936de"
 MATHML_NAMESPACE = "http://www.w3.org/1998/Math/MathML"
 _ALLOWED_MATHML_TAGS = frozenset(
     {
-        "math", "mi", "mn", "mo", "mrow", "mfrac", "msqrt", "mroot",
-        "msup", "msub", "msubsup", "munder", "mover", "munderover",
-        "mtable", "mtr", "mtd", "mspace", "mpadded", "mphantom",
-        "mfenced", "menclose", "mmultiscripts", "mprescripts", "none",
+        "math",
+        "mi",
+        "mn",
+        "mo",
+        "mrow",
+        "mfrac",
+        "msqrt",
+        "mroot",
+        "msup",
+        "msub",
+        "msubsup",
+        "munder",
+        "mover",
+        "munderover",
+        "mtable",
+        "mtr",
+        "mtd",
+        "mspace",
+        "mpadded",
+        "mphantom",
+        "mfenced",
+        "menclose",
+        "mmultiscripts",
+        "mprescripts",
+        "none",
     }
 )
 _COMMON_PASSIVE_ATTRIBUTES = frozenset(
     {
-        "accent", "accentunder", "close", "columnalign", "columnspan",
-        "columnspacing", "depth", "display", "displaystyle", "fence", "form",
-        "height", "largeop", "lspace", "mathbackground", "mathcolor",
-        "mathsize", "mathvariant", "maxsize", "minsize", "movablelimits",
-        "notation", "open", "rowalign", "rowspan", "rowspacing", "rspace",
-        "scriptlevel", "separators", "separator", "stretchy", "symmetric",
+        "accent",
+        "accentunder",
+        "close",
+        "columnalign",
+        "columnspan",
+        "columnspacing",
+        "depth",
+        "display",
+        "displaystyle",
+        "fence",
+        "form",
+        "height",
+        "largeop",
+        "lspace",
+        "mathbackground",
+        "mathcolor",
+        "mathsize",
+        "mathvariant",
+        "maxsize",
+        "minsize",
+        "movablelimits",
+        "notation",
+        "open",
+        "rowalign",
+        "rowspan",
+        "rowspacing",
+        "rspace",
+        "scriptlevel",
+        "separators",
+        "separator",
+        "stretchy",
+        "symmetric",
         "width",
     }
 )
@@ -263,7 +310,11 @@ class EquationVerifier:
         )
 
     def canonicalize_mathml(self, mathml: Any) -> str:
-        if not isinstance(mathml, str) or not mathml or len(mathml) > self.config.max_mathml_chars:
+        if (
+            not isinstance(mathml, str)
+            or not mathml
+            or len(mathml) > self.config.max_mathml_chars
+        ):
             raise EquationVerificationRejected("invalid_mathml")
         lowered = mathml.lower()
         if "<?" in lowered or "<!" in lowered:
@@ -280,7 +331,10 @@ class EquationVerifier:
         while stack:
             node, depth = stack.pop()
             nodes += 1
-            if nodes > self.config.max_mathml_nodes or depth > self.config.max_mathml_depth:
+            if (
+                nodes > self.config.max_mathml_nodes
+                or depth > self.config.max_mathml_depth
+            ):
                 raise EquationVerificationRejected("invalid_mathml")
             namespace, name = self._expanded_name(node.tag)
             if namespace not in {None, MATHML_NAMESPACE}:
@@ -352,8 +406,7 @@ class EquationVerifier:
         intersection = np.logical_and(left_ink, right_ink).sum()
         iou = float(intersection / union)
         similarity = float(
-            1.0
-            - np.abs(left.astype(np.int16) - right.astype(np.int16)).mean() / 255.0
+            1.0 - np.abs(left.astype(np.int16) - right.astype(np.int16)).mean() / 255.0
         )
         return ComparisonMetrics(ink_iou=iou, pixel_similarity=similarity)
 
@@ -367,9 +420,7 @@ class EquationVerifier:
         cropped = Image.fromarray(ink[y0:y1, x0:x1], mode="L")
         cropped.thumbnail((480, 224), Image.Resampling.LANCZOS)
         canvas = Image.new("L", (512, 256), 255)
-        canvas.paste(
-            cropped, ((512 - cropped.width) // 2, (256 - cropped.height) // 2)
-        )
+        canvas.paste(cropped, ((512 - cropped.width) // 2, (256 - cropped.height) // 2))
         return np.asarray(canvas, dtype=np.uint8)
 
     @staticmethod

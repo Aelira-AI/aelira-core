@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
 from src.education.remediation.math_fixer import MathFixer
 
-
 METADATA = {
     "issue_type": IMAGE_EQUATION_ISSUE_TYPE,
     "page_number": 1,
@@ -20,7 +19,9 @@ METADATA = {
 class Source:
     def __init__(self):
         self.payload = SimpleNamespace(
-            identity=SimpleNamespace(**{key: METADATA[key] for key in METADATA if key != "issue_type"}),
+            identity=SimpleNamespace(
+                **{key: METADATA[key] for key in METADATA if key != "issue_type"}
+            ),
             source_sha256="c" * 64,
             normalized_sha256="a" * 64,
         )
@@ -158,9 +159,7 @@ def test_injected_verification_extra_fields_cannot_enter_pending_evidence():
             base = Verifier(mathml).evidence
             self.evidence = LeakyEvidence(**dataclasses.asdict(base))
 
-    result = fixer(LeakyVerifier())._fix_math_issue(
-        SimpleNamespace(metadata=METADATA)
-    )
+    result = fixer(LeakyVerifier())._fix_math_issue(SimpleNamespace(metadata=METADATA))
 
     assert result.error == "image_equation_association_pending"
     evidence = dataclasses.asdict(result.verification_evidence)

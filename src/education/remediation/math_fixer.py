@@ -81,6 +81,7 @@ class PendingEquationAssociation:
     model_used: Optional[str]
     verification_evidence: MathVerificationEvidence
 
+
 # ---------------------------------------------------------------------------
 # Regex patterns for detecting LaTeX math in plain text extracted from PDFs
 # ---------------------------------------------------------------------------
@@ -534,7 +535,12 @@ class MathFixer:
     def _bounded_verification_evidence(
         verification: Any,
     ) -> Optional[MathVerificationEvidence]:
-        hash_names = ("source_sha256", "rendered_sha256", "mathml_sha256", "font_sha256")
+        hash_names = (
+            "source_sha256",
+            "rendered_sha256",
+            "mathml_sha256",
+            "font_sha256",
+        )
         version_names = (
             "renderer_version",
             "comparator_version",

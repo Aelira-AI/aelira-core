@@ -53,7 +53,7 @@ def test_identical_round_trip_returns_only_bounded_typed_evidence():
 
     source = _png(lambda pen: pen.line((20, 45, 220, 45), fill="black", width=5))
     verifier = EquationVerifier(
-        converter=lambda latex: '<math><mi>x</mi><mo>=</mo><mn>1</mn></math>',
+        converter=lambda latex: "<math><mi>x</mi><mo>=</mo><mn>1</mn></math>",
         renderer=lambda mathml: source,
     )
 
@@ -92,7 +92,7 @@ def test_near_miss_operator_is_rejected_by_comparison():
         )
     )
     verifier = EquationVerifier(
-        converter=lambda latex: '<math><mi>x</mi><mo>+</mo><mn>1</mn></math>',
+        converter=lambda latex: "<math><mi>x</mi><mo>+</mo><mn>1</mn></math>",
         renderer=lambda mathml: changed,
     )
 
@@ -119,10 +119,14 @@ def test_invalid_unbounded_or_fallback_mathml_fails_closed(mathml):
     from src.education.remediation.equation_verifier import EquationVerificationRejected
     from src.education.remediation.equation_verifier import EquationVerifier
 
-    verifier = EquationVerifier(converter=lambda latex: mathml, renderer=lambda value: b"png")
+    verifier = EquationVerifier(
+        converter=lambda latex: mathml, renderer=lambda value: b"png"
+    )
 
     with pytest.raises(EquationVerificationRejected):
-        verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
+        verifier.verify(
+            _validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x"
+        )
 
 
 @pytest.mark.parametrize(
@@ -139,9 +143,13 @@ def test_mathml_active_or_foreign_attributes_fail_closed(attribute):
     from src.education.remediation.equation_verifier import EquationVerifier
 
     mathml = f"<math><mi {attribute}>x</mi></math>"
-    verifier = EquationVerifier(converter=lambda latex: mathml, renderer=lambda value: b"png")
+    verifier = EquationVerifier(
+        converter=lambda latex: mathml, renderer=lambda value: b"png"
+    )
     with pytest.raises(EquationVerificationRejected, match="invalid_mathml"):
-        verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
+        verifier.verify(
+            _validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x"
+        )
 
 
 @pytest.mark.parametrize(
@@ -165,13 +173,15 @@ def test_foreign_element_namespaces_reject_before_render(mathml):
         ),
     )
     with pytest.raises(EquationVerificationRejected, match="invalid_mathml"):
-        verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
+        verifier.verify(
+            _validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x"
+        )
 
 
 @pytest.mark.parametrize(
     "mathml",
     [
-        '<math><?x <style>body{display:none}</style> ?><mi>x</mi></math>',
+        "<math><?x <style>body{display:none}</style> ?><mi>x</mi></math>",
         '<math><!-- <img src="data:image/png;base64,AAAA"> --><mi>x</mi></math>',
         '<!DOCTYPE math [<!ENTITY injected "x">]><math><mi>&injected;</mi></math>',
     ],
@@ -187,7 +197,9 @@ def test_non_element_xml_constructs_reject_before_render(mathml):
         ),
     )
     with pytest.raises(EquationVerificationRejected, match="invalid_mathml"):
-        verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
+        verifier.verify(
+            _validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x"
+        )
 
 
 def test_renderer_receives_only_canonical_allowlisted_tree():
@@ -213,12 +225,18 @@ def test_converter_renderer_blank_and_comparator_failures_close():
     from src.education.remediation.equation_verifier import EquationVerifier
 
     image = _validated(_png(lambda pen: pen.rectangle((20, 20, 80, 60), fill="black")))
-    mathml = '<math><mi>x</mi></math>'
+    mathml = "<math><mi>x</mi></math>"
 
     for verifier in (
         EquationVerifier(converter=lambda latex: (_ for _ in ()).throw(RuntimeError())),
-        EquationVerifier(converter=lambda latex: mathml, renderer=lambda value: (_ for _ in ()).throw(TimeoutError())),
-        EquationVerifier(converter=lambda latex: mathml, renderer=lambda value: _png(lambda pen: None)),
+        EquationVerifier(
+            converter=lambda latex: mathml,
+            renderer=lambda value: (_ for _ in ()).throw(TimeoutError()),
+        ),
+        EquationVerifier(
+            converter=lambda latex: mathml,
+            renderer=lambda value: _png(lambda pen: None),
+        ),
         EquationVerifier(
             converter=lambda latex: mathml,
             renderer=lambda value: image.jpeg_bytes,
@@ -230,13 +248,18 @@ def test_converter_renderer_blank_and_comparator_failures_close():
 
 
 def test_sabotage_cannot_bypass_a_failed_comparator():
-    from src.education.remediation.equation_verifier import ComparisonMetrics, EquationVerifier
+    from src.education.remediation.equation_verifier import (
+        ComparisonMetrics,
+        EquationVerifier,
+    )
 
     payload = _png(lambda pen: pen.ellipse((20, 20, 80, 70), fill="black"))
     verifier = EquationVerifier(
-        converter=lambda latex: '<math><mi>x</mi></math>',
+        converter=lambda latex: "<math><mi>x</mi></math>",
         renderer=lambda value: payload,
-        comparator=lambda left, right: ComparisonMetrics(ink_iou=0.0, pixel_similarity=0.0),
+        comparator=lambda left, right: ComparisonMetrics(
+            ink_iou=0.0, pixel_similarity=0.0
+        ),
     )
 
     evidence = verifier.verify(_validated(payload), "x")
@@ -254,7 +277,7 @@ def test_nonfinite_or_out_of_range_metrics_fail_closed(value):
 
     payload = _png(lambda pen: pen.ellipse((20, 20, 80, 70), fill="black"))
     verifier = EquationVerifier(
-        converter=lambda latex: '<math><mi>x</mi></math>',
+        converter=lambda latex: "<math><mi>x</mi></math>",
         renderer=lambda value: payload,
         comparator=lambda left, right: ComparisonMetrics(
             ink_iou=value, pixel_similarity=1.0
@@ -285,7 +308,11 @@ def test_committed_calibration_manifest_has_separated_supported_corpus():
 
 
 def test_pinned_font_and_license_match_manifest_hashes():
-    from src.education.remediation.equation_verifier import FONT_PATH, LICENSE_PATH, VerifierConfig
+    from src.education.remediation.equation_verifier import (
+        FONT_PATH,
+        LICENSE_PATH,
+        VerifierConfig,
+    )
 
     config = VerifierConfig()
     font = FONT_PATH.read_bytes()

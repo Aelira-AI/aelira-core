@@ -44,7 +44,9 @@ class EquationRecognizer:
             raise EquationRecognitionRejected("alt_text_client_unavailable")
         if getattr(client, "purpose", None) != "alt_text":
             raise EquationRecognitionRejected("purpose_mismatch")
-        if image.mime_type != "image/jpeg" or not image.jpeg_bytes.startswith(b"\xff\xd8"):
+        if image.mime_type != "image/jpeg" or not image.jpeg_bytes.startswith(
+            b"\xff\xd8"
+        ):
             raise EquationRecognitionRejected("invalid_image_payload")
         try:
             response = client.analyze_image_sync(

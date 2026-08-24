@@ -8,7 +8,6 @@ from src.education.remediation.equation_image_source import (
     ValidatedEquationImage,
 )
 
-
 PAYLOAD = ValidatedEquationImage(
     jpeg_bytes=b"\xff\xd8\xff\xd9",
     mime_type="image/jpeg",
@@ -53,7 +52,9 @@ def success(content):
 def test_printed_equation_uses_only_purpose_bound_vision_and_returns_latex():
     from src.education.remediation.equation_recognizer import EquationRecognizer
 
-    client = Client(success('{"classification":"printed_equation","latex":"x^2 + 1 = 0"}'))
+    client = Client(
+        success('{"classification":"printed_equation","latex":"x^2 + 1 = 0"}')
+    )
     result = EquationRecognizer(client).recognize(PAYLOAD)
 
     assert result.classification == "printed_equation"
@@ -118,7 +119,9 @@ def test_oversized_latex_fails_closed():
 
     content = json.dumps({"classification": "printed_equation", "latex": "x" * 9})
     with pytest.raises(EquationRecognitionRejected, match="invalid_provider_response"):
-        EquationRecognizer(Client(success(content)), max_latex_chars=8).recognize(PAYLOAD)
+        EquationRecognizer(Client(success(content)), max_latex_chars=8).recognize(
+            PAYLOAD
+        )
 
 
 def test_oversized_provider_response_is_rejected_before_json_parse(monkeypatch):
@@ -136,16 +139,19 @@ def test_oversized_provider_response_is_rejected_before_json_parse(monkeypatch):
         ),
     )
     with pytest.raises(EquationRecognitionRejected, match="invalid_provider_response"):
-        EquationRecognizer(
-            Client(success("x" * 65)), max_response_chars=64
-        ).recognize(PAYLOAD)
+        EquationRecognizer(Client(success("x" * 65)), max_response_chars=64).recognize(
+            PAYLOAD
+        )
 
 
 @pytest.mark.parametrize(
     "client,response_code",
     [
         (None, "alt_text_client_unavailable"),
-        (Client({"success": False, "error": "purpose_operation_mismatch"}), "provider_failure"),
+        (
+            Client({"success": False, "error": "purpose_operation_mismatch"}),
+            "provider_failure",
+        ),
         (Client({"success": False, "error": "audit_write_failed"}), "provider_failure"),
         (Client({"success": True}), "provider_failure"),
     ],

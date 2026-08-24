@@ -168,7 +168,9 @@ class EquationImageSource:
             current = _displayed_image_occurrences(page, expected.page_number)
         except Exception as exc:
             raise ImageSourceRejected("occurrence_identity_mismatch") from exc
-        matches = [item for item in current if item["occurrence_id"] == expected.occurrence_id]
+        matches = [
+            item for item in current if item["occurrence_id"] == expected.occurrence_id
+        ]
         if len(matches) != 1 or self._identity(matches[0]) != expected:
             raise ImageSourceRejected("occurrence_identity_mismatch")
 
@@ -257,7 +259,13 @@ class EquationImageSource:
             raise
         except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
             raise ImageSourceRejected("decompression_bomb") from exc
-        except (UnidentifiedImageError, EOFError, OSError, SyntaxError, ValueError) as exc:
+        except (
+            UnidentifiedImageError,
+            EOFError,
+            OSError,
+            SyntaxError,
+            ValueError,
+        ) as exc:
             raise ImageSourceRejected("malformed_image") from exc
 
     def _check_dimensions(self, size: tuple[int, int]) -> None:
