@@ -95,6 +95,7 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
 
     calls = []
     validated = SimpleNamespace(
+        source_sha256="c" * 64,
         normalized_sha256="a" * 64,
         identity=SimpleNamespace(
             page_number=1,

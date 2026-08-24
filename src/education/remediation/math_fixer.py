@@ -74,6 +74,7 @@ class PendingEquationAssociation:
     occurrence_ordinal: int
     bbox: tuple[float, float, float, float]
     occurrence_id: str
+    image_stream_sha256: str
     alt_text: str
     mathml_string: str
     provider_used: Optional[str]
@@ -505,6 +506,7 @@ class MathFixer:
             occurrence_ordinal=identity.occurrence_ordinal,
             bbox=identity.bbox,
             occurrence_id=identity.occurrence_id,
+            image_stream_sha256=validated.source_sha256,
             alt_text=aria_label,
             mathml_string=mathml_string,
             provider_used=getattr(recognition, "provider", None),

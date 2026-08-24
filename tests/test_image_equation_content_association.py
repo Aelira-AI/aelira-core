@@ -76,6 +76,9 @@ def _pending(document: fitz.Document, page_number: int, display_index: int):
     ]
     return PendingEquationAssociation(
         **occurrence,
+        image_stream_sha256=hashlib.sha256(
+            document.extract_image(occurrence["image_xref"])["image"]
+        ).hexdigest(),
         alt_text="x squared",
         mathml_string=MATHML,
         provider_used="gemini",
@@ -178,6 +181,7 @@ def test_reconciliation_promotes_only_postsave_verified_staged_result():
         occurrence_ordinal=1,
         bbox=(120.0, 130.0, 180.0, 160.0),
         occurrence_id="source-occurrence",
+        image_stream_sha256="c" * 64,
         alt_text="x squared",
         mathml_string=MATHML,
         provider_used="gemini",
@@ -413,7 +417,9 @@ def _find_formula(root):
     return found[0]
 
 
-@pytest.mark.parametrize("sabotage", ["k", "parent_tree", "marked_content"])
+@pytest.mark.parametrize(
+    "sabotage", ["k", "parent_tree", "marked_content", "image_stream", "extra_do"]
+)
 def test_postsave_reverse_verification_rejects_sabotage(tmp_path, sabotage):
     from src.education.remediation.content_tagger_v2 import (
         associate_image_formula,
@@ -444,13 +450,42 @@ def test_postsave_reverse_verification_rejects_sabotage(tmp_path, sabotage):
                 if int(nums[index]) == result.struct_parent
             )
             page_array[result.mcid] = None
-        else:
+        elif sabotage == "marked_content":
             replacement = []
             for op in pikepdf.parse_content_stream(pdf.pages[0]):
                 if str(op.operator) == "BDC" and str(op.operands[0]) == "/Formula":
                     op = pikepdf.ContentStreamInstruction(
                         [Name.Figure, op.operands[1]], pikepdf.Operator("BDC")
                     )
+                replacement.append(op)
+            pdf.pages[0].obj[Name.Contents] = pdf.make_stream(
+                pikepdf.unparse_content_stream(replacement)
+            )
+        elif sabotage == "image_stream":
+            pdf.pages[0].obj[Name.Resources][Name.XObject]["/Im0"].write(b"\x01")
+        else:
+            other = pdf.make_stream(b"\x01")
+            other[Name.Type] = Name.XObject
+            other[Name.Subtype] = Name.Image
+            other[Name.Width] = 1
+            other[Name.Height] = 1
+            other[Name.ColorSpace] = Name.DeviceGray
+            other[Name.BitsPerComponent] = 8
+            pdf.pages[0].obj[Name.Resources][Name.XObject]["/Im1"] = pdf.make_indirect(
+                other
+            )
+            replacement = []
+            inside_formula = False
+            for op in pikepdf.parse_content_stream(pdf.pages[0]):
+                if str(op.operator) == "BDC" and str(op.operands[0]) == "/Formula":
+                    inside_formula = True
+                if str(op.operator) == "EMC" and inside_formula:
+                    replacement.append(
+                        pikepdf.ContentStreamInstruction(
+                            [Name("/Im1")], pikepdf.Operator("Do")
+                        )
+                    )
+                    inside_formula = False
                 replacement.append(op)
             pdf.pages[0].obj[Name.Contents] = pdf.make_stream(
                 pikepdf.unparse_content_stream(replacement)

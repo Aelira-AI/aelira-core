@@ -1039,6 +1039,7 @@ def associate_image_formula(
         ordinal = int(pending.occurrence_ordinal)
         bbox = tuple(float(value) for value in pending.bbox)
         occurrence_id = str(pending.occurrence_id)
+        image_stream_sha256 = str(pending.image_stream_sha256)
         alt_text = str(pending.alt_text)
         mathml = str(pending.mathml_string)
         if (
@@ -1050,6 +1051,7 @@ def associate_image_formula(
             or not alt_text.isprintable()
             or not mathml
             or len(mathml.encode("utf-8")) > 65536
+            or re.fullmatch(r"[0-9a-f]{64}", image_stream_sha256) is None
         ):
             return _association_failure(pending, "invalid_association_request")
         digest = hashlib.sha256(mathml.encode("utf-8")).hexdigest()
@@ -1073,6 +1075,12 @@ def associate_image_formula(
         ]
         if len(exact) != 1:
             return _association_failure(pending, "occurrence_identity_mismatch")
+        current_image = fitz_doc.extract_image(image_xref).get("image")
+        if (
+            not isinstance(current_image, bytes)
+            or hashlib.sha256(current_image).hexdigest() != image_stream_sha256
+        ):
+            return _association_failure(pending, "image_stream_identity_mismatch")
 
         page = pdf.pages[page_number - 1]
         ops = list(pikepdf.parse_content_stream(page))
@@ -1190,7 +1198,8 @@ def verify_image_formula_association(
             exact = [
                 item
                 for item in occurrences
-                if item["image_index"] == pending.image_index
+                if item["page_number"] == pending.page_number
+                and item["image_index"] == pending.image_index
                 and item["occurrence_ordinal"] == pending.occurrence_ordinal
                 and all(
                     abs(left - right) <= 1e-6
@@ -1200,6 +1209,13 @@ def verify_image_formula_association(
             if len(exact) != 1:
                 raise ValueError("saved_occurrence_identity_mismatch")
             saved_image_xref = exact[0]["image_xref"]
+            saved_image = fitz_doc.extract_image(saved_image_xref).get("image")
+            if (
+                not isinstance(saved_image, bytes)
+                or hashlib.sha256(saved_image).hexdigest()
+                != pending.image_stream_sha256
+            ):
+                raise ValueError("saved_image_stream_identity_mismatch")
             formulas: List[Any] = []
             root_kids = pdf.Root[Name.StructTreeRoot].get(Name.K)
             roots = (
@@ -1262,6 +1278,7 @@ def verify_image_formula_association(
             draw_ordinal = 0
             stack: List[tuple[str, int]] = []
             matched_target = 0
+            formula_marked_draws = 0
             for index, op in enumerate(ops):
                 operator = str(op.operator)
                 if operator == "BDC":
@@ -1275,14 +1292,16 @@ def verify_image_formula_association(
                     if not stack:
                         raise ValueError("saved_marked_content_unbalanced")
                     stack.pop()
-                elif index in target_indices:
+                elif operator == "Do":
                     has_formula = stack.count(("/Formula", expected.mcid)) == 1
-                    if draw_ordinal == pending.occurrence_ordinal:
-                        matched_target += int(has_formula)
-                    elif has_formula:
-                        raise ValueError("saved_formula_marks_wrong_draw")
-                    draw_ordinal += 1
-            return matched_target == 1 and not stack
+                    formula_marked_draws += int(has_formula)
+                    if index in target_indices:
+                        if draw_ordinal == pending.occurrence_ordinal:
+                            matched_target += int(has_formula)
+                        elif has_formula:
+                            raise ValueError("saved_formula_marks_wrong_draw")
+                        draw_ordinal += 1
+            return matched_target == 1 and formula_marked_draws == 1 and not stack
     except Exception as exc:
         logger.warning("Post-save Formula association verification failed: %s", exc)
         return False

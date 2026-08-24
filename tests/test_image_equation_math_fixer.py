@@ -21,6 +21,7 @@ class Source:
     def __init__(self):
         self.payload = SimpleNamespace(
             identity=SimpleNamespace(**{key: METADATA[key] for key in METADATA if key != "issue_type"}),
+            source_sha256="c" * 64,
             normalized_sha256="a" * 64,
         )
 
