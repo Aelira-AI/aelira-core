@@ -150,6 +150,8 @@ def test_mathml_active_or_foreign_attributes_fail_closed(attribute):
         '<math xmlns="urn:evil"><mi>x</mi></math>',
         '<math xmlns="http://www.w3.org/1998/Math/MathML" '
         'xmlns:e="urn:evil"><e:mi>x</e:mi></math>',
+        '<math xmlns="http://www.w3.org/1998/Math/MathML" '
+        'xmlns:e="http://www.w3.org/1998/Math/MathML}evil"><e:mi>x</e:mi></math>',
     ],
 )
 def test_foreign_element_namespaces_reject_before_render(mathml):

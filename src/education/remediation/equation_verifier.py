@@ -279,9 +279,9 @@ class EquationVerifier:
             nodes += 1
             if nodes > self.config.max_mathml_nodes or depth > self.config.max_mathml_depth:
                 raise EquationVerificationRejected("invalid_mathml")
-            if self._namespace(node.tag) not in {None, MATHML_NAMESPACE}:
+            namespace, name = self._expanded_name(node.tag)
+            if namespace not in {None, MATHML_NAMESPACE}:
                 raise EquationVerificationRejected("invalid_mathml")
-            name = self._local_name(node.tag)
             if name not in _ALLOWED_MATHML_TAGS or name == "mtext":
                 raise EquationVerificationRejected("invalid_mathml")
             allowed_attributes = _PASSIVE_ATTRIBUTES_BY_TAG[name]
@@ -308,13 +308,19 @@ class EquationVerifier:
 
     @staticmethod
     def _local_name(tag: str) -> str:
-        return tag.rsplit("}", 1)[-1].lower()
+        return EquationVerifier._expanded_name(tag)[1]
 
     @staticmethod
-    def _namespace(tag: str) -> Optional[str]:
-        if not tag.startswith("{") or "}" not in tag:
-            return None
-        return tag[1:].split("}", 1)[0]
+    def _expanded_name(tag: str) -> tuple[Optional[str], str]:
+        if not tag.startswith("{"):
+            if "{" in tag or "}" in tag:
+                raise EquationVerificationRejected("invalid_mathml")
+            return None, tag.lower()
+        boundary = tag.find("}")
+        local = tag[boundary + 1 :] if boundary > 1 else ""
+        if boundary <= 1 or not local or "{" in local or "}" in local:
+            raise EquationVerificationRejected("invalid_mathml")
+        return tag[1:boundary], local.lower()
 
     def _compare(self, source: bytes, rendered: bytes) -> ComparisonMetrics:
         left = self._normalized_canvas(source)
