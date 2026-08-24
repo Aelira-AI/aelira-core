@@ -111,6 +111,8 @@ def test_near_miss_operator_is_rejected_by_comparison():
         "<html><mi>x</mi></html>",
         "<math><script>alert(1)</script><mi>x</mi></math>",
         "<math><annotation src='https://example.invalid'>x</annotation></math>",
+        '<math xmlns="urn:evil"><mi>x</mi></math>',
+        '<math xmlns:e="urn:evil"><e:mi>x</e:mi></math>',
     ],
 )
 def test_invalid_unbounded_or_fallback_mathml_fails_closed(mathml):
@@ -138,6 +140,28 @@ def test_mathml_active_or_foreign_attributes_fail_closed(attribute):
 
     mathml = f"<math><mi {attribute}>x</mi></math>"
     verifier = EquationVerifier(converter=lambda latex: mathml, renderer=lambda value: b"png")
+    with pytest.raises(EquationVerificationRejected, match="invalid_mathml"):
+        verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
+
+
+@pytest.mark.parametrize(
+    "mathml",
+    [
+        '<math xmlns="urn:evil"><mi>x</mi></math>',
+        '<math xmlns="http://www.w3.org/1998/Math/MathML" '
+        'xmlns:e="urn:evil"><e:mi>x</e:mi></math>',
+    ],
+)
+def test_foreign_element_namespaces_reject_before_render(mathml):
+    from src.education.remediation.equation_verifier import EquationVerificationRejected
+    from src.education.remediation.equation_verifier import EquationVerifier
+
+    verifier = EquationVerifier(
+        converter=lambda latex: mathml,
+        renderer=lambda value: (_ for _ in ()).throw(
+            AssertionError("foreign MathML must not reach renderer")
+        ),
+    )
     with pytest.raises(EquationVerificationRejected, match="invalid_mathml"):
         verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
 

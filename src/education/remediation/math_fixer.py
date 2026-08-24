@@ -76,6 +76,8 @@ class PendingEquationAssociation:
     occurrence_id: str
     alt_text: str
     mathml_string: str
+    provider_used: Optional[str]
+    model_used: Optional[str]
     verification_evidence: MathVerificationEvidence
 
 # ---------------------------------------------------------------------------
@@ -199,6 +201,7 @@ class MathFixResult:
     fix_method: Optional[str] = None
     confidence: float = 0.0
     needs_review: bool = False
+    provider_used: Optional[str] = None
     model_used: Optional[str] = None
     verification_evidence: Optional[MathVerificationEvidence] = None
     pending_association: Optional[PendingEquationAssociation] = None
@@ -487,6 +490,8 @@ class MathFixer:
             occurrence_id=identity.occurrence_id,
             alt_text=aria_label,
             mathml_string=mathml_string,
+            provider_used=getattr(recognition, "provider", None),
+            model_used=getattr(recognition, "model", None),
             verification_evidence=evidence,
         )
         return MathFixResult(
@@ -500,6 +505,7 @@ class MathFixer:
             fix_method="ai_vision",
             confidence=0.55,
             needs_review=True,
+            provider_used=getattr(recognition, "provider", None),
             model_used=getattr(recognition, "model", None),
             verification_evidence=evidence,
             pending_association=pending,

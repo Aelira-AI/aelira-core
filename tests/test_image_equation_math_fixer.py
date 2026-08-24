@@ -103,10 +103,13 @@ def test_verified_image_equation_stages_typed_mandatory_review_request():
     assert result.fix_method == "ai_vision"
     assert result.confidence == 0.55
     assert result.needs_review is True
+    assert result.provider_used == "gemini"
     assert result.model_used == "vision-model"
     assert result.pending_association is not None
     assert result.verification_evidence is not None
     assert result.pending_association.occurrence_id == "occ-1"
+    assert result.pending_association.provider_used == "gemini"
+    assert result.pending_association.model_used == "vision-model"
     assert result.pending_association.mathml_string == mathml
     assert "<mtext" not in mathml
     assert result.verification_evidence.passed is True

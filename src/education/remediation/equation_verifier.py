@@ -22,6 +22,7 @@ ASSET_DIR = Path(__file__).parent / "assets" / "math-font"
 FONT_PATH = ASSET_DIR / "STIXTwoMath-Regular.ttf"
 LICENSE_PATH = ASSET_DIR / "OFL.txt"
 FONT_SHA256 = "562551b15b836e6e01d1b7350909baf3c8c8d83260c1190fbf4544333e6936de"
+MATHML_NAMESPACE = "http://www.w3.org/1998/Math/MathML"
 _ALLOWED_MATHML_TAGS = frozenset(
     {
         "math", "mi", "mn", "mo", "mrow", "mfrac", "msqrt", "mroot",
@@ -278,6 +279,8 @@ class EquationVerifier:
             nodes += 1
             if nodes > self.config.max_mathml_nodes or depth > self.config.max_mathml_depth:
                 raise EquationVerificationRejected("invalid_mathml")
+            if self._namespace(node.tag) not in {None, MATHML_NAMESPACE}:
+                raise EquationVerificationRejected("invalid_mathml")
             name = self._local_name(node.tag)
             if name not in _ALLOWED_MATHML_TAGS or name == "mtext":
                 raise EquationVerificationRejected("invalid_mathml")
@@ -306,6 +309,12 @@ class EquationVerifier:
     @staticmethod
     def _local_name(tag: str) -> str:
         return tag.rsplit("}", 1)[-1].lower()
+
+    @staticmethod
+    def _namespace(tag: str) -> Optional[str]:
+        if not tag.startswith("{") or "}" not in tag:
+            return None
+        return tag[1:].split("}", 1)[0]
 
     def _compare(self, source: bytes, rendered: bytes) -> ComparisonMetrics:
         left = self._normalized_canvas(source)
