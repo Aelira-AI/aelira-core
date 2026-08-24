@@ -149,6 +149,44 @@ def test_failed_selected_client_produces_exactly_one_manual_issue(probe_path):
     assert remediator.result.failed_count == 0
 
 
+def test_brightspace_worker_never_retries_without_purpose_client_on_constructor_error(
+    monkeypatch,
+):
+    from src.api.brightspace_routes import _run_remediator_worker
+
+    calls = []
+    alt_text_client = object()
+
+    class RejectingPdfRemediator:
+        def __init__(self, *args, **kwargs):
+            calls.append(kwargs)
+            if "alt_text_client" in kwargs:
+                raise TypeError("constructor rejected authoritative client")
+
+        def remediate(self):
+            return MagicMock()
+
+    monkeypatch.setattr(
+        "src.api.brightspace_routes.importlib.import_module",
+        lambda *_args, **_kwargs: type(
+            "PdfModule", (), {"PdfRemediator": RejectingPdfRemediator}
+        ),
+    )
+
+    with pytest.raises(TypeError, match="constructor rejected authoritative client"):
+        _run_remediator_worker(
+            ext="pdf",
+            raw_issues=[{"category": "structure"}],
+            config=RemediationConfig(allow_legacy_nested_ai=False),
+            remediation_client=None,
+            alt_text_client=alt_text_client,
+            source_bytes=b"%PDF-source",
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["alt_text_client"] is alt_text_client
+
+
 def test_explicit_legacy_mode_may_alias_remediation_client_for_alt(probe_path):
     remediation = RecordingClient("legacy")
     remediator = PurposeProbeRemediator(

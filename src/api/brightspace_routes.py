@@ -1402,18 +1402,13 @@ def _run_remediator_worker(
             remediator_class = getattr(
                 importlib.import_module(module_path, package="src.api"), class_name
             )
-            try:
-                remediator = remediator_class(
-                    file_path,
-                    raw_issues,
-                    config,
-                    remediation_client,
-                    alt_text_client=alt_text_client,
-                )
-            except TypeError:
-                remediator = remediator_class(
-                    file_path, raw_issues, config, remediation_client
-                )
+            remediator = remediator_class(
+                file_path,
+                raw_issues,
+                config,
+                remediation_client,
+                alt_text_client=alt_text_client,
+            )
         else:
             raise ValueError("unsupported_remediation_worker_input")
 
