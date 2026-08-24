@@ -7,6 +7,7 @@ Revises: 20260822_v095_job_quarantine
 from alembic import op
 import hashlib
 import json
+import os
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -18,7 +19,60 @@ depends_on = None
 _TABLE = "scan_fixes"
 _SOURCE_CONSTRAINT = "ck_scan_fixes_source_kind"
 _OCCURRENCE_CONSTRAINT = "uq_scan_fixes_scan_occurrence"
+_OCCURRENCE_INDEX = "ux_scan_fixes_scan_occurrence_task8"
 _EVIDENCE_JSON = sa.JSON().with_variant(JSONB(), "postgresql")
+POSTGRES_DEFAULT_MAX_ROWS = 100_000
+POSTGRES_BACKFILL_CHUNK_ROWS = 1_000
+POSTGRES_LOCK_TIMEOUT_MS = 5_000
+POSTGRES_STATEMENT_TIMEOUT_MS = 900_000
+
+
+def _positive_operator_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer") from exc
+    if value < 1:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
+def _operator_override() -> bool:
+    return os.getenv("TASK8_REVIEW_MIGRATION_ALLOW_LARGE_TABLE", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _configure_postgres_timeouts(bind: sa.engine.Connection) -> None:
+    lock_ms = _positive_operator_int(
+        "TASK8_REVIEW_MIGRATION_LOCK_TIMEOUT_MS", POSTGRES_LOCK_TIMEOUT_MS
+    )
+    statement_ms = _positive_operator_int(
+        "TASK8_REVIEW_MIGRATION_STATEMENT_TIMEOUT_MS",
+        POSTGRES_STATEMENT_TIMEOUT_MS,
+    )
+    bind.execute(sa.text(f"SET LOCAL lock_timeout = '{lock_ms}ms'"))
+    bind.execute(sa.text(f"SET LOCAL statement_timeout = '{statement_ms}ms'"))
+
+
+def _postgres_preflight(bind: sa.engine.Connection) -> int:
+    """Bound table work or fail with the exact operator override contract."""
+    _configure_postgres_timeouts(bind)
+    row_count = bind.execute(sa.text("SELECT count(*) FROM scan_fixes")).scalar_one()
+    maximum = _positive_operator_int(
+        "TASK8_REVIEW_MIGRATION_MAX_ROWS", POSTGRES_DEFAULT_MAX_ROWS
+    )
+    if row_count > maximum and not _operator_override():
+        raise RuntimeError(
+            "Task8 review migration refused: scan_fixes has "
+            f"{row_count} rows (configured maximum {maximum}). Run in a planned "
+            "maintenance window after capacity review, then set operator override "
+            "TASK8_REVIEW_MIGRATION_ALLOW_LARGE_TABLE=true."
+        )
+    return row_count
 
 
 def _column_names() -> set[str]:
@@ -41,6 +95,14 @@ def _unique_names() -> set[str]:
     }
 
 
+def _index_names() -> set[str]:
+    return {
+        index["name"]
+        for index in sa.inspect(op.get_bind()).get_indexes(_TABLE)
+        if index.get("name")
+    }
+
+
 def _occurrence_key(issue_id: object, location: object, page_number: object) -> str:
     payload = json.dumps(
         [issue_id, location, page_number], ensure_ascii=False, separators=(",", ":")
@@ -49,62 +111,74 @@ def _occurrence_key(issue_id: object, location: object, page_number: object) -> 
 
 
 def _backfill_occurrences(existing: set[str]) -> None:
+    """Backfill in bounded reads while reconciling duplicates deterministically."""
     bind = op.get_bind()
     identity_columns = {"issue_id", "location", "page_number"}
-    if identity_columns <= existing:
-        rows = bind.execute(
-            sa.text(
-                "SELECT id, scan_id, issue_id, location, page_number "
-                "FROM scan_fixes ORDER BY id"
-            )
-        ).mappings()
-        keyed = [
-            (row, _occurrence_key(row.issue_id, row.location, row.page_number))
-            for row in rows
-        ]
-    else:
-        rows = bind.execute(
-            sa.text("SELECT id, scan_id FROM scan_fixes ORDER BY id")
-        ).mappings()
-        keyed = [(row, _occurrence_key(row.id, None, None)) for row in rows]
-
-    groups: dict[tuple[str, str], list[str]] = {}
-    for row, key in keyed:
-        groups.setdefault((row.scan_id, key), []).append(row.id)
+    selected = (
+        "id, scan_id, issue_id, location, page_number"
+        if identity_columns <= existing
+        else "id, scan_id"
+    )
+    keepers: dict[tuple[str, str], str] = {}
     table_names = set(sa.inspect(bind).get_table_names())
-    for (_, key), ids in groups.items():
-        keeper = min(ids)
-        if len(ids) > 1:
-            stale = [row_id for row_id in ids if row_id != keeper]
-            if "review_audit_log" in table_names:
-                bind.execute(
-                    sa.text(
-                        "UPDATE review_audit_log SET fix_id = :keeper "
-                        "WHERE fix_id IN :stale"
-                    ).bindparams(sa.bindparam("stale", expanding=True)),
-                    {"keeper": keeper, "stale": stale},
-                )
-            if {"review_status", "needs_review"} <= existing:
-                assignments = ["review_status = 'pending'", "needs_review = true"]
-                for column in ("reviewed_by", "reviewed_at", "review_notes"):
-                    if column in existing:
-                        assignments.append(f"{column} = NULL")
-                bind.execute(
-                    sa.text(
-                        f"UPDATE scan_fixes SET {', '.join(assignments)} WHERE id = :id"
-                    ),
-                    {"id": keeper},
-                )
+    last_id: str | None = None
+    while True:
+        rows = list(
             bind.execute(
-                sa.text("DELETE FROM scan_fixes WHERE id IN :stale").bindparams(
-                    sa.bindparam("stale", expanding=True)
+                sa.text(
+                    f"SELECT {selected} FROM scan_fixes "
+                    "WHERE (:last_id IS NULL OR id > :last_id) "
+                    "ORDER BY id LIMIT :chunk_rows"
                 ),
-                {"stale": stale},
-            )
-        bind.execute(
-            sa.text("UPDATE scan_fixes SET occurrence_key = :key WHERE id = :keeper"),
-            {"key": key, "keeper": keeper},
+                {"last_id": last_id, "chunk_rows": POSTGRES_BACKFILL_CHUNK_ROWS},
+            ).mappings()
         )
+        if not rows:
+            break
+        for row in rows:
+            key = (
+                _occurrence_key(row.issue_id, row.location, row.page_number)
+                if identity_columns <= existing
+                else _occurrence_key(row.id, None, None)
+            )
+            group = (row.scan_id, key)
+            keeper = keepers.setdefault(group, row.id)
+            if keeper != row.id:
+                stale = [row.id]
+                if "review_audit_log" in table_names:
+                    bind.execute(
+                        sa.text(
+                            "UPDATE review_audit_log SET fix_id = :keeper "
+                            "WHERE fix_id IN :stale"
+                        ).bindparams(sa.bindparam("stale", expanding=True)),
+                        {"keeper": keeper, "stale": stale},
+                    )
+                if {"review_status", "needs_review"} <= existing:
+                    assignments = ["review_status = 'pending'", "needs_review = true"]
+                    for column in ("reviewed_by", "reviewed_at", "review_notes"):
+                        if column in existing:
+                            assignments.append(f"{column} = NULL")
+                    bind.execute(
+                        sa.text(
+                            f"UPDATE scan_fixes SET {', '.join(assignments)} "
+                            "WHERE id = :id"
+                        ),
+                        {"id": keeper},
+                    )
+                bind.execute(
+                    sa.text("DELETE FROM scan_fixes WHERE id IN :stale").bindparams(
+                        sa.bindparam("stale", expanding=True)
+                    ),
+                    {"stale": stale},
+                )
+                continue
+            bind.execute(
+                sa.text(
+                    "UPDATE scan_fixes SET occurrence_key = :key WHERE id = :keeper"
+                ),
+                {"key": key, "keeper": keeper},
+            )
+        last_id = rows[-1].id
 
 
 def _create_occurrence_constraint() -> None:
@@ -138,8 +212,18 @@ def _create_occurrence_constraint() -> None:
             existing_type=sa.String(64),
             nullable=False,
         )
-        op.create_unique_constraint(
-            _OCCURRENCE_CONSTRAINT, _TABLE, ["scan_id", "occurrence_key"]
+        if _OCCURRENCE_INDEX not in _index_names():
+            op.create_index(
+                _OCCURRENCE_INDEX,
+                _TABLE,
+                ["scan_id", "occurrence_key"],
+                unique=True,
+            )
+        op.execute(
+            sa.text(
+                f"ALTER TABLE {_TABLE} ADD CONSTRAINT {_OCCURRENCE_CONSTRAINT} "
+                f"UNIQUE USING INDEX {_OCCURRENCE_INDEX}"
+            )
         )
 
 
@@ -167,7 +251,15 @@ def _drop_occurrence_constraint() -> None:
 
 
 def upgrade() -> None:
-    """Add nullable fields safely when replayed by recovery tooling."""
+    """Run bounded DDL/backfill in a planned maintenance window.
+
+    PostgreSQL operators must ensure writers can tolerate a brief bounded lock.
+    Large tables fail before DDL; after capacity review, the error documents the
+    explicit operator override. Timeout failures are safe to retry because every
+    schema step is introspection-guarded and transactional.
+    """
+    if op.get_bind().dialect.name == "postgresql":
+        _postgres_preflight(op.get_bind())
     existing = _column_names()
     additions = (
         sa.Column("provider_used", sa.String(64), nullable=True),
@@ -196,7 +288,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove only fields that still exist; safe for interrupted rollbacks."""
+    """Reverse inside the same bounded PostgreSQL maintenance-window contract."""
+    if op.get_bind().dialect.name == "postgresql":
+        _postgres_preflight(op.get_bind())
     if _SOURCE_CONSTRAINT in _check_names():
         op.drop_constraint(_SOURCE_CONSTRAINT, _TABLE, type_="check")
 

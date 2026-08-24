@@ -13,6 +13,7 @@ import pytest
 from src.db.models import (
     CloudFile,
     CloudProvider,
+    RemediationArtifact,
     RemediationOutcome,
     Scan,
     ScanFix,
@@ -37,7 +38,19 @@ class _Query:
     def filter(self, *args):
         return self
 
+    def options(self, *args):
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def populate_existing(self):
+        return self
+
     def first(self):
+        return self.value
+
+    def one_or_none(self):
         return self.value
 
     def all(self):
@@ -59,6 +72,7 @@ class _DB:
             Scan: scan,
             ScanResult: scan_result,
             ScanFix: None,
+            RemediationArtifact: None,
             CloudFile: cloud_file,
         }
         self.added = []

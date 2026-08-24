@@ -15,7 +15,15 @@ import pytest
 from fastapi import HTTPException
 
 from src.auth.dependencies import AuthenticatedPrincipal
-from src.db.models import CloudFile, Scan, ScanFix, ScanStatus, ScanType, UserRole
+from src.db.models import (
+    CloudFile,
+    RemediationArtifact,
+    Scan,
+    ScanFix,
+    ScanStatus,
+    ScanType,
+    UserRole,
+)
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 
 CLAIMED_BYTES = b"%PDF-1.7\nexact descriptor-bound remediation\n%%EOF\n"
@@ -34,6 +42,15 @@ class _CloudFileQuery:
             ]
         return self
 
+    def options(self, *args):
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def populate_existing(self):
+        return self
+
     def limit(self, value):
         self.rows = self.rows[:value]
         return self
@@ -50,6 +67,9 @@ class _CloudFileQuery:
     def first(self):
         return self.rows[0] if self.rows else None
 
+    def one_or_none(self):
+        return self.rows[0] if self.rows else None
+
     def delete(self):
         self.rows.clear()
         return 0
@@ -64,7 +84,17 @@ class _RouteDB:
     def query(self, model):
         if model is Scan.id:
             return _CloudFileQuery(["scan-1"])
-        assert model in {CloudFile, ScanFix}
+        if model is Scan:
+            return _CloudFileQuery(
+                [
+                    SimpleNamespace(
+                        id="scan-1",
+                        department_id="dept-1",
+                        current_remediation_artifact_id=None,
+                    )
+                ]
+            )
+        assert model in {CloudFile, ScanFix, RemediationArtifact}
         return _CloudFileQuery([])
 
     def add(self, value):

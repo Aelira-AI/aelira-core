@@ -566,7 +566,11 @@ def test_postgresql_parent_delete_requires_service_cleanup_optional(tmp_path):
             sha256=hashlib.sha256(payload).hexdigest(),
             expires_at=datetime.now(timezone.utc) + timedelta(days=1),
         )
-        session.add_all((department, user, scan, credential, cloud_file, job, artifact))
+        # Stage the cloud parent before inserting rows that point back through
+        # the current-artifact cycle; this fixture has no ORM relationships.
+        session.add_all((department, user, scan, credential, cloud_file))
+        session.flush()
+        session.add_all((job, artifact))
         session.flush()
         cloud_file.current_remediation_artifact_id = ids["artifact"]
         session.commit()

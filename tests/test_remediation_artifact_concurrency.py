@@ -138,13 +138,38 @@ def test_review_gate_never_relocks_scan_after_artifact_lock():
 
 
 def test_scan_fix_writer_locks_scan_before_reading_occurrences():
-    from src.services.scan_fix_service import persist_scan_fixes
+    from src.services.scan_fix_service import lock_scan_review_graph, persist_scan_fixes
 
     source = inspect.getsource(persist_scan_fixes)
-    scan_lock = source.index("db.query(Scan.id)")
-    occurrence_read = source.index("db.query(ScanFix)")
+    assert "lock_scan_review_graph" in source
+    lock_source = inspect.getsource(lock_scan_review_graph)
+    scan_lock = lock_source.index("db.query(Scan)")
+    occurrence_read = lock_source.index("db.query(ScanFix)")
     assert scan_lock < occurrence_read
-    assert "with_for_update" in source[scan_lock:occurrence_read]
+    assert "with_for_update" in lock_source[scan_lock:occurrence_read]
+
+
+def test_review_mutations_and_artifact_consumption_share_public_lock_graph():
+    from src.api import review_routes
+    from src.services.scan_fix_service import lock_scan_review_graph
+
+    helper_source = inspect.getsource(lock_scan_review_graph)
+    assert helper_source.index("db.query(Scan)") < helper_source.index(
+        "db.query(ScanFix)"
+    )
+    assert helper_source.index("db.query(ScanFix)") < helper_source.index(
+        "db.query(RemediationArtifact)"
+    )
+    assert helper_source.index("db.query(RemediationArtifact)") < helper_source.index(
+        "db.query(CloudFile)"
+    )
+    for callable_ in (
+        review_routes.review_fix,
+        review_routes.batch_review,
+        module.RemediationArtifactService._lock_mutable_graph,
+        module.RemediationArtifactService.open_verified,
+    ):
+        assert "lock_scan_review_graph" in inspect.getsource(callable_)
 
 
 @pytest.mark.asyncio
@@ -240,9 +265,28 @@ def test_postgres_scan_lock_serializes_fix_writer_with_approval_gate():
         database_url, connect_args={"options": f"-csearch_path={schema}"}
     )
     metadata = MetaData()
-    Table("scans", metadata, Column("id", String(36), primary_key=True))
+    Table(
+        "scans",
+        metadata,
+        Column("id", String(36), primary_key=True),
+        Column("department_id", String(36)),
+        Column("current_remediation_artifact_id", String(36)),
+    )
     Table("users", metadata, Column("id", String(36), primary_key=True))
     models.ScanFix.__table__.to_metadata(metadata)
+    Table(
+        "remediation_artifacts",
+        metadata,
+        Column("id", String(36), primary_key=True),
+        Column("scan_id", String(36), nullable=False),
+        Column("cloud_file_id", String(36)),
+        Column("review_status", String(20)),
+        Column("written_back_at", String),
+        Column("approval_checksum", String(64)),
+        Column("approved_by_id", String(36)),
+        Column("approved_by_ref", String(255)),
+        Column("approved_at", String),
+    )
     metadata.create_all(engine)
     with engine.begin() as connection:
         connection.execute(metadata.tables["scans"].insert().values(id="scan-1"))

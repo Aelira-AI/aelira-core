@@ -1,7 +1,9 @@
 """Alembic revision identifiers must fit the existing version table."""
 
 from pathlib import Path
+import inspect as pyinspect
 import os
+from unittest.mock import MagicMock
 
 import pytest
 from alembic.config import Config
@@ -213,6 +215,38 @@ def test_review_migration_downgrade_and_reupgrade_restore_occurrence_constraint(
             for constraint in inspect(connection).get_unique_constraints("scan_fixes")
         }
         assert "uq_scan_fixes_scan_occurrence" in constraints
+
+
+def test_review_migration_documents_bounded_postgres_maintenance_contract():
+    scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    module = scripts.get_revision("20260824_task8_review").module
+
+    assert module.POSTGRES_DEFAULT_MAX_ROWS > 0
+    assert 0 < module.POSTGRES_BACKFILL_CHUNK_ROWS <= module.POSTGRES_DEFAULT_MAX_ROWS
+    source = pyinspect.getsource(module)
+    assert "SET LOCAL lock_timeout" in source
+    assert "SET LOCAL statement_timeout" in source
+    assert "TASK8_REVIEW_MIGRATION_MAX_ROWS" in source
+    assert "TASK8_REVIEW_MIGRATION_ALLOW_LARGE_TABLE" in source
+    assert "maintenance window" in (module.upgrade.__doc__ or "").lower()
+    assert "operator" in (module.upgrade.__doc__ or "").lower()
+
+
+def test_review_migration_postgres_preflight_refuses_large_table_without_override(
+    monkeypatch,
+):
+    scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    module = scripts.get_revision("20260824_task8_review").module
+    bind = MagicMock()
+    bind.execute.return_value.scalar_one.return_value = 11
+    monkeypatch.setenv("TASK8_REVIEW_MIGRATION_MAX_ROWS", "10")
+    monkeypatch.delenv("TASK8_REVIEW_MIGRATION_ALLOW_LARGE_TABLE", raising=False)
+
+    with pytest.raises(RuntimeError, match="operator override"):
+        module._postgres_preflight(bind)
+
+    monkeypatch.setenv("TASK8_REVIEW_MIGRATION_ALLOW_LARGE_TABLE", "true")
+    assert module._postgres_preflight(bind) == 11
 
 
 def _task8_postgres_url() -> str:

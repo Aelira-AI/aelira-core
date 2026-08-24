@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import json
@@ -11,8 +12,15 @@ from typing import Any
 import uuid
 
 from pydantic import ValidationError
+from sqlalchemy.orm import load_only
 
-from ..db.models import ReviewAuditLog, Scan, ScanFix
+from ..db.models import (
+    CloudFile,
+    RemediationArtifact,
+    ReviewAuditLog,
+    Scan,
+    ScanFix,
+)
 from ..education.remediation.base import FixedIssue, VerificationEvidence
 from ..utils.sanitization import sanitize_for_postgres
 
@@ -39,6 +47,138 @@ _CANONICAL_FIELDS = (
     "wcag_criteria",
     "page_number",
 )
+
+
+@dataclass(frozen=True)
+class ScanReviewGraph:
+    """Rows held in the canonical scan -> fix -> artifact -> cloud order."""
+
+    scan: Any
+    fixes: tuple[Any, ...]
+    artifacts: tuple[Any, ...]
+    cloud_files: tuple[Any, ...]
+
+
+def invalidate_current_artifact_approvals(
+    db: Any, graph: ScanReviewGraph, *, reason: str = "fix_review_changed"
+) -> tuple[Any, ...]:
+    """Invalidate every approved current output while graph locks are held."""
+    cloud_by_artifact = {
+        cloud.current_remediation_artifact_id: cloud
+        for cloud in graph.cloud_files
+        if cloud.current_remediation_artifact_id
+    }
+    current_ids = set(cloud_by_artifact)
+    if graph.scan.current_remediation_artifact_id:
+        current_ids.add(graph.scan.current_remediation_artifact_id)
+    invalidated = []
+    for artifact in graph.artifacts:
+        if (
+            artifact.id not in current_ids
+            or artifact.review_status != "approved"
+            or getattr(artifact, "written_back_at", None) is not None
+        ):
+            continue
+        artifact.review_status = "pending"
+        artifact.approval_checksum = None
+        artifact.approved_by_id = None
+        artifact.approved_by_ref = None
+        artifact.approved_at = None
+        cloud = cloud_by_artifact.get(artifact.id)
+        if cloud is not None:
+            cloud.writeback_status = "pending_review"
+            cloud.has_remediated_version = False
+            cloud.remediation_origin = None
+        db.add(
+            ReviewAuditLog(
+                id=str(uuid.uuid4()),
+                scan_id=graph.scan.id,
+                user_id=None,
+                action="artifact_approval_invalidated",
+                details={"artifact_id": artifact.id, "reason": reason},
+            )
+        )
+        invalidated.append(artifact)
+    if invalidated:
+        db.flush()
+    return tuple(invalidated)
+
+
+def lock_scan_review_graph(
+    db: Any, scan_id: str, *, invalidate_approvals: bool = False
+) -> ScanReviewGraph:
+    """Acquire the shared review graph without artifact-first circular locks."""
+    scan = (
+        db.query(Scan)
+        .options(
+            load_only(
+                Scan.id,
+                Scan.department_id,
+                Scan.current_remediation_artifact_id,
+            )
+        )
+        .filter(Scan.id == scan_id)
+        .with_for_update()
+        .populate_existing()
+        .one_or_none()
+    )
+    if scan is None:
+        raise ValueError("scan does not exist")
+    fixes = tuple(
+        db.query(ScanFix)
+        .filter(ScanFix.scan_id == scan_id)
+        .order_by(ScanFix.id.asc())
+        .with_for_update()
+        .populate_existing()
+        .all()
+    )
+    artifacts = tuple(
+        db.query(RemediationArtifact)
+        .options(
+            load_only(
+                RemediationArtifact.id,
+                RemediationArtifact.scan_id,
+                RemediationArtifact.cloud_file_id,
+                RemediationArtifact.review_status,
+                RemediationArtifact.written_back_at,
+                RemediationArtifact.approval_checksum,
+                RemediationArtifact.approved_by_id,
+                RemediationArtifact.approved_by_ref,
+                RemediationArtifact.approved_at,
+            )
+        )
+        .filter(RemediationArtifact.scan_id == scan_id)
+        .order_by(RemediationArtifact.id.asc())
+        .with_for_update()
+        .populate_existing()
+        .all()
+    )
+    cloud_ids = sorted(
+        {artifact.cloud_file_id for artifact in artifacts if artifact.cloud_file_id}
+    )
+    cloud_files = tuple(
+        db.query(CloudFile)
+        .options(
+            load_only(
+                CloudFile.id,
+                CloudFile.current_remediation_artifact_id,
+                CloudFile.writeback_status,
+                CloudFile.has_remediated_version,
+                CloudFile.remediation_origin,
+            )
+        )
+        .filter(CloudFile.id.in_(cloud_ids))
+        .order_by(CloudFile.id.asc())
+        .with_for_update()
+        .populate_existing()
+        .all()
+        if cloud_ids
+        else ()
+    )
+    graph = ScanReviewGraph(scan, fixes, artifacts, cloud_files)
+    if invalidate_approvals:
+        invalidate_current_artifact_approvals(db, graph)
+    return graph
 
 
 def _evidence_dict(value: Any) -> dict[str, Any]:
@@ -152,20 +292,19 @@ def persist_scan_fixes(
     occurrence_keys = [row.occurrence_key for row in rows]
     if len(set(occurrence_keys)) != len(occurrence_keys):
         raise ValueError("ambiguous duplicate fix occurrence")
-    locked_scan_id = (
-        db.query(Scan.id).filter(Scan.id == scan_id).with_for_update().scalar()
-    )
-    if locked_scan_id is None:
-        raise ValueError("scan does not exist")
-    existing = (
-        db.query(ScanFix).filter(ScanFix.scan_id == scan_id).all() if replace else []
-    )
+    graph = lock_scan_review_graph(db, scan_id)
+    existing = list(graph.fixes) if replace else []
     existing_by_occurrence: dict[str, ScanFix] = {}
     for row in existing:
         key = row.occurrence_key or _occurrence_key(row)
         if key in existing_by_occurrence:
             raise ValueError("ambiguous duplicate persisted fix occurrence")
         existing_by_occurrence[key] = row
+    review_changed = (
+        bool(rows)
+        if not replace
+        else set(existing_by_occurrence) != set(occurrence_keys)
+    )
     persisted: list[ScanFix] = []
     for row in rows:
         current = existing_by_occurrence.pop(row.occurrence_key, None)
@@ -179,6 +318,7 @@ def persist_scan_fixes(
             for field in _CANONICAL_FIELDS:
                 setattr(current, field, getattr(row, field))
             if not unchanged:
+                review_changed = True
                 previous_review_status = current.review_status
                 previous_reviewer = current.reviewed_by
                 current.review_status = row.review_status
@@ -203,6 +343,8 @@ def persist_scan_fixes(
         persisted.append(target)
     for stale in existing_by_occurrence.values():
         db.delete(stale)
+    if review_changed:
+        invalidate_current_artifact_approvals(db, graph, reason="fix_set_replaced")
     return persisted
 
 

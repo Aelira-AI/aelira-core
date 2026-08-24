@@ -20,6 +20,7 @@ from src.db.models import (
     CloudJobQueue,
     CloudJobStatus,
     CloudProvider,
+    RemediationArtifact,
     RemediationOutcome,
     Scan,
     ScanFix,
@@ -175,6 +176,15 @@ class CloudFileQuery:
             self.rows = [row for row in self.rows if getattr(row, key, row) == expected]
         return self
 
+    def options(self, *args):
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def populate_existing(self):
+        return self
+
     def with_for_update(self):
         return self
 
@@ -191,6 +201,9 @@ class CloudFileQuery:
     def first(self):
         return self.rows[0] if self.rows else None
 
+    def one_or_none(self):
+        return self.rows[0] if self.rows else None
+
 
 class CloudFileDB:
     def __init__(self, rows):
@@ -201,7 +214,17 @@ class CloudFileDB:
     def query(self, model):
         if model is Scan.id:
             return CloudFileQuery(["scan-1"])
-        if model is ScanFix:
+        if model is Scan:
+            return CloudFileQuery(
+                [
+                    SimpleNamespace(
+                        id="scan-1",
+                        department_id="dept-1",
+                        current_remediation_artifact_id=None,
+                    )
+                ]
+            )
+        if model in {ScanFix, RemediationArtifact}:
             return CloudFileQuery([])
         assert model is CloudFile
         return CloudFileQuery(self.rows)
@@ -3024,7 +3047,19 @@ class _ProcessQuery:
     def filter(self, *args):
         return self
 
+    def options(self, *args):
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def populate_existing(self):
+        return self
+
     def first(self):
+        return self.value
+
+    def one_or_none(self):
         return self.value
 
     def all(self):
@@ -3059,6 +3094,7 @@ class _ProcessDB:
             "Scan": self.scan,
             "ScanResult": self.scan_result,
             "ScanFix": None,
+            "RemediationArtifact": None,
             "CloudFile": self.cloud_file,
         }
         return _ProcessQuery(values.get(model.__name__))
@@ -3713,9 +3749,7 @@ async def test_exact_revoked_credential_is_not_replaced_by_active_sibling():
     db.get.side_effect = lambda model, identifier, **kwargs: (
         cloud_file
         if model is CloudFile
-        else revoked
-        if model is CloudOAuthCredentials
-        else None
+        else revoked if model is CloudOAuthCredentials else None
     )
     db.query.side_effect = lambda model: (
         cloud_query if model is CloudFile else sibling_query

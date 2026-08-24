@@ -146,6 +146,34 @@ def test_scan_fix_persistence_rejects_ambiguous_duplicate_occurrence_before_writ
     db.add.assert_not_called()
 
 
+def test_appending_fix_invalidates_current_artifact_approval(monkeypatch):
+    from src.services import scan_fix_service
+
+    artifact = SimpleNamespace(
+        id="artifact-1",
+        cloud_file_id=None,
+        review_status="approved",
+        written_back_at=None,
+        approval_checksum=HASH,
+        approved_by_id="user-1",
+        approved_by_ref="reviewer@example.test",
+        approved_at=datetime.now(timezone.utc),
+    )
+    graph = scan_fix_service.ScanReviewGraph(
+        scan=SimpleNamespace(id="scan-1", current_remediation_artifact_id="artifact-1"),
+        fixes=(),
+        artifacts=(artifact,),
+        cloud_files=(),
+    )
+    monkeypatch.setattr(scan_fix_service, "lock_scan_review_graph", lambda db, _: graph)
+    db = MagicMock()
+
+    scan_fix_service.persist_scan_fixes(db, "scan-1", [_fix()], replace=False)
+
+    assert artifact.review_status == "pending"
+    assert artifact.approval_checksum is None
+
+
 def test_scan_fix_database_constraint_rejects_concurrent_duplicate_occurrence():
     from src.db.models import ScanFix
     from src.services.scan_fix_service import build_scan_fix
@@ -289,6 +317,84 @@ def test_authenticated_batch_review_records_actor_time_and_each_fix():
     assert all(record.user_id == "user-1" for record in records)
 
 
+def test_review_graph_invalidation_clears_every_approved_current_sink():
+    from src.db.models import (
+        CloudFile,
+        RemediationArtifact,
+        ReviewAuditLog,
+        Scan,
+        ScanFix,
+    )
+    from src.services.scan_fix_service import lock_scan_review_graph
+
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id="department-1",
+        current_remediation_artifact_id="artifact-local",
+    )
+    fix = SimpleNamespace(id="fix-1")
+    local = SimpleNamespace(
+        id="artifact-local", cloud_file_id=None, review_status="approved"
+    )
+    cloud_artifact = SimpleNamespace(
+        id="artifact-cloud", cloud_file_id="cloud-1", review_status="approved"
+    )
+    cloud = SimpleNamespace(
+        id="cloud-1",
+        current_remediation_artifact_id="artifact-cloud",
+        writeback_status="approved",
+        has_remediated_version=True,
+        remediation_origin="manual",
+    )
+    db = MagicMock()
+    calls = []
+
+    def query(model):
+        calls.append(model)
+        chain = MagicMock()
+        chain.options.return_value = chain
+        chain.filter.return_value = chain
+        chain.order_by.return_value = chain
+        chain.with_for_update.return_value = chain
+        chain.populate_existing.return_value = chain
+        if model is Scan:
+            chain.one_or_none.return_value = scan
+        elif model is ScanFix:
+            chain.all.return_value = [fix]
+        elif model is RemediationArtifact:
+            chain.all.return_value = [local, cloud_artifact]
+        elif model is CloudFile:
+            chain.all.return_value = [cloud]
+        return chain
+
+    db.query.side_effect = query
+
+    graph = lock_scan_review_graph(db, "scan-1", invalidate_approvals=True)
+
+    assert graph.scan is scan
+    assert graph.fixes == (fix,)
+    assert calls[:4] == [Scan, ScanFix, RemediationArtifact, CloudFile]
+    for artifact in (local, cloud_artifact):
+        assert artifact.review_status == "pending"
+        assert artifact.approval_checksum is None
+        assert artifact.approved_by_id is None
+        assert artifact.approved_by_ref is None
+        assert artifact.approved_at is None
+    assert cloud.writeback_status == "pending_review"
+    assert cloud.has_remediated_version is False
+    assert cloud.remediation_origin is None
+    audits = [
+        call.args[0]
+        for call in db.add.call_args_list
+        if isinstance(call.args[0], ReviewAuditLog)
+    ]
+    assert {audit.details["artifact_id"] for audit in audits} == {
+        "artifact-local",
+        "artifact-cloud",
+    }
+    db.flush.assert_called_once()
+
+
 def test_durable_evidence_and_per_fix_audit_survive_session_restart():
     from src.db.models import ReviewAuditLog, ScanFix
     from src.services.scan_fix_service import (
@@ -299,10 +405,38 @@ def test_durable_evidence_and_per_fix_audit_survive_session_restart():
 
     engine = create_engine("sqlite://")
     metadata = MetaData()
-    Table("scans", metadata, Column("id", String(36), primary_key=True))
+    Table(
+        "scans",
+        metadata,
+        Column("id", String(36), primary_key=True),
+        Column("department_id", String(36)),
+        Column("current_remediation_artifact_id", String(36)),
+    )
     Table("users", metadata, Column("id", String(36), primary_key=True))
     ScanFix.__table__.to_metadata(metadata)
     ReviewAuditLog.__table__.to_metadata(metadata)
+    Table(
+        "remediation_artifacts",
+        metadata,
+        Column("id", String(36), primary_key=True),
+        Column("scan_id", String(36), nullable=False),
+        Column("cloud_file_id", String(36)),
+        Column("review_status", String(20)),
+        Column("written_back_at", String),
+        Column("approval_checksum", String(64)),
+        Column("approved_by_id", String(36)),
+        Column("approved_by_ref", String(255)),
+        Column("approved_at", String),
+    )
+    Table(
+        "cloud_files",
+        metadata,
+        Column("id", String(36), primary_key=True),
+        Column("current_remediation_artifact_id", String(36)),
+        Column("writeback_status", String(20)),
+        Column("has_remediated_version", String),
+        Column("remediation_origin", String(16)),
+    )
     metadata.create_all(engine)
     with engine.begin() as connection:
         connection.execute(metadata.tables["scans"].insert().values(id="scan-1"))

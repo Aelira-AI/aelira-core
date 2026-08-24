@@ -18,6 +18,7 @@ from src.db.models import (
     AuditLog,
     CloudFile,
     CloudProvider,
+    RemediationArtifact,
     RemediationOutcome,
     Scan,
     ScanFix,
@@ -131,6 +132,15 @@ class _CloudQuery:
             self.rows = [row for row in self.rows if getattr(row, key, row) == expected]
         return self
 
+    def options(self, *args):
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def populate_existing(self):
+        return self
+
     def with_for_update(self):
         return self
 
@@ -147,6 +157,9 @@ class _CloudQuery:
     def first(self):
         return self.rows[0] if self.rows else None
 
+    def one_or_none(self):
+        return self.rows[0] if self.rows else None
+
 
 class _TransactionDB:
     def __init__(self, cloud_file, *, fail_commit=False):
@@ -160,7 +173,17 @@ class _TransactionDB:
     def query(self, model):
         if model is Scan.id:
             return _CloudQuery(["scan-1"])
-        if model is ScanFix:
+        if model is Scan:
+            return _CloudQuery(
+                [
+                    SimpleNamespace(
+                        id="scan-1",
+                        department_id="dept-1",
+                        current_remediation_artifact_id=None,
+                    )
+                ]
+            )
+        if model in {ScanFix, RemediationArtifact}:
             return _CloudQuery([])
         assert model is CloudFile
         return _CloudQuery([self.cloud_file] if self.cloud_file else [])
