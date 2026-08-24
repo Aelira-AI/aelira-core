@@ -21,7 +21,9 @@ def math_issue_type_from(issue: Mapping[str, Any]) -> Optional[str]:
     issue_type = issue.get("issue_type")
     if not isinstance(issue_type, str):
         metadata = issue.get("metadata")
-        issue_type = metadata.get("issue_type") if isinstance(metadata, Mapping) else None
+        issue_type = (
+            metadata.get("issue_type") if isinstance(metadata, Mapping) else None
+        )
     return issue_type if issue_type in MATH_ISSUE_TYPES else None
 
 
