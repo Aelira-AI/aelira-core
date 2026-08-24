@@ -18,7 +18,8 @@ Usage:
 
 import logging
 import re
-from dataclasses import dataclass
+import hashlib
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, List, Optional
 
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE, MATH_ISSUE_TYPES
@@ -164,6 +165,13 @@ class MathFixResult:
     page_number: int = 0
     error: Optional[str] = None
     has_mathml: bool = False
+    source_kind: Optional[str] = None
+    fix_method: Optional[str] = None
+    confidence: float = 0.0
+    needs_review: bool = False
+    model_used: Optional[str] = None
+    verification_evidence: Optional[dict[str, Any]] = None
+    pending_association: Optional[dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +227,10 @@ class MathFixer:
             from .equation_recognizer import EquationRecognizer
 
             equation_recognizer = EquationRecognizer(alt_text_client)
+        if equation_verifier is None:
+            from .equation_verifier import EquationVerifier
+
+            equation_verifier = EquationVerifier()
         self.image_source = image_source
         self.equation_recognizer = equation_recognizer
         self.equation_verifier = equation_verifier
@@ -412,11 +424,67 @@ class MathFixer:
                 error="equation_verification_failed",
                 page_number=page_number,
             )
+        mathml_string = self._convert_to_mathml(recognition.latex)
+        if not mathml_string:
+            return MathFixResult(
+                success=False,
+                error="image_equation_conversion_failed",
+                page_number=page_number,
+            )
+        expected_mathml_sha256 = getattr(verification, "mathml_sha256", None)
+        actual_mathml_sha256 = hashlib.sha256(mathml_string.encode("utf-8")).hexdigest()
+        if expected_mathml_sha256 != actual_mathml_sha256:
+            return MathFixResult(
+                success=False,
+                error="equation_verification_mismatch",
+                page_number=page_number,
+            )
+        if is_dataclass(verification):
+            evidence = asdict(verification)
+        else:
+            evidence = {
+                key: getattr(verification, key)
+                for key in (
+                    "passed",
+                    "source_sha256",
+                    "rendered_sha256",
+                    "mathml_sha256",
+                    "renderer_version",
+                    "comparator_version",
+                    "font_sha256",
+                    "threshold_version",
+                    "ink_iou",
+                    "pixel_similarity",
+                    "required_ink_iou",
+                    "required_pixel_similarity",
+                )
+                if hasattr(verification, key)
+            }
+        aria_label = self._generate_aria_label(recognition.latex)
         return MathFixResult(
             success=False,
-            error="image_equation_association_unavailable",
+            error="image_equation_association_pending",
             equation_text=recognition.latex,
+            aria_label=aria_label,
             page_number=page_number,
+            has_mathml=True,
+            source_kind="image_equation",
+            fix_method="ai_vision",
+            confidence=0.55,
+            needs_review=True,
+            model_used=getattr(recognition, "model", None),
+            verification_evidence=evidence,
+            pending_association={
+                "page_number": page_number,
+                "image_xref": metadata.get("image_xref"),
+                "image_index": metadata.get("image_index"),
+                "occurrence_ordinal": metadata.get("occurrence_ordinal"),
+                "bbox": metadata.get("bbox"),
+                "occurrence_id": metadata.get("occurrence_id"),
+                "alt_text": aria_label,
+                "mathml_string": mathml_string,
+                "verification_evidence": evidence,
+            },
         )
 
     def _convert_to_mathml(self, latex: str) -> str:

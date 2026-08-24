@@ -41,8 +41,7 @@ def test_bounded_source_and_recognizer_modules_exist(module_name):
     __import__(module_name)
 
 
-@pytest.mark.xfail(strict=True, reason="approved plan Task 5 is deferred")
-def test_deferred_verifier_contract():
+def test_verifier_contract_is_implemented():
     __import__("src.education.remediation.equation_verifier")
 
 

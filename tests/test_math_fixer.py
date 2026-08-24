@@ -110,8 +110,16 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
 
     class Verifier:
         def verify(self, image, latex):
+            import hashlib
+
+            from latex2mathml.converter import convert
+
             calls.append(("verifier", image, latex))
-            return SimpleNamespace(passed=True)
+            mathml = convert(latex)
+            return SimpleNamespace(
+                passed=True,
+                mathml_sha256=hashlib.sha256(mathml.encode()).hexdigest(),
+            )
 
     class StructTree:
         def add_formula(self, **kwargs):
@@ -142,7 +150,8 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
     )
 
     assert not result.success
-    assert result.error == "image_equation_association_unavailable"
+    assert result.error == "image_equation_association_pending"
+    assert result.pending_association is not None
     assert [call[0] for call in calls] == ["source", "recognizer", "verifier"]
 
 

@@ -530,6 +530,7 @@ class PdfRemediator(BaseRemediator):
         # Stats from ContentTaggerV2, recorded by _save_document on success;
         # None means the tagger did not run (or fell back to v1/failed).
         self._content_tagger_stats: Optional[Dict[str, int]] = None
+        self._pending_image_equations: List[tuple[Any, Any]] = []
 
         # WCAG criteria mapping per issue category
         self._wcag_map: Dict[IssueCategory, str] = {
@@ -988,6 +989,17 @@ class PdfRemediator(BaseRemediator):
                 for i, result in enumerate(results):
                     issue = issues[i] if i < len(issues) else None
                     if issue is None:
+                        continue
+                    if result.pending_association is not None:
+                        self._pending_image_equations.append((issue, result))
+                        self._add_manual_issue(
+                            issue,
+                            reason="Verified image equation awaits exact content association",
+                            recommendation=(
+                                "Keep this candidate pending until Formula/MCID/ParentTree "
+                                "association is verified."
+                            ),
+                        )
                         continue
                     if result.success:
                         self._structure_modified = True
