@@ -212,3 +212,23 @@ def test_alt_lookup_does_not_parse_pages_without_images():
             raise AssertionError("empty image pages must not be parsed")
 
     assert _occurrence_alt_lookup(object(), _Page(), []) == {}
+
+
+def test_alt_lookup_parse_failure_keeps_occurrences_missing_and_scan_continuable():
+    class _Doc:
+        def xref_object(self, xref):
+            return ""
+
+    class _Page:
+        def get_text(self, mode):
+            raise RuntimeError("malformed page")
+
+    occurrence = {
+        "image_xref": 7,
+        "bbox": (10.0, 20.0, 90.0, 55.0),
+        "occurrence_id": "affected",
+    }
+
+    assert _occurrence_alt_lookup(_Doc(), _Page(), [occurrence]) == {
+        "affected": (False, None)
+    }

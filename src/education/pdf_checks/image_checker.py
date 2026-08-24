@@ -88,7 +88,14 @@ def _occurrence_alt_lookup(
             if occurrence["image_xref"] == xref:
                 results[occurrence["occurrence_id"]] = (True, alt_text)
 
-    struct_tree = page.get_text("dict")
+    try:
+        struct_tree = page.get_text("dict")
+    except Exception:
+        logger.warning(
+            "[ImageChecker] Failed to read image structure metadata on page %s",
+            getattr(page, "number", "unknown"),
+        )
+        return results
     for block in struct_tree.get("blocks", []):
         if block.get("type") != 1 or not block.get("alt"):
             continue
@@ -164,6 +171,7 @@ class ImageAccessibilityChecker:
         scan_only = not ai_enabled
 
         image_issues: List[PDFImageIssue] = []
+        images_to_analyze = []  # List of dicts with owned temporary paths
         doc = None  # Track document for cleanup in finally block
         logger.info(
             f"[ImageChecker] Starting optimized batch image extraction from PDF: {file_path}"
@@ -175,8 +183,6 @@ class ImageAccessibilityChecker:
             logger.info(f"[ImageChecker] PDF opened successfully, {len(doc)} pages")
 
             # SINGLE PASS: Extract all images needing analysis
-            images_to_analyze = []  # List of dicts
-
             for page_num, page in enumerate(doc, start=1):
                 images = _displayed_image_occurrences(page, page_num)
                 alt_lookup = _occurrence_alt_lookup(doc, page, images)
@@ -674,6 +680,15 @@ class ImageAccessibilityChecker:
             logger.error(f"[ImageChecker] Failed to extract images from PDF: {e}")
 
         finally:
+            for image_data in images_to_analyze:
+                temp_path = image_data.get("temp_path")
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.unlink(temp_path)
+                    except Exception:
+                        logger.warning(
+                            "[ImageChecker] Failed to delete an image-analysis temp file"
+                        )
             # Ensure document is always closed to prevent memory leaks
             if doc is not None:
                 try:
