@@ -35,12 +35,15 @@ def test_canonical_candidate_routes_as_structure():
     [
         "src.education.remediation.equation_image_source",
         "src.education.remediation.equation_recognizer",
-        "src.education.remediation.equation_verifier",
     ],
 )
-@pytest.mark.xfail(strict=True, reason="approved plan Tasks 3-5 are deferred")
-def test_deferred_fail_closed_pipeline_contract(module_name):
+def test_bounded_source_and_recognizer_modules_exist(module_name):
     __import__(module_name)
+
+
+@pytest.mark.xfail(strict=True, reason="approved plan Task 5 is deferred")
+def test_deferred_verifier_contract():
+    __import__("src.education.remediation.equation_verifier")
 
 
 @pytest.mark.xfail(strict=True, reason="approved plan Task 7 is deferred")
