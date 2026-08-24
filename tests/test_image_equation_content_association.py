@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+from io import BytesIO
 from pathlib import Path
 
 import fitz
@@ -418,7 +419,22 @@ def _find_formula(root):
 
 
 @pytest.mark.parametrize(
-    "sabotage", ["k", "parent_tree", "marked_content", "image_stream", "extra_do"]
+    "sabotage",
+    [
+        "k",
+        "parent_tree",
+        "marked_content",
+        "image_stream",
+        "extra_do",
+        "backlink",
+        "bbox",
+        "filespec_type",
+        "relationship",
+        "embedded_type",
+        "embedded_subtype",
+        "embedded_size",
+        "embedded_digest",
+    ],
 )
 def test_postsave_reverse_verification_rejects_sabotage(tmp_path, sabotage):
     from src.education.remediation.content_tagger_v2 import (
@@ -463,6 +479,32 @@ def test_postsave_reverse_verification_rejects_sabotage(tmp_path, sabotage):
             )
         elif sabotage == "image_stream":
             pdf.pages[0].obj[Name.Resources][Name.XObject]["/Im0"].write(b"\x01")
+        elif sabotage == "backlink":
+            formula[Name.P] = pdf.make_indirect(Dictionary({"/Type": Name.StructElem}))
+        elif sabotage == "bbox":
+            formula[Name.A][Name("/BBox")][0] = -1
+        elif sabotage in {
+            "filespec_type",
+            "relationship",
+            "embedded_type",
+            "embedded_subtype",
+            "embedded_size",
+            "embedded_digest",
+        }:
+            filespec = formula[Name("/AF")][0]
+            embedded = filespec[Name("/EF")][Name.F]
+            if sabotage == "filespec_type":
+                filespec[Name.Type] = Name("/File")
+            elif sabotage == "relationship":
+                filespec[Name("/AFRelationship")] = Name("/Data")
+            elif sabotage == "embedded_type":
+                embedded[Name.Type] = Name.XObject
+            elif sabotage == "embedded_subtype":
+                embedded[Name.Subtype] = Name("/text#2Fplain")
+            elif sabotage == "embedded_size":
+                embedded[Name("/Params")][Name("/Size")] = 999999
+            else:
+                embedded[Name("/Params")][Name("/CheckSum")] = pikepdf.String(b"bad")
         else:
             other = pdf.make_stream(b"\x01")
             other[Name.Type] = Name.XObject
@@ -530,4 +572,281 @@ def test_pending_equation_forbids_v1_fallback(tmp_path, monkeypatch):
 
     assert remediator._verified_image_equations == []
     remediator._pikepdf_doc.close()
+    fitz_doc.close()
+
+
+def test_verifier_allows_balanced_nested_artifact_bmc(tmp_path):
+    """A non-semantic Artifact BMC may wrap the exact Formula owner."""
+    from src.education.remediation.content_tagger_v2 import (
+        associate_image_formula,
+        verify_image_formula_association,
+    )
+
+    source = tmp_path / "source.pdf"
+    output = tmp_path / "artifact.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 1)
+    with pikepdf.open(source) as pdf:
+        result = associate_image_formula(pdf, fitz_doc, pending)
+        assert result.success
+        ops = list(pikepdf.parse_content_stream(pdf.pages[0]))
+        formula_start = next(
+            index
+            for index, op in enumerate(ops)
+            if str(op.operator) == "BDC" and str(op.operands[0]) == "/Formula"
+        )
+        formula_end = next(
+            index
+            for index in range(formula_start + 1, len(ops))
+            if str(ops[index].operator) == "EMC"
+        )
+        ops.insert(
+            formula_start,
+            pikepdf.ContentStreamInstruction([Name.Artifact], pikepdf.Operator("BMC")),
+        )
+        ops.insert(
+            formula_end + 2,
+            pikepdf.ContentStreamInstruction([], pikepdf.Operator("EMC")),
+        )
+        pdf.pages[0].obj[Name.Contents] = pdf.make_stream(
+            pikepdf.unparse_content_stream(ops)
+        )
+        pdf.save(output)
+    fitz_doc.close()
+
+    assert verify_image_formula_association(output, pending, result)
+
+
+@pytest.mark.parametrize("owner_operator", ["BMC", "BDC"])
+def test_verifier_rejects_additional_semantic_owner(tmp_path, owner_operator):
+    """The image draw must have Formula as its sole semantic owner."""
+    from src.education.remediation.content_tagger_v2 import (
+        associate_image_formula,
+        verify_image_formula_association,
+    )
+
+    source = tmp_path / "source.pdf"
+    output = tmp_path / f"extra-{owner_operator}.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 1)
+    with pikepdf.open(source) as pdf:
+        result = associate_image_formula(pdf, fitz_doc, pending)
+        assert result.success
+        ops = list(pikepdf.parse_content_stream(pdf.pages[0]))
+        start = next(
+            index
+            for index, op in enumerate(ops)
+            if str(op.operator) == "BDC" and str(op.operands[0]) == "/Formula"
+        )
+        operands = (
+            [Name.Figure]
+            if owner_operator == "BMC"
+            else [Name.Figure, Dictionary({"/MCID": result.mcid + 100})]
+        )
+        ops.insert(
+            start + 1,
+            pikepdf.ContentStreamInstruction(operands, pikepdf.Operator(owner_operator)),
+        )
+        do_index = next(
+            index
+            for index in range(start + 2, len(ops))
+            if str(ops[index].operator) == "Do"
+        )
+        ops.insert(
+            do_index + 1,
+            pikepdf.ContentStreamInstruction([], pikepdf.Operator("EMC")),
+        )
+        pdf.pages[0].obj[Name.Contents] = pdf.make_stream(
+            pikepdf.unparse_content_stream(ops)
+        )
+        pdf.save(output)
+    fitz_doc.close()
+
+    assert not verify_image_formula_association(output, pending, result)
+
+
+def test_generic_tagger_excludes_exact_pending_equation_draw(tmp_path):
+    """The generic pass must not create a Figure owner for the pending draw."""
+    from src.education.remediation.content_tagger_v2 import ContentTaggerV2
+
+    source = tmp_path / "source.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 1)
+    with pikepdf.open(source) as pdf:
+        stats = ContentTaggerV2(
+            pdf, fitz_doc, excluded_image_occurrences=[pending]
+        ).tag_all_pages()
+        assert stats["blocks_created"] == 1
+        ops = list(pikepdf.parse_content_stream(pdf.pages[0]))
+        owners = []
+        stack = []
+        for op in ops:
+            operator = str(op.operator)
+            if operator in {"BMC", "BDC"}:
+                stack.append(str(op.operands[0]))
+            elif operator == "EMC":
+                stack.pop()
+            elif operator == "Do":
+                owners.append(tuple(stack))
+        assert owners == [("/Figure",), ()]
+    fitz_doc.close()
+
+
+def test_duplicate_pending_occurrence_rejected_before_tagger_mutation(tmp_path, monkeypatch):
+    """Two pending requests for one occurrence fail before generic tagging."""
+    from types import SimpleNamespace
+
+    from src.education.remediation.base import RemediationConfig
+    from src.education.remediation.content_tagger_v2 import ContentTaggerV2
+    from src.education.remediation.pdf_remediator import PdfRemediator
+    from src.education.remediation.pdf_structure import PDFStructureTree
+
+    source = tmp_path / "source.pdf"
+    output = tmp_path / "output.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 1)
+    remediator = PdfRemediator(
+        str(source), [], RemediationConfig(create_backup=False, verify_fixes=False)
+    )
+    remediator._pdf = fitz_doc
+    remediator._pikepdf_doc = pikepdf.open(source)
+    remediator._struct_tree = PDFStructureTree(remediator._pikepdf_doc)
+    remediator._structure_modified = True
+    staged = SimpleNamespace(pending_association=pending)
+    remediator._pending_image_equations = [
+        (SimpleNamespace(id="equation-1"), staged),
+        (SimpleNamespace(id="equation-2"), staged),
+    ]
+    called = False
+
+    def sabotaged_tagger(self):
+        nonlocal called
+        called = True
+        raise AssertionError("tagger must not run")
+
+    monkeypatch.setattr(ContentTaggerV2, "tag_all_pages", sabotaged_tagger)
+    with pytest.raises(RuntimeError, match="Duplicate pending image-equation occurrence"):
+        remediator._write_pdf_output(fitz_doc, str(output))
+    assert called is False
+    remediator._pikepdf_doc.close()
+    fitz_doc.close()
+
+
+def _make_form_image_pdf(path: Path) -> None:
+    pdf = pikepdf.new()
+    image = pdf.make_stream(b"\x00")
+    image[Name.Type] = Name.XObject
+    image[Name.Subtype] = Name.Image
+    image[Name.Width] = 1
+    image[Name.Height] = 1
+    image[Name.ColorSpace] = Name.DeviceGray
+    image[Name.BitsPerComponent] = 8
+    image = pdf.make_indirect(image)
+    form = pdf.make_stream(b"q 1 0 0 1 0 0 cm /Im0 Do Q")
+    form[Name.Type] = Name.XObject
+    form[Name.Subtype] = Name.Form
+    form[Name("/BBox")] = Array([0, 0, 1, 1])
+    form[Name.Resources] = Dictionary({"/XObject": Dictionary({"/Im0": image})})
+    form = pdf.make_indirect(form)
+    page = pikepdf.Page(
+        Dictionary(
+            {
+                "/Type": Name.Page,
+                "/MediaBox": Array([0, 0, 300, 300]),
+                "/Contents": pdf.make_stream(b"q 60 0 0 30 120 140 cm /Fm0 Do Q"),
+                "/Resources": Dictionary({"/XObject": Dictionary({"/Fm0": form})}),
+            }
+        )
+    )
+    pdf.pages.append(page)
+    pdf.save(path)
+
+
+def test_form_xobject_image_fails_closed_before_mutation(tmp_path):
+    """v0.9.6 explicitly routes Form-contained image equations to manual review."""
+    from src.education.remediation.content_tagger_v2 import associate_image_formula
+
+    source = tmp_path / "form.pdf"
+    _make_form_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 0)
+    with pikepdf.open(source) as pdf:
+        before_content = pdf.pages[0].obj[Name.Contents].read_bytes()
+        assert Name.StructTreeRoot not in pdf.Root
+        result = associate_image_formula(pdf, fitz_doc, pending)
+        assert result.success is False
+        assert result.error == "form_xobject_image_manual"
+        assert Name.StructTreeRoot not in pdf.Root
+        assert pdf.pages[0].obj[Name.Contents].read_bytes() == before_content
+    fitz_doc.close()
+
+
+def test_parent_tree_kids_preserve_unrelated_direct_entry(tmp_path):
+    """Legal /Kids trees are updated in place and annotation mappings survive."""
+    from src.education.remediation.content_tagger_v2 import associate_image_formula
+    from src.education.remediation.pdf_structure import PDFStructureTree
+
+    source = tmp_path / "source.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 1)
+    with pikepdf.open(source) as pdf:
+        tree = PDFStructureTree(pdf)
+        page_array = pdf.make_indirect(Array([]))
+        annotation_owner = pdf.make_indirect(
+            Dictionary({"/Type": Name.StructElem, "/S": Name.P})
+        )
+        leaf = pdf.make_indirect(
+            Dictionary({"/Nums": Array([42, page_array, 99, annotation_owner])})
+        )
+        tree.struct_root[Name.ParentTree] = Dictionary({"/Kids": Array([leaf])})
+        pdf.pages[0].obj[Name.StructParents] = 42
+
+        result = associate_image_formula(pdf, fitz_doc, pending)
+        assert result.success
+        parent_tree = tree.struct_root[Name.ParentTree]
+        assert Name("/Kids") in parent_tree and Name.Nums not in parent_tree
+        nums = parent_tree[Name("/Kids")][0][Name.Nums]
+        entries = {int(nums[i]): nums[i + 1] for i in range(0, len(nums), 2)}
+        assert entries[99].objgen == annotation_owner.objgen
+        assert isinstance(entries[42], Array)
+        assert entries[42][result.mcid] is not None
+    fitz_doc.close()
+
+
+def test_association_rolls_back_when_append_sabotaged(tmp_path, monkeypatch):
+    """A failure after structure mutation leaves no Formula or content change."""
+    import src.education.remediation.content_tagger_v2 as module
+
+    source = tmp_path / "source.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    pending = _pending(fitz_doc, 1, 1)
+    with pikepdf.open(source) as pdf:
+        original_append = module._append_formula_to_structure
+        before_content = pdf.pages[0].obj[Name.Contents].read_bytes()
+        before_serialized = BytesIO()
+        pdf.save(before_serialized)
+        before_root = pdf.Root.get(Name.StructTreeRoot)
+        before_kids = list(before_root.get(Name.K, Array([]))) if before_root else []
+
+        def sabotage(target_pdf, formula):
+            original_append(target_pdf, formula)
+            raise RuntimeError("post-mutation sabotage")
+
+        monkeypatch.setattr(module, "_append_formula_to_structure", sabotage)
+        result = module.associate_image_formula(pdf, fitz_doc, pending)
+        assert result.success is False
+        assert pdf.pages[0].obj[Name.Contents].read_bytes() == before_content
+        root = pdf.Root.get(Name.StructTreeRoot)
+        after_kids = list(root.get(Name.K, Array([]))) if root is not None else []
+        assert [kid.objgen for kid in after_kids] == [kid.objgen for kid in before_kids]
+        assert not any(str(kid.get(Name.S, "")) == "/Formula" for kid in after_kids)
+        after_serialized = BytesIO()
+        pdf.save(after_serialized)
+        assert after_serialized.getvalue() == before_serialized.getvalue()
     fitz_doc.close()

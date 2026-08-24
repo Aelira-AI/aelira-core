@@ -167,7 +167,13 @@ class ContentTaggerV2:
         fitz_doc: The same document opened by PyMuPDF (fitz.Document).
     """
 
-    def __init__(self, pdf: Any, fitz_doc: Any) -> None:
+    def __init__(
+        self,
+        pdf: Any,
+        fitz_doc: Any,
+        *,
+        excluded_image_occurrences: Optional[List[Any]] = None,
+    ) -> None:
         if not HAS_PIKEPDF:
             raise ImportError(
                 "pikepdf is required for content tagging. "
@@ -180,6 +186,12 @@ class ContentTaggerV2:
             )
         self.pdf = pdf
         self.fitz_doc = fitz_doc
+        self._excluded_image_occurrences: Dict[int, set[tuple[int, int]]] = {}
+        for pending in excluded_image_occurrences or []:
+            page_idx = int(pending.page_number) - 1
+            self._excluded_image_occurrences.setdefault(page_idx, set()).add(
+                (int(pending.image_xref), int(pending.occurrence_ordinal))
+            )
         self._next_mcid: int = 0
         # Maps StructParents number-tree key -> list of (mcid, struct_elem)
         self._parent_tree_entries: Dict[int, List[Tuple[int, Any]]] = {}
@@ -320,6 +332,10 @@ class ContentTaggerV2:
             return page_stats
 
         content_blocks = self._find_content_blocks(ops, page)
+        excluded_indices = self._excluded_do_indices(page_idx, page, ops)
+        content_blocks = [
+            block for block in content_blocks if block[0] not in excluded_indices
+        ]
         if not content_blocks:
             return page_stats
 
@@ -436,6 +452,35 @@ class ContentTaggerV2:
         self._parent_tree_entries[struct_parent] = page_entries
 
         return page_stats
+
+    def _excluded_do_indices(self, page_idx: int, page: Any, ops: List[Any]) -> set[int]:
+        """Resolve exact direct image draws reserved for Formula association."""
+        excluded = self._excluded_image_occurrences.get(page_idx, set())
+        if not excluded:
+            return set()
+        ordinals: Dict[int, int] = {}
+        indices: set[int] = set()
+        resources = page.obj.get(Name.Resources)
+        xobjects = resources.get(Name.XObject) if resources is not None else None
+        if xobjects is None:
+            return indices
+        for index, op in enumerate(ops):
+            if str(op.operator) != "Do" or not op.operands:
+                continue
+            try:
+                raw_name = str(op.operands[0])
+                resource_name = raw_name if raw_name.startswith("/") else f"/{raw_name}"
+                xobject = xobjects.get(Name(resource_name))
+                if xobject is None or str(xobject.get(Name.Subtype, "")) != "/Image":
+                    continue
+                xref = int(xobject.objgen[0])
+                ordinal = ordinals.get(xref, 0)
+                if (xref, ordinal) in excluded:
+                    indices.add(index)
+                ordinals[xref] = ordinal + 1
+            except Exception:
+                continue
+        return indices
 
     # ------------------------------------------------------------------
     # PyMuPDF block extraction
@@ -848,34 +893,24 @@ class ContentTaggerV2:
     # ------------------------------------------------------------------
 
     def _build_parent_tree(self, struct_root: Any) -> None:
-        """Build /ParentTree /Nums array from MCID->element mappings."""
-        nums_list: List[Any] = []
-
-        keys = set(self._preserved_parent_tree_entries) | set(self._parent_tree_entries)
-        for struct_parent in sorted(keys):
+        """Merge selected page arrays without flattening the existing number tree."""
+        parent_tree, _ = _number_tree_entries(struct_root)
+        for struct_parent, new_entries in sorted(self._parent_tree_entries.items()):
             preserved = self._preserved_parent_tree_entries.get(struct_parent)
             if preserved is not None and not isinstance(preserved, Array):
-                raise ValueError("Existing ParentTree page entry is not an array")
+                raise ValueError("Existing selected-page ParentTree entry is not an array")
             page_array: List[Any] = list(preserved) if preserved is not None else []
-            entries_sorted = sorted(
-                self._parent_tree_entries.get(struct_parent, []), key=lambda e: e[0]
-            )
-            for mcid_val, elem in entries_sorted:
+            for mcid_val, elem in sorted(new_entries, key=lambda entry: entry[0]):
                 while len(page_array) <= mcid_val:
                     page_array.append(None)
                 if page_array[mcid_val] is not None:
                     raise ValueError("ParentTree MCID collision")
                 page_array[mcid_val] = elem
-
-            nums_list.append(struct_parent)
-            nums_list.append(self.pdf.make_indirect(Array(page_array)))
-
-        parent_tree = struct_root.get(Name.ParentTree)
-        if parent_tree is None:
-            parent_tree = Dictionary({"/Nums": Array([])})
-            struct_root[Name.ParentTree] = parent_tree
-
-        parent_tree[Name.Nums] = Array(nums_list)
+            _set_number_tree_value(
+                parent_tree,
+                struct_parent,
+                self.pdf.make_indirect(Array(page_array)),
+            )
 
     # ------------------------------------------------------------------
     # Document root
@@ -980,25 +1015,100 @@ def _resolved_image_do_indices(page: Any, ops: List[Any], image_xref: int) -> Li
     return matches
 
 
+def _form_xobject_reaches_image(
+    resources: Any, image_xref: int, seen: set[Any], *, inside_form: bool = False
+) -> bool:
+    """Detect, but deliberately do not resolve, images nested in Form XObjects."""
+    xobjects = resources.get(Name.XObject) if resources is not None else None
+    if xobjects is None:
+        return False
+    for xobject in xobjects.values():
+        try:
+            identity = tuple(xobject.objgen)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            subtype = str(xobject.get(Name.Subtype, ""))
+            if (
+                inside_form
+                and subtype == "/Image"
+                and int(xobject.objgen[0]) == image_xref
+            ):
+                return True
+            if subtype == "/Form":
+                nested = xobject.get(Name.Resources) or resources
+                if _form_xobject_reaches_image(
+                    nested, image_xref, seen, inside_form=True
+                ):
+                    return True
+        except Exception:
+            continue
+    return False
+
+
 def _number_tree_entries(struct_root: Any) -> tuple[Any, List[tuple[int, Any]]]:
     parent_tree = struct_root.get(Name.ParentTree)
     if parent_tree is None:
         parent_tree = Dictionary({"/Nums": Array([])})
         struct_root[Name.ParentTree] = parent_tree
-    if parent_tree.get(Name("/Kids")) is not None:
-        raise ValueError("parent_tree_kids_unsupported")
-    nums = parent_tree.get(Name.Nums, Array([]))
-    if not isinstance(nums, Array) or len(nums) % 2:
-        raise ValueError("invalid_parent_tree")
     entries: List[tuple[int, Any]] = []
     seen: set[int] = set()
-    for index in range(0, len(nums), 2):
-        key = int(nums[index])
-        if key in seen:
-            raise ValueError("parent_tree_collision")
-        seen.add(key)
-        entries.append((key, nums[index + 1]))
+
+    def visit(node: Any) -> None:
+        kids = node.get(Name("/Kids"))
+        if kids is not None:
+            if not isinstance(kids, Array):
+                raise ValueError("invalid_parent_tree")
+            for kid in kids:
+                visit(kid)
+            return
+        nums = node.get(Name.Nums, Array([]))
+        if not isinstance(nums, Array) or len(nums) % 2:
+            raise ValueError("invalid_parent_tree")
+        for index in range(0, len(nums), 2):
+            key = int(nums[index])
+            if key in seen:
+                raise ValueError("parent_tree_collision")
+            seen.add(key)
+            entries.append((key, nums[index + 1]))
+
+    visit(parent_tree)
     return parent_tree, entries
+
+
+def _set_number_tree_value(parent_tree: Any, key: int, value: Any) -> None:
+    """Replace an existing number-tree value without flattening legal /Kids."""
+    kids = parent_tree.get(Name("/Kids"))
+    if kids is not None:
+        for kid in kids:
+            before = dict(_number_tree_node_entries(kid))
+            if key in before:
+                _set_number_tree_value(kid, key, value)
+                return
+        if not kids:
+            raise ValueError("invalid_parent_tree")
+        _set_number_tree_value(kids[-1], key, value)
+        return
+    nums = parent_tree.get(Name.Nums)
+    if nums is None:
+        nums = Array([])
+        parent_tree[Name.Nums] = nums
+    for index in range(0, len(nums), 2):
+        if int(nums[index]) == key:
+            nums[index + 1] = value
+            return
+    nums.extend([key, value])
+
+
+def _number_tree_node_entries(node: Any) -> List[tuple[int, Any]]:
+    entries: List[tuple[int, Any]] = []
+    kids = node.get(Name("/Kids"))
+    if kids is not None:
+        for kid in kids:
+            entries.extend(_number_tree_node_entries(kid))
+        return entries
+    nums = node.get(Name.Nums, Array([]))
+    return [(int(nums[index]), nums[index + 1]) for index in range(0, len(nums), 2)]
 
 
 def _append_formula_to_structure(pdf: Any, formula: Any) -> None:
@@ -1032,6 +1142,7 @@ def associate_image_formula(
     """
     from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 
+    rollback: Optional[Dict[str, Any]] = None
     try:
         page_number = int(pending.page_number)
         image_xref = int(pending.image_xref)
@@ -1089,8 +1200,65 @@ def associate_image_formula(
             item for item in occurrences if item["image_xref"] == image_xref
         ]
         if len(do_indices) != len(displayed_same_xref) or ordinal >= len(do_indices):
+            if _form_xobject_reaches_image(
+                page.obj.get(Name.Resources), image_xref, set()
+            ):
+                return _association_failure(pending, "form_xobject_image_manual")
             return _association_failure(pending, "exact_do_unresolved")
         target_index = do_indices[ordinal]
+
+        root_existed = Name.StructTreeRoot in pdf.Root
+        mark_info_existed = Name.MarkInfo in pdf.Root
+        struct_parents_existed = Name.StructParents in page.obj
+        existing_root = pdf.Root.get(Name.StructTreeRoot)
+        existing_kids = existing_root.get(Name.K) if existing_root is not None else None
+        rollback = {
+            "root_existed": root_existed,
+            "mark_info_existed": mark_info_existed,
+            "struct_parents_existed": struct_parents_existed,
+            "struct_parents": page.obj.get(Name.StructParents),
+            "contents": page.obj.get(Name.Contents),
+            "root_kids_object": existing_kids,
+            "root_kids": list(existing_kids) if isinstance(existing_kids, Array) else None,
+            "number_arrays": [],
+            "value_arrays": [],
+            "structure_arrays": [],
+        }
+        if existing_root is not None:
+
+            def snapshot_structure_arrays(element: Any) -> None:
+                kids = element.get(Name.K) if hasattr(element, "keys") else None
+                if isinstance(kids, Array):
+                    rollback["structure_arrays"].append((kids, list(kids)))
+                    for child in kids:
+                        if hasattr(child, "keys") and str(
+                            child.get(Name.Type, "")
+                        ) != "/MCR":
+                            snapshot_structure_arrays(child)
+                elif hasattr(kids, "keys") and str(
+                    kids.get(Name.Type, "")
+                ) != "/MCR":
+                    snapshot_structure_arrays(kids)
+
+            snapshot_structure_arrays(existing_root)
+        if existing_root is not None and existing_root.get(Name.ParentTree) is not None:
+
+            def snapshot_number_arrays(node: Any) -> None:
+                kids = node.get(Name("/Kids"))
+                if kids is not None:
+                    for kid in kids:
+                        snapshot_number_arrays(kid)
+                else:
+                    nums = node.get(Name.Nums)
+                    if isinstance(nums, Array):
+                        rollback["number_arrays"].append((nums, list(nums)))
+                        for index in range(1, len(nums), 2):
+                            if isinstance(nums[index], Array):
+                                rollback["value_arrays"].append(
+                                    (nums[index], list(nums[index]))
+                                )
+
+            snapshot_number_arrays(existing_root[Name.ParentTree])
 
         if Name.StructTreeRoot not in pdf.Root:
             from src.education.remediation.pdf_structure import PDFStructureTree
@@ -1139,12 +1307,8 @@ def associate_image_formula(
         _append_formula_to_structure(pdf, formula)
         page_array[mcid] = formula
         if page_entry is None:
-            entries.append((struct_parent, pdf.make_indirect(page_array)))
-        entries.sort(key=lambda item: item[0])
-        merged_nums: List[Any] = []
-        for key, value in entries:
-            merged_nums.extend((key, value))
-        parent_tree[Name.Nums] = Array(merged_nums)
+            page_array = pdf.make_indirect(page_array)
+        _set_number_tree_value(parent_tree, struct_parent, page_array)
 
         bdc = pikepdf.ContentStreamInstruction(
             [Name("/Formula"), Dictionary({"/MCID": mcid})], Operator("BDC")
@@ -1166,6 +1330,42 @@ def associate_image_formula(
             mathml_sha256=digest,
         )
     except Exception as exc:
+        if rollback is not None:
+            rollback_page = pdf.pages[int(getattr(pending, "page_number", 1)) - 1]
+            rollback_page.obj[Name.Contents] = rollback["contents"]
+            if rollback["struct_parents_existed"]:
+                rollback_page.obj[Name.StructParents] = rollback["struct_parents"]
+            elif Name.StructParents in rollback_page.obj:
+                del rollback_page.obj[Name.StructParents]
+            if not rollback["root_existed"] and Name.StructTreeRoot in pdf.Root:
+                del pdf.Root[Name.StructTreeRoot]
+            elif rollback["root_existed"]:
+                root = pdf.Root[Name.StructTreeRoot]
+                old_kids = rollback["root_kids_object"]
+                if isinstance(old_kids, Array):
+                    while len(old_kids):
+                        old_kids.pop()
+                    for child in rollback["root_kids"]:
+                        old_kids.append(child)
+                    root[Name.K] = old_kids
+                elif old_kids is None and Name.K in root:
+                    del root[Name.K]
+                else:
+                    root[Name.K] = old_kids
+                for nums, values in rollback["number_arrays"]:
+                    while len(nums):
+                        nums.pop()
+                    for value in values:
+                        nums.append(value)
+                for array, values in (
+                    rollback["value_arrays"] + rollback["structure_arrays"]
+                ):
+                    while len(array):
+                        array.pop()
+                    for value in values:
+                        array.append(value)
+            if not rollback["mark_info_existed"] and Name.MarkInfo in pdf.Root:
+                del pdf.Root[Name.MarkInfo]
         logger.warning("Exact Formula association failed closed: %s", exc)
         return _association_failure(pending, "association_failed")
 
@@ -1241,6 +1441,21 @@ def verify_image_formula_association(
                 raise ValueError("saved_formula_not_unique")
             formula = semantic_formulas[0]
             mcr = formula.get(Name.K)
+            parent = formula.get(Name.P)
+            parent_kids = parent.get(Name.K) if hasattr(parent, "keys") else None
+            siblings = (
+                list(parent_kids)
+                if isinstance(parent_kids, Array)
+                else ([parent_kids] if parent_kids is not None else [])
+            )
+            backlink_count = sum(
+                1
+                for sibling in siblings
+                if hasattr(sibling, "objgen")
+                and tuple(sibling.objgen) == tuple(formula.objgen)
+            )
+            attributes = formula.get(Name.A)
+            saved_bbox = attributes.get(Name("/BBox")) if hasattr(attributes, "keys") else None
             if (
                 not hasattr(mcr, "keys")
                 or str(mcr.get(Name.Type, "")) != "/MCR"
@@ -1248,14 +1463,44 @@ def verify_image_formula_association(
                 or tuple(mcr.get(Name.Pg).objgen)
                 != tuple(pdf.pages[pending.page_number - 1].obj.objgen)
                 or str(formula.get(Name.Alt, "")) != pending.alt_text
+                or backlink_count != 1
+                or not isinstance(saved_bbox, Array)
+                or len(saved_bbox) != 4
+                or any(
+                    abs(float(saved) - float(wanted)) > 1e-6
+                    for saved, wanted in zip(saved_bbox, pending.bbox)
+                )
             ):
-                raise ValueError("saved_mcr_mismatch")
+                raise ValueError("saved_mcr_or_formula_contract_mismatch")
             af = formula.get(Name("/AF"))
             if not isinstance(af, Array) or len(af) != 1:
                 raise ValueError("saved_af_mismatch")
-            embedded = af[0].get(Name("/EF")).get(Name.F)
+            filespec = af[0]
             if (
-                hashlib.sha256(embedded.read_bytes()).hexdigest()
+                str(filespec.get(Name.Type, "")) != "/Filespec"
+                or str(filespec.get(Name("/AFRelationship"), "")) != "/Supplement"
+            ):
+                raise ValueError("saved_filespec_mismatch")
+            ef = filespec.get(Name("/EF"))
+            embedded = ef.get(Name.F) if hasattr(ef, "keys") else None
+            if (
+                embedded is None
+                or str(embedded.get(Name.Type, "")) != "/EmbeddedFile"
+                or str(embedded.get(Name.Subtype, ""))
+                != "/application#2Fmathml+xml"
+            ):
+                raise ValueError("saved_embedded_file_contract_mismatch")
+            embedded_bytes = embedded.read_bytes()
+            params = embedded.get(Name("/Params"))
+            checksum = params.get(Name("/CheckSum")) if hasattr(params, "keys") else None
+            if (
+                not hasattr(params, "keys")
+                or int(params.get(Name("/Size"), -1)) != len(embedded_bytes)
+                or len(embedded_bytes) > 65536
+                or checksum is None
+                or bytes(checksum)
+                != hashlib.md5(embedded_bytes, usedforsecurity=False).digest()
+                or hashlib.sha256(embedded_bytes).hexdigest()
                 != expected.mathml_sha256
             ):
                 raise ValueError("saved_mathml_mismatch")
@@ -1281,11 +1526,13 @@ def verify_image_formula_association(
             formula_marked_draws = 0
             for index, op in enumerate(ops):
                 operator = str(op.operator)
-                if operator == "BDC":
+                if operator in {"BMC", "BDC"}:
                     try:
-                        stack.append(
-                            (str(op.operands[0]), int(op.operands[1][Name.MCID]))
+                        tag = str(op.operands[0])
+                        mcid_value = (
+                            int(op.operands[1][Name.MCID]) if operator == "BDC" else -1
                         )
+                        stack.append((tag, mcid_value))
                     except Exception:
                         stack.append(("", -1))
                 elif operator == "EMC":
@@ -1293,7 +1540,11 @@ def verify_image_formula_association(
                         raise ValueError("saved_marked_content_unbalanced")
                     stack.pop()
                 elif operator == "Do":
-                    has_formula = stack.count(("/Formula", expected.mcid)) == 1
+                    formula_owner = ("/Formula", expected.mcid)
+                    has_formula = stack.count(formula_owner) == 1
+                    semantic_owners = [owner for owner in stack if owner[0] != "/Artifact"]
+                    if has_formula and semantic_owners != [formula_owner]:
+                        raise ValueError("saved_draw_has_additional_semantic_owner")
                     formula_marked_draws += int(has_formula)
                     if index in target_indices:
                         if draw_ordinal == pending.occurrence_ordinal:

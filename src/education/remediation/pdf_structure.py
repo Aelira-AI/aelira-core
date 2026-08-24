@@ -15,6 +15,7 @@ Key capabilities:
 Based on PDF/UA-1 (ISO 14289-1), PDF/UA-2 (ISO 14289-2:2024), and WCAG 2.1 requirements.
 """
 
+import hashlib
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -1029,9 +1030,18 @@ class PDFStructureTree:
                 {"/O": Name.Layout, "/BBox": Array(list(bbox))}
             )
 
-        mathml_stream = self.pdf.make_stream(mathml_string.encode("utf-8"))
+        mathml_bytes = mathml_string.encode("utf-8")
+        mathml_stream = self.pdf.make_stream(mathml_bytes)
         mathml_stream[Name.Type] = Name("/EmbeddedFile")
         mathml_stream[Name.Subtype] = Name("/application#2Fmathml+xml")
+        mathml_stream[Name("/Params")] = Dictionary(
+            {
+                "/Size": len(mathml_bytes),
+                "/CheckSum": String(
+                    hashlib.md5(mathml_bytes, usedforsecurity=False).digest()
+                ),
+            }
+        )
         filespec = self.pdf.make_indirect(
             Dictionary(
                 {

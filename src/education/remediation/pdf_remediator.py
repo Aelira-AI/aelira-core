@@ -31,7 +31,7 @@ import stat
 import tempfile
 import warnings
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
@@ -86,6 +86,7 @@ from .role_mapping_fixer import RoleMappingFixer
 from .font_unicode_fixer import FontUnicodeFixer
 from .math_fixer import MathFixer
 from src.education.math_contracts import CONCRETE_MATH_ISSUE_TYPES
+from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 
 MATH_SPECIALIST_ISSUE_TYPES = CONCRETE_MATH_ISSUE_TYPES
 from .contrast_flagger import ContrastFlagger
@@ -2447,18 +2448,86 @@ class PdfRemediator(BaseRemediator):
         # This is critical because PyMuPDF cannot save structure tree changes
         if self._structure_modified and self._pikepdf_doc:
             logger.info("Saving PDF with pikepdf (structure tree was modified)")
+            working_pdf = self._pikepdf_doc
+            working_struct_tree = self._struct_tree
+            working_fitz = self._pdf
+            transaction_fitz = None
             try:
+                pending_requests = [
+                    staged.pending_association
+                    for _, staged in self._pending_image_equations
+                    if staged.pending_association is not None
+                ]
+                occurrence_keys = [
+                    (
+                        int(pending.page_number),
+                        int(pending.image_xref),
+                        int(pending.image_index),
+                        int(pending.occurrence_ordinal),
+                        str(pending.occurrence_id),
+                    )
+                    for pending in pending_requests
+                ]
+                if len(occurrence_keys) != len(set(occurrence_keys)):
+                    raise RuntimeError("Duplicate pending image-equation occurrence")
+
+                if pending_requests:
+                    transaction_bytes = BytesIO()
+                    self._pikepdf_doc.save(transaction_bytes)
+                    transaction_bytes.seek(0)
+                    working_pdf = pikepdf.open(transaction_bytes)
+                    working_struct_tree = PDFStructureTree(working_pdf)
+                    transaction_fitz = fitz.open(
+                        stream=transaction_bytes.getvalue(), filetype="pdf"
+                    )
+                    working_fitz = transaction_fitz
+
+                working_pending_requests = []
+                for pending in pending_requests:
+                    occurrences = _displayed_image_occurrences(
+                        working_fitz[pending.page_number - 1], pending.page_number
+                    )
+                    matches = [
+                        occurrence
+                        for occurrence in occurrences
+                        if occurrence["image_index"] == pending.image_index
+                        and occurrence["occurrence_ordinal"]
+                        == pending.occurrence_ordinal
+                        and all(
+                            abs(left - right) <= 1e-6
+                            for left, right in zip(occurrence["bbox"], pending.bbox)
+                        )
+                    ]
+                    if len(matches) != 1:
+                        raise RuntimeError("Pending occurrence changed in transaction")
+                    occurrence = matches[0]
+                    image_bytes = working_fitz.extract_image(
+                        occurrence["image_xref"]
+                    ).get("image")
+                    working_pending_requests.append(
+                        replace(
+                            pending,
+                            image_xref=occurrence["image_xref"],
+                            occurrence_id=occurrence["occurrence_id"],
+                            image_stream_sha256=hashlib.sha256(image_bytes).hexdigest(),
+                        )
+                    )
+
                 # Apply pending bookmarks via pikepdf BEFORE saving
                 # (PyMuPDF's set_toc changes are lost when saving with pikepdf)
-                if self._pending_bookmarks and self._struct_tree:
+                if self._pending_bookmarks and working_struct_tree:
                     logger.info(
                         f"Adding {len(self._pending_bookmarks)} bookmarks via pikepdf"
                     )
-                    self._struct_tree.add_bookmarks(self._pending_bookmarks)
+                    working_struct_tree.add_bookmarks(self._pending_bookmarks)
 
                 # Tag content streams with BDC/EMC markers and build ParentTree
                 try:
-                    tagger = ContentTaggerV2(self._pikepdf_doc, self._pdf)
+                    tagger = ContentTaggerV2(
+                        working_pdf,
+                        working_fitz,
+                        excluded_image_occurrences=working_pending_requests,
+                    )
                     stats = tagger.tag_all_pages()
                     self._content_tagger_stats = stats
                     tagged = stats.get("blocks_matched", 0) + stats.get(
@@ -2501,14 +2570,18 @@ class PdfRemediator(BaseRemediator):
                         )
 
                 staged_associations = []
-                for issue, staged in self._pending_image_equations:
+                for pending_index, (issue, staged) in enumerate(
+                    self._pending_image_equations
+                ):
                     pending = staged.pending_association
                     if pending is None:
                         raise RuntimeError(
                             "Missing typed image-equation association request"
                         )
                     association = associate_image_formula(
-                        self._pikepdf_doc, self._pdf, pending
+                        working_pdf,
+                        working_fitz,
+                        working_pending_requests[pending_index],
                     )
                     if not association.success:
                         raise RuntimeError(
@@ -2517,7 +2590,7 @@ class PdfRemediator(BaseRemediator):
                         )
                     staged_associations.append((issue, staged, association))
 
-                self._pikepdf_doc.save(output_path)
+                working_pdf.save(output_path)
                 for issue, staged, association in staged_associations:
                     if not verify_image_formula_association(
                         output_path, staged.pending_association, association
@@ -2526,8 +2599,19 @@ class PdfRemediator(BaseRemediator):
                             "Post-save image-equation association verification failed"
                         )
                 self._verified_image_equations = staged_associations
+                if working_pdf is not self._pikepdf_doc:
+                    original_pdf = self._pikepdf_doc
+                    self._pikepdf_doc = working_pdf
+                    self._struct_tree = working_struct_tree
+                    original_pdf.close()
+                if transaction_fitz is not None:
+                    transaction_fitz.close()
                 logger.info("Successfully saved PDF with structure tree modifications")
             except Exception as e:
+                if transaction_fitz is not None:
+                    transaction_fitz.close()
+                if working_pdf is not self._pikepdf_doc:
+                    working_pdf.close()
                 logger.error(f"Failed to save with pikepdf: {e}")
                 if self._pending_image_equations:
                     self._verified_image_equations = []
