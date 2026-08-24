@@ -36,3 +36,6 @@ def test_image_issues_include_xref():
         assert (
             issue.image_xref is not None
         ), f"image_xref should not be None for scan-only issue: {issue}"
+        assert issue.bbox is not None
+        assert issue.occurrence_ordinal >= 0
+        assert issue.occurrence_id.startswith("imgocc-v1-")

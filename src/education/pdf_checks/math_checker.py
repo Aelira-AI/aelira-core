@@ -4,6 +4,11 @@ import logging
 import re
 from typing import Dict, List
 
+import fitz
+
+from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+from src.education.pdf_checks.models import PDFImageIssue
+
 try:
     import pikepdf
     from pikepdf import Name
@@ -74,6 +79,63 @@ class MathEquationChecker:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    _LOCAL_EQUATION_CUE = re.compile(r"\b(?:equation|formula)\b", re.IGNORECASE)
+
+    def find_image_equation_candidates(
+        self, file_path: str, image_issues: List[PDFImageIssue]
+    ) -> List[Dict]:
+        """Create conservative candidates from exact, locally cued occurrences."""
+        candidates: List[Dict] = []
+        with fitz.open(file_path) as doc:
+            for issue in image_issues:
+                page_index = issue.page_number - 1
+                if page_index < 0 or page_index >= len(doc):
+                    continue
+                page = doc[page_index]
+                bbox = fitz.Rect(issue.bbox)
+                if bbox.is_empty or bbox.is_infinite:
+                    continue
+                nearby = fitz.Rect(
+                    max(page.rect.x0, bbox.x0 - 24),
+                    max(page.rect.y0, bbox.y0 - 48),
+                    min(page.rect.x1, bbox.x1 + 24),
+                    min(page.rect.y1, bbox.y1 + 48),
+                )
+                context = page.get_text("text", clip=nearby)
+                if not self._LOCAL_EQUATION_CUE.search(context):
+                    continue
+                identity = {
+                    "page_number": issue.page_number,
+                    "image_xref": issue.image_xref,
+                    "image_index": issue.image_index,
+                    "occurrence_ordinal": issue.occurrence_ordinal,
+                    "bbox": list(issue.bbox),
+                    "occurrence_id": issue.occurrence_id,
+                }
+                candidates.append(
+                    {
+                        "category": "structure",
+                        "severity": "high",
+                        "rule": "WCAG 1.1.1",
+                        "message": "Possible equation image requires accessible math",
+                        "impact": "Screen readers cannot interpret equation pixels as mathematical content",
+                        "location": (
+                            f"Page {issue.page_number}, Image {issue.image_index + 1}, "
+                            f"Occurrence {issue.occurrence_ordinal + 1}"
+                        ),
+                        "element": "Image equation candidate",
+                        "suggested_fix": "Verify the equation and associate accessible MathML with this exact occurrence",
+                        "issue_type": IMAGE_EQUATION_ISSUE_TYPE,
+                        **identity,
+                        "metadata": {
+                            "issue_type": IMAGE_EQUATION_ISSUE_TYPE,
+                            "rule": "WCAG 1.1.1",
+                            **identity,
+                        },
+                    }
+                )
+        return candidates
 
     def check(self, file_path: str, text: str, structure: Dict) -> List[Dict]:
         """Check for math/equation accessibility issues in a PDF.

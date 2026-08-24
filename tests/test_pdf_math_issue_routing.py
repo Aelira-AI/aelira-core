@@ -1,6 +1,10 @@
 import pytest
 
-from src.education.remediation.base import BaseRemediator, IssueCategory, RemediationConfig
+from src.education.remediation.base import (
+    BaseRemediator,
+    IssueCategory,
+    RemediationConfig,
+)
 
 
 class _ProbeRemediator(BaseRemediator):
@@ -98,7 +102,9 @@ def test_api_and_base_normalizers_route_candidate_once_and_preserve_identity(
         "mathml_recommendation",
     ],
 )
-def test_document_wide_math_warnings_route_to_structure_but_are_not_concrete(issue_type):
+def test_document_wide_math_warnings_route_to_structure_but_are_not_concrete(
+    issue_type,
+):
     from src.api.education.remediation_routes import _infer_category
     from src.education.math_contracts import is_concrete_math_issue_type
 
@@ -111,3 +117,32 @@ def test_pdf_specialist_routing_imports_the_central_concrete_contract():
     from src.education.remediation import pdf_remediator
 
     assert pdf_remediator.MATH_SPECIALIST_ISSUE_TYPES is CONCRETE_MATH_ISSUE_TYPES
+
+
+def test_image_candidate_fails_closed_until_recognition_pipeline_exists():
+    from types import SimpleNamespace
+
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from src.education.remediation.math_fixer import MathFixer
+
+    class _StructTree:
+        def add_formula(self, **kwargs):
+            raise AssertionError("candidate must not mutate structure")
+
+    fixer = MathFixer(
+        SimpleNamespace(pages=[object()]),
+        SimpleNamespace(),
+        struct_tree=_StructTree(),
+    )
+    result = fixer._fix_math_issue(
+        SimpleNamespace(
+            metadata={
+                "issue_type": IMAGE_EQUATION_ISSUE_TYPE,
+                "page_number": 1,
+                "occurrence_id": "imgocc-v1-example",
+            }
+        )
+    )
+
+    assert not result.success
+    assert result.error == "image_equation_pipeline_unavailable"

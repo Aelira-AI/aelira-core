@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
+from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE, MATH_ISSUE_TYPES
+
 try:
     from latex2mathml.converter import convert as latex_to_mathml
 
@@ -191,8 +193,6 @@ class MathFixer:
     """
 
     # Issue types this fixer handles
-    from src.education.math_contracts import MATH_ISSUE_TYPES
-
     HANDLED_ISSUE_TYPES = MATH_ISSUE_TYPES
 
     def __init__(
@@ -284,6 +284,12 @@ class MathFixer:
             return MathFixResult(
                 success=False,
                 error=f"Unrecognised issue_type: {issue_type!r}",
+            )
+        if issue_type == IMAGE_EQUATION_ISSUE_TYPE:
+            return MathFixResult(
+                success=False,
+                error="image_equation_pipeline_unavailable",
+                page_number=int(metadata.get("page_number", 1) or 1),
             )
 
         # Determine page number (1-indexed)

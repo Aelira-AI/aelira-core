@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 # Required by PDFProcessingResult.cvd_analysis field
 from ..color_blindness_simulator import ColorBlindnessAnalysisResult
@@ -105,17 +105,20 @@ class TableFix(BaseModel):
 class PDFImageIssue(BaseModel):
     """Image accessibility issue in PDF"""
 
+    model_config = ConfigDict(frozen=True)
+
     page_number: int
     image_index: int  # Index of image on the page
+    occurrence_ordinal: int
+    bbox: Tuple[float, float, float, float]
+    occurrence_id: str
     has_alt_text: bool
     existing_alt_text: Optional[str] = None  # The current alt text if present
     suggested_alt_text: Optional[str] = None
     image_type: Optional[str] = None  # decorative, informative, functional, complex
     is_chart: bool = False  # True if detected as chart/graph/infographic
     detailed_description: Optional[str] = None  # For charts/complex images
-    image_xref: Optional[int] = (
-        None  # PDF xref for extracting image bytes in remediator
-    )
+    image_xref: int  # PDF xref for extracting image bytes in remediator
     # Alt text validation (for images WITH alt text)
     alt_text_validated: bool = False  # Whether AI validation was performed
     alt_text_accurate: Optional[bool] = None  # Whether existing alt text is accurate

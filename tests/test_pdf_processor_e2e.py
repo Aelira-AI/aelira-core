@@ -211,11 +211,12 @@ class TestPDFImageProcessing:
     """Test PDF image extraction and alt text generation."""
 
     def test_image_issues_field(self, pdf_processor):
-        """Test image_issues field exists."""
+        """Default processing performs scan-only image discovery without AI."""
+        assert pdf_processor.image_generator is None
         result = pdf_processor.process_pdf(str(ACADEMIC_PAPER))
 
-        # image_issues is optional, may be None if not enabled
-        assert hasattr(result, "image_issues")
+        assert result.image_issues
+        assert all(issue.occurrence_id for issue in result.image_issues)
 
     def test_image_alt_text_with_generator(self):
         """Test image alt text generation when enabled."""
