@@ -24,31 +24,16 @@ logger = logging.getLogger(__name__)
 
 def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
     """Return deterministic identities for addressable embedded image draws."""
-    resource_index_lists: Dict[int, List[int]] = {}
-    for index, info in enumerate(page.get_images(full=True)):
-        resource_index_lists.setdefault(int(info[0]), []).append(index)
+    resource_xrefs = {int(info[0]) for info in page.get_images(full=True)}
     displayed_infos = list(page.get_image_info(xrefs=True))
-    displayed_counts: Dict[int, int] = {}
-    for info in displayed_infos:
-        xref = int(info.get("xref") or 0)
-        displayed_counts[xref] = displayed_counts.get(xref, 0) + 1
     ordinals: Dict[int, int] = {}
     occurrences: List[Dict] = []
-    for info in displayed_infos:
+    for image_index, info in enumerate(displayed_infos):
         xref = int(info.get("xref") or 0)
         ordinal = ordinals.get(xref, 0)
         ordinals[xref] = ordinal + 1
         raw_bbox = info.get("bbox")
-        resource_indices = resource_index_lists.get(xref, [])
-        if (
-            xref <= 0
-            or not resource_indices
-            or not raw_bbox
-            or (
-                len(resource_indices) > 1
-                and len(resource_indices) != displayed_counts.get(xref)
-            )
-        ):
+        if xref <= 0 or xref not in resource_xrefs or not raw_bbox:
             continue
         try:
             bbox = tuple(float(value) for value in raw_bbox)
@@ -61,11 +46,6 @@ def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
             or bbox[3] <= bbox[1]
         ):
             continue
-        image_index = (
-            resource_indices[ordinal]
-            if len(resource_indices) > 1
-            else resource_indices[0]
-        )
         identity = f"{page_number}|{xref}|{image_index}|{ordinal}|" + ",".join(
             f"{value:.6f}" for value in bbox
         )
@@ -83,6 +63,52 @@ def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
             }
         )
     return occurrences
+
+
+def _occurrence_alt_lookup(
+    doc, page, occurrences: List[Dict]
+) -> Dict[str, Tuple[bool, Optional[str]]]:
+    """Return one alt-text result per displayed occurrence."""
+    results: Dict[str, Tuple[bool, Optional[str]]] = {
+        occurrence["occurrence_id"]: (False, None) for occurrence in occurrences
+    }
+    if not occurrences:
+        return results
+
+    for xref in {occurrence["image_xref"] for occurrence in occurrences}:
+        try:
+            obj = doc.xref_object(xref)
+        except Exception:
+            continue
+        if "/Alt" not in obj:
+            continue
+        alt_match = re.search(r"/Alt\s*\((.*?)\)", obj)
+        alt_text = alt_match.group(1) if alt_match else None
+        for occurrence in occurrences:
+            if occurrence["image_xref"] == xref:
+                results[occurrence["occurrence_id"]] = (True, alt_text)
+
+    struct_tree = page.get_text("dict")
+    for block in struct_tree.get("blocks", []):
+        if block.get("type") != 1 or not block.get("alt"):
+            continue
+        try:
+            block_bbox = tuple(float(value) for value in block.get("bbox", ()))
+        except (TypeError, ValueError):
+            continue
+        matches = [
+            occurrence
+            for occurrence in occurrences
+            if occurrence["image_xref"] == block.get("xref")
+            and len(block_bbox) == 4
+            and all(
+                abs(left - right) <= 1e-3
+                for left, right in zip(occurrence["bbox"], block_bbox)
+            )
+        ]
+        if len(matches) == 1:
+            results[matches[0]["occurrence_id"]] = (True, block["alt"])
+    return results
 
 
 class ImageAccessibilityChecker:
@@ -153,6 +179,7 @@ class ImageAccessibilityChecker:
 
             for page_num, page in enumerate(doc, start=1):
                 images = _displayed_image_occurrences(page, page_num)
+                alt_lookup = _occurrence_alt_lookup(doc, page, images)
                 logger.info(
                     f"[ImageChecker] Page {page_num}: found {len(images)} images"
                 )
@@ -160,9 +187,9 @@ class ImageAccessibilityChecker:
                 for occurrence in images:
                     img_index = occurrence["image_index"]
                     xref = occurrence["image_xref"]
-                    has_alt_text, existing_alt_text = self._check_image_has_alt_text(
-                        doc, xref, page
-                    )
+                    has_alt_text, existing_alt_text = alt_lookup[
+                        occurrence["occurrence_id"]
+                    ]
 
                     if not has_alt_text and scan_only:
                         # Scan-only mode: record the issue with xref so the
@@ -803,7 +830,7 @@ class ImageAccessibilityChecker:
                         if block.get("xref") == xref:
                             alt_text = block["alt"]
                             logger.info(
-                                f"[ImageChecker] Image xref {xref} has alt text: {alt_text[:50]}..."
+                                "[ImageChecker] Image xref %s has alt text", xref
                             )
                             return (True, alt_text)
 

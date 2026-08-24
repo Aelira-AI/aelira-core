@@ -108,7 +108,7 @@ class PDFImageIssue(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     page_number: int
-    image_index: int  # Index of image on the page
+    image_index: int  # Index in displayed image occurrences on the page
     occurrence_ordinal: int
     bbox: Tuple[float, float, float, float]
     occurrence_id: str

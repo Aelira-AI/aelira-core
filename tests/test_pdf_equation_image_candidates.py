@@ -7,6 +7,7 @@ from PIL import Image
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
 from src.education.pdf_checks.image_checker import ImageAccessibilityChecker
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
+from src.education.pdf_checks.image_checker import _occurrence_alt_lookup
 from src.education.pdf_checks.math_checker import MathEquationChecker
 
 
@@ -130,7 +131,7 @@ def test_invalid_xrefs_and_missing_bboxes_are_not_addressable_candidates():
     assert occurrences[0]["bbox"] == (10.25, 20.5, 90.75, 55.125)
 
 
-def test_duplicate_resource_entries_for_one_xref_are_not_addressable():
+def test_display_index_does_not_depend_on_resource_alias_order():
     class _Page:
         def get_images(self, full=True):
             return [(7,), (7,)]
@@ -138,7 +139,10 @@ def test_duplicate_resource_entries_for_one_xref_are_not_addressable():
         def get_image_info(self, xrefs=True):
             return [{"xref": 7, "bbox": (10.0, 20.0, 90.0, 55.0)}]
 
-    assert _displayed_image_occurrences(_Page(), 1) == []
+    occurrences = _displayed_image_occurrences(_Page(), 1)
+
+    assert len(occurrences) == 1
+    assert occurrences[0]["image_index"] == 0
 
 
 def test_invalid_earlier_draw_does_not_shift_later_resource_index():
@@ -157,3 +161,54 @@ def test_invalid_earlier_draw_does_not_shift_later_resource_index():
     assert len(occurrences) == 1
     assert occurrences[0]["image_index"] == 1
     assert occurrences[0]["occurrence_ordinal"] == 1
+
+
+def test_alt_lookup_is_occurrence_specific_and_parses_page_once():
+    class _Doc:
+        def xref_object(self, xref):
+            return ""
+
+    class _Page:
+        calls = 0
+
+        def get_text(self, mode):
+            assert mode == "dict"
+            self.calls += 1
+            return {
+                "blocks": [
+                    {
+                        "type": 1,
+                        "xref": 7,
+                        "bbox": (10.0, 20.0, 90.0, 55.0),
+                        "alt": "first occurrence",
+                    }
+                ]
+            }
+
+    occurrences = [
+        {
+            "image_xref": 7,
+            "bbox": (10.0, 20.0, 90.0, 55.0),
+            "occurrence_id": "first",
+        },
+        {
+            "image_xref": 7,
+            "bbox": (10.0, 70.0, 90.0, 105.0),
+            "occurrence_id": "second",
+        },
+    ]
+    page = _Page()
+
+    lookup = _occurrence_alt_lookup(_Doc(), page, occurrences)
+
+    assert page.calls == 1
+    assert lookup["first"] == (True, "first occurrence")
+    assert lookup["second"] == (False, None)
+
+
+def test_alt_lookup_does_not_parse_pages_without_images():
+    class _Page:
+        def get_text(self, mode):
+            raise AssertionError("empty image pages must not be parsed")
+
+    assert _occurrence_alt_lookup(object(), _Page(), []) == {}
