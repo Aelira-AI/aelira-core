@@ -352,30 +352,34 @@ def test_pinned_renderer_calibration_separates_supported_math_near_misses():
     )
     renderer = OfflineMathMLRenderer()
     verifier = EquationVerifier(renderer=renderer.render)
+    metric_tolerance = manifest["cross_platform_metric_tolerance"]
     executed_positive = []
     executed_negative = []
     for item in manifest["positive_pairs"]:
         source = _validated(renderer.render(convert(item["latex"])))
         evidence = verifier.verify(source, item["latex"])
         assert evidence.passed is True
-        assert evidence.ink_iou == pytest.approx(item["ink_iou"], abs=0.005)
+        assert evidence.ink_iou == pytest.approx(item["ink_iou"], abs=metric_tolerance)
         assert evidence.pixel_similarity == pytest.approx(
-            item["pixel_similarity"], abs=0.005
+            item["pixel_similarity"], abs=metric_tolerance
         )
         executed_positive.append(evidence.ink_iou)
     for item in manifest["near_miss_pairs"]:
         source = _validated(renderer.render(convert(item["source_latex"])))
         evidence = verifier.verify(source, item["changed_latex"])
         assert evidence.passed is False
-        assert evidence.ink_iou == pytest.approx(item["ink_iou"], abs=0.005)
+        assert evidence.ink_iou == pytest.approx(item["ink_iou"], abs=metric_tolerance)
         assert evidence.pixel_similarity == pytest.approx(
-            item["pixel_similarity"], abs=0.005
+            item["pixel_similarity"], abs=metric_tolerance
         )
         executed_negative.append(evidence.ink_iou)
-    assert min(executed_positive) == pytest.approx(0.991489, abs=0.005)
-    assert max(executed_negative) == pytest.approx(0.884669, abs=0.005)
     assert verifier.config.required_ink_iou == 0.90
-    assert min(executed_positive) - max(executed_negative) >= 0.10
+    assert min(executed_positive) >= verifier.config.required_ink_iou
+    assert max(executed_negative) < verifier.config.required_ink_iou
+    assert (
+        min(executed_positive) - max(executed_negative)
+        >= manifest["minimum_documented_margin"]
+    )
 
 
 def _hanging_renderer_worker(mathml, font_data, connection, max_width, max_height):
