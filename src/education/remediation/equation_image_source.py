@@ -117,17 +117,19 @@ def _complete_webp(data: bytes) -> bool:
     allowed = {b"VP8 ", b"VP8L", b"VP8X", b"ALPH", b"ICCP", b"EXIF", b"XMP "}
     seen: set[bytes] = set()
     image_chunks = 0
+    image_seen = False
     offset = 12
     while offset < len(data):
         if len(data) - offset < 8:
             return False
         kind = data[offset : offset + 4]
         length = int.from_bytes(data[offset + 4 : offset + 8], "little")
-        if kind not in allowed or kind in seen:
+        if image_seen or kind not in allowed or kind in seen:
             return False
         seen.add(kind)
         if kind in {b"VP8 ", b"VP8L"}:
             image_chunks += 1
+            image_seen = True
         end = offset + 8 + length
         padded_end = end + (length & 1)
         if end > len(data) or padded_end > len(data):

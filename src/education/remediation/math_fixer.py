@@ -202,10 +202,26 @@ class MathFixer:
         *,
         struct_tree: Optional[Any] = None,
         ai_client: Optional[Any] = None,
+        alt_text_client: Optional[Any] = None,
+        image_source: Optional[Any] = None,
+        equation_recognizer: Optional[Any] = None,
+        equation_verifier: Optional[Any] = None,
     ) -> None:
         self.pdf = pdf
         self.fitz_doc = fitz_doc
         self.ai_client = ai_client
+        self.alt_text_client = alt_text_client
+        if image_source is None:
+            from .equation_image_source import EquationImageSource
+
+            image_source = EquationImageSource()
+        if equation_recognizer is None and alt_text_client is not None:
+            from .equation_recognizer import EquationRecognizer
+
+            equation_recognizer = EquationRecognizer(alt_text_client)
+        self.image_source = image_source
+        self.equation_recognizer = equation_recognizer
+        self.equation_verifier = equation_verifier
 
         if struct_tree is not None:
             self.struct_tree = struct_tree
@@ -286,11 +302,7 @@ class MathFixer:
                 error=f"Unrecognised issue_type: {issue_type!r}",
             )
         if issue_type == IMAGE_EQUATION_ISSUE_TYPE:
-            return MathFixResult(
-                success=False,
-                error="image_equation_pipeline_unavailable",
-                page_number=int(metadata.get("page_number", 1) or 1),
-            )
+            return self._prepare_image_equation(metadata)
 
         # Determine page number (1-indexed)
         page_number: int = int(metadata.get("page_number", 1) or 1)
@@ -345,6 +357,63 @@ class MathFixer:
             aria_label=aria_label,
             page_number=page_number,
             has_mathml=has_mathml,
+        )
+
+    def _prepare_image_equation(self, metadata: dict[str, Any]) -> MathFixResult:
+        page_number = int(metadata.get("page_number", 1) or 1)
+        if self.equation_recognizer is None:
+            return MathFixResult(
+                success=False,
+                error="alt_text_client_unavailable",
+                page_number=page_number,
+            )
+        if self.equation_verifier is None:
+            return MathFixResult(
+                success=False,
+                error="equation_verifier_unavailable",
+                page_number=page_number,
+            )
+        try:
+            validated = self.image_source.extract(self.fitz_doc, metadata)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="equation_image_source_rejected",
+                page_number=page_number,
+            )
+        try:
+            recognition = self.equation_recognizer.recognize(validated)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="equation_recognition_rejected",
+                page_number=page_number,
+            )
+        if recognition.classification != "printed_equation" or not recognition.latex:
+            return MathFixResult(
+                success=False,
+                error="not_printed_equation",
+                page_number=page_number,
+            )
+        try:
+            verification = self.equation_verifier.verify(validated, recognition.latex)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="equation_verification_failed",
+                page_number=page_number,
+            )
+        if getattr(verification, "passed", False) is not True:
+            return MathFixResult(
+                success=False,
+                error="equation_verification_failed",
+                page_number=page_number,
+            )
+        return MathFixResult(
+            success=False,
+            error="image_equation_association_unavailable",
+            equation_text=recognition.latex,
+            page_number=page_number,
         )
 
     def _convert_to_mathml(self, latex: str) -> str:

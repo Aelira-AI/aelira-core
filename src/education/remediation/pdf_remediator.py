@@ -982,6 +982,7 @@ class PdfRemediator(BaseRemediator):
                     self._pdf,
                     struct_tree=self._struct_tree,
                     ai_client=None,
+                    alt_text_client=self.alt_text_client,
                 )
                 results = specialist.fix(issues)
                 for i, result in enumerate(results):

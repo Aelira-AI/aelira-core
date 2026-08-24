@@ -145,4 +145,4 @@ def test_image_candidate_fails_closed_until_recognition_pipeline_exists():
     )
 
     assert not result.success
-    assert result.error == "image_equation_pipeline_unavailable"
+    assert result.error == "alt_text_client_unavailable"

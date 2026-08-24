@@ -205,6 +205,20 @@ def test_webp_unknown_chunk_is_rejected_even_when_riff_length_is_adjusted():
         EquationImageSource().extract(Document(bytes(source), "webp"), IDENTITY)
 
 
+def test_webp_allowlisted_metadata_after_image_is_still_rejected():
+    from src.education.remediation.equation_image_source import (
+        EquationImageSource,
+        ImageSourceRejected,
+    )
+
+    source = bytearray(encoded("WEBP"))
+    source.extend(b"EXIF\x04\x00\x00\x00data")
+    source[4:8] = (len(source) - 8).to_bytes(4, "little")
+
+    with pytest.raises(ImageSourceRejected, match="trailing_image_data"):
+        EquationImageSource().extract(Document(bytes(source), "webp"), IDENTITY)
+
+
 def test_rejected_source_never_invokes_downstream_or_mutates():
     from src.education.remediation.equation_image_source import prepare_equation_image
 
