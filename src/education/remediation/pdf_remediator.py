@@ -19,14 +19,17 @@ compliance) and PyMuPDF (fitz) for text/image extraction during analysis.
 
 import base64
 import binascii
+import hashlib
 import html
 import logging
 import os
 import re
+import secrets
 import shutil
 import stat
 import tempfile
 import warnings
+from contextlib import contextmanager
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
@@ -77,6 +80,7 @@ from .role_mapping_fixer import RoleMappingFixer
 from .font_unicode_fixer import FontUnicodeFixer
 from .math_fixer import MathFixer
 from .contrast_flagger import ContrastFlagger
+from .output_claim import DescriptorBoundOutputClaim
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +112,17 @@ _IMAGE_DATA_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _BASE64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}\Z")
+_BASE64_DECODE_ERRORS = (binascii.Error, ValueError)
 _MAX_IMAGE_DATA_BYTES = 10 * 1024 * 1024
 _MAX_IMAGE_WIDTH = 10_000
 _MAX_IMAGE_HEIGHT = 10_000
 _MAX_IMAGE_PIXELS = 25_000_000
+_MAX_PDF_CANDIDATE_BYTES = 100 * 1024 * 1024
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PUBLICATION_DIR_FD_FUNCTIONS = {
+    name: getattr(os, name, None)
+    for name in ("open", "mkdir", "rename", "stat", "unlink", "rmdir")
+}
 
 
 def _is_complete_png_file(image_bytes: bytes) -> bool:
@@ -298,7 +308,7 @@ def _safe_image_data_source(value: str) -> Optional[str]:
 
     try:
         decoded = base64.b64decode(payload, validate=True)
-    except (binascii.Error, ValueError):
+    except _BASE64_DECODE_ERRORS:
         return None
     if not decoded or len(decoded) > _MAX_IMAGE_DATA_BYTES:
         return None
@@ -817,6 +827,7 @@ class PdfRemediator(BaseRemediator):
             logger.error("Remediation failed: %s", e)
             self.result.success = False
             self.result.error_message = str(e)
+            self.result.close_output_claim()
             self.result.complete()
         finally:
             self._cleanup_working_copy()
@@ -1563,46 +1574,154 @@ class PdfRemediator(BaseRemediator):
         return self._pdf
 
     def _save_document(self, document: Any) -> str:
-        """Prepare artifacts privately, then atomically publish final paths."""
+        """Prepare privately and publish through retained directory descriptors."""
         output_path = self._get_output_path()
         logger.info(f"Saving remediated PDF to: {output_path}")
 
         output_dir = Path(output_path).parent
-        output_dir.mkdir(parents=True, exist_ok=True)
-        candidate_dir = tempfile.mkdtemp(
-            prefix=f".{Path(output_path).stem}.candidate-",
-            dir=str(output_dir),
-        )
-        candidate_path = str(Path(candidate_dir) / "candidate.pdf")
+        output_name = Path(output_path).name
+        html_name: Optional[str] = None
         html_path: Optional[str] = None
-        html_candidate_path: Optional[str] = None
         html_existed = False
+        output_dir_fd: Optional[int] = None
+        candidate_dir_fd: Optional[int] = None
+        candidate_dir_name: Optional[str] = None
+        candidate_dir_path: Optional[str] = None
+        candidate_identity: Optional[tuple[int, int]] = None
+        serialization_dir_path: Optional[str] = None
+        serialization_cleanup_attempted = False
+        pdf_candidate_identity: Optional[tuple[int, int]] = None
+        pdf_candidate_fd: Optional[int] = None
+        local_claim: Optional[DescriptorBoundOutputClaim] = None
+        html_candidate_identity: Optional[tuple[int, int]] = None
+        document_handles_closed = False
+        primary_error: Optional[Exception] = None
+        maintenance_errors: List[str] = []
 
         try:
-            os.chmod(candidate_dir, 0o700)
-            self._write_pdf_output(document, candidate_path)
+            self._require_descriptor_publication_support()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_dir_fd = self._open_bound_directory(
+                str(output_dir), purpose="output directory"
+            )
+            candidate_dir_name, candidate_identity = self._create_candidate_directory(
+                output_dir_fd,
+                prefix=f".{Path(output_path).stem}.candidate-",
+            )
+            candidate_dir_path = str(output_dir / candidate_dir_name)
+            candidate_dir_fd = self._open_bound_directory(
+                candidate_dir_name,
+                purpose="candidate directory",
+                dir_fd=output_dir_fd,
+                expected_mode=0o700,
+            )
+            candidate_stat = os.fstat(candidate_dir_fd)
+            if (candidate_stat.st_dev, candidate_stat.st_ino) != candidate_identity:
+                raise RuntimeError(
+                    "Candidate directory identity changed while it was being bound; "
+                    f"private candidate may be retained at '{candidate_dir_path}'"
+                )
+
+            serialization_dir_path = tempfile.mkdtemp(
+                prefix="aelira_pdf_serialization_"
+            )
+            self._validate_serialization_directory(serialization_dir_path, output_dir)
+            serialization_path = str(Path(serialization_dir_path) / "serialized.pdf")
+            self._write_pdf_output(document, serialization_path)
             close_error = self._close_document_handles(document)
+            document_handles_closed = True
             if close_error:
                 raise RuntimeError(close_error)
-            self._validate_output_candidate(candidate_path)
-
-            if self._html_output is not None:
-                html_path = str(
-                    Path(output_path).with_name(
-                        f"{Path(output_path).stem}_accessible.html"
+            self._copy_serialized_pdf_to_candidate(serialization_path, candidate_dir_fd)
+            serialization_cleanup_attempted = True
+            serialization_cleanup_error = self._remove_serialization_directory(
+                serialization_dir_path
+            )
+            if serialization_cleanup_error:
+                raise RuntimeError(serialization_cleanup_error)
+            serialization_dir_path = None
+            (
+                pdf_candidate_fd,
+                validated_candidate_size,
+                validated_candidate_sha256,
+            ) = self._validate_output_candidate(
+                "candidate.pdf", dir_fd=candidate_dir_fd
+            )
+            pdf_candidate_metadata = os.fstat(pdf_candidate_fd)
+            pdf_candidate_identity = (
+                pdf_candidate_metadata.st_dev,
+                pdf_candidate_metadata.st_ino,
+            )
+            try:
+                local_claim = (
+                    DescriptorBoundOutputClaim._snapshot_from_owned_descriptor(
+                        pdf_candidate_fd,
+                        filename=output_name,
+                        display_path=output_path,
+                        mime="application/pdf",
                     )
                 )
-                html_existed = os.path.lexists(html_path)
-                html_candidate_path = str(Path(candidate_dir) / "candidate.html")
-                self._write_html_candidate(html_candidate_path)
-                self._validate_html_candidate(html_candidate_path)
+            finally:
+                pdf_candidate_fd = None
+            if (
+                local_claim.size != validated_candidate_size
+                or local_claim.sha256 != validated_candidate_sha256
+            ):
+                raise RuntimeError(
+                    "Validated PDF candidate changed while its private output "
+                    "claim snapshot was created"
+                )
 
-            os.replace(candidate_path, output_path)
+            if self._html_output is not None:
+                html_name = f"{Path(output_path).stem}_accessible.html"
+                html_path = str(Path(output_path).with_name(html_name))
+                html_existed = self._directory_entry_exists(output_dir_fd, html_name)
+                self._write_html_candidate("candidate.html", dir_fd=candidate_dir_fd)
+                html_candidate_identity = self._validate_html_candidate(
+                    "candidate.html", dir_fd=candidate_dir_fd
+                )
+
+            self._verify_bound_directory(
+                output_dir_fd, str(output_dir), purpose="output directory"
+            )
+            self._verify_bound_directory(
+                candidate_dir_fd,
+                candidate_dir_path,
+                purpose="candidate directory",
+                expected_mode=0o700,
+            )
+            self._verify_candidate_entry(
+                candidate_dir_fd,
+                "candidate.pdf",
+                pdf_candidate_identity,
+                purpose="PDF candidate",
+            )
+            if html_candidate_identity is not None:
+                self._verify_candidate_entry(
+                    candidate_dir_fd,
+                    "candidate.html",
+                    html_candidate_identity,
+                    purpose="HTML candidate",
+                )
+            self._verify_current_path_binding(
+                output_dir_fd, str(output_dir), purpose="output directory"
+            )
+            os.rename(
+                "candidate.pdf",
+                output_name,
+                src_dir_fd=candidate_dir_fd,
+                dst_dir_fd=output_dir_fd,
+            )
             logger.info("Atomically published validated PDF: %s", output_path)
 
-            if html_path and html_candidate_path:
+            if html_path and html_name:
                 try:
-                    os.replace(html_candidate_path, html_path)
+                    os.rename(
+                        "candidate.html",
+                        html_name,
+                        src_dir_fd=candidate_dir_fd,
+                        dst_dir_fd=output_dir_fd,
+                    )
                 except Exception as e:
                     if html_existed:
                         html_state = f"prior HTML retained at: {html_path}"
@@ -1620,26 +1739,436 @@ class PdfRemediator(BaseRemediator):
                         f"HTML alternative saved to: {html_path}"
                     )
         except Exception as e:
-            close_error = self._close_document_handles(document)
-            cleanup_error = self._remove_candidate_directory(candidate_dir)
-            additional_errors = [
-                error for error in (close_error, cleanup_error) if error
-            ]
-            if additional_errors:
-                raise RuntimeError(f"{e}; {'; '.join(additional_errors)}") from e
-            raise
+            primary_error = e
+        finally:
+            if not document_handles_closed:
+                close_error = self._close_document_handles(document)
+                if close_error:
+                    maintenance_errors.append(close_error)
 
-        cleanup_error = self._remove_candidate_directory(candidate_dir)
-        if cleanup_error:
-            raise RuntimeError(cleanup_error)
+            if serialization_dir_path and not serialization_cleanup_attempted:
+                serialization_cleanup_error = self._remove_serialization_directory(
+                    serialization_dir_path
+                )
+                if serialization_cleanup_error:
+                    maintenance_errors.append(serialization_cleanup_error)
+
+            if candidate_dir_name and output_dir_fd is not None:
+                cleanup_error = self._remove_candidate_directory(
+                    candidate_dir_path or str(output_dir / candidate_dir_name),
+                    candidate_dir_name,
+                    candidate_dir_fd,
+                    output_dir_fd,
+                    candidate_identity,
+                )
+                if cleanup_error:
+                    maintenance_errors.append(cleanup_error)
+
+            for descriptor, purpose, retained_path in (
+                (
+                    candidate_dir_fd,
+                    "candidate directory",
+                    candidate_dir_path or str(output_dir),
+                ),
+                (output_dir_fd, "output directory", str(output_dir)),
+            ):
+                if descriptor is None:
+                    continue
+                try:
+                    os.close(descriptor)
+                except Exception as e:
+                    close_error = (
+                        f"Publication descriptor close failed for {purpose} "
+                        f"'{retained_path}'; descriptor may remain open: {e}"
+                    )
+                    logger.error(close_error)
+                    self.result.warnings.append(close_error)
+                    maintenance_errors.append(close_error)
+
+        if (
+            primary_error is not None or maintenance_errors
+        ) and pdf_candidate_fd is not None:
+            try:
+                os.close(pdf_candidate_fd)
+            except Exception as e:
+                close_error = (
+                    "Validated PDF candidate descriptor close failed for "
+                    f"'{output_path}'; descriptor may remain open: {e}"
+                )
+                logger.error(close_error)
+                self.result.warnings.append(close_error)
+                maintenance_errors.append(close_error)
+            else:
+                pdf_candidate_fd = None
+
+        if primary_error is not None or maintenance_errors:
+            if local_claim is not None:
+                try:
+                    local_claim.close()
+                except Exception as e:
+                    close_error = (
+                        "Private output claim close failed after unsuccessful "
+                        f"publication for '{output_path}': {e}"
+                    )
+                    logger.error(close_error)
+                    self.result.warnings.append(close_error)
+                    maintenance_errors.append(close_error)
+                else:
+                    local_claim = None
+
+        if primary_error is not None:
+            if maintenance_errors:
+                raise RuntimeError(
+                    f"{primary_error}; {'; '.join(maintenance_errors)}"
+                ) from primary_error
+            raise primary_error
+        if maintenance_errors:
+            raise RuntimeError("; ".join(maintenance_errors))
+
+        if local_claim is None:
+            raise RuntimeError("Validated PDF output claim was not retained")
+        try:
+            self.result.set_output_claim(local_claim)
+        except Exception:
+            local_claim.close()
+            raise
+        local_claim = None
         return output_path
 
-    def _write_html_candidate(self, candidate_path: str) -> None:
+    @staticmethod
+    def _validate_serialization_directory(
+        serialization_dir: str, output_dir: Path
+    ) -> None:
+        """Require a private library-write directory outside caller output."""
+        os.chmod(serialization_dir, 0o700)
+        metadata = os.lstat(serialization_dir)
+        mode = stat.S_IMODE(metadata.st_mode)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(
+                f"PDF serialization path is not a directory: '{serialization_dir}'"
+            )
+        if metadata.st_uid != os.geteuid():
+            raise RuntimeError(
+                "PDF serialization directory is not owned by the current user: "
+                f"'{serialization_dir}'"
+            )
+        if mode != 0o700:
+            raise RuntimeError(
+                f"PDF serialization directory '{serialization_dir}' has mode "
+                f"{mode:#o}; expected 0o700"
+            )
+        resolved_serialization = Path(serialization_dir).resolve(strict=True)
+        resolved_output = output_dir.resolve(strict=True)
+        if (
+            resolved_serialization == resolved_output
+            or resolved_output in resolved_serialization.parents
+        ):
+            raise RuntimeError(
+                "PDF serialization directory must be outside the caller output "
+                f"directory: '{serialization_dir}'"
+            )
+
+    @staticmethod
+    def _copy_serialized_pdf_to_candidate(
+        serialization_path: str, candidate_dir_fd: int
+    ) -> None:
+        """Validate a library serialization and copy it to a bound candidate."""
+        source_fd: Optional[int] = None
+        destination_fd: Optional[int] = None
+        destination_created = False
+        transfer_error: Optional[Exception] = None
+        close_errors = []
+
+        try:
+            source_flags = os.O_RDONLY | os.O_NOFOLLOW
+            if hasattr(os, "O_CLOEXEC"):
+                source_flags |= os.O_CLOEXEC
+            try:
+                source_fd = os.open(serialization_path, source_flags)
+            except Exception as e:
+                raise RuntimeError(
+                    "PDF serialization source could not be opened securely; "
+                    f"symbolic links are forbidden: {e}"
+                ) from e
+
+            source_metadata = os.fstat(source_fd)
+            if not stat.S_ISREG(source_metadata.st_mode):
+                raise RuntimeError("PDF serialization source is not a regular file")
+            if source_metadata.st_uid != os.geteuid():
+                raise RuntimeError(
+                    "PDF serialization source is not owned by the current user"
+                )
+            if source_metadata.st_size <= 0:
+                raise RuntimeError(
+                    "PDF serialization source size must be greater than zero"
+                )
+            if source_metadata.st_size > _MAX_PDF_CANDIDATE_BYTES:
+                raise RuntimeError(
+                    "PDF serialization source size exceeds the publication "
+                    f"limit of {_MAX_PDF_CANDIDATE_BYTES} bytes"
+                )
+
+            destination_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            if hasattr(os, "O_CLOEXEC"):
+                destination_flags |= os.O_CLOEXEC
+            destination_fd = os.open(
+                "candidate.pdf",
+                destination_flags,
+                0o600,
+                dir_fd=candidate_dir_fd,
+            )
+            destination_created = True
+
+            remaining = source_metadata.st_size
+            while remaining:
+                chunk = os.read(source_fd, min(1024 * 1024, remaining))
+                if not chunk:
+                    raise RuntimeError(
+                        "PDF serialization source ended before its validated size"
+                    )
+                remaining -= len(chunk)
+                offset = 0
+                while offset < len(chunk):
+                    written = os.write(destination_fd, chunk[offset:])
+                    if written <= 0:
+                        raise RuntimeError(
+                            "PDF candidate copy made no forward progress"
+                        )
+                    offset += written
+            if os.read(source_fd, 1):
+                raise RuntimeError(
+                    "PDF serialization source grew beyond its validated size"
+                )
+            os.fsync(destination_fd)
+        except Exception as e:
+            transfer_error = e
+        finally:
+            for descriptor, label in (
+                (destination_fd, "PDF candidate destination"),
+                (source_fd, "PDF serialization source"),
+            ):
+                if descriptor is None:
+                    continue
+                try:
+                    os.close(descriptor)
+                except Exception as e:
+                    close_errors.append(f"could not close {label}: {e}")
+
+        if transfer_error is None and not close_errors:
+            return
+
+        cleanup_error = None
+        if destination_created:
+            try:
+                os.unlink("candidate.pdf", dir_fd=candidate_dir_fd)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                cleanup_error = f"could not unlink the bound partial PDF candidate: {e}"
+
+        errors = []
+        if transfer_error is not None:
+            errors.append(str(transfer_error))
+        errors.extend(close_errors)
+        if cleanup_error:
+            errors.append(cleanup_error)
+        raise RuntimeError("PDF serialization copy failed: " + "; ".join(errors))
+
+    def _remove_serialization_directory(self, serialization_dir: str) -> Optional[str]:
+        """Remove the private library-write directory or report its path."""
+        try:
+            shutil.rmtree(serialization_dir)
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            cleanup_error = (
+                "Serialization cleanup failed; private serialization directory "
+                f"retained at '{serialization_dir}' for operator cleanup: {e}"
+            )
+            logger.error(cleanup_error)
+            self.result.warnings.append(cleanup_error)
+            return cleanup_error
+        return None
+
+    @staticmethod
+    def _require_descriptor_publication_support() -> None:
+        """Fail closed unless the host provides every required dir-fd primitive."""
+        missing = []
+        for constant in ("O_DIRECTORY", "O_NOFOLLOW"):
+            if not hasattr(os, constant):
+                missing.append(constant)
+        supported = getattr(os, "supports_dir_fd", set())
+        for function_name, function in _PUBLICATION_DIR_FD_FUNCTIONS.items():
+            if function is None or function not in supported:
+                missing.append(f"os.{function_name}(dir_fd=...)")
+        for function_name in ("fchmod", "fstat", "geteuid"):
+            if not hasattr(os, function_name):
+                missing.append(f"os.{function_name}")
+        if missing:
+            raise RuntimeError(
+                "Descriptor-bound publication is unsupported on this platform; "
+                f"missing: {', '.join(missing)}"
+            )
+
+    @classmethod
+    def _open_bound_directory(
+        cls,
+        path: str,
+        *,
+        purpose: str,
+        dir_fd: Optional[int] = None,
+        expected_mode: Optional[int] = None,
+    ) -> int:
+        """Open a directory without symlink traversal and verify it by fstat."""
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            descriptor = os.open(path, flags, dir_fd=dir_fd)
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not securely open {purpose} '{path}': {e}"
+            ) from e
+        try:
+            if expected_mode is not None:
+                os.fchmod(descriptor, expected_mode)
+            cls._verify_bound_directory(
+                descriptor,
+                path,
+                purpose=purpose,
+                expected_mode=expected_mode,
+            )
+        except Exception as e:
+            try:
+                os.close(descriptor)
+            except Exception as close_exception:
+                raise RuntimeError(
+                    f"{e}; descriptor close failed for {purpose} '{path}': "
+                    f"{close_exception}"
+                ) from e
+            raise
+        return descriptor
+
+    @staticmethod
+    def _verify_bound_directory(
+        descriptor: int,
+        path: str,
+        *,
+        purpose: str,
+        expected_mode: Optional[int] = None,
+    ) -> None:
+        """Reject non-directory, unowned, or unexpectedly permissive bindings."""
+        metadata = os.fstat(descriptor)
+        mode = stat.S_IMODE(metadata.st_mode)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(f"Bound {purpose} '{path}' is not a directory")
+        if metadata.st_uid != os.geteuid():
+            raise RuntimeError(
+                f"Bound {purpose} '{path}' is not owned by the current user"
+            )
+        if expected_mode is not None:
+            if mode != expected_mode:
+                raise RuntimeError(
+                    f"Bound {purpose} '{path}' has mode {mode:#o}; "
+                    f"expected {expected_mode:#o}"
+                )
+        elif mode & 0o022:
+            raise RuntimeError(
+                f"Bound {purpose} '{path}' is unexpectedly permissive "
+                f"(mode {mode:#o})"
+            )
+
+    @staticmethod
+    def _verify_current_path_binding(
+        descriptor: int, path: str, *, purpose: str
+    ) -> None:
+        """Require the current pathname to identify the retained directory."""
+        bound_metadata = os.fstat(descriptor)
+        try:
+            path_metadata = os.lstat(path)
+        except Exception as e:
+            raise RuntimeError(
+                f"Current {purpose} pathname '{path}' cannot be verified: {e}"
+            ) from e
+        if not stat.S_ISDIR(path_metadata.st_mode):
+            raise RuntimeError(
+                f"Current {purpose} pathname '{path}' is not a directory"
+            )
+        bound_identity = (bound_metadata.st_dev, bound_metadata.st_ino)
+        path_identity = (path_metadata.st_dev, path_metadata.st_ino)
+        if path_identity != bound_identity:
+            raise RuntimeError(
+                f"Current {purpose} pathname '{path}' no longer identifies "
+                "the retained publication directory"
+            )
+
+    @staticmethod
+    def _create_candidate_directory(
+        output_dir_fd: int, *, prefix: str
+    ) -> tuple[str, tuple[int, int]]:
+        """Create one private candidate child through the bound output fd."""
+        for _ in range(100):
+            candidate_name = f"{prefix}{secrets.token_hex(4)}"
+            try:
+                os.mkdir(candidate_name, 0o700, dir_fd=output_dir_fd)
+            except FileExistsError:
+                continue
+            try:
+                metadata = os.stat(
+                    candidate_name, dir_fd=output_dir_fd, follow_symlinks=False
+                )
+            except Exception as e:
+                try:
+                    os.rmdir(candidate_name, dir_fd=output_dir_fd)
+                except Exception as cleanup_exception:
+                    raise RuntimeError(
+                        "Could not verify newly created candidate directory; "
+                        f"cleanup also failed for '{candidate_name}': "
+                        f"{cleanup_exception}"
+                    ) from e
+                raise RuntimeError(
+                    f"Could not verify newly created candidate directory: {e}"
+                ) from e
+            return candidate_name, (metadata.st_dev, metadata.st_ino)
+        raise RuntimeError("Could not allocate a unique private candidate directory")
+
+    @staticmethod
+    def _directory_entry_exists(directory_fd: int, name: str) -> bool:
+        """Check an entry relative to a retained directory descriptor."""
+        try:
+            os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        return True
+
+    @staticmethod
+    def _verify_candidate_entry(
+        directory_fd: int,
+        name: str,
+        expected_identity: Optional[tuple[int, int]],
+        *,
+        purpose: str,
+    ) -> None:
+        """Require a candidate basename to still identify its validated file."""
+        if expected_identity is None:
+            raise RuntimeError(f"{purpose} has no validated file identity")
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"{purpose} is no longer a regular file")
+        if (metadata.st_dev, metadata.st_ino) != expected_identity:
+            raise RuntimeError(f"{purpose} identity changed after validation")
+
+    def _write_html_candidate(
+        self, candidate_path: str, *, dir_fd: Optional[int] = None
+    ) -> None:
         """Exclusively create the HTML candidate without following symlinks."""
+        if dir_fd is None:
+            raise RuntimeError("HTML candidate write requires a bound directory")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        descriptor = os.open(candidate_path, flags, 0o600)
+        flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor = os.open(candidate_path, flags, 0o600, dir_fd=dir_fd)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 descriptor = None
@@ -1649,16 +2178,26 @@ class PdfRemediator(BaseRemediator):
                 os.close(descriptor)
 
     @staticmethod
-    def _validate_html_candidate(candidate_path: str) -> None:
+    def _validate_html_candidate(
+        candidate_path: str, *, dir_fd: Optional[int] = None
+    ) -> tuple[int, int]:
         """Require a non-empty UTF-8 regular file before publication."""
-        flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        descriptor = os.open(candidate_path, flags)
+        if dir_fd is None:
+            raise RuntimeError("HTML candidate validation requires a bound directory")
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor = os.open(candidate_path, flags, dir_fd=dir_fd)
         try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
                 raise RuntimeError(
                     "HTML candidate validation failed: not a regular file"
+                )
+            if metadata.st_uid != os.geteuid():
+                raise RuntimeError(
+                    "HTML candidate validation failed: file is not owned by "
+                    "the current user"
                 )
             with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
                 descriptor = None
@@ -1672,6 +2211,7 @@ class PdfRemediator(BaseRemediator):
                 os.close(descriptor)
         if not content:
             raise RuntimeError("HTML candidate validation failed: content is empty")
+        return metadata.st_dev, metadata.st_ino
 
     def _close_document_handles(self, document: Any) -> Optional[str]:
         """Close save-time handles; final cleanup remains a safety net."""
@@ -1691,15 +2231,52 @@ class PdfRemediator(BaseRemediator):
             return "Save handle cleanup failed: " + "; ".join(close_errors)
         return None
 
-    def _validate_output_candidate(self, candidate_path: str) -> None:
-        """Validate the exact candidate bytes before atomic publication."""
+    def _validate_output_candidate(
+        self, candidate_path: str, *, dir_fd: Optional[int] = None
+    ) -> tuple[int, int, str]:
+        """Validate bytes and retain their descriptor, size, and digest."""
+        if dir_fd is None:
+            raise RuntimeError("PDF candidate validation requires a bound directory")
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor: Optional[int] = None
         try:
-            with fitz.open(candidate_path) as candidate:
+            descriptor = os.open(candidate_path, flags, dir_fd=dir_fd)
+            os.set_inheritable(descriptor, False)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise RuntimeError("candidate is not a regular file")
+            if metadata.st_uid != os.geteuid():
+                raise RuntimeError("candidate is not owned by the current user")
+            if metadata.st_size <= 0:
+                raise RuntimeError("candidate size must be greater than zero")
+            if metadata.st_size > _MAX_PDF_CANDIDATE_BYTES:
+                raise RuntimeError(
+                    "candidate size exceeds the publication limit of "
+                    f"{_MAX_PDF_CANDIDATE_BYTES} bytes"
+                )
+
+            remaining = metadata.st_size
+            chunks = []
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    raise RuntimeError("candidate ended before its validated size")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise RuntimeError("candidate grew beyond its validated size")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            candidate_bytes = b"".join(chunks)
+
+            with fitz.open(stream=candidate_bytes, filetype="pdf") as candidate:
                 if not candidate.is_pdf or candidate.page_count < 1:
                     raise RuntimeError("candidate is not a non-empty PDF")
                 candidate_pages = candidate.page_count
+                candidate_texts = []
                 for page in candidate:
-                    page.get_text()
+                    candidate_texts.append(page.get_text())
             with fitz.open(self._working_path) as source:
                 source_pages = source.page_count
             if candidate_pages != source_pages:
@@ -1707,21 +2284,68 @@ class PdfRemediator(BaseRemediator):
                     f"candidate page count changed from {source_pages} to "
                     f"{candidate_pages}"
                 )
-            with pikepdf.open(candidate_path) as candidate_pdf:
+            with pikepdf.open(BytesIO(candidate_bytes)) as candidate_pdf:
                 if len(candidate_pdf.pages) != source_pages:
                     raise RuntimeError("candidate page tree is inconsistent")
+
+            if self._require_output_text_layer:
+                if getattr(self, "_ocr_pages", []):
+                    missing_pages = [
+                        page_index + 1
+                        for page_index in self._ocr_pages
+                        if page_index >= len(candidate_texts)
+                        or len(candidate_texts[page_index].strip())
+                        < self._MIN_OCR_TEXT_CHARS
+                    ]
+                else:
+                    combined_text = "".join(candidate_texts)
+                    missing_pages = (
+                        []
+                        if len(combined_text.strip()) >= self._MIN_OCR_TEXT_CHARS
+                        else [1]
+                    )
+                if missing_pages:
+                    if getattr(self, "_ocr_pages", []):
+                        raise RuntimeError(
+                            "Remediated output lost the OCR text layer for page(s) "
+                            f"{missing_pages}; refusing to deliver an unsearchable file."
+                        )
+                    raise RuntimeError(
+                        "Remediated output lost the OCR text layer; refusing to "
+                        "deliver an unsearchable file for an image-only input."
+                    )
+            if self._bytes_are_identical_to_file(candidate_bytes, self.file_path):
+                raise RuntimeError(
+                    "Remediated output is byte-identical to the original input; "
+                    "refusing to publish a no-op remediation."
+                )
         except Exception as e:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             raise RuntimeError(
                 f"Remediated output candidate failed PDF validation: {e}"
             ) from e
 
-        if self._require_output_text_layer:
-            self._ensure_output_text_layer(candidate_path)
-        if self._files_are_identical(candidate_path, self.file_path):
-            raise RuntimeError(
-                "Remediated output is byte-identical to the original input; "
-                "refusing to publish a no-op remediation."
-            )
+        return descriptor, metadata.st_size, hashlib.sha256(candidate_bytes).hexdigest()
+
+    @staticmethod
+    def _bytes_are_identical_to_file(candidate_bytes: bytes, path: str) -> bool:
+        """Compare in-memory validated bytes with a file in bounded chunks."""
+        if len(candidate_bytes) != os.path.getsize(path):
+            return False
+        offset = 0
+        with open(path, "rb") as source:
+            while True:
+                source_chunk = source.read(1024 * 1024)
+                if not source_chunk:
+                    return offset == len(candidate_bytes)
+                next_offset = offset + len(source_chunk)
+                if candidate_bytes[offset:next_offset] != source_chunk:
+                    return False
+                offset = next_offset
 
     @staticmethod
     def _files_are_identical(first_path: str, second_path: str) -> bool:
@@ -1737,21 +2361,61 @@ class PdfRemediator(BaseRemediator):
                 if not first_chunk:
                     return True
 
-    def _remove_candidate_directory(self, candidate_dir: str) -> Optional[str]:
-        """Remove a candidate directory and report any retained private data."""
-        if not os.path.lexists(candidate_dir):
-            return None
+    def _remove_candidate_directory(
+        self,
+        candidate_dir: str,
+        candidate_name: str,
+        candidate_dir_fd: Optional[int],
+        output_dir_fd: int,
+        candidate_identity: Optional[tuple[int, int]],
+    ) -> Optional[str]:
+        """Remove only expected candidate entries through retained descriptors."""
+        errors = []
+        if candidate_dir_fd is not None:
+            for filename in ("candidate.pdf", "candidate.html"):
+                try:
+                    os.unlink(filename, dir_fd=candidate_dir_fd)
+                except FileNotFoundError:
+                    pass
+                except Exception as e:
+                    errors.append(f"could not unlink {filename}: {e}")
+
         try:
-            shutil.rmtree(candidate_dir)
-        except Exception as e:
-            cleanup_error = (
-                "Candidate cleanup failed; private candidate directory retained at "
-                f"'{candidate_dir}' for operator cleanup: {e}"
+            current = os.stat(
+                candidate_name,
+                dir_fd=output_dir_fd,
+                follow_symlinks=False,
             )
-            logger.error(cleanup_error)
-            self.result.warnings.append(cleanup_error)
-            return cleanup_error
-        return None
+        except FileNotFoundError:
+            if candidate_dir_fd is not None:
+                errors.append(
+                    "candidate child is no longer reachable by its bound name"
+                )
+        except Exception as e:
+            errors.append(f"could not verify candidate child identity: {e}")
+        else:
+            current_identity = (current.st_dev, current.st_ino)
+            if candidate_identity is None or current_identity != candidate_identity:
+                errors.append(
+                    "candidate child identity changed; replacement not removed"
+                )
+            elif errors:
+                pass
+            else:
+                try:
+                    os.rmdir(candidate_name, dir_fd=output_dir_fd)
+                except Exception as e:
+                    errors.append(f"could not remove candidate directory: {e}")
+
+        if not errors:
+            return None
+        cleanup_error = (
+            "Candidate cleanup failed; private candidate directory retained at "
+            f"'{candidate_dir}' for operator cleanup: {'; '.join(errors)}"
+        )
+        logger.error(cleanup_error)
+        self.result.warnings.append(cleanup_error)
+        return cleanup_error
 
     def _write_pdf_output(self, document: Any, output_path: str) -> None:
         """Write the current PDF state to ``output_path``."""
@@ -3062,161 +3726,181 @@ Generate only the alt text, nothing else:"""
                     "An accessible HTML version has been generated as an alternative."
                 )
 
+    @contextmanager
+    def _materialize_output_claim_for_verification(self):
+        """Materialize exact claimed bytes in a fresh private directory."""
+        verification_dir = tempfile.mkdtemp(prefix="aelira_pdf_verification_")
+        verification_path = str(Path(verification_dir) / "claimed-output.pdf")
+        try:
+            os.chmod(verification_dir, 0o700)
+            directory_metadata = os.lstat(verification_dir)
+            if not stat.S_ISDIR(directory_metadata.st_mode):
+                raise RuntimeError("PDF verification workspace is not a directory")
+            if directory_metadata.st_uid != os.geteuid():
+                raise RuntimeError(
+                    "PDF verification workspace is not owned by the current user"
+                )
+            if stat.S_IMODE(directory_metadata.st_mode) != 0o700:
+                raise RuntimeError("PDF verification workspace must have mode 0o700")
+
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            descriptor = os.open(verification_path, flags, 0o600)
+            try:
+                os.set_inheritable(descriptor, False)
+                with self.result.open_output_stream() as source:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        offset = 0
+                        while offset < len(chunk):
+                            written = os.write(descriptor, chunk[offset:])
+                            if written <= 0:
+                                raise RuntimeError(
+                                    "PDF verification materialization made no progress"
+                                )
+                            offset += written
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+            yield verification_path
+        finally:
+            shutil.rmtree(verification_dir)
+
     def _verify_fixes(self, output_path: str):
-        """
-        Verify remediation by re-scanning the output PDF and comparing issues.
-
-        This method:
-        1. Re-scans the remediated PDF using PDFProcessor
-        2. Compares original issues with new issues
-        3. Identifies fixed, remaining, and regression issues
-        4. Updates the result with verification data
-
-        Args:
-            output_path: Path to the remediated PDF
-        """
+        """Re-scan only bytes borrowed from the descriptor-bound output claim."""
         from .base import VerificationResult
         from ..pdf_processor import PDFProcessor
 
-        logger.info(f"Verifying remediation of {output_path}")
+        logger.info("Verifying descriptor-bound remediation output for %s", output_path)
 
         try:
-            # Re-scan the remediated document
-            processor = PDFProcessor(
-                generate_alt_text=False,  # Don't generate new alt text during verification
-                validate_alt_text=False,
-                simulate_color_blindness=False,
-            )
-            new_result = processor.process_pdf(output_path)
-
-            # Map new issues by their characteristics (not ID, since IDs are regenerated)
-            new_issue_types = set()
-            for new_issue in new_result.issues:
-                issue_key = (
-                    new_issue.get("type", new_issue.get("rule", "unknown")),
-                    new_issue.get("location", ""),
-                    new_issue.get("message", "")[:50],
+            with self._materialize_output_claim_for_verification() as verification_path:
+                processor = PDFProcessor(
+                    generate_alt_text=False,
+                    validate_alt_text=False,
+                    simulate_color_blindness=False,
                 )
-                new_issue_types.add(issue_key)
+                new_result = processor.process_pdf(verification_path)
 
-            # Determine fixed vs remaining
-            # An issue is "fixed" if a similar issue type doesn't appear in the new scan
-            issues_fixed = []
-            issues_remaining = []
-
-            for issue in self.issues:
-                issue_key = (
-                    issue.category.value,
-                    issue.location or "",
-                    issue.description[:50],
-                )
-                # Check if this type of issue still exists
-                still_exists = any(
-                    issue.category.value.lower() in str(new_type[0]).lower()
-                    or issue.description[:30].lower() in str(new_type[2]).lower()
-                    for new_type in new_issue_types
-                )
-                if still_exists:
-                    issues_remaining.append(issue.id)
-                else:
-                    issues_fixed.append(issue.id)
-
-            # Check for regressions (new issues not in original)
-            regressions = []
-            for new_issue in new_result.issues:
-                # A regression is a new issue that doesn't match any original
-                new_desc = new_issue.get("message", "")[:30].lower()
-                new_type = new_issue.get("type", new_issue.get("rule", "")).lower()
-                is_regression = not any(
-                    new_type in orig_issue.category.value.lower()
-                    or new_desc in orig_issue.description[:30].lower()
-                    for orig_issue in self.issues
-                )
-                if is_regression:
-                    regressions.append(new_issue.get("message", "Unknown issue")[:100])
-
-            # Calculate verification score
-            issues_before = len(self.issues)
-            issues_after = len(new_result.issues)
-
-            if issues_before == 0:
-                verification_score = 100.0
-            else:
-                # Score based on improvement ratio minus regression penalty
-                improvement_ratio = len(issues_fixed) / issues_before
-                regression_penalty = len(regressions) * 0.1
-                verification_score = max(
-                    0.0, min(100.0, improvement_ratio * 100 - regression_penalty * 100)
-                )
-
-            # Verification passes if no regressions and at least some issues fixed
-            passed = len(regressions) == 0 and (
-                len(issues_fixed) > 0 or issues_before == 0
-            )
-
-            verification = VerificationResult(
-                passed=passed,
-                issues_before=issues_before,
-                issues_after=issues_after,
-                issues_fixed=issues_fixed,
-                issues_remaining=issues_remaining,
-                regressions=regressions,
-                verification_score=verification_score,
-            )
-
-            # Matterhorn validation
-            try:
-                from ..validation.matterhorn import (
-                    MatterhornValidator,
-                    CheckpointStatus,
-                )
-
-                mh_validator = MatterhornValidator()
-                mh_result = mh_validator.validate(output_path)
-                if mh_result:
-                    failed_checks = [
-                        cp
-                        for cp in mh_result.checkpoints
-                        if cp.status == CheckpointStatus.FAIL
-                    ]
-                    if failed_checks:
-                        for cp in failed_checks:
-                            verification.regressions.append(
-                                f"Matterhorn {cp.id}: {cp.name}"
-                            )
-                        logger.info(
-                            f"Matterhorn: {len(failed_checks)} failed checkpoints"
-                        )
+                new_issue_types = {
+                    (
+                        issue.get("type", issue.get("rule", "unknown")),
+                        issue.get("location", ""),
+                        issue.get("message", "")[:50],
+                    )
+                    for issue in new_result.issues
+                }
+                issues_fixed = []
+                issues_remaining = []
+                for issue in self.issues:
+                    still_exists = any(
+                        issue.category.value.lower() in str(new_type[0]).lower()
+                        or issue.description[:30].lower() in str(new_type[2]).lower()
+                        for new_type in new_issue_types
+                    )
+                    if still_exists:
+                        issues_remaining.append(issue.id)
                     else:
-                        logger.info("Matterhorn: all checkpoints passed")
-            except Exception as e:
-                logger.warning(f"Matterhorn validation skipped: {e}")
+                        issues_fixed.append(issue.id)
+
+                regressions = []
+                for new_issue in new_result.issues:
+                    new_desc = new_issue.get("message", "")[:30].lower()
+                    new_type = new_issue.get("type", new_issue.get("rule", "")).lower()
+                    is_regression = not any(
+                        new_type in original.category.value.lower()
+                        or new_desc in original.description[:30].lower()
+                        for original in self.issues
+                    )
+                    if is_regression:
+                        regressions.append(
+                            new_issue.get("message", "Unknown issue")[:100]
+                        )
+
+                issues_before = len(self.issues)
+                issues_after = len(new_result.issues)
+                if issues_before == 0:
+                    verification_score = 100.0
+                else:
+                    improvement_ratio = len(issues_fixed) / issues_before
+                    regression_penalty = len(regressions) * 0.1
+                    verification_score = max(
+                        0.0,
+                        min(
+                            100.0,
+                            improvement_ratio * 100 - regression_penalty * 100,
+                        ),
+                    )
+
+                verification = VerificationResult(
+                    passed=len(regressions) == 0
+                    and (len(issues_fixed) > 0 or issues_before == 0),
+                    issues_before=issues_before,
+                    issues_after=issues_after,
+                    issues_fixed=issues_fixed,
+                    issues_remaining=issues_remaining,
+                    regressions=regressions,
+                    verification_score=verification_score,
+                )
+
+                try:
+                    from ..validation.matterhorn import (
+                        CheckpointStatus,
+                        MatterhornValidator,
+                    )
+
+                    mh_result = MatterhornValidator().validate(verification_path)
+                    if mh_result:
+                        failed_checks = [
+                            checkpoint
+                            for checkpoint in mh_result.checkpoints
+                            if checkpoint.status == CheckpointStatus.FAIL
+                        ]
+                        if failed_checks:
+                            verification.passed = False
+                            verification.regressions.extend(
+                                f"Matterhorn {checkpoint.id}: {checkpoint.name}"
+                                for checkpoint in failed_checks
+                            )
+                            logger.info(
+                                "Matterhorn: %d failed checkpoints",
+                                len(failed_checks),
+                            )
+                        else:
+                            logger.info("Matterhorn: all checkpoints passed")
+                except Exception as e:
+                    logger.warning("Matterhorn validation skipped: %s", e)
 
             self.result.verification_passed = verification.passed
             self.result.verification_result = verification
-
-            # Update remediated compliance score based on actual re-scan
             self.result.remediated_compliance_score = new_result.compliance_score
-
             logger.info(
-                f"Verification complete: {len(issues_fixed)} fixed, "
-                f"{len(issues_remaining)} remaining, {len(regressions)} regressions"
+                "Verification complete: %d fixed, %d remaining, %d regressions",
+                len(issues_fixed),
+                len(issues_remaining),
+                len(verification.regressions),
             )
-
             return verification
-
         except Exception as e:
-            logger.error(f"Verification failed: {e}")
-            # Create a minimal verification result indicating failure
+            logger.error("Verification failed: %s", e)
             verification = VerificationResult(
                 passed=False,
                 issues_before=len(self.issues),
                 issues_after=0,
                 issues_fixed=[],
                 issues_remaining=[issue.id for issue in self.issues],
-                regressions=[f"Verification failed: {str(e)}"],
+                regressions=[f"Verification failed: {e}"],
                 verification_score=0.0,
             )
             self.result.verification_passed = False
             self.result.verification_result = verification
             return verification
+        finally:
+            if not self.result.verification_passed:
+                self.result.close_output_claim()

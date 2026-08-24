@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
+import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import uuid
@@ -181,6 +182,304 @@ def _claim_db(parents, existing=None):
         _query(existing),
     ]
     return db
+
+
+def _stream_publish_kwargs(stream, payload, **overrides):
+    values = dict(
+        db=MagicMock(),
+        source_stream=stream,
+        claimed_size_bytes=len(payload),
+        claimed_sha256=hashlib.sha256(payload).hexdigest(),
+        claimed_mime_type="application/pdf",
+        claimed_filename="fixed.pdf",
+        department_id=DEPARTMENT_ID,
+        scan_id=SCAN_ID,
+        cloud_file_id=CLOUD_FILE_ID,
+        remediation_job_id=JOB_ID,
+        created_by_id=USER_ID,
+        provider="canvas",
+        scan_type=ScanType.PDF,
+        filename="fixed.pdf",
+        commit=False,
+    )
+    values.update(overrides)
+    return values
+
+
+def _assert_stream_usable(stream, payload):
+    assert stream.closed is False
+    assert os.fstat(stream.fileno()).st_size == len(payload)
+    stream.seek(0)
+    assert stream.read() == payload
+
+
+def _mock_stream_publication(service, payload):
+    artifact = SimpleNamespace(
+        id="77777777-7777-4777-8777-777777777777",
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        mime_type="application/pdf",
+        filename="fixed.pdf",
+    )
+    claim = module.ArtifactClaim(
+        artifact=artifact,
+        owned=True,
+        status="staging",
+        publication_token="a" * 64,
+    )
+    service.claim = MagicMock(return_value=claim)
+    service.finalize = MagicMock(return_value=artifact)
+    return artifact
+
+
+class _BorrowedDescriptorSource:
+    def __init__(self, descriptor):
+        self.descriptor = descriptor
+        self.closed = False
+
+    def fileno(self):
+        return self.descriptor
+
+
+def test_claim_and_publish_stream_reads_exact_bytes_from_offset_zero(tmp_path):
+    service = _service(tmp_path)
+    payload = b"%PDF-1.7\nclaimed exact bytes\n%%EOF\n"
+    source = tmp_path / "claimed.pdf"
+    source.write_bytes(payload)
+    published = []
+    parents = _parents(
+        scan=SimpleNamespace(
+            id=SCAN_ID,
+            department_id=DEPARTMENT_ID,
+            user_id=USER_ID,
+            scan_type=ScanType.PDF,
+        )
+    )
+
+    def claim(_db, prepared):
+        artifact = _artifact(prepared)
+        published.append(artifact)
+        return module.ArtifactClaim(
+            artifact=artifact,
+            owned=True,
+            status="staging",
+            publication_token=prepared.publication_token,
+        )
+
+    def lock(_db, _artifact_id):
+        return (
+            parents["department"],
+            parents["scan"],
+            parents["cloud"],
+            parents["job"],
+            published[0],
+        )
+
+    service.claim = MagicMock(side_effect=claim)
+    service._lock_existing_artifact = MagicMock(side_effect=lock)
+    with source.open("rb") as stream:
+        stream.seek(11)
+        result = service.claim_and_publish_stream(
+            **_stream_publish_kwargs(stream, payload)
+        )
+
+        _assert_stream_usable(stream, payload)
+
+    assert result.artifact is published[0]
+    assert (service.root / result.storage_key).read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong"),
+    [
+        ("claimed_size_bytes", 1),
+        ("claimed_sha256", "0" * 64),
+        ("claimed_mime_type", "application/octet-stream"),
+        ("claimed_filename", "different.pdf"),
+    ],
+)
+def test_claim_and_publish_stream_rejects_each_claim_metadata_mismatch(
+    tmp_path, field, wrong
+):
+    service = _service(tmp_path)
+    payload = b"%PDF-1.7\nclaim metadata\n%%EOF\n"
+    source = tmp_path / "claimed.pdf"
+    source.write_bytes(payload)
+    service.claim = MagicMock()
+
+    with source.open("rb") as stream:
+        with pytest.raises(module.ArtifactIntegrityError, match="claim metadata"):
+            service.claim_and_publish_stream(
+                **_stream_publish_kwargs(stream, payload, **{field: wrong})
+            )
+        _assert_stream_usable(stream, payload)
+
+    service.claim.assert_not_called()
+    assert not service.root.exists()
+
+
+@pytest.mark.parametrize("source_kind", ["directory", "symlink"])
+def test_claim_and_publish_stream_rejects_nonregular_descriptor(tmp_path, source_kind):
+    service = _service(tmp_path)
+    payload = b"%PDF-1.7\nunsafe\n%%EOF\n"
+    if source_kind == "directory":
+        descriptor = os.open(tmp_path, os.O_RDONLY)
+    else:
+        target = tmp_path / "target.pdf"
+        link = tmp_path / "source-link.pdf"
+        target.write_bytes(payload)
+        link.symlink_to(target)
+        if hasattr(os, "O_PATH"):
+            flags = os.O_PATH | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        else:
+            flags = os.O_SYMLINK | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(link, flags)
+    stream = _BorrowedDescriptorSource(descriptor)
+    try:
+        with pytest.raises(module.ArtifactValidationError, match="regular"):
+            service.claim_and_publish_stream(**_stream_publish_kwargs(stream, payload))
+        assert stream.closed is False
+        os.fstat(stream.fileno())
+    finally:
+        os.close(descriptor)
+
+
+def test_claim_and_publish_stream_rejects_writable_non_cloexec_and_closed(
+    tmp_path,
+):
+    service = _service(tmp_path)
+    payload = b"%PDF-1.7\nunsafe descriptor\n%%EOF\n"
+    source = tmp_path / "claimed.pdf"
+    source.write_bytes(payload)
+
+    with source.open("r+b") as writable:
+        with pytest.raises(module.ArtifactValidationError, match="read-only"):
+            service.claim_and_publish_stream(
+                **_stream_publish_kwargs(writable, payload)
+            )
+        _assert_stream_usable(writable, payload)
+
+    with source.open("rb") as inheritable:
+        os.set_inheritable(inheritable.fileno(), True)
+        with pytest.raises(module.ArtifactValidationError, match="close-on-exec"):
+            service.claim_and_publish_stream(
+                **_stream_publish_kwargs(inheritable, payload)
+            )
+        _assert_stream_usable(inheritable, payload)
+
+    closed = source.open("rb")
+    closed.close()
+    with pytest.raises(module.ArtifactValidationError, match="unavailable"):
+        service.claim_and_publish_stream(**_stream_publish_kwargs(closed, payload))
+
+
+def test_claim_and_publish_stream_rejects_fstat_oversize_before_read(tmp_path):
+    service = _service(tmp_path, max_bytes=16)
+    payload = b"%PDF-1.7\n" + b"x" * 64
+    source = tmp_path / "oversize.pdf"
+    source.write_bytes(payload)
+    service.claim = MagicMock()
+
+    with source.open("rb") as stream:
+        with pytest.raises(module.ArtifactTooLargeError, match="maximum"):
+            service.claim_and_publish_stream(**_stream_publish_kwargs(stream, payload))
+        _assert_stream_usable(stream, payload)
+
+    service.claim.assert_not_called()
+
+
+def test_claim_and_publish_stream_maps_unreadable_duplicate_to_validation_error(
+    tmp_path, monkeypatch
+):
+    service = _service(tmp_path)
+    payload = b"%PDF-1.7\nunreadable duplicate\n%%EOF\n"
+    source = tmp_path / "claimed.pdf"
+    source.write_bytes(payload)
+    real_lseek = os.lseek
+
+    def reject_duplicate(descriptor, offset, whence):
+        if descriptor != stream.fileno():
+            raise OSError(9, "Bad file descriptor")
+        return real_lseek(descriptor, offset, whence)
+
+    with source.open("rb") as stream:
+        monkeypatch.setattr(module.os, "lseek", reject_duplicate)
+        with pytest.raises(module.ArtifactValidationError, match="unavailable"):
+            service.claim_and_publish_stream(**_stream_publish_kwargs(stream, payload))
+        _assert_stream_usable(stream, payload)
+
+
+def test_claim_and_publish_stream_db_failure_keeps_borrowed_stream_open_and_cleans(
+    tmp_path,
+):
+    service = _service(tmp_path)
+    payload = b"%PDF-1.7\ndatabase failure\n%%EOF\n"
+    source = tmp_path / "claimed.pdf"
+    source.write_bytes(payload)
+    artifact = _mock_stream_publication(service, payload)
+    service._publish_fd = MagicMock(side_effect=IntegrityError("db", {}, Exception()))
+    service.abort_staging = MagicMock(return_value=True)
+    db = MagicMock()
+    kwargs = _stream_publish_kwargs(stream=None, payload=payload, db=db)
+
+    with source.open("rb") as stream:
+        kwargs["source_stream"] = stream
+        with pytest.raises(module.ArtifactPublicationRetryable) as caught:
+            service.claim_and_publish_stream(**kwargs)
+        _assert_stream_usable(stream, payload)
+
+    assert caught.value.result.artifact_id == artifact.id
+    assert caught.value.result.cleanup_complete is True
+    service.abort_staging.assert_called_once_with(
+        db,
+        artifact_id=artifact.id,
+        publication_token="a" * 64,
+    )
+
+
+@pytest.mark.parametrize("exit_mode", ["success", "metadata_error", "publish_error"])
+def test_claim_and_publish_stream_restores_caller_offset_on_every_exit(
+    tmp_path, exit_mode
+):
+    service = _service(tmp_path)
+    payload = b"%PDF-1.7\ncaller offset\n%%EOF\n"
+    source = tmp_path / "claimed.pdf"
+    source.write_bytes(payload)
+    _mock_stream_publication(service, payload)
+    service._publish_fd = MagicMock()
+    service.abort_staging = MagicMock(return_value=True)
+    overrides = {}
+    expected_error = nullcontext()
+    if exit_mode == "metadata_error":
+        overrides["claimed_sha256"] = "0" * 64
+        expected_error = pytest.raises(module.ArtifactIntegrityError)
+    elif exit_mode == "publish_error":
+        service._publish_fd.side_effect = IntegrityError("db", {}, Exception())
+        expected_error = pytest.raises(module.ArtifactPublicationRetryable)
+
+    with source.open("rb", buffering=0) as stream:
+        stream.seek(9)
+        with expected_error:
+            service.claim_and_publish_stream(
+                **_stream_publish_kwargs(stream, payload, **overrides)
+            )
+        assert stream.tell() == 9
+
+
+def test_claim_and_publish_stream_rejects_nonseekable_stream(tmp_path):
+    service = _service(tmp_path)
+    payload = b"%PDF-1.7\npipe\n%%EOF\n"
+    read_descriptor, write_descriptor = os.pipe()
+    os.set_inheritable(read_descriptor, False)
+    try:
+        with os.fdopen(read_descriptor, "rb", closefd=False) as stream:
+            with pytest.raises(module.ArtifactValidationError, match="regular file"):
+                service.claim_and_publish_stream(
+                    **_stream_publish_kwargs(stream, payload)
+                )
+    finally:
+        os.close(read_descriptor)
+        os.close(write_descriptor)
 
 
 def test_source_metadata_is_computed_before_db_claim_and_claim_is_staging(tmp_path):

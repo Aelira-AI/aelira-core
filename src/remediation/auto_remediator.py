@@ -102,31 +102,37 @@ class AutoRemediator:
                 config=config,
             )
             result = remediator.remediate()
+            try:
+                # A verified score comes from re-running the full scanner pipeline
+                # against the actual output file, so it reflects what remediation
+                # really produced. Without it, callers can only estimate.
+                score_verified = (
+                    result.verification_result is not None
+                    and result.remediated_compliance_score is not None
+                )
 
-            # A verified score comes from re-running the full scanner pipeline
-            # against the actual output file, so it reflects what remediation
-            # really produced. Without it, callers can only estimate.
-            score_verified = (
-                result.verification_result is not None
-                and result.remediated_compliance_score is not None
-            )
-
-            return {
-                "success": result.success,
-                "fixed_count": len(result.fixed_issues),
-                "manual_count": len(result.manual_issues),
-                "output_path": result.output_file,
-                "remediated_compliance_score": result.remediated_compliance_score,
-                "score_verified": score_verified,
-                "fixed_issues": [
-                    {"id": f.issue_id, "description": f.description}
-                    for f in result.fixed_issues
-                ],
-                "manual_issues": [
-                    {"id": m.issue_id, "description": m.description, "reason": m.reason}
-                    for m in result.manual_issues
-                ],
-            }
+                return {
+                    "success": result.success,
+                    "fixed_count": len(result.fixed_issues),
+                    "manual_count": len(result.manual_issues),
+                    "output_path": result.output_file,
+                    "remediated_compliance_score": result.remediated_compliance_score,
+                    "score_verified": score_verified,
+                    "fixed_issues": [
+                        {"id": f.issue_id, "description": f.description}
+                        for f in result.fixed_issues
+                    ],
+                    "manual_issues": [
+                        {
+                            "id": m.issue_id,
+                            "description": m.description,
+                            "reason": m.reason,
+                        }
+                        for m in result.manual_issues
+                    ],
+                }
+            finally:
+                result.close_output_claim()
         except (OSError, ValueError, TypeError, KeyError, ValidationError) as e:
             logger.error(f"Error remediating document {file_path}: {e}")
             return {

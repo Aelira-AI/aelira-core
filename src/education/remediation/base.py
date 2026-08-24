@@ -22,7 +22,9 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
+
+from .output_claim import DescriptorBoundOutputClaim
 
 ALT_TEXT_CATEGORY_ALIASES = frozenset(
     {
@@ -478,6 +480,91 @@ class RemediationResult(BaseModel):
     config_used: Optional[Dict[str, Any]] = None
     ai_calls_made: int = 0
     backup_path: Optional[str] = None
+
+    _output_claim: Optional[DescriptorBoundOutputClaim] = PrivateAttr(default=None)
+
+    def set_output_claim(self, claim: DescriptorBoundOutputClaim) -> None:
+        """Take ownership of one live descriptor-bound output claim."""
+        if not isinstance(claim, DescriptorBoundOutputClaim):
+            raise TypeError("claim must be a DescriptorBoundOutputClaim")
+        if claim.closed:
+            raise RuntimeError("Cannot attach a closed output claim")
+        if self.has_output_claim():
+            raise RuntimeError("RemediationResult already owns a live output claim")
+        self._output_claim = claim
+
+    def take_output_claim(self) -> Optional[DescriptorBoundOutputClaim]:
+        """Transfer ownership of the live output claim to the caller."""
+        claim = self._output_claim
+        self._output_claim = None
+        if claim is None or claim.closed:
+            return None
+        return claim
+
+    def has_output_claim(self) -> bool:
+        """Return whether this result currently owns a live output claim."""
+        return self._output_claim is not None and not self._output_claim.closed
+
+    def open_output_stream(self):
+        """Borrow a stream over the exact claimed output bytes."""
+        claim = self._output_claim
+        if claim is None or claim.closed:
+            raise RuntimeError("RemediationResult has no live output claim")
+        return claim.open_stream()
+
+    def output_claim_metadata(self) -> Dict[str, Any]:
+        """Return publication metadata without exposing descriptor or path state."""
+        claim = self._output_claim
+        if claim is None or claim.closed:
+            raise RuntimeError("RemediationResult has no live output claim")
+        return {
+            "size_bytes": claim.size,
+            "sha256": claim.sha256,
+            "mime_type": claim.mime,
+            "filename": claim.filename,
+        }
+
+    def close_output_claim(self) -> None:
+        """Release and detach the owned output claim, idempotently."""
+        claim = self._output_claim
+        self._output_claim = None
+        if claim is not None:
+            claim.close()
+
+    def model_copy(self, *, update=None, deep: bool = False):
+        if self.has_output_claim():
+            raise TypeError("Cannot copy a RemediationResult with a live output claim")
+        copied = BaseModel.__deepcopy__(self) if deep else BaseModel.__copy__(self)
+        if update:
+            if self.model_config.get("extra") == "allow":
+                for key, value in update.items():
+                    if key in self.__pydantic_fields__:
+                        copied.__dict__[key] = value
+                    else:
+                        if copied.__pydantic_extra__ is None:
+                            copied.__pydantic_extra__ = {}
+                        copied.__pydantic_extra__[key] = value
+            else:
+                copied.__dict__.update(update)
+            copied.__pydantic_fields_set__.update(update.keys())
+        return copied
+
+    def __copy__(self):
+        if self.has_output_claim():
+            raise TypeError("Cannot copy a RemediationResult with a live output claim")
+        return self.model_copy(deep=False)
+
+    def __deepcopy__(self, memo=None):
+        if self.has_output_claim():
+            raise TypeError("Cannot copy a RemediationResult with a live output claim")
+        return self.model_copy(deep=True)
+
+    def __getstate__(self):
+        if self.has_output_claim():
+            raise TypeError(
+                "Cannot pickle a RemediationResult with a live output claim"
+            )
+        return super().__getstate__()
 
     def complete(self) -> None:
         """Mark remediation as complete and calculate duration."""

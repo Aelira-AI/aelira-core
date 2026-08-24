@@ -7,11 +7,12 @@ Applies automated fixes to accessibility issues.
 
 import asyncio
 import logging
+import os
 import re
 import tempfile
 import shutil
 import uuid
-from typing import Any, Dict, List, NoReturn, Optional
+from typing import Any, BinaryIO, Callable, Dict, List, NoReturn, Optional, TypeVar
 from pathlib import Path
 from datetime import datetime, timezone
 from sqlalchemy import select
@@ -67,6 +68,8 @@ _EXECUTION_CONTEXT_TEXT_FIELDS = {
 }
 _EXECUTION_CONTEXT_TEXT_RE = re.compile(r"^[A-Za-z0-9_./:-]+$")
 _ALLOWED_PURPOSES = ("remediation", "alt_text")
+_VERIFICATION_COPY_CHUNK_BYTES = 64 * 1024
+_ThreadResult = TypeVar("_ThreadResult")
 
 _LMS_PROVIDERS = {
     CloudProvider.CANVAS.value,
@@ -274,6 +277,49 @@ def _fence_claim_for_handler_commit(job: Any, db: Session) -> None:
         raise RetryableRemediationJobError("job_ownership_lost")
 
 
+def _abort_completion_publication(
+    job: Any,
+    db: Session,
+    *,
+    artifact_id: Any,
+    artifact_publication: Any,
+) -> tuple[str | None, bool]:
+    """Abort only the exact in-memory publication owned by this completion."""
+    cleanup_artifact_id = artifact_id if isinstance(artifact_id, str) else None
+    if isinstance(artifact_publication, ArtifactPublicationResult):
+        cleanup_artifact_id = (
+            artifact_publication.artifact_id
+            if isinstance(artifact_publication.artifact_id, str)
+            else cleanup_artifact_id
+        )
+    cleanup_complete = cleanup_artifact_id is None
+    if (
+        cleanup_artifact_id is None
+        or not isinstance(artifact_publication, ArtifactPublicationResult)
+        or not isinstance(artifact_publication.publication_token, str)
+    ):
+        return cleanup_artifact_id, cleanup_complete
+
+    try:
+        RemediationArtifactService.from_settings().abort_staging(
+            db,
+            artifact_id=cleanup_artifact_id,
+            publication_token=artifact_publication.publication_token,
+        )
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "Failed to clean remediation artifact after completion rollback",
+            extra={
+                "job_id": str(job.id),
+                "artifact_id": cleanup_artifact_id,
+                "publication_cleanup_pending": True,
+            },
+        )
+        return cleanup_artifact_id, False
+    return cleanup_artifact_id, True
+
+
 def _clear_claim_for_terminal(job: Any) -> None:
     if getattr(job, "claim_token", None) is None:
         return
@@ -396,6 +442,76 @@ def _partition_authoritative_document_issues(
     return automatic, manual
 
 
+def _close_output_claim(result: Any) -> None:
+    """Close a remediator-owned output claim without trusting its model fields."""
+    close_claim = getattr(result, "close_output_claim", None)
+    if callable(close_claim):
+        close_claim()
+
+
+async def _to_thread_cancellation_safe(
+    function: Callable[..., _ThreadResult],
+    *args: Any,
+    close_result_claim_on_cancel: bool = False,
+) -> _ThreadResult:
+    """Do not abandon a thread whose result may own a live output claim."""
+    worker = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError as cancellation:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+        try:
+            completed = worker.result()
+        except BaseException:
+            pass
+        else:
+            if close_result_claim_on_cancel:
+                _close_output_claim(completed)
+        raise cancellation
+
+
+def _validate_matterhorn_claim_bytes(
+    validator: Any,
+    source_stream: BinaryIO,
+    expected_size: int,
+) -> Any:
+    """Validate a bounded private copy made from the exact claimed PDF bytes."""
+    if type(expected_size) is not int or expected_size < 0:
+        raise ValueError("Claimed PDF size is invalid")
+    with tempfile.TemporaryDirectory(prefix="aelira_matterhorn_claim_") as temp_dir:
+        verification_path = Path(temp_dir) / "claimed-output.pdf"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(verification_path, flags, 0o600)
+        remaining = expected_size
+        try:
+            while remaining:
+                chunk = source_stream.read(
+                    min(_VERIFICATION_COPY_CHUNK_BYTES, remaining)
+                )
+                if not chunk:
+                    raise ValueError("Claimed PDF ended before its declared size")
+                if len(chunk) > remaining:
+                    raise ValueError("Claimed PDF exceeds its declared size")
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(descriptor, view)
+                    if written <= 0:
+                        raise OSError("Matterhorn verification copy made no progress")
+                    view = view[written:]
+                remaining -= len(chunk)
+            if source_stream.read(1):
+                raise ValueError("Claimed PDF exceeds its declared size")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return validator.validate(verification_path)
+
+
 async def process_remediation_job(
     job_data: Dict[str, Any],
     db: Session,
@@ -445,6 +561,8 @@ async def process_remediation_job(
     artifact_service = None
     artifact_id = None
     artifact_publication: ArtifactPublicationResult | None = None
+    remediation_result = None
+    pdf_claim_metadata: Dict[str, Any] | None = None
 
     try:
         logger.info(
@@ -584,7 +702,14 @@ async def process_remediation_job(
 
         # 8. Run remediation
         logger.info(f"Starting remediation with {remediator.__class__.__name__}")
-        remediation_result = await asyncio.to_thread(remediator.remediate)
+        is_pdf = scan.scan_type in ("PDF", "pdf", ScanType.PDF)
+        if is_pdf:
+            remediation_result = await _to_thread_cancellation_safe(
+                remediator.remediate,
+                close_result_claim_on_cancel=True,
+            )
+        else:
+            remediation_result = await asyncio.to_thread(remediator.remediate)
         if remediation_result.success is not True:
             return {
                 "success": False,
@@ -638,9 +763,15 @@ async def process_remediation_job(
                 if cloud_file_id
                 else None
             )
+            has_output_claim = getattr(remediation_result, "has_output_claim", None)
             if (
-                not output_file
-                or not Path(output_file).is_file()
+                (
+                    is_pdf
+                    and (
+                        not callable(has_output_claim) or has_output_claim() is not True
+                    )
+                )
+                or (not is_pdf and (not output_file or not Path(output_file).is_file()))
                 or getattr(remediation_result, "verification_passed", None) is not True
                 or cloud_file is None
                 or remediation_job_id is None
@@ -663,30 +794,98 @@ async def process_remediation_job(
                     "scan_id": scan_id,
                 }
 
-            artifact_temp_dir = tempfile.mkdtemp(prefix="aelira_remediation_artifact_")
-            artifact_source = Path(artifact_temp_dir) / Path(output_file).name
-            try:
-                await asyncio.to_thread(shutil.copyfile, output_file, artifact_source)
-            except OSError as exc:
-                raise RetryableRemediationJobError(
-                    "remediation_artifact_retryable"
-                ) from exc
             artifact_service = RemediationArtifactService.from_settings()
-            published = artifact_service.claim_and_publish(
-                db,
-                source_path=artifact_source,
-                trusted_temp_root=artifact_temp_dir,
-                department_id=str(department_id),
-                scan_id=str(scan_id),
-                cloud_file_id=str(cloud_file.id),
-                remediation_job_id=str(remediation_job_id),
-                created_by_id=created_by_id,
-                provider=str(cloud_file.provider),
-                scan_type=scan.scan_type,
-                filename=artifact_source.name,
-                provider_result={"verification_passed": True},
-                commit=False,
-            )
+            publication_args = {
+                "department_id": str(department_id),
+                "scan_id": str(scan_id),
+                "cloud_file_id": str(cloud_file.id),
+                "remediation_job_id": str(remediation_job_id),
+                "created_by_id": created_by_id,
+                "provider": str(cloud_file.provider),
+                "scan_type": scan.scan_type,
+                "provider_result": {"verification_passed": True},
+                "commit": False,
+            }
+            if is_pdf:
+                try:
+                    pdf_claim_metadata = remediation_result.output_claim_metadata()
+                except Exception:
+                    if remediation_result.has_output_claim() is True:
+                        raise
+                    scan.status = ScanStatus.FAILED
+                    _set_remediation_outcome(
+                        scan, RemediationOutcome.ARTIFACT_UNAVAILABLE
+                    )
+                    scan.completed_at = datetime.now(timezone.utc)
+                    if not defer_final_commit:
+                        if assert_owned is not None:
+                            await assert_owned()
+                        db.commit()
+                    return {
+                        "success": False,
+                        "error": "remediation_artifact_unavailable",
+                        "fixed_count": remediation_result.fixed_count,
+                        "manual_count": remediation_result.manual_count,
+                        "failed_count": remediation_result.failed_count,
+                        "skipped_count": remediation_result.skipped_count,
+                        "total_issues": remediation_result.total_issues,
+                        "scan_id": scan_id,
+                    }
+                try:
+                    source_stream = remediation_result.open_output_stream()
+                except Exception:
+                    if remediation_result.has_output_claim() is True:
+                        raise
+                    scan.status = ScanStatus.FAILED
+                    _set_remediation_outcome(
+                        scan, RemediationOutcome.ARTIFACT_UNAVAILABLE
+                    )
+                    scan.completed_at = datetime.now(timezone.utc)
+                    if not defer_final_commit:
+                        if assert_owned is not None:
+                            await assert_owned()
+                        db.commit()
+                    return {
+                        "success": False,
+                        "error": "remediation_artifact_unavailable",
+                        "fixed_count": remediation_result.fixed_count,
+                        "manual_count": remediation_result.manual_count,
+                        "failed_count": remediation_result.failed_count,
+                        "skipped_count": remediation_result.skipped_count,
+                        "total_issues": remediation_result.total_issues,
+                        "scan_id": scan_id,
+                    }
+                with source_stream as claimed_stream:
+                    published = artifact_service.claim_and_publish_stream(
+                        db,
+                        source_stream=claimed_stream,
+                        filename=pdf_claim_metadata["filename"],
+                        claimed_size_bytes=pdf_claim_metadata["size_bytes"],
+                        claimed_sha256=pdf_claim_metadata["sha256"],
+                        claimed_mime_type=pdf_claim_metadata["mime_type"],
+                        claimed_filename=pdf_claim_metadata["filename"],
+                        **publication_args,
+                    )
+            else:
+                artifact_temp_dir = tempfile.mkdtemp(
+                    prefix="aelira_remediation_artifact_"
+                )
+                artifact_source = Path(artifact_temp_dir) / Path(output_file).name
+                try:
+                    await asyncio.to_thread(
+                        shutil.copyfile, output_file, artifact_source
+                    )
+                except OSError as exc:
+                    raise RetryableRemediationJobError(
+                        "remediation_artifact_retryable"
+                    ) from exc
+                published = artifact_service.claim_and_publish(
+                    db,
+                    source_path=artifact_source,
+                    trusted_temp_root=artifact_temp_dir,
+                    filename=artifact_source.name,
+                    **publication_args,
+                )
             artifact_publication = (
                 published
                 if isinstance(published, ArtifactPublicationResult)
@@ -782,14 +981,18 @@ async def process_remediation_job(
         )
 
         # Run post-remediation Matterhorn validation (PDF only)
-        if scan.scan_type in ("PDF", "pdf") and remediation_result.output_file:
+        if pdf_claim_metadata is not None:
             try:
                 from ..education.validation.matterhorn import MatterhornValidator
 
                 validator = MatterhornValidator()
-                matterhorn = await asyncio.to_thread(
-                    validator.validate, remediation_result.output_file
-                )
+                with remediation_result.open_output_stream() as source_stream:
+                    matterhorn = await _to_thread_cancellation_safe(
+                        _validate_matterhorn_claim_bytes,
+                        validator,
+                        source_stream,
+                        pdf_claim_metadata["size_bytes"],
+                    )
 
                 for cp in matterhorn.checkpoints:
                     db.add(
@@ -877,6 +1080,30 @@ async def process_remediation_job(
             response, artifact_publication=artifact_publication
         )
 
+    except asyncio.CancelledError:
+        db.rollback()
+        if (
+            artifact_publication is not None
+            and artifact_service is not None
+            and isinstance(artifact_publication.publication_token, str)
+        ):
+            scan.status = ScanStatus.FAILED
+            _set_remediation_outcome(scan, RemediationOutcome.ARTIFACT_UNAVAILABLE)
+            scan.completed_at = datetime.now(timezone.utc)
+            try:
+                artifact_service.abort_staging(
+                    db,
+                    artifact_id=artifact_publication.artifact_id,
+                    publication_token=artifact_publication.publication_token,
+                )
+            except Exception:
+                db.rollback()
+                logger.warning(
+                    "Failed to clean cancelled remediation artifact",
+                    extra={"scan_id": scan_id},
+                )
+        raise
+
     except LostJobOwnership:
         db.rollback()
         raise
@@ -938,6 +1165,8 @@ async def process_remediation_job(
         }
 
     finally:
+        if remediation_result is not None:
+            _close_output_claim(remediation_result)
         # Cleanup temp file and directory if downloaded from cloud
         if temp_file_path:
             try:
@@ -1536,35 +1765,30 @@ async def handle_remediation_job(
     }
     artifact_publication = getattr(result, "artifact_publication", None)
     assert_owned = getattr(job, "_assert_owned", None)
-    if assert_owned is not None:
-        await assert_owned()
-    _fence_claim_for_handler_commit(job, db)
     try:
+        if assert_owned is not None:
+            await assert_owned()
+        _fence_claim_for_handler_commit(job, db)
         db.commit()
+    except asyncio.CancelledError:
+        db.rollback()
+        _abort_completion_publication(
+            job,
+            db,
+            artifact_id=safe_result.get("artifact_id"),
+            artifact_publication=artifact_publication,
+        )
+        raise
     except Exception as exc:
         db.rollback()
-        artifact_id = safe_result.get("artifact_id")
-        cleanup_complete = artifact_id is None
-        if (
-            isinstance(artifact_id, str)
-            and isinstance(artifact_publication, ArtifactPublicationResult)
-            and isinstance(artifact_publication.publication_token, str)
-        ):
-            try:
-                RemediationArtifactService.from_settings().abort_staging(
-                    db,
-                    artifact_id=artifact_id,
-                    publication_token=artifact_publication.publication_token,
-                )
-                cleanup_complete = True
-            except Exception:
-                db.rollback()
-                logger.warning(
-                    "Failed to clean remediation artifact after completion rollback",
-                    extra={"job_id": str(job.id)},
-                )
+        artifact_id, cleanup_complete = _abort_completion_publication(
+            job,
+            db,
+            artifact_id=safe_result.get("artifact_id"),
+            artifact_publication=artifact_publication,
+        )
         raise RemediationCompletionCommitFailed(
-            artifact_id=artifact_id if isinstance(artifact_id, str) else None,
+            artifact_id=artifact_id,
             cleanup_complete=cleanup_complete,
         ) from exc
     return safe_result

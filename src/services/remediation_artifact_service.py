@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field as dataclass_field
 from datetime import datetime, timedelta, timezone
+import fcntl
 import hashlib
 import hmac
 import json
@@ -483,6 +484,75 @@ class RemediationArtifactService:
                 "artifact bytes do not match scan type and extension"
             )
         return filename, mime_type, size, checksum
+
+    @contextmanager
+    def _borrow_source_stream_fd(self, source_stream: BinaryIO) -> Iterator[int]:
+        """Yield a private descriptor duplicate without taking stream ownership."""
+        try:
+            source_fd = source_stream.fileno()
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            raise ArtifactValidationError(
+                "source stream descriptor is unavailable"
+            ) from exc
+        if (
+            not isinstance(source_fd, int)
+            or isinstance(source_fd, bool)
+            or source_fd < 0
+        ):
+            raise ArtifactValidationError("source stream descriptor is unavailable")
+
+        duplicate = -1
+        original_offset: int | None = None
+        try:
+            try:
+                descriptor_flags = fcntl.fcntl(source_fd, fcntl.F_GETFD)
+                duplicate = os.dup(source_fd)
+                os.set_inheritable(duplicate, False)
+                opened = os.fstat(duplicate)
+                access_mode = fcntl.fcntl(duplicate, fcntl.F_GETFL) & os.O_ACCMODE
+            except (OSError, ValueError) as exc:
+                raise ArtifactValidationError(
+                    "source stream descriptor is unavailable"
+                ) from exc
+            if not stat.S_ISREG(opened.st_mode):
+                raise ArtifactValidationError(
+                    "source stream descriptor must reference a regular file"
+                )
+            if access_mode != os.O_RDONLY:
+                raise ArtifactValidationError(
+                    "source stream descriptor must be read-only"
+                )
+            if not descriptor_flags & fcntl.FD_CLOEXEC:
+                raise ArtifactValidationError(
+                    "source stream descriptor must be close-on-exec"
+                )
+            if opened.st_size < 0:
+                raise ArtifactValidationError(
+                    "source stream descriptor has an invalid size"
+                )
+            if opened.st_size > self.max_bytes:
+                raise ArtifactTooLargeError("artifact exceeds configured maximum")
+            try:
+                original_offset = os.lseek(source_fd, 0, os.SEEK_CUR)
+                os.lseek(duplicate, 0, os.SEEK_SET)
+            except OSError as exc:
+                raise ArtifactValidationError(
+                    "source stream descriptor is unavailable"
+                ) from exc
+            yield duplicate
+        finally:
+            restore_error: OSError | None = None
+            if original_offset is not None:
+                try:
+                    os.lseek(source_fd, original_offset, os.SEEK_SET)
+                except OSError as exc:
+                    restore_error = exc
+            if duplicate >= 0:
+                os.close(duplicate)
+            if restore_error is not None:
+                raise ArtifactValidationError(
+                    "source stream descriptor position could not be restored"
+                ) from restore_error
 
     @staticmethod
     def _locked(db: Any, model: Any, identity: str, label: str):
@@ -965,6 +1035,101 @@ class RemediationArtifactService:
             return ArtifactClaim(artifact=artifact, owned=False, status="available")
         raise ArtifactAuthorizationError("existing job claim is not reusable")
 
+    def _claim_and_publish_fd(
+        self,
+        db: Any,
+        *,
+        source_fd: int,
+        department_id: str,
+        scan_id: str,
+        cloud_file_id: str | None,
+        remediation_job_id: str | None,
+        created_by_id: str | None,
+        provider: str,
+        scan_type: ScanType | str,
+        filename: str,
+        provider_result: dict[str, Any] | None = None,
+        commit: bool = True,
+        claimed_metadata: tuple[int, str, str, str] | None = None,
+    ) -> ArtifactPublicationResult:
+        """Validate, DB-first publish, and optionally defer the final commit."""
+        claim: ArtifactClaim | None = None
+        prepared = self._prepare(
+            source_fd,
+            department_id=department_id,
+            scan_id=scan_id,
+            cloud_file_id=cloud_file_id,
+            remediation_job_id=remediation_job_id,
+            created_by_id=created_by_id,
+            provider=provider,
+            scan_type=scan_type,
+            filename=filename,
+            provider_result=provider_result,
+        )
+        if claimed_metadata is not None and claimed_metadata != (
+            prepared.size_bytes,
+            prepared.sha256,
+            prepared.mime_type,
+            prepared.filename,
+        ):
+            raise ArtifactIntegrityError(
+                "source stream does not match output claim metadata"
+            )
+        claim = self.claim(db, prepared)
+        try:
+            if claim.status == "in_progress":
+                raise ArtifactInProgressError(
+                    "artifact publication is already in progress"
+                )
+            if claim.status == "available":
+                with self.open_verified(
+                    db,
+                    claim.artifact,
+                    department_id=department_id,
+                    scan_id=scan_id,
+                    cloud_file_id=cloud_file_id,
+                ):
+                    pass
+                return ArtifactPublicationResult(
+                    artifact=claim.artifact,
+                    artifact_id=str(claim.artifact.id),
+                )
+            assert claim.publication_token is not None
+            if claim.status != "published":
+                self._publish_fd(db, claim.artifact, claim.publication_token, source_fd)
+            artifact = self.finalize(
+                db,
+                artifact_id=claim.artifact.id,
+                publication_token=claim.publication_token,
+            )
+            if commit:
+                db.commit()
+            return ArtifactPublicationResult(
+                artifact=artifact,
+                artifact_id=str(artifact.id),
+                publication_token=claim.publication_token,
+            )
+        except (OSError, ArtifactIntegrityError, SQLAlchemyError) as exc:
+            db.rollback()
+            cleanup_complete = False
+            if claim.owned and claim.publication_token is not None:
+                try:
+                    self.abort_staging(
+                        db,
+                        artifact_id=str(claim.artifact.id),
+                        publication_token=claim.publication_token,
+                    )
+                    cleanup_complete = True
+                except Exception:
+                    db.rollback()
+            raise ArtifactPublicationRetryable(
+                ArtifactPublicationRetry(
+                    artifact_id=str(claim.artifact.id),
+                    publication_token=claim.publication_token,
+                    cleanup_complete=cleanup_complete,
+                )
+            ) from exc
+
     def claim_and_publish(
         self,
         db: Any,
@@ -982,11 +1147,11 @@ class RemediationArtifactService:
         provider_result: dict[str, Any] | None = None,
         commit: bool = True,
     ) -> ArtifactPublicationResult:
-        """Validate, DB-first publish, and optionally defer the final commit."""
-        claim: ArtifactClaim | None = None
+        """Publish a trusted path through the common descriptor implementation."""
         with self._open_source_fd(source_path, trusted_temp_root) as source_fd:
-            prepared = self._prepare(
-                source_fd,
+            return self._claim_and_publish_fd(
+                db,
+                source_fd=source_fd,
                 department_id=department_id,
                 scan_id=scan_id,
                 cloud_file_id=cloud_file_id,
@@ -996,63 +1161,51 @@ class RemediationArtifactService:
                 scan_type=scan_type,
                 filename=filename,
                 provider_result=provider_result,
+                commit=commit,
             )
-            claim = self.claim(db, prepared)
-            try:
-                if claim.status == "in_progress":
-                    raise ArtifactInProgressError(
-                        "artifact publication is already in progress"
-                    )
-                if claim.status == "available":
-                    with self.open_verified(
-                        db,
-                        claim.artifact,
-                        department_id=department_id,
-                        scan_id=scan_id,
-                        cloud_file_id=cloud_file_id,
-                    ):
-                        pass
-                    return ArtifactPublicationResult(
-                        artifact=claim.artifact,
-                        artifact_id=str(claim.artifact.id),
-                    )
-                assert claim.publication_token is not None
-                if claim.status != "published":
-                    self._publish_fd(
-                        db, claim.artifact, claim.publication_token, source_fd
-                    )
-                artifact = self.finalize(
-                    db,
-                    artifact_id=claim.artifact.id,
-                    publication_token=claim.publication_token,
-                )
-                if commit:
-                    db.commit()
-                return ArtifactPublicationResult(
-                    artifact=artifact,
-                    artifact_id=str(artifact.id),
-                    publication_token=claim.publication_token,
-                )
-            except (OSError, ArtifactIntegrityError, SQLAlchemyError) as exc:
-                db.rollback()
-                cleanup_complete = False
-                if claim.owned and claim.publication_token is not None:
-                    try:
-                        self.abort_staging(
-                            db,
-                            artifact_id=str(claim.artifact.id),
-                            publication_token=claim.publication_token,
-                        )
-                        cleanup_complete = True
-                    except Exception:
-                        db.rollback()
-                raise ArtifactPublicationRetryable(
-                    ArtifactPublicationRetry(
-                        artifact_id=str(claim.artifact.id),
-                        publication_token=claim.publication_token,
-                        cleanup_complete=cleanup_complete,
-                    )
-                ) from exc
+
+    def claim_and_publish_stream(
+        self,
+        db: Any,
+        *,
+        source_stream: BinaryIO,
+        claimed_size_bytes: int,
+        claimed_sha256: str,
+        claimed_mime_type: str,
+        claimed_filename: str,
+        department_id: str,
+        scan_id: str,
+        cloud_file_id: str | None,
+        remediation_job_id: str | None,
+        created_by_id: str | None,
+        provider: str,
+        scan_type: ScanType | str,
+        filename: str,
+        provider_result: dict[str, Any] | None = None,
+        commit: bool = True,
+    ) -> ArtifactPublicationResult:
+        """Publish an exact caller-owned output claim without closing its stream."""
+        with self._borrow_source_stream_fd(source_stream) as source_fd:
+            return self._claim_and_publish_fd(
+                db,
+                source_fd=source_fd,
+                department_id=department_id,
+                scan_id=scan_id,
+                cloud_file_id=cloud_file_id,
+                remediation_job_id=remediation_job_id,
+                created_by_id=created_by_id,
+                provider=provider,
+                scan_type=scan_type,
+                filename=filename,
+                provider_result=provider_result,
+                commit=commit,
+                claimed_metadata=(
+                    claimed_size_bytes,
+                    claimed_sha256,
+                    claimed_mime_type,
+                    claimed_filename,
+                ),
+            )
 
     def persist(self, **_: Any) -> PreparedRemediationArtifact:
         """Bytes-first persistence is intentionally disabled; use claim_and_publish."""
