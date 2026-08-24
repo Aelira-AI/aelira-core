@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -122,6 +123,25 @@ def test_invalid_unbounded_or_fallback_mathml_fails_closed(mathml):
         verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
 
 
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        'style="background:url(https://example.invalid/x)"',
+        'onclick="alert(1)"',
+        'href="https://example.invalid/x"',
+        'xmlns:evil="urn:evil" evil:payload="x"',
+    ],
+)
+def test_mathml_active_or_foreign_attributes_fail_closed(attribute):
+    from src.education.remediation.equation_verifier import EquationVerificationRejected
+    from src.education.remediation.equation_verifier import EquationVerifier
+
+    mathml = f"<math><mi {attribute}>x</mi></math>"
+    verifier = EquationVerifier(converter=lambda latex: mathml, renderer=lambda value: b"png")
+    with pytest.raises(EquationVerificationRejected, match="invalid_mathml"):
+        verifier.verify(_validated(_png(lambda pen: pen.point((5, 5), fill="black"))), "x")
+
+
 def test_converter_renderer_blank_and_comparator_failures_close():
     from src.education.remediation.equation_verifier import EquationVerificationRejected
     from src.education.remediation.equation_verifier import EquationVerifier
@@ -156,6 +176,26 @@ def test_sabotage_cannot_bypass_a_failed_comparator():
     evidence = verifier.verify(_validated(payload), "x")
 
     assert evidence.passed is False
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan"), -0.1, 1.1])
+def test_nonfinite_or_out_of_range_metrics_fail_closed(value):
+    from src.education.remediation.equation_verifier import (
+        ComparisonMetrics,
+        EquationVerificationRejected,
+        EquationVerifier,
+    )
+
+    payload = _png(lambda pen: pen.ellipse((20, 20, 80, 70), fill="black"))
+    verifier = EquationVerifier(
+        converter=lambda latex: '<math><mi>x</mi></math>',
+        renderer=lambda value: payload,
+        comparator=lambda left, right: ComparisonMetrics(
+            ink_iou=value, pixel_similarity=1.0
+        ),
+    )
+    with pytest.raises(EquationVerificationRejected, match="comparison_failed"):
+        verifier.verify(_validated(payload), "x")
 
 
 def test_committed_calibration_manifest_has_separated_supported_corpus():
@@ -214,23 +254,56 @@ def test_pinned_renderer_calibration_separates_supported_math_near_misses():
         OfflineMathMLRenderer,
     )
 
-    positives = ["x+1", "x^2", "x_1", r"\frac{x}{2}", "x=1"]
-    near_misses = [
-        ("x+1", "x-1"),
-        ("x^2", "x^3"),
-        ("x_1", "x_2"),
-        (r"\frac{x}{2}", r"\frac{x}{3}"),
-        ("x=1", r"x\ne1"),
-        (r"\sqrt{x}", "x"),
-    ]
+    manifest = json.loads(
+        Path("tests/fixtures/pdfs/image_equations/manifest.json").read_text()
+    )
     renderer = OfflineMathMLRenderer()
     verifier = EquationVerifier(renderer=renderer.render)
-    try:
-        for latex in positives:
-            source = _validated(renderer.render(convert(latex)))
-            assert verifier.verify(source, latex).passed is True
-        for source_latex, changed_latex in near_misses:
-            source = _validated(renderer.render(convert(source_latex)))
-            assert verifier.verify(source, changed_latex).passed is False
-    except RuntimeError as exc:
-        pytest.skip(f"pinned Chromium unavailable in this developer environment: {exc}")
+    executed_positive = []
+    executed_negative = []
+    for item in manifest["positive_pairs"]:
+        source = _validated(renderer.render(convert(item["latex"])))
+        evidence = verifier.verify(source, item["latex"])
+        assert evidence.passed is True
+        assert evidence.ink_iou == pytest.approx(item["ink_iou"], abs=0.005)
+        assert evidence.pixel_similarity == pytest.approx(
+            item["pixel_similarity"], abs=0.005
+        )
+        executed_positive.append(evidence.ink_iou)
+    for item in manifest["near_miss_pairs"]:
+        source = _validated(renderer.render(convert(item["source_latex"])))
+        evidence = verifier.verify(source, item["changed_latex"])
+        assert evidence.passed is False
+        assert evidence.ink_iou == pytest.approx(item["ink_iou"], abs=0.005)
+        assert evidence.pixel_similarity == pytest.approx(
+            item["pixel_similarity"], abs=0.005
+        )
+        executed_negative.append(evidence.ink_iou)
+    assert min(executed_positive) == pytest.approx(0.991489, abs=0.005)
+    assert max(executed_negative) == pytest.approx(0.884669, abs=0.005)
+    assert verifier.config.required_ink_iou == 0.90
+    assert min(executed_positive) - max(executed_negative) >= 0.10
+
+
+def _hanging_renderer_worker(mathml, font_data, connection, max_width, max_height):
+    time.sleep(10)
+
+
+def test_renderer_has_killable_end_to_end_deadline():
+    from src.education.remediation.equation_verifier import OfflineMathMLRenderer
+
+    renderer = OfflineMathMLRenderer(
+        timeout_seconds=0.1, worker_target=_hanging_renderer_worker
+    )
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="renderer_timeout"):
+        renderer.render("<math><mi>x</mi></math>")
+    assert time.monotonic() - started < 2
+
+
+def test_renderer_rejects_oversized_element_before_screenshot():
+    from src.education.remediation.equation_verifier import OfflineMathMLRenderer
+
+    renderer = OfflineMathMLRenderer(max_width=100)
+    with pytest.raises(RuntimeError, match="renderer_failed"):
+        renderer.render('<math><mspace width="1000px"/></math>')

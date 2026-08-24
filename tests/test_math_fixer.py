@@ -94,7 +94,17 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
     from src.education.remediation.math_fixer import MathFixer
 
     calls = []
-    validated = SimpleNamespace(identity=SimpleNamespace(occurrence_id="occ-1"))
+    validated = SimpleNamespace(
+        normalized_sha256="a" * 64,
+        identity=SimpleNamespace(
+            page_number=1,
+            image_xref=7,
+            image_index=0,
+            occurrence_ordinal=0,
+            bbox=(1.0, 2.0, 3.0, 4.0),
+            occurrence_id="occ-1",
+        ),
+    )
 
     class Source:
         def extract(self, document, identity):
@@ -105,7 +115,9 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
         def recognize(self, image):
             calls.append(("recognizer", image))
             return SimpleNamespace(
-                classification="printed_equation", latex="x^2 + 1 = 0"
+                classification="printed_equation",
+                latex="x^2 + 1 = 0",
+                model="vision-model",
             )
 
     class Verifier:
@@ -118,7 +130,17 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
             mathml = convert(latex)
             return SimpleNamespace(
                 passed=True,
+                source_sha256="a" * 64,
+                rendered_sha256="b" * 64,
                 mathml_sha256=hashlib.sha256(mathml.encode()).hexdigest(),
+                renderer_version="renderer-v1",
+                comparator_version="comparator-v1",
+                font_sha256="f" * 64,
+                threshold_version="threshold-v1",
+                ink_iou=1.0,
+                pixel_similarity=1.0,
+                required_ink_iou=0.9,
+                required_pixel_similarity=0.98,
             )
 
     class StructTree:

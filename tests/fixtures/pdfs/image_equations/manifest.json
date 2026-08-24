@@ -4,20 +4,21 @@
   "threshold_version": "printed-equation-v1",
   "font_sha256": "562551b15b836e6e01d1b7350909baf3c8c8d83260c1190fbf4544333e6936de",
   "minimum_documented_margin": 0.10,
+  "rounding": "six_decimal_places",
   "method": "Native MathML rendered twice with pinned Playwright Chromium and committed STIX Two Math; source normalized to JPEG quality 95/subsampling 0; compared by binary-ink-canvas-v1 on 2026-08-24",
   "positive_pairs": [
-    {"id": "positive-1-x+1", "ink_iou": 0.997187, "pixel_similarity": 0.999957},
-    {"id": "positive-2-x^2", "ink_iou": 0.991489, "pixel_similarity": 0.999967},
-    {"id": "positive-3-x_1", "ink_iou": 0.995360, "pixel_similarity": 0.999974},
-    {"id": "positive-4-fraction-x-over-2", "ink_iou": 0.992327, "pixel_similarity": 0.999975},
-    {"id": "positive-5-x-equals-1", "ink_iou": 0.996173, "pixel_similarity": 0.999959}
+    {"id": "positive-1-x+1", "latex": "x+1", "ink_iou": 0.997187, "pixel_similarity": 0.999957},
+    {"id": "positive-2-x^2", "latex": "x^2", "ink_iou": 0.991489, "pixel_similarity": 0.999967},
+    {"id": "positive-3-x_1", "latex": "x_1", "ink_iou": 0.995360, "pixel_similarity": 0.999974},
+    {"id": "positive-4-fraction-x-over-2", "latex": "\\frac{x}{2}", "ink_iou": 0.992327, "pixel_similarity": 0.999975},
+    {"id": "positive-5-x-equals-1", "latex": "x=1", "ink_iou": 0.996173, "pixel_similarity": 0.999959}
   ],
   "near_miss_pairs": [
-    {"id": "near-miss-1-plus-vs-minus", "ink_iou": 0.884669, "pixel_similarity": 0.999347},
-    {"id": "near-miss-2-exponent-2-vs-3", "ink_iou": 0.616725, "pixel_similarity": 0.998448},
-    {"id": "near-miss-3-subscript-1-vs-2", "ink_iou": 0.593972, "pixel_similarity": 0.998389},
-    {"id": "near-miss-4-denominator-2-vs-3", "ink_iou": 0.743820, "pixel_similarity": 0.999250},
-    {"id": "near-miss-5-equals-vs-not-equals", "ink_iou": 0.817881, "pixel_similarity": 0.998917},
-    {"id": "near-miss-6-square-root-vs-plain", "ink_iou": 0.086753, "pixel_similarity": 0.995077}
+    {"id": "near-miss-1-plus-vs-minus", "source_latex": "x+1", "changed_latex": "x-1", "ink_iou": 0.884669, "pixel_similarity": 0.999347},
+    {"id": "near-miss-2-exponent-2-vs-3", "source_latex": "x^2", "changed_latex": "x^3", "ink_iou": 0.616725, "pixel_similarity": 0.998448},
+    {"id": "near-miss-3-subscript-1-vs-2", "source_latex": "x_1", "changed_latex": "x_2", "ink_iou": 0.593972, "pixel_similarity": 0.998389},
+    {"id": "near-miss-4-denominator-2-vs-3", "source_latex": "\\frac{x}{2}", "changed_latex": "\\frac{x}{3}", "ink_iou": 0.743820, "pixel_similarity": 0.999250},
+    {"id": "near-miss-5-equals-vs-not-equals", "source_latex": "x=1", "changed_latex": "x\\ne1", "ink_iou": 0.817881, "pixel_similarity": 0.998917},
+    {"id": "near-miss-6-square-root-vs-plain", "source_latex": "\\sqrt{x}", "changed_latex": "x", "ink_iou": 0.086753, "pixel_similarity": 0.995077}
   ]
 }

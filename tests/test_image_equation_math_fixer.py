@@ -54,6 +54,12 @@ class Evidence:
     required_pixel_similarity: float = 0.98
 
 
+@dataclasses.dataclass(frozen=True)
+class LeakyEvidence(Evidence):
+    latex: str = "private latex"
+    jpeg_bytes: bytes = b"private image"
+
+
 class Verifier:
     def __init__(self, mathml, *, passed=True):
         self.evidence = Evidence(
@@ -98,12 +104,14 @@ def test_verified_image_equation_stages_typed_mandatory_review_request():
     assert result.confidence == 0.55
     assert result.needs_review is True
     assert result.model_used == "vision-model"
-    assert result.pending_association["occurrence_id"] == "occ-1"
-    assert result.pending_association["mathml_string"] == mathml
+    assert result.pending_association is not None
+    assert result.verification_evidence is not None
+    assert result.pending_association.occurrence_id == "occ-1"
+    assert result.pending_association.mathml_string == mathml
     assert "<mtext" not in mathml
-    assert result.verification_evidence["passed"] is True
-    assert "latex" not in result.verification_evidence
-    assert "jpeg_bytes" not in result.verification_evidence
+    assert result.verification_evidence.passed is True
+    assert not hasattr(result.verification_evidence, "latex")
+    assert not hasattr(result.verification_evidence, "jpeg_bytes")
 
 
 def test_image_conversion_failure_never_uses_mtext_or_mutates(monkeypatch):
@@ -136,3 +144,35 @@ def test_mathml_digest_mismatch_fails_closed():
     assert not result.success
     assert result.error == "equation_verification_mismatch"
     assert result.pending_association is None
+
+
+def test_injected_verification_extra_fields_cannot_enter_pending_evidence():
+    mathml = fixer(Verifier("unused"))._convert_to_mathml("x^2 + 1 = 0")
+
+    class LeakyVerifier(Verifier):
+        def __init__(self):
+            base = Verifier(mathml).evidence
+            self.evidence = LeakyEvidence(**dataclasses.asdict(base))
+
+    result = fixer(LeakyVerifier())._fix_math_issue(
+        SimpleNamespace(metadata=METADATA)
+    )
+
+    assert result.error == "image_equation_association_pending"
+    evidence = dataclasses.asdict(result.verification_evidence)
+    assert set(evidence) == {
+        "passed",
+        "source_sha256",
+        "rendered_sha256",
+        "mathml_sha256",
+        "renderer_version",
+        "comparator_version",
+        "font_sha256",
+        "threshold_version",
+        "ink_iou",
+        "pixel_similarity",
+        "required_ink_iou",
+        "required_pixel_similarity",
+    }
+    assert "private latex" not in repr(result.pending_association)
+    assert "private image" not in repr(result.pending_association)

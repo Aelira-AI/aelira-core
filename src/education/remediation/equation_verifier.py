@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import math
+import multiprocessing
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -22,33 +24,26 @@ LICENSE_PATH = ASSET_DIR / "OFL.txt"
 FONT_SHA256 = "562551b15b836e6e01d1b7350909baf3c8c8d83260c1190fbf4544333e6936de"
 _ALLOWED_MATHML_TAGS = frozenset(
     {
-        "math",
-        "mi",
-        "mn",
-        "mo",
-        "mrow",
-        "mfrac",
-        "msqrt",
-        "mroot",
-        "msup",
-        "msub",
-        "msubsup",
-        "munder",
-        "mover",
-        "munderover",
-        "mtable",
-        "mtr",
-        "mtd",
-        "mspace",
-        "mpadded",
-        "mphantom",
-        "mfenced",
-        "menclose",
-        "mmultiscripts",
-        "mprescripts",
-        "none",
+        "math", "mi", "mn", "mo", "mrow", "mfrac", "msqrt", "mroot",
+        "msup", "msub", "msubsup", "munder", "mover", "munderover",
+        "mtable", "mtr", "mtd", "mspace", "mpadded", "mphantom",
+        "mfenced", "menclose", "mmultiscripts", "mprescripts", "none",
     }
 )
+_COMMON_PASSIVE_ATTRIBUTES = frozenset(
+    {
+        "accent", "accentunder", "close", "columnalign", "columnspan",
+        "columnspacing", "depth", "display", "displaystyle", "fence", "form",
+        "height", "largeop", "lspace", "mathbackground", "mathcolor",
+        "mathsize", "mathvariant", "maxsize", "minsize", "movablelimits",
+        "notation", "open", "rowalign", "rowspan", "rowspacing", "rspace",
+        "scriptlevel", "separators", "separator", "stretchy", "symmetric",
+        "width",
+    }
+)
+_PASSIVE_ATTRIBUTES_BY_TAG = {
+    tag: _COMMON_PASSIVE_ATTRIBUTES for tag in _ALLOWED_MATHML_TAGS
+}
 
 
 class EquationVerificationRejected(ValueError):
@@ -91,51 +86,109 @@ class EquationVerificationEvidence:
     required_pixel_similarity: float
 
 
-class OfflineMathMLRenderer:
-    """Render passive MathML with pinned Chromium settings and a committed font."""
+def _render_mathml_worker(
+    mathml: str,
+    font_data: str,
+    connection,
+    max_width: int,
+    max_height: int,
+) -> None:
+    network_requests = 0
+    try:
+        from playwright.sync_api import sync_playwright
 
-    def __init__(self) -> None:
-        self.network_requests = 0
-
-    def render(self, mathml: str) -> bytes:
-        try:
-            from playwright.sync_api import sync_playwright
-        except Exception as exc:
-            raise RuntimeError("renderer_unavailable") from exc
-        font = FONT_PATH.read_bytes()
-        if hashlib.sha256(font).hexdigest() != FONT_SHA256:
-            raise RuntimeError("font_integrity_failed")
-        font_data = base64.b64encode(font).decode("ascii")
         html = f"""<!doctype html><meta charset=utf-8><style>
 @font-face{{font-family:STIXPinned;src:url(data:font/ttf;base64,{font_data}) format('truetype')}}
 html,body{{margin:0;background:#fff;color:#000}}
 #formula{{display:inline-block;padding:24px;font:48px STIXPinned;line-height:1}}
 </style><div id=formula>{mathml}</div>"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(
+                    viewport={"width": 1024, "height": 512},
+                    device_scale_factor=1,
+                    color_scheme="light",
+                )
+
+                def block(route):
+                    nonlocal network_requests
+                    network_requests += 1
+                    route.abort()
+
+                page.route("**/*", block)
+                page.set_content(html, wait_until="load", timeout=5_000)
+                page.evaluate("document.fonts.ready")
+                locator = page.locator("#formula")
+                box = locator.bounding_box(timeout=5_000)
+                if (
+                    box is None
+                    or box["width"] <= 0
+                    or box["height"] <= 0
+                    or box["width"] > max_width
+                    or box["height"] > max_height
+                ):
+                    raise RuntimeError("renderer_dimension_limit")
+                output = locator.screenshot(animations="disabled", timeout=5_000)
+            finally:
+                browser.close()
+        connection.send(("ok", output, network_requests))
+    except Exception:
+        connection.send(("error", b"", network_requests))
+    finally:
+        connection.close()
+
+
+class OfflineMathMLRenderer:
+    """Render passive MathML under a killable deadline with pinned assets."""
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 15.0,
+        max_width: int = 4096,
+        max_height: int = 2048,
+        worker_target: Callable[..., None] = _render_mathml_worker,
+    ) -> None:
         self.network_requests = 0
+        self.timeout_seconds = timeout_seconds
+        self.max_width = max_width
+        self.max_height = max_height
+        self.worker_target = worker_target
+
+    def render(self, mathml: str) -> bytes:
+        font = FONT_PATH.read_bytes()
+        if hashlib.sha256(font).hexdigest() != FONT_SHA256:
+            raise RuntimeError("font_integrity_failed")
+        font_data = base64.b64encode(font).decode("ascii")
+        self.network_requests = 0
+        context = multiprocessing.get_context("spawn")
+        receiving, sending = context.Pipe(duplex=False)
+        process = context.Process(
+            target=self.worker_target,
+            args=(mathml, font_data, sending, self.max_width, self.max_height),
+        )
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                try:
-                    page = browser.new_page(
-                        viewport={"width": 1024, "height": 512},
-                        device_scale_factor=1,
-                        color_scheme="light",
-                    )
-
-                    def block(route):
-                        self.network_requests += 1
-                        route.abort()
-
-                    page.route("**/*", block)
-                    page.set_content(html, wait_until="load", timeout=5_000)
-                    page.evaluate("document.fonts.ready")
-                    output = page.locator("#formula").screenshot(
-                        animations="disabled", timeout=5_000
-                    )
-                finally:
-                    browser.close()
-        except Exception as exc:
-            raise RuntimeError("renderer_failed") from exc
+            process.start()
+            sending.close()
+            process.join(self.timeout_seconds)
+            if process.is_alive():
+                process.terminate()
+                process.join(1)
+                if process.is_alive():
+                    process.kill()
+                    process.join()
+                raise RuntimeError("renderer_timeout")
+            if not receiving.poll() or process.exitcode != 0:
+                raise RuntimeError("renderer_failed")
+            status, output, self.network_requests = receiving.recv()
+            if status != "ok":
+                raise RuntimeError("renderer_failed")
+        finally:
+            receiving.close()
+            if process.is_alive():
+                process.terminate()
+                process.join()
         if self.network_requests:
             raise RuntimeError("renderer_network_attempt")
         return output
@@ -184,6 +237,11 @@ class EquationVerifier:
             raise EquationVerificationRejected("comparison_failed") from None
         if not isinstance(metrics, ComparisonMetrics):
             raise EquationVerificationRejected("comparison_failed")
+        if any(
+            not math.isfinite(value) or value < 0.0 or value > 1.0
+            for value in (metrics.ink_iou, metrics.pixel_similarity)
+        ):
+            raise EquationVerificationRejected("comparison_failed")
         passed = (
             metrics.ink_iou >= self.config.required_ink_iou
             and metrics.pixel_similarity >= self.config.required_pixel_similarity
@@ -223,8 +281,21 @@ class EquationVerifier:
             name = self._local_name(node.tag)
             if name not in _ALLOWED_MATHML_TAGS or name == "mtext":
                 raise EquationVerificationRejected("invalid_mathml")
-            if any(key.lower().endswith(("href", "src")) for key in node.attrib):
-                raise EquationVerificationRejected("invalid_mathml")
+            allowed_attributes = _PASSIVE_ATTRIBUTES_BY_TAG[name]
+            for key, value in node.attrib.items():
+                lowered = key.lower()
+                if (
+                    "}" in key
+                    or ":" in key
+                    or lowered not in allowed_attributes
+                    or len(value) > 128
+                    or not value.isprintable()
+                    or "url(" in value.lower()
+                    or "http:" in value.lower()
+                    or "https:" in value.lower()
+                    or "data:" in value.lower()
+                ):
+                    raise EquationVerificationRejected("invalid_mathml")
             text_chars += len(node.text or "") + len(node.tail or "")
             if text_chars > self.config.max_mathml_chars:
                 raise EquationVerificationRejected("invalid_mathml")
@@ -246,7 +317,10 @@ class EquationVerifier:
             raise EquationVerificationRejected("blank_render")
         intersection = np.logical_and(left_ink, right_ink).sum()
         iou = float(intersection / union)
-        similarity = float(1.0 - np.abs(left.astype(np.int16) - right.astype(np.int16)).mean() / 255.0)
+        similarity = float(
+            1.0
+            - np.abs(left.astype(np.int16) - right.astype(np.int16)).mean() / 255.0
+        )
         return ComparisonMetrics(ink_iou=iou, pixel_similarity=similarity)
 
     def _normalized_canvas(self, payload: bytes) -> np.ndarray:
@@ -259,14 +333,20 @@ class EquationVerifier:
         cropped = Image.fromarray(ink[y0:y1, x0:x1], mode="L")
         cropped.thumbnail((480, 224), Image.Resampling.LANCZOS)
         canvas = Image.new("L", (512, 256), 255)
-        canvas.paste(cropped, ((512 - cropped.width) // 2, (256 - cropped.height) // 2))
+        canvas.paste(
+            cropped, ((512 - cropped.width) // 2, (256 - cropped.height) // 2)
+        )
         return np.asarray(canvas, dtype=np.uint8)
 
     @staticmethod
     def _decode_ink(payload: bytes) -> np.ndarray:
         try:
             with Image.open(BytesIO(payload)) as image:
-                if image.width <= 0 or image.height <= 0 or image.width * image.height > 25_000_000:
+                if (
+                    image.width <= 0
+                    or image.height <= 0
+                    or image.width * image.height > 25_000_000
+                ):
                     raise EquationVerificationRejected("render_dimension_limit")
                 image.load()
                 return np.asarray(image.convert("L"), dtype=np.uint8)

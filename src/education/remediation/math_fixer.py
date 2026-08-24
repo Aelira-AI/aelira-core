@@ -19,7 +19,8 @@ Usage:
 import logging
 import re
 import hashlib
-from dataclasses import asdict, dataclass, is_dataclass
+import math
+from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE, MATH_ISSUE_TYPES
@@ -47,6 +48,35 @@ except ImportError:
     HAS_PIKEPDF = False
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MathVerificationEvidence:
+    passed: bool
+    source_sha256: str
+    rendered_sha256: str
+    mathml_sha256: str
+    renderer_version: str
+    comparator_version: str
+    font_sha256: str
+    threshold_version: str
+    ink_iou: float
+    pixel_similarity: float
+    required_ink_iou: float
+    required_pixel_similarity: float
+
+
+@dataclass(frozen=True)
+class PendingEquationAssociation:
+    page_number: int
+    image_xref: int
+    image_index: int
+    occurrence_ordinal: int
+    bbox: tuple[float, float, float, float]
+    occurrence_id: str
+    alt_text: str
+    mathml_string: str
+    verification_evidence: MathVerificationEvidence
 
 # ---------------------------------------------------------------------------
 # Regex patterns for detecting LaTeX math in plain text extracted from PDFs
@@ -170,8 +200,8 @@ class MathFixResult:
     confidence: float = 0.0
     needs_review: bool = False
     model_used: Optional[str] = None
-    verification_evidence: Optional[dict[str, Any]] = None
-    pending_association: Optional[dict[str, Any]] = None
+    verification_evidence: Optional[MathVerificationEvidence] = None
+    pending_association: Optional[PendingEquationAssociation] = None
 
 
 # ---------------------------------------------------------------------------
@@ -439,28 +469,26 @@ class MathFixer:
                 error="equation_verification_mismatch",
                 page_number=page_number,
             )
-        if is_dataclass(verification):
-            evidence = asdict(verification)
-        else:
-            evidence = {
-                key: getattr(verification, key)
-                for key in (
-                    "passed",
-                    "source_sha256",
-                    "rendered_sha256",
-                    "mathml_sha256",
-                    "renderer_version",
-                    "comparator_version",
-                    "font_sha256",
-                    "threshold_version",
-                    "ink_iou",
-                    "pixel_similarity",
-                    "required_ink_iou",
-                    "required_pixel_similarity",
-                )
-                if hasattr(verification, key)
-            }
+        evidence = self._bounded_verification_evidence(verification)
+        if evidence is None or evidence.source_sha256 != validated.normalized_sha256:
+            return MathFixResult(
+                success=False,
+                error="equation_verification_mismatch",
+                page_number=page_number,
+            )
         aria_label = self._generate_aria_label(recognition.latex)
+        identity = validated.identity
+        pending = PendingEquationAssociation(
+            page_number=identity.page_number,
+            image_xref=identity.image_xref,
+            image_index=identity.image_index,
+            occurrence_ordinal=identity.occurrence_ordinal,
+            bbox=identity.bbox,
+            occurrence_id=identity.occurrence_id,
+            alt_text=aria_label,
+            mathml_string=mathml_string,
+            verification_evidence=evidence,
+        )
         return MathFixResult(
             success=False,
             error="image_equation_association_pending",
@@ -474,17 +502,65 @@ class MathFixer:
             needs_review=True,
             model_used=getattr(recognition, "model", None),
             verification_evidence=evidence,
-            pending_association={
-                "page_number": page_number,
-                "image_xref": metadata.get("image_xref"),
-                "image_index": metadata.get("image_index"),
-                "occurrence_ordinal": metadata.get("occurrence_ordinal"),
-                "bbox": metadata.get("bbox"),
-                "occurrence_id": metadata.get("occurrence_id"),
-                "alt_text": aria_label,
-                "mathml_string": mathml_string,
-                "verification_evidence": evidence,
-            },
+            pending_association=pending,
+        )
+
+    @staticmethod
+    def _bounded_verification_evidence(
+        verification: Any,
+    ) -> Optional[MathVerificationEvidence]:
+        hash_names = ("source_sha256", "rendered_sha256", "mathml_sha256", "font_sha256")
+        version_names = (
+            "renderer_version",
+            "comparator_version",
+            "threshold_version",
+        )
+        metric_names = (
+            "ink_iou",
+            "pixel_similarity",
+            "required_ink_iou",
+            "required_pixel_similarity",
+        )
+        hashes = {name: getattr(verification, name, None) for name in hash_names}
+        versions = {name: getattr(verification, name, None) for name in version_names}
+        metrics = {name: getattr(verification, name, None) for name in metric_names}
+        if getattr(verification, "passed", None) is not True:
+            return None
+        if any(
+            not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in hashes.values()
+        ):
+            return None
+        if any(
+            not isinstance(value, str)
+            or not value
+            or len(value) > 128
+            or not value.isprintable()
+            for value in versions.values()
+        ):
+            return None
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+            or float(value) > 1.0
+            for value in metrics.values()
+        ):
+            return None
+        return MathVerificationEvidence(
+            passed=True,
+            source_sha256=str(hashes["source_sha256"]),
+            rendered_sha256=str(hashes["rendered_sha256"]),
+            mathml_sha256=str(hashes["mathml_sha256"]),
+            font_sha256=str(hashes["font_sha256"]),
+            renderer_version=str(versions["renderer_version"]),
+            comparator_version=str(versions["comparator_version"]),
+            threshold_version=str(versions["threshold_version"]),
+            ink_iou=float(metrics["ink_iou"]),
+            pixel_similarity=float(metrics["pixel_similarity"]),
+            required_ink_iou=float(metrics["required_ink_iou"]),
+            required_pixel_similarity=float(metrics["required_pixel_similarity"]),
         )
 
     def _convert_to_mathml(self, latex: str) -> str:
