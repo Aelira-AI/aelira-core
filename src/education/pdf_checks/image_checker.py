@@ -36,6 +36,8 @@ def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
     occurrences: List[Dict] = []
     for info in displayed_infos:
         xref = int(info.get("xref") or 0)
+        ordinal = ordinals.get(xref, 0)
+        ordinals[xref] = ordinal + 1
         raw_bbox = info.get("bbox")
         resource_indices = resource_index_lists.get(xref, [])
         if (
@@ -59,8 +61,6 @@ def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
             or bbox[3] <= bbox[1]
         ):
             continue
-        ordinal = ordinals.get(xref, 0)
-        ordinals[xref] = ordinal + 1
         image_index = (
             resource_indices[ordinal]
             if len(resource_indices) > 1

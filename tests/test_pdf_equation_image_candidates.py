@@ -139,3 +139,21 @@ def test_duplicate_resource_entries_for_one_xref_are_not_addressable():
             return [{"xref": 7, "bbox": (10.0, 20.0, 90.0, 55.0)}]
 
     assert _displayed_image_occurrences(_Page(), 1) == []
+
+
+def test_invalid_earlier_draw_does_not_shift_later_resource_index():
+    class _Page:
+        def get_images(self, full=True):
+            return [(7,), (7,)]
+
+        def get_image_info(self, xrefs=True):
+            return [
+                {"xref": 7, "bbox": None},
+                {"xref": 7, "bbox": (10.0, 20.0, 90.0, 55.0)},
+            ]
+
+    occurrences = _displayed_image_occurrences(_Page(), 1)
+
+    assert len(occurrences) == 1
+    assert occurrences[0]["image_index"] == 1
+    assert occurrences[0]["occurrence_ordinal"] == 1
