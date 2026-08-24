@@ -101,7 +101,7 @@ class EquationRecognizer:
             raise EquationRecognitionRejected("invalid_provider_response")
         if not latex or len(latex) > self.max_latex_chars:
             raise EquationRecognitionRejected("invalid_provider_response")
-        if any(ord(character) < 32 or ord(character) == 127 for character in latex):
+        if any(not character.isprintable() for character in latex):
             raise EquationRecognitionRejected("invalid_provider_response")
         return parsed
 
