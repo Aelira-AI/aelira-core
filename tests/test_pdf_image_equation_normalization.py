@@ -161,6 +161,25 @@ def test_byte_dimension_and_pixel_bounds_are_checked():
             EquationImageSource(limits).extract(Document(payload, "png"), IDENTITY)
 
 
+def test_dimension_limit_rejects_before_full_pixel_load(monkeypatch):
+    from src.education.remediation.equation_image_source import (
+        EquationImageSource,
+        ImageSourceLimits,
+        ImageSourceRejected,
+    )
+
+    payload = encoded("PNG", size=(24, 12))
+
+    def forbidden_load(self):
+        raise AssertionError("pixel load must not run after probe exceeds bounds")
+
+    monkeypatch.setattr(Image.Image, "load", forbidden_load)
+    with pytest.raises(ImageSourceRejected, match="dimension_limit"):
+        EquationImageSource(ImageSourceLimits(max_width=23)).extract(
+            Document(payload, "png"), IDENTITY
+        )
+
+
 def test_decompression_bomb_warning_is_rejected(monkeypatch):
     from src.education.remediation.equation_image_source import (
         EquationImageSource,
@@ -170,6 +189,20 @@ def test_decompression_bomb_warning_is_rejected(monkeypatch):
     monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
     with pytest.raises(ImageSourceRejected, match="decompression_bomb"):
         EquationImageSource().extract(Document(encoded("PNG", size=(24, 12)), "png"), IDENTITY)
+
+
+def test_webp_unknown_chunk_is_rejected_even_when_riff_length_is_adjusted():
+    from src.education.remediation.equation_image_source import (
+        EquationImageSource,
+        ImageSourceRejected,
+    )
+
+    source = bytearray(encoded("WEBP"))
+    source.extend(b"EVIL\x04\x00\x00\x00data")
+    source[4:8] = (len(source) - 8).to_bytes(4, "little")
+
+    with pytest.raises(ImageSourceRejected, match="trailing_image_data"):
+        EquationImageSource().extract(Document(bytes(source), "webp"), IDENTITY)
 
 
 def test_rejected_source_never_invokes_downstream_or_mutates():

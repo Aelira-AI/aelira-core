@@ -118,6 +118,26 @@ def test_oversized_latex_fails_closed():
         EquationRecognizer(Client(success(content)), max_latex_chars=8).recognize(PAYLOAD)
 
 
+def test_oversized_provider_response_is_rejected_before_json_parse(monkeypatch):
+    from src.education.remediation import equation_recognizer
+    from src.education.remediation.equation_recognizer import (
+        EquationRecognitionRejected,
+        EquationRecognizer,
+    )
+
+    monkeypatch.setattr(
+        equation_recognizer.json,
+        "loads",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("oversized response must not be parsed")
+        ),
+    )
+    with pytest.raises(EquationRecognitionRejected, match="invalid_provider_response"):
+        EquationRecognizer(
+            Client(success("x" * 65)), max_response_chars=64
+        ).recognize(PAYLOAD)
+
+
 @pytest.mark.parametrize(
     "client,response_code",
     [
@@ -153,3 +173,20 @@ def test_non_alt_text_binding_is_rejected_before_transport():
     with pytest.raises(EquationRecognitionRejected, match="purpose_mismatch"):
         EquationRecognizer(client).recognize(PAYLOAD)
     assert client.calls == []
+
+
+def test_provider_exception_is_not_chained_or_exposed():
+    from src.education.remediation.equation_recognizer import (
+        EquationRecognitionRejected,
+        EquationRecognizer,
+    )
+
+    class RaisingClient(Client):
+        def analyze_image_sync(self, **kwargs):
+            raise RuntimeError("secret request payload")
+
+    with pytest.raises(EquationRecognitionRejected, match="provider_failure") as exc:
+        EquationRecognizer(RaisingClient(None)).recognize(PAYLOAD)
+    assert exc.value.__cause__ is None
+    assert exc.value.__suppress_context__ is True
+    assert "secret request payload" not in str(exc.value)

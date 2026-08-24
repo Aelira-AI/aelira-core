@@ -27,9 +27,16 @@ _PROMPT = """Classify this single bounded image. Return exactly one JSON object 
 class EquationRecognizer:
     """Recover bounded LaTeX through one explicitly alt-text-purpose client."""
 
-    def __init__(self, alt_text_client: Any, *, max_latex_chars: int = 4096) -> None:
+    def __init__(
+        self,
+        alt_text_client: Any,
+        *,
+        max_latex_chars: int = 4096,
+        max_response_chars: int = 8192,
+    ) -> None:
         self.alt_text_client = alt_text_client
         self.max_latex_chars = max_latex_chars
+        self.max_response_chars = max_response_chars
 
     def recognize(self, image: ValidatedEquationImage) -> EquationRecognition:
         client = self.alt_text_client
@@ -45,8 +52,8 @@ class EquationRecognizer:
                 prompt=_PROMPT,
                 max_tokens=500,
             )
-        except Exception as exc:
-            raise EquationRecognitionRejected("provider_failure") from exc
+        except Exception:
+            raise EquationRecognitionRejected("provider_failure") from None
         if not isinstance(response, dict) or response.get("success") is not True:
             raise EquationRecognitionRejected("provider_failure")
         content = response.get("content")
@@ -61,7 +68,11 @@ class EquationRecognizer:
         )
 
     def _parse(self, content: str) -> dict[str, Any]:
-        if not content or content.strip() != content:
+        if (
+            not content
+            or len(content) > self.max_response_chars
+            or content.strip() != content
+        ):
             raise EquationRecognitionRejected("invalid_provider_response")
 
         def reject_duplicates(pairs):

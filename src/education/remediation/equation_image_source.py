@@ -107,12 +107,33 @@ def _complete_jpeg(data: bytes) -> bool:
 
 
 def _complete_webp(data: bytes) -> bool:
-    return (
-        len(data) >= 12
-        and data[:4] == b"RIFF"
-        and data[8:12] == b"WEBP"
-        and int.from_bytes(data[4:8], "little") + 8 == len(data)
-    )
+    if (
+        len(data) < 20
+        or data[:4] != b"RIFF"
+        or data[8:12] != b"WEBP"
+        or int.from_bytes(data[4:8], "little") + 8 != len(data)
+    ):
+        return False
+    allowed = {b"VP8 ", b"VP8L", b"VP8X", b"ALPH", b"ICCP", b"EXIF", b"XMP "}
+    seen: set[bytes] = set()
+    image_chunks = 0
+    offset = 12
+    while offset < len(data):
+        if len(data) - offset < 8:
+            return False
+        kind = data[offset : offset + 4]
+        length = int.from_bytes(data[offset + 4 : offset + 8], "little")
+        if kind not in allowed or kind in seen:
+            return False
+        seen.add(kind)
+        if kind in {b"VP8 ", b"VP8L"}:
+            image_chunks += 1
+        end = offset + 8 + length
+        padded_end = end + (length & 1)
+        if end > len(data) or padded_end > len(data):
+            return False
+        offset = padded_end
+    return offset == len(data) and image_chunks == 1
 
 
 class EquationImageSource:
@@ -192,7 +213,10 @@ class EquationImageSource:
                 with Image.open(BytesIO(source)) as probe:
                     fmt = probe.format
                     frames = getattr(probe, "n_frames", 1)
+                    self._check_dimensions(probe.size)
                     probe.verify()
+                if frames != 1:
+                    raise ImageSourceRejected("multiframe_image")
                 if fmt == "PNG" and not _complete_png(source):
                     raise ImageSourceRejected("trailing_image_data")
                 if fmt == "JPEG" and not _complete_jpeg(source):
@@ -201,9 +225,8 @@ class EquationImageSource:
                     raise ImageSourceRejected("trailing_image_data")
                 if fmt not in {"PNG", "JPEG", "WEBP"}:
                     raise ImageSourceRejected("unsupported_image_format")
-                if frames != 1:
-                    raise ImageSourceRejected("multiframe_image")
                 image = Image.open(BytesIO(source))
+                self._check_dimensions(image.size)
                 image.load()
                 if getattr(image, "n_frames", 1) != 1:
                     image.close()
@@ -215,6 +238,15 @@ class EquationImageSource:
             raise ImageSourceRejected("decompression_bomb") from exc
         except (UnidentifiedImageError, EOFError, OSError, SyntaxError, ValueError) as exc:
             raise ImageSourceRejected("malformed_image") from exc
+
+    def _check_dimensions(self, size: tuple[int, int]) -> None:
+        width, height = size
+        if width <= 0 or height <= 0:
+            raise ImageSourceRejected("dimension_limit")
+        if width > self.limits.max_width or height > self.limits.max_height:
+            raise ImageSourceRejected("dimension_limit")
+        if width * height > self.limits.max_pixels:
+            raise ImageSourceRejected("pixel_limit")
 
     @staticmethod
     def _identity(identity: Mapping[str, Any]) -> EquationImageIdentity:
