@@ -1,5 +1,6 @@
 """Task 14 slice 3C1: execution-time LMS remediation policy enforcement."""
 
+import asyncio
 import ast
 import importlib.util
 import inspect
@@ -709,6 +710,7 @@ async def test_remediation_completion_commit_failure_restores_processing_and_abo
 
     assert caught.value.code == "remediation_completion_retryable"
     assert caught.value.artifact_id == "artifact-1"
+    assert caught.value.cleanup_complete is True
     assert "a" * 64 not in repr(caught.value)
     assert job.status == "processing"
     assert job.progress == 10
@@ -719,6 +721,190 @@ async def test_remediation_completion_commit_failure_restores_processing_and_abo
         artifact_id="artifact-1",
         publication_token="a" * 64,
     )
+
+
+@pytest.mark.asyncio
+async def test_remediation_completion_checkpoint_cancellation_aborts_exact_artifact():
+    from src.jobs.remediation_job import (
+        RemediationProcessingResult,
+        handle_remediation_job,
+    )
+    from src.services.remediation_artifact_service import ArtifactPublicationResult
+
+    job, db = _job_graph(context={})
+    job.status = CloudJobStatus.PROCESSING.value
+    job.progress = 10
+    job.progress_message = "Remediating..."
+    job.completed_at = None
+    job.error_message = None
+    job._assert_owned = AsyncMock(side_effect=asyncio.CancelledError)
+    artifact_service = MagicMock()
+    artifact = SimpleNamespace(id="artifact-cancelled")
+    publication = ArtifactPublicationResult(
+        artifact=artifact,
+        artifact_id="artifact-cancelled",
+        publication_token="b" * 64,
+    )
+    process = AsyncMock(
+        return_value=RemediationProcessingResult(
+            {
+                "success": True,
+                "scan_id": "scan-1",
+                "artifact_id": "artifact-cancelled",
+            },
+            artifact_publication=publication,
+        )
+    )
+
+    with (
+        patch("src.jobs.remediation_job.process_remediation_job", new=process),
+        patch(
+            "src.jobs.remediation_job.RemediationArtifactService.from_settings",
+            return_value=artifact_service,
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await handle_remediation_job(job, db, MagicMock())
+
+    process.assert_awaited_once()
+    job._assert_owned.assert_awaited_once_with()
+    artifact_service.abort_staging.assert_called_once_with(
+        db,
+        artifact_id=publication.artifact_id,
+        publication_token=publication.publication_token,
+    )
+    assert db.rollbacks == 1
+    assert db.commits == 0
+    assert job.status == CloudJobStatus.PROCESSING.value
+    assert job.progress == 10
+    assert job.progress_message == "Remediating..."
+    assert job.completed_at is None
+    assert job.error_message is None
+    assert job.result_data is None
+
+
+@pytest.mark.asyncio
+async def test_remediation_completion_cancellation_cleanup_failure_stays_pending(
+    caplog,
+):
+    from src.jobs.remediation_job import (
+        RemediationProcessingResult,
+        handle_remediation_job,
+    )
+    from src.services.remediation_artifact_service import ArtifactPublicationResult
+
+    job, db = _job_graph(context={})
+    job.status = CloudJobStatus.PROCESSING.value
+    job.progress = 10
+    job.completed_at = None
+    job._assert_owned = AsyncMock(side_effect=asyncio.CancelledError)
+    artifact_service = MagicMock()
+    artifact_service.abort_staging.side_effect = OSError("cleanup unavailable")
+    publication = ArtifactPublicationResult(
+        artifact=SimpleNamespace(id="artifact-pending"),
+        artifact_id="artifact-pending",
+        publication_token="d" * 64,
+    )
+    process = AsyncMock(
+        return_value=RemediationProcessingResult(
+            {
+                "success": True,
+                "scan_id": "scan-1",
+                "artifact_id": "artifact-pending",
+            },
+            artifact_publication=publication,
+        )
+    )
+
+    with (
+        patch("src.jobs.remediation_job.process_remediation_job", new=process),
+        patch(
+            "src.jobs.remediation_job.RemediationArtifactService.from_settings",
+            return_value=artifact_service,
+        ),
+        caplog.at_level("WARNING", logger="src.jobs.remediation_job"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await handle_remediation_job(job, db, MagicMock())
+
+    artifact_service.abort_staging.assert_called_once_with(
+        db,
+        artifact_id=publication.artifact_id,
+        publication_token=publication.publication_token,
+    )
+    pending = [
+        record
+        for record in caplog.records
+        if getattr(record, "publication_cleanup_pending", False) is True
+    ]
+    assert len(pending) == 1
+    assert pending[0].artifact_id == publication.artifact_id
+    assert db.rollbacks == 2
+    assert db.commits == 0
+    assert job.status == CloudJobStatus.PROCESSING.value
+    assert job.progress == 10
+    assert job.completed_at is None
+    assert job.result_data is None
+
+
+@pytest.mark.asyncio
+async def test_remediation_completion_fence_failure_aborts_exact_artifact_for_retry():
+    from src.jobs.remediation_job import (
+        RemediationCompletionCommitFailed,
+        RemediationProcessingResult,
+        handle_remediation_job,
+    )
+    from src.services.remediation_artifact_service import ArtifactPublicationResult
+
+    job, db = _job_graph(context={})
+    job.status = CloudJobStatus.PROCESSING.value
+    job.progress = 10
+    job.completed_at = None
+    artifact_service = MagicMock()
+    artifact = SimpleNamespace(id="artifact-fence")
+    publication = ArtifactPublicationResult(
+        artifact=artifact,
+        artifact_id="artifact-fence",
+        publication_token="c" * 64,
+    )
+    process = AsyncMock(
+        return_value=RemediationProcessingResult(
+            {
+                "success": True,
+                "scan_id": "scan-1",
+                "artifact_id": "artifact-fence",
+            },
+            artifact_publication=publication,
+        )
+    )
+
+    with (
+        patch("src.jobs.remediation_job.process_remediation_job", new=process),
+        patch(
+            "src.jobs.remediation_job.RemediationArtifactService.from_settings",
+            return_value=artifact_service,
+        ),
+        patch(
+            "src.jobs.remediation_job._fence_claim_for_handler_commit",
+            side_effect=RuntimeError("claim fence unavailable"),
+        ),
+        pytest.raises(RemediationCompletionCommitFailed) as caught,
+    ):
+        await handle_remediation_job(job, db, MagicMock())
+
+    assert caught.value.artifact_id == publication.artifact_id
+    assert caught.value.cleanup_complete is True
+    artifact_service.abort_staging.assert_called_once_with(
+        db,
+        artifact_id=publication.artifact_id,
+        publication_token=publication.publication_token,
+    )
+    assert db.rollbacks == 1
+    assert db.commits == 0
+    assert job.status == CloudJobStatus.PROCESSING.value
+    assert job.progress == 10
+    assert job.completed_at is None
+    assert job.result_data is None
 
 
 @pytest.mark.asyncio

@@ -8,13 +8,16 @@ Market Impact: +15% US, +10% Australia (community colleges)
 
 import asyncio
 import functools
+import hashlib
 import importlib
 import os
 import logging
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Literal
 from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -290,9 +293,33 @@ async def _run_brightspace_worker(
         )
         try:
             return await asyncio.shield(future)
-        except asyncio.CancelledError:
-            await asyncio.shield(future)
-            raise
+        except asyncio.CancelledError as cancellation:
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    continue
+            try:
+                completed = future.result()
+            except BaseException:
+                pass
+            else:
+                _close_worker_output_claim(completed)
+            raise cancellation
+
+
+def _close_worker_output_claim(worker_result: Any) -> None:
+    """Release a live result claim without inspecting or exposing its internals."""
+    result = getattr(worker_result, "result", worker_result)
+    close_output_claim = getattr(result, "close_output_claim", None)
+    if callable(close_output_claim):
+        try:
+            close_output_claim()
+        except Exception as exc:
+            logger.warning(
+                "Failed to close Brightspace remediation output claim",
+                extra={"error_type": type(exc).__name__},
+            )
 
 
 def _get_credential(db: Session, dept_id: str) -> CloudOAuthCredentials:
@@ -1194,6 +1221,126 @@ class _WorkerRemediationResult:
     remediated_bytes: Optional[bytes] = None
 
 
+@dataclass(frozen=True)
+class _SafePdfClaimMetadata:
+    size_bytes: int
+    sha256: str
+    mime_type: str
+    filename: str
+
+
+def _safe_pdf_claim_metadata(result: Any) -> _SafePdfClaimMetadata:
+    """Accept only bounded publication metadata with no descriptor/path state."""
+    has_output_claim = getattr(result, "has_output_claim", None)
+    if not callable(has_output_claim) or has_output_claim() is not True:
+        raise ValueError("Brightspace PDF output claim is unavailable")
+    output_claim_metadata = getattr(result, "output_claim_metadata", None)
+    if not callable(output_claim_metadata):
+        raise ValueError("Brightspace PDF output metadata is unavailable")
+    metadata = output_claim_metadata()
+    if not isinstance(metadata, dict) or set(metadata) != {
+        "size_bytes",
+        "sha256",
+        "mime_type",
+        "filename",
+    }:
+        raise ValueError("Brightspace PDF output metadata is invalid")
+    size_bytes = metadata["size_bytes"]
+    sha256 = metadata["sha256"]
+    mime_type = metadata["mime_type"]
+    filename = metadata["filename"]
+    if (
+        type(size_bytes) is not int
+        or size_bytes <= 0
+        or size_bytes > BRIGHTSPACE_BATCH_SIZE_LIMIT_BYTES
+        or not isinstance(sha256, str)
+        or len(sha256) != 64
+        or any(character not in "0123456789abcdef" for character in sha256)
+        or mime_type != "application/pdf"
+        or not isinstance(filename, str)
+        or not filename
+        or len(filename.encode("utf-8")) > 255
+        or filename != Path(filename).name
+        or "/" in filename
+        or "\\" in filename
+        or "\x00" in filename
+        or Path(filename).suffix.lower() != ".pdf"
+    ):
+        raise ValueError("Brightspace PDF output metadata is unsafe")
+    return _SafePdfClaimMetadata(
+        size_bytes=size_bytes,
+        sha256=sha256,
+        mime_type=mime_type,
+        filename=filename,
+    )
+
+
+@contextmanager
+def _bounded_brightspace_pdf_validation_file(
+    source_stream: Any,
+    *,
+    metadata: _SafePdfClaimMetadata,
+):
+    """Materialize one private bounded copy from the exact claim stream."""
+    with tempfile.TemporaryDirectory(
+        prefix="aelira_brightspace_pdf_validation_"
+    ) as temp_dir:
+        validation_path = Path(temp_dir) / "claimed-output.pdf"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(validation_path, flags, 0o600)
+        digest = hashlib.sha256()
+        remaining = metadata.size_bytes
+        try:
+            while remaining:
+                chunk = source_stream.read(min(64 * 1024, remaining))
+                if not isinstance(chunk, bytes) or not chunk:
+                    raise ValueError(
+                        "Brightspace PDF output ended before its claimed size"
+                    )
+                if len(chunk) > remaining:
+                    raise ValueError("Brightspace PDF output exceeds its claimed size")
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(descriptor, view)
+                    if written <= 0:
+                        raise OSError(
+                            "Brightspace PDF validation copy made no progress"
+                        )
+                    view = view[written:]
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if source_stream.read(1):
+                raise ValueError("Brightspace PDF output exceeds its claimed size")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if digest.hexdigest() != metadata.sha256:
+            raise ValueError("Brightspace PDF output digest does not match its claim")
+        yield validation_path
+
+
+def _validate_brightspace_pdf_claim(
+    result: Any,
+    metadata: _SafePdfClaimMetadata,
+) -> None:
+    """Run Matterhorn against a bounded copy of the exact claimed bytes."""
+    from ..education.validation.matterhorn import MatterhornValidator
+
+    with result.open_output_stream() as source_stream:
+        with _bounded_brightspace_pdf_validation_file(
+            source_stream,
+            metadata=metadata,
+        ) as validation_path:
+            try:
+                MatterhornValidator().validate(validation_path)
+            except Exception as exc:
+                logger.warning(
+                    "Brightspace PDF Matterhorn validation was unavailable",
+                    extra={"error_type": type(exc).__name__},
+                )
+
+
 def _run_remediator_worker(
     *,
     ext: str,
@@ -1271,7 +1418,6 @@ def _run_remediator_worker(
             raise ValueError("unsupported_remediation_worker_input")
 
         result = remediator.remediate()
-        output_path = getattr(result, "output_file", None)
         complete = (
             getattr(result, "success", None) is True
             and _bounded_count(getattr(result, "fixed_count", 0)) > 0
@@ -1279,6 +1425,9 @@ def _run_remediator_worker(
             and _bounded_count(getattr(result, "failed_count", 0)) == 0
             and getattr(result, "verification_passed", None) is True
         )
+        if ext == "pdf":
+            return _WorkerRemediationResult(result=result)
+        output_path = getattr(result, "output_file", None)
         if not complete or not output_path or not os.path.isfile(output_path):
             return _WorkerRemediationResult(result=result)
         if source_text is not None:
@@ -1297,6 +1446,189 @@ def _persist_remediated_bytes(path: str, content: bytes) -> bool:
     with open(path, "wb") as output:
         output.write(content)
     return os.path.isfile(path)
+
+
+def _brightspace_pdf_artifact_unavailable(
+    cloud_file: CloudFile,
+    *,
+    decisions: Dict[str, str],
+    failed_count: int = 1,
+) -> RemediationOutcome:
+    """Return the existing fail-closed state without exposing claim internals."""
+    cloud_file.has_remediated_version = False
+    cloud_file.remediation_origin = None
+    cloud_file.remediated_issues_fixed = 0
+    cloud_file.remediated_issues_remaining = max(1, failed_count)
+    cloud_file.writeback_status = None
+    return RemediationOutcome(
+        cloud_file_id=str(cloud_file.id),
+        status="failed",
+        failed_count=max(1, failed_count),
+        purpose_decisions=decisions,
+        error_code="artifact_unavailable",
+    )
+
+
+async def _finish_brightspace_pdf_remediation(
+    cloud_file: CloudFile,
+    db: Session,
+    *,
+    result: Any,
+    complete: bool,
+    decisions: Dict[str, str],
+    alt_text_client: Any,
+) -> RemediationOutcome:
+    """Promote one descriptor-bound PDF claim and release ownership on exit."""
+    artifact = None
+    artifact_publication = None
+    artifact_service = None
+    fixed = _bounded_count(getattr(result, "fixed_count", 0))
+    manual = _bounded_count(getattr(result, "manual_count", 0))
+    failed = _bounded_count(getattr(result, "failed_count", 0))
+    try:
+        if not complete:
+            cloud_file.has_remediated_version = False
+            cloud_file.remediation_origin = None
+            cloud_file.remediated_issues_fixed = fixed
+            cloud_file.remediated_issues_remaining = manual + failed
+            cloud_file.writeback_status = None
+            status = (
+                "failed"
+                if getattr(result, "success", None) is not True or failed > 0
+                else "manual_required"
+            )
+            return RemediationOutcome(
+                cloud_file_id=str(cloud_file.id),
+                status=status,
+                manual_count=manual + fixed,
+                failed_count=failed,
+                purpose_decisions=decisions,
+                error_code="manual_required",
+            )
+
+        try:
+            claim_metadata = _safe_pdf_claim_metadata(result)
+            _validate_brightspace_pdf_claim(result, claim_metadata)
+            artifact_service = RemediationArtifactService.from_settings()
+            with result.open_output_stream() as source_stream:
+                published = artifact_service.claim_and_publish_stream(
+                    db,
+                    source_stream=source_stream,
+                    claimed_size_bytes=claim_metadata.size_bytes,
+                    claimed_sha256=claim_metadata.sha256,
+                    claimed_mime_type=claim_metadata.mime_type,
+                    claimed_filename=claim_metadata.filename,
+                    department_id=str(cloud_file.department_id),
+                    scan_id=str(cloud_file.last_scan_id),
+                    cloud_file_id=str(cloud_file.id),
+                    remediation_job_id=None,
+                    created_by_id=None,
+                    provider=CloudProvider.BRIGHTSPACE.value,
+                    scan_type="PDF",
+                    filename=claim_metadata.filename,
+                    provider_result={"verification_passed": True},
+                    commit=False,
+                )
+                if isinstance(published, ArtifactPublicationResult):
+                    artifact_publication = published
+                    artifact = published.artifact
+                else:
+                    artifact = published
+            # A cancellation requested while the synchronous publisher held
+            # control must land before any completion state or commit.
+            await asyncio.sleep(0)
+            if getattr(artifact, "lifecycle_status", None) != "available":
+                raise ValueError("Brightspace PDF artifact is unavailable")
+        except asyncio.CancelledError:
+            db.rollback()
+            cloud_file.has_remediated_version = False
+            cloud_file.remediation_origin = None
+            cloud_file.writeback_status = None
+            if (
+                artifact_publication is not None
+                and artifact_service is not None
+                and isinstance(artifact_publication.publication_token, str)
+            ):
+                try:
+                    artifact_service.abort_staging(
+                        db,
+                        artifact_id=artifact_publication.artifact_id,
+                        publication_token=artifact_publication.publication_token,
+                    )
+                except Exception:
+                    db.rollback()
+                    logger.warning("Failed to clean cancelled Brightspace artifact")
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Brightspace PDF artifact promotion failed closed",
+                extra={"error_type": type(exc).__name__},
+            )
+            return _brightspace_pdf_artifact_unavailable(
+                cloud_file,
+                decisions=decisions,
+                failed_count=max(1, failed),
+            )
+
+        cloud_file.has_remediated_version = True
+        cloud_file.remediation_origin = "manual"
+        cloud_file.remediated_issues_fixed = fixed
+        cloud_file.remediated_issues_remaining = 0
+        cloud_file.writeback_status = "pending_review"
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            cloud_file.has_remediated_version = False
+            cloud_file.remediation_origin = None
+            cloud_file.writeback_status = None
+            if artifact_publication is not None and artifact_service is not None:
+                try:
+                    artifact_service.abort_staging(
+                        db,
+                        artifact_id=artifact_publication.artifact_id,
+                        publication_token=artifact_publication.publication_token,
+                    )
+                except Exception:
+                    db.rollback()
+                    logger.warning("Failed to clean aborted Brightspace artifact")
+            return RemediationOutcome(
+                cloud_file_id=str(cloud_file.id),
+                status="failed",
+                failed_count=max(1, fixed),
+                purpose_decisions=decisions,
+                error_code="remediation_failed",
+            )
+
+        assert artifact is not None
+        return RemediationOutcome(
+            cloud_file_id=str(cloud_file.id),
+            status="completed",
+            fixed_count=fixed,
+            manual_count=manual,
+            failed_count=failed,
+            has_remediated_version=True,
+            artifact_id=str(artifact.id),
+            artifact_mime_type=artifact.mime_type,
+            artifact_size_bytes=artifact.size_bytes,
+            artifact_sha256=artifact.sha256,
+            artifact_expires_at=artifact.expires_at,
+            artifact_review_status=artifact.review_status,
+            ai_used=decisions.get("alt_text") == "used",
+            external_ai_used=(
+                decisions.get("alt_text") == "used"
+                and getattr(alt_text_client, "provider", None) != "ollama"
+            ),
+            providers=(
+                [getattr(alt_text_client, "provider")]
+                if decisions.get("alt_text") == "used"
+                and isinstance(getattr(alt_text_client, "provider", None), str)
+                else []
+            ),
+            purpose_decisions=decisions,
+        )
+    finally:
+        _close_worker_output_claim(_WorkerRemediationResult(result=result))
 
 
 async def _remediate_file_impl(
@@ -1497,6 +1829,15 @@ async def _remediate_file_impl(
             and _bounded_count(getattr(result, "failed_count", 0)) == 0
             and getattr(result, "verification_passed", None) is True
         )
+        if ext == "pdf":
+            return await _finish_brightspace_pdf_remediation(
+                cloud_file,
+                db,
+                result=result,
+                complete=complete,
+                decisions=decisions,
+                alt_text_client=alt_text_client,
+            )
         if (
             complete
             and worker_result.remediated_bytes is not None
@@ -1505,7 +1846,6 @@ async def _remediate_file_impl(
                 "docx",
                 "pptx",
                 "xlsx",
-                "pdf",
             }
         ):
             with tempfile.TemporaryDirectory(
@@ -1534,7 +1874,6 @@ async def _remediate_file_impl(
                                 "docx": "WORD",
                                 "pptx": "POWERPOINT",
                                 "xlsx": "EXCEL",
-                                "pdf": "PDF",
                             }[ext],
                             filename=f"remediated.{ext}",
                             provider_result={"verification_passed": True},

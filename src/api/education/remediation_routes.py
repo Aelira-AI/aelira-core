@@ -1,12 +1,14 @@
 """Remediation endpoints — auto-fix, code remediation, download, batch."""
 
 import json
+import hashlib
 import logging
 import os
 import shutil
 import tempfile
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +58,54 @@ from ._scope import authorize_scan_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@contextmanager
+def _bounded_pdf_claim_validation_file(
+    source_stream,
+    *,
+    claimed_size_bytes: int,
+    claimed_sha256: str,
+):
+    """Materialize exact claimed PDF bytes in one private bounded temp file."""
+    if not isinstance(claimed_size_bytes, int) or claimed_size_bytes < 0:
+        raise ValueError("PDF output claim has an invalid size")
+    if not isinstance(claimed_sha256, str) or len(claimed_sha256) != 64:
+        raise ValueError("PDF output claim has an invalid digest")
+
+    with tempfile.TemporaryDirectory(prefix="aelira_pdf_verification_") as temp_dir:
+        verification_path = Path(temp_dir) / "claimed-output.pdf"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor = os.open(verification_path, flags, 0o600)
+        digest = hashlib.sha256()
+        remaining = claimed_size_bytes
+        try:
+            with os.fdopen(descriptor, "wb", closefd=True) as destination:
+                descriptor = -1
+                while remaining:
+                    chunk = source_stream.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError(
+                            "PDF output claim ended before its claimed size"
+                        )
+                    destination.write(chunk)
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                if source_stream.read(1):
+                    raise ValueError("PDF output claim exceeds its claimed size")
+                destination.flush()
+                os.fsync(destination.fileno())
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+        if digest.hexdigest() != claimed_sha256:
+            raise ValueError("PDF output claim digest does not match its metadata")
+        yield verification_path
 
 
 def _managed_artifact_authority(
@@ -1748,6 +1798,7 @@ async def remediate_scan(
     artifact_publication = None
     artifact_service = None
     artifact_temp_dir = None
+    result = None
 
     try:
         # Configuration, partitioning, and persisted-input normalization are
@@ -1822,6 +1873,7 @@ async def remediate_scan(
         remediator = RemediatorClass(**remediator_kwargs)
 
         result = remediator.remediate()
+        pdf_claim_required = RemediatorClass is PdfRemediator
         if embedded_alt_manual:
             merge_partitioned_manual_issues(
                 result,
@@ -1830,16 +1882,57 @@ async def remediate_scan(
                 purpose="manual_review",
             )
 
-        if (
+        successful_complete_result = (
             result.success is True
-            and result.fixed_count > 0
             and result.manual_count == 0
             and result.failed_count == 0
+        )
+        if (
+            pdf_claim_required
+            and successful_complete_result
+            and result.has_output_claim() is not True
         ):
-            output_path = getattr(result, "output_file", None)
+            scan.status = ScanStatus.FAILED
+            scan.remediation_outcome = RemediationOutcome.ARTIFACT_UNAVAILABLE.value
+            _audit_terminal_remediation(
+                db=db,
+                request=request,
+                user_id=user_id,
+                department_id=department_id,
+                scan_id=scan_id,
+                file_type=scan_type_value,
+                remediation_requested=remediation_requested,
+                alt_text_requested=alt_text_requested,
+                remediation_tracker=remediation_tracker,
+                alt_text_tracker=alt_text_tracker,
+                successful=False,
+                total_issues=result.total_issues,
+                fixed_count=0,
+                manual_count=result.fixed_count,
+                failed_count=result.failed_count,
+                error="remediation_artifact_unavailable",
+                commit=False,
+            )
+            db.commit()
+            return {
+                "success": False,
+                "scan_id": scan_id,
+                "error": "remediation_artifact_unavailable",
+                "fixed_count": 0,
+                "manual_count": result.fixed_count,
+                "failed_count": result.failed_count,
+                "artifact_id": None,
+            }
+
+        if successful_complete_result and result.fixed_count > 0:
+            if pdf_claim_required:
+                output_path = None
+                output_available = result.has_output_claim()
+            else:
+                output_path = getattr(result, "output_file", None)
+                output_available = bool(output_path and Path(output_path).is_file())
             if (
-                not output_path
-                or not Path(output_path).is_file()
+                not output_available
                 or getattr(result, "verification_passed", None) is not True
             ):
                 scan.status = ScanStatus.FAILED
@@ -1873,33 +1966,50 @@ async def remediate_scan(
                     "failed_count": result.failed_count,
                     "artifact_id": None,
                 }
-            artifact_temp_dir = tempfile.mkdtemp(prefix="aelira_direct_artifact_")
-            artifact_source = Path(artifact_temp_dir) / Path(output_path).name
-            shutil.copyfile(output_path, artifact_source)
             artifact_service = RemediationArtifactService.from_settings()
-            published = artifact_service.claim_and_publish(
-                db,
-                source_path=artifact_source,
-                trusted_temp_root=artifact_temp_dir,
-                department_id=str(department_id),
-                scan_id=str(scan.id),
-                cloud_file_id=(
+            publication_kwargs = {
+                "department_id": str(department_id),
+                "scan_id": str(scan.id),
+                "cloud_file_id": (
                     str(resolved_cloud_file.id)
                     if resolved_cloud_file is not None
                     else None
                 ),
-                remediation_job_id=None,
-                created_by_id=str(user_id) if user_id else None,
-                provider=(
+                "remediation_job_id": None,
+                "created_by_id": str(user_id) if user_id else None,
+                "provider": (
                     str(resolved_cloud_file.provider)
                     if resolved_cloud_file is not None
                     else "local"
                 ),
-                scan_type=scan.scan_type,
-                filename=artifact_source.name,
-                provider_result={"verification_passed": True},
-                commit=False,
-            )
+                "scan_type": scan.scan_type,
+                "provider_result": {"verification_passed": True},
+                "commit": False,
+            }
+            if pdf_claim_required:
+                claim_metadata = result.output_claim_metadata()
+                with result.open_output_stream() as source_stream:
+                    published = artifact_service.claim_and_publish_stream(
+                        db,
+                        source_stream=source_stream,
+                        filename=claim_metadata["filename"],
+                        claimed_size_bytes=claim_metadata["size_bytes"],
+                        claimed_sha256=claim_metadata["sha256"],
+                        claimed_mime_type=claim_metadata["mime_type"],
+                        claimed_filename=claim_metadata["filename"],
+                        **publication_kwargs,
+                    )
+            else:
+                artifact_temp_dir = tempfile.mkdtemp(prefix="aelira_direct_artifact_")
+                artifact_source = Path(artifact_temp_dir) / Path(output_path).name
+                shutil.copyfile(output_path, artifact_source)
+                published = artifact_service.claim_and_publish(
+                    db,
+                    source_path=artifact_source,
+                    trusted_temp_root=artifact_temp_dir,
+                    filename=artifact_source.name,
+                    **publication_kwargs,
+                )
             if isinstance(published, ArtifactPublicationResult):
                 artifact_publication = published
                 artifact = published.artifact
@@ -1907,8 +2017,9 @@ async def remediate_scan(
                 # Preserve compatibility with test doubles and older service
                 # adapters; the production service always returns the typed claim.
                 artifact = published
-            shutil.rmtree(artifact_temp_dir, ignore_errors=True)
-            artifact_temp_dir = None
+            if artifact_temp_dir:
+                shutil.rmtree(artifact_temp_dir, ignore_errors=True)
+                artifact_temp_dir = None
 
         # Persist fixes to scan_fixes table for the review workflow
         import uuid as _uuid
@@ -1949,19 +2060,39 @@ async def remediate_scan(
                 )
             )
 
-        # Run Matterhorn validation on the remediated file
+        # Run Matterhorn only for a complete result with eligible output bytes.
         try:
             from ...education.validation.matterhorn import MatterhornValidator
             from ...db import models as _dbm
 
-            output_path = result.output_file
             if (
-                output_path
-                and os.path.exists(output_path)
-                and output_path.endswith(".pdf")
+                pdf_claim_required
+                and successful_complete_result
+                and result.has_output_claim()
             ):
-                validator = MatterhornValidator()
-                mh_result = validator.validate(output_path)
+                claim_metadata = result.output_claim_metadata()
+                with result.open_output_stream() as output_stream:
+                    with _bounded_pdf_claim_validation_file(
+                        output_stream,
+                        claimed_size_bytes=claim_metadata["size_bytes"],
+                        claimed_sha256=claim_metadata["sha256"],
+                    ) as validation_path:
+                        validator = MatterhornValidator()
+                        mh_result = validator.validate(validation_path)
+            elif successful_complete_result and not pdf_claim_required:
+                output_path = result.output_file
+                if (
+                    output_path
+                    and os.path.exists(output_path)
+                    and output_path.endswith(".pdf")
+                ):
+                    validator = MatterhornValidator()
+                    mh_result = validator.validate(output_path)
+                else:
+                    mh_result = None
+            else:
+                mh_result = None
+            if mh_result is not None:
                 for cp in mh_result.checkpoints:
                     db.add(
                         _dbm.MatterhornResult(
@@ -1982,11 +2113,7 @@ async def remediate_scan(
         except Exception as mh_err:
             logger.warning(f"Matterhorn validation skipped for {scan_id}: {mh_err}")
 
-        terminal_success = (
-            result.success is True
-            and result.failed_count == 0
-            and result.manual_count == 0
-        )
+        terminal_success = successful_complete_result
         if result.success is not True or result.failed_count > 0:
             scan.status = ScanStatus.FAILED
             scan.remediation_outcome = RemediationOutcome.REMEDIATION_FAILED.value
@@ -2004,7 +2131,7 @@ async def remediate_scan(
         # committing. Enum/property/list failures must still roll back through
         # the single audited failure path.
         response_payload = {
-            "success": result.success,
+            "success": terminal_success if pdf_claim_required else result.success,
             "scan_id": scan_id,
             "artifact_id": str(artifact.id) if artifact is not None else None,
             "artifact_mime_type": artifact.mime_type if artifact is not None else None,
@@ -2159,6 +2286,18 @@ async def remediate_scan(
         raise HTTPException(
             status_code=500, detail="Remediation failed. Please try again."
         )
+
+    finally:
+        if result is not None:
+            close_output_claim = getattr(result, "close_output_claim", None)
+            if callable(close_output_claim):
+                try:
+                    close_output_claim()
+                except Exception:
+                    logger.warning(
+                        "Failed to close direct remediation output claim",
+                        extra={"scan_id": scan_id},
+                    )
 
     # Once commit succeeds, returning the already-built value is intentionally
     # outside the rollback/failure-audit handler. Framework serialization cannot

@@ -156,3 +156,5 @@ def test_full_remediation_pipeline():
                     print(f"Matterhorn: all {mh_result.total} checkpoints passed")
         except Exception as e:
             print(f"Matterhorn validation skipped: {e}")
+
+        result.close_output_claim()
