@@ -61,7 +61,7 @@ def test_scan_only_discovers_every_displayed_occurrence_without_ai(tmp_path):
     assert len({issue.image_xref for issue in first}) == 1
     page_one = [issue for issue in first if issue.page_number == 1]
     assert [issue.occurrence_ordinal for issue in page_one] == [0, 1]
-    assert page_one[0].image_index == page_one[1].image_index
+    assert [issue.image_index for issue in page_one] == [0, 1]
     assert page_one[0].bbox != page_one[1].bbox
 
 
@@ -128,3 +128,14 @@ def test_invalid_xrefs_and_missing_bboxes_are_not_addressable_candidates():
     assert len(occurrences) == 1
     assert occurrences[0]["image_xref"] == 7
     assert occurrences[0]["bbox"] == (10.25, 20.5, 90.75, 55.125)
+
+
+def test_duplicate_resource_entries_for_one_xref_are_not_addressable():
+    class _Page:
+        def get_images(self, full=True):
+            return [(7,), (7,)]
+
+        def get_image_info(self, xrefs=True):
+            return [{"xref": 7, "bbox": (10.0, 20.0, 90.0, 55.0)}]
+
+    assert _displayed_image_occurrences(_Page(), 1) == []

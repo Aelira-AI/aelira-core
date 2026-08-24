@@ -24,15 +24,29 @@ logger = logging.getLogger(__name__)
 
 def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
     """Return deterministic identities for addressable embedded image draws."""
-    resource_indices = {
-        int(info[0]): index for index, info in enumerate(page.get_images(full=True))
-    }
+    resource_index_lists: Dict[int, List[int]] = {}
+    for index, info in enumerate(page.get_images(full=True)):
+        resource_index_lists.setdefault(int(info[0]), []).append(index)
+    displayed_infos = list(page.get_image_info(xrefs=True))
+    displayed_counts: Dict[int, int] = {}
+    for info in displayed_infos:
+        xref = int(info.get("xref") or 0)
+        displayed_counts[xref] = displayed_counts.get(xref, 0) + 1
     ordinals: Dict[int, int] = {}
     occurrences: List[Dict] = []
-    for info in page.get_image_info(xrefs=True):
+    for info in displayed_infos:
         xref = int(info.get("xref") or 0)
         raw_bbox = info.get("bbox")
-        if xref <= 0 or xref not in resource_indices or not raw_bbox:
+        resource_indices = resource_index_lists.get(xref, [])
+        if (
+            xref <= 0
+            or not resource_indices
+            or not raw_bbox
+            or (
+                len(resource_indices) > 1
+                and len(resource_indices) != displayed_counts.get(xref)
+            )
+        ):
             continue
         try:
             bbox = tuple(float(value) for value in raw_bbox)
@@ -47,7 +61,11 @@ def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
             continue
         ordinal = ordinals.get(xref, 0)
         ordinals[xref] = ordinal + 1
-        image_index = resource_indices[xref]
+        image_index = (
+            resource_indices[ordinal]
+            if len(resource_indices) > 1
+            else resource_indices[0]
+        )
         identity = f"{page_number}|{xref}|{image_index}|{ordinal}|" + ",".join(
             f"{value:.6f}" for value in bbox
         )
