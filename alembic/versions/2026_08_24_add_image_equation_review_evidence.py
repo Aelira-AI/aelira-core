@@ -8,6 +8,7 @@ from alembic import op
 import hashlib
 import json
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision = "20260824_task8_review"
 down_revision = "20260822_v095_job_quarantine"
@@ -17,6 +18,7 @@ depends_on = None
 _TABLE = "scan_fixes"
 _SOURCE_CONSTRAINT = "ck_scan_fixes_source_kind"
 _OCCURRENCE_CONSTRAINT = "uq_scan_fixes_scan_occurrence"
+_EVIDENCE_JSON = sa.JSON().with_variant(JSONB(), "postgresql")
 
 
 def _column_names() -> set[str]:
@@ -172,7 +174,7 @@ def upgrade() -> None:
     additions = (
         sa.Column("provider_used", sa.String(64), nullable=True),
         sa.Column("source_kind", sa.String(32), nullable=True),
-        sa.Column("verification_evidence", sa.JSON(), nullable=True),
+        sa.Column("verification_evidence", _EVIDENCE_JSON, nullable=True),
         sa.Column("occurrence_key", sa.String(64), nullable=True),
     )
     for column in additions:

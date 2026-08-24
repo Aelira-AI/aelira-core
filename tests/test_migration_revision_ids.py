@@ -1,6 +1,7 @@
 """Alembic revision identifiers must fit the existing version table."""
 
 from pathlib import Path
+import os
 
 import pytest
 from alembic.config import Config
@@ -9,6 +10,7 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.engine import make_url
 
 from src.db.models import ScanFix
 
@@ -73,6 +75,7 @@ def test_image_equation_review_evidence_upgrade_is_idempotent_on_existing_table(
     assert columns["source_kind"]["nullable"] is True
     assert columns["provider_used"]["nullable"] is True
     assert columns["verification_evidence"]["nullable"] is True
+    assert str(columns["verification_evidence"]["type"]).upper() == "JSON"
 
 
 def test_image_equation_review_upgrade_preserves_sqlite_audit_links():
@@ -210,3 +213,146 @@ def test_review_migration_downgrade_and_reupgrade_restore_occurrence_constraint(
             for constraint in inspect(connection).get_unique_constraints("scan_fixes")
         }
         assert "uq_scan_fixes_scan_occurrence" in constraints
+
+
+def _task8_postgres_url() -> str:
+    database_url = os.getenv("TEST_TASK8_POSTGRES_URL", "")
+    if not database_url:
+        pytest.skip("set TEST_TASK8_POSTGRES_URL for the real PostgreSQL contract")
+    assert make_url(database_url).get_backend_name() == "postgresql"
+    return database_url
+
+
+@pytest.mark.integration
+def test_review_migration_uses_jsonb_and_survives_postgres_replay_cycle():
+    scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    revision = scripts.get_revision("20260824_task8_review")
+    engine = create_engine(_task8_postgres_url())
+    schema = "task8_review_migration"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+            connection.execute(text(f'SET search_path TO "{schema}"'))
+            connection.execute(
+                text(
+                    "CREATE TABLE scan_fixes ("
+                    "id VARCHAR(36) PRIMARY KEY, scan_id VARCHAR(36) NOT NULL, "
+                    "issue_id TEXT NOT NULL, location TEXT, page_number INTEGER, "
+                    "review_status VARCHAR(20) NOT NULL, needs_review BOOLEAN NOT NULL, "
+                    "reviewed_by VARCHAR(36), reviewed_at TIMESTAMPTZ, review_notes TEXT)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO scan_fixes "
+                    "(id, scan_id, issue_id, location, page_number, review_status, needs_review) "
+                    "VALUES ('fix-1', 'scan-1', 'rule-1', 'page 1', 1, 'pending', true)"
+                )
+            )
+            module = revision.module
+            module.op = Operations(MigrationContext.configure(connection))
+            module.upgrade()
+            module.upgrade()
+
+            data_type = connection.execute(
+                text(
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_schema = :schema AND table_name = 'scan_fixes' "
+                    "AND column_name = 'verification_evidence'"
+                ),
+                {"schema": schema},
+            ).scalar_one()
+            assert data_type == "jsonb"
+            connection.execute(
+                text(
+                    "UPDATE scan_fixes SET verification_evidence = "
+                    "CAST(:evidence AS jsonb), source_kind = 'image_equation'"
+                ),
+                {"evidence": '{"passed":true}'},
+            )
+            assert connection.execute(
+                text("SELECT verification_evidence->>'passed' FROM scan_fixes")
+            ).scalar_one() == "true"
+
+            module.downgrade()
+            assert {
+                column["name"]
+                for column in inspect(connection).get_columns(
+                    "scan_fixes", schema=schema
+                )
+            }.isdisjoint(
+                {
+                    "occurrence_key",
+                    "verification_evidence",
+                    "source_kind",
+                    "provider_used",
+                }
+            )
+            module.upgrade()
+            assert connection.execute(
+                text(
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_schema = :schema AND table_name = 'scan_fixes' "
+                    "AND column_name = 'verification_evidence'"
+                ),
+                {"schema": schema},
+            ).scalar_one() == "jsonb"
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_review_migration_postgres_constraints_reject_invalid_and_duplicate_rows():
+    scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    revision = scripts.get_revision("20260824_task8_review")
+    engine = create_engine(_task8_postgres_url())
+    schema = "task8_review_constraints"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+            connection.execute(text(f'SET search_path TO "{schema}"'))
+            connection.execute(
+                text(
+                    "CREATE TABLE scan_fixes ("
+                    "id VARCHAR(36) PRIMARY KEY, scan_id VARCHAR(36) NOT NULL, "
+                    "issue_id TEXT NOT NULL, location TEXT, page_number INTEGER)"
+                )
+            )
+            module = revision.module
+            module.op = Operations(MigrationContext.configure(connection))
+            module.upgrade()
+            key = "a" * 64
+            connection.execute(
+                text(
+                    "INSERT INTO scan_fixes "
+                    "(id, scan_id, issue_id, occurrence_key, source_kind) "
+                    "VALUES ('fix-1', 'scan-1', 'rule-1', :key, 'image_equation')"
+                ),
+                {"key": key},
+            )
+            with pytest.raises(IntegrityError), connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO scan_fixes "
+                        "(id, scan_id, issue_id, occurrence_key) "
+                        "VALUES ('fix-2', 'scan-1', 'rule-2', :key)"
+                    ),
+                    {"key": key},
+                )
+            with pytest.raises(IntegrityError), connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO scan_fixes "
+                        "(id, scan_id, issue_id, occurrence_key, source_kind) "
+                        "VALUES ('fix-3', 'scan-1', 'rule-3', :key, 'forged')"
+                    ),
+                    {"key": "b" * 64},
+                )
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        engine.dispose()

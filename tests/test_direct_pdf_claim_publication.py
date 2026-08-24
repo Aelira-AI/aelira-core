@@ -310,6 +310,10 @@ async def test_direct_pdf_publishes_and_validates_exact_claim_after_path_tamper(
     assert not Path(run.validation["path"]).exists()
     assert result.close_calls == 1
     assert result.has_output_claim() is False
+    persisted = [row for row in run.db.added if isinstance(row, ScanFix)]
+    assert len(persisted) == 1
+    assert persisted[0].issue_id == "issue-1"
+    assert len(persisted[0].occurrence_key) == 64
 
     audit_fields = run.audit.log_remediation_complete.call_args.kwargs
     assert all("path" not in key and "fd" not in key for key in audit_fields)

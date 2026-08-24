@@ -353,14 +353,6 @@ def test_durable_evidence_and_per_fix_audit_survive_session_restart():
         }
 
 
-def test_direct_and_queued_paths_use_shared_persistence_service():
-    from src.api.education.remediation_routes import remediate_scan
-    from src.jobs.remediation_job import process_remediation_job
-
-    assert "persist_scan_fixes" in remediate_scan.__code__.co_names
-    assert "persist_scan_fixes" in process_remediation_job.__code__.co_names
-
-
 def test_generic_fixes_keep_existing_auto_approval_behavior():
     from src.services.scan_fix_service import (
         build_scan_fix,

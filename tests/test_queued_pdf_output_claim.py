@@ -20,7 +20,12 @@ from src.db.models import (
     ScanStatus,
     ScanType,
 )
-from src.education.remediation.base import RemediationResult
+from src.education.remediation.base import (
+    FixedIssue,
+    IssueCategory,
+    IssueSeverity,
+    RemediationResult,
+)
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.services.remediation_artifact_service import ArtifactPublicationResult
 
@@ -147,6 +152,18 @@ async def test_queued_pdf_publishes_and_validates_exact_claim_bytes(
     payload = b"%PDF-exact-claimed-output"
     _, output_path, scan, cloud_file, db, job_data = _context(tmp_path)
     remediation_result = _result(Path(job_data["file_path"]), output_path, payload)
+    remediation_result.fixed_issues = [
+        FixedIssue(
+            issue_id="queued-issue-1",
+            category=IssueCategory.STRUCTURE,
+            severity=IssueSeverity.HIGH,
+            description="Fix queued structure",
+            location="page 1",
+            fixed_content="tagged",
+            fix_method="rule",
+            page_number=1,
+        )
+    ]
     remediator = MagicMock()
 
     def remediate():
@@ -228,6 +245,10 @@ async def test_queued_pdf_publishes_and_validates_exact_claim_bytes(
     assert all("output_file" not in details for details in audit_details)
     assert all("source_stream" not in details for details in audit_details)
     assert scan.remediation_outcome == RemediationOutcome.COMPLETED.value
+    persisted = [row for row in db.added if isinstance(row, ScanFix)]
+    assert len(persisted) == 1
+    assert persisted[0].issue_id == "queued-issue-1"
+    assert len(persisted[0].occurrence_key) == 64
 
 
 @pytest.mark.parametrize("closed", [False, True])
