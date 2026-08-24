@@ -774,6 +774,7 @@ class ScanFix(Base):
 
     # Issue identification
     issue_id = Column(String, nullable=False)
+    occurrence_key = Column(String(64), nullable=False)
     category = Column(String(50), nullable=False)
     severity = Column(String(20), nullable=False)
     description = Column(Text, nullable=False)
@@ -822,6 +823,9 @@ class ScanFix(Base):
         CheckConstraint(
             "source_kind IS NULL OR source_kind = 'image_equation'",
             name="ck_scan_fixes_source_kind",
+        ),
+        UniqueConstraint(
+            "scan_id", "occurrence_key", name="uq_scan_fixes_scan_occurrence"
         ),
         Index("idx_scan_fixes_scan_id", "scan_id"),
         Index("idx_scan_fixes_review", "needs_review", "review_status"),

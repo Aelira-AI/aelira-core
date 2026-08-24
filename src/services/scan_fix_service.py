@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime
+import hashlib
+import json
 import math
 from typing import Any
 import uuid
@@ -20,6 +22,7 @@ IMAGE_EQUATION_REQUIRED_INK_IOU = 0.90
 IMAGE_EQUATION_REQUIRED_PIXEL_SIMILARITY = 0.98
 _CANONICAL_FIELDS = (
     "issue_id",
+    "occurrence_key",
     "category",
     "severity",
     "description",
@@ -61,6 +64,21 @@ def valid_image_equation_evidence(value: Any) -> bool:
     )
 
 
+def _occurrence_key(fix: Any) -> str:
+    """Bind durable identity to one stable document occurrence."""
+    issue_id = sanitize_for_postgres(getattr(fix, "issue_id", None))
+    location = sanitize_for_postgres(getattr(fix, "location", None))
+    page_number = getattr(fix, "page_number", None)
+    if not isinstance(issue_id, str) or not issue_id:
+        raise ValueError("fix issue_id is invalid")
+    payload = json.dumps(
+        [issue_id, location, page_number],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
     """Build one canonical row, overriding forgeable image-review flags."""
     source_kind = getattr(fix, "source_kind", None)
@@ -91,12 +109,16 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
         needs_review = bool(fix.needs_review)
         review_status = "pending" if needs_review else "auto_approved"
 
+    occurrence_key = _occurrence_key(fix)
     return ScanFix(
         id=str(
-            uuid.uuid5(uuid.NAMESPACE_URL, f"aelira:scan-fix:{scan_id}:{fix.issue_id}")
+            uuid.uuid5(
+                uuid.NAMESPACE_URL, f"aelira:scan-fix:{scan_id}:{occurrence_key}"
+            )
         ),
         scan_id=scan_id,
         issue_id=fix.issue_id,
+        occurrence_key=occurrence_key,
         category=(
             fix.category.value if hasattr(fix.category, "value") else fix.category
         ),
@@ -127,13 +149,21 @@ def persist_scan_fixes(
 ) -> list[ScanFix]:
     """Persist canonical rows for direct and queued remediation paths."""
     rows = [build_scan_fix(scan_id, fix) for fix in fixes]
+    occurrence_keys = [row.occurrence_key for row in rows]
+    if len(set(occurrence_keys)) != len(occurrence_keys):
+        raise ValueError("ambiguous duplicate fix occurrence")
     existing = (
         db.query(ScanFix).filter(ScanFix.scan_id == scan_id).all() if replace else []
     )
-    existing_by_issue = {row.issue_id: row for row in existing}
+    existing_by_occurrence: dict[str, ScanFix] = {}
+    for row in existing:
+        key = row.occurrence_key or _occurrence_key(row)
+        if key in existing_by_occurrence:
+            raise ValueError("ambiguous duplicate persisted fix occurrence")
+        existing_by_occurrence[key] = row
     persisted: list[ScanFix] = []
     for row in rows:
-        current = existing_by_issue.pop(row.issue_id, None)
+        current = existing_by_occurrence.pop(row.occurrence_key, None)
         if current is None:
             target = row
         else:
@@ -166,7 +196,7 @@ def persist_scan_fixes(
             target = current
         db.add(target)
         persisted.append(target)
-    for stale in existing_by_issue.values():
+    for stale in existing_by_occurrence.values():
         db.delete(stale)
     return persisted
 

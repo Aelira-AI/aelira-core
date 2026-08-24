@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import Column, MetaData, String, Table, create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.education.remediation.base import FixedIssue, IssueCategory, IssueSeverity
@@ -109,6 +110,65 @@ def test_shared_persistence_forces_image_equation_pending_and_preserves_evidence
         build_scan_fix("scan-1", nan_forgery)
 
 
+def test_scan_fix_identity_is_occurrence_bound_and_reorder_stable():
+    from src.services.scan_fix_service import build_scan_fix, persist_scan_fixes
+
+    first = _fix(issue_id="duplicate-rule", location="page 1 / image 2", page_number=1)
+    second = _fix(issue_id="duplicate-rule", location="page 4 / image 1", page_number=4)
+
+    forward = [build_scan_fix("scan-1", fix) for fix in (first, second)]
+    reverse = [build_scan_fix("scan-1", fix) for fix in (second, first)]
+
+    assert len({row.id for row in forward}) == 2
+    assert {row.id for row in forward} == {row.id for row in reverse}
+    assert {row.occurrence_key for row in forward} == {
+        row.occurrence_key for row in reverse
+    }
+
+    db = MagicMock()
+    query = db.query.return_value
+    query.filter.return_value = query
+    query.all.return_value = []
+    persisted = persist_scan_fixes(db, "scan-1", [second, first])
+    assert {row.id for row in persisted} == {row.id for row in forward}
+
+
+def test_scan_fix_persistence_rejects_ambiguous_duplicate_occurrence_before_writes():
+    from src.services.scan_fix_service import persist_scan_fixes
+
+    db = MagicMock()
+    duplicate = _fix(issue_id="same", location="page 1", page_number=1)
+
+    with pytest.raises(ValueError, match="ambiguous duplicate fix occurrence"):
+        persist_scan_fixes(db, "scan-1", [duplicate, duplicate.model_copy()])
+
+    db.query.assert_not_called()
+    db.add.assert_not_called()
+
+
+def test_scan_fix_database_constraint_rejects_concurrent_duplicate_occurrence():
+    from src.db.models import ScanFix
+    from src.services.scan_fix_service import build_scan_fix
+
+    engine = create_engine("sqlite://")
+    metadata = MetaData()
+    Table("scans", metadata, Column("id", String(36), primary_key=True))
+    Table("users", metadata, Column("id", String(36), primary_key=True))
+    ScanFix.__table__.to_metadata(metadata)
+    metadata.create_all(engine)
+    row = build_scan_fix("scan-1", _fix(location="page 1", page_number=1))
+
+    with Session(engine) as first:
+        first.add(row)
+        first.commit()
+    with Session(engine) as second:
+        colliding = build_scan_fix("scan-1", _fix(location="page 1", page_number=1))
+        colliding.id = "different-primary-key"
+        second.add(colliding)
+        with pytest.raises(IntegrityError):
+            second.commit()
+
+
 def test_review_gate_requires_exact_human_approval_for_every_image_equation_fix():
     from src.services.scan_fix_service import image_equation_review_blockers
 
@@ -197,7 +257,7 @@ def test_artifact_service_and_metadata_share_image_equation_blockers():
 
     service = RemediationArtifactService.__new__(RemediationArtifactService)
     with pytest.raises(ArtifactAuthorizationError, match="human review"):
-        service._require_approvable_review(db, artifact)
+        service._require_approvable_review(db, artifact, scan)
 
 
 def test_authenticated_batch_review_records_actor_time_and_each_fix():

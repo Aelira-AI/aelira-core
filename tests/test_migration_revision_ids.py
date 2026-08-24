@@ -2,11 +2,13 @@
 
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from src.db.models import ScanFix
 
@@ -36,6 +38,11 @@ def test_scan_fix_review_evidence_columns_are_nullable_and_bounded():
     assert ScanFix.__table__.c.provider_used.nullable is True
     assert ScanFix.__table__.c.provider_used.type.length == 64
     assert ScanFix.__table__.c.verification_evidence.nullable is True
+    assert ScanFix.__table__.c.occurrence_key.nullable is False
+    assert ScanFix.__table__.c.occurrence_key.type.length == 64
+    assert "uq_scan_fixes_scan_occurrence" in {
+        constraint.name for constraint in ScanFix.__table__.constraints
+    }
     assert "ck_scan_fixes_source_kind" in {
         constraint.name for constraint in ScanFix.__table__.constraints
     }
@@ -74,7 +81,12 @@ def test_image_equation_review_upgrade_preserves_sqlite_audit_links():
     engine = create_engine("sqlite://")
     with engine.begin() as connection:
         connection.exec_driver_sql("PRAGMA foreign_keys=ON")
-        connection.execute(text("CREATE TABLE scan_fixes (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(
+            text(
+                "CREATE TABLE scan_fixes ("
+                "id VARCHAR(36) PRIMARY KEY, scan_id VARCHAR(36) NOT NULL)"
+            )
+        )
         connection.execute(
             text(
                 "CREATE TABLE review_audit_log ("
@@ -82,7 +94,11 @@ def test_image_equation_review_upgrade_preserves_sqlite_audit_links():
                 "fix_id VARCHAR(36) REFERENCES scan_fixes(id) ON DELETE SET NULL)"
             )
         )
-        connection.execute(text("INSERT INTO scan_fixes (id) VALUES ('fix-1')"))
+        connection.execute(
+            text(
+                "INSERT INTO scan_fixes (id, scan_id) VALUES ('fix-1', 'scan-1')"
+            )
+        )
         connection.execute(
             text(
                 "INSERT INTO review_audit_log (id, fix_id) VALUES ('audit-1', 'fix-1')"
@@ -96,3 +112,101 @@ def test_image_equation_review_upgrade_preserves_sqlite_audit_links():
         ).scalar_one()
 
     assert fix_id == "fix-1"
+
+
+def test_review_upgrade_reconciles_legacy_duplicates_and_enforces_occurrence_unique():
+    scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    revision = scripts.get_revision("20260824_task8_review")
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE scan_fixes ("
+                "id VARCHAR(36) PRIMARY KEY, scan_id VARCHAR(36) NOT NULL, "
+                "issue_id TEXT NOT NULL, location TEXT, page_number INTEGER, "
+                "review_status VARCHAR(20) NOT NULL, needs_review BOOLEAN NOT NULL, "
+                "reviewed_by VARCHAR(36), reviewed_at DATETIME, review_notes TEXT)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE review_audit_log ("
+                "id VARCHAR(36) PRIMARY KEY, fix_id VARCHAR(36) "
+                "REFERENCES scan_fixes(id) ON DELETE SET NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO scan_fixes VALUES "
+                "('fix-b', 'scan-1', 'rule-1', 'page 1', 1, 'approved', 1, "
+                "'user-1', CURRENT_TIMESTAMP, 'old'), "
+                "('fix-a', 'scan-1', 'rule-1', 'page 1', 1, 'auto_approved', 0, "
+                "NULL, NULL, NULL), "
+                "('fix-c', 'scan-1', 'rule-1', 'page 2', 2, 'approved', 1, "
+                "'user-1', CURRENT_TIMESTAMP, 'keep')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO review_audit_log VALUES "
+                "('audit-a', 'fix-a'), ('audit-b', 'fix-b')"
+            )
+        )
+        module = revision.module
+        module.op = Operations(MigrationContext.configure(connection))
+        module.upgrade()
+        module.upgrade()
+
+        rows = connection.execute(
+            text(
+                "SELECT id, occurrence_key, review_status, reviewed_by "
+                "FROM scan_fixes ORDER BY id"
+            )
+        ).all()
+        links = connection.execute(
+            text("SELECT fix_id FROM review_audit_log ORDER BY id")
+        ).scalars().all()
+        assert rows[0][0] == "fix-a"
+        assert rows[0][2:] == ("pending", None)
+        assert rows[1][0] == "fix-c"
+        assert all(len(row[1]) == 64 for row in rows)
+        assert links == ["fix-a", "fix-a"]
+
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    "INSERT INTO scan_fixes "
+                    "(id, scan_id, issue_id, occurrence_key, review_status, needs_review) "
+                    "VALUES ('fix-d', 'scan-1', 'rule-x', :key, 'pending', 1)"
+                ),
+                {"key": rows[0][1]},
+            )
+
+
+def test_review_migration_downgrade_and_reupgrade_restore_occurrence_constraint():
+    scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    revision = scripts.get_revision("20260824_task8_review")
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE scan_fixes ("
+                "id VARCHAR(36) PRIMARY KEY, scan_id VARCHAR(36) NOT NULL, "
+                "issue_id TEXT NOT NULL, location TEXT, page_number INTEGER, "
+                "review_status VARCHAR(20) NOT NULL, needs_review BOOLEAN NOT NULL, "
+                "reviewed_by VARCHAR(36), reviewed_at DATETIME, review_notes TEXT)"
+            )
+        )
+        module = revision.module
+        module.op = Operations(MigrationContext.configure(connection))
+        module.upgrade()
+        module.downgrade()
+        assert "occurrence_key" not in {
+            column["name"] for column in inspect(connection).get_columns("scan_fixes")
+        }
+        module.upgrade()
+        constraints = {
+            constraint["name"]
+            for constraint in inspect(connection).get_unique_constraints("scan_fixes")
+        }
+        assert "uq_scan_fixes_scan_occurrence" in constraints
