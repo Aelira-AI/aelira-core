@@ -144,3 +144,31 @@ def test_image_equation_pipeline_is_injected_and_stops_before_association():
     assert not result.success
     assert result.error == "image_equation_association_unavailable"
     assert [call[0] for call in calls] == ["source", "recognizer", "verifier"]
+
+
+def test_image_equation_unexpected_metadata_error_is_stable_and_redacted():
+    from types import SimpleNamespace
+
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from src.education.remediation.math_fixer import MathFixer
+
+    fixer = MathFixer(
+        SimpleNamespace(pages=[object()]),
+        SimpleNamespace(),
+        struct_tree=SimpleNamespace(),
+        alt_text_client=SimpleNamespace(purpose="alt_text"),
+        equation_verifier=SimpleNamespace(),
+    )
+    results = fixer.fix(
+        [
+            SimpleNamespace(
+                metadata={
+                    "issue_type": IMAGE_EQUATION_ISSUE_TYPE,
+                    "page_number": "private-invalid-page",
+                }
+            )
+        ]
+    )
+
+    assert results[0].error == "math_fix_failed"
+    assert "private-invalid-page" not in results[0].error

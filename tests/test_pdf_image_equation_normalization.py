@@ -219,6 +219,55 @@ def test_webp_allowlisted_metadata_after_image_is_still_rejected():
         EquationImageSource().extract(Document(bytes(source), "webp"), IDENTITY)
 
 
+def test_minimal_webp_layout_requires_zero_padding_and_rejects_extended_chunks():
+    from src.education.remediation.equation_image_source import _complete_webp
+
+    def riff(kind, payload, pad=b""):
+        body = b"WEBP" + kind + len(payload).to_bytes(4, "little") + payload + pad
+        return b"RIFF" + len(body).to_bytes(4, "little") + body
+
+    vp8l = b"\x2f\x00\x00\x00\x00"
+    assert _complete_webp(riff(b"VP8L", vp8l, b"\x00"))
+    assert not _complete_webp(riff(b"VP8L", vp8l, b"\x01"))
+    assert not _complete_webp(riff(b"VP8X", b"\x00" * 10))
+
+
+def test_occurrence_enumeration_errors_are_normalized():
+    from src.education.remediation.equation_image_source import (
+        EquationImageSource,
+        ImageSourceRejected,
+    )
+
+    class BrokenDocument(Document):
+        def __getitem__(self, index):
+            class BrokenPage:
+                def get_images(self, full=True):
+                    raise RuntimeError("private parser details")
+
+            return BrokenPage()
+
+    with pytest.raises(ImageSourceRejected, match="occurrence_identity_mismatch"):
+        EquationImageSource().extract(BrokenDocument(encoded("PNG"), "png"), IDENTITY)
+
+
+def test_jpeg_encoder_errors_are_normalized(monkeypatch):
+    from src.education.remediation.equation_image_source import (
+        EquationImageSource,
+        ImageSourceRejected,
+    )
+
+    payload = encoded("PNG")
+    monkeypatch.setattr(
+        Image.Image,
+        "save",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("private encoder details")
+        ),
+    )
+    with pytest.raises(ImageSourceRejected, match="normalization_failed"):
+        EquationImageSource().extract(Document(payload, "png"), IDENTITY)
+
+
 def test_rejected_source_never_invokes_downstream_or_mutates():
     from src.education.remediation.equation_image_source import prepare_equation_image
 

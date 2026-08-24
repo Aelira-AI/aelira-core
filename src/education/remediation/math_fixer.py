@@ -281,8 +281,11 @@ class MathFixer:
             try:
                 result = self._fix_math_issue(issue)
             except Exception as exc:
-                logger.error(f"MathFixer: unexpected error on issue {issue}: {exc}")
-                result = MathFixResult(success=False, error=str(exc))
+                logger.error(
+                    "MathFixer: unexpected %s while processing an issue",
+                    type(exc).__name__,
+                )
+                result = MathFixResult(success=False, error="math_fix_failed")
             results.append(result)
 
         return results

@@ -114,8 +114,7 @@ def _complete_webp(data: bytes) -> bool:
         or int.from_bytes(data[4:8], "little") + 8 != len(data)
     ):
         return False
-    allowed = {b"VP8 ", b"VP8L", b"VP8X", b"ALPH", b"ICCP", b"EXIF", b"XMP "}
-    seen: set[bytes] = set()
+    allowed = {b"VP8 ", b"VP8L"}
     image_chunks = 0
     image_seen = False
     offset = 12
@@ -124,15 +123,28 @@ def _complete_webp(data: bytes) -> bool:
             return False
         kind = data[offset : offset + 4]
         length = int.from_bytes(data[offset + 4 : offset + 8], "little")
-        if image_seen or kind not in allowed or kind in seen:
+        if image_seen or kind not in allowed:
             return False
-        seen.add(kind)
         if kind in {b"VP8 ", b"VP8L"}:
             image_chunks += 1
             image_seen = True
         end = offset + 8 + length
         padded_end = end + (length & 1)
         if end > len(data) or padded_end > len(data):
+            return False
+        payload = data[offset + 8 : end]
+        if length & 1 and data[end:padded_end] != b"\x00":
+            return False
+        if kind == b"VP8L":
+            if len(payload) < 5 or payload[0] != 0x2F or payload[4] >> 5 != 0:
+                return False
+        elif (
+            len(payload) < 10
+            or payload[0] & 1
+            or payload[3:6] != b"\x9d\x01\x2a"
+            or int.from_bytes(payload[6:8], "little") & 0x3FFF == 0
+            or int.from_bytes(payload[8:10], "little") & 0x3FFF == 0
+        ):
             return False
         offset = padded_end
     return offset == len(data) and image_chunks == 1
@@ -152,7 +164,10 @@ class EquationImageSource:
             page = document[expected.page_number - 1]
         except Exception as exc:
             raise ImageSourceRejected("occurrence_identity_mismatch") from exc
-        current = _displayed_image_occurrences(page, expected.page_number)
+        try:
+            current = _displayed_image_occurrences(page, expected.page_number)
+        except Exception as exc:
+            raise ImageSourceRejected("occurrence_identity_mismatch") from exc
         matches = [item for item in current if item["occurrence_id"] == expected.occurrence_id]
         if len(matches) != 1 or self._identity(matches[0]) != expected:
             raise ImageSourceRejected("occurrence_identity_mismatch")
@@ -193,6 +208,10 @@ class EquationImageSource:
                 progressive=False,
             )
             jpeg = output.getvalue()
+        except ImageSourceRejected:
+            raise
+        except Exception as exc:
+            raise ImageSourceRejected("normalization_failed") from exc
         finally:
             image.close()
 
