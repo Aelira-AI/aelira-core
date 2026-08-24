@@ -128,8 +128,16 @@ class _CloudQuery:
         for criterion in criteria:
             key = criterion.left.key
             expected = criterion.right.value
-            self.rows = [row for row in self.rows if getattr(row, key) == expected]
+            self.rows = [
+                row for row in self.rows if getattr(row, key, row) == expected
+            ]
         return self
+
+    def with_for_update(self):
+        return self
+
+    def scalar(self):
+        return self.rows[0] if self.rows else None
 
     def limit(self, value):
         self.limit_value = value
@@ -152,6 +160,10 @@ class _TransactionDB:
         self.fail_commit = fail_commit
 
     def query(self, model):
+        if model is Scan.id:
+            return _CloudQuery(["scan-1"])
+        if model is ScanFix:
+            return _CloudQuery([])
         assert model is CloudFile
         return _CloudQuery([self.cloud_file] if self.cloud_file else [])
 
