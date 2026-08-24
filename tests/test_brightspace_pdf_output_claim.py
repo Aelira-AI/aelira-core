@@ -15,9 +15,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.db.models import CloudProvider
+from src.db.models import CloudProvider, ScanFix
+from src.education.remediation.base import (
+    FixedIssue,
+    IssueCategory,
+    IssueSeverity,
+    RemediationResult,
+    VerificationEvidence,
+)
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.services.remediation_artifact_service import ArtifactPublicationResult
+from src.services.scan_fix_service import ScanReviewGraph
 
 CLAIMED_PDF = b"%PDF-1.7\nbrightspace descriptor claim\n%%EOF\n"
 
@@ -218,6 +226,15 @@ async def _run_pdf_outer(
             "src.education.validation.matterhorn.MatterhornValidator",
             return_value=validator,
         ),
+        patch(
+            "src.services.scan_fix_service.lock_scan_review_graph",
+            return_value=ScanReviewGraph(
+                SimpleNamespace(id="scan-pdf", current_remediation_artifact_id=None),
+                (),
+                (),
+                (),
+            ),
+        ),
     ):
         outcome = await _remediate_file_impl(
             cloud_file,
@@ -232,6 +249,89 @@ async def _run_pdf_outer(
         published=published,
         validated=validated,
     )
+
+
+def _image_equation_result(output_path: Path) -> RemediationResult:
+    output_path.write_bytes(CLAIMED_PDF)
+    evidence = VerificationEvidence(
+        passed=True,
+        source_sha256="1" * 64,
+        rendered_sha256="2" * 64,
+        mathml_sha256="3" * 64,
+        renderer_version="chromium-test",
+        comparator_version="pixel-test",
+        font_sha256="4" * 64,
+        threshold_version="printed-equation-v1",
+        ink_iou=0.95,
+        pixel_similarity=0.99,
+        required_ink_iou=0.90,
+        required_pixel_similarity=0.98,
+    )
+    fixed = FixedIssue(
+        issue_id="image-equation-1",
+        category=IssueCategory.STRUCTURE,
+        severity=IssueSeverity.HIGH,
+        description="Image equation lacked an accessible formula",
+        location="page 1 / image 0 / occurrence 0",
+        fixed_content="Associated verified Formula, Alt, and MathML",
+        fix_method="ai_vision",
+        confidence=0.55,
+        needs_review=True,
+        provider_used="ollama",
+        model_used="vision-test",
+        source_kind="image_equation",
+        verification_evidence=evidence,
+        page_number=1,
+    )
+    result = RemediationResult(
+        original_file=str(output_path.with_name("source.pdf")),
+        output_file=str(output_path),
+        document_type="PDF",
+        total_issues=1,
+        fixed_count=1,
+        manual_count=0,
+        failed_count=0,
+        fixed_issues=[fixed],
+        verification_passed=True,
+        success=True,
+    )
+    result.set_output_claim(
+        DescriptorBoundOutputClaim._snapshot_from_owned_descriptor(
+            os.open(output_path, os.O_RDONLY),
+            filename=output_path.name,
+            display_path=str(output_path),
+            mime="application/pdf",
+        )
+    )
+    return result
+
+
+@pytest.mark.asyncio
+async def test_brightspace_pdf_persists_real_image_equation_review_evidence(
+    tmp_path,
+):
+    result = _image_equation_result(tmp_path / "fixed.pdf")
+
+    run = await _run_pdf_outer(tmp_path, result)
+
+    assert run.outcome.status == "completed"
+    persisted = [
+        call.args[0]
+        for call in run.db.add.call_args_list
+        if call.args and isinstance(call.args[0], ScanFix)
+    ]
+    assert len(persisted) == 1
+    row = persisted[0]
+    assert row.issue_id == "image-equation-1"
+    assert row.source_kind == "image_equation"
+    assert row.provider_used == "ollama"
+    assert row.model_used == "vision-test"
+    assert row.fix_method == "ai_vision"
+    assert row.confidence == 0.55
+    assert row.needs_review is True
+    assert row.review_status == "pending"
+    assert row.verification_evidence["threshold_version"] == "printed-equation-v1"
+    assert row.verification_evidence["source_sha256"] == "1" * 64
 
 
 @pytest.mark.asyncio

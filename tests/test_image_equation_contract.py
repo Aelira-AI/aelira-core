@@ -1,9 +1,4 @@
-"""Executable contract for verified PDF image-equation remediation.
-
-Tasks after candidate discovery remain explicitly deferred until their plan slices land.
-"""
-
-from pathlib import Path
+"""Executable contract for verified PDF image-equation remediation."""
 
 import pytest
 
@@ -59,9 +54,7 @@ def test_durable_review_contract_is_implemented():
     assert callable(artifact_review_blockers)
 
 
-@pytest.mark.xfail(strict=True, reason="approved plan Tasks 9-10 are deferred")
-def test_deferred_brightspace_scanfix_publication_parity_contract():
-    source = (
-        Path(__file__).parents[1] / "src" / "api" / "brightspace_routes.py"
-    ).read_text()
-    assert "persist_scan_fixes" in source
+def test_brightspace_scanfix_publication_parity_contract():
+    from src.api.brightspace_routes import persist_scan_fixes
+
+    assert callable(persist_scan_fixes)

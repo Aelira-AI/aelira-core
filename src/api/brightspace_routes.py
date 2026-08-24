@@ -66,6 +66,7 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
+from ..services.scan_fix_service import persist_scan_fixes
 from ..utils.security import (
     PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
     require_brightspace_oauth_allowed_origin,
@@ -1480,6 +1481,22 @@ async def _finish_brightspace_pdf_remediation(
     fixed = _bounded_count(getattr(result, "fixed_count", 0))
     manual = _bounded_count(getattr(result, "manual_count", 0))
     failed = _bounded_count(getattr(result, "failed_count", 0))
+    prior_cloud_state = {
+        field: getattr(cloud_file, field, None)
+        for field in (
+            "current_remediation_artifact_id",
+            "has_remediated_version",
+            "remediation_origin",
+            "remediated_issues_fixed",
+            "remediated_issues_remaining",
+            "writeback_status",
+        )
+    }
+
+    def restore_prior_cloud_state() -> None:
+        for field, value in prior_cloud_state.items():
+            setattr(cloud_file, field, value)
+
     try:
         if not complete:
             cloud_file.has_remediated_version = False
@@ -1529,6 +1546,11 @@ async def _finish_brightspace_pdf_remediation(
                     artifact = published.artifact
                 else:
                     artifact = published
+            persist_scan_fixes(
+                db,
+                str(cloud_file.last_scan_id),
+                getattr(result, "fixed_issues", ()),
+            )
             # A cancellation requested while the synchronous publisher held
             # control must land before any completion state or commit.
             await asyncio.sleep(0)
@@ -1536,9 +1558,7 @@ async def _finish_brightspace_pdf_remediation(
                 raise ValueError("Brightspace PDF artifact is unavailable")
         except asyncio.CancelledError:
             db.rollback()
-            cloud_file.has_remediated_version = False
-            cloud_file.remediation_origin = None
-            cloud_file.writeback_status = None
+            restore_prior_cloud_state()
             if (
                 artifact_publication is not None
                 and artifact_service is not None
@@ -1553,17 +1573,36 @@ async def _finish_brightspace_pdf_remediation(
                 except Exception:
                     db.rollback()
                     logger.warning("Failed to clean cancelled Brightspace artifact")
+            restore_prior_cloud_state()
             raise
         except Exception as exc:
+            db.rollback()
+            restore_prior_cloud_state()
+            if (
+                artifact_publication is not None
+                and artifact_service is not None
+                and isinstance(artifact_publication.publication_token, str)
+            ):
+                try:
+                    artifact_service.abort_staging(
+                        db,
+                        artifact_id=artifact_publication.artifact_id,
+                        publication_token=artifact_publication.publication_token,
+                    )
+                except Exception:
+                    db.rollback()
+                    logger.warning("Failed to clean rejected Brightspace artifact")
             logger.warning(
                 "Brightspace PDF artifact promotion failed closed",
                 extra={"error_type": type(exc).__name__},
             )
-            return _brightspace_pdf_artifact_unavailable(
+            outcome = _brightspace_pdf_artifact_unavailable(
                 cloud_file,
                 decisions=decisions,
                 failed_count=max(1, failed),
             )
+            restore_prior_cloud_state()
+            return outcome
 
         cloud_file.has_remediated_version = True
         cloud_file.remediation_origin = "manual"
@@ -1574,10 +1613,12 @@ async def _finish_brightspace_pdf_remediation(
             db.commit()
         except Exception:
             db.rollback()
-            cloud_file.has_remediated_version = False
-            cloud_file.remediation_origin = None
-            cloud_file.writeback_status = None
-            if artifact_publication is not None and artifact_service is not None:
+            restore_prior_cloud_state()
+            if (
+                artifact_publication is not None
+                and artifact_service is not None
+                and isinstance(artifact_publication.publication_token, str)
+            ):
                 try:
                     artifact_service.abort_staging(
                         db,
@@ -1587,6 +1628,7 @@ async def _finish_brightspace_pdf_remediation(
                 except Exception:
                     db.rollback()
                     logger.warning("Failed to clean aborted Brightspace artifact")
+            restore_prior_cloud_state()
             return RemediationOutcome(
                 cloud_file_id=str(cloud_file.id),
                 status="failed",
