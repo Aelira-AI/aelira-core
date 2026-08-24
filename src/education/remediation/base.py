@@ -24,6 +24,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from src.education.math_contracts import MATH_ISSUE_TYPES
+
 try:
     from .output_claim import DescriptorBoundOutputClaim
 except ImportError:
@@ -152,6 +154,7 @@ _CATEGORY_ALIASES = {
     "1.1.1": IssueCategory.ALT_TEXT,
     "1.3.1": IssueCategory.STRUCTURE,
     "1.4.3": IssueCategory.CONTRAST,
+    **{issue_type: IssueCategory.STRUCTURE for issue_type in MATH_ISSUE_TYPES},
 }
 
 

@@ -191,11 +191,9 @@ class MathFixer:
     """
 
     # Issue types this fixer handles
-    HANDLED_ISSUE_TYPES = {
-        "raw_latex_code",
-        "math_content_accessibility",
-        "mathml_recommendation",
-    }
+    from src.education.math_contracts import MATH_ISSUE_TYPES
+
+    HANDLED_ISSUE_TYPES = MATH_ISSUE_TYPES
 
     def __init__(
         self,

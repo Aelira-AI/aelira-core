@@ -746,6 +746,12 @@ def _infer_category(issue: dict) -> str:
     Checks explicit category/type first, then falls back to keyword
     matching on description/message and WCAG rule numbers.
     """
+    from ...education.math_contracts import math_issue_type_from
+
+    math_issue_type = math_issue_type_from(issue)
+    if math_issue_type:
+        return "structure"
+
     # Use explicit category/type/issue_type if present
     explicit = issue.get("category") or issue.get("type") or issue.get("issue_type")
     if explicit:
@@ -947,10 +953,14 @@ def _normalize_issues_for_remediation(issues: list) -> list:
         # Copy scanner top-level fields into metadata
         metadata.setdefault("page_number", issue.get("page_number", 1))
         metadata.setdefault("issue_type", issue.get("issue_type"))
+        metadata.setdefault("rule", issue.get("rule"))
         metadata.setdefault("element", issue.get("element"))
         metadata.setdefault("text", issue.get("text", ""))
         metadata.setdefault("bbox", issue.get("bbox"))
         metadata.setdefault("image_index", issue.get("image_index", 0))
+        metadata.setdefault("image_xref", issue.get("image_xref"))
+        metadata.setdefault("occurrence_ordinal", issue.get("occurrence_ordinal"))
+        metadata.setdefault("occurrence_id", issue.get("occurrence_id"))
         metadata.setdefault(
             "generated_alt_text",
             issue.get("generated_alt_text") or issue.get("alt_text"),

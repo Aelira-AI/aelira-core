@@ -79,6 +79,9 @@ from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
 from .font_unicode_fixer import FontUnicodeFixer
 from .math_fixer import MathFixer
+from src.education.math_contracts import CONCRETE_MATH_ISSUE_TYPES
+
+MATH_SPECIALIST_ISSUE_TYPES = CONCRETE_MATH_ISSUE_TYPES
 from .contrast_flagger import ContrastFlagger
 from .output_claim import DescriptorBoundOutputClaim
 
@@ -583,9 +586,7 @@ class PdfRemediator(BaseRemediator):
                 "missing_role_map": "role_mapping",
                 "incomplete_role_map": "role_mapping",
                 "missing_tounicode": "font_unicode",
-                "math_content_accessibility": "math",
-                "raw_latex_code": "math",
-                "mathml_recommendation": "math",
+                **{issue_type: "math" for issue_type in MATH_SPECIALIST_ISSUE_TYPES},
             }
             specialist_issues: Dict[str, List[RemediationIssue]] = {}
             core_structure_issues: List[RemediationIssue] = []
@@ -2604,9 +2605,7 @@ class PdfRemediator(BaseRemediator):
                 "missing_role_map",
                 "incomplete_role_map",
                 "missing_tounicode",
-                "math_content_accessibility",
-                "raw_latex_code",
-                "mathml_recommendation",
+                *MATH_SPECIALIST_ISSUE_TYPES,
             ]:
                 return bool(self._struct_tree)  # Need pikepdf for structure fixes
             return False
