@@ -24,7 +24,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, PrivateAttr
 
-from .output_claim import DescriptorBoundOutputClaim
+try:
+    from .output_claim import DescriptorBoundOutputClaim
+except ImportError:
+    if __package__:
+        raise
+    from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 
 ALT_TEXT_CATEGORY_ALIASES = frozenset(
     {
