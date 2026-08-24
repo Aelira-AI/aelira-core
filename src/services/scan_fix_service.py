@@ -12,7 +12,7 @@ import uuid
 
 from pydantic import ValidationError
 
-from ..db.models import ReviewAuditLog, ScanFix
+from ..db.models import ReviewAuditLog, Scan, ScanFix
 from ..education.remediation.base import FixedIssue, VerificationEvidence
 from ..utils.sanitization import sanitize_for_postgres
 
@@ -152,6 +152,14 @@ def persist_scan_fixes(
     occurrence_keys = [row.occurrence_key for row in rows]
     if len(set(occurrence_keys)) != len(occurrence_keys):
         raise ValueError("ambiguous duplicate fix occurrence")
+    locked_scan_id = (
+        db.query(Scan.id)
+        .filter(Scan.id == scan_id)
+        .with_for_update()
+        .scalar()
+    )
+    if locked_scan_id is None:
+        raise ValueError("scan does not exist")
     existing = (
         db.query(ScanFix).filter(ScanFix.scan_id == scan_id).all() if replace else []
     )

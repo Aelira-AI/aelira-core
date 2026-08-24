@@ -304,6 +304,8 @@ def test_durable_evidence_and_per_fix_audit_survive_session_restart():
     ScanFix.__table__.to_metadata(metadata)
     ReviewAuditLog.__table__.to_metadata(metadata)
     metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(metadata.tables["scans"].insert().values(id="scan-1"))
 
     with Session(engine) as session:
         row = persist_scan_fixes(session, "scan-1", [_fix()])[0]

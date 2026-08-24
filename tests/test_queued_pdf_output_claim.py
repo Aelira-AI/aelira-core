@@ -43,6 +43,12 @@ class _Query:
     def all(self):
         return [] if self.value is None else [self.value]
 
+    def with_for_update(self):
+        return self
+
+    def scalar(self):
+        return self.value
+
     def delete(self):
         return 0
 
@@ -60,6 +66,8 @@ class _DB:
         self.rollbacks = 0
 
     def query(self, model):
+        if model is Scan.id:
+            return _Query(self.values[Scan].id)
         return _Query(self.values.get(model))
 
     def add(self, value):

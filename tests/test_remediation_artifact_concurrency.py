@@ -2,10 +2,17 @@
 
 from datetime import datetime, timedelta, timezone
 import inspect
+import os
+import queue
+import threading
+import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import Column, MetaData, String, Table, create_engine, select, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
 
 from src.db import models
 from src.services import remediation_artifact_service as module
@@ -128,6 +135,166 @@ def test_review_gate_never_relocks_scan_after_artifact_lock():
     )
     assert "db.query(Scan)" not in source
     assert "db.query(ScanFix)" in source
+
+
+def test_scan_fix_writer_locks_scan_before_reading_occurrences():
+    from src.services.scan_fix_service import persist_scan_fixes
+
+    source = inspect.getsource(persist_scan_fixes)
+    scan_lock = source.index("db.query(Scan.id)")
+    occurrence_read = source.index("db.query(ScanFix)")
+    assert scan_lock < occurrence_read
+    assert "with_for_update" in source[scan_lock:occurrence_read]
+
+
+@pytest.mark.asyncio
+async def test_stale_approval_reaches_no_upload_sink(monkeypatch, tmp_path):
+    from src.jobs import upload_job
+
+    service = module.RemediationArtifactService(
+        root=tmp_path / "artifacts",
+        max_bytes=1024,
+        retention_days=30,
+        staging_grace_seconds=60,
+    )
+    artifact = _artifact(
+        lifecycle_status="available",
+        review_status="approved",
+        approval_checksum="a" * 64,
+        publication_token=None,
+        publication_heartbeat_at=None,
+        published_at=datetime.now(timezone.utc),
+        approved_by_ref="reviewer@example.test",
+        approved_at=datetime.now(timezone.utc),
+    )
+    scan = SimpleNamespace(
+        id=SCAN_ID,
+        department_id=DEPARTMENT_ID,
+        scan_type="WORD",
+        status=models.ScanStatus.COMPLETED,
+        remediation_outcome=models.RemediationOutcome.COMPLETED.value,
+    )
+    cloud = SimpleNamespace(
+        id=CLOUD_FILE_ID,
+        current_remediation_artifact_id=ARTIFACT_ID,
+        writeback_status="approved",
+        has_remediated_version=True,
+        remediation_origin="manual",
+    )
+    service._lock_existing_artifact = MagicMock(
+        return_value=(SimpleNamespace(id=DEPARTMENT_ID), scan, cloud, None, artifact)
+    )
+    db = MagicMock()
+    db.get.return_value = artifact
+    query = db.query.return_value
+    query.filter.return_value = query
+    query.with_for_update.return_value = query
+    query.populate_existing.return_value = query
+    query.all.return_value = [SimpleNamespace(review_status="pending")]
+    sink = AsyncMock()
+    monkeypatch.setattr(
+        upload_job.RemediationArtifactService, "from_settings", lambda: service
+    )
+    monkeypatch.setattr(upload_job, "_process_upload_path", sink)
+
+    result = await upload_job.process_upload_job(
+        {
+            "artifact_id": ARTIFACT_ID,
+            "department_id": DEPARTMENT_ID,
+            "cloud_file_id": CLOUD_FILE_ID,
+            "provider": "canvas",
+            "artifact_checksum": "a" * 64,
+        },
+        db,
+    )
+
+    assert result == {
+        "success": False,
+        "uploaded": False,
+        "error": "managed_artifact_unavailable",
+    }
+    sink.assert_not_awaited()
+    assert artifact.review_status == "pending"
+    assert artifact.approval_checksum is None
+
+
+@pytest.mark.integration
+def test_postgres_scan_lock_serializes_fix_writer_with_approval_gate():
+    from src.education.remediation.base import (
+        FixedIssue,
+        IssueCategory,
+        IssueSeverity,
+    )
+    from src.services.scan_fix_service import persist_scan_fixes
+
+    database_url = os.getenv("TEST_TASK8_POSTGRES_URL", "")
+    if not database_url:
+        pytest.skip("set TEST_TASK8_POSTGRES_URL for PostgreSQL concurrency")
+    assert make_url(database_url).get_backend_name() == "postgresql"
+    schema = "task8_review_concurrency"
+    admin = create_engine(database_url)
+    with admin.begin() as connection:
+        connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    engine = create_engine(
+        database_url, connect_args={"options": f"-csearch_path={schema}"}
+    )
+    metadata = MetaData()
+    Table("scans", metadata, Column("id", String(36), primary_key=True))
+    Table("users", metadata, Column("id", String(36), primary_key=True))
+    models.ScanFix.__table__.to_metadata(metadata)
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(metadata.tables["scans"].insert().values(id="scan-1"))
+
+    started = threading.Event()
+    finished = threading.Event()
+    failures: queue.Queue[BaseException] = queue.Queue()
+    fix = FixedIssue(
+        issue_id="rule-1",
+        category=IssueCategory.STRUCTURE,
+        severity=IssueSeverity.HIGH,
+        description="serialized occurrence",
+        location="page 1",
+        fixed_content="fixed",
+        fix_method="rule",
+        page_number=1,
+    )
+
+    def writer() -> None:
+        try:
+            with Session(engine) as session:
+                started.set()
+                persist_scan_fixes(session, "scan-1", [fix])
+                session.commit()
+        except BaseException as exc:
+            failures.put(exc)
+        finally:
+            finished.set()
+
+    try:
+        with Session(engine) as gate:
+            gate.execute(
+                select(models.Scan.id)
+                .where(models.Scan.id == "scan-1")
+                .with_for_update()
+            ).scalar_one()
+            thread = threading.Thread(target=writer, daemon=True)
+            thread.start()
+            assert started.wait(2)
+            time.sleep(0.2)
+            assert not finished.is_set()
+            gate.commit()
+            assert finished.wait(2)
+            thread.join(timeout=2)
+        assert failures.empty(), list(failures.queue)
+        with Session(engine) as session:
+            assert session.query(models.ScanFix).count() == 1
+    finally:
+        engine.dispose()
+        with admin.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        admin.dispose()
 
 
 def test_cleanup_candidate_selection_is_unlocked_and_heartbeat_based():
