@@ -574,6 +574,34 @@ def test_add_formula():
     assert formula_found, "Formula element not found in structure tree"
 
 
+def test_create_formula_element_with_mcid_has_exact_mcr():
+    """Association helper creates Formula /K as one page-bound MCR."""
+    import pikepdf
+    from pikepdf import Dictionary, Name
+
+    from src.education.remediation.pdf_structure import PDFStructureTree
+
+    pdf = pikepdf.new()
+    pdf.pages.append(
+        pikepdf.Page(Dictionary({"/Type": Name.Page, "/MediaBox": [0, 0, 612, 792]}))
+    )
+    tree = PDFStructureTree(pdf)
+
+    formula = tree.create_formula_element(
+        page_num=1,
+        alt_text="x squared",
+        mathml_string="<math><msup><mi>x</mi><mn>2</mn></msup></math>",
+        bbox=(72, 700, 300, 720),
+        mcid=9,
+    )
+
+    assert str(formula["/S"]) == "/Formula"
+    assert str(formula["/K"]["/Type"]) == "/MCR"
+    assert int(formula["/K"]["/MCID"]) == 9
+    assert tuple(formula["/K"]["/Pg"].objgen) == tuple(pdf.pages[0].obj.objgen)
+    assert len(formula["/AF"]) == 1
+
+
 def test_add_role_mapping():
     """PDFStructureTree.add_role_mapping() extends existing RoleMap."""
     import pikepdf

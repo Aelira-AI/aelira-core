@@ -1119,32 +1119,14 @@ def associate_image_formula(
         if page_array[mcid] is not None:
             return _association_failure(pending, "mcid_collision")
 
-        mathml_stream = pdf.make_stream(mathml.encode("utf-8"))
-        mathml_stream[Name.Type] = Name("/EmbeddedFile")
-        mathml_stream[Name.Subtype] = Name("/application#2Fmathml+xml")
-        filespec = pdf.make_indirect(
-            Dictionary(
-                {
-                    "/Type": Name("/Filespec"),
-                    "/F": String("formula.mml"),
-                    "/EF": Dictionary({"/F": mathml_stream}),
-                    "/AFRelationship": Name("/Supplement"),
-                }
-            )
-        )
-        mcr = Dictionary({"/Type": Name("/MCR"), "/Pg": page.obj, "/MCID": mcid})
-        formula = pdf.make_indirect(
-            Dictionary(
-                {
-                    "/Type": Name.StructElem,
-                    "/S": Name("/Formula"),
-                    "/Pg": page.obj,
-                    "/K": mcr,
-                    "/Alt": String(alt_text),
-                    "/A": Dictionary({"/O": Name.Layout, "/BBox": Array(list(bbox))}),
-                    "/AF": Array([filespec]),
-                }
-            )
+        from src.education.remediation.pdf_structure import PDFStructureTree
+
+        formula = PDFStructureTree(pdf).create_formula_element(
+            page_num=page_number,
+            alt_text=alt_text,
+            mathml_string=mathml,
+            bbox=bbox,
+            mcid=mcid,
         )
         _append_formula_to_structure(pdf, formula)
         page_array[mcid] = formula
