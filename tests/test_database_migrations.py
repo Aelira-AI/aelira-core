@@ -11,24 +11,39 @@ Tests verify that:
 import pytest
 import os
 import subprocess
+import sys
 from pathlib import Path
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
+from conftest import require_disposable_postgres_url
 
 # Mark all tests in this module as requires_db (skipped in CI without migration database)
 pytestmark = pytest.mark.integration
 
 
-# Test database URL (use a separate test database)
-TEST_DATABASE_URL = os.getenv(
-    "TEST_MIGRATION_DATABASE_URL",
-    os.getenv(
-        "DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5432/aelira_migration_test",
-    ),
-)
+# Migration tests never fall back to the suite or application database.
+TEST_DATABASE_URL = os.getenv("TEST_MIGRATION_DATABASE_URL")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def migration_database_environment():
+    """Fence every in-process and subprocess Alembic command to the test DB."""
+    if not TEST_DATABASE_URL:
+        yield
+        return
+    require_disposable_postgres_url(TEST_DATABASE_URL, destructive=False)
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
 
 
 @pytest.fixture(scope="module")
@@ -41,7 +56,8 @@ def alembic_config():
         pytest.skip("alembic.ini not found")
 
     config = Config(str(alembic_ini))
-    config.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
+    if TEST_DATABASE_URL:
+        config.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
     return config
 
 
@@ -56,6 +72,8 @@ def restore_schema_after_module(alembic_config):
     the price of exercising migrations in place.
     """
     yield
+    if not TEST_DATABASE_URL or os.getenv("ALLOW_DESTRUCTIVE_MIGRATION_TESTS") != "1":
+        return
     try:
         command.upgrade(alembic_config, "head")
     except Exception:  # pragma: no cover - best effort restoration
@@ -65,6 +83,9 @@ def restore_schema_after_module(alembic_config):
 @pytest.fixture(scope="module")
 def test_engine():
     """Create test database engine."""
+    if not TEST_DATABASE_URL:
+        pytest.skip("requires TEST_MIGRATION_DATABASE_URL")
+    require_disposable_postgres_url(TEST_DATABASE_URL, destructive=True)
     engine = create_engine(TEST_DATABASE_URL)
     yield engine
     engine.dispose()
@@ -266,16 +287,56 @@ class TestSchemaIntegrity:
             except Exception:
                 pass
 
+    @pytest.mark.slow
+    def test_pristine_and_incremental_upgrades_have_identical_constraints(
+        self, alembic_config, clean_database
+    ):
+        """A fresh schema and a one-revision upgrade expose the same constraints."""
+
+        def constraint_snapshot():
+            with clean_database.connect() as connection:
+                return tuple(connection.execute(text("""
+                            SELECT namespace.nspname,
+                                   relation.relname,
+                                   constraint_row.conname,
+                                   pg_get_constraintdef(constraint_row.oid, true),
+                                   constraint_row.convalidated
+                              FROM pg_constraint AS constraint_row
+                              JOIN pg_class AS relation
+                                ON relation.oid = constraint_row.conrelid
+                              JOIN pg_namespace AS namespace
+                                ON namespace.oid = relation.relnamespace
+                             WHERE namespace.nspname = 'public'
+                             ORDER BY relation.relname, constraint_row.conname
+                            """)).all())
+
+        command.upgrade(alembic_config, "head")
+        pristine = constraint_snapshot()
+
+        with clean_database.begin() as connection:
+            connection.execute(text("DROP SCHEMA public CASCADE"))
+            connection.execute(text("CREATE SCHEMA public"))
+            connection.execute(text("GRANT ALL ON SCHEMA public TO public"))
+
+        scripts = ScriptDirectory.from_config(alembic_config)
+        [head] = scripts.get_heads()
+        previous = scripts.get_revision(head).down_revision
+        assert isinstance(previous, str)
+        command.upgrade(alembic_config, previous)
+        command.upgrade(alembic_config, head)
+
+        assert constraint_snapshot() == pristine
+
 
 class TestMigrationCLI:
     """Test Alembic CLI commands."""
 
-    def test_alembic_current(self):
+    def test_alembic_current(self, test_engine):
         """Test that 'alembic current' runs without error."""
         backend_dir = Path(__file__).parent.parent
 
         result = subprocess.run(
-            ["alembic", "current"],
+            [sys.executable, "-m", "alembic", "current"],
             cwd=str(backend_dir),
             capture_output=True,
             text=True,
@@ -290,7 +351,7 @@ class TestMigrationCLI:
         backend_dir = Path(__file__).parent.parent
 
         result = subprocess.run(
-            ["alembic", "history", "--verbose"],
+            [sys.executable, "-m", "alembic", "history", "--verbose"],
             cwd=str(backend_dir),
             capture_output=True,
             text=True,
@@ -299,12 +360,12 @@ class TestMigrationCLI:
         # Should show at least some output (even if just headers)
         assert result.returncode == 0 or "Error" not in result.stderr
 
-    def test_alembic_check(self):
+    def test_alembic_check(self, test_engine):
         """Test that schema matches models (no pending migrations)."""
         backend_dir = Path(__file__).parent.parent
 
         subprocess.run(
-            ["alembic", "check"],
+            [sys.executable, "-m", "alembic", "check"],
             cwd=str(backend_dir),
             capture_output=True,
             text=True,
@@ -420,20 +481,7 @@ class TestMigrationOrdering:
     def test_single_head(self):
         """Test that there's only one head (no branching)."""
         backend_dir = Path(__file__).parent.parent
+        scripts = ScriptDirectory.from_config(Config(str(backend_dir / "alembic.ini")))
+        heads = scripts.get_heads()
 
-        result = subprocess.run(
-            ["alembic", "heads"],
-            cwd=str(backend_dir),
-            capture_output=True,
-            text=True,
-        )
-
-        # Count number of heads (each head is on its own line)
-        heads = [
-            line
-            for line in result.stdout.strip().split("\n")
-            if line and "(head)" in line
-        ]
-
-        # Should have at most one head
-        assert len(heads) <= 1, f"Multiple heads detected: {heads}"
+        assert len(heads) == 1, f"Expected one migration head, found: {heads}"

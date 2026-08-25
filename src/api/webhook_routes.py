@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from fastapi.responses import Response, PlainTextResponse
 from sqlalchemy.orm import Session
 from typing import Optional, Tuple
+import hashlib
 import logging
 from datetime import datetime, timezone
 
@@ -144,19 +145,41 @@ async def microsoft_graph_webhook(
         logger.warning("Microsoft webhook: invalid JSON body")
         return Response(status_code=400)
 
-    # Process notifications
+    if not isinstance(body, dict) or not isinstance(body.get("value", []), list):
+        logger.warning("Microsoft webhook: invalid notification envelope")
+        return Response(status_code=400)
+
+    # Process notifications. Provider-supplied identifiers and resource paths are
+    # deliberately excluded from logs because they are not trusted diagnostics.
     notifications = body.get("value", [])
 
     for notification in notifications:
+        if not isinstance(notification, dict):
+            logger.warning("Microsoft webhook: invalid notification")
+            continue
         subscription_id = notification.get("subscriptionId")
         change_type = notification.get("changeType")
         resource = notification.get("resource")
         client_state = notification.get("clientState")  # Our department_id
 
-        logger.info(
-            f"Microsoft webhook: subscription={subscription_id}, "
-            f"change={change_type}, resource={resource}"
-        )
+        if (
+            not isinstance(subscription_id, str)
+            or not subscription_id
+            or len(subscription_id) > 255
+            or not isinstance(client_state, str)
+            or not client_state
+            or len(client_state) > 64
+            or not isinstance(change_type, str)
+            or not change_type
+            or len(change_type) > 64
+            or not isinstance(resource, str)
+            or not resource
+            or len(resource) > 1024
+        ):
+            logger.warning("Microsoft webhook: invalid notification fields")
+            continue
+
+        logger.info("Microsoft webhook notification received")
 
         # Validate subscription exists
         with get_db() as db:
@@ -165,47 +188,57 @@ async def microsoft_graph_webhook(
                 .filter(
                     CloudWebhookSubscription.subscription_id == subscription_id,
                     CloudWebhookSubscription.provider == CloudProvider.MICROSOFT.value,
+                    CloudWebhookSubscription.department_id == client_state,
                     CloudWebhookSubscription.is_active,
                 )
                 .first()
             )
 
             if not subscription:
-                logger.warning(
-                    f"Unknown Microsoft webhook subscription: {subscription_id}"
-                )
+                logger.warning("Unknown Microsoft webhook subscription")
                 continue
 
             # Verify client state matches department ID
-            if client_state and client_state != subscription.department_id:
-                logger.warning(
-                    f"Microsoft webhook client state mismatch: "
-                    f"expected={subscription.department_id}, got={client_state}"
-                )
+            if client_state != subscription.department_id:
+                logger.warning("Microsoft webhook client state mismatch")
                 continue
 
             # Update last notification time and durably enqueue reconciliation.
-            subscription.last_notification_at = datetime.now(timezone.utc)
-            enqueue_cloud_job(
-                db,
-                department_id=subscription.department_id,
-                job_type=CloudJobType.SYNC.value,
-                payload={
-                    "credential_id": subscription.credential_id,
-                    "provider": CloudProvider.MICROSOFT.value,
-                    "subscription_id": subscription.id,
-                    "resource": resource,
-                    "change_type": change_type,
-                },
-                dedupe_key=(
-                    f"webhook:microsoft:{subscription.subscription_id}:"
-                    f"{resource or 'resource'}:{change_type or 'change'}"
-                ),
-                credential_id=subscription.credential_id,
-                provider=CloudProvider.MICROSOFT.value,
-                priority=3,
-            )
-            db.commit()
+            try:
+                subscription.last_notification_at = datetime.now(timezone.utc)
+                enqueue_cloud_job(
+                    db,
+                    department_id=subscription.department_id,
+                    job_type=CloudJobType.SYNC.value,
+                    payload={
+                        "credential_id": subscription.credential_id,
+                        "provider": CloudProvider.MICROSOFT.value,
+                        "subscription_id": subscription.id,
+                        "resource": resource,
+                        "change_type": change_type,
+                    },
+                    dedupe_key="webhook:microsoft:"
+                    + hashlib.sha256(
+                        f"{subscription_id}\0{resource}\0{change_type}".encode()
+                    ).hexdigest(),
+                    credential_id=subscription.credential_id,
+                    provider=CloudProvider.MICROSOFT.value,
+                    priority=3,
+                )
+                db.commit()
+            except Exception as exc:
+                try:
+                    db.rollback()
+                except Exception as rollback_exc:
+                    logger.error(
+                        "Microsoft webhook enqueue rollback failed",
+                        extra={"exception_type": type(rollback_exc).__name__[:64]},
+                    )
+                logger.error(
+                    "Microsoft webhook enqueue failed",
+                    extra={"exception_type": type(exc).__name__[:64]},
+                )
+                return Response(status_code=503)
 
     return Response(status_code=202)
 
@@ -218,7 +251,7 @@ async def microsoft_graph_validation(validationToken: str = Query(..., max_lengt
     When creating a subscription, Microsoft sends a GET request with
     validationToken that we must echo back.
     """
-    logger.info(f"Microsoft webhook validation GET: {validationToken}")
+    logger.info("Microsoft webhook validation GET received")
     return PlainTextResponse(content=validationToken, status_code=200)
 
 

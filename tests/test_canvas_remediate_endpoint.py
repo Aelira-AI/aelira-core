@@ -136,6 +136,95 @@ async def test_remediate_endpoint_enqueues_exact_durable_scan_and_remediation():
 
 
 @pytest.mark.asyncio
+async def test_remediate_endpoint_sanitizes_enqueue_failure_and_rolls_back():
+    sentinel = "/app/uploads/private.pdf token=secret"
+    request = MagicMock(
+        file_id="f-1",
+        course_id="101",
+        department_id="d1",
+        upload_back=False,
+        use_ai=False,
+        generate_alt_text=False,
+    )
+    canvas = AsyncMock()
+    canvas.list_course_files.side_effect = RuntimeError(sentinel)
+    db = _db_with_credential_and_file()
+
+    with (
+        patch("src.api.canvas_routes.require_feature", new=AsyncMock()),
+        patch("src.api.canvas_routes.verify_department_access"),
+        patch(
+            "src.api.canvas_routes._get_canvas_client",
+            new=AsyncMock(return_value=(SimpleNamespace(id="cred-1"), canvas)),
+        ),
+        patch("src.api.canvas_routes.logger.error") as log_error,
+    ):
+        response = await remediate_canvas_file(
+            request=request,
+            db=db,
+            principal=_principal(),
+        )
+
+    payload = response.model_dump()
+    assert payload == {
+        "success": False,
+        "scan_id": None,
+        "job_id": None,
+        "message": "Unable to queue remediation. Please try again later.",
+        "error_code": "remediation_queue_unavailable",
+    }
+    serialized = f"{payload!r} {log_error.call_args!r}"
+    assert sentinel not in serialized
+    assert "/app/uploads/private.pdf" not in serialized
+    assert "token=secret" not in serialized
+    assert log_error.call_args.kwargs["extra"] == {
+        "operation": "canvas_remediation_enqueue",
+        "exception_type": "RuntimeError",
+    }
+    db.rollback.assert_called_once_with()
+    canvas.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_remediate_endpoint_rollback_failure_keeps_sanitized_response():
+    request = MagicMock(
+        file_id="f-1",
+        course_id="101",
+        department_id="d1",
+        upload_back=False,
+        use_ai=False,
+        generate_alt_text=False,
+    )
+    canvas = AsyncMock()
+    canvas.list_course_files.side_effect = RuntimeError("provider token=secret")
+    db = _db_with_credential_and_file()
+    db.rollback.side_effect = RuntimeError("/database/path password=secret")
+
+    with (
+        patch("src.api.canvas_routes.require_feature", new=AsyncMock()),
+        patch("src.api.canvas_routes.verify_department_access"),
+        patch(
+            "src.api.canvas_routes._get_canvas_client",
+            new=AsyncMock(return_value=(SimpleNamespace(id="cred-1"), canvas)),
+        ),
+        patch("src.api.canvas_routes.logger.error") as log_error,
+    ):
+        response = await remediate_canvas_file(
+            request=request,
+            db=db,
+            principal=_principal(),
+        )
+
+    assert response.error_code == "remediation_queue_unavailable"
+    assert "token=secret" not in repr(log_error.call_args_list)
+    assert "password=secret" not in repr(log_error.call_args_list)
+    assert [
+        call.kwargs["extra"]["exception_type"] for call in log_error.call_args_list
+    ] == ["RuntimeError", "RuntimeError"]
+    canvas.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_remediation_dependency_is_persisted_before_endpoint_acknowledges():
     request = MagicMock(
         file_id="f-1",

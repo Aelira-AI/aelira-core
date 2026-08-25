@@ -3,10 +3,12 @@ Pytest configuration and shared fixtures.
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 # Skip browser/E2E/integration tests in CI environments (industry best practice - testing pyramid)
@@ -43,12 +45,95 @@ if "TOKEN_ENCRYPTION_KEY" not in os.environ:
 
     os.environ["TOKEN_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
-# Test database URL - use existing DATABASE_URL if set (important for Docker),
-# otherwise fallback to local defaults.
-if "DATABASE_URL" not in os.environ:
-    os.environ["DATABASE_URL"] = os.getenv(
-        "TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/aelira_test"
+
+_TEST_DATABASE_NAME = re.compile(
+    r"^(?:test_[a-z0-9][a-z0-9_]*|[a-z0-9][a-z0-9_]*_test)$"
+)
+_PRODUCTION_NAME_PARTS = {"prod", "production", "staging", "live"}
+_LOCAL_DATABASE_HOSTS = {None, "", "localhost", "127.0.0.1", "::1"}
+
+
+def _enabled(environment, name: str) -> bool:
+    return str(environment.get(name, "")).lower() in {"1", "true", "yes"}
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def require_disposable_postgres_url(
+    database_url: str,
+    *,
+    destructive: bool,
+    environment=None,
+) -> str:
+    """Validate an unmistakably test-only PostgreSQL target without exposing auth."""
+    environment = os.environ if environment is None else environment
+    _require(bool(database_url), "TEST_MIGRATION_DATABASE_URL must be set explicitly")
+    parsed = make_url(database_url)
+    _require(
+        parsed.drivername
+        in {
+            "postgresql",
+            "postgresql+psycopg2",
+            "postgresql+psycopg",
+        },
+        "test database must use a synchronous PostgreSQL driver",
     )
+    database = parsed.database or ""
+    _require(
+        bool(_TEST_DATABASE_NAME.fullmatch(database)),
+        f"refusing database with ambiguous test name {database!r}",
+    )
+    name_parts = set(re.split(r"[_\-.]+", database.lower()))
+    _require(
+        not name_parts.intersection(_PRODUCTION_NAME_PARTS),
+        f"refusing production-shaped test database name {database!r}",
+    )
+
+    host = (parsed.host or "").lower()
+    host_parts = set(re.split(r"[_\-.]+", host))
+    _require(
+        not host_parts.intersection(_PRODUCTION_NAME_PARTS),
+        f"refusing production-shaped test database host {host!r}",
+    )
+    remote_allowed = _enabled(environment, "ALLOW_REMOTE_TEST_DATABASE") or (
+        not destructive and _enabled(environment, "CI")
+    )
+    _require(
+        host in _LOCAL_DATABASE_HOSTS or remote_allowed,
+        "non-local test databases require ALLOW_REMOTE_TEST_DATABASE=1",
+    )
+    if destructive:
+        _require(
+            _enabled(environment, "ALLOW_DESTRUCTIVE_MIGRATION_TESTS"),
+            "destructive database tests require ALLOW_DESTRUCTIVE_MIGRATION_TESTS=1",
+        )
+    return database_url
+
+
+def _require_test_database_url(database_url: str) -> str:
+    """Fence ordinary suite setup to memory SQLite or test-only PostgreSQL."""
+    parsed = make_url(database_url)
+    if parsed.drivername == "sqlite" and parsed.database in (None, "", ":memory:"):
+        return database_url
+    return require_disposable_postgres_url(database_url, destructive=False)
+
+
+def _select_suite_database_url(environment) -> str:
+    explicit = environment.get("TEST_DATABASE_URL")
+    if explicit:
+        return explicit
+    if _enabled(environment, "CI") and environment.get("DATABASE_URL"):
+        return environment["DATABASE_URL"]
+    return "postgresql://postgres:postgres@localhost:5432/aelira_test"
+
+
+# A local application DATABASE_URL is never a test fallback. CI may provide its
+# isolated service URL explicitly; both paths still pass the same strict fence.
+_suite_database_url = _select_suite_database_url(os.environ)
+os.environ["DATABASE_URL"] = _require_test_database_url(_suite_database_url)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -61,6 +146,8 @@ def setup_test_database():
     print(f"\n🔧 Setting up test database at: {settings.database_url}")
 
     # Test connection — skip gracefully if DB is unavailable (allows pure unit tests to run)
+    created_department = False
+    created_user = False
     try:
         engine = create_engine(settings.database_url)
         engine.connect().close()
@@ -95,6 +182,7 @@ def setup_test_database():
             )
             db.add(mock_dept)
             db.flush()  # Ensure department is in database before adding user
+            created_department = True
             print("   - Created Department: test-dept-456")
         else:
             print("   - Department test-dept-456 already exists")
@@ -110,6 +198,7 @@ def setup_test_database():
                 role=UserRole.ADMIN,
             )
             db.add(mock_user)
+            created_user = True
             print("   - Created User: test-user-123")
         else:
             print("   - User test-user-123 already exists")
@@ -132,8 +221,10 @@ def setup_test_database():
     # Clean up after all tests
     try:
         db = SessionLocal()
-        db.query(User).filter(User.id == "test-user-123").delete()
-        db.query(Department).filter(Department.id == "test-dept-456").delete()
+        if created_user:
+            db.query(User).filter(User.id == "test-user-123").delete()
+        if created_department:
+            db.query(Department).filter(Department.id == "test-dept-456").delete()
         db.commit()
         db.close()
         print("\n🧹 Cleaned up test fixtures")

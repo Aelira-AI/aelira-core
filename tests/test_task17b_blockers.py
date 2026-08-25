@@ -2,15 +2,366 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import inspect
+import logging
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+
+
+def test_queue_model_preserves_migration_constraint_names():
+    from src.db.models import CloudJobQueue
+
+    constraint_names = {
+        constraint.name for constraint in CloudJobQueue.__table__.constraints
+    }
+    assert "ck_cloud_job_queue_payload_object" in constraint_names
+    dependency = next(iter(CloudJobQueue.__table__.c.depends_on_job_id.foreign_keys))
+    assert dependency.constraint.name == "fk_cloud_job_queue_dependency"
+
+
+def test_onedrive_constructor_rejects_credential_identifier_scope():
+    from src.integrations.microsoft_365.onedrive import OneDriveIntegration
+
+    with pytest.raises(TypeError, match="credential_id"):
+        OneDriveIntegration(access_token="token", credential_id="credential-1")
+
+
+@pytest.mark.asyncio
+async def test_onedrive_webhook_uses_department_scope_as_client_state():
+    from src.integrations.microsoft_365.onedrive import OneDriveIntegration
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(request.extensions)
+        captured["body"] = request.content
+        return httpx.Response(
+            201,
+            json={"id": "provider-sub", "resource": "/me/drive/root"},
+            request=request,
+        )
+
+    integration = OneDriveIntegration(
+        access_token="token",
+        department_id="department-authority",
+    )
+    temporary_directory = Path(integration._temp_dir)
+    assert integration.credential_id is None
+    integration._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        await integration.create_webhook("https://example.test/hooks/microsoft")
+    finally:
+        await integration.close()
+
+    assert b'"clientState":"department-authority"' in captured["body"]
+    assert b"credential" not in captured["body"]
+    assert not temporary_directory.exists()
+
+
+@pytest.mark.asyncio
+async def test_onedrive_close_failure_is_sanitized_and_still_cleans_temp(caplog):
+    from src.integrations.microsoft_365.onedrive import OneDriveIntegration
+
+    sentinel = "/private/provider/token=secret"
+    integration = OneDriveIntegration("token", "department-authority")
+    temporary_directory = Path(integration._temp_dir)
+    integration._http_client = SimpleNamespace(
+        is_closed=False,
+        aclose=AsyncMock(side_effect=RuntimeError(sentinel)),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await integration.close()
+
+    assert integration._http_client is None
+    assert not temporary_directory.exists()
+    assert sentinel not in caplog.text
+    assert "token=secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_state", [None, "", "another-department"])
+async def test_microsoft_webhook_requires_exact_department_client_state(
+    monkeypatch, client_state
+):
+    from src.api import webhook_routes
+
+    subscription = SimpleNamespace(
+        id="subscription-row",
+        subscription_id="provider-subscription",
+        department_id="department-authority",
+        credential_id="credential-1",
+        last_notification_at=None,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = subscription
+
+    @contextmanager
+    def scoped_db():
+        yield db
+
+    enqueue = MagicMock()
+    monkeypatch.setattr(webhook_routes, "get_db", scoped_db)
+    monkeypatch.setattr(webhook_routes, "enqueue_cloud_job", enqueue)
+    request = SimpleNamespace(
+        json=AsyncMock(
+            return_value={
+                "value": [
+                    {
+                        "subscriptionId": "provider-subscription",
+                        "clientState": client_state,
+                        "changeType": "updated",
+                        "resource": "/me/drive/root",
+                    }
+                ]
+            }
+        )
+    )
+
+    response = await webhook_routes.microsoft_graph_webhook(
+        request,
+        validationToken=None,
+    )
+
+    assert response.status_code == 202
+    assert subscription.last_notification_at is None
+    enqueue.assert_not_called()
+    db.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_microsoft_webhook_filters_department_and_never_logs_provider_values(
+    monkeypatch, caplog
+):
+    from src.api import webhook_routes
+
+    subscription = SimpleNamespace(
+        id="subscription-row",
+        subscription_id="provider-subscription",
+        department_id="department-authority",
+        credential_id="credential-1",
+        last_notification_at=None,
+    )
+    query = MagicMock()
+    query.filter.return_value.first.return_value = subscription
+    db = MagicMock()
+    db.query.return_value = query
+
+    @contextmanager
+    def scoped_db():
+        yield db
+
+    monkeypatch.setattr(webhook_routes, "get_db", scoped_db)
+    enqueue = MagicMock()
+    monkeypatch.setattr(webhook_routes, "enqueue_cloud_job", enqueue)
+    secret_subscription = "subscription-token-secret"
+    secret_resource = "/drives/private-provider-path/token=secret"
+    request = SimpleNamespace(
+        json=AsyncMock(
+            return_value={
+                "value": [
+                    {
+                        "subscriptionId": secret_subscription,
+                        "clientState": "department-authority",
+                        "changeType": "updated",
+                        "resource": secret_resource,
+                    }
+                ]
+            }
+        )
+    )
+
+    with caplog.at_level(logging.INFO, logger=webhook_routes.logger.name):
+        response = await webhook_routes.microsoft_graph_webhook(
+            request,
+            validationToken=None,
+        )
+
+    filter_sql = " ".join(str(expression) for expression in query.filter.call_args.args)
+    assert "cloud_webhook_subscriptions.department_id" in filter_sql
+    assert "cloud_webhook_subscriptions.subscription_id" in filter_sql
+    assert response.status_code == 202
+    assert secret_subscription not in caplog.text
+    assert secret_resource not in caplog.text
+    assert "token=secret" not in caplog.text
+    dedupe_key = enqueue.call_args.kwargs["dedupe_key"]
+    assert dedupe_key.startswith("webhook:microsoft:")
+    assert secret_subscription not in dedupe_key
+    assert secret_resource not in dedupe_key
+
+
+@pytest.mark.asyncio
+async def test_microsoft_validation_echo_does_not_log_validation_token(caplog):
+    from src.api import webhook_routes
+
+    validation_token = "graph-validation-token-secret"
+    with caplog.at_level(logging.INFO, logger=webhook_routes.logger.name):
+        response = await webhook_routes.microsoft_graph_validation(validation_token)
+
+    assert response.body == validation_token.encode()
+    assert validation_token not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_microsoft_webhook_enqueue_and_rollback_failures_are_sanitized(
+    monkeypatch,
+):
+    from src.api import webhook_routes
+
+    subscription = SimpleNamespace(
+        id="subscription-row",
+        subscription_id="provider-subscription",
+        department_id="department-authority",
+        credential_id="credential-1",
+        last_notification_at=None,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = subscription
+    db.rollback.side_effect = RuntimeError("/database/path password=secret")
+
+    @contextmanager
+    def scoped_db():
+        yield db
+
+    monkeypatch.setattr(webhook_routes, "get_db", scoped_db)
+    monkeypatch.setattr(
+        webhook_routes,
+        "enqueue_cloud_job",
+        MagicMock(side_effect=RuntimeError("provider token=secret")),
+    )
+    request = SimpleNamespace(
+        json=AsyncMock(
+            return_value={
+                "value": [
+                    {
+                        "subscriptionId": "provider-subscription",
+                        "clientState": "department-authority",
+                        "changeType": "updated",
+                        "resource": "/me/drive/root",
+                    }
+                ]
+            }
+        )
+    )
+
+    with patch.object(webhook_routes.logger, "error") as log_error:
+        response = await webhook_routes.microsoft_graph_webhook(
+            request,
+            validationToken=None,
+        )
+
+    assert response.status_code == 503
+    serialized_log = repr(log_error.call_args_list)
+    assert "password=secret" not in serialized_log
+    assert "token=secret" not in serialized_log
+    assert [
+        call.kwargs["extra"]["exception_type"] for call in log_error.call_args_list
+    ] == ["RuntimeError", "RuntimeError"]
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_status"),
+    [
+        ([], 400),
+        ({"value": {}}, 400),
+        ({"value": ["not-an-object"]}, 202),
+    ],
+)
+@pytest.mark.asyncio
+async def test_microsoft_webhook_rejects_or_skips_malformed_envelopes(
+    monkeypatch, body, expected_status
+):
+    from src.api import webhook_routes
+
+    database = MagicMock()
+
+    @contextmanager
+    def scoped_db():
+        yield database
+
+    monkeypatch.setattr(webhook_routes, "get_db", scoped_db)
+    response = await webhook_routes.microsoft_graph_webhook(
+        SimpleNamespace(json=AsyncMock(return_value=body)),
+        validationToken=None,
+    )
+
+    assert response.status_code == expected_status
+    database.query.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgresql://localhost/aelira_test_prod",
+        "postgresql://localhost/aelira_production_test",
+        "postgresql+asyncpg://localhost/aelira_test",
+        "sqlite:////tmp/aelira_test",
+        "postgresql://prod-db.example/aelira_test",
+        "postgresql://remote.example/aelira_test",
+    ],
+)
+def test_destructive_database_fence_rejects_near_misses(database_url):
+    from conftest import require_disposable_postgres_url
+
+    environment = {"ALLOW_DESTRUCTIVE_MIGRATION_TESTS": "1"}
+    with pytest.raises(RuntimeError):
+        require_disposable_postgres_url(
+            database_url,
+            destructive=True,
+            environment=environment,
+        )
+
+
+def test_destructive_database_fence_requires_opt_in_and_accepts_exact_local_test():
+    from conftest import require_disposable_postgres_url
+
+    database_url = "postgresql://localhost/aelira_migration_test"
+    with pytest.raises(RuntimeError, match="ALLOW_DESTRUCTIVE"):
+        require_disposable_postgres_url(
+            database_url,
+            destructive=True,
+            environment={},
+        )
+    assert (
+        require_disposable_postgres_url(
+            database_url,
+            destructive=True,
+            environment={"ALLOW_DESTRUCTIVE_MIGRATION_TESTS": "1"},
+        )
+        == database_url
+    )
+
+    with pytest.raises(RuntimeError, match="ALLOW_REMOTE"):
+        require_disposable_postgres_url(
+            "postgresql://ci-postgres/aelira_migration_test",
+            destructive=True,
+            environment={
+                "CI": "true",
+                "ALLOW_DESTRUCTIVE_MIGRATION_TESTS": "1",
+            },
+        )
+
+
+def test_suite_database_selection_never_uses_local_application_database():
+    from conftest import _select_suite_database_url
+
+    environment = {
+        "DATABASE_URL": "postgresql://prod.example/aelira",
+        "CI": "false",
+    }
+    selected = _select_suite_database_url(environment)
+    assert selected.endswith("/aelira_test")
+    assert "prod.example" not in selected
+
+    environment["TEST_DATABASE_URL"] = "postgresql://127.0.0.1/aelira_migration_test"
+    assert _select_suite_database_url(environment) == environment["TEST_DATABASE_URL"]
 
 
 def test_reconciliation_has_its_own_exact_job_type_and_handler():
@@ -89,6 +440,13 @@ async def test_webhook_refresh_renews_microsoft_and_persists_audit(monkeypatch):
     )
 
     assert result["success"] is True
+    webhook_refresh_job.OneDriveIntegration.assert_called_once_with(
+        access_token="token",
+        department_id="dept-1",
+    )
+    assert "credential_id" not in (
+        webhook_refresh_job.OneDriveIntegration.call_args.kwargs
+    )
     integration.renew_webhook.assert_awaited_once_with("provider-sub")
     assert subscription.renewal_status == "renewed"
     assert subscription.renewal_result == {

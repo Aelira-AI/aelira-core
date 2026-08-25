@@ -290,6 +290,7 @@ async def test_legacy_queue_fails_before_database_or_policy_activity():
         patch(
             "src.api.brightspace_routes.LMSRemediationClient.bind_if_allowed"
         ) as bind,
+        patch("src.api.brightspace_routes.enqueue_cloud_job") as enqueue,
         pytest.raises(HTTPException) as caught,
     ):
         await remediate_brightspace_content(
@@ -308,6 +309,110 @@ async def test_legacy_queue_fails_before_database_or_policy_activity():
     db.add.assert_not_called()
     db.commit.assert_not_called()
     bind.assert_not_called()
+    enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_brightspace_scan_enqueue_failure_is_sanitized_and_rolled_back():
+    from src.api.brightspace_routes import (
+        BrightspaceContentScanRequest,
+        scan_brightspace_content,
+    )
+
+    sentinel = "/private/provider/file.pdf token=secret"
+    credential = SimpleNamespace(
+        id="credential-1",
+        department_id="dept-1",
+        provider_metadata={"brightspace_instance_url": "https://lms.example"},
+    )
+    item = SimpleNamespace(
+        topic_id=7,
+        module_id=3,
+        content_type="html",
+        file_name="lesson.html",
+        title="Lesson",
+        file_size=100,
+        module_path="Course / Lesson",
+        url="/content/lesson.html",
+        modified_at=None,
+    )
+    api_client = SimpleNamespace(
+        get_course_content_recursive=AsyncMock(return_value=[item]),
+        close=AsyncMock(),
+    )
+    db = MagicMock()
+    query = MagicMock()
+    query.filter.return_value.first.return_value = None
+    db.query.return_value = query
+
+    with (
+        patch("src.api.brightspace_routes.require_lti_course_access"),
+        patch(
+            "src.api.brightspace_routes._get_credential",
+            return_value=credential,
+        ),
+        patch(
+            "src.api.brightspace_routes._ensure_valid_token",
+            new=AsyncMock(return_value="access-token"),
+        ),
+        patch(
+            "src.api.brightspace_routes.BrightspaceAPIClient",
+            return_value=api_client,
+        ),
+        patch(
+            "src.api.brightspace_routes.enqueue_cloud_job",
+            side_effect=RuntimeError(sentinel),
+        ),
+        patch("src.api.brightspace_routes.logger.error") as log_error,
+        pytest.raises(HTTPException) as caught,
+    ):
+        await scan_brightspace_content(
+            BrightspaceContentScanRequest(org_unit_id=42),
+            principal=_principal(),
+            db=db,
+        )
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail == "brightspace_scan_queue_unavailable"
+    assert caught.value.__cause__ is None
+    assert sentinel not in repr(log_error.call_args_list)
+    assert "token=secret" not in repr(log_error.call_args_list)
+    db.rollback.assert_called_once_with()
+    db.commit.assert_not_called()
+    api_client.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_brightspace_scan_rollback_failure_cannot_replace_stable_error():
+    from src.api.brightspace_routes import (
+        BrightspaceContentScanRequest,
+        scan_brightspace_content,
+    )
+
+    db = MagicMock()
+    db.rollback.side_effect = RuntimeError("/database/path password=secret")
+    with (
+        patch(
+            "src.api.brightspace_routes._scan_brightspace_content_impl",
+            new=AsyncMock(side_effect=RuntimeError("provider token=secret")),
+        ),
+        patch("src.api.brightspace_routes.logger.error") as log_error,
+        pytest.raises(HTTPException) as caught,
+    ):
+        await scan_brightspace_content(
+            BrightspaceContentScanRequest(org_unit_id=42),
+            principal=_principal(),
+            db=db,
+        )
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail == "brightspace_scan_queue_unavailable"
+    serialized_log = repr(log_error.call_args_list)
+    assert "password=secret" not in serialized_log
+    assert "token=secret" not in serialized_log
+    assert [
+        call.kwargs["extra"]["exception_type"] for call in log_error.call_args_list
+    ] == ["RuntimeError", "RuntimeError"]
 
 
 @pytest.mark.asyncio

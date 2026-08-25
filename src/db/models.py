@@ -1463,7 +1463,13 @@ class CloudJobQueue(Base):
         return value
 
     depends_on_job_id = Column(
-        String(36), ForeignKey("cloud_job_queue.id", ondelete="RESTRICT"), nullable=True
+        String(36),
+        ForeignKey(
+            "cloud_job_queue.id",
+            name="fk_cloud_job_queue_dependency",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
     )
     dedupe_key = Column(String(255), nullable=True)
     status = Column(
@@ -1524,6 +1530,10 @@ class CloudJobQueue(Base):
         CheckConstraint(
             "progress BETWEEN 0 AND 100", name="ck_cloud_job_queue_progress"
         ),
+        CheckConstraint(
+            "jsonb_typeof(payload) = 'object'",
+            name="ck_cloud_job_queue_payload_object",
+        ).ddl_if(dialect="postgresql"),
         CheckConstraint(
             "attempt_count >= 0 AND max_retries >= 0",
             name="ck_cloud_job_queue_attempts",

@@ -105,6 +105,7 @@ class CanvasRemediateResponse(BaseModel):
     scan_id: Optional[str] = None
     job_id: Optional[str] = None
     message: str
+    error_code: Optional[str] = None
 
 
 # =============================================================================
@@ -550,6 +551,16 @@ async def list_canvas_course_folders(
 # =============================================================================
 
 
+def _rollback_canvas_remediation_enqueue(db: Session) -> None:
+    try:
+        db.rollback()
+    except Exception as exc:
+        logger.error(
+            "Canvas remediation enqueue rollback failed",
+            extra={"exception_type": type(exc).__name__[:64]},
+        )
+
+
 @router.post("/remediate")
 async def remediate_canvas_file(
     request: CanvasRemediateRequest,
@@ -776,15 +787,21 @@ async def remediate_canvas_file(
         )
 
     except HTTPException:
+        _rollback_canvas_remediation_enqueue(db)
         raise
     except Exception as exc:
+        _rollback_canvas_remediation_enqueue(db)
         logger.error(
-            "Failed to queue Canvas remediation",
-            extra={"error_type": type(exc).__name__, "department_id": dept_id},
+            "Canvas remediation enqueue failed",
+            extra={
+                "operation": "canvas_remediation_enqueue",
+                "exception_type": type(exc).__name__[:64],
+            },
         )
         return CanvasRemediateResponse(
             success=False,
-            message="Failed to queue remediation (queue_unavailable)",
+            message="Unable to queue remediation. Please try again later.",
+            error_code="remediation_queue_unavailable",
         )
 
 

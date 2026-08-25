@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
-from sqlalchemy.engine import make_url
+from conftest import require_disposable_postgres_url
 
 ROOT = Path(__file__).parents[1]
 HEAD = "20260825_canvas_queue"
@@ -40,25 +40,23 @@ def test_task17b_migrations_are_one_linear_reversible_head():
 
 
 @pytest.mark.integration
-def test_task17b_migrations_downgrade_then_upgrade_on_disposable_postgres():
+def test_task17b_migrations_downgrade_then_upgrade_on_disposable_postgres(monkeypatch):
     database_url = os.getenv("TEST_MIGRATION_DATABASE_URL")
     if not database_url or os.getenv("ALLOW_DESTRUCTIVE_MIGRATION_TESTS") != "1":
         pytest.skip(
             "requires TEST_MIGRATION_DATABASE_URL and "
             "ALLOW_DESTRUCTIVE_MIGRATION_TESTS=1"
         )
-    parsed = make_url(database_url)
-    database = parsed.database or ""
-    assert parsed.get_backend_name() == "postgresql"
-    assert (
-        database.startswith("test_")
-        or database.endswith("_test")
-        or "_test_" in database
-    )
+    require_disposable_postgres_url(database_url, destructive=True)
+    monkeypatch.setenv("DATABASE_URL", database_url)
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", database_url)
     engine = create_engine(database_url)
     try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+            connection.exec_driver_sql("GRANT ALL ON SCHEMA public TO public")
         command.upgrade(config, "head")
         schema = inspect(engine)
         assert "artifact_orphan_quarantine" in schema.get_table_names()

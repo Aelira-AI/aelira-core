@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy import create_engine, delete, text, update
 from sqlalchemy.orm import sessionmaker
+from conftest import require_disposable_postgres_url
 
 from src.db.models import (
     CloudJobQueue,
@@ -34,7 +35,10 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def pg_sessions():
-    url = os.environ["DATABASE_URL"]
+    url = os.getenv("TEST_MIGRATION_DATABASE_URL")
+    if not url:
+        pytest.skip("requires TEST_MIGRATION_DATABASE_URL")
+    require_disposable_postgres_url(url, destructive=True)
     engine = create_engine(url)
     try:
         with engine.connect() as connection:
@@ -42,6 +46,7 @@ def pg_sessions():
     except Exception:
         pytest.skip("PostgreSQL unavailable")
     factory = sessionmaker(bind=engine, expire_on_commit=False)
+    factory._test_worker_ids = set()
     department_id = str(uuid.uuid4())
     with factory() as db:
         db.add(
@@ -55,9 +60,12 @@ def pg_sessions():
         db.commit()
     yield factory, department_id
     with factory() as db:
-        db.execute(
-            delete(WorkerHeartbeat).where(WorkerHeartbeat.worker_id.like("task17-%"))
-        )
+        if factory._test_worker_ids:
+            db.execute(
+                delete(WorkerHeartbeat).where(
+                    WorkerHeartbeat.worker_id.in_(factory._test_worker_ids)
+                )
+            )
         db.execute(delete(Department).where(Department.id == department_id))
         db.commit()
     engine.dispose()
@@ -89,6 +97,10 @@ def enqueue(factory, department_id, **values) -> str:
 def processor(factory, worker_id, registry, **kwargs) -> JobProcessor:
     kwargs.setdefault("poll_interval", 0.01)
     kwargs.setdefault("heartbeat_interval", 0.01)
+    with factory() as db:
+        if db.get(WorkerHeartbeat, worker_id) is not None:
+            raise RuntimeError(f"fixture worker ID already exists: {worker_id}")
+    factory._test_worker_ids.add(worker_id)
     value = JobProcessor(
         worker_id=worker_id,
         session_factory=factory,
@@ -103,6 +115,58 @@ def upload_registry(handler) -> JobRegistry:
     registry = JobRegistry()
     registry.register("upload", handler)
     return registry
+
+
+def _column_constraints(db, *, column_name: str, constraint_type: str):
+    """Return exact PostgreSQL definitions for constraints touching one column."""
+    return list(
+        db.execute(
+            text("""
+                SELECT constraint_row.conname AS name,
+                       pg_get_constraintdef(constraint_row.oid, true) AS definition,
+                       constraint_row.convalidated AS validated
+                  FROM pg_constraint AS constraint_row
+                  JOIN pg_attribute AS attribute_row
+                    ON attribute_row.attrelid = constraint_row.conrelid
+                   AND attribute_row.attnum = ANY(constraint_row.conkey)
+                 WHERE constraint_row.conrelid = 'cloud_job_queue'::regclass
+                   AND constraint_row.contype = :constraint_type
+                   AND attribute_row.attname = :column_name
+                 ORDER BY constraint_row.conname
+                """),
+            {
+                "column_name": column_name,
+                "constraint_type": constraint_type,
+            },
+        )
+        .mappings()
+        .all()
+    )
+
+
+def _drop_constraints(db, constraints) -> None:
+    quote = db.bind.dialect.identifier_preparer.quote
+    for constraint in constraints:
+        db.execute(
+            text(
+                "ALTER TABLE cloud_job_queue DROP CONSTRAINT "
+                f"{quote(constraint['name'])}"
+            )
+        )
+
+
+def _restore_constraints(db, constraints) -> None:
+    quote = db.bind.dialect.identifier_preparer.quote
+    for constraint in constraints:
+        definition = constraint["definition"]
+        if not constraint["validated"] and "NOT VALID" not in definition.upper():
+            definition = f"{definition} NOT VALID"
+        db.execute(
+            text(
+                "ALTER TABLE cloud_job_queue ADD CONSTRAINT "
+                f"{quote(constraint['name'])} {definition}"
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -608,11 +672,21 @@ def test_malformed_legacy_payload_is_quarantined_while_valid_job_is_claimed(
     worker = processor(factory, "task17-worker-payload", registry, batch_size=2)
 
     with factory() as db:
-        db.execute(
-            text(
-                "ALTER TABLE cloud_job_queue DROP CONSTRAINT ck_cloud_job_queue_payload_object"
+        payload_constraints = [
+            constraint
+            for constraint in _column_constraints(
+                db,
+                column_name="payload",
+                constraint_type="c",
             )
-        )
+            if constraint["name"] == "ck_cloud_job_queue_payload_object"
+            or (
+                "jsonb_typeof" in constraint["definition"].lower()
+                and "payload" in constraint["definition"].lower()
+            )
+        ]
+        assert payload_constraints
+        _drop_constraints(db, payload_constraints)
         db.execute(
             text("UPDATE cloud_job_queue SET payload = '[]'::jsonb WHERE id = :job_id"),
             {"job_id": malformed_id},
@@ -631,11 +705,11 @@ def test_malformed_legacy_payload_is_quarantined_while_valid_job_is_claimed(
         with factory() as db:
             db.execute(
                 text(
-                    "ALTER TABLE cloud_job_queue ADD CONSTRAINT "
-                    "ck_cloud_job_queue_payload_object "
-                    "CHECK (jsonb_typeof(payload) = 'object') NOT VALID"
-                )
+                    "UPDATE cloud_job_queue SET payload = '{}'::jsonb WHERE id = :job_id"
+                ),
+                {"job_id": malformed_id},
             )
+            _restore_constraints(db, payload_constraints)
             db.commit()
 
 
@@ -668,12 +742,15 @@ def test_missing_legacy_dependency_is_quarantined(pg_sessions):
     factory, department_id = pg_sessions
     registry = registry_with(AsyncMock(return_value=JobSuccess()))
     worker = processor(factory, "task17-worker-missing-dependency", registry)
+    child_id = None
     with factory() as db:
-        db.execute(
-            text(
-                "ALTER TABLE cloud_job_queue DROP CONSTRAINT fk_cloud_job_queue_dependency"
-            )
+        dependency_constraints = _column_constraints(
+            db,
+            column_name="depends_on_job_id",
+            constraint_type="f",
         )
+        assert dependency_constraints
+        _drop_constraints(db, dependency_constraints)
         db.commit()
     try:
         child_id = enqueue(
@@ -689,13 +766,13 @@ def test_missing_legacy_dependency_is_quarantined(pg_sessions):
             assert child.completed_at is not None
     finally:
         with factory() as db:
-            db.execute(
-                text(
-                    "ALTER TABLE cloud_job_queue ADD CONSTRAINT "
-                    "fk_cloud_job_queue_dependency FOREIGN KEY (depends_on_job_id) "
-                    "REFERENCES cloud_job_queue(id) ON DELETE RESTRICT NOT VALID"
+            if child_id is not None:
+                db.execute(
+                    update(CloudJobQueue)
+                    .where(CloudJobQueue.id == child_id)
+                    .values(depends_on_job_id=None)
                 )
-            )
+            _restore_constraints(db, dependency_constraints)
             db.commit()
 
 

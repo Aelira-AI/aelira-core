@@ -1567,7 +1567,7 @@ async def _download_cloud_file(
         elif credential.provider == CloudProvider.MICROSOFT.value:
             integration = OneDriveIntegration(
                 access_token=access_token,
-                credential_id=credential.id,
+                department_id=credential.department_id,
             )
             try:
                 result = await integration.download_file(

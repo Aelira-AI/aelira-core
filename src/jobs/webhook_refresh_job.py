@@ -150,7 +150,7 @@ async def handle_webhook_refresh_job(
         if provider == "microsoft":
             integration = OneDriveIntegration(
                 access_token=access_token,
-                credential_id=credential.id,
+                department_id=credential.department_id,
             )
             renewal = await integration.renew_webhook(subscription.subscription_id)
             renewed_id = renewal.get("subscription_id")
