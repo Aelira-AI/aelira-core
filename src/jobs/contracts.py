@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -49,6 +50,91 @@ def sanitize_json(value: Any, *, _depth: int = 0) -> Any:
     if isinstance(value, (list, tuple, set, frozenset)):
         return [sanitize_json(item, _depth=_depth + 1) for item in list(value)[:256]]
     return "<non-json-value>"
+
+
+_PUBLIC_JOB_RESULT_FIELDS = frozenset(
+    {
+        "artifact_id",
+        "compliance_improvement",
+        "download_available",
+        "failed_count",
+        "fixed_count",
+        "manual_count",
+        "original_compliance_score",
+        "remediated_compliance_score",
+        "scan_id",
+        "skipped_count",
+        "success",
+        "total_issues",
+    }
+)
+_PUBLIC_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_PUBLIC_COUNT_FIELDS = frozenset(
+    {"failed_count", "fixed_count", "manual_count", "skipped_count", "total_issues"}
+)
+_PUBLIC_SCORE_FIELDS = frozenset(
+    {
+        "compliance_improvement",
+        "original_compliance_score",
+        "remediated_compliance_score",
+    }
+)
+
+_PUBLIC_JOB_ERROR_CODES = frozenset(
+    {
+        "invalid_job_payload",
+        "invalid_job_scope",
+        "job_execution_timeout",
+        "job_handler_exception",
+        "job_lease_expired",
+        "managed_artifact_required",
+        "malformed_handler_result",
+        "manual_required",
+        "policy_not_permitted",
+        "remediation_artifact_unavailable",
+        "remediation_failed",
+        "remediation_unsupported",
+        "scan_not_found",
+        "scan_results_unavailable",
+        "source_file_unavailable",
+        "unregistered_job_type",
+    }
+)
+
+
+def public_job_result(value: Any) -> dict[str, Any] | None:
+    """Project internal result data onto the path-free public contract."""
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, Any] = {}
+    for key in _PUBLIC_JOB_RESULT_FIELDS:
+        if key not in value:
+            continue
+        item = value[key]
+        if key in {"success", "download_available"}:
+            if type(item) is bool:
+                result[key] = item
+        elif key in {"artifact_id", "scan_id"}:
+            if isinstance(item, str) and _PUBLIC_IDENTIFIER_RE.fullmatch(item):
+                result[key] = item
+        elif key in _PUBLIC_COUNT_FIELDS:
+            if type(item) is int and 0 <= item <= 1_000_000:
+                result[key] = item
+        elif key in _PUBLIC_SCORE_FIELDS:
+            if (
+                type(item) in {int, float}
+                and math.isfinite(float(item))
+                and -100.0 <= float(item) <= 100.0
+            ):
+                result[key] = item
+    return result or None
+
+
+def public_job_error_code(value: Any) -> str | None:
+    """Return only an explicitly stable public remediation error code."""
+    return (
+        value if isinstance(value, str) and value in _PUBLIC_JOB_ERROR_CODES else None
+    )
 
 
 def validate_json_object(value: Any, *, max_bytes: int = 262_144) -> dict[str, Any]:

@@ -1,5 +1,6 @@
 """Remediation endpoints — auto-fix, code remediation, download, batch."""
 
+import asyncio
 import json
 import hashlib
 import logging
@@ -14,8 +15,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 from urllib.parse import quote
 
@@ -25,6 +27,8 @@ from ...auth.dependencies import AuthenticatedPrincipal, get_authenticated_princ
 from ...db.database import get_db_dependency
 from ...db.models import (
     CloudFile,
+    CloudJobQueue,
+    CloudJobStatus,
     CloudOAuthCredentials,
     RemediationArtifact,
     RemediationOutcome,
@@ -48,6 +52,8 @@ from ...services.scan_fix_service import (
     persist_scan_fixes,
 )
 from ...jobs.remediation_job import _partition_authoritative_document_issues
+from ...jobs.contracts import public_job_error_code, public_job_result
+from ...services.job_enqueue_service import JobEnqueueError, enqueue_cloud_job
 from ...utils.sanitization import sanitize_for_postgres
 from ...utils.security import (
     PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
@@ -62,6 +68,18 @@ from ._scope import authorize_scan_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+LEGACY_REMEDIATION_WAIT_SECONDS = 300.0
+LEGACY_REMEDIATION_POLL_SECONDS = 0.5
+_JOB_TERMINAL_STATUSES = frozenset(
+    {CloudJobStatus.COMPLETED.value, CloudJobStatus.FAILED.value}
+)
+_PUBLIC_PROGRESS_MESSAGES = {
+    CloudJobStatus.PENDING.value: "Queued",
+    CloudJobStatus.PROCESSING.value: "Remediation in progress",
+    CloudJobStatus.COMPLETED.value: "Completed",
+    CloudJobStatus.FAILED.value: "Failed",
+}
 
 
 @contextmanager
@@ -166,6 +184,31 @@ def _artifact_failure(exc: ArtifactError) -> HTTPException:
     return HTTPException(status_code=status_code, detail="Artifact unavailable")
 
 
+def _artifact_requires_approval(
+    db: Session,
+    *,
+    scan_id: str,
+    artifact: RemediationArtifact,
+    persisted_job_gate: bool = False,
+) -> bool:
+    """Derive the current durable equation gate without trusting one route."""
+    raw_provider_result = getattr(artifact, "provider_result", None)
+    provider_result = (
+        raw_provider_result if isinstance(raw_provider_result, dict) else {}
+    )
+    return (
+        persisted_job_gate
+        or provider_result.get("requires_approval") is True
+        or db.query(ScanFix.id)
+        .filter(
+            ScanFix.scan_id == scan_id,
+            ScanFix.source_kind == "image_equation",
+        )
+        .first()
+        is not None
+    )
+
+
 @router.get("/scans/{scan_id}/artifacts/{artifact_id}")
 async def get_managed_artifact_metadata(
     scan_id: str,
@@ -215,12 +258,17 @@ async def download_managed_artifact(
         db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
     )
     service = RemediationArtifactService.from_settings()
+    requires_approval = _artifact_requires_approval(
+        db, scan_id=scan_id, artifact=artifact
+    )
     context = service.open_verified(
         db,
         artifact,
         department_id=principal.department_id,
         scan_id=scan_id,
         cloud_file_id=str(cloud_file.id) if cloud_file is not None else None,
+        require_approved=requires_approval,
+        approval_checksum=artifact.sha256 if requires_approval else None,
     )
     try:
         stream = context.__enter__()
@@ -1139,6 +1187,265 @@ def _effective_generate_alt_text(
     return not lms_backed
 
 
+def _prefer_respond_async(request: Request) -> bool:
+    return any(
+        item.split(";", 1)[0].strip().lower() == "respond-async"
+        for item in request.headers.get("prefer", "").split(",")
+    )
+
+
+def _canonical_remediation_options(
+    options: RemediationOptions | None,
+    *,
+    use_ai: bool,
+    generate_alt_text: bool,
+) -> dict[str, Any]:
+    values = (options or RemediationOptions()).model_dump()
+    values["use_ai"] = use_ai
+    values["generate_alt_text"] = generate_alt_text
+    values["latex_formats"] = sorted(set(values["latex_formats"]))
+    return values
+
+
+def _remediation_dedupe_key(scan_id: str, options: dict[str, Any]) -> str:
+    canonical = json.dumps(options, sort_keys=True, separators=(",", ":")).encode()
+    return f"remediate:{scan_id}:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def _status_url(job_id: str) -> str:
+    return f"/education/remediation/jobs/{job_id}"
+
+
+def _download_url(job_id: str) -> str:
+    return f"/education/remediation/jobs/{job_id}/download"
+
+
+def _async_job_contract(job: CloudJobQueue, scan_id: str) -> dict[str, Any]:
+    return {
+        "job_id": str(job.id),
+        "scan_id": scan_id,
+        "status": str(job.status),
+        "status_url": _status_url(str(job.id)),
+    }
+
+
+def _load_remediation_job(job_id: str, department_id: str) -> dict[str, Any] | None:
+    from ...db.database import SessionLocal
+
+    with SessionLocal() as poll_db:
+        job = (
+            poll_db.query(CloudJobQueue)
+            .filter(
+                CloudJobQueue.id == job_id,
+                CloudJobQueue.department_id == department_id,
+                CloudJobQueue.job_type == "remediate",
+            )
+            .one_or_none()
+        )
+        if job is None:
+            return None
+        return {
+            "status": str(job.status),
+            "result_data": public_job_result(job.result_data),
+            "last_error_code": public_job_error_code(job.last_error_code),
+        }
+
+
+async def _wait_for_remediation_job(
+    job_id: str,
+    department_id: str,
+    *,
+    timeout_seconds: float = LEGACY_REMEDIATION_WAIT_SECONDS,
+    poll_seconds: float = LEGACY_REMEDIATION_POLL_SECONDS,
+) -> dict[str, Any] | None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + min(max(timeout_seconds, 0.0), 300.0)
+    snapshot = None
+    while loop.time() < deadline:
+        remaining = deadline - loop.time()
+        try:
+            snapshot = await asyncio.wait_for(
+                asyncio.to_thread(_load_remediation_job, job_id, department_id),
+                timeout=remaining,
+            )
+        except TimeoutError:
+            return snapshot
+        if snapshot is None or snapshot["status"] in _JOB_TERMINAL_STATUSES:
+            return snapshot
+        await asyncio.sleep(min(max(poll_seconds, 0.01), deadline - loop.time()))
+    return snapshot
+
+
+def _legacy_completed_result(
+    snapshot: dict[str, Any], *, scan_id: str, job_id: str
+) -> dict[str, Any]:
+    if snapshot["status"] == CloudJobStatus.FAILED.value:
+        return {
+            "success": False,
+            "scan_id": scan_id,
+            "job_id": job_id,
+            "error_code": snapshot.get("last_error_code") or "remediation_failed",
+        }
+    result = dict(public_job_result(snapshot.get("result_data")) or {})
+    result.update({"success": True, "scan_id": scan_id, "job_id": job_id})
+    if result.get("download_available") is True and result.get("artifact_id"):
+        result["output_file"] = _download_url(job_id)
+        result["download_url"] = _download_url(job_id)
+    else:
+        result["output_file"] = None
+    return result
+
+
+def _job_scan_id(job: CloudJobQueue) -> str | None:
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    value = payload.get("scan_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _artifact_is_downloadable(
+    db: Session, job: CloudJobQueue, scan_id: str
+) -> tuple[bool, RemediationArtifact | None]:
+    result = public_job_result(job.result_data) or {}
+    artifact_id = result.get("artifact_id")
+    if job.status != CloudJobStatus.COMPLETED.value or not isinstance(artifact_id, str):
+        return False, None
+    artifact = db.get(RemediationArtifact, artifact_id)
+    if artifact is None:
+        return False, None
+    requires_approval = _artifact_requires_approval(
+        db,
+        scan_id=scan_id,
+        artifact=artifact,
+        persisted_job_gate=result.get("download_available") is False,
+    )
+    try:
+        RemediationArtifactService.from_settings().resolve_record(
+            db,
+            artifact,
+            department_id=job.department_id,
+            scan_id=scan_id,
+            cloud_file_id=job.cloud_file_id,
+            require_approved=requires_approval,
+            approval_checksum=artifact.sha256 if requires_approval else None,
+        )
+    except ArtifactError:
+        db.rollback()
+        return False, None
+    db.rollback()
+    return True, artifact
+
+
+def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str, Any]:
+    result = public_job_result(job.result_data) or {}
+    downloadable, artifact = _artifact_is_downloadable(db, job, scan_id)
+    progress = job.progress if type(job.progress) is int else 0
+    return {
+        "job_id": str(job.id),
+        "scan_id": scan_id,
+        "status": str(job.status),
+        "status_url": _status_url(str(job.id)),
+        "progress": min(100, max(0, progress)),
+        "progress_message": _PUBLIC_PROGRESS_MESSAGES.get(str(job.status)),
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+        "error_code": public_job_error_code(job.last_error_code),
+        "fixed_count": result.get("fixed_count"),
+        "manual_count": result.get("manual_count"),
+        "failed_count": result.get("failed_count"),
+        "skipped_count": result.get("skipped_count"),
+        "original_score": result.get("original_compliance_score"),
+        "remediated_score": result.get("remediated_compliance_score"),
+        "improvement": result.get("compliance_improvement"),
+        "artifact_id": str(artifact.id) if downloadable and artifact else None,
+        "download_available": downloadable,
+        "download_url": _download_url(str(job.id)) if downloadable else None,
+    }
+
+
+def _enqueue_scan_remediation(
+    db: Session,
+    *,
+    scan: Scan,
+    principal: AuthenticatedPrincipal,
+    options: dict[str, Any],
+    commit: bool = True,
+) -> CloudJobQueue:
+    authorized = authorize_scan_access(db, scan, principal)
+    cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized)
+    provider = cloud_file.provider if cloud_file is not None else "local"
+    credential = None
+    if cloud_file is not None and cloud_file.credential_id:
+        credential = _get_bound_cloud_credential(
+            db, cloud_file, principal.department_id
+        )
+        if credential is None:
+            raise HTTPException(status_code=400, detail="Original file not available")
+    if cloud_file is None:
+        source_path = scan.storage_path
+        if not isinstance(source_path, str) or not os.path.isfile(source_path):
+            raise HTTPException(status_code=400, detail="Original file not available")
+    purposes = []
+    if options.get("use_ai") is True:
+        purposes.append("remediation")
+    if options.get("generate_alt_text") is True:
+        purposes.append("alt_text")
+    try:
+        job = enqueue_cloud_job(
+            db,
+            department_id=principal.department_id,
+            job_type="remediate",
+            payload={
+                "scan_id": str(scan.id),
+                "options": options,
+                "requested_by_id": principal.user_id,
+            },
+            dedupe_key=_remediation_dedupe_key(str(scan.id), options),
+            provider=provider,
+            credential_id=str(credential.id) if credential is not None else None,
+            cloud_file_id=str(cloud_file.id) if cloud_file is not None else None,
+            provider_file_id=(
+                str(cloud_file.provider_file_id)
+                if cloud_file is not None and cloud_file.provider_file_id
+                else None
+            ),
+            max_retries=0,
+            execution_context={
+                "ai_requested": options.get("use_ai") is True,
+                "alt_text_requested": options.get("generate_alt_text") is True,
+                "requested_purposes": purposes,
+                "originating_route": "education_api",
+            },
+        )
+        if commit:
+            db.commit()
+        return job
+    except JobEnqueueError as exc:
+        db.rollback()
+        logger.warning(
+            "Remediation enqueue rejected",
+            extra={"scan_id": str(scan.id), "error_code": str(exc)},
+        )
+        raise HTTPException(status_code=409, detail="Remediation could not be queued")
+
+
+async def _respond_for_enqueued_job(
+    job: CloudJobQueue,
+    *,
+    scan_id: str,
+    department_id: str,
+    respond_async: bool,
+):
+    contract = _async_job_contract(job, scan_id)
+    if respond_async:
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=contract)
+    snapshot = await _wait_for_remediation_job(str(job.id), department_id)
+    if snapshot is not None and snapshot["status"] in _JOB_TERMINAL_STATUSES:
+        return _legacy_completed_result(snapshot, scan_id=scan_id, job_id=str(job.id))
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=contract)
+
+
 @router.post("/remediate/batch")
 async def batch_remediate(
     scan_ids: List[str],
@@ -1158,6 +1465,44 @@ async def batch_remediate(
 
 
 @router.post("/remediate/{scan_id}")
+async def enqueue_remediate_scan(
+    scan_id: str,
+    request: Request,
+    options: Optional[RemediationOptions] = None,
+    use_ai: Optional[bool] = None,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Enqueue one account-fenced remediation and optionally await it."""
+    scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    authorized = authorize_scan_access(db, scan, principal)
+    if scan.result is None:
+        raise HTTPException(status_code=400, detail="Scan has no results to remediate")
+    cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized)
+    lms_backed = cloud_file is not None and cloud_file.provider in {
+        "canvas",
+        "blackboard",
+        "moodle",
+        "brightspace",
+    }
+    canonical_options = _canonical_remediation_options(
+        options,
+        use_ai=_effective_remediation_use_ai(options, use_ai, lms_backed=lms_backed),
+        generate_alt_text=_effective_generate_alt_text(options, lms_backed=lms_backed),
+    )
+    job = _enqueue_scan_remediation(
+        db, scan=scan, principal=principal, options=canonical_options
+    )
+    return await _respond_for_enqueued_job(
+        job,
+        scan_id=scan_id,
+        department_id=principal.department_id,
+        respond_async=_prefer_respond_async(request),
+    )
+
+
 async def remediate_scan(
     scan_id: str,
     request: Request,
@@ -2298,30 +2643,163 @@ async def remediate_scan(
     return response_payload
 
 
+def _authorized_remediation_job(
+    db: Session, job_id: str, principal: AuthenticatedPrincipal
+) -> tuple[CloudJobQueue, Scan, str]:
+    job = (
+        db.query(CloudJobQueue)
+        .filter(
+            CloudJobQueue.id == job_id,
+            CloudJobQueue.department_id == principal.department_id,
+            CloudJobQueue.job_type == "remediate",
+        )
+        .one_or_none()
+    )
+    scan_id = _job_scan_id(job) if job is not None else None
+    scan = (
+        db.query(Scan)
+        .filter(
+            Scan.id == scan_id,
+            Scan.department_id == principal.department_id,
+        )
+        .one_or_none()
+        if scan_id is not None
+        else None
+    )
+    if job is None or scan is None or scan_id is None:
+        raise HTTPException(status_code=404, detail="Remediation job not found")
+    authorize_scan_access(db, scan, principal)
+    return job, scan, scan_id
+
+
+@router.get("/remediation/jobs/{job_id}")
+def get_remediation_job_status(
+    job_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    job, _, scan_id = _authorized_remediation_job(db, job_id, principal)
+    return _public_job_shape(db, job, scan_id)
+
+
+@router.get("/scans/{scan_id}/remediation/latest")
+def get_latest_remediation_job(
+    scan_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    scan = (
+        db.query(Scan)
+        .filter(
+            Scan.id == scan_id,
+            Scan.department_id == principal.department_id,
+        )
+        .one_or_none()
+    )
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, principal)
+    job = (
+        db.query(CloudJobQueue)
+        .filter(
+            CloudJobQueue.department_id == principal.department_id,
+            CloudJobQueue.job_type == "remediate",
+            CloudJobQueue.payload["scan_id"].as_string() == scan_id,
+        )
+        .order_by(desc(CloudJobQueue.created_at), desc(CloudJobQueue.id))
+        .first()
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Remediation job not found")
+    return _public_job_shape(db, job, scan_id)
+
+
+def _stream_remediation_artifact(
+    db: Session, *, job: CloudJobQueue, scan_id: str
+) -> StreamingResponse:
+    result = public_job_result(job.result_data) or {}
+    artifact_id = result.get("artifact_id")
+    if job.status != CloudJobStatus.COMPLETED.value or not isinstance(artifact_id, str):
+        raise HTTPException(status_code=404, detail="Remediated file not available")
+    artifact = db.get(RemediationArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Remediated file not available")
+    requires_approval = _artifact_requires_approval(
+        db,
+        scan_id=scan_id,
+        artifact=artifact,
+        persisted_job_gate=result.get("download_available") is False,
+    )
+    detached_stream = None
+    try:
+        with RemediationArtifactService.from_settings().open_verified(
+            db,
+            artifact,
+            department_id=job.department_id,
+            scan_id=scan_id,
+            cloud_file_id=job.cloud_file_id,
+            require_approved=requires_approval,
+            approval_checksum=artifact.sha256 if requires_approval else None,
+        ) as stream:
+            detached_stream = os.fdopen(os.dup(stream.fileno()), "rb")
+            filename = artifact.filename
+            mime_type = artifact.mime_type
+            size_bytes = artifact.size_bytes
+            sha256 = artifact.sha256
+    except ArtifactError:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Remediated file not available")
+    db.rollback()
+    assert detached_stream is not None
+
+    def chunks():
+        try:
+            while data := detached_stream.read(64 * 1024):
+                yield data
+        finally:
+            detached_stream.close()
+
+    return StreamingResponse(
+        chunks(),
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+            "Content-Length": str(size_bytes),
+            "ETag": f'"{sha256}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/remediation/jobs/{job_id}/download")
+def download_remediation_job_artifact(
+    job_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    job, _, scan_id = _authorized_remediation_job(db, job_id, principal)
+    return _stream_remediation_artifact(db, job=job, scan_id=scan_id)
+
+
 # ==================== Code Remediation Endpoint ====================
 
 
 @router.post("/code/remediate/{scan_id}")
-def remediate_code_scan(
+async def remediate_code_scan(
     scan_id: str,
+    request: Request,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Remediate a code (HTML) scan using approved ScanFix records.
 
-    This endpoint loads fixes that have been reviewed and approved (or
-    auto-approved) for a code scan, converts them to the format expected
-    by HtmlRemediator, runs the remediator, and returns a structured result.
+    This endpoint verifies that reviewed fixes exist, then queues durable
+    remediation. The worker revalidates approvals before applying them.
 
     Only HTML files can be auto-remediated; CSS and JS files are not supported.
     """
-    from ...education.remediation.html_remediator import HtmlRemediator
-    from ...education.remediation.base import RemediationConfig
-
-    _, user_id, department_id = principal.as_legacy_tuple()
-
-    # 1. Verify scan exists and belongs to user's department
+    # Verify all code-specific preconditions before creating durable work.
     scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -2371,104 +2849,61 @@ def remediate_code_scan(
             detail="No approved fixes to apply. Review and approve fixes first.",
         )
 
-    # 4. Convert ScanFix -> issue dicts for HtmlRemediator
-    issue_dicts = [_scanfix_to_issue_dict(fix) for fix in approved_fixes]
-
-    logger.info(
-        f"Code remediation for scan {scan_id}: {len(issue_dicts)} approved fixes",
-        extra={"user_id": user_id, "department_id": department_id},
+    options = _canonical_remediation_options(
+        RemediationOptions(use_ai=False, generate_alt_text=False),
+        use_ai=False,
+        generate_alt_text=False,
     )
-
-    # 5. Initialize HtmlRemediator
-    config = RemediationConfig(
-        use_ai=False,  # We already have approved fixes; no AI needed
-        verify_fixes=True,
-        create_backup=True,
-        output_directory=str(Path(file_path).parent),
+    options["approved_fixes_only"] = True
+    job = _enqueue_scan_remediation(
+        db,
+        scan=scan,
+        principal=principal,
+        options=options,
     )
-
-    try:
-        remediator = HtmlRemediator(
-            file_path=file_path,
-            issues=issue_dicts,
-            config=config,
-            ai_client=None,
-        )
-
-        # 6. Run remediation
-        result = remediator.remediate()
-
-        # 7. Update ScanFix records — mark applied ones
-        applied_issue_ids = {f.issue_id for f in result.fixed_issues}
-        failed_issue_ids = {f.get("issue_id") for f in result.failed_issues}
-        now = datetime.now(timezone.utc)
-
-        for fix in approved_fixes:
-            fix_issue_id = fix.issue_id or fix.id
-            if fix_issue_id in applied_issue_ids:
-                fix.review_status = "applied"
-                fix.updated_at = now
-            elif fix_issue_id in failed_issue_ids:
-                fix.review_status = "apply_failed"
-                fix.updated_at = now
-
-        # 8. Commit
-        db.commit()
-
-        logger.info(
-            f"Code remediation complete for scan {scan_id}: "
-            f"{result.fixed_count} fixed, {result.manual_count} manual, "
-            f"{result.failed_count} failed",
-            extra={"user_id": user_id, "department_id": department_id},
-        )
-
-        # 9. Return structured result
-        return {
-            "success": result.success,
-            "scan_id": scan_id,
-            "fixes_applied": result.fixed_count,
-            "fixes_failed": result.failed_count,
-            "manual_fixes": result.manual_count,
-            "output_file": result.output_file,
-            "original_score": result.original_compliance_score,
-            "remediated_score": result.remediated_compliance_score,
-            "fixed_issues": [
-                {
-                    "id": f.issue_id,
-                    "category": f.category.value,
-                    "severity": f.severity.value,
-                    "description": f.description,
-                    "fix_method": f.fix_method,
-                }
-                for f in result.fixed_issues
-            ],
-            "manual_issues": [
-                {
-                    "id": m.issue_id,
-                    "category": m.category.value,
-                    "severity": m.severity.value,
-                    "description": m.description,
-                    "reason": m.reason,
-                }
-                for m in result.manual_issues
-            ],
-            "warnings": result.warnings,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"Code remediation failed for scan {scan_id}: {e}",
-            exc_info=True,
-            extra={"user_id": user_id, "department_id": department_id},
-        )
-        raise HTTPException(
-            status_code=500, detail="Code remediation failed. Please try again."
-        )
+    return await _respond_for_enqueued_job(
+        job,
+        scan_id=scan_id,
+        department_id=principal.department_id,
+        respond_async=_prefer_respond_async(request),
+    )
 
 
 @router.get("/scans/{scan_id}/remediated")
+async def download_queued_remediated_file(
+    scan_id: str,
+    request: Request,
+    format: Optional[str] = None,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Compatibility download backed only by the newest managed artifact."""
+    scan = (
+        db.query(Scan)
+        .filter(
+            Scan.id == scan_id,
+            Scan.department_id == principal.department_id,
+        )
+        .one_or_none()
+    )
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, principal)
+    job = (
+        db.query(CloudJobQueue)
+        .filter(
+            CloudJobQueue.department_id == principal.department_id,
+            CloudJobQueue.job_type == "remediate",
+            CloudJobQueue.payload["scan_id"].as_string() == scan_id,
+        )
+        .order_by(desc(CloudJobQueue.created_at), desc(CloudJobQueue.id))
+        .first()
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Remediated file not available")
+    return _stream_remediation_artifact(db, job=job, scan_id=scan_id)
+
+
 async def download_remediated_file(
     scan_id: str,
     request: Request,
@@ -2608,100 +3043,44 @@ async def list_remediated_formats(
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
-    """
-    List available remediated file formats for a scan.
-
-    Returns which formats are available for download.
-    """
-    _, user_id, department_id = principal.as_legacy_tuple()
-
-    scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
-
-    if not scan:
+    """List only the latest verified managed remediation artifact."""
+    scan = (
+        db.query(Scan)
+        .filter(
+            Scan.id == scan_id,
+            Scan.department_id == principal.department_id,
+        )
+        .one_or_none()
+    )
+    if scan is None:
         raise HTTPException(status_code=404, detail="Scan not found")
-
     authorize_scan_access(db, scan, principal)
-
-    file_path = scan.storage_path
-    if not file_path:
-        return {"available_formats": [], "message": "No file stored"}
-
-    from ...utils.file_storage import get_remediated_file_path
-
-    remediated_base = get_remediated_file_path(file_path)
-    remediated_dir = Path(remediated_base).parent
-    base_stem = Path(file_path).stem
-    remediated_stem = f"{base_stem}_remediated"
-
+    job = (
+        db.query(CloudJobQueue)
+        .filter(
+            CloudJobQueue.department_id == principal.department_id,
+            CloudJobQueue.job_type == "remediate",
+            CloudJobQueue.payload["scan_id"].as_string() == scan_id,
+        )
+        .order_by(desc(CloudJobQueue.created_at), desc(CloudJobQueue.id))
+        .first()
+    )
     available = []
-    scan_type = scan.scan_type
-    file_ext = Path(file_path).suffix.lower()
-
-    # Special case: LaTeX scan with a PDF file - treat as standard PDF
-    if scan_type == ScanType.LATEX and file_ext == ".pdf":
-        path = Path(remediated_base)
-        if path.exists():
+    if job is not None:
+        downloadable, artifact = _artifact_is_downloadable(db, job, scan_id)
+        if downloadable and artifact is not None:
             available.append(
                 {
-                    "format": "pdf",
-                    "filename": path.name,
-                    "size_bytes": path.stat().st_size,
+                    "format": Path(artifact.filename).suffix.lower().lstrip("."),
+                    "filename": artifact.filename,
+                    "size_bytes": artifact.size_bytes,
                     "download_url": f"/education/scans/{scan_id}/remediated",
                 }
             )
-
-    elif scan_type == ScanType.LATEX:
-        # LaTeX .tex file: Check for each LaTeX output format
-        for ext in ["tex", "pdf", "html"]:
-            path = remediated_dir / f"{remediated_stem}.{ext}"
-            if path.exists():
-                available.append(
-                    {
-                        "format": ext,
-                        "filename": path.name,
-                        "size_bytes": path.stat().st_size,
-                        "download_url": f"/education/scans/{scan_id}/remediated?format={ext}",
-                    }
-                )
-
-    elif scan_type == ScanType.MULTIMEDIA:
-        # Check for multimedia outputs
-        zip_path = remediated_dir / f"{base_stem}_accessible.zip"
-        vtt_path = remediated_dir / f"{base_stem}.vtt"
-        transcript_path = remediated_dir / f"{base_stem}_transcript.txt"
-        ad_path = remediated_dir / f"{base_stem}_audio_descriptions.txt"
-
-        for path, fmt in [
-            (zip_path, "zip"),
-            (vtt_path, "vtt"),
-            (transcript_path, "transcript"),
-            (ad_path, "audio_descriptions"),
-        ]:
-            if path.exists():
-                available.append(
-                    {
-                        "format": fmt,
-                        "filename": path.name,
-                        "size_bytes": path.stat().st_size,
-                        "download_url": f"/education/scans/{scan_id}/remediated?format={fmt}",
-                    }
-                )
-    else:
-        # Standard document
-        path = Path(remediated_base)
-        if path.exists():
-            available.append(
-                {
-                    "format": path.suffix.lstrip("."),
-                    "filename": path.name,
-                    "size_bytes": path.stat().st_size,
-                    "download_url": f"/education/scans/{scan_id}/remediated",
-                }
-            )
-
+    scan_type = getattr(scan.scan_type, "value", str(scan.scan_type))
     return {
         "scan_id": scan_id,
-        "scan_type": scan_type.value,
+        "scan_type": scan_type,
         "available_formats": available,
         "remediation_complete": len(available) > 0,
     }
@@ -2717,20 +3096,17 @@ async def _batch_remediate_impl(
     """
     Batch remediate multiple scans.
 
-    Starts remediation for multiple scans in the background.
-    Returns immediately with a batch ID to track progress.
+    Atomically queues remediation for multiple scans and returns their job IDs.
     REQUIRES API KEY IN PRODUCTION.
     REQUIRES: bulk_api feature (tier-gated via TIER_QUOTAS; enabled on all core tiers)
     """
-    _, user_id, department_id = principal.as_legacy_tuple()
+    _, _, department_id = principal.as_legacy_tuple()
 
     if not scan_ids:
         raise HTTPException(status_code=400, detail="No scan IDs provided")
 
     if len(scan_ids) > 50:
         raise HTTPException(status_code=400, detail="Maximum 50 scans per batch")
-
-    batch_id = str(uuid.uuid4())
 
     # Resolve and authorize the complete request before feature checks, tasks,
     # writes, or external clients. This makes mixed-scope batches atomic.
@@ -2744,20 +3120,49 @@ async def _batch_remediate_impl(
             raise HTTPException(
                 status_code=400, detail="Scan has no results to remediate"
             )
-        valid_scans.append(scan_id)
+        valid_scans.append(scan)
 
     # Batch remediation requires bulk_api feature.
     await require_feature(db, department_id, "bulk_api", "Batch Remediation")
 
-    # Queue batch remediation in background
-    # For now, return the plan - actual background processing would be added
+    jobs = []
+    try:
+        for scan in valid_scans:
+            authorized = authorize_scan_access(db, scan, principal)
+            cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized)
+            lms_backed = cloud_file is not None and cloud_file.provider in {
+                "canvas",
+                "blackboard",
+                "moodle",
+                "brightspace",
+            }
+            options = _canonical_remediation_options(
+                RemediationOptions(use_ai=use_ai),
+                use_ai=use_ai,
+                generate_alt_text=not lms_backed,
+            )
+            jobs.append(
+                _enqueue_scan_remediation(
+                    db,
+                    scan=scan,
+                    principal=principal,
+                    options=options,
+                    commit=False,
+                )
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    batch_id = str(uuid.uuid4())
     return {
         "success": True,
         "batch_id": batch_id,
-        "total_scans": len(valid_scans),
-        "scans_queued": valid_scans,
+        "total_scans": len(jobs),
+        "scans_queued": [str(scan.id) for scan in valid_scans],
+        "job_ids": [str(job.id) for job in jobs],
         "message": "Batch remediation queued. Check individual scan statuses for progress.",
-        "note": "Batch background processing coming soon. For now, remediate individually.",
     }
 
 
