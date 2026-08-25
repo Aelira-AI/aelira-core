@@ -573,25 +573,44 @@ class ContentTaggerV2:
         Returns (start_index, end_index, kind) with end_index exclusive.
         """
         blocks: List[Tuple[int, int, str]] = []
+        marked_depth = 0
         i = 0
         while i < len(ops):
             op_name = str(ops[i].operator)
-            if op_name == "BT":
+            if op_name in ("BMC", "BDC"):
+                marked_depth += 1
+                i += 1
+            elif op_name == "EMC":
+                if marked_depth <= 0:
+                    raise ValueError("Unbalanced EMC in page content stream")
+                marked_depth -= 1
+                i += 1
+            elif op_name == "BT":
                 start = i
                 j = i + 1
+                contains_markers = marked_depth > 0
                 while j < len(ops) and str(ops[j].operator) != "ET":
+                    if str(ops[j].operator) in ("BMC", "BDC", "EMC"):
+                        contains_markers = True
                     j += 1
                 end = j + 1 if j < len(ops) else j
-                blocks.append((start, end, "text"))
+                if not contains_markers:
+                    blocks.append((start, end, "text"))
                 i = end
-            elif op_name == "INLINE_IMAGE":
+            elif op_name == "INLINE_IMAGE" and marked_depth == 0:
                 blocks.append((i, i + 1, "image"))
                 i += 1
-            elif op_name == "Do" and self._is_image_xobject(page, ops[i]):
+            elif (
+                op_name == "Do"
+                and marked_depth == 0
+                and self._is_image_xobject(page, ops[i])
+            ):
                 blocks.append((i, i + 1, "image"))
                 i += 1
             else:
                 i += 1
+        if marked_depth != 0:
+            raise ValueError("Unbalanced marked content in page content stream")
         return blocks
 
     def _is_image_xobject(self, page: Any, op: Any) -> bool:
