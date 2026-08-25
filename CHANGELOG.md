@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-08-26
+
+### Security
+
+- Image-equation remediation is purpose-bound, source-validated, deterministically verified, confidence-capped, and always held for explicit human acceptance before approval or download.
+- PDF table remediation binds visible cells to real marked content and verifies the saved structure before publication; ambiguous, ragged, merged, unbound, or excessive structures fail closed without mutation.
+- Remediation publication revalidates tenant, approval, checksum, and artifact authority under the final lock, while Canvas and Brightspace enqueue failures return stable bounded error codes.
+
+### Added
+
+- Printed standalone equation images addressable by PDF occurrence identity can be recognized as LaTeX, converted to MathML, round-trip verified, and associated with `/Formula` content. Unsupported STEM visuals remain manual-review cases.
+- Verified Table/TR/TH/TD remediation includes MCID/MCR and ParentTree associations, saved-output semantic verification, atomic rollback, and inclusive limits of 64 columns, 10,000 cells, and 200 tables.
+- Canvas stored-content remediation now uses durable jobs, immutable bounded source snapshots, complete target fingerprints, persisted review evidence, restart recovery, and fenced writeback.
+
+### Fixed
+
+- OCR-generated searchable text survives into delivered PDFs; PDF-derived HTML is rebuilt through a passive allowlist and rejects active content, unsafe URLs, malformed images, and trailing-data polyglots.
+- Direct, queued, and Brightspace PDF publication consumes the exact descriptor-bound output claim instead of reopening a mutable pathname.
+- OneDrive receives tenant scope through `department_id`; invalid credential constructor wiring, reserved scan metadata use, asynchronous remediation CORS preflight, and LMS enqueue-error leakage are corrected.
+
+### Changed
+
+- Document remediation runs through the durable queue with active-job deduplication, bounded legacy waiting, tenant-fenced status/latest endpoints, artifact-gated downloads, and a killable subprocess with a terminal no-retry hard timeout.
+- Release reruns isolate publication receipts by attempt while preserving the exact seven-file SBOM gate. Public PDF, Office, and LaTeX remediation guides now document supported boundaries and human-review outcomes.
+
+### Operator action required
+
+- Drain active work and pause remediation intake before upgrading. Back up PostgreSQL and verify the restore path, then run `alembic upgrade head` explicitly and confirm the single head is `20260825_canvas_queue`.
+- Set `REMEDIATION_EXECUTION_TIMEOUT_SECONDS` and `REMEDIATION_TERMINATION_GRACE_SECONDS` for the deployment. Defaults are 1,800 seconds and 10 seconds; a hard timeout is terminal and is not retried automatically.
+- Start API and worker from the same 0.9.6 release, confirm API health and a fresh worker heartbeat, then inspect queue age and failed/quarantined rows before accepting new work.
+- Image-derived equations remain `ai_vision`, confidence `0.55`, and `needs_review=true`. Recognition alone never approves an artifact: a human acceptance must be persisted and revalidated before download or writeback.
+- Preserve every v0.9.5 operator action below, including deliberate review and resubmission of any pre-v0.9.5 quarantined work.
+
 ## [0.9.5] - 2026-08-22
 
 ### Security

@@ -4,7 +4,7 @@ AI-powered accessibility testing CLI for WCAG 2.1 AA compliance, optimized for H
 
 > **AELIRA** — **A**ccessibility, **E**quity, **L**earning, **I**nclusion, **R**emediation, **A**utomation.
 
-**Version:** 0.9.5
+**Version:** 0.9.6
 
 ## Installation
 
