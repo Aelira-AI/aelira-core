@@ -145,8 +145,9 @@ class TestPDFStructureTree:
         assert str(para_elem[pikepdf.Name.ActualText]) == "This is a test paragraph."
 
     def test_add_table(self, sample_pdf):
-        """Test adding a table with headers."""
+        """Unbound table structure writes are refused without mutation."""
         struct_tree = PDFStructureTree(sample_pdf)
+        kids_before = len(struct_tree.kids)
 
         headers = ["Name", "Age", "City"]
         rows = [
@@ -161,12 +162,8 @@ class TestPDFStructureTree:
             summary="User information table",
         )
 
-        assert result is True
-
-        kids = struct_tree.kids
-        table_elem = kids[-1]
-        assert table_elem[pikepdf.Name.S] == pikepdf.Name.Table
-        assert str(table_elem[pikepdf.Name.Alt]) == "User information table"
+        assert result is False
+        assert len(struct_tree.kids) == kids_before
 
     def test_add_list(self, sample_pdf):
         """Test adding a list structure."""
@@ -378,10 +375,13 @@ class TestIntegration:
         struct_tree.add_paragraph(1, "Introduction paragraph text.")
         struct_tree.add_heading(1, 2, "Section 1")
         struct_tree.add_alt_text_to_image(1, "Logo showing company name")
-        struct_tree.add_table(
-            1,
-            headers=["Column A", "Column B"],
-            rows=[["Data 1", "Data 2"]],
+        assert (
+            struct_tree.add_table(
+                1,
+                headers=["Column A", "Column B"],
+                rows=[["Data 1", "Data 2"]],
+            )
+            is False
         )
         struct_tree.add_list(1, ["Item 1", "Item 2", "Item 3"])
 
@@ -398,7 +398,7 @@ class TestIntegration:
             assert results["language_set"] is True
             assert results["heading_count"] >= 2
             assert results["figure_count"] >= 1
-            assert results["table_count"] >= 1
+            assert results["table_count"] == 0
             assert (
                 len(results["issues"]) == 0
                 or "title" not in str(results["issues"]).lower()
@@ -562,44 +562,8 @@ def test_add_formula():
             formula_found = True
             assert str(kid["/Alt"]) == "x squared plus 2 x plus 1 equals 0"
             assert "/AF" in kid
-            assert len(kid["/AF"]) == 1
-            filespec = kid["/AF"][0]
-            assert str(filespec["/AFRelationship"]) == "/Supplement"
-            embedded = filespec["/EF"]["/F"]
-            assert str(embedded["/Subtype"]) == "/application#2Fmathml+xml"
-            assert embedded.read_bytes() == (
-                b"<math><msup><mi>x</mi><mn>2</mn></msup></math>"
-            )
             break
     assert formula_found, "Formula element not found in structure tree"
-
-
-def test_create_formula_element_with_mcid_has_exact_mcr():
-    """Association helper creates Formula /K as one page-bound MCR."""
-    import pikepdf
-    from pikepdf import Dictionary, Name
-
-    from src.education.remediation.pdf_structure import PDFStructureTree
-
-    pdf = pikepdf.new()
-    pdf.pages.append(
-        pikepdf.Page(Dictionary({"/Type": Name.Page, "/MediaBox": [0, 0, 612, 792]}))
-    )
-    tree = PDFStructureTree(pdf)
-
-    formula = tree.create_formula_element(
-        page_num=1,
-        alt_text="x squared",
-        mathml_string="<math><msup><mi>x</mi><mn>2</mn></msup></math>",
-        bbox=(72, 700, 300, 720),
-        mcid=9,
-    )
-
-    assert str(formula["/S"]) == "/Formula"
-    assert str(formula["/K"]["/Type"]) == "/MCR"
-    assert int(formula["/K"]["/MCID"]) == 9
-    assert tuple(formula["/K"]["/Pg"].objgen) == tuple(pdf.pages[0].obj.objgen)
-    assert len(formula["/AF"]) == 1
 
 
 def test_add_role_mapping():

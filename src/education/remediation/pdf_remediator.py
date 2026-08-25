@@ -9,7 +9,7 @@ Supported auto-fixes:
 - Add document language (in PDF Catalog)
 - Add heading structure tags (H1-H6)
 - Create bookmarks/outline
-- Add table structure tags with headers
+- Bind verified table cells to real marked content and route ambiguity to review
 - Set document title in metadata
 - Generate accessible HTML version as fallback
 
@@ -78,7 +78,15 @@ from .content_tagger_v2 import (
     associate_image_formula,
     verify_image_formula_association,
 )
-from .table_tagger import TableTagger
+from .table_tagger import (
+    MAX_TABLE_CELLS,
+    MAX_TABLE_COLUMNS,
+    MAX_TABLES,
+    TABLE_STRUCTURE_NOT_VERIFIED,
+    TABLE_STRUCTURE_TOO_COMPLEX,
+    TableTagResult,
+    TableTagger,
+)
 from .form_fixer import FormFixer
 from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
@@ -454,7 +462,7 @@ class PdfRemediator(BaseRemediator):
     - Create heading structure tags (H1-H6)
     - Set document language in Catalog (/Lang)
     - Set document title with display preference
-    - Add table structure with proper TH/TD markup
+    - Refuse table structure writes that lack verified content bindings
     - Create bookmarks from heading structure
     - Generate accessible HTML as fallback for edge cases
 
@@ -482,7 +490,7 @@ class PdfRemediator(BaseRemediator):
         IssueCategory.HEADING,  # H1-H6 structure tags
         IssueCategory.TITLE,  # Document title in metadata
         IssueCategory.READING_ORDER,  # Heuristic reading order reordering
-        IssueCategory.TABLE,  # THead/TBody/TR/TH/TD structure tags
+        IssueCategory.TABLE,  # Verified Table/TR/TH/TD structure tags
         IssueCategory.LIST,  # L/LI/Lbl/LBody structure tags
         IssueCategory.FORM,  # Form field tooltips + tab order
         IssueCategory.LINK,  # Link annotation /Contents + vague text
@@ -572,8 +580,21 @@ class PdfRemediator(BaseRemediator):
         try:
             logger.info("Starting two-phase remediation of %s", self.file_path)
 
-            # Create backup if configured (always from the untouched original)
-            if self.config.create_backup:
+            # Table safety must be decided from the untouched input. Cache the
+            # read-only document-wide outcome before backup creation, document
+            # loading, or any non-table mutation.
+            if any(issue.category == IssueCategory.TABLE for issue in self.issues):
+                self._prepare_table_fixes()
+                if self._table_batch_is_too_complex():
+                    self._complete_table_complexity_refusal()
+                    logger.info(
+                        "Remediation refused before backup or document load: %s",
+                        TABLE_STRUCTURE_TOO_COMPLEX,
+                    )
+                    return self.result
+
+            # Create backup if configured
+            if self.config.create_backup and not self._has_only_table_issues():
                 self.result.backup_path = self._create_backup()
 
             # Stage a private working copy (and OCR it if the input is
@@ -708,44 +729,29 @@ class PdfRemediator(BaseRemediator):
                     )
                     self.result.failed_count += 1
 
-            # 8. Tables
-            for issue in issues_by_category.get(IssueCategory.TABLE, []):
-                try:
-                    self._process_issue(issue, document)
-                except Exception as e:
-                    logger.error("Error processing TABLE issue %s: %s", issue.id, e)
-                    self.result.failed_issues.append(
-                        {
-                            "issue_id": issue.id,
-                            "description": issue.description,
-                            "error": str(e),
-                        }
-                    )
-                    self.result.failed_count += 1
-
-            # 9. Forms (specialist)
+            # 8. Forms (specialist)
             if issues_by_category.get(IssueCategory.FORM):
                 self._run_specialist(
                     "form", issues_by_category[IssueCategory.FORM], document
                 )
 
-            # 10. Links (specialist)
+            # 9. Links (specialist)
             if issues_by_category.get(IssueCategory.LINK):
                 self._run_specialist(
                     "link", issues_by_category[IssueCategory.LINK], document
                 )
 
-            # 11. Math (specialist)
+            # 10. Math (specialist)
             if specialist_issues.get("math"):
                 self._run_specialist("math", specialist_issues["math"], document)
 
-            # 12. Font/Unicode (specialist)
+            # 11. Font/Unicode (specialist)
             if specialist_issues.get("font_unicode"):
                 self._run_specialist(
                     "font_unicode", specialist_issues["font_unicode"], document
                 )
 
-            # 13. Reading order
+            # 12. Reading order
             for issue in issues_by_category.get(IssueCategory.READING_ORDER, []):
                 try:
                     self._process_issue(issue, document)
@@ -762,7 +768,7 @@ class PdfRemediator(BaseRemediator):
                     )
                     self.result.failed_count += 1
 
-            # 14. Alt text (vision AI — runs last because it may use AI)
+            # 13. Alt text (vision AI — runs last because it may use AI)
             for issue in issues_by_category.get(IssueCategory.ALT_TEXT, []):
                 try:
                     self._process_issue(issue, document)
@@ -777,9 +783,35 @@ class PdfRemediator(BaseRemediator):
                     )
                     self.result.failed_count += 1
 
+            # 14. Tables run last so the retained rollback snapshot contains
+            # every non-table change if final saved-file verification fails.
+            for issue in issues_by_category.get(IssueCategory.TABLE, []):
+                try:
+                    self._process_issue(issue, document)
+                except Exception as e:
+                    logger.error("Error processing TABLE issue %s: %s", issue.id, e)
+                    self.result.failed_issues.append(
+                        {
+                            "issue_id": issue.id,
+                            "description": issue.description,
+                            "error": str(e),
+                        }
+                    )
+                    self.result.failed_count += 1
+
             # ============================================================
             # Phase 2 — Content marking and finalization
             # ============================================================
+
+            # A table-only refusal is a true no-op: do not let final-save or
+            # fallback paths create an output that implies remediation.
+            if self._is_table_only_manual_noop():
+                self._discard_failed_table_output(self._get_output_path())
+                self._close_documents_without_save(document)
+                self._calculate_scores()
+                self.result.complete()
+                logger.info("Table-only remediation refused without modifying the PDF")
+                return self.result
 
             # ContentTagger v2 handles content marking, ParentTree,
             # Document root, and PDF/UA identifier — always run it.
@@ -819,9 +851,10 @@ class PdfRemediator(BaseRemediator):
             # ContentTagger v2 (inside _save_document) fixes the document-
             # level structure issues Phase 1 had to file as manual; move
             # them to the fixed bucket based on what the tagger reported.
-            self._reconcile_content_tagger_fixes()
+            if output_path:
+                self._reconcile_content_tagger_fixes()
 
-            if self.config.verify_fixes:
+            if self.config.verify_fixes and output_path:
                 self._verify_fixes(output_path)
 
             self._calculate_scores()
@@ -836,6 +869,10 @@ class PdfRemediator(BaseRemediator):
 
         except Exception as e:
             logger.error("Remediation failed: %s", e)
+            if any(issue.category == IssueCategory.TABLE for issue in self.issues):
+                if getattr(self, "_pre_table_pikepdf_doc", None) is not None:
+                    self._rollback_provisional_table_fixes()
+                self._discard_failed_table_output(self._get_output_path())
             self.result.success = False
             self.result.error_message = str(e)
             self.result.close_output_claim()
@@ -1108,6 +1145,20 @@ class PdfRemediator(BaseRemediator):
                 page_number=page_num,
             )
         else:
+            table_refusal = getattr(self, "_table_safety_refusals", {}).get(issue.id)
+            if issue.category == IssueCategory.TABLE and table_refusal:
+                issue.metadata["remediation_error_code"] = table_refusal
+                recommendation = (
+                    "Verify the table's real cell content and structure manually."
+                    if table_refusal == TABLE_STRUCTURE_NOT_VERIFIED
+                    else "Simplify or split the table, then verify its structure manually."
+                )
+                self._add_manual_issue(
+                    issue,
+                    reason=table_refusal,
+                    recommendation=recommendation,
+                )
+                return
             self.result.failed_issues.append(
                 {
                     "issue_id": issue.id,
@@ -1847,6 +1898,11 @@ class PdfRemediator(BaseRemediator):
             raise primary_error
         if maintenance_errors:
             raise RuntimeError("; ".join(maintenance_errors))
+
+        previous_table_pdf = getattr(self, "_pre_table_pikepdf_doc", None)
+        if previous_table_pdf is not None:
+            previous_table_pdf.close()
+            self._pre_table_pikepdf_doc = None
 
         if local_claim is None:
             raise RuntimeError("Validated PDF output claim was not retained")
@@ -2597,6 +2653,15 @@ class PdfRemediator(BaseRemediator):
                         raise RuntimeError(
                             "Post-save image-equation association verification failed"
                         )
+                expected_table_cells = int(
+                    getattr(self, "_table_expected_bound_cells", 0)
+                )
+                if expected_table_cells and not TableTagger.verify_file(
+                    output_path, expected_table_cells
+                ):
+                    raise RuntimeError(
+                        "Post-save table association verification failed"
+                    )
                 self._verified_image_equations = staged_associations
                 if working_pdf is not self._pikepdf_doc:
                     original_pdf = self._pikepdf_doc
@@ -2612,6 +2677,12 @@ class PdfRemediator(BaseRemediator):
                 if working_pdf is not self._pikepdf_doc:
                     working_pdf.close()
                 logger.error(f"Failed to save with pikepdf: {e}")
+                if getattr(self, "_table_expected_bound_cells", 0):
+                    self._rollback_provisional_table_fixes()
+                    Path(output_path).unlink(missing_ok=True)
+                    if not self._has_only_table_issues():
+                        return self._write_pdf_output(document, output_path)
+                    raise
                 if self._pending_image_equations:
                     self._verified_image_equations = []
                     raise
@@ -2620,6 +2691,80 @@ class PdfRemediator(BaseRemediator):
         else:
             # Use PyMuPDF for non-structure changes (metadata, bookmarks)
             document.save(output_path, garbage=4, deflate=True)
+
+    def _rollback_provisional_table_fixes(self) -> None:
+        """Restore the pre-table PDF and move provisional fixes to review."""
+        provisional_ids = set(getattr(self, "_table_fixed_issue_ids", set()))
+        current_pdf = self._pikepdf_doc
+        previous_pdf = getattr(self, "_pre_table_pikepdf_doc", None)
+        if previous_pdf is not None:
+            self._pikepdf_doc = previous_pdf
+            self._struct_tree = PDFStructureTree(previous_pdf)
+        self._pre_table_pikepdf_doc = None
+        self._structure_modified = getattr(self, "_pre_table_structure_modified", False)
+        self._table_expected_bound_cells = 0
+        self._table_fixed_issue_ids = set()
+        if current_pdf is not None and current_pdf is not previous_pdf:
+            current_pdf.close()
+
+        self.result.fixed_issues = [
+            fixed
+            for fixed in self.result.fixed_issues
+            if fixed.issue_id not in provisional_ids
+        ]
+        self.result.fixed_count = len(self.result.fixed_issues)
+        manual_ids = {manual.issue_id for manual in self.result.manual_issues}
+        for issue in self.issues:
+            if issue.id not in provisional_ids or issue.id in manual_ids:
+                continue
+            self._record_table_safety_refusal(issue, TABLE_STRUCTURE_NOT_VERIFIED)
+            issue.metadata["remediation_error_code"] = TABLE_STRUCTURE_NOT_VERIFIED
+            self._add_manual_issue(
+                issue,
+                reason=TABLE_STRUCTURE_NOT_VERIFIED,
+                recommendation=(
+                    "Verify the table's real cell content and structure manually."
+                ),
+            )
+
+    def _discard_failed_table_output(self, output_path: str) -> None:
+        """Remove only the resolved deterministic output after refusal."""
+        source = Path(self.file_path)
+        destination = Path(output_path)
+        configured_directory = (
+            Path(self.config.output_directory)
+            if self.config.output_directory
+            else source.parent
+        )
+        try:
+            resolved_directory = configured_directory.resolve(strict=False)
+            resolved_parent = destination.parent.resolve(strict=False)
+            resolved_source = source.resolve(strict=False)
+        except OSError as exc:
+            logger.warning("Could not resolve failed table output safely: %s", exc)
+            return
+
+        candidate = resolved_parent / destination.name
+        try:
+            candidate.relative_to(resolved_directory)
+        except ValueError:
+            logger.warning(
+                "Refusing to remove failed table output outside its directory: %s",
+                output_path,
+            )
+            return
+        if candidate == resolved_source:
+            logger.warning("Refusing to remove the source PDF: %s", candidate)
+            return
+        if candidate.is_dir() and not candidate.is_symlink():
+            logger.warning("Refusing to remove output directory: %s", candidate)
+            return
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "Could not remove failed table output %s: %s", candidate, exc
+            )
 
     # Issue types ContentTaggerV2 always resolves when it completes, and
     # those it only resolves when it actually tagged content blocks
@@ -2809,8 +2954,9 @@ class PdfRemediator(BaseRemediator):
             return HAS_PYMUPDF and HAS_PIKEPDF
 
         if issue.category == IssueCategory.TABLE:
-            # Table structure tagging requires both PyMuPDF and pikepdf
-            return HAS_PYMUPDF and HAS_PIKEPDF
+            # Route through the deterministic preflight/refusal path even
+            # when detection dependencies are unavailable.
+            return True
 
         if issue.category == IssueCategory.LIST:
             # List structure tagging requires pikepdf + PyMuPDF for text detection
@@ -3329,141 +3475,258 @@ class PdfRemediator(BaseRemediator):
     def _apply_table_fix(
         self, issue: RemediationIssue, document: Any, fix_content: str
     ) -> bool:
-        """
-        Apply table structure fix using the TableTagger, with a fallback to
-        direct structure tree manipulation for borderless tables.
-
-        TableTagger uses PyMuPDF's find_tables() which relies on visual lines/
-        borders.  Many PDFs have borderless tables that the scanner detects via
-        text-layout heuristics but find_tables() misses.  When TableTagger
-        finds nothing, we fall back to creating a minimal Table/TR/TH/TD
-        structure directly via PDFStructureTree using the issue metadata.
-
-        Uses _table_tagger_tried flag to avoid re-running the expensive
-        TableTagger scan 83 times when it found nothing on the first attempt.
-        """
+        """Apply the prepared table batch only after verified content binding."""
         try:
-            # On the first table issue, try TableTagger once for the whole doc.
-            # If it finds nothing (borderless tables), skip it for subsequent issues.
-            if not getattr(self, "_table_tagger_tried", False):
-                self._table_tagger_tried = True
-                self._table_tagger_found = False
-
-                # Flush pending pikepdf changes so TableTagger sees them
-                if self._structure_modified and self._pikepdf_doc:
-                    try:
-                        self._pikepdf_doc.save(self._working_path)
-                        logger.debug(
-                            "Flushed pending pikepdf changes before table tagging"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Could not flush pikepdf changes before table tagging: %s",
-                            e,
-                        )
-
-                tagger = TableTagger(
-                    use_ai=(self.config.use_ai and self.config.allow_legacy_nested_ai),
-                    allow_legacy_provider_manager=self.config.allow_legacy_nested_ai,
-                )
-                result = tagger.tag_tables(self._working_path)
-
-                if result.success and result.tables_tagged > 0:
-                    self._table_tagger_found = True
-                    self._structure_modified = True
-                    self._reload_pikepdf_doc()
-                    logger.info(
-                        "Table structure fix applied via TableTagger: tagged %d/%d tables, "
-                        "%d cells (%d headers), confidence=%.2f",
-                        result.tables_tagged,
-                        result.tables_found,
-                        result.total_cells,
-                        result.header_cells,
-                        result.confidence,
-                    )
-                    # TableTagger tagged everything in one pass — mark all
-                    # table issues as handled by storing metadata
-                    issue.metadata["table_confidence"] = result.confidence
-                    issue.metadata["tables_found"] = result.tables_found
-                    issue.metadata["tables_tagged"] = result.tables_tagged
-                    return True
-                else:
-                    logger.info(
-                        "TableTagger found no tables (borderless?), "
-                        "using metadata fallback for all table issues"
-                    )
-
-            # If TableTagger already handled everything, subsequent table
-            # issues are already fixed (it tagged the whole document at once)
-            if self._table_tagger_found:
-                return True
-
-            # Metadata fallback for borderless tables — creates structure
-            # tags directly via pikepdf using scanner-provided info
-            return self._add_table_from_metadata(issue)
+            if not getattr(self, "_table_batch_prepared", False):
+                self._prepare_table_fixes()
+            if not getattr(self, "_table_binding_attempted", False):
+                self._bind_prepared_tables()
+            return issue.id in getattr(self, "_table_fixed_issue_ids", set())
 
         except Exception as e:
             logger.error("Error applying table fix: %s", e)
+            self._record_table_safety_refusal(issue, TABLE_STRUCTURE_NOT_VERIFIED)
             return False
 
-    def _add_table_from_metadata(self, issue: RemediationIssue) -> bool:
-        """Create a minimal Table structure element from scanner metadata.
+    def _prepare_table_fixes(self) -> None:
+        """Preflight table bounds and cache untouched-input detection."""
+        if getattr(self, "_table_batch_prepared", False):
+            return
+        self._table_batch_prepared = True
+        self._table_fixed_issue_ids = set()
+        self._table_safety_refusals = {}
+        self._table_preflight_detection = None
+        self._table_binding_attempted = False
+        table_issues = [
+            issue for issue in self.issues if issue.category == IssueCategory.TABLE
+        ]
 
-        When TableTagger can't detect a table (e.g. borderless tables), we
-        still create a Table/TR/TH/TD structure using whatever information
-        the scanner provided in the issue metadata (page number, element
-        description with row/col counts, detected headers).
-        """
-        if not self._struct_tree:
-            return False
+        try:
+            if self._table_preflight_too_complex(table_issues):
+                for issue in table_issues:
+                    self._record_table_safety_refusal(
+                        issue, TABLE_STRUCTURE_TOO_COMPLEX
+                    )
+                return
 
-        page_num = issue.metadata.get("page_number", 1)
+            tagger = TableTagger(use_ai=False)
+            detection = tagger.detect_tables(self.file_path)
+            self._table_preflight_detection = detection
+        except Exception as exc:
+            logger.error("Table preflight failed closed: %s", exc, exc_info=True)
+            for issue in table_issues:
+                self._record_table_safety_refusal(issue, TABLE_STRUCTURE_NOT_VERIFIED)
+            return
+        if detection.error_code == TABLE_STRUCTURE_TOO_COMPLEX:
+            for issue in table_issues:
+                self._record_table_safety_refusal(issue, TABLE_STRUCTURE_TOO_COMPLEX)
+            return
+        if not detection.success or not detection.tables:
+            for issue in table_issues:
+                self._record_table_safety_refusal(issue, TABLE_STRUCTURE_NOT_VERIFIED)
 
-        # Parse row/col counts from element description like "Table (5 rows x 3 cols)"
-        element = issue.metadata.get("element", "")
-        rows, cols = 2, 2  # defaults
-        import re
+    def _bind_prepared_tables(self) -> None:
+        """Bind the uniquely identified issue tables on a transactional clone."""
+        self._table_binding_attempted = True
+        table_issues = [
+            issue for issue in self.issues if issue.category == IssueCategory.TABLE
+        ]
+        if self._table_safety_refusals:
+            return
+        detection = self._table_preflight_detection
+        if (
+            detection is None
+            or not detection.success
+            or not detection.tables
+            or self._pikepdf_doc is None
+            or self._pdf is None
+        ):
+            for issue in table_issues:
+                self._record_table_safety_refusal(issue, TABLE_STRUCTURE_NOT_VERIFIED)
+            return
 
-        match = re.search(r"(\d+)\s*rows?\s*x\s*(\d+)\s*col", element)
-        if match:
-            rows = int(match.group(1))
-            cols = int(match.group(2))
+        selected: Dict[tuple[int, int], Any] = {}
+        issue_tables: Dict[str, Any] = {}
+        for issue in table_issues:
+            table = self._table_for_issue(issue, detection.tables)
+            if table is None:
+                self._record_table_safety_refusal(issue, TABLE_STRUCTURE_NOT_VERIFIED)
+                continue
+            key = (table.page_num, table.table_index)
+            selected[key] = table
+            issue_tables[issue.id] = table
 
-        # Parse detected headers from the issue
-        detected_headers_str = issue.metadata.get("detected_headers", "")
-        if detected_headers_str:
-            headers = [h.strip() for h in detected_headers_str.split(",") if h.strip()]
-        else:
-            # Generate placeholder headers (Column 1, Column 2, ...)
-            headers = [f"Column {i+1}" for i in range(cols)]
+        if not selected:
+            return
 
-        # Pad or trim headers to match col count
-        while len(headers) < cols:
-            headers.append(f"Column {len(headers)+1}")
-        headers = headers[:cols]
-
-        # Create empty data rows (we don't have cell content, but the
-        # structure tags are what matter for accessibility compliance)
-        data_rows = [["" for _ in range(cols)] for _ in range(max(rows - 1, 1))]
-
-        success = self._struct_tree.add_table(
-            page_num=page_num,
-            headers=headers,
-            rows=data_rows,
-            summary=issue.description,
+        tagger = TableTagger(use_ai=False)
+        binding = tagger.bind_tables(
+            self._pikepdf_doc,
+            self._pdf,
+            [selected[key] for key in sorted(selected)],
         )
+        if (
+            not isinstance(binding, TableTagResult)
+            or not binding.success
+            or binding.bound_pdf is None
+        ):
+            for issue_id in issue_tables:
+                issue = next(item for item in table_issues if item.id == issue_id)
+                self._record_table_safety_refusal(issue, TABLE_STRUCTURE_NOT_VERIFIED)
+            return
 
-        if success:
-            self._structure_modified = True
-            logger.info(
-                "Table structure added via metadata fallback: "
-                "page %d, %d headers, %d data rows",
-                page_num,
-                len(headers),
-                len(data_rows),
+        previous_pdf = self._pikepdf_doc
+        self._pre_table_pikepdf_doc = previous_pdf
+        self._pre_table_structure_modified = self._structure_modified
+        self._pikepdf_doc = binding.bound_pdf
+        self._struct_tree = PDFStructureTree(self._pikepdf_doc)
+        self._structure_modified = True
+        self._table_expected_bound_cells = binding.total_cells
+        self._table_fixed_issue_ids.update(issue_tables)
+
+    @staticmethod
+    def _table_for_issue(issue: RemediationIssue, tables: List[Any]) -> Optional[Any]:
+        """Resolve an issue to one detected table; ambiguity fails closed."""
+        page_number = issue.metadata.get("page_number")
+        if page_number is None and issue.location:
+            match = re.search(r"Page\s+(\d+)", str(issue.location), re.I)
+            page_number = int(match.group(1)) if match else None
+        candidates = list(tables)
+        if page_number is not None:
+            try:
+                page_index = int(page_number) - 1
+            except (TypeError, ValueError):
+                return None
+            candidates = [table for table in candidates if table.page_num == page_index]
+
+        table_number = issue.metadata.get("table_number")
+        if table_number is None and issue.location:
+            match = re.search(r"Table\s+(\d+)", str(issue.location), re.I)
+            table_number = int(match.group(1)) if match else None
+        if table_number is not None:
+            try:
+                table_index = int(table_number) - 1
+            except (TypeError, ValueError):
+                return None
+            candidates = [
+                table for table in candidates if table.table_index == table_index
+            ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _record_table_safety_refusal(
+        self, issue: RemediationIssue, error_code: str
+    ) -> None:
+        """Record a table safety refusal for manual routing by _process_issue."""
+        if not hasattr(self, "_table_safety_refusals"):
+            self._table_safety_refusals = {}
+        self._table_safety_refusals[issue.id] = error_code
+
+    @classmethod
+    def _table_preflight_too_complex(cls, table_issues: List[RemediationIssue]) -> bool:
+        """Check every issue and aggregate limits before any structure write."""
+        if len(table_issues) > MAX_TABLES:
+            return True
+        total_cells = 0
+        for issue in table_issues:
+            issue_cells = 0
+            for rows, columns in cls._table_issue_dimension_evidence(issue):
+                if rows <= 0 or columns <= 0:
+                    # Invalid declarations are not evidence and must never
+                    # reduce the aggregate contributed by other issues.
+                    continue
+                if columns > MAX_TABLE_COLUMNS:
+                    return True
+                # Multiple declarations for one issue describe the same
+                # table. Use the largest evidenced grid rather than adding
+                # duplicate metadata representations together.
+                issue_cells = max(issue_cells, rows * columns)
+            total_cells += issue_cells
+            if total_cells > MAX_TABLE_CELLS:
+                return True
+        return False
+
+    @staticmethod
+    def _table_issue_dimension_evidence(
+        issue: RemediationIssue,
+    ) -> List[tuple[int, int]]:
+        """Collect every declared grid so smaller metadata cannot hide risk."""
+        evidence: List[tuple[int, int]] = []
+        metadata = issue.metadata
+        for row_key, column_key in (
+            ("rows", "columns"),
+            ("rows", "cols"),
+            ("row_count", "column_count"),
+        ):
+            rows = metadata.get(row_key)
+            columns = metadata.get(column_key)
+            if rows is None or columns is None:
+                continue
+            try:
+                evidence.append((int(rows), int(columns)))
+            except (TypeError, ValueError):
+                evidence.append((0, 0))
+
+        dimension_pattern = re.compile(
+            r"(-?\d+)\s*rows?\s*(?:x|×)\s*(-?\d+)\s*col", re.I
+        )
+        text_sources = (
+            metadata.get("element"),
+            issue.element_type,
+            issue.location,
+        )
+        for source in text_sources:
+            if source is None:
+                continue
+            evidence.extend(
+                (int(rows), int(columns))
+                for rows, columns in dimension_pattern.findall(str(source))
             )
 
-        return success
+        return evidence
+
+    def _is_table_only_manual_noop(self) -> bool:
+        return self._has_only_table_issues() and self.result.manual_count == len(
+            self.issues
+        )
+
+    def _table_batch_is_too_complex(self) -> bool:
+        """Return whether untouched-input preflight blocks the whole batch."""
+        refusals = getattr(self, "_table_safety_refusals", {})
+        return TABLE_STRUCTURE_TOO_COMPLEX in refusals.values()
+
+    def _complete_table_complexity_refusal(self) -> None:
+        """Finish an oversized batch without backup, load, mutation, or output."""
+        for issue in self.issues:
+            if issue.category != IssueCategory.TABLE:
+                self.result.skipped_count += 1
+                continue
+            issue.metadata["remediation_error_code"] = TABLE_STRUCTURE_TOO_COMPLEX
+            self._add_manual_issue(
+                issue,
+                reason=TABLE_STRUCTURE_TOO_COMPLEX,
+                recommendation=(
+                    "Simplify or split the table, then verify its structure manually."
+                ),
+            )
+        self.result.warnings.append(
+            "Remediation was not started because table_structure_too_complex "
+            "was detected."
+        )
+        self._calculate_scores()
+        self.result.complete()
+
+    def _has_only_table_issues(self) -> bool:
+        return bool(self.issues) and all(
+            issue.category == IssueCategory.TABLE for issue in self.issues
+        )
+
+    def _close_documents_without_save(self, document: Any) -> None:
+        document.close()
+        if self._pikepdf_doc:
+            try:
+                self._pikepdf_doc.close()
+            except Exception:
+                pass
 
     # Bullet characters used for list item detection (includes common PDF
     # text-extraction variants where bullets render as special Unicode).

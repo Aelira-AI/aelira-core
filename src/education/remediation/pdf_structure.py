@@ -338,113 +338,14 @@ class PDFStructureTree:
         rows: List[List[str]],
         summary: Optional[str] = None,
     ) -> bool:
-        """
-        Add a table structure with proper header markup.
-
-        Creates Table, TR, TH, and TD elements with proper Scope
-        attributes for WCAG 1.3.1 compliance.
-
-        Args:
-            page_num: 1-indexed page number
-            headers: List of header cell texts
-            rows: List of rows, each row is a list of cell texts
-            summary: Optional table summary for screen readers
-
-        Returns:
-            True if table was successfully added
-        """
-        try:
-            self._element_count += 1
-            page_obj = self.pdf.pages[page_num - 1].obj
-
-            # Create Table element
-            table_kids = Array([])
-
-            table_elem = self.pdf.make_indirect(
-                Dictionary(
-                    {
-                        "/Type": Name.StructElem,
-                        "/S": Name.Table,
-                        "/P": self.struct_root,
-                        "/K": table_kids,
-                        "/Pg": page_obj,
-                    }
-                )
-            )
-
-            if summary:
-                table_elem[Name.Alt] = String(summary)
-
-            # Add header row with TH elements
-            if headers:
-                header_row_kids = Array([])
-                header_row = self.pdf.make_indirect(
-                    Dictionary(
-                        {
-                            "/Type": Name.StructElem,
-                            "/S": Name.TR,
-                            "/P": table_elem,
-                            "/K": header_row_kids,
-                        }
-                    )
-                )
-
-                for header_text in headers:
-                    th_elem = self.pdf.make_indirect(
-                        Dictionary(
-                            {
-                                "/Type": Name.StructElem,
-                                "/S": Name.TH,
-                                "/P": header_row,
-                                "/Scope": Name.Column,  # WCAG requirement
-                                "/ActualText": String(header_text),
-                            }
-                        )
-                    )
-                    header_row_kids.append(th_elem)
-
-                table_kids.append(header_row)
-
-            # Add data rows
-            for row_data in rows:
-                data_row_kids = Array([])
-                data_row = self.pdf.make_indirect(
-                    Dictionary(
-                        {
-                            "/Type": Name.StructElem,
-                            "/S": Name.TR,
-                            "/P": table_elem,
-                            "/K": data_row_kids,
-                        }
-                    )
-                )
-
-                for cell_text in row_data:
-                    td_elem = self.pdf.make_indirect(
-                        Dictionary(
-                            {
-                                "/Type": Name.StructElem,
-                                "/S": Name.TD,
-                                "/P": data_row,
-                                "/ActualText": String(str(cell_text)),
-                            }
-                        )
-                    )
-                    data_row_kids.append(td_elem)
-
-                table_kids.append(data_row)
-
-            self.kids.append(table_elem)
-
-            logger.info(
-                f"Added table on page {page_num}: "
-                f"{len(headers)} columns, {len(rows)} rows"
-            )
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to add table structure: {e}")
-            return False
+        """Refuse table nodes until cells have verified MCID/MCR bindings."""
+        logger.warning(
+            "Refused unbound table structure write on page %s: %d headers, %d rows",
+            page_num,
+            len(headers),
+            len(rows),
+        )
+        return False
 
     def add_list(
         self,
