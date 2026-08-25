@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import create_engine, delete, text, update
-from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
+from conftest import require_disposable_postgres_url
 
 from src.db.models import (
     CloudJobQueue,
@@ -38,14 +38,7 @@ def pg_sessions():
     url = os.getenv("TEST_MIGRATION_DATABASE_URL")
     if not url:
         pytest.skip("requires TEST_MIGRATION_DATABASE_URL")
-    parsed = make_url(url)
-    database = parsed.database or ""
-    assert parsed.get_backend_name() == "postgresql"
-    assert (
-        database.startswith("test_")
-        or database.endswith("_test")
-        or "_test_" in database
-    ), f"refusing PostgreSQL test database {database!r}"
+    require_disposable_postgres_url(url, destructive=True)
     engine = create_engine(url)
     try:
         with engine.connect() as connection:
@@ -53,11 +46,9 @@ def pg_sessions():
     except Exception:
         pytest.skip("PostgreSQL unavailable")
     factory = sessionmaker(bind=engine, expire_on_commit=False)
+    factory._test_worker_ids = set()
     department_id = str(uuid.uuid4())
     with factory() as db:
-        existing_worker_ids = {
-            row[0] for row in db.query(WorkerHeartbeat.worker_id).all()
-        }
         db.add(
             Department(
                 id=department_id,
@@ -69,14 +60,10 @@ def pg_sessions():
         db.commit()
     yield factory, department_id
     with factory() as db:
-        current_worker_ids = {
-            row[0] for row in db.query(WorkerHeartbeat.worker_id).all()
-        }
-        created_worker_ids = current_worker_ids - existing_worker_ids
-        if created_worker_ids:
+        if factory._test_worker_ids:
             db.execute(
                 delete(WorkerHeartbeat).where(
-                    WorkerHeartbeat.worker_id.in_(created_worker_ids)
+                    WorkerHeartbeat.worker_id.in_(factory._test_worker_ids)
                 )
             )
         db.execute(delete(Department).where(Department.id == department_id))
@@ -110,6 +97,10 @@ def enqueue(factory, department_id, **values) -> str:
 def processor(factory, worker_id, registry, **kwargs) -> JobProcessor:
     kwargs.setdefault("poll_interval", 0.01)
     kwargs.setdefault("heartbeat_interval", 0.01)
+    with factory() as db:
+        if db.get(WorkerHeartbeat, worker_id) is not None:
+            raise RuntimeError(f"fixture worker ID already exists: {worker_id}")
+    factory._test_worker_ids.add(worker_id)
     value = JobProcessor(
         worker_id=worker_id,
         session_factory=factory,

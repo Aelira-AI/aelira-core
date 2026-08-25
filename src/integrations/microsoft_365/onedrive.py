@@ -72,7 +72,10 @@ class OneDriveIntegration(BaseCloudIntegration):
             drive_id: Specific drive ID (optional, uses default user drive if not provided)
             site_id: SharePoint site ID (optional, for SharePoint access)
         """
-        super().__init__(access_token=access_token, credential_id=department_id)
+        # Graph webhook clientState is account-scoped.  Do not alias that account
+        # authority into BaseCloudIntegration.credential_id: callers must not be
+        # able to mistake a department identifier for a credential identifier.
+        super().__init__(access_token=access_token)
         self._department_id = department_id
         self._drive_id = drive_id
         self._site_id = site_id
@@ -105,10 +108,18 @@ class OneDriveIntegration(BaseCloudIntegration):
         return self._http_client
 
     async def close(self):
-        """Close HTTP client."""
-        if self._http_client and not self._http_client.is_closed:
-            await self._http_client.aclose()
+        """Close the HTTP client and release inherited temporary storage."""
+        try:
+            if self._http_client and not self._http_client.is_closed:
+                await self._http_client.aclose()
+        except Exception as exc:
+            logger.warning(
+                "Failed to close Microsoft Graph client",
+                extra={"exception_type": type(exc).__name__[:64]},
+            )
+        finally:
             self._http_client = None
+            self.cleanup()
 
     def _get_drive_base_url(self) -> str:
         """Get the base URL for drive operations."""

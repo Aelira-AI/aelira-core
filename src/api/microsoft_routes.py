@@ -1373,7 +1373,7 @@ async def upload_to_onedrive(
     access_token = token_manager.decrypt_token(credential.access_token)
 
     # Upload file using OneDrive integration
-    OneDriveIntegration(
+    integration = OneDriveIntegration(
         access_token=access_token,
         department_id=credential.department_id,
     )
@@ -1395,6 +1395,8 @@ async def upload_to_onedrive(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload file: {str(e)}",
         )
+    finally:
+        await integration.close()
 
 
 # ==================== SharePoint Operations ====================

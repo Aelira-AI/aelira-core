@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
-from sqlalchemy.engine import make_url
+from conftest import require_disposable_postgres_url
 
 ROOT = Path(__file__).parents[1]
 HEAD = "20260824_task8_review"
@@ -45,14 +45,7 @@ def test_task17b_migrations_downgrade_then_upgrade_on_disposable_postgres(monkey
             "requires TEST_MIGRATION_DATABASE_URL and "
             "ALLOW_DESTRUCTIVE_MIGRATION_TESTS=1"
         )
-    parsed = make_url(database_url)
-    database = parsed.database or ""
-    assert parsed.get_backend_name() == "postgresql"
-    assert (
-        database.startswith("test_")
-        or database.endswith("_test")
-        or "_test_" in database
-    )
+    require_disposable_postgres_url(database_url, destructive=True)
     monkeypatch.setenv("DATABASE_URL", database_url)
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", database_url)

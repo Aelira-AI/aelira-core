@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect as sqlalchemy_inspect, text
-from sqlalchemy.engine import make_url
+from conftest import require_disposable_postgres_url
 
 MIGRATION_PATH = (
     Path(__file__).parents[1]
@@ -116,15 +116,7 @@ def _reset_public_schema(engine, database_url):
 
 
 def _require_disposable_database(database_url):
-    assert os.getenv("ALLOW_DESTRUCTIVE_MIGRATION_TESTS") == "1"
-    parsed = make_url(database_url)
-    assert parsed.get_backend_name() == "postgresql"
-    database = parsed.database or ""
-    assert (
-        database.startswith("test_")
-        or database.endswith("_test")
-        or "_test_" in database
-    ), f"refusing destructive migration test against database {database!r}"
+    require_disposable_postgres_url(database_url, destructive=True)
 
 
 def test_schema_reset_checks_disposable_database_before_connecting():

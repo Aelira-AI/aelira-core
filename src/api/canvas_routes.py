@@ -551,6 +551,16 @@ async def list_canvas_course_folders(
 # =============================================================================
 
 
+def _rollback_canvas_remediation_enqueue(db: Session) -> None:
+    try:
+        db.rollback()
+    except Exception as exc:
+        logger.error(
+            "Canvas remediation enqueue rollback failed",
+            extra={"exception_type": type(exc).__name__[:64]},
+        )
+
+
 @router.post("/remediate")
 async def remediate_canvas_file(
     request: CanvasRemediateRequest,
@@ -777,16 +787,14 @@ async def remediate_canvas_file(
         )
 
     except HTTPException:
-        db.rollback()
+        _rollback_canvas_remediation_enqueue(db)
         raise
     except Exception as exc:
-        db.rollback()
+        _rollback_canvas_remediation_enqueue(db)
         logger.error(
             "Canvas remediation enqueue failed",
             extra={
                 "operation": "canvas_remediation_enqueue",
-                "department_id": str(dept_id)[:64],
-                "course_id": str(request.course_id)[:64],
                 "exception_type": type(exc).__name__[:64],
             },
         )

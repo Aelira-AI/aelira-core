@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Literal
 from datetime import datetime, timezone
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from pydantic import (
@@ -2059,11 +2059,44 @@ async def _remediate_file(
     )
 
 
+def _rollback_brightspace_scan_enqueue(db: Session) -> None:
+    try:
+        db.rollback()
+    except Exception as exc:
+        logger.error(
+            "Brightspace scan enqueue rollback failed",
+            extra={"exception_type": type(exc).__name__[:64]},
+        )
+
+
 @router.post("/content/scan")
 async def scan_brightspace_content(
     request: BrightspaceContentScanRequest,
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
+) -> BrightspaceContentScanResponse:
+    """Run the course scan enqueue boundary with a stable public failure code."""
+    try:
+        return await _scan_brightspace_content_impl(request, principal, db)
+    except HTTPException:
+        _rollback_brightspace_scan_enqueue(db)
+        raise
+    except Exception as exc:
+        _rollback_brightspace_scan_enqueue(db)
+        logger.error(
+            "Brightspace scan enqueue failed",
+            extra={"exception_type": type(exc).__name__[:64]},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="brightspace_scan_queue_unavailable",
+        ) from None
+
+
+async def _scan_brightspace_content_impl(
+    request: BrightspaceContentScanRequest,
+    principal: AuthenticatedPrincipal,
+    db: Session,
 ) -> BrightspaceContentScanResponse:
     """Queue scan jobs for Brightspace course content.
 

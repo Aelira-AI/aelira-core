@@ -200,12 +200,13 @@ class BaseCloudIntegration(ABC):
     - Webhook management
     """
 
-    def __init__(self, access_token: str, credential_id: str):
+    def __init__(self, access_token: str, credential_id: Optional[str] = None):
         """
         Initialize the cloud integration.
 
         Args:
-            credential_id: Database ID of the CloudOAuthCredentials record
+            credential_id: Database ID of the CloudOAuthCredentials record when the
+                provider integration is credential-scoped
             access_token: Decrypted OAuth access token
         """
         self.credential_id = credential_id
@@ -386,8 +387,11 @@ class BaseCloudIntegration(ABC):
 
         try:
             shutil.rmtree(self._temp_dir, ignore_errors=True)
-        except Exception as e:
-            logger.warning(f"Failed to cleanup temp directory: {e}")
+        except Exception as exc:
+            logger.warning(
+                "Failed to clean cloud integration temporary storage",
+                extra={"exception_type": type(exc).__name__[:64]},
+            )
 
     async def __aenter__(self):
         """Async context manager entry"""

@@ -14,38 +14,27 @@ import subprocess
 import sys
 from pathlib import Path
 from sqlalchemy import create_engine, text, inspect
-from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from conftest import require_disposable_postgres_url
 
 # Mark all tests in this module as requires_db (skipped in CI without migration database)
 pytestmark = pytest.mark.integration
 
 
 # Migration tests never fall back to the suite or application database.
-TEST_DATABASE_URL = os.getenv(
-    "TEST_MIGRATION_DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/aelira_migration_test",
-)
-
-
-def _require_disposable_database(database_url: str) -> None:
-    parsed = make_url(database_url)
-    database = parsed.database or ""
-    assert parsed.get_backend_name() == "postgresql"
-    assert (
-        database.startswith("test_")
-        or database.endswith("_test")
-        or "_test_" in database
-    ), f"refusing destructive migration test against database {database!r}"
+TEST_DATABASE_URL = os.getenv("TEST_MIGRATION_DATABASE_URL")
 
 
 @pytest.fixture(scope="module", autouse=True)
 def migration_database_environment():
     """Fence every in-process and subprocess Alembic command to the test DB."""
-    _require_disposable_database(TEST_DATABASE_URL)
+    if not TEST_DATABASE_URL:
+        yield
+        return
+    require_disposable_postgres_url(TEST_DATABASE_URL, destructive=False)
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     try:
@@ -67,7 +56,8 @@ def alembic_config():
         pytest.skip("alembic.ini not found")
 
     config = Config(str(alembic_ini))
-    config.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
+    if TEST_DATABASE_URL:
+        config.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
     return config
 
 
@@ -82,7 +72,7 @@ def restore_schema_after_module(alembic_config):
     the price of exercising migrations in place.
     """
     yield
-    if os.getenv("ALLOW_DESTRUCTIVE_MIGRATION_TESTS") != "1":
+    if not TEST_DATABASE_URL or os.getenv("ALLOW_DESTRUCTIVE_MIGRATION_TESTS") != "1":
         return
     try:
         command.upgrade(alembic_config, "head")
@@ -93,9 +83,9 @@ def restore_schema_after_module(alembic_config):
 @pytest.fixture(scope="module")
 def test_engine():
     """Create test database engine."""
-    if os.getenv("ALLOW_DESTRUCTIVE_MIGRATION_TESTS") != "1":
-        pytest.skip("requires ALLOW_DESTRUCTIVE_MIGRATION_TESTS=1")
-    _require_disposable_database(TEST_DATABASE_URL)
+    if not TEST_DATABASE_URL:
+        pytest.skip("requires TEST_MIGRATION_DATABASE_URL")
+    require_disposable_postgres_url(TEST_DATABASE_URL, destructive=True)
     engine = create_engine(TEST_DATABASE_URL)
     yield engine
     engine.dispose()

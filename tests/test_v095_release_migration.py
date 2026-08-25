@@ -11,7 +11,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import make_url
+from conftest import require_disposable_postgres_url
 
 ROOT = Path(__file__).parents[1]
 PREVIOUS_HEAD = "20260822_task21_provenance"
@@ -68,14 +68,7 @@ def _destructive_database() -> str:
         pytest.skip(
             "requires TEST_MIGRATION_DATABASE_URL and ALLOW_DESTRUCTIVE_MIGRATION_TESTS=1"
         )
-    parsed = make_url(database_url)
-    database = parsed.database or ""
-    assert parsed.get_backend_name() == "postgresql"
-    assert (
-        database.startswith("test_")
-        or database.endswith("_test")
-        or "_test_" in database
-    )
+    require_disposable_postgres_url(database_url, destructive=True)
     return database_url
 
 
