@@ -4,6 +4,7 @@ import asyncio
 import ast
 import importlib.util
 import inspect
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -432,6 +433,10 @@ class HandlerDB:
 
     def rollback(self):
         self.rollbacks += 1
+
+    @property
+    def no_autoflush(self):
+        return nullcontext()
 
 
 class FreshCredentialHandlerDB(HandlerDB):
@@ -3413,7 +3418,6 @@ async def test_worker_persists_verified_output_before_temp_cleanup(tmp_path):
         department_id="dept-1",
         scan_type=ScanType.WORD,
         storage_path=str(path),
-        metadata={},
         status=ScanStatus.PROCESSING,
         file_name="file.docx",
     )
@@ -3480,6 +3484,10 @@ async def test_worker_persists_verified_output_before_temp_cleanup(tmp_path):
     assert published_source is not None
     assert not published_source.exists()
     assert scan.remediation_outcome == RemediationOutcome.COMPLETED.value
+    assert scan.metadata is Scan.metadata
+    assert result["fixed_count"] == 1
+    assert result["manual_count"] == 0
+    assert result["failed_count"] == 0
 
 
 @pytest.mark.asyncio

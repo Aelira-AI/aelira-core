@@ -701,7 +701,7 @@ async def process_remediation_job(
             return {"success": False, "error": f"Scan not found: {scan_id}"}
         prior_scan_state = {
             field: getattr(scan, field, None)
-            for field in ("status", "remediation_outcome", "completed_at", "metadata")
+            for field in ("status", "remediation_outcome", "completed_at")
         }
 
         # 2. Get ScanResult with detailed issues
@@ -1177,19 +1177,6 @@ async def process_remediation_job(
                 else RemediationOutcome.NO_OP
             ),
         )
-
-        # Store remediation metadata
-        metadata = dict(scan.metadata or {})
-        metadata["remediation"] = {
-            "fixed_count": remediation_result.fixed_count,
-            "manual_count": remediation_result.manual_count,
-            "failed_count": remediation_result.failed_count,
-            "artifact_id": artifact_id,
-            "artifact_persisted": artifact is not None,
-            "compliance_improvement": remediation_result.improvement,
-            "remediated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        scan.metadata = metadata
 
         if approved_fixes_only:
             applied_fix_ids = frozenset(
