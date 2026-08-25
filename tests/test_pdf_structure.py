@@ -562,8 +562,44 @@ def test_add_formula():
             formula_found = True
             assert str(kid["/Alt"]) == "x squared plus 2 x plus 1 equals 0"
             assert "/AF" in kid
+            assert len(kid["/AF"]) == 1
+            filespec = kid["/AF"][0]
+            assert str(filespec["/AFRelationship"]) == "/Supplement"
+            embedded = filespec["/EF"]["/F"]
+            assert str(embedded["/Subtype"]) == "/application#2Fmathml+xml"
+            assert embedded.read_bytes() == (
+                b"<math><msup><mi>x</mi><mn>2</mn></msup></math>"
+            )
             break
     assert formula_found, "Formula element not found in structure tree"
+
+
+def test_create_formula_element_with_mcid_has_exact_mcr():
+    """Association helper creates Formula /K as one page-bound MCR."""
+    import pikepdf
+    from pikepdf import Dictionary, Name
+
+    from src.education.remediation.pdf_structure import PDFStructureTree
+
+    pdf = pikepdf.new()
+    pdf.pages.append(
+        pikepdf.Page(Dictionary({"/Type": Name.Page, "/MediaBox": [0, 0, 612, 792]}))
+    )
+    tree = PDFStructureTree(pdf)
+
+    formula = tree.create_formula_element(
+        page_num=1,
+        alt_text="x squared",
+        mathml_string="<math><msup><mi>x</mi><mn>2</mn></msup></math>",
+        bbox=(72, 700, 300, 720),
+        mcid=9,
+    )
+
+    assert str(formula["/S"]) == "/Formula"
+    assert str(formula["/K"]["/Type"]) == "/MCR"
+    assert int(formula["/K"]["/MCID"]) == 9
+    assert tuple(formula["/K"]["/Pg"].objgen) == tuple(pdf.pages[0].obj.objgen)
+    assert len(formula["/AF"]) == 1
 
 
 def test_add_role_mapping():

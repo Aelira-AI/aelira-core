@@ -85,3 +85,122 @@ def test_math_fixer_converts_latex_to_formula():
         pdf2.close()
     finally:
         os.unlink(tmp_path)
+
+
+def test_image_equation_pipeline_is_injected_and_stops_before_association():
+    from types import SimpleNamespace
+
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from src.education.remediation.math_fixer import MathFixer
+
+    calls = []
+    validated = SimpleNamespace(
+        source_sha256="c" * 64,
+        normalized_sha256="a" * 64,
+        identity=SimpleNamespace(
+            page_number=1,
+            image_xref=7,
+            image_index=0,
+            occurrence_ordinal=0,
+            bbox=(1.0, 2.0, 3.0, 4.0),
+            occurrence_id="occ-1",
+        ),
+    )
+
+    class Source:
+        def extract(self, document, identity):
+            calls.append(("source", document, identity["occurrence_id"]))
+            return validated
+
+    class Recognizer:
+        def recognize(self, image):
+            calls.append(("recognizer", image))
+            return SimpleNamespace(
+                classification="printed_equation",
+                latex="x^2 + 1 = 0",
+                model="vision-model",
+            )
+
+    class Verifier:
+        def verify(self, image, latex):
+            import hashlib
+
+            from latex2mathml.converter import convert
+
+            calls.append(("verifier", image, latex))
+            mathml = convert(latex)
+            return SimpleNamespace(
+                passed=True,
+                source_sha256="a" * 64,
+                rendered_sha256="b" * 64,
+                mathml_sha256=hashlib.sha256(mathml.encode()).hexdigest(),
+                renderer_version="renderer-v1",
+                comparator_version="comparator-v1",
+                font_sha256="f" * 64,
+                threshold_version="threshold-v1",
+                ink_iou=1.0,
+                pixel_similarity=1.0,
+                required_ink_iou=0.9,
+                required_pixel_similarity=0.98,
+            )
+
+    class StructTree:
+        def add_formula(self, **kwargs):
+            raise AssertionError("association is deferred and must not mutate")
+
+    fitz_doc = SimpleNamespace()
+    fixer = MathFixer(
+        SimpleNamespace(pages=[object()]),
+        fitz_doc,
+        struct_tree=StructTree(),
+        alt_text_client=SimpleNamespace(purpose="alt_text"),
+        image_source=Source(),
+        equation_recognizer=Recognizer(),
+        equation_verifier=Verifier(),
+    )
+    result = fixer._fix_math_issue(
+        SimpleNamespace(
+            metadata={
+                "issue_type": IMAGE_EQUATION_ISSUE_TYPE,
+                "page_number": 1,
+                "image_xref": 7,
+                "image_index": 0,
+                "occurrence_ordinal": 0,
+                "bbox": (1.0, 2.0, 3.0, 4.0),
+                "occurrence_id": "occ-1",
+            }
+        )
+    )
+
+    assert not result.success
+    assert result.error == "image_equation_association_pending"
+    assert result.pending_association is not None
+    assert [call[0] for call in calls] == ["source", "recognizer", "verifier"]
+
+
+def test_image_equation_unexpected_metadata_error_is_stable_and_redacted():
+    from types import SimpleNamespace
+
+    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+    from src.education.remediation.math_fixer import MathFixer
+
+    fixer = MathFixer(
+        SimpleNamespace(pages=[object()]),
+        SimpleNamespace(),
+        struct_tree=SimpleNamespace(),
+        alt_text_client=SimpleNamespace(purpose="alt_text"),
+        equation_verifier=SimpleNamespace(),
+    )
+    results = fixer.fix(
+        [
+            SimpleNamespace(
+                metadata={
+                    "issue_type": IMAGE_EQUATION_ISSUE_TYPE,
+                    "page_number": "private-invalid-page",
+                }
+            )
+        ]
+    )
+
+    assert results[0].error == "math_fix_failed"
+    assert "private-invalid-page" not in results[0].error

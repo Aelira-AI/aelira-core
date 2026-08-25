@@ -18,8 +18,12 @@ Usage:
 
 import logging
 import re
+import hashlib
+import math
 from dataclasses import dataclass
 from typing import Any, List, Optional
+
+from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE, MATH_ISSUE_TYPES
 
 try:
     from latex2mathml.converter import convert as latex_to_mathml
@@ -44,6 +48,39 @@ except ImportError:
     HAS_PIKEPDF = False
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MathVerificationEvidence:
+    passed: bool
+    source_sha256: str
+    rendered_sha256: str
+    mathml_sha256: str
+    renderer_version: str
+    comparator_version: str
+    font_sha256: str
+    threshold_version: str
+    ink_iou: float
+    pixel_similarity: float
+    required_ink_iou: float
+    required_pixel_similarity: float
+
+
+@dataclass(frozen=True)
+class PendingEquationAssociation:
+    page_number: int
+    image_xref: int
+    image_index: int
+    occurrence_ordinal: int
+    bbox: tuple[float, float, float, float]
+    occurrence_id: str
+    image_stream_sha256: str
+    alt_text: str
+    mathml_string: str
+    provider_used: Optional[str]
+    model_used: Optional[str]
+    verification_evidence: MathVerificationEvidence
+
 
 # ---------------------------------------------------------------------------
 # Regex patterns for detecting LaTeX math in plain text extracted from PDFs
@@ -162,6 +199,14 @@ class MathFixResult:
     page_number: int = 0
     error: Optional[str] = None
     has_mathml: bool = False
+    source_kind: Optional[str] = None
+    fix_method: Optional[str] = None
+    confidence: float = 0.0
+    needs_review: bool = False
+    provider_used: Optional[str] = None
+    model_used: Optional[str] = None
+    verification_evidence: Optional[MathVerificationEvidence] = None
+    pending_association: Optional[PendingEquationAssociation] = None
 
 
 # ---------------------------------------------------------------------------
@@ -191,11 +236,7 @@ class MathFixer:
     """
 
     # Issue types this fixer handles
-    HANDLED_ISSUE_TYPES = {
-        "raw_latex_code",
-        "math_content_accessibility",
-        "mathml_recommendation",
-    }
+    HANDLED_ISSUE_TYPES = MATH_ISSUE_TYPES
 
     def __init__(
         self,
@@ -204,10 +245,30 @@ class MathFixer:
         *,
         struct_tree: Optional[Any] = None,
         ai_client: Optional[Any] = None,
+        alt_text_client: Optional[Any] = None,
+        image_source: Optional[Any] = None,
+        equation_recognizer: Optional[Any] = None,
+        equation_verifier: Optional[Any] = None,
     ) -> None:
         self.pdf = pdf
         self.fitz_doc = fitz_doc
         self.ai_client = ai_client
+        self.alt_text_client = alt_text_client
+        if image_source is None:
+            from .equation_image_source import EquationImageSource
+
+            image_source = EquationImageSource()
+        if equation_recognizer is None and alt_text_client is not None:
+            from .equation_recognizer import EquationRecognizer
+
+            equation_recognizer = EquationRecognizer(alt_text_client)
+        if equation_verifier is None:
+            from .equation_verifier import EquationVerifier
+
+            equation_verifier = EquationVerifier()
+        self.image_source = image_source
+        self.equation_recognizer = equation_recognizer
+        self.equation_verifier = equation_verifier
 
         if struct_tree is not None:
             self.struct_tree = struct_tree
@@ -267,8 +328,11 @@ class MathFixer:
             try:
                 result = self._fix_math_issue(issue)
             except Exception as exc:
-                logger.error(f"MathFixer: unexpected error on issue {issue}: {exc}")
-                result = MathFixResult(success=False, error=str(exc))
+                logger.error(
+                    "MathFixer: unexpected %s while processing an issue",
+                    type(exc).__name__,
+                )
+                result = MathFixResult(success=False, error="math_fix_failed")
             results.append(result)
 
         return results
@@ -287,6 +351,8 @@ class MathFixer:
                 success=False,
                 error=f"Unrecognised issue_type: {issue_type!r}",
             )
+        if issue_type == IMAGE_EQUATION_ISSUE_TYPE:
+            return self._prepare_image_equation(metadata)
 
         # Determine page number (1-indexed)
         page_number: int = int(metadata.get("page_number", 1) or 1)
@@ -341,6 +407,191 @@ class MathFixer:
             aria_label=aria_label,
             page_number=page_number,
             has_mathml=has_mathml,
+        )
+
+    def _prepare_image_equation(self, metadata: dict[str, Any]) -> MathFixResult:
+        page_number = int(metadata.get("page_number", 1) or 1)
+        if self.equation_recognizer is None:
+            return MathFixResult(
+                success=False,
+                error="alt_text_client_unavailable",
+                page_number=page_number,
+            )
+        if self.equation_verifier is None:
+            return MathFixResult(
+                success=False,
+                error="equation_verifier_unavailable",
+                page_number=page_number,
+            )
+        try:
+            validated = self.image_source.extract(self.fitz_doc, metadata)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="equation_image_source_rejected",
+                page_number=page_number,
+            )
+        try:
+            recognition = self.equation_recognizer.recognize(validated)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="equation_recognition_rejected",
+                page_number=page_number,
+            )
+        if recognition.classification != "printed_equation" or not recognition.latex:
+            return MathFixResult(
+                success=False,
+                error="not_printed_equation",
+                page_number=page_number,
+            )
+        try:
+            verification = self.equation_verifier.verify(validated, recognition.latex)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="equation_verification_failed",
+                page_number=page_number,
+            )
+        if getattr(verification, "passed", False) is not True:
+            return MathFixResult(
+                success=False,
+                error="equation_verification_failed",
+                page_number=page_number,
+            )
+        mathml_string = self._convert_to_mathml(recognition.latex)
+        if not mathml_string:
+            return MathFixResult(
+                success=False,
+                error="image_equation_conversion_failed",
+                page_number=page_number,
+            )
+        canonicalize = getattr(self.equation_verifier, "canonicalize_mathml", None)
+        if callable(canonicalize):
+            try:
+                canonical_mathml = canonicalize(mathml_string)
+            except Exception:
+                return MathFixResult(
+                    success=False,
+                    error="image_equation_conversion_failed",
+                    page_number=page_number,
+                )
+            if not isinstance(canonical_mathml, str) or not canonical_mathml:
+                return MathFixResult(
+                    success=False,
+                    error="image_equation_conversion_failed",
+                    page_number=page_number,
+                )
+            mathml_string = canonical_mathml
+        expected_mathml_sha256 = getattr(verification, "mathml_sha256", None)
+        actual_mathml_sha256 = hashlib.sha256(mathml_string.encode("utf-8")).hexdigest()
+        if expected_mathml_sha256 != actual_mathml_sha256:
+            return MathFixResult(
+                success=False,
+                error="equation_verification_mismatch",
+                page_number=page_number,
+            )
+        evidence = self._bounded_verification_evidence(verification)
+        if evidence is None or evidence.source_sha256 != validated.normalized_sha256:
+            return MathFixResult(
+                success=False,
+                error="equation_verification_mismatch",
+                page_number=page_number,
+            )
+        aria_label = self._generate_aria_label(recognition.latex)
+        identity = validated.identity
+        pending = PendingEquationAssociation(
+            page_number=identity.page_number,
+            image_xref=identity.image_xref,
+            image_index=identity.image_index,
+            occurrence_ordinal=identity.occurrence_ordinal,
+            bbox=identity.bbox,
+            occurrence_id=identity.occurrence_id,
+            image_stream_sha256=validated.source_sha256,
+            alt_text=aria_label,
+            mathml_string=mathml_string,
+            provider_used=getattr(recognition, "provider", None),
+            model_used=getattr(recognition, "model", None),
+            verification_evidence=evidence,
+        )
+        return MathFixResult(
+            success=False,
+            error="image_equation_association_pending",
+            equation_text=recognition.latex,
+            aria_label=aria_label,
+            page_number=page_number,
+            has_mathml=True,
+            source_kind="image_equation",
+            fix_method="ai_vision",
+            confidence=0.55,
+            needs_review=True,
+            provider_used=getattr(recognition, "provider", None),
+            model_used=getattr(recognition, "model", None),
+            verification_evidence=evidence,
+            pending_association=pending,
+        )
+
+    @staticmethod
+    def _bounded_verification_evidence(
+        verification: Any,
+    ) -> Optional[MathVerificationEvidence]:
+        hash_names = (
+            "source_sha256",
+            "rendered_sha256",
+            "mathml_sha256",
+            "font_sha256",
+        )
+        version_names = (
+            "renderer_version",
+            "comparator_version",
+            "threshold_version",
+        )
+        metric_names = (
+            "ink_iou",
+            "pixel_similarity",
+            "required_ink_iou",
+            "required_pixel_similarity",
+        )
+        hashes = {name: getattr(verification, name, None) for name in hash_names}
+        versions = {name: getattr(verification, name, None) for name in version_names}
+        metrics = {name: getattr(verification, name, None) for name in metric_names}
+        if getattr(verification, "passed", None) is not True:
+            return None
+        if any(
+            not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in hashes.values()
+        ):
+            return None
+        if any(
+            not isinstance(value, str)
+            or not value
+            or len(value) > 128
+            or not value.isprintable()
+            for value in versions.values()
+        ):
+            return None
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+            or float(value) > 1.0
+            for value in metrics.values()
+        ):
+            return None
+        return MathVerificationEvidence(
+            passed=True,
+            source_sha256=str(hashes["source_sha256"]),
+            rendered_sha256=str(hashes["rendered_sha256"]),
+            mathml_sha256=str(hashes["mathml_sha256"]),
+            font_sha256=str(hashes["font_sha256"]),
+            renderer_version=str(versions["renderer_version"]),
+            comparator_version=str(versions["comparator_version"]),
+            threshold_version=str(versions["threshold_version"]),
+            ink_iou=float(metrics["ink_iou"]),
+            pixel_similarity=float(metrics["pixel_similarity"]),
+            required_ink_iou=float(metrics["required_ink_iou"]),
+            required_pixel_similarity=float(metrics["required_pixel_similarity"]),
         )
 
     def _convert_to_mathml(self, latex: str) -> str:

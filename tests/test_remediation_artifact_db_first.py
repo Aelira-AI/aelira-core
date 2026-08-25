@@ -91,7 +91,13 @@ def _db(service, artifact, *, locked_scan_type="WORD"):
     service._lock_existing_artifact = MagicMock(
         return_value=(
             SimpleNamespace(id=DEPT),
-            SimpleNamespace(id=SCAN, department_id=DEPT, scan_type=locked_scan_type),
+            SimpleNamespace(
+                id=SCAN,
+                department_id=DEPT,
+                scan_type=locked_scan_type,
+                status=ScanStatus.COMPLETED,
+                remediation_outcome=RemediationOutcome.COMPLETED.value,
+            ),
             cloud,
             SimpleNamespace(id=JOB),
             artifact,
@@ -120,6 +126,34 @@ def _db(service, artifact, *, locked_scan_type="WORD"):
     return db, cloud
 
 
+def test_approved_retry_rechecks_image_equation_human_review(tmp_path):
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, _ = _db(service, artifact)
+    original_query = db.query.side_effect
+    forged = SimpleNamespace(
+        source_kind="image_equation",
+        review_status="auto_approved",
+        reviewed_by=None,
+        reviewed_at=None,
+        verification_evidence={"passed": True},
+    )
+
+    def query(model):
+        chain = original_query(model)
+        if model is ScanFix:
+            chain.all.return_value = [forged]
+        return chain
+
+    db.query.side_effect = query
+    with pytest.raises(ArtifactAuthorizationError, match="human review"):
+        service.approve(
+            db,
+            artifact_id=artifact.id,
+            approved_by_ref="admin@example.com",
+        )
+
+
 def test_open_verified_yields_descriptor_bound_stream_after_canonical_lock(tmp_path):
     service = _service(tmp_path)
     artifact = _artifact(service)
@@ -138,6 +172,44 @@ def test_open_verified_yields_descriptor_bound_stream_after_canonical_lock(tmp_p
 
     assert stream.closed
     service._lock_existing_artifact.assert_called_once_with(db, artifact.id)
+
+
+def test_approved_consumption_revalidates_fixes_and_invalidates_stale_approval(
+    tmp_path,
+):
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, cloud = _db(service, artifact)
+    original_query = db.query.side_effect
+
+    def query(model):
+        chain = original_query(model)
+        if model is ScanFix:
+            chain.all.return_value = [SimpleNamespace(review_status="pending")]
+        return chain
+
+    db.query.side_effect = query
+    service._open_verified = MagicMock()
+
+    with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
+        with service.open_verified(
+            db,
+            artifact,
+            department_id=DEPT,
+            scan_id=SCAN,
+            cloud_file_id=CLOUD,
+            require_approved=True,
+        ):
+            pass
+
+    assert artifact.review_status == "pending"
+    assert artifact.approval_checksum is None
+    assert artifact.approved_by_ref is None
+    assert artifact.approved_at is None
+    assert cloud.writeback_status == "pending_review"
+    assert cloud.has_remediated_version is False
+    service._open_verified.assert_not_called()
+    db.flush.assert_called()
 
 
 def test_open_verified_rejects_current_scan_type_mutation(tmp_path):
@@ -207,6 +279,34 @@ def test_mark_written_uses_written_retention_setting(tmp_path):
     assert artifact.written_back_at == now
     assert artifact.expires_at == now + timedelta(days=7)
     assert artifact.provider_result == {"revision": "42", "ok": True}
+
+
+def test_mark_written_revalidates_fixes_and_invalidates_stale_approval(tmp_path):
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, cloud = _db(service, artifact)
+    original_query = db.query.side_effect
+
+    def query(model):
+        chain = original_query(model)
+        if model is ScanFix:
+            chain.all.return_value = [SimpleNamespace(review_status="rejected")]
+        return chain
+
+    db.query.side_effect = query
+
+    with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
+        service.mark_written(
+            db, artifact_id=artifact.id, provider_result={"revision": "42"}
+        )
+
+    assert artifact.written_back_at is None
+    assert artifact.provider_result is None
+    assert artifact.review_status == "pending"
+    assert artifact.approval_checksum is None
+    assert cloud.writeback_status == "pending_review"
+    assert cloud.has_remediated_version is False
+    db.flush.assert_called()
 
 
 def test_mark_written_retry_is_semantic_noop_without_retention_extension(tmp_path):

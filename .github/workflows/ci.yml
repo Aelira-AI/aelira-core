@@ -114,6 +114,8 @@ jobs:
             tesseract-ocr tesseract-ocr-eng ffmpeg
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Install pinned equation-verifier browser
+        run: python -m playwright install --with-deps chromium
       - name: Run tests
         env:
           DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test

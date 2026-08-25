@@ -34,6 +34,12 @@ from ..db.models import (
     User,
 )
 from ..education.reports.compliance_report import AuditReportGenerator
+from ..services.scan_fix_service import (
+    apply_authenticated_batch_review,
+    invalidate_current_artifact_approvals,
+    lock_scan_review_graph,
+    validate_fix_review_action,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -463,13 +469,15 @@ def review_fix(
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    fix = (
-        db.query(ScanFix)
-        .filter(ScanFix.id == fix_id, ScanFix.scan_id == scan_id)
-        .first()
-    )
+    graph = lock_scan_review_graph(db, scan_id)
+    fix = next((row for row in graph.fixes if row.id == fix_id), None)
     if not fix:
         raise HTTPException(status_code=404, detail="Fix not found")
+
+    try:
+        validate_fix_review_action(fix, body.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
     now = datetime.now(timezone.utc)
 
@@ -496,6 +504,7 @@ def review_fix(
             details={"notes": body.notes, "edited": body.action == "edit"},
         )
     )
+    invalidate_current_artifact_approvals(db, graph)
 
     db.commit()
     return ReviewResponse(status="ok", fix_id=fix_id, review_status=fix.review_status)
@@ -516,26 +525,27 @@ def batch_review(
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    query = db.query(ScanFix).filter(
-        ScanFix.scan_id == scan_id,
-        ScanFix.review_status == "pending",
-    )
-
+    graph = lock_scan_review_graph(db, scan_id)
+    fixes = [fix for fix in graph.fixes if fix.review_status == "pending"]
     if body.fix_ids:
-        query = query.filter(ScanFix.id.in_(body.fix_ids))
+        selected_ids = set(body.fix_ids)
+        fixes = [fix for fix in fixes if fix.id in selected_ids]
     if body.min_confidence is not None:
-        query = query.filter(ScanFix.confidence >= body.min_confidence)
+        fixes = [fix for fix in fixes if fix.confidence >= body.min_confidence]
     if body.category:
-        query = query.filter(ScanFix.category == body.category)
-
-    fixes = query.all()
+        fixes = [fix for fix in fixes if fix.category == body.category]
     now = datetime.now(timezone.utc)
 
-    for fix in fixes:
-        fix.review_status = "approved" if body.action == "approve" else "rejected"
-        fix.reviewed_by = user_id
-        fix.reviewed_at = now
-        fix.review_notes = body.notes
+    apply_authenticated_batch_review(
+        db,
+        scan_id=scan_id,
+        fixes=fixes,
+        action=body.action,
+        user_id=user_id,
+        reviewed_at=now,
+        notes=body.notes,
+    )
+    invalidate_current_artifact_approvals(db, graph)
 
     db.add(
         ReviewAuditLog(

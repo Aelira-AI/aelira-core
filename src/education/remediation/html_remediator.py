@@ -75,9 +75,13 @@ class HtmlRemediator(BaseRemediator):
         issues: List[Dict[str, Any]],
         config: Optional[RemediationConfig] = None,
         ai_client: Optional[Any] = None,
+        *,
+        alt_text_client: Optional[Any] = None,
     ):
         """Initialize HTML remediator."""
-        super().__init__(file_path, issues, config, ai_client)
+        super().__init__(
+            file_path, issues, config, ai_client, alt_text_client=alt_text_client
+        )
 
         # Determine file type
         self.file_ext = Path(file_path).suffix.lower()

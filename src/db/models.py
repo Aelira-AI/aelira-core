@@ -774,6 +774,7 @@ class ScanFix(Base):
 
     # Issue identification
     issue_id = Column(String, nullable=False)
+    occurrence_key = Column(String(64), nullable=False)
     category = Column(String(50), nullable=False)
     severity = Column(String(20), nullable=False)
     description = Column(Text, nullable=False)
@@ -787,7 +788,10 @@ class ScanFix(Base):
     fix_method = Column(
         String(20), nullable=False
     )  # rule / heuristic / ai_text / ai_vision
+    provider_used = Column(String(64), nullable=True)
     model_used = Column(String(50), nullable=True)
+    source_kind = Column(String(32), nullable=True)
+    verification_evidence = Column(JOB_JSON, nullable=True)
     confidence = Column(Float, nullable=False, default=1.0, server_default="1.0")
     needs_review = Column(
         Boolean, nullable=False, default=False, server_default=text("false")
@@ -816,6 +820,13 @@ class ScanFix(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "source_kind IS NULL OR source_kind = 'image_equation'",
+            name="ck_scan_fixes_source_kind",
+        ),
+        UniqueConstraint(
+            "scan_id", "occurrence_key", name="uq_scan_fixes_scan_occurrence"
+        ),
         Index("idx_scan_fixes_scan_id", "scan_id"),
         Index("idx_scan_fixes_review", "needs_review", "review_status"),
         Index("idx_scan_fixes_confidence", "confidence"),

@@ -6,7 +6,9 @@ Also provides color vision deficiency (CVD) accessibility analysis.
 
 import asyncio
 import concurrent.futures
+import hashlib
 import logging
+import math
 import os
 import re
 import tempfile
@@ -18,6 +20,102 @@ from src.education.pdf_checks.models import PDFImageIssue
 from src.utils.async_helpers import run_async_from_sync
 
 logger = logging.getLogger(__name__)
+
+
+def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
+    """Return deterministic identities for addressable embedded image draws."""
+    resource_xrefs = {int(info[0]) for info in page.get_images(full=True)}
+    displayed_infos = list(page.get_image_info(xrefs=True))
+    ordinals: Dict[int, int] = {}
+    occurrences: List[Dict] = []
+    for image_index, info in enumerate(displayed_infos):
+        xref = int(info.get("xref") or 0)
+        ordinal = ordinals.get(xref, 0)
+        ordinals[xref] = ordinal + 1
+        raw_bbox = info.get("bbox")
+        if xref <= 0 or xref not in resource_xrefs or not raw_bbox:
+            continue
+        try:
+            bbox = tuple(float(value) for value in raw_bbox)
+        except (TypeError, ValueError):
+            continue
+        if (
+            len(bbox) != 4
+            or not all(math.isfinite(value) for value in bbox)
+            or bbox[2] <= bbox[0]
+            or bbox[3] <= bbox[1]
+        ):
+            continue
+        identity = f"{page_number}|{xref}|{image_index}|{ordinal}|" + ",".join(
+            f"{value:.6f}" for value in bbox
+        )
+        occurrence_id = (
+            "imgocc-v1-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
+        )
+        occurrences.append(
+            {
+                "page_number": page_number,
+                "image_xref": xref,
+                "image_index": image_index,
+                "occurrence_ordinal": ordinal,
+                "bbox": bbox,
+                "occurrence_id": occurrence_id,
+            }
+        )
+    return occurrences
+
+
+def _occurrence_alt_lookup(
+    doc, page, occurrences: List[Dict]
+) -> Dict[str, Tuple[bool, Optional[str]]]:
+    """Return one alt-text result per displayed occurrence."""
+    results: Dict[str, Tuple[bool, Optional[str]]] = {
+        occurrence["occurrence_id"]: (False, None) for occurrence in occurrences
+    }
+    if not occurrences:
+        return results
+
+    for xref in {occurrence["image_xref"] for occurrence in occurrences}:
+        try:
+            obj = doc.xref_object(xref)
+        except Exception:
+            continue
+        if "/Alt" not in obj:
+            continue
+        alt_match = re.search(r"/Alt\s*\((.*?)\)", obj)
+        alt_text = alt_match.group(1) if alt_match else None
+        for occurrence in occurrences:
+            if occurrence["image_xref"] == xref:
+                results[occurrence["occurrence_id"]] = (True, alt_text)
+
+    try:
+        struct_tree = page.get_text("dict")
+    except Exception:
+        logger.warning(
+            "[ImageChecker] Failed to read image structure metadata on page %s",
+            getattr(page, "number", "unknown"),
+        )
+        return results
+    for block in struct_tree.get("blocks", []):
+        if block.get("type") != 1 or not block.get("alt"):
+            continue
+        try:
+            block_bbox = tuple(float(value) for value in block.get("bbox", ()))
+        except (TypeError, ValueError):
+            continue
+        matches = [
+            occurrence
+            for occurrence in occurrences
+            if occurrence["image_xref"] == block.get("xref")
+            and len(block_bbox) == 4
+            and all(
+                abs(left - right) <= 1e-3
+                for left, right in zip(occurrence["bbox"], block_bbox)
+            )
+        ]
+        if len(matches) == 1:
+            results[matches[0]["occurrence_id"]] = (True, block["alt"])
+    return results
 
 
 class ImageAccessibilityChecker:
@@ -73,6 +171,7 @@ class ImageAccessibilityChecker:
         scan_only = not ai_enabled
 
         image_issues: List[PDFImageIssue] = []
+        images_to_analyze = []  # List of dicts with owned temporary paths
         doc = None  # Track document for cleanup in finally block
         logger.info(
             f"[ImageChecker] Starting optimized batch image extraction from PDF: {file_path}"
@@ -84,30 +183,28 @@ class ImageAccessibilityChecker:
             logger.info(f"[ImageChecker] PDF opened successfully, {len(doc)} pages")
 
             # SINGLE PASS: Extract all images needing analysis
-            images_to_analyze = []  # List of dicts
-
             for page_num, page in enumerate(doc, start=1):
-                images = page.get_images()
+                images = _displayed_image_occurrences(page, page_num)
+                alt_lookup = _occurrence_alt_lookup(doc, page, images)
                 logger.info(
                     f"[ImageChecker] Page {page_num}: found {len(images)} images"
                 )
 
-                for img_index, img_info in enumerate(images):
-                    xref = img_info[0]
-                    has_alt_text, existing_alt_text = self._check_image_has_alt_text(
-                        doc, xref, page
-                    )
+                for occurrence in images:
+                    img_index = occurrence["image_index"]
+                    xref = occurrence["image_xref"]
+                    has_alt_text, existing_alt_text = alt_lookup[
+                        occurrence["occurrence_id"]
+                    ]
 
                     if not has_alt_text and scan_only:
                         # Scan-only mode: record the issue with xref so the
                         # remediator can extract image bytes for vision AI later.
                         image_issues.append(
                             PDFImageIssue(
-                                page_number=page_num,
-                                image_index=img_index,
+                                **occurrence,
                                 has_alt_text=False,
                                 image_type="informative",  # conservative default
-                                image_xref=xref,
                             )
                         )
                     elif not has_alt_text and self.generate_alt_text:
@@ -137,6 +234,7 @@ class ImageAccessibilityChecker:
                                     "page_num": page_num,
                                     "img_index": img_index,
                                     "xref": xref,
+                                    "identity": occurrence,
                                     "temp_path": temp_path,
                                     "context": context,
                                 }
@@ -148,11 +246,9 @@ class ImageAccessibilityChecker:
                             # Add failed extraction as issue
                             image_issues.append(
                                 PDFImageIssue(
-                                    page_number=page_num,
-                                    image_index=img_index,
+                                    **occurrence,
                                     has_alt_text=False,
                                     suggested_alt_text=f"[Extraction failed: {str(e)}]",
-                                    image_xref=xref,
                                 )
                             )
                     elif has_alt_text and existing_alt_text and self.validate_alt_text:
@@ -210,8 +306,7 @@ class ImageAccessibilityChecker:
                                 ):
                                     image_issues.append(
                                         PDFImageIssue(
-                                            page_number=page_num,
-                                            image_index=img_index,
+                                            **occurrence,
                                             has_alt_text=True,
                                             existing_alt_text=existing_alt_text,
                                             suggested_alt_text=suggested_improvement,
@@ -559,14 +654,12 @@ class ImageAccessibilityChecker:
 
                 image_issues.append(
                     PDFImageIssue(
-                        page_number=img_data["page_num"],
-                        image_index=img_data["img_index"],
+                        **img_data["identity"],
                         has_alt_text=False,
                         suggested_alt_text=suggested_alt,
                         image_type=image_type,
                         is_chart=is_chart,
                         detailed_description=detailed_desc,
-                        image_xref=img_data.get("xref"),
                     )
                 )
 
@@ -587,6 +680,15 @@ class ImageAccessibilityChecker:
             logger.error(f"[ImageChecker] Failed to extract images from PDF: {e}")
 
         finally:
+            for image_data in images_to_analyze:
+                temp_path = image_data.get("temp_path")
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.unlink(temp_path)
+                    except Exception:
+                        logger.warning(
+                            "[ImageChecker] Failed to delete an image-analysis temp file"
+                        )
             # Ensure document is always closed to prevent memory leaks
             if doc is not None:
                 try:
@@ -743,7 +845,7 @@ class ImageAccessibilityChecker:
                         if block.get("xref") == xref:
                             alt_text = block["alt"]
                             logger.info(
-                                f"[ImageChecker] Image xref {xref} has alt text: {alt_text[:50]}..."
+                                "[ImageChecker] Image xref %s has alt text", xref
                             )
                             return (True, alt_text)
 

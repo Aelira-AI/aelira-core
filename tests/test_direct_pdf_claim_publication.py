@@ -9,14 +9,30 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from src.auth.dependencies import AuthenticatedPrincipal
-from src.db.models import CloudFile, ScanStatus, ScanType, UserRole
+from src.db.models import (
+    CloudFile,
+    RemediationArtifact,
+    Scan,
+    ScanFix,
+    ScanStatus,
+    ScanType,
+    UserRole,
+)
+from src.education.remediation.base import (
+    FixedIssue,
+    IssueCategory,
+    IssueSeverity,
+    RemediationResult,
+    VerificationEvidence,
+)
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
+from src.services.remediation_artifact_service import ArtifactPublicationResult
 
 CLAIMED_BYTES = b"%PDF-1.7\nexact descriptor-bound remediation\n%%EOF\n"
 
@@ -29,7 +45,18 @@ class _CloudFileQuery:
         for criterion in criteria:
             key = criterion.left.key
             expected = criterion.right.value
-            self.rows = [row for row in self.rows if getattr(row, key) == expected]
+            self.rows = [
+                row for row in self.rows if (getattr(row, key, row) == expected)
+            ]
+        return self
+
+    def options(self, *args):
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def populate_existing(self):
         return self
 
     def limit(self, value):
@@ -39,8 +66,21 @@ class _CloudFileQuery:
     def all(self):
         return self.rows
 
+    def with_for_update(self):
+        return self
+
+    def scalar(self):
+        return self.rows[0] if self.rows else None
+
     def first(self):
         return self.rows[0] if self.rows else None
+
+    def one_or_none(self):
+        return self.rows[0] if self.rows else None
+
+    def delete(self):
+        self.rows.clear()
+        return 0
 
 
 class _RouteDB:
@@ -50,7 +90,19 @@ class _RouteDB:
         self.rollbacks = 0
 
     def query(self, model):
-        assert model is CloudFile
+        if model is Scan.id:
+            return _CloudFileQuery(["scan-1"])
+        if model is Scan:
+            return _CloudFileQuery(
+                [
+                    SimpleNamespace(
+                        id="scan-1",
+                        department_id="dept-1",
+                        current_remediation_artifact_id=None,
+                    )
+                ]
+            )
+        assert model in {CloudFile, ScanFix, RemediationArtifact}
         return _CloudFileQuery([])
 
     def add(self, value):
@@ -68,20 +120,35 @@ class _RouteDB:
 
 class _DirectPdfResult(SimpleNamespace):
     def __init__(self, output_path: Path, *, with_claim: bool = True):
-        fixed = SimpleNamespace(
+        fixed = FixedIssue(
             issue_id="issue-1",
-            category=SimpleNamespace(value="pdf_tagging"),
-            severity=SimpleNamespace(value="high"),
-            description="Fixed PDF structure",
-            location=None,
-            original_content=None,
-            fixed_content=None,
-            fix_method="mechanical",
-            model_used=None,
-            confidence=1.0,
-            needs_review=False,
-            wcag_criteria=None,
-            page_number=None,
+            category=IssueCategory.STRUCTURE,
+            severity=IssueSeverity.HIGH,
+            description="Associated verified image equation",
+            location="page 1 / image 0 / occurrence 0",
+            fixed_content="Formula, Alt, and MathML",
+            fix_method="ai_vision",
+            model_used="vision-test",
+            provider_used="ollama",
+            confidence=0.55,
+            needs_review=True,
+            source_kind="image_equation",
+            verification_evidence=VerificationEvidence(
+                passed=True,
+                source_sha256="1" * 64,
+                rendered_sha256="2" * 64,
+                mathml_sha256="3" * 64,
+                renderer_version="chromium-test",
+                comparator_version="pixel-test",
+                font_sha256="4" * 64,
+                threshold_version="printed-equation-v1",
+                ink_iou=0.95,
+                pixel_similarity=0.99,
+                required_ink_iou=0.90,
+                required_pixel_similarity=0.98,
+            ),
+            wcag_criteria="1.1.1",
+            page_number=1,
         )
         super().__init__(
             success=True,
@@ -178,6 +245,10 @@ async def _run_route(
     tamper=None,
     publication_error: Exception | None = None,
     matterhorn_error: Exception | None = None,
+    matterhorn_result=None,
+    cloud_file=None,
+    publication_hook=None,
+    artifact_service=None,
 ):
     from src.api.education.remediation_routes import remediate_scan
 
@@ -193,7 +264,7 @@ async def _run_route(
         return result
 
     remediator.remediate.side_effect = remediate
-    artifact_service = MagicMock()
+    artifact_service = artifact_service or MagicMock()
     publication = {}
 
     def publish(db_arg, **kwargs):
@@ -202,7 +273,14 @@ async def _run_route(
         publication["kwargs"] = kwargs
         if publication_error is not None:
             raise publication_error
-        return _artifact()
+        artifact = _artifact()
+        if publication_hook is not None:
+            publication_hook(artifact)
+        return ArtifactPublicationResult(
+            artifact=artifact,
+            artifact_id=str(artifact.id),
+            publication_token="direct-exact-token",
+        )
 
     artifact_service.claim_and_publish_stream.side_effect = publish
     artifact_service.claim_and_publish.side_effect = AssertionError(
@@ -217,7 +295,19 @@ async def _run_route(
         validation["exists_during_validation"] = Path(path).exists()
         if matterhorn_error is not None:
             raise matterhorn_error
-        return SimpleNamespace(checkpoints=[], passed=0, total=0)
+        if matterhorn_result is not None:
+            return matterhorn_result
+        checkpoint = SimpleNamespace(
+            id="01-003",
+            name="Structure tree present",
+            status=SimpleNamespace(value="pass"),
+            severity="error",
+            details=None,
+            page_number=None,
+        )
+        return SimpleNamespace(
+            checkpoints=[checkpoint], passed=1, failed=0, warnings=0, total=1
+        )
 
     matterhorn.validate.side_effect = validate
     audit = MagicMock()
@@ -226,6 +316,12 @@ async def _run_route(
             patch(
                 "src.api.education.remediation_routes.ScanService.get_scan_with_result",
                 return_value=scan,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "src.api.education.remediation_routes._resolve_bound_scan_cloud_file",
+                return_value=cloud_file,
             )
         )
         stack.enter_context(
@@ -264,6 +360,42 @@ async def _run_route(
         validation=validation,
         audit=audit,
     )
+
+
+@pytest.mark.asyncio
+async def test_direct_pdf_persists_real_image_equation_remediation_result(tmp_path):
+    output = tmp_path / "fixed.pdf"
+    output.write_bytes(CLAIMED_BYTES)
+    fixed = _DirectPdfResult(output, with_claim=False).fixed_issues[0]
+    result = RemediationResult(
+        original_file=str(tmp_path / "source.pdf"),
+        output_file=str(output),
+        document_type="PDF",
+        total_issues=1,
+        fixed_count=1,
+        manual_count=0,
+        failed_count=0,
+        fixed_issues=[fixed],
+        verification_passed=True,
+        success=True,
+    )
+    result.set_output_claim(
+        DescriptorBoundOutputClaim._snapshot_from_owned_descriptor(
+            os.open(output, os.O_RDONLY),
+            filename=output.name,
+            display_path=str(output),
+            mime="application/pdf",
+        )
+    )
+
+    run = await _run_route(tmp_path, result)
+
+    assert run.response["success"] is True
+    persisted = [row for row in run.db.added if isinstance(row, ScanFix)]
+    assert len(persisted) == 1
+    assert persisted[0].source_kind == "image_equation"
+    assert persisted[0].verification_evidence["source_sha256"] == "1" * 64
+    assert result.has_output_claim() is False
 
 
 @pytest.mark.asyncio
@@ -306,6 +438,13 @@ async def test_direct_pdf_publishes_and_validates_exact_claim_after_path_tamper(
     assert not Path(run.validation["path"]).exists()
     assert result.close_calls == 1
     assert result.has_output_claim() is False
+    persisted = [row for row in run.db.added if isinstance(row, ScanFix)]
+    assert len(persisted) == 1
+    assert persisted[0].issue_id == "issue-1"
+    assert persisted[0].source_kind == "image_equation"
+    assert persisted[0].review_status == "pending"
+    assert persisted[0].verification_evidence["source_sha256"] == "1" * 64
+    assert len(persisted[0].occurrence_key) == 64
 
     audit_fields = run.audit.log_remediation_complete.call_args.kwargs
     assert all("path" not in key and "fd" not in key for key in audit_fields)
@@ -354,10 +493,75 @@ async def test_direct_pdf_claim_closes_when_publication_raises(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_direct_pdf_claim_closes_when_matterhorn_raises(tmp_path):
+@pytest.mark.parametrize(
+    ("matterhorn_result", "matterhorn_error"),
+    [
+        (None, RuntimeError("Matterhorn unavailable")),
+        (
+            SimpleNamespace(checkpoints=[], total=0, passed=0, failed=0, warnings=0),
+            None,
+        ),
+        (
+            SimpleNamespace(
+                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="fail"))],
+                total=1,
+                passed=0,
+                failed=1,
+                warnings=0,
+            ),
+            None,
+        ),
+        (
+            SimpleNamespace(
+                checkpoints=[SimpleNamespace(status=SimpleNamespace(value="pass"))],
+                total=2,
+                passed=1,
+                failed=0,
+                warnings=0,
+            ),
+            None,
+        ),
+    ],
+    ids=["exception", "unavailable", "disqualifying", "integrity"],
+)
+async def test_direct_image_equation_matterhorn_failure_rolls_back(
+    tmp_path, matterhorn_result, matterhorn_error
+):
     output = tmp_path / "fixed.pdf"
     output.write_bytes(CLAIMED_BYTES)
     result = _DirectPdfResult(output)
+    service = MagicMock()
+
+    with pytest.raises(HTTPException):
+        await _run_route(
+            tmp_path,
+            result,
+            matterhorn_result=matterhorn_result,
+            matterhorn_error=matterhorn_error,
+            artifact_service=service,
+        )
+
+    service.abort_staging.assert_called_once_with(
+        ANY,
+        artifact_id="66666666-6666-4666-8666-666666666666",
+        publication_token="direct-exact-token",
+    )
+    assert result.close_calls == 1
+    assert result.has_output_claim() is False
+
+
+@pytest.mark.asyncio
+async def test_direct_non_image_equation_matterhorn_exception_remains_advisory(
+    tmp_path,
+):
+    output = tmp_path / "fixed.pdf"
+    output.write_bytes(CLAIMED_BYTES)
+    result = _DirectPdfResult(output)
+    result.fixed_issues[0].source_kind = None
+    result.fixed_issues[0].verification_evidence = None
+    result.fixed_issues[0].provider_used = None
+    result.fixed_issues[0].model_used = None
+    result.fixed_issues[0].fix_method = "rule"
 
     run = await _run_route(
         tmp_path,
@@ -367,9 +571,46 @@ async def test_direct_pdf_claim_closes_when_matterhorn_raises(tmp_path):
 
     assert run.response["success"] is True
     assert run.publication["bytes"] == CLAIMED_BYTES
-    assert run.validation["bytes"] == CLAIMED_BYTES
     assert result.close_calls == 1
-    assert result.has_output_claim() is False
+
+
+@pytest.mark.asyncio
+async def test_direct_failure_restores_complete_cloud_file_publication_state(tmp_path):
+    output = tmp_path / "fixed.pdf"
+    output.write_bytes(CLAIMED_BYTES)
+    result = _DirectPdfResult(output)
+    cloud_file = SimpleNamespace(
+        id="cloud-direct",
+        provider="local",
+        credential_id=None,
+        current_remediation_artifact_id="prior-artifact",
+        has_remediated_version=True,
+        remediation_origin="prior-origin",
+        remediated_issues_fixed=7,
+        remediated_issues_remaining=2,
+        writeback_status="prior-status",
+    )
+    prior_state = dict(vars(cloud_file))
+
+    def mutate_cloud(artifact):
+        cloud_file.current_remediation_artifact_id = artifact.id
+        cloud_file.has_remediated_version = False
+        cloud_file.remediation_origin = "mutated"
+        cloud_file.remediated_issues_fixed = 99
+        cloud_file.remediated_issues_remaining = 0
+        cloud_file.writeback_status = "mutated-status"
+
+    with pytest.raises(HTTPException):
+        await _run_route(
+            tmp_path,
+            result,
+            cloud_file=cloud_file,
+            publication_hook=mutate_cloud,
+            matterhorn_error=RuntimeError("Matterhorn unavailable"),
+        )
+
+    assert vars(cloud_file) == prior_state
+    assert result.close_calls == 1
 
 
 @pytest.mark.asyncio

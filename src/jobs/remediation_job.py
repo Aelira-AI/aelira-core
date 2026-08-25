@@ -24,7 +24,6 @@ from ..db.models import (
     ScanStatus,
     ScanType,
     ScanResult,
-    ScanFix,
     ReviewAuditLog,
     MatterhornResult as MatterhornResultModel,
     CloudFile,
@@ -55,6 +54,7 @@ from ..services.remediation_artifact_service import (
     ArtifactPublicationRetryable,
     RemediationArtifactService,
 )
+from ..services.scan_fix_service import persist_scan_fixes
 from .contracts import LostJobOwnership
 
 logger = logging.getLogger(__name__)
@@ -563,6 +563,20 @@ async def process_remediation_job(
     artifact_publication: ArtifactPublicationResult | None = None
     remediation_result = None
     pdf_claim_metadata: Dict[str, Any] | None = None
+    cloud_file = None
+    prior_cloud_state: Dict[str, Any] | None = None
+    scan = None
+    prior_scan_state: Dict[str, Any] | None = None
+
+    def restore_prior_cloud_state() -> None:
+        if cloud_file is not None and prior_cloud_state is not None:
+            for field, value in prior_cloud_state.items():
+                setattr(cloud_file, field, value)
+
+    def restore_prior_scan_state() -> None:
+        if scan is not None and prior_scan_state is not None:
+            for field, value in prior_scan_state.items():
+                setattr(scan, field, value)
 
     try:
         logger.info(
@@ -573,6 +587,10 @@ async def process_remediation_job(
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if not scan:
             return {"success": False, "error": f"Scan not found: {scan_id}"}
+        prior_scan_state = {
+            field: getattr(scan, field, None)
+            for field in ("status", "remediation_outcome", "completed_at", "metadata")
+        }
 
         # 2. Get ScanResult with detailed issues
         scan_result = db.query(ScanResult).filter(ScanResult.scan_id == scan_id).first()
@@ -763,6 +781,18 @@ async def process_remediation_job(
                 if cloud_file_id
                 else None
             )
+            if cloud_file is not None:
+                prior_cloud_state = {
+                    field: getattr(cloud_file, field, None)
+                    for field in (
+                        "current_remediation_artifact_id",
+                        "has_remediated_version",
+                        "remediation_origin",
+                        "remediated_issues_fixed",
+                        "remediated_issues_remaining",
+                        "writeback_status",
+                    )
+                }
             has_output_claim = getattr(remediation_result, "has_output_claim", None)
             if (
                 (
@@ -928,36 +958,7 @@ async def process_remediation_job(
         }
         scan.metadata = metadata
 
-        # Persist individual fixes to scan_fixes table (delete existing for idempotency on retry)
-        db.query(ScanFix).filter(ScanFix.scan_id == scan_id).delete()
-        for fix in remediation_result.fixed_issues:
-            scan_fix = ScanFix(
-                id=str(uuid.uuid4()),
-                scan_id=scan_id,
-                issue_id=fix.issue_id,
-                category=(
-                    fix.category.value
-                    if hasattr(fix.category, "value")
-                    else fix.category
-                ),
-                severity=(
-                    fix.severity.value
-                    if hasattr(fix.severity, "value")
-                    else fix.severity
-                ),
-                description=fix.description,
-                location=fix.location,
-                original_content=fix.original_content,
-                fixed_content=fix.fixed_content,
-                fix_method=fix.fix_method,
-                model_used=fix.model_used,
-                confidence=fix.confidence,
-                needs_review=fix.needs_review,
-                review_status="auto_approved" if not fix.needs_review else "pending",
-                wcag_criteria=fix.wcag_criteria,
-                page_number=fix.page_number,
-            )
-            db.add(scan_fix)
+        persist_scan_fixes(db, scan_id, remediation_result.fixed_issues)
 
         # Log remediation completion to audit trail
         auto_approved = sum(
@@ -993,6 +994,14 @@ async def process_remediation_job(
                         source_stream,
                         pdf_claim_metadata["size_bytes"],
                     )
+
+                from ..education.remediation.image_equation_gate import (
+                    contains_image_equation_fixes,
+                    require_image_equation_matterhorn_result,
+                )
+
+                if contains_image_equation_fixes(remediation_result.fixed_issues):
+                    require_image_equation_matterhorn_result(matterhorn)
 
                 for cp in matterhorn.checkpoints:
                     db.add(
@@ -1033,11 +1042,23 @@ async def process_remediation_job(
                     },
                 )
             except ImportError:
+                from ..education.remediation.image_equation_gate import (
+                    contains_image_equation_fixes,
+                )
+
+                if contains_image_equation_fixes(remediation_result.fixed_issues):
+                    raise
                 logger.warning(
                     "pikepdf not installed - skipping Matterhorn validation",
                     extra={"scan_id": scan_id},
                 )
             except Exception as exc:
+                from ..education.remediation.image_equation_gate import (
+                    contains_image_equation_fixes,
+                )
+
+                if contains_image_equation_fixes(remediation_result.fixed_issues):
+                    raise
                 logger.error(
                     "Matterhorn validation failed",
                     extra={"scan_id": scan_id, "error_type": type(exc).__name__},
@@ -1082,6 +1103,7 @@ async def process_remediation_job(
 
     except asyncio.CancelledError:
         db.rollback()
+        restore_prior_cloud_state()
         if (
             artifact_publication is not None
             and artifact_service is not None
@@ -1102,6 +1124,7 @@ async def process_remediation_job(
                     "Failed to clean cancelled remediation artifact",
                     extra={"scan_id": scan_id},
                 )
+            restore_prior_cloud_state()
         raise
 
     except LostJobOwnership:
@@ -1134,6 +1157,8 @@ async def process_remediation_job(
 
     except Exception as exc:
         db.rollback()
+        restore_prior_cloud_state()
+        restore_prior_scan_state()
         if artifact_publication is not None and artifact_service is not None:
             cleanup_complete = False
             try:
@@ -1149,6 +1174,7 @@ async def process_remediation_job(
                     "Failed to clean aborted remediation artifact",
                     extra={"scan_id": scan_id},
                 )
+            restore_prior_cloud_state()
             raise RetryableRemediationJobError(
                 "remediation_artifact_retryable",
                 artifact_id=artifact_publication.artifact_id,

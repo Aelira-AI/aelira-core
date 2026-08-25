@@ -22,7 +22,9 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+
+from src.education.math_contracts import MATH_ISSUE_TYPES
 
 try:
     from .output_claim import DescriptorBoundOutputClaim
@@ -152,6 +154,7 @@ _CATEGORY_ALIASES = {
     "1.1.1": IssueCategory.ALT_TEXT,
     "1.3.1": IssueCategory.STRUCTURE,
     "1.4.3": IssueCategory.CONTRAST,
+    **{issue_type: IssueCategory.STRUCTURE for issue_type in MATH_ISSUE_TYPES},
 }
 
 
@@ -270,6 +273,34 @@ class RemediationIssue(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class VerificationEvidence(BaseModel):
+    """Allowlisted, bounded evidence safe for durable review records."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    passed: bool
+    source_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    rendered_sha256: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    mathml_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    renderer_version: str = Field(min_length=1, max_length=128)
+    comparator_version: str = Field(min_length=1, max_length=128)
+    font_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    threshold_version: str = Field(min_length=1, max_length=128)
+    ink_iou: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    pixel_similarity: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    required_ink_iou: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    required_pixel_similarity: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+
+    @field_validator("renderer_version", "comparator_version", "threshold_version")
+    @classmethod
+    def _printable_version(cls, value: str) -> str:
+        if value != value.strip() or not value.isprintable():
+            raise ValueError("evidence version must be bounded printable text")
+        return value
+
+
 class FixedIssue(BaseModel):
     """Represents a successfully fixed issue."""
 
@@ -281,9 +312,12 @@ class FixedIssue(BaseModel):
     original_content: Optional[str] = None
     fixed_content: str
     fix_method: str  # "rule", "heuristic", "ai_text", "ai_vision"
-    confidence: float = 1.0  # 0.0-1.0
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, allow_inf_nan=False)
     needs_review: bool = False
-    model_used: Optional[str] = None  # "gemini", "ollama", etc.
+    provider_used: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    model_used: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    source_kind: Optional[str] = Field(default=None, min_length=1, max_length=32)
+    verification_evidence: Optional[VerificationEvidence] = None
     verification_passed: bool = True
     notes: Optional[str] = None
     wcag_criteria: Optional[str] = None
@@ -636,11 +670,35 @@ class BaseRemediator(ABC):
             ai_client: Purpose-bound client for non-alt remediation (optional)
             alt_text_client: Purpose-bound client for image/chart descriptions
         """
+        from src.education.math_contracts import (
+            IMAGE_EQUATION_ISSUE_TYPE,
+            math_issue_type_from,
+        )
+
         self.file_path = file_path
-        self.config = config or RemediationConfig()
+        configured = config or RemediationConfig()
+        has_image_equation = any(
+            isinstance(raw_issue, dict)
+            and math_issue_type_from(raw_issue) == IMAGE_EQUATION_ISSUE_TYPE
+            for raw_issue in issues
+        )
+        # Exact image-equation recognition is never a legacy/ambient AI
+        # operation.  Copy rather than mutate the caller's configuration so a
+        # mixed batch cannot silently alter a subsequently constructed legacy
+        # remediator.
+        self.config = (
+            configured.model_copy(update={"allow_legacy_nested_ai": False})
+            if has_image_equation
+            else configured
+        )
         self.issues = self._normalize_issues(issues)
         self.ai_client = ai_client
-        self.alt_text_client = alt_text_client
+        self.alt_text_client = (
+            alt_text_client
+            if not has_image_equation
+            or getattr(alt_text_client, "purpose", None) == "alt_text"
+            else None
+        )
         if self.alt_text_client is None and self.config.allow_legacy_nested_ai:
             self.alt_text_client = ai_client
 
@@ -1004,7 +1062,10 @@ class BaseRemediator(ABC):
         confidence: float = 1.0,
         notes: Optional[str] = None,
         needs_review: bool = False,
+        provider_used: Optional[str] = None,
         model_used: Optional[str] = None,
+        source_kind: Optional[str] = None,
+        verification_evidence: Optional[Dict[str, Any]] = None,
         wcag_criteria: Optional[str] = None,
         page_number: Optional[int] = None,
     ) -> None:
@@ -1021,7 +1082,10 @@ class BaseRemediator(ABC):
                 fix_method=fix_method,
                 confidence=confidence,
                 needs_review=needs_review,
+                provider_used=provider_used,
                 model_used=model_used,
+                source_kind=source_kind,
+                verification_evidence=verification_evidence,
                 notes=notes,
                 wcag_criteria=wcag_criteria,
                 page_number=page_number,

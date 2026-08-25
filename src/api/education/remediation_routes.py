@@ -43,6 +43,10 @@ from ...services.remediation_artifact_service import (
     ArtifactPublicationResult,
     RemediationArtifactService,
 )
+from ...services.scan_fix_service import (
+    artifact_review_blockers as scan_fix_review_blockers,
+    persist_scan_fixes,
+)
 from ...jobs.remediation_job import _partition_authoritative_document_issues
 from ...utils.sanitization import sanitize_for_postgres
 from ...utils.security import (
@@ -151,14 +155,7 @@ def _artifact_review_blockers(
     if scan.remediation_outcome != RemediationOutcome.COMPLETED.value:
         blockers.append("verification_not_passed")
     fixes = db.query(ScanFix).filter(ScanFix.scan_id == scan.id).all()
-    terminal = {"auto_approved", "approved", "rejected"}
-    accepted = {"auto_approved", "approved"}
-    if not fixes:
-        blockers.append("no_fixes")
-    elif any(fix.review_status not in terminal for fix in fixes):
-        blockers.append("fixes_pending_review")
-    if fixes and not any(fix.review_status in accepted for fix in fixes):
-        blockers.append("no_accepted_fix")
+    blockers.extend(scan_fix_review_blockers(fixes))
     return blockers
 
 
@@ -746,6 +743,12 @@ def _infer_category(issue: dict) -> str:
     Checks explicit category/type first, then falls back to keyword
     matching on description/message and WCAG rule numbers.
     """
+    from ...education.math_contracts import math_issue_type_from
+
+    math_issue_type = math_issue_type_from(issue)
+    if math_issue_type:
+        return "structure"
+
     # Use explicit category/type/issue_type if present
     explicit = issue.get("category") or issue.get("type") or issue.get("issue_type")
     if explicit:
@@ -947,10 +950,14 @@ def _normalize_issues_for_remediation(issues: list) -> list:
         # Copy scanner top-level fields into metadata
         metadata.setdefault("page_number", issue.get("page_number", 1))
         metadata.setdefault("issue_type", issue.get("issue_type"))
+        metadata.setdefault("rule", issue.get("rule"))
         metadata.setdefault("element", issue.get("element"))
         metadata.setdefault("text", issue.get("text", ""))
         metadata.setdefault("bbox", issue.get("bbox"))
         metadata.setdefault("image_index", issue.get("image_index", 0))
+        metadata.setdefault("image_xref", issue.get("image_xref"))
+        metadata.setdefault("occurrence_ordinal", issue.get("occurrence_ordinal"))
+        metadata.setdefault("occurrence_id", issue.get("occurrence_id"))
         metadata.setdefault(
             "generated_alt_text",
             issue.get("generated_alt_text") or issue.get("alt_text"),
@@ -1786,12 +1793,19 @@ async def remediate_scan(
 
     original_status = scan.status
     original_outcome = scan.remediation_outcome
-    original_cloud_remediated = (
-        resolved_cloud_file.has_remediated_version if resolved_cloud_file else None
-    )
-    original_remediation_origin = (
-        getattr(resolved_cloud_file, "remediation_origin", None)
-        if resolved_cloud_file
+    original_cloud_state = (
+        {
+            field: getattr(resolved_cloud_file, field, None)
+            for field in (
+                "current_remediation_artifact_id",
+                "has_remediated_version",
+                "remediation_origin",
+                "remediated_issues_fixed",
+                "remediated_issues_remaining",
+                "writeback_status",
+            )
+        }
+        if resolved_cloud_file is not None
         else None
     )
     artifact = None
@@ -2021,44 +2035,10 @@ async def remediate_scan(
                 shutil.rmtree(artifact_temp_dir, ignore_errors=True)
                 artifact_temp_dir = None
 
-        # Persist fixes to scan_fixes table for the review workflow
-        import uuid as _uuid
+        # Direct and queued flows share one canonical, idempotent writer.
+        persist_scan_fixes(db, scan_id, result.fixed_issues)
 
-        for fix in result.fixed_issues:
-            db.add(
-                ScanFix(
-                    id=str(_uuid.uuid4()),
-                    scan_id=scan_id,
-                    issue_id=fix.issue_id,
-                    category=(
-                        fix.category.value
-                        if hasattr(fix.category, "value")
-                        else fix.category
-                    ),
-                    severity=(
-                        fix.severity.value
-                        if hasattr(fix.severity, "value")
-                        else fix.severity
-                    ),
-                    description=_sanitize_str(fix.description),
-                    location=_sanitize_str(getattr(fix, "location", None)),
-                    original_content=_sanitize_str(
-                        getattr(fix, "original_content", None)
-                    ),
-                    fixed_content=_sanitize_str(getattr(fix, "fixed_content", None)),
-                    fix_method=_sanitize_str(getattr(fix, "fix_method", None)),
-                    model_used=getattr(fix, "model_used", None),
-                    confidence=getattr(fix, "confidence", 0.5),
-                    needs_review=getattr(fix, "needs_review", True),
-                    review_status=(
-                        "auto_approved"
-                        if not getattr(fix, "needs_review", True)
-                        else "pending"
-                    ),
-                    wcag_criteria=getattr(fix, "wcag_criteria", None),
-                    page_number=getattr(fix, "page_number", None),
-                )
-            )
+        import uuid as _uuid
 
         # Run Matterhorn only for a complete result with eligible output bytes.
         try:
@@ -2079,6 +2059,13 @@ async def remediate_scan(
                     ) as validation_path:
                         validator = MatterhornValidator()
                         mh_result = validator.validate(validation_path)
+                        from ...education.remediation.image_equation_gate import (
+                            contains_image_equation_fixes,
+                            require_image_equation_matterhorn_result,
+                        )
+
+                        if contains_image_equation_fixes(result.fixed_issues):
+                            require_image_equation_matterhorn_result(mh_result)
             elif successful_complete_result and not pdf_claim_required:
                 output_path = result.output_file
                 if (
@@ -2111,6 +2098,12 @@ async def remediate_scan(
                     f"{mh_result.passed}/{mh_result.total} passed"
                 )
         except Exception as mh_err:
+            from ...education.remediation.image_equation_gate import (
+                contains_image_equation_fixes,
+            )
+
+            if contains_image_equation_fixes(result.fixed_issues):
+                raise
             logger.warning(f"Matterhorn validation skipped for {scan_id}: {mh_err}")
 
         terminal_success = successful_complete_result
@@ -2240,10 +2233,10 @@ async def remediate_scan(
             shutil.rmtree(artifact_temp_dir, ignore_errors=True)
         scan.status = original_status
         scan.remediation_outcome = original_outcome
-        if resolved_cloud_file is not None:
+        if resolved_cloud_file is not None and original_cloud_state is not None:
             try:
-                resolved_cloud_file.has_remediated_version = original_cloud_remediated
-                resolved_cloud_file.remediation_origin = original_remediation_origin
+                for field, value in original_cloud_state.items():
+                    setattr(resolved_cloud_file, field, value)
             except Exception:
                 logger.warning(
                     "Failed to restore in-memory CloudFile remediation status",

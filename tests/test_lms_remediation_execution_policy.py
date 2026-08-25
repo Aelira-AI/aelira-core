@@ -20,8 +20,10 @@ from src.db.models import (
     CloudJobQueue,
     CloudJobStatus,
     CloudProvider,
+    RemediationArtifact,
     RemediationOutcome,
     Scan,
+    ScanFix,
     ScanResult,
     ScanStatus,
     ScanType,
@@ -171,8 +173,23 @@ class CloudFileQuery:
         for criterion in criteria:
             key = criterion.left.key
             expected = criterion.right.value
-            self.rows = [row for row in self.rows if getattr(row, key) == expected]
+            self.rows = [row for row in self.rows if getattr(row, key, row) == expected]
         return self
+
+    def options(self, *args):
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def populate_existing(self):
+        return self
+
+    def with_for_update(self):
+        return self
+
+    def scalar(self):
+        return self.rows[0] if self.rows else None
 
     def limit(self, value):
         self.limit_value = value
@@ -184,6 +201,9 @@ class CloudFileQuery:
     def first(self):
         return self.rows[0] if self.rows else None
 
+    def one_or_none(self):
+        return self.rows[0] if self.rows else None
+
 
 class CloudFileDB:
     def __init__(self, rows):
@@ -192,6 +212,20 @@ class CloudFileDB:
         self.commits = 0
 
     def query(self, model):
+        if model is Scan.id:
+            return CloudFileQuery(["scan-1"])
+        if model is Scan:
+            return CloudFileQuery(
+                [
+                    SimpleNamespace(
+                        id="scan-1",
+                        department_id="dept-1",
+                        current_remediation_artifact_id=None,
+                    )
+                ]
+            )
+        if model in {ScanFix, RemediationArtifact}:
+            return CloudFileQuery([])
         assert model is CloudFile
         return CloudFileQuery(self.rows)
 
@@ -3013,7 +3047,28 @@ class _ProcessQuery:
     def filter(self, *args):
         return self
 
+    def options(self, *args):
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def populate_existing(self):
+        return self
+
     def first(self):
+        return self.value
+
+    def one_or_none(self):
+        return self.value
+
+    def all(self):
+        return [] if self.value is None else [self.value]
+
+    def with_for_update(self):
+        return self
+
+    def scalar(self):
         return self.value
 
     def delete(self):
@@ -3031,11 +3086,15 @@ class _ProcessDB:
         self.queried_models = []
 
     def query(self, model):
+        if model is Scan.id:
+            self.queried_models.append("Scan.id")
+            return _ProcessQuery(self.scan.id)
         self.queried_models.append(model.__name__)
         values = {
             "Scan": self.scan,
             "ScanResult": self.scan_result,
             "ScanFix": None,
+            "RemediationArtifact": None,
             "CloudFile": self.cloud_file,
         }
         return _ProcessQuery(values.get(model.__name__))

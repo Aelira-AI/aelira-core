@@ -15,6 +15,7 @@ Key capabilities:
 Based on PDF/UA-1 (ISO 14289-1), PDF/UA-2 (ISO 14289-2:2024), and WCAG 2.1 requirements.
 """
 
+import hashlib
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -1000,6 +1001,60 @@ class PDFStructureTree:
             logger.error(f"Failed to set PDF/UA identifier: {e}")
             return False
 
+    def create_formula_element(
+        self,
+        page_num: int,
+        alt_text: str,
+        mathml_string: str,
+        bbox: Optional[tuple] = None,
+        mcid: Optional[int] = None,
+    ) -> Any:
+        """Create, but do not place, one Formula element and MathML attachment."""
+        page_obj = self.pdf.pages[page_num - 1].obj
+        formula_dict = {
+            "/Type": Name.StructElem,
+            "/S": Name("/Formula"),
+            "/Alt": String(alt_text),
+            "/Pg": page_obj,
+        }
+        if mcid is not None:
+            if isinstance(mcid, bool) or not isinstance(mcid, int) or mcid < 0:
+                raise ValueError("mcid must be a non-negative integer")
+            formula_dict["/K"] = Dictionary(
+                {"/Type": Name("/MCR"), "/MCID": mcid, "/Pg": page_obj}
+            )
+        formula_elem = self.pdf.make_indirect(Dictionary(formula_dict))
+
+        if bbox:
+            formula_elem[Name.A] = Dictionary(
+                {"/O": Name.Layout, "/BBox": Array(list(bbox))}
+            )
+
+        mathml_bytes = mathml_string.encode("utf-8")
+        mathml_stream = self.pdf.make_stream(mathml_bytes)
+        mathml_stream[Name.Type] = Name("/EmbeddedFile")
+        mathml_stream[Name.Subtype] = Name("/application#2Fmathml+xml")
+        mathml_stream[Name("/Params")] = Dictionary(
+            {
+                "/Size": len(mathml_bytes),
+                "/CheckSum": String(
+                    hashlib.md5(mathml_bytes, usedforsecurity=False).digest()
+                ),
+            }
+        )
+        filespec = self.pdf.make_indirect(
+            Dictionary(
+                {
+                    "/Type": Name("/Filespec"),
+                    "/F": String("formula.mml"),
+                    "/EF": Dictionary({"/F": mathml_stream}),
+                    "/AFRelationship": Name("/Supplement"),
+                }
+            )
+        )
+        formula_elem["/AF"] = Array([filespec])
+        return formula_elem
+
     def add_formula(
         self,
         page_num: int,
@@ -1021,50 +1076,13 @@ class PDFStructureTree:
         """
         try:
             self._element_count += 1
-            page_obj = self.pdf.pages[page_num - 1].obj
-
-            # Create the Formula structure element
-            formula_elem = self.pdf.make_indirect(
-                Dictionary(
-                    {
-                        "/Type": Name.StructElem,
-                        "/S": Name("/Formula"),
-                        "/P": self.struct_root,
-                        "/Alt": String(alt_text),
-                        "/Pg": page_obj,
-                    }
-                )
+            formula_elem = self.create_formula_element(
+                page_num=page_num,
+                alt_text=alt_text,
+                mathml_string=mathml_string,
+                bbox=bbox,
             )
-
-            if bbox:
-                formula_elem[Name.A] = Dictionary(
-                    {
-                        "/O": Name.Layout,
-                        "/BBox": Array(list(bbox)),
-                    }
-                )
-
-            # Create embedded file stream for MathML
-            mathml_bytes = mathml_string.encode("utf-8")
-            mathml_stream = self.pdf.make_stream(mathml_bytes)
-            mathml_stream[Name.Type] = Name("/EmbeddedFile")
-            mathml_stream[Name.Subtype] = Name("/application#2Fmathml+xml")
-
-            # Create file specification
-            filespec = self.pdf.make_indirect(
-                Dictionary(
-                    {
-                        "/Type": Name("/Filespec"),
-                        "/F": String("formula.mml"),
-                        "/EF": Dictionary({"/F": mathml_stream}),
-                        "/AFRelationship": Name("/Supplement"),
-                    }
-                )
-            )
-
-            # Attach via /AF array
-            formula_elem["/AF"] = Array([filespec])
-
+            formula_elem[Name.P] = self.struct_root
             self.kids.append(formula_elem)
 
             logger.info(f"Added Formula on page {page_num}: {alt_text[:50]}")

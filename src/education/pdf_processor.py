@@ -197,8 +197,8 @@ class PDFProcessor:
         # 6. Check compliance (pass context for enhanced descriptions)
         score, issues = self._check_compliance(html, structure, document_context)
 
-        # 7. Scan images for accessibility issues if requested.
-        # When generate_alt_text=True the scan also runs AI to suggest alt text.
+        # 7. Always scan images. The checker itself stays in no-AI scan-only
+        # mode unless generation or validation was explicitly requested.
         image_checker = ImageAccessibilityChecker(
             generate_alt_text=self.generate_alt_text,
             validate_alt_text=self.validate_alt_text,
@@ -206,10 +206,8 @@ class PDFProcessor:
             progress_callback=self.progress_callback,
             cvd_simulator=self.cvd_simulator,
         )
-        image_issues = []
-        if self.generate_alt_text or self.validate_alt_text:
-            logger.info("[PDFProcessor] Scanning images for accessibility issues...")
-            image_issues = image_checker.check(file_path, document_context)
+        logger.info("[PDFProcessor] Scanning images for accessibility issues...")
+        image_issues = image_checker.check(file_path, document_context)
         logger.info(
             f"[PDFProcessor] _check_images() returned {len(image_issues) if image_issues else 0} issues"
         )
@@ -267,6 +265,10 @@ class PDFProcessor:
                     "image_type": img_issue.image_type,  # decorative/informative/functional/complex
                     "is_decorative": img_issue.image_type == "decorative",
                     "image_xref": img_issue.image_xref,  # PDF xref so remediator can extract image bytes
+                    "image_index": img_issue.image_index,
+                    "occurrence_ordinal": img_issue.occurrence_ordinal,
+                    "bbox": list(img_issue.bbox),
+                    "occurrence_id": img_issue.occurrence_id,
                     "is_chart": img_issue.is_chart,  # True if chart/graph/infographic
                     "detailed_description": img_issue.detailed_description,  # For charts/complex images
                 }
@@ -283,6 +285,15 @@ class PDFProcessor:
             logger.info(f"[PDFProcessor] New compliance score: {score}")
         else:
             logger.info("[PDFProcessor] No image issues to merge")
+
+        # Conservative equation candidates are independent of LaTeX-aware
+        # document-wide warnings and never invoke a provider.
+        equation_candidates = MathEquationChecker().find_image_equation_candidates(
+            file_path, image_issues
+        )
+        if equation_candidates:
+            issues.extend(equation_candidates)
+            score = self._calculate_compliance_score(issues)
 
         # 7.5. Check PDF structure accessibility (language, title, structure tree,
         #       list structure, font/role mapping, etc.)
