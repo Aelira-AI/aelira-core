@@ -34,6 +34,7 @@ from src.services.canvas_content_provenance import (
     EVIDENCE_MAX_BYTES,
     EVIDENCE_MAX_ROWS_PER_FILE,
     _allowlisted_diagnostics,
+    _archive_candidate,
     canvas_candidate_fingerprint,
     canvas_content_candidate_is_current,
     canvas_content_sha256,
@@ -509,6 +510,90 @@ def test_evidence_diagnostics_are_allowlisted_and_bounded():
     assert b"unsafe" not in encoded
     assert len(encoded) <= EVIDENCE_MAX_BYTES
     assert EVIDENCE_MAX_ROWS_PER_FILE == 20
+
+
+class _EvidenceDb:
+    def __init__(self):
+        self.rows = {}
+
+    def get(self, _model, evidence_id):
+        return self.rows.get(evidence_id)
+
+    def add(self, row):
+        self.rows[row.id] = row
+
+    def flush(self):
+        return None
+
+    def scalars(self, _query):
+        return []
+
+
+def _evidence_metadata(
+    *,
+    source_sha256="a" * 64,
+    scan_id="scan-1",
+    producer_job_id="job-1",
+    snapshot_sha256="d" * 64,
+):
+    return {
+        "canvas_content_remediation": {
+            "job_id": producer_job_id,
+            "scan_id": scan_id,
+            "status": "completed",
+            "source_sha256": source_sha256,
+        },
+        "canvas_content_candidate": {
+            "fingerprint": "b" * 64,
+            "source_sha256": source_sha256,
+            "candidate_sha256": "c" * 64,
+            "snapshot_sha256": snapshot_sha256,
+            "scan_id": scan_id,
+            "producer_job_id": producer_job_id,
+        },
+    }
+
+
+def test_exact_duplicate_canvas_evidence_archival_is_idempotent():
+    db = _EvidenceDb()
+    cloud_file = SimpleNamespace(id="file-1", department_id="dept-1")
+    metadata = _evidence_metadata()
+
+    _archive_candidate(db, cloud_file, metadata, "source_changed")
+    evidence_id = next(iter(db.rows))
+    _archive_candidate(db, cloud_file, metadata, "source_changed")
+
+    assert list(db.rows) == [evidence_id]
+
+
+@pytest.mark.parametrize(
+    ("dimension", "replacement"),
+    [
+        ("source_sha256", "e" * 64),
+        ("scan_id", "scan-2"),
+        ("producer_job_id", "job-2"),
+        ("department_id", "dept-2"),
+        ("snapshot_sha256", "f" * 64),
+    ],
+)
+def test_canvas_evidence_identity_binds_persisted_provenance(dimension, replacement):
+    db = _EvidenceDb()
+    cloud_file = SimpleNamespace(id="file-1", department_id="dept-1")
+    _archive_candidate(db, cloud_file, _evidence_metadata(), "source_changed")
+
+    metadata_changes = {}
+    if dimension == "department_id":
+        cloud_file.department_id = replacement
+    else:
+        metadata_changes[dimension] = replacement
+    _archive_candidate(
+        db,
+        cloud_file,
+        _evidence_metadata(**metadata_changes),
+        "source_changed",
+    )
+
+    assert len(db.rows) == 2
 
 
 @pytest.mark.asyncio

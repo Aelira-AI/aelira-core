@@ -132,6 +132,33 @@ def _allowlisted_diagnostics(metadata: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _canvas_content_evidence_id(
+    *,
+    department_id: str,
+    cloud_file_id: str,
+    source_sha256: str,
+    candidate_sha256: str,
+    source_scan_id: str | None,
+    producer_job_id: str | None,
+    quarantine_reason: str,
+    diagnostics: dict[str, Any],
+) -> str:
+    return hashlib.sha256(
+        _canonical_json(
+            {
+                "department_id": department_id,
+                "cloud_file_id": cloud_file_id,
+                "source_sha256": source_sha256,
+                "candidate_sha256": candidate_sha256,
+                "source_scan_id": source_scan_id,
+                "producer_job_id": producer_job_id,
+                "quarantine_reason": quarantine_reason,
+                "diagnostics": diagnostics,
+            }
+        )
+    ).hexdigest()
+
+
 def _archive_candidate(
     db: Session, cloud_file: CloudFile, metadata: dict[str, Any], reason: str
 ) -> None:
@@ -151,15 +178,22 @@ def _archive_candidate(
     stored_bytes = len(_canonical_json(diagnostics))
     if stored_bytes < 1 or stored_bytes > EVIDENCE_MAX_BYTES:
         raise CanvasContentProvenanceError("canvas_evidence_too_large")
-    evidence_id = hashlib.sha256(
-        _canonical_json(
-            {
-                "cloud_file_id": str(cloud_file.id),
-                "candidate_sha256": candidate_sha256,
-                "reason": reason,
-            }
-        )
-    ).hexdigest()
+    source_scan_id = candidate.get("scan_id")
+    if not isinstance(source_scan_id, str):
+        source_scan_id = None
+    producer_job_id = candidate.get("producer_job_id")
+    if not isinstance(producer_job_id, str):
+        producer_job_id = None
+    evidence_id = _canvas_content_evidence_id(
+        department_id=cloud_file.department_id,
+        cloud_file_id=str(cloud_file.id),
+        source_sha256=source_sha256,
+        candidate_sha256=candidate_sha256,
+        source_scan_id=source_scan_id,
+        producer_job_id=producer_job_id,
+        quarantine_reason=reason,
+        diagnostics=diagnostics,
+    )
     if db.get(CanvasContentRemediationEvidence, evidence_id) is not None:
         return
     now = datetime.now(timezone.utc)
@@ -170,8 +204,8 @@ def _archive_candidate(
             cloud_file_id=str(cloud_file.id),
             source_sha256=source_sha256,
             candidate_sha256=candidate_sha256,
-            source_scan_id=candidate.get("scan_id"),
-            producer_job_id=candidate.get("producer_job_id"),
+            source_scan_id=source_scan_id,
+            producer_job_id=producer_job_id,
             quarantine_reason=reason,
             diagnostics=diagnostics,
             stored_bytes=stored_bytes,
