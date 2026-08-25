@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import inspect
@@ -11,6 +12,103 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+
+
+def test_queue_model_preserves_migration_constraint_names():
+    from src.db.models import CloudJobQueue
+
+    constraint_names = {
+        constraint.name for constraint in CloudJobQueue.__table__.constraints
+    }
+    assert "ck_cloud_job_queue_payload_object" in constraint_names
+    dependency = next(iter(CloudJobQueue.__table__.c.depends_on_job_id.foreign_keys))
+    assert dependency.constraint.name == "fk_cloud_job_queue_dependency"
+
+
+def test_onedrive_constructor_rejects_credential_identifier_scope():
+    from src.integrations.microsoft_365.onedrive import OneDriveIntegration
+
+    with pytest.raises(TypeError, match="credential_id"):
+        OneDriveIntegration(access_token="token", credential_id="credential-1")
+
+
+@pytest.mark.asyncio
+async def test_onedrive_webhook_uses_department_scope_as_client_state():
+    from src.integrations.microsoft_365.onedrive import OneDriveIntegration
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(request.extensions)
+        captured["body"] = request.content
+        return httpx.Response(
+            201,
+            json={"id": "provider-sub", "resource": "/me/drive/root"},
+            request=request,
+        )
+
+    integration = OneDriveIntegration(
+        access_token="token",
+        department_id="department-authority",
+    )
+    integration._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        await integration.create_webhook("https://example.test/hooks/microsoft")
+    finally:
+        await integration.close()
+
+    assert b'"clientState":"department-authority"' in captured["body"]
+    assert b"credential" not in captured["body"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_state", [None, "", "another-department"])
+async def test_microsoft_webhook_requires_exact_department_client_state(
+    monkeypatch, client_state
+):
+    from src.api import webhook_routes
+
+    subscription = SimpleNamespace(
+        id="subscription-row",
+        subscription_id="provider-subscription",
+        department_id="department-authority",
+        credential_id="credential-1",
+        last_notification_at=None,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = subscription
+
+    @contextmanager
+    def scoped_db():
+        yield db
+
+    enqueue = MagicMock()
+    monkeypatch.setattr(webhook_routes, "get_db", scoped_db)
+    monkeypatch.setattr(webhook_routes, "enqueue_cloud_job", enqueue)
+    request = SimpleNamespace(
+        json=AsyncMock(
+            return_value={
+                "value": [
+                    {
+                        "subscriptionId": "provider-subscription",
+                        "clientState": client_state,
+                        "changeType": "updated",
+                        "resource": "/me/drive/root",
+                    }
+                ]
+            }
+        )
+    )
+
+    response = await webhook_routes.microsoft_graph_webhook(
+        request,
+        validationToken=None,
+    )
+
+    assert response.status_code == 202
+    assert subscription.last_notification_at is None
+    enqueue.assert_not_called()
+    db.commit.assert_not_called()
 
 
 def test_reconciliation_has_its_own_exact_job_type_and_handler():
@@ -89,6 +187,13 @@ async def test_webhook_refresh_renews_microsoft_and_persists_audit(monkeypatch):
     )
 
     assert result["success"] is True
+    webhook_refresh_job.OneDriveIntegration.assert_called_once_with(
+        access_token="token",
+        department_id="dept-1",
+    )
+    assert "credential_id" not in (
+        webhook_refresh_job.OneDriveIntegration.call_args.kwargs
+    )
     integration.renew_webhook.assert_awaited_once_with("provider-sub")
     assert subscription.renewal_status == "renewed"
     assert subscription.renewal_result == {

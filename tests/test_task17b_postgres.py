@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 from sqlalchemy import create_engine, delete
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from src.db.models import CloudJobQueue, Department
@@ -19,7 +20,18 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def pg_enqueue_scope():
-    engine = create_engine(os.environ["DATABASE_URL"])
+    database_url = os.getenv("TEST_MIGRATION_DATABASE_URL")
+    if not database_url:
+        pytest.skip("requires TEST_MIGRATION_DATABASE_URL")
+    parsed = make_url(database_url)
+    database = parsed.database or ""
+    assert parsed.get_backend_name() == "postgresql"
+    assert (
+        database.startswith("test_")
+        or database.endswith("_test")
+        or "_test_" in database
+    )
+    engine = create_engine(database_url)
     try:
         with engine.connect() as connection:
             connection.exec_driver_sql("SELECT 1")

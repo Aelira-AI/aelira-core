@@ -261,7 +261,7 @@ class CloudScanJob:
         """Download file from OneDrive/SharePoint."""
         integration = OneDriveIntegration(
             access_token=access_token,
-            credential_id=self.credential.id,
+            department_id=self.credential.department_id,
         )
 
         try:

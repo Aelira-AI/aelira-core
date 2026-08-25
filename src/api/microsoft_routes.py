@@ -261,7 +261,7 @@ async def get_microsoft_integration(
 
     return OneDriveIntegration(
         access_token=access_token,
-        credential_id=credential.id,
+        department_id=credential.department_id,
         drive_id=drive_id,
         site_id=site_id,
     )
@@ -791,7 +791,7 @@ async def list_onedrive_folders(
         # Initialize OneDrive integration
         integration = OneDriveIntegration(
             access_token=access_token,
-            credential_id=credential.id,
+            department_id=credential.department_id,
         )
 
         # List folders
@@ -1373,7 +1373,10 @@ async def upload_to_onedrive(
     access_token = token_manager.decrypt_token(credential.access_token)
 
     # Upload file using OneDrive integration
-    OneDriveIntegration(access_token=access_token, credential_id=credential.id)
+    OneDriveIntegration(
+        access_token=access_token,
+        department_id=credential.department_id,
+    )
 
     try:
         # Placeholder - would use upload_file method

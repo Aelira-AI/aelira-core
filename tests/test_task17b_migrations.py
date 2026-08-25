@@ -38,7 +38,7 @@ def test_task17b_migrations_are_one_linear_reversible_head():
 
 
 @pytest.mark.integration
-def test_task17b_migrations_downgrade_then_upgrade_on_disposable_postgres():
+def test_task17b_migrations_downgrade_then_upgrade_on_disposable_postgres(monkeypatch):
     database_url = os.getenv("TEST_MIGRATION_DATABASE_URL")
     if not database_url or os.getenv("ALLOW_DESTRUCTIVE_MIGRATION_TESTS") != "1":
         pytest.skip(
@@ -53,10 +53,15 @@ def test_task17b_migrations_downgrade_then_upgrade_on_disposable_postgres():
         or database.endswith("_test")
         or "_test_" in database
     )
+    monkeypatch.setenv("DATABASE_URL", database_url)
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", database_url)
     engine = create_engine(database_url)
     try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+            connection.exec_driver_sql("GRANT ALL ON SCHEMA public TO public")
         command.upgrade(config, "head")
         schema = inspect(engine)
         assert "artifact_orphan_quarantine" in schema.get_table_names()

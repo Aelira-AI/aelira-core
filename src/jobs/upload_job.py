@@ -426,7 +426,7 @@ async def _upload_to_microsoft(
     try:
         integration = OneDriveIntegration(
             access_token=access_token,
-            credential_id=department_id,
+            department_id=department_id,
         )
 
         try:

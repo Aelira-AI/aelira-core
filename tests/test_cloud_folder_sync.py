@@ -25,7 +25,7 @@ from src.db.models import (
     CloudProvider,
     CloudJobQueue,
 )
-from src.jobs.cloud_sync_job import handle_sync_job
+from src.jobs.cloud_sync_job import CloudSyncJob, handle_sync_job
 from src.jobs.contracts import FailureKind, JobFailure
 
 # Mark all tests in this module as integration tests
@@ -481,4 +481,41 @@ class TestMicrosoftSyncPrivacy:
 
         # Verify: No files should be synced
         assert result["folders_processed"] == 0
+        assert result["files_discovered"] == 0
+
+    @pytest.mark.asyncio
+    async def test_selected_folder_uses_department_scoped_onedrive_client(
+        self, mock_db_session, mock_token_manager
+    ):
+        credential = MagicMock(spec=CloudOAuthCredentials)
+        credential.id = "credential-distinct-from-department"
+        credential.department_id = "department-authority"
+        credential.provider = CloudProvider.MICROSOFT.value
+        credential.last_sync_at = None
+        mock_token_manager.refresh_if_expired = AsyncMock(
+            return_value="microsoft-access-token"
+        )
+
+        with patch("src.jobs.cloud_sync_job.OneDriveIntegration") as constructor:
+            integration = constructor.return_value
+            integration.list_files = AsyncMock(return_value=([], None))
+            integration.close = AsyncMock()
+
+            result = await CloudSyncJob(credential, mock_token_manager)._sync_microsoft(
+                mock_db_session,
+                folder_id="selected-folder",
+                recursive=False,
+            )
+
+        constructor.assert_called_once_with(
+            access_token="microsoft-access-token",
+            department_id="department-authority",
+        )
+        assert "credential_id" not in constructor.call_args.kwargs
+        integration.list_files.assert_awaited_once_with(
+            folder_id="selected-folder",
+            page_token=None,
+            page_size=100,
+        )
+        integration.close.assert_awaited_once()
         assert result["files_discovered"] == 0

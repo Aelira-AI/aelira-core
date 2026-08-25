@@ -118,7 +118,7 @@ async def test_onedrive_list_files_returns_canonical_folder_and_file_dtos():
         )
 
     integration = OneDriveIntegration(
-        access_token="token", credential_id="microsoft-credential"
+        access_token="token", department_id="department-1"
     )
     integration._http_client = _async_client(handler)
     try:
@@ -150,7 +150,12 @@ async def test_provider_auth_failures_are_typed(integration_type, client_attribu
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"error": "expired"}, request=request)
 
-    integration = integration_type(access_token="token", credential_id="credential")
+    scope_argument = (
+        {"department_id": "department-1"}
+        if integration_type is OneDriveIntegration
+        else {"credential_id": "credential"}
+    )
+    integration = integration_type(access_token="token", **scope_argument)
     setattr(integration, client_attribute, _async_client(handler))
     try:
         with pytest.raises(CloudAuthError):

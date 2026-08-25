@@ -105,6 +105,7 @@ class CanvasRemediateResponse(BaseModel):
     scan_id: Optional[str] = None
     job_id: Optional[str] = None
     message: str
+    error_code: Optional[str] = None
 
 
 # =============================================================================
@@ -776,15 +777,23 @@ async def remediate_canvas_file(
         )
 
     except HTTPException:
+        db.rollback()
         raise
     except Exception as exc:
+        db.rollback()
         logger.error(
-            "Failed to queue Canvas remediation",
-            extra={"error_type": type(exc).__name__, "department_id": dept_id},
+            "Canvas remediation enqueue failed",
+            extra={
+                "operation": "canvas_remediation_enqueue",
+                "department_id": str(dept_id)[:64],
+                "course_id": str(request.course_id)[:64],
+                "exception_type": type(exc).__name__[:64],
+            },
         )
         return CanvasRemediateResponse(
             success=False,
-            message="Failed to queue remediation (queue_unavailable)",
+            message="Unable to queue remediation. Please try again later.",
+            error_code="remediation_queue_unavailable",
         )
 
 

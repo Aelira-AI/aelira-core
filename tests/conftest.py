@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 # Skip browser/E2E/integration tests in CI environments (industry best practice - testing pyramid)
@@ -43,12 +44,35 @@ if "TOKEN_ENCRYPTION_KEY" not in os.environ:
 
     os.environ["TOKEN_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
-# Test database URL - use existing DATABASE_URL if set (important for Docker),
-# otherwise fallback to local defaults.
-if "DATABASE_URL" not in os.environ:
-    os.environ["DATABASE_URL"] = os.getenv(
-        "TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/aelira_test"
-    )
+
+def _require_test_database_url(database_url: str) -> str:
+    """Refuse to run the suite against a database without an explicit test name."""
+    parsed = make_url(database_url)
+    if parsed.get_backend_name() == "sqlite" and parsed.database in (
+        None,
+        "",
+        ":memory:",
+    ):
+        return database_url
+    database = parsed.database or ""
+    assert (
+        database.startswith("test_")
+        or database.endswith("_test")
+        or "_test_" in database
+    ), f"refusing test suite database {database!r}"
+    return database_url
+
+
+# Respect an explicitly configured test URL or the CI/Docker DATABASE_URL, but
+# fail closed if its database name is not unmistakably test-only.
+_suite_database_url = os.getenv(
+    "DATABASE_URL",
+    os.getenv(
+        "TEST_DATABASE_URL",
+        "postgresql://postgres:postgres@localhost:5432/aelira_test",
+    ),
+)
+os.environ["DATABASE_URL"] = _require_test_database_url(_suite_database_url)
 
 
 @pytest.fixture(scope="session", autouse=True)

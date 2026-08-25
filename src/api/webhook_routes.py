@@ -177,11 +177,8 @@ async def microsoft_graph_webhook(
                 continue
 
             # Verify client state matches department ID
-            if client_state and client_state != subscription.department_id:
-                logger.warning(
-                    f"Microsoft webhook client state mismatch: "
-                    f"expected={subscription.department_id}, got={client_state}"
-                )
+            if client_state != subscription.department_id:
+                logger.warning("Microsoft webhook client state mismatch")
                 continue
 
             # Update last notification time and durably enqueue reconciliation.
