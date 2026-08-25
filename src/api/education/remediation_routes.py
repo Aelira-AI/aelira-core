@@ -184,6 +184,31 @@ def _artifact_failure(exc: ArtifactError) -> HTTPException:
     return HTTPException(status_code=status_code, detail="Artifact unavailable")
 
 
+def _artifact_requires_approval(
+    db: Session,
+    *,
+    scan_id: str,
+    artifact: RemediationArtifact,
+    persisted_job_gate: bool = False,
+) -> bool:
+    """Derive the current durable equation gate without trusting one route."""
+    raw_provider_result = getattr(artifact, "provider_result", None)
+    provider_result = (
+        raw_provider_result if isinstance(raw_provider_result, dict) else {}
+    )
+    return (
+        persisted_job_gate
+        or provider_result.get("requires_approval") is True
+        or db.query(ScanFix.id)
+        .filter(
+            ScanFix.scan_id == scan_id,
+            ScanFix.source_kind == "image_equation",
+        )
+        .first()
+        is not None
+    )
+
+
 @router.get("/scans/{scan_id}/artifacts/{artifact_id}")
 async def get_managed_artifact_metadata(
     scan_id: str,
@@ -233,12 +258,17 @@ async def download_managed_artifact(
         db, scan_id=scan_id, artifact_id=artifact_id, principal=principal
     )
     service = RemediationArtifactService.from_settings()
+    requires_approval = _artifact_requires_approval(
+        db, scan_id=scan_id, artifact=artifact
+    )
     context = service.open_verified(
         db,
         artifact,
         department_id=principal.department_id,
         scan_id=scan_id,
         cloud_file_id=str(cloud_file.id) if cloud_file is not None else None,
+        require_approved=requires_approval,
+        approval_checksum=artifact.sha256 if requires_approval else None,
     )
     try:
         stream = context.__enter__()
@@ -1282,14 +1312,11 @@ def _artifact_is_downloadable(
     artifact = db.get(RemediationArtifact, artifact_id)
     if artifact is None:
         return False, None
-    requires_approval = result.get("download_available") is False or (
-        db.query(ScanFix.id)
-        .filter(
-            ScanFix.scan_id == scan_id,
-            ScanFix.source_kind == "image_equation",
-        )
-        .first()
-        is not None
+    requires_approval = _artifact_requires_approval(
+        db,
+        scan_id=scan_id,
+        artifact=artifact,
+        persisted_job_gate=result.get("download_available") is False,
     )
     try:
         RemediationArtifactService.from_settings().resolve_record(
@@ -1299,6 +1326,7 @@ def _artifact_is_downloadable(
             scan_id=scan_id,
             cloud_file_id=job.cloud_file_id,
             require_approved=requires_approval,
+            approval_checksum=artifact.sha256 if requires_approval else None,
         )
     except ArtifactError:
         db.rollback()
@@ -2696,14 +2724,11 @@ def _stream_remediation_artifact(
     artifact = db.get(RemediationArtifact, artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Remediated file not available")
-    requires_approval = result.get("download_available") is False or (
-        db.query(ScanFix.id)
-        .filter(
-            ScanFix.scan_id == scan_id,
-            ScanFix.source_kind == "image_equation",
-        )
-        .first()
-        is not None
+    requires_approval = _artifact_requires_approval(
+        db,
+        scan_id=scan_id,
+        artifact=artifact,
+        persisted_job_gate=result.get("download_available") is False,
     )
     detached_stream = None
     try:
@@ -2714,6 +2739,7 @@ def _stream_remediation_artifact(
             scan_id=scan_id,
             cloud_file_id=job.cloud_file_id,
             require_approved=requires_approval,
+            approval_checksum=artifact.sha256 if requires_approval else None,
         ) as stream:
             detached_stream = os.fdopen(os.dup(stream.fileno()), "rb")
             filename = artifact.filename

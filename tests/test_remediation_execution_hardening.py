@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
 import os
@@ -479,7 +480,9 @@ def test_parent_claim_rejects_symlinked_output_components(tmp_path):
 
 
 def test_image_equation_artifact_is_not_downloadable_before_approval(monkeypatch):
-    artifact = SimpleNamespace(id="artifact-1", cloud_file_id=None)
+    artifact = SimpleNamespace(
+        id="artifact-1", cloud_file_id=None, sha256="a" * 64, provider_result={}
+    )
     job = SimpleNamespace(
         status=CloudJobStatus.COMPLETED.value,
         department_id="department-1",
@@ -493,6 +496,7 @@ def test_image_equation_artifact_is_not_downloadable_before_approval(monkeypatch
     class Service:
         def resolve_record(self, *_args, **kwargs):
             assert kwargs["require_approved"] is True
+            assert kwargs["approval_checksum"] == "a" * 64
             raise ArtifactAuthorizationError("approval required")
 
     monkeypatch.setattr(
@@ -504,7 +508,9 @@ def test_image_equation_artifact_is_not_downloadable_before_approval(monkeypatch
 
 
 def test_equation_artifact_stays_gated_if_current_fix_row_is_removed(monkeypatch):
-    artifact = SimpleNamespace(id="artifact-1", cloud_file_id=None)
+    artifact = SimpleNamespace(
+        id="artifact-1", cloud_file_id=None, sha256="a" * 64, provider_result={}
+    )
     job = SimpleNamespace(
         status=CloudJobStatus.COMPLETED.value,
         department_id="department-1",
@@ -518,6 +524,7 @@ def test_equation_artifact_stays_gated_if_current_fix_row_is_removed(monkeypatch
     class Service:
         def resolve_record(self, *_args, **kwargs):
             assert kwargs["require_approved"] is True
+            assert kwargs["approval_checksum"] == "a" * 64
             raise ArtifactAuthorizationError("approval required")
 
     monkeypatch.setattr(
@@ -529,7 +536,12 @@ def test_equation_artifact_stays_gated_if_current_fix_row_is_removed(monkeypatch
 
 
 def test_download_validation_uses_job_cloud_authority(monkeypatch):
-    artifact = SimpleNamespace(id="artifact-1", cloud_file_id="cloud-file-other")
+    artifact = SimpleNamespace(
+        id="artifact-1",
+        cloud_file_id="cloud-file-other",
+        sha256="a" * 64,
+        provider_result={},
+    )
     job = SimpleNamespace(
         status=CloudJobStatus.COMPLETED.value,
         department_id="department-1",
@@ -843,3 +855,383 @@ async def test_worker_fails_closed_when_code_approval_is_revoked(monkeypatch):
         "scan_id": "scan-1",
     }
     child.assert_not_awaited()
+
+
+@pytest.mark.parametrize("configured", (True, False))
+@pytest.mark.asyncio
+async def test_local_queue_uses_only_purpose_bound_alt_text_client(
+    monkeypatch, configured
+):
+    from src.jobs import remediation_job
+
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id="department-1",
+        scan_type=ScanType.PDF,
+        storage_path="/uploads/source.pdf",
+        status="processing",
+        remediation_outcome=None,
+        completed_at=None,
+    )
+    job = SimpleNamespace(
+        id="job-1",
+        department_id="department-1",
+        provider="local",
+        cloud_file_id=None,
+        credential_id=None,
+        payload={
+            "scan_id": "scan-1",
+            "options": {"use_ai": False, "generate_alt_text": True},
+            "requested_by_id": "user-1",
+        },
+        execution_context={
+            "alt_text_requested": True,
+            "requested_purposes": ["alt_text"],
+        },
+        claim_token=None,
+        worker_id=None,
+    )
+    db = MagicMock()
+    db.get.side_effect = lambda model, identity, **_kwargs: (
+        scan if model is Scan and identity == "scan-1" else None
+    )
+    purpose_client = SimpleNamespace(purpose="alt_text", provider="ollama")
+    bind = MagicMock(return_value=purpose_client if configured else None)
+    process = AsyncMock(
+        return_value={
+            "success": True,
+            "scan_id": "scan-1",
+            "fixed_count": 0,
+            "manual_count": 0,
+            "failed_count": 0,
+            "skipped_count": 0,
+        }
+    )
+    monkeypatch.setattr(remediation_job.LMSRemediationClient, "bind_if_allowed", bind)
+    monkeypatch.setattr(remediation_job, "process_remediation_job", process)
+
+    await remediation_job.handle_remediation_job(job, db, object())
+
+    bind.assert_called_once_with(
+        purpose="alt_text",
+        department_id="department-1",
+        job_id="job-1",
+        scan_id="scan-1",
+        cloud_file_id=None,
+    )
+    call = process.await_args
+    assert call.kwargs["lms_policy_authoritative"] is True
+    assert call.kwargs["alt_text_client"] is (purpose_client if configured else None)
+    assert call.kwargs["ai_client"] is None
+
+
+@pytest.mark.parametrize("configured", (True, False))
+def test_local_child_rebinds_alt_text_without_legacy_provider_fallback(
+    monkeypatch, tmp_path, configured
+):
+    from src.jobs import remediation_subprocess
+    from src.ai.lms_remediation_client import LMSRemediationClient
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-1.7\n%%EOF\n")
+    purpose_client = SimpleNamespace(purpose="alt_text", provider="ollama")
+    bind = MagicMock(return_value=purpose_client if configured else None)
+    constructor = MagicMock(return_value=object())
+    provider_manager = MagicMock()
+    monkeypatch.setattr(LMSRemediationClient, "bind_if_allowed", bind)
+    monkeypatch.setattr(
+        "src.education.remediation.pdf_remediator.PdfRemediator", constructor
+    )
+    monkeypatch.setattr("src.ai.providers.get_provider_manager", provider_manager)
+
+    remediation_subprocess._build_remediator(
+        {
+            "scan_type": "PDF",
+            "issues": [],
+            "options": {"use_ai": False},
+            "lms_binding": {
+                "department_id": "department-1",
+                "job_id": "job-1",
+                "scan_id": "scan-1",
+                "remediation": False,
+                "alt_text": configured,
+            },
+        },
+        source,
+        tmp_path,
+    )
+
+    provider_manager.assert_not_called()
+    kwargs = constructor.call_args.kwargs
+    assert kwargs["ai_client"] is None
+    assert kwargs["alt_text_client"] is (purpose_client if configured else None)
+    assert kwargs["config"].allow_legacy_nested_ai is False
+    assert kwargs["config"].fix_alt_text is configured
+
+
+@pytest.mark.asyncio
+async def test_inherited_artifact_download_revalidates_equation_approval(monkeypatch):
+    artifact = SimpleNamespace(
+        id="artifact-1",
+        filename="fixed.pdf",
+        mime_type="application/pdf",
+        size_bytes=5,
+        sha256="a" * 64,
+        provider_result={"requires_approval": True},
+    )
+    principal = SimpleNamespace(department_id="department-1")
+    opened = {}
+
+    class Context:
+        def __enter__(self):
+            from io import BytesIO
+
+            return BytesIO(b"fixed")
+
+        def __exit__(self, *_args):
+            return None
+
+    class Service:
+        def open_verified(self, *_args, **kwargs):
+            opened.update(kwargs)
+            return Context()
+
+    monkeypatch.setattr(
+        routes,
+        "_managed_artifact_authority",
+        MagicMock(return_value=(SimpleNamespace(id="scan-1"), None, artifact)),
+    )
+    monkeypatch.setattr(
+        routes.RemediationArtifactService,
+        "from_settings",
+        classmethod(lambda cls: Service()),
+    )
+
+    await routes.download_managed_artifact(
+        "scan-1", "artifact-1", db=MagicMock(), principal=principal
+    )
+
+    assert opened["require_approved"] is True
+    assert opened["approval_checksum"] == "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_code_fix_revocation_after_child_aborts_before_publication(
+    monkeypatch, tmp_path
+):
+    from src.jobs import remediation_job
+
+    source = tmp_path / "source.html"
+    source.write_text("<html><img></html>")
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id="department-1",
+        scan_type=ScanType.CODE,
+        storage_path=str(source),
+        status="processing",
+        remediation_outcome=None,
+        completed_at=None,
+        metadata={},
+    )
+    approved = SimpleNamespace(
+        id="fix-1",
+        issue_id="issue-1",
+        category="alt_text",
+        severity="high",
+        description="Missing alt text",
+        location="line 1",
+        original_content="<img>",
+        fixed_content='<img alt="approved">',
+        wcag_criteria="1.1.1",
+        review_status="approved",
+        updated_at=None,
+    )
+    db = MagicMock()
+    db.no_autoflush = nullcontext()
+
+    def query(model):
+        chain = MagicMock()
+        chain.filter.return_value = chain
+        chain.with_for_update.return_value = chain
+        chain.populate_existing.return_value = chain
+        if model is Scan:
+            chain.first.return_value = scan
+            chain.one_or_none.return_value = scan
+        elif model is ScanResult:
+            chain.first.return_value = SimpleNamespace(issues=[{"id": "issue-1"}])
+        elif model is ScanFix:
+            chain.all.return_value = [approved]
+        return chain
+
+    db.query.side_effect = query
+
+    async def child(**_kwargs):
+        approved.review_status = "rejected"
+        return SimpleNamespace(
+            success=True,
+            fixed_count=1,
+            manual_count=0,
+            failed_count=0,
+            skipped_count=0,
+            total_issues=1,
+            fixed_issues=[SimpleNamespace(issue_id="issue-1")],
+            manual_issues=[],
+            verification_passed=True,
+            close_output_claim=MagicMock(),
+        )
+
+    service = SimpleNamespace(
+        root=tmp_path / "artifacts", claim_and_publish_stream=MagicMock()
+    )
+    monkeypatch.setattr(remediation_job, "run_remediation_subprocess", child)
+    monkeypatch.setattr(
+        remediation_job.RemediationArtifactService,
+        "from_settings",
+        classmethod(lambda cls: service),
+    )
+
+    result = await remediation_job.process_remediation_job(
+        {
+            "job_id": "job-1",
+            "scan_id": "scan-1",
+            "department_id": "department-1",
+            "file_path": str(source),
+            "options": {"use_ai": False, "approved_fixes_only": True},
+        },
+        db,
+        assert_owned=AsyncMock(),
+        defer_final_commit=True,
+    )
+
+    assert result == {
+        "success": False,
+        "error": "manual_required",
+        "scan_id": "scan-1",
+    }
+    service.claim_and_publish_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_revalidates_code_fix_under_completion_fence(monkeypatch):
+    from src.jobs import remediation_job
+
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id="department-1",
+        scan_type=ScanType.CODE,
+        storage_path="/uploads/source.html",
+        status="processing",
+        remediation_outcome=None,
+        completed_at=None,
+    )
+    job = SimpleNamespace(
+        id="job-1",
+        department_id="department-1",
+        provider="local",
+        cloud_file_id=None,
+        credential_id=None,
+        payload={"scan_id": "scan-1", "options": {"use_ai": False}},
+        execution_context={},
+        claim_token=None,
+        worker_id=None,
+    )
+    db = MagicMock()
+    db.get.side_effect = lambda model, identity, **_kwargs: (
+        scan if model is Scan and identity == "scan-1" else None
+    )
+    result = remediation_job.RemediationProcessingResult(
+        {
+            "success": True,
+            "scan_id": "scan-1",
+            "artifact_id": "artifact-1",
+        },
+        approved_fix_snapshot={"fix-1": ("approved",)},
+    )
+    events = []
+    monkeypatch.setattr(
+        remediation_job, "process_remediation_job", AsyncMock(return_value=result)
+    )
+    monkeypatch.setattr(
+        remediation_job,
+        "_fence_claim_for_handler_commit",
+        lambda *_args: events.append("handler_fenced"),
+    )
+
+    def reject(*_args, **_kwargs):
+        events.append("approval_revalidated")
+        raise remediation_job.ApprovedFixAuthorityError("revoked")
+
+    monkeypatch.setattr(remediation_job, "_lock_and_revalidate_approved_fixes", reject)
+    monkeypatch.setattr(
+        remediation_job,
+        "_abort_completion_publication",
+        lambda *_args, **_kwargs: events.append("publication_aborted"),
+    )
+    terminal = AsyncMock(
+        side_effect=remediation_job.RemediationJobFailed("manual_required")
+    )
+    monkeypatch.setattr(remediation_job, "_commit_terminal_failure", terminal)
+
+    with pytest.raises(remediation_job.RemediationJobFailed, match="manual_required"):
+        await remediation_job.handle_remediation_job(job, db, object())
+
+    assert events == [
+        "handler_fenced",
+        "approval_revalidated",
+        "publication_aborted",
+    ]
+    terminal.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handler_marks_only_revalidated_code_fixes_applied(monkeypatch):
+    from src.jobs import remediation_job
+
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id="department-1",
+        scan_type=ScanType.CODE,
+        storage_path="/uploads/source.html",
+        status="processing",
+        remediation_outcome=None,
+        completed_at=None,
+    )
+    job = SimpleNamespace(
+        id="job-1",
+        department_id="department-1",
+        provider="local",
+        cloud_file_id=None,
+        credential_id=None,
+        payload={"scan_id": "scan-1", "options": {"use_ai": False}},
+        execution_context={},
+        claim_token=None,
+        worker_id=None,
+    )
+    db = MagicMock()
+    db.get.side_effect = lambda model, identity, **_kwargs: (
+        scan if model is Scan and identity == "scan-1" else None
+    )
+    approved = SimpleNamespace(
+        id="fix-1", issue_id="issue-1", review_status="approved", updated_at=None
+    )
+    result = remediation_job.RemediationProcessingResult(
+        {"success": True, "scan_id": "scan-1"},
+        approved_fix_snapshot={"fix-1": ("approved",)},
+        applied_fix_ids=frozenset({"issue-1"}),
+    )
+    monkeypatch.setattr(
+        remediation_job, "process_remediation_job", AsyncMock(return_value=result)
+    )
+    monkeypatch.setattr(remediation_job, "_fence_claim_for_handler_commit", MagicMock())
+    revalidate = MagicMock(return_value=[approved])
+    monkeypatch.setattr(
+        remediation_job, "_lock_and_revalidate_approved_fixes", revalidate
+    )
+
+    returned = await remediation_job.handle_remediation_job(job, db, object())
+
+    assert returned["success"] is True
+    assert approved.review_status == "applied"
+    assert approved.updated_at is not None
+    revalidate.assert_called_once()
+    db.commit.assert_called_once()

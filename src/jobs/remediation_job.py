@@ -6,6 +6,7 @@ Applies automated fixes to accessibility issues.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -161,10 +162,102 @@ class RemediationProcessingResult(dict):
         self,
         *args: Any,
         artifact_publication: ArtifactPublicationResult | None = None,
+        approved_fix_snapshot: dict[str, tuple[Any, ...]] | None = None,
+        applied_fix_ids: frozenset[str] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.artifact_publication = artifact_publication
+        self.approved_fix_snapshot = approved_fix_snapshot
+        self.applied_fix_ids = applied_fix_ids
+
+
+class ApprovedFixAuthorityError(RuntimeError):
+    """Approved code-fix authority changed while remediation was running."""
+
+
+def _scan_fix_authority_value(value: Any) -> Any:
+    """Return a detached, deterministic value for approval-authority comparison."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (dict, list)):
+        return json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    return value
+
+
+_SCAN_FIX_AUTHORITY_FIELDS = (
+    "issue_id",
+    "occurrence_key",
+    "category",
+    "severity",
+    "description",
+    "location",
+    "original_content",
+    "fixed_content",
+    "fix_method",
+    "provider_used",
+    "model_used",
+    "source_kind",
+    "verification_evidence",
+    "confidence",
+    "needs_review",
+    "review_status",
+    "reviewed_by",
+    "reviewed_at",
+    "review_notes",
+    "wcag_criteria",
+    "page_number",
+    "updated_at",
+)
+
+
+def _approved_fix_snapshot(rows: list[ScanFix]) -> dict[str, tuple[Any, ...]]:
+    return {
+        str(row.id): tuple(
+            _scan_fix_authority_value(getattr(row, field, None))
+            for field in _SCAN_FIX_AUTHORITY_FIELDS
+        )
+        for row in rows
+    }
+
+
+def _lock_and_revalidate_approved_fixes(
+    db: Session,
+    *,
+    scan_id: str,
+    expected: dict[str, tuple[Any, ...]],
+) -> list[ScanFix]:
+    """Lock the exact reviewed fix set and reject revocation or edited evidence."""
+    if not expected:
+        raise ApprovedFixAuthorityError("approved fix authority is missing")
+    with db.no_autoflush:
+        rows = (
+            db.query(ScanFix)
+            .filter(
+                ScanFix.scan_id == scan_id,
+                ScanFix.id.in_(tuple(expected)),
+            )
+            .with_for_update()
+            .populate_existing()
+            .all()
+        )
+    current = _approved_fix_snapshot(rows)
+    if (
+        set(current) != set(expected)
+        or any(
+            getattr(row, "review_status", None) not in _APPROVED_FIX_STATUSES
+            for row in rows
+        )
+        or current != expected
+    ):
+        raise ApprovedFixAuthorityError("approved fix authority changed")
+    return rows
 
 
 def transition_retryable_remediation_job(
@@ -585,6 +678,7 @@ async def process_remediation_job(
     prior_cloud_state: Dict[str, Any] | None = None
     scan = None
     prior_scan_state: Dict[str, Any] | None = None
+    applied_fix_ids: frozenset[str] | None = None
 
     def restore_prior_cloud_state() -> None:
         if cloud_file is not None and prior_cloud_state is not None:
@@ -619,6 +713,7 @@ async def process_remediation_job(
                 "scan_id": scan_id,
             }
         approved_fixes: list[ScanFix] = []
+        approved_fix_snapshot: dict[str, tuple[Any, ...]] | None = None
         approved_fixes_only = options.get("approved_fixes_only") is True
         if approved_fixes_only:
             scan_type_value = str(
@@ -644,6 +739,7 @@ async def process_remediation_job(
                     "error": "manual_required",
                     "scan_id": scan_id,
                 }
+            approved_fix_snapshot = _approved_fix_snapshot(approved_fixes)
         elif not scan_result.issues:
             original_status = scan.status
             original_outcome = scan.remediation_outcome
@@ -861,6 +957,20 @@ async def process_remediation_job(
                     "error": "scan_not_found",
                     "scan_id": scan_id,
                 }
+            if approved_fix_snapshot is not None:
+                try:
+                    approved_fixes = _lock_and_revalidate_approved_fixes(
+                        db,
+                        scan_id=str(scan_id),
+                        expected=approved_fix_snapshot,
+                    )
+                except ApprovedFixAuthorityError:
+                    db.rollback()
+                    return {
+                        "success": False,
+                        "error": "manual_required",
+                        "scan_id": scan_id,
+                    }
         if remediation_result.success is not True:
             return {
                 "success": False,
@@ -962,6 +1072,13 @@ async def process_remediation_job(
                 }
 
             artifact_service = RemediationArtifactService.from_settings()
+            from ..education.remediation.image_equation_gate import (
+                contains_image_equation_fixes,
+            )
+
+            requires_approval = contains_image_equation_fixes(
+                remediation_result.fixed_issues
+            )
             publication_args = {
                 "department_id": str(department_id),
                 "scan_id": str(scan_id),
@@ -974,7 +1091,10 @@ async def process_remediation_job(
                     str(cloud_file.provider) if cloud_file is not None else "local"
                 ),
                 "scan_type": scan.scan_type,
-                "provider_result": {"verification_passed": True},
+                "provider_result": {
+                    "verification_passed": True,
+                    "requires_approval": requires_approval,
+                },
                 "commit": False,
             }
             if not is_pdf and not killable_execution:
@@ -1072,14 +1192,14 @@ async def process_remediation_job(
         scan.metadata = metadata
 
         if approved_fixes_only:
-            applied_ids = {
+            applied_fix_ids = frozenset(
                 str(getattr(fix, "issue_id", ""))
                 for fix in remediation_result.fixed_issues
-            }
+            )
             applied_at = datetime.now(timezone.utc)
             for approved_fix in approved_fixes:
                 approved_issue_id = str(approved_fix.issue_id or approved_fix.id)
-                if approved_issue_id in applied_ids:
+                if approved_issue_id in applied_fix_ids:
                     approved_fix.review_status = "applied"
                     approved_fix.updated_at = applied_at
         else:
@@ -1237,7 +1357,10 @@ async def process_remediation_job(
             response["artifact_required"] = False
             response["download_available"] = False
         return RemediationProcessingResult(
-            response, artifact_publication=artifact_publication
+            response,
+            artifact_publication=artifact_publication,
+            approved_fix_snapshot=approved_fix_snapshot,
+            applied_fix_ids=applied_fix_ids,
         )
 
     except asyncio.CancelledError:
@@ -1872,18 +1995,18 @@ async def handle_remediation_job(
 
     remediation_client = None
     alt_text_client = None
-    if provider in _LMS_PROVIDERS:
+    if provider in _LMS_PROVIDERS or local_job:
         binding = {
             "department_id": job.department_id,
             "job_id": str(job.id),
             "scan_id": str(scan.id),
-            "cloud_file_id": str(cloud_file.id),
+            "cloud_file_id": str(cloud_file.id) if cloud_file is not None else None,
         }
         if "remediation" in requested:
             remediation_client = LMSRemediationClient.bind_if_allowed(
                 purpose="remediation", **binding
             )
-            if remediation_client is None:
+            if remediation_client is None and provider in _LMS_PROVIDERS:
                 await _commit_terminal_failure(
                     job, db, "policy_not_permitted", scan=authoritative_scan
                 )
@@ -1891,7 +2014,7 @@ async def handle_remediation_job(
             alt_text_client = LMSRemediationClient.bind_if_allowed(
                 purpose="alt_text", **binding
             )
-            if alt_text_client is None:
+            if alt_text_client is None and provider in _LMS_PROVIDERS:
                 await _commit_terminal_failure(
                     job, db, "policy_not_permitted", scan=authoritative_scan
                 )
@@ -1918,7 +2041,7 @@ async def handle_remediation_job(
         db,
         ai_client=remediation_client,
         alt_text_client=alt_text_client,
-        lms_policy_authoritative=provider in _LMS_PROVIDERS,
+        lms_policy_authoritative=provider in _LMS_PROVIDERS or local_job,
         credential=credential,
         token_manager=token_manager,
         defer_final_commit=True,
@@ -1940,12 +2063,47 @@ async def handle_remediation_job(
         key: value for key, value in result.items() if key in _SAFE_RESULT_FIELDS
     }
     artifact_publication = getattr(result, "artifact_publication", None)
+    approved_fix_snapshot = getattr(result, "approved_fix_snapshot", None)
+    applied_fix_ids = getattr(result, "applied_fix_ids", None)
     assert_owned = getattr(job, "_assert_owned", None)
     try:
         if assert_owned is not None:
             await assert_owned()
-        _fence_claim_for_handler_commit(job, db)
+        with db.no_autoflush:
+            _fence_claim_for_handler_commit(job, db)
+            approved_fixes = (
+                _lock_and_revalidate_approved_fixes(
+                    db,
+                    scan_id=str(scan_id),
+                    expected=approved_fix_snapshot,
+                )
+                if approved_fix_snapshot is not None
+                else []
+            )
+        if approved_fix_snapshot is not None:
+            applied_at = datetime.now(timezone.utc)
+            for approved_fix in approved_fixes:
+                approved_issue_id = str(approved_fix.issue_id or approved_fix.id)
+                if applied_fix_ids is not None and approved_issue_id in applied_fix_ids:
+                    approved_fix.review_status = "applied"
+                    approved_fix.updated_at = applied_at
         db.commit()
+    except ApprovedFixAuthorityError:
+        db.rollback()
+        _abort_completion_publication(
+            job,
+            db,
+            artifact_id=safe_result.get("artifact_id"),
+            artifact_publication=artifact_publication,
+        )
+        await _commit_terminal_failure(
+            job,
+            db,
+            "manual_required",
+            scan=authoritative_scan,
+            result={"scan_id": str(scan_id)},
+            rollback_scan_state=pre_process_scan_state,
+        )
     except asyncio.CancelledError:
         db.rollback()
         _abort_completion_publication(
