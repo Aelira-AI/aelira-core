@@ -537,6 +537,20 @@ class Settings(BaseSettings):
     pdf_ocr_dpi: int = int(os.getenv("PDF_OCR_DPI", "150"))
     pdf_ocr_batch_size: int = int(os.getenv("PDF_OCR_BATCH_SIZE", "10"))
     pdf_processing_timeout: int = int(os.getenv("PDF_PROCESSING_TIMEOUT", "300"))
+    remediation_execution_timeout_seconds: float = Field(
+        default_factory=lambda: float(
+            os.getenv("REMEDIATION_EXECUTION_TIMEOUT_SECONDS", "1800")
+        ),
+        ge=1,
+        le=86400,
+    )
+    remediation_termination_grace_seconds: float = Field(
+        default_factory=lambda: float(
+            os.getenv("REMEDIATION_TERMINATION_GRACE_SECONDS", "10")
+        ),
+        ge=0,
+        le=300,
+    )
 
     # Excel Processing
     xlsx_max_rows: int = int(os.getenv("XLSX_MAX_ROWS", "10000"))

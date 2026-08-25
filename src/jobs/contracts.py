@@ -51,6 +51,64 @@ def sanitize_json(value: Any, *, _depth: int = 0) -> Any:
     return "<non-json-value>"
 
 
+_PUBLIC_JOB_RESULT_FIELDS = frozenset(
+    {
+        "artifact_id",
+        "compliance_improvement",
+        "download_available",
+        "failed_count",
+        "fixed_count",
+        "manual_count",
+        "original_compliance_score",
+        "remediated_compliance_score",
+        "scan_id",
+        "skipped_count",
+        "success",
+        "total_issues",
+    }
+)
+
+_PUBLIC_JOB_ERROR_CODES = frozenset(
+    {
+        "invalid_job_payload",
+        "invalid_job_scope",
+        "job_execution_timeout",
+        "job_handler_exception",
+        "job_lease_expired",
+        "managed_artifact_required",
+        "malformed_handler_result",
+        "manual_required",
+        "policy_not_permitted",
+        "remediation_artifact_unavailable",
+        "remediation_failed",
+        "remediation_unsupported",
+        "scan_not_found",
+        "scan_results_unavailable",
+        "source_file_unavailable",
+        "unregistered_job_type",
+    }
+)
+
+
+def public_job_result(value: Any) -> dict[str, Any] | None:
+    """Project internal result data onto the path-free public contract."""
+    if not isinstance(value, Mapping):
+        return None
+    result = {
+        key: sanitize_json(value[key])
+        for key in _PUBLIC_JOB_RESULT_FIELDS
+        if key in value
+    }
+    return result or None
+
+
+def public_job_error_code(value: Any) -> str | None:
+    """Return only an explicitly stable public remediation error code."""
+    return (
+        value if isinstance(value, str) and value in _PUBLIC_JOB_ERROR_CODES else None
+    )
+
+
 def validate_json_object(value: Any, *, max_bytes: int = 262_144) -> dict[str, Any]:
     if type(value) is not dict:
         raise ValueError("job JSON value must be an object")
