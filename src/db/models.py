@@ -38,6 +38,14 @@ import uuid
 JOB_JSON = JSON().with_variant(JSONB, "postgresql")
 
 
+def _lower_hex_64_constraint(column: str) -> str:
+    """Portable PostgreSQL/SQLite exact lowercase SHA-256 constraint."""
+    stripped = column
+    for character in "0123456789abcdef":
+        stripped = f"replace({stripped}, '{character}', '')"
+    return f"length({column}) = 64 AND {column} = lower({column}) AND {stripped} = ''"
+
+
 class Base(DeclarativeBase):
     """SQLAlchemy 2.0 declarative base class for all models."""
 
@@ -968,6 +976,7 @@ class CloudJobType(str, Enum):
     UPLOAD = "upload"  # Upload file to cloud
     WEBHOOK_REFRESH = "webhook_refresh"  # Renew webhook subscription
     RECONCILE = "canvas_reconcile"  # Observe an uncertain Canvas writeback
+    CANVAS_CONTENT = "canvas_content"  # Remediate immutable Canvas stored HTML
 
 
 class CloudJobStatus(str, Enum):
@@ -1245,6 +1254,66 @@ class ContentWritebackLog(Base):
             "ix_content_writeback_log_reconciliation_due",
             "reconciliation_status",
             "reconciliation_next_attempt_at",
+        ),
+    )
+
+
+class CanvasContentRemediationEvidence(Base):
+    """Bounded, hash-only evidence for invalidated Canvas HTML candidates."""
+
+    __tablename__ = "canvas_content_remediation_evidence"
+
+    id = Column(String(64), primary_key=True)
+    department_id = Column(
+        String(36), ForeignKey("departments.id", ondelete="CASCADE"), nullable=False
+    )
+    cloud_file_id = Column(
+        String(36), ForeignKey("cloud_files.id", ondelete="CASCADE"), nullable=False
+    )
+    source_sha256 = Column(String(64), nullable=False)
+    candidate_sha256 = Column(String(64), nullable=False)
+    source_scan_id = Column(String(36), nullable=True)
+    producer_job_id = Column(String(36), nullable=True)
+    quarantine_reason = Column(String(64), nullable=False)
+    diagnostics = Column(
+        JOB_JSON, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    stored_bytes = Column(Integer, nullable=False)
+    lifecycle_state = Column(
+        String(16), nullable=False, default="current", server_default="current"
+    )
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            f"{_lower_hex_64_constraint('source_sha256')} AND "
+            f"{_lower_hex_64_constraint('candidate_sha256')}",
+            name="ck_canvas_content_evidence_hashes",
+        ),
+        CheckConstraint(
+            "stored_bytes BETWEEN 1 AND 4096",
+            name="ck_canvas_content_evidence_size",
+        ),
+        CheckConstraint(
+            "length(quarantine_reason) BETWEEN 1 AND 64",
+            name="ck_canvas_content_evidence_reason",
+        ),
+        CheckConstraint(
+            "lifecycle_state IN ('current', 'expired')",
+            name="ck_canvas_content_evidence_lifecycle",
+        ),
+        Index(
+            "ix_canvas_content_evidence_file_created",
+            "cloud_file_id",
+            "created_at",
+        ),
+        Index(
+            "ix_canvas_content_evidence_department_expires",
+            "department_id",
+            "expires_at",
         ),
     )
 

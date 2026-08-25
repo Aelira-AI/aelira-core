@@ -969,6 +969,28 @@ async def _handle_canvas_content_scan(
             scan_options=payload.get("scan_options"),
         )
         result = await scanner.scan_content_item(cloud_file)
+        scan_options = payload.get("scan_options")
+        if (
+            result.get("success") is True
+            and int(result.get("issues", 0) or 0) > 0
+            and isinstance(scan_options, dict)
+            and scan_options.get("auto_remediate") is True
+        ):
+            from .canvas_content_job import enqueue_canvas_content_remediation
+
+            dependency_scan_id = result.get("scan_id")
+            if not isinstance(dependency_scan_id, str) or not dependency_scan_id:
+                raise ScanJobFailed("INVALID_JOB_SCOPE")
+            db.refresh(cloud_file)
+            remediation_job = enqueue_canvas_content_remediation(
+                db,
+                cloud_file=cloud_file,
+                options=scan_options,
+                depends_on_job_id=str(job.id),
+                dependency_scan_id=dependency_scan_id,
+            )
+            db.commit()
+            result["remediation_job_id"] = str(remediation_job.id)
         return {"success": True, **result}
     finally:
         await client.close()

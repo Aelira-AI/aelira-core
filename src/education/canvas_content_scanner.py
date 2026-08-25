@@ -55,6 +55,11 @@ from ..services.canvas_identity_service import (
     add_or_get_canvas_cloud_file,
     invalidate_canvas_derived_state,
 )
+from ..services.canvas_content_provenance import (
+    canvas_content_sha256,
+    invalidate_canvas_content_candidate,
+    lock_current_canvas_content_candidate,
+)
 from ..utils.security import require_persisted_canvas_origin
 from .deterministic_axe import DeterministicScanUnavailable, run_deterministic_axe
 
@@ -1788,132 +1793,195 @@ class CanvasContentScanner:
         cloud_file: CloudFile,
         approved_by: str,
     ) -> Dict[str, Any]:
-        """
-        Write remediated content back to Canvas after stale-check.
-
-        Safety: Compares cloud_file.content_updated_at against the current
-        Canvas updated_at to detect edits made between scan and write-back.
-        If Canvas content has been modified, returns stale=True instead of
-        overwriting.
-
-        Args:
-            cloud_file: CloudFile with remediated_body
-            approved_by: Email/identifier of the approving user
-
-        Returns:
-            Dict with success, stale flag, and optional error
-        """
-        if not cloud_file.remediated_body:
-            return {"success": False, "stale": False, "error": "No remediated body"}
-
-        if cloud_file.writeback_status != "approved":
-            return {
-                "success": False,
-                "stale": False,
-                "error": f"Cannot write back: status is '{cloud_file.writeback_status}', must be 'approved'",
-            }
-
-        if cloud_file.needs_rescan:
+        """Write the exact approved candidate through a durable intent fence."""
+        current = lock_current_canvas_content_candidate(self.db, cloud_file)
+        if current is None:
+            self.db.rollback()
             return {
                 "success": False,
                 "stale": True,
-                "error": "Source changed — re-scan required before write-back",
+                "error": "Remediated content is stale or unverified",
+            }
+        cloud_file = current
+        if (
+            cloud_file.department_id != self.department_id
+            or cloud_file.credential_id != self.credential_id
+        ):
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Canvas connection changed; re-scan required before write-back",
+            }
+        if not cloud_file.remediated_body or cloud_file.writeback_status != "approved":
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Content is not approved for write-back",
+            }
+        if cloud_file.needs_rescan:
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Source changed; re-scan required before write-back",
             }
 
-        content_source = cloud_file.content_source
-
-        # Fetch current Canvas state for stale check
         try:
             current_updated_at = await self._get_canvas_updated_at(cloud_file)
-        except Exception as e:
+        except Exception:
+            self.db.rollback()
             return {
                 "success": False,
                 "stale": False,
-                "error": f"Failed to check Canvas state: {e}",
+                "error": "Canvas source verification failed",
             }
-
-        if cloud_file.content_updated_at is None or current_updated_at is None:
+        if (
+            cloud_file.content_updated_at is None
+            or current_updated_at is None
+            or current_updated_at != cloud_file.content_updated_at
+        ):
+            self.db.rollback()
             return {
                 "success": False,
                 "stale": True,
-                "error": (
-                    "Content version cannot be verified — re-scan required "
-                    "before write-back."
-                ),
+                "error": "Canvas source is stale; re-scan required before write-back",
             }
 
-        # Stale check — Canvas content changed since the exact scanned version.
-        if current_updated_at != cloud_file.content_updated_at:
-            logger.warning(
-                "Stale content detected — Canvas modified since scan",
-                extra={
-                    "cloud_file_id": cloud_file.id,
-                    "scanned_at": str(cloud_file.content_updated_at),
-                    "canvas_updated_at": str(current_updated_at),
-                },
+        unresolved = (
+            self.db.query(ContentWritebackLog.id)
+            .filter(
+                ContentWritebackLog.cloud_file_id == cloud_file.id,
+                ContentWritebackLog.reconciliation_status.in_(
+                    ("reconciliation_required", "manual_required")
+                ),
             )
+            .first()
+        )
+        if unresolved is not None:
+            self.db.rollback()
             return {
                 "success": False,
-                "stale": True,
-                "error": (
-                    "Content is stale — Canvas was modified since the scan. "
-                    "Re-scan required before write-back."
-                ),
+                "stale": False,
+                "error": "A prior write-back requires manual reconciliation",
             }
 
-        # Create audit log before write-back
+        candidate_metadata = (
+            cloud_file.provider_metadata.get("canvas_content_candidate")
+            if isinstance(cloud_file.provider_metadata, dict)
+            else None
+        )
+        expected_fingerprint = (
+            candidate_metadata.get("fingerprint")
+            if isinstance(candidate_metadata, dict)
+            else None
+        )
+        expected_source_sha256 = canvas_content_sha256(cloud_file.content_body)
+        expected_candidate_sha256 = canvas_content_sha256(cloud_file.remediated_body)
+        log_id = str(uuid.uuid4())
         writeback_log = ContentWritebackLog(
-            id=str(uuid.uuid4()),
+            id=log_id,
             cloud_file_id=cloud_file.id,
             original_body=cloud_file.content_body,
             remediated_body=cloud_file.remediated_body,
             approved_by=approved_by,
             approved_at=datetime.now(timezone.utc),
+            correlation_id=str(uuid.uuid4()),
+            reconciliation_status="reconciliation_required",
+            provider_result={
+                "kind": "canvas_html",
+                "provider_file_id": cloud_file.provider_file_id,
+                "source_sha256": expected_source_sha256,
+                "candidate_sha256": expected_candidate_sha256,
+                "candidate_fingerprint": expected_fingerprint,
+            },
         )
         self.db.add(writeback_log)
+        self.db.commit()
 
-        # Push to Canvas
+        current = lock_current_canvas_content_candidate(self.db, cloud_file)
+        current_metadata = (
+            current.provider_metadata.get("canvas_content_candidate")
+            if current is not None and isinstance(current.provider_metadata, dict)
+            else None
+        )
+        current_fingerprint = (
+            current_metadata.get("fingerprint")
+            if isinstance(current_metadata, dict)
+            else None
+        )
+        if (
+            current is None
+            or current.writeback_status != "approved"
+            or current_fingerprint != expected_fingerprint
+            or not isinstance(current.content_body, str)
+            or not isinstance(current.remediated_body, str)
+            or canvas_content_sha256(current.content_body) != expected_source_sha256
+            or canvas_content_sha256(current.remediated_body)
+            != expected_candidate_sha256
+        ):
+            self.db.rollback()
+            persisted = self.db.get(ContentWritebackLog, log_id)
+            if persisted is not None:
+                persisted.reconciliation_status = "manual_required"
+                persisted.reconciliation_resolution = "manual_required"
+                persisted.reconciliation_last_error = (
+                    "canvas_candidate_changed_before_writeback"
+                )
+                persisted.reconciliation_resolved_at = datetime.now(timezone.utc)
+                if current is not None:
+                    current.writeback_status = "reconciliation_failed"
+                self.db.commit()
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Remediated content changed before write-back",
+            }
+        cloud_file = current
+        writeback_log = self.db.get(ContentWritebackLog, log_id)
+        assert writeback_log is not None
         try:
             await self._update_canvas_content(
                 cloud_file,
                 cloud_file.remediated_body,
                 message="Accessibility remediation by Aelira",
             )
-
-            # Update state — content on Canvas is now the remediated version
-            writeback_log.written_back_at = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
+            writeback_log.written_back_at = now
+            writeback_log.reconciliation_status = "committed"
             cloud_file.writeback_status = "written_back"
-            cloud_file.writeback_at = datetime.now(timezone.utc)
+            cloud_file.writeback_at = now
             cloud_file.content_body = cloud_file.remediated_body
-
-            # Update compliance score to the remediated score
             if cloud_file.remediated_compliance_score is not None:
                 cloud_file.last_compliance_score = (
                     cloud_file.remediated_compliance_score
                 )
-
             cloud_file.needs_rescan = False
             self.db.commit()
-
-            logger.info(
-                "Content written back to Canvas",
+            return {"success": True, "stale": False}
+        except Exception as exc:
+            self.db.rollback()
+            persisted = self.db.get(ContentWritebackLog, log_id)
+            if persisted is not None:
+                persisted.reconciliation_status = "manual_required"
+                persisted.reconciliation_resolution = "manual_required"
+                persisted.reconciliation_last_error = "canvas_writeback_outcome_unknown"
+                persisted.reconciliation_resolved_at = datetime.now(timezone.utc)
+                cloud_file.writeback_status = "reconciliation_failed"
+                self.db.commit()
+            logger.error(
+                "Canvas content write-back outcome requires reconciliation",
                 extra={
                     "cloud_file_id": cloud_file.id,
-                    "content_source": content_source,
-                    "approved_by": approved_by,
+                    "error_type": type(exc).__name__,
                 },
             )
-
-            return {"success": True, "stale": False}
-
-        except Exception as e:
-            self.db.rollback()
-            logger.error(
-                "Write-back failed: %s",
-                e,
-                extra={"cloud_file_id": cloud_file.id},
-            )
-            return {"success": False, "stale": False, "error": str(e)}
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Canvas write-back outcome requires manual reconciliation",
+            }
 
     # ------------------------------------------------------------------
     # 5. rollback_content — restore original from audit log
@@ -2017,6 +2085,12 @@ class CanvasContentScanner:
         if existing:
             # Update existing record
             if existing.content_updated_at != content_updated_at:
+                if existing.content_source not in (None, "file"):
+                    invalidate_canvas_content_candidate(
+                        self.db,
+                        existing,
+                        reason="canvas_source_changed",
+                    )
                 invalidate_canvas_derived_state(existing)
             existing.file_name = file_name
             existing.content_body = sanitize_for_postgres(content_body)

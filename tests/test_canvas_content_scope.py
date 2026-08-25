@@ -280,11 +280,15 @@ def test_non_lti_batch_approve_preserves_multi_course_behavior(auth_method):
     second = _cloud_file("second", course_id=OTHER_COURSE_ID)
     db.query.return_value.filter.return_value.all.return_value = [first, second]
 
-    with _client(_principal(auth_method=auth_method), db) as client:
-        response = client.post(
-            "/canvas/content/batch-approve",
-            json={"cloud_file_ids": [first.id, second.id]},
-        )
+    with patch(
+        "src.api.canvas_content_routes.lock_current_canvas_content_candidate",
+        side_effect=lambda _db, row: row,
+    ):
+        with _client(_principal(auth_method=auth_method), db) as client:
+            response = client.post(
+                "/canvas/content/batch-approve",
+                json={"cloud_file_ids": [first.id, second.id]},
+            )
 
     assert response.status_code == 200
     assert response.json()["approved_count"] == 2

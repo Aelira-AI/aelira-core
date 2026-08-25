@@ -8,7 +8,15 @@ from typing import Any
 from .contracts import JobFailure, JobHandler, JobResult, JobSuccess, sanitize_json
 
 EXECUTABLE_JOB_TYPES = frozenset(
-    {"sync", "scan", "remediate", "upload", "webhook_refresh", "canvas_reconcile"}
+    {
+        "sync",
+        "scan",
+        "remediate",
+        "upload",
+        "webhook_refresh",
+        "canvas_reconcile",
+        "canvas_content",
+    }
 )
 
 
@@ -117,6 +125,7 @@ def adapt_legacy_handler(
 
 
 def build_default_registry() -> JobRegistry:
+    from .canvas_content_job import handle_canvas_content_job
     from .cloud_scan_job import handle_scan_job
     from .cloud_sync_job import handle_sync_job
     from .remediation_job import handle_remediation_job
@@ -125,6 +134,7 @@ def build_default_registry() -> JobRegistry:
     from .reconciliation_job import handle_reconciliation_job
 
     registry = JobRegistry()
+    registry.register("canvas_content", handle_canvas_content_job)
     registry.register("sync", adapt_legacy_handler(handle_sync_job))
     registry.register("scan", adapt_legacy_handler(handle_scan_job))
     registry.register("remediate", adapt_legacy_handler(handle_remediation_job))
