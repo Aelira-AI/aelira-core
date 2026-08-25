@@ -585,6 +585,13 @@ class PdfRemediator(BaseRemediator):
             # loading, or any non-table mutation.
             if any(issue.category == IssueCategory.TABLE for issue in self.issues):
                 self._prepare_table_fixes()
+                if self._table_batch_is_too_complex():
+                    self._complete_table_complexity_refusal()
+                    logger.info(
+                        "Remediation refused before backup or document load: %s",
+                        TABLE_STRUCTURE_TOO_COMPLEX,
+                    )
+                    return self.result
 
             # Create backup if configured
             if self.config.create_backup and not self._has_only_table_issues():
@@ -3681,6 +3688,32 @@ class PdfRemediator(BaseRemediator):
         return self._has_only_table_issues() and self.result.manual_count == len(
             self.issues
         )
+
+    def _table_batch_is_too_complex(self) -> bool:
+        """Return whether untouched-input preflight blocks the whole batch."""
+        refusals = getattr(self, "_table_safety_refusals", {})
+        return TABLE_STRUCTURE_TOO_COMPLEX in refusals.values()
+
+    def _complete_table_complexity_refusal(self) -> None:
+        """Finish an oversized batch without backup, load, mutation, or output."""
+        for issue in self.issues:
+            if issue.category != IssueCategory.TABLE:
+                self.result.skipped_count += 1
+                continue
+            issue.metadata["remediation_error_code"] = TABLE_STRUCTURE_TOO_COMPLEX
+            self._add_manual_issue(
+                issue,
+                reason=TABLE_STRUCTURE_TOO_COMPLEX,
+                recommendation=(
+                    "Simplify or split the table, then verify its structure manually."
+                ),
+            )
+        self.result.warnings.append(
+            "Remediation was not started because table_structure_too_complex "
+            "was detected."
+        )
+        self._calculate_scores()
+        self.result.complete()
 
     def _has_only_table_issues(self) -> bool:
         return bool(self.issues) and all(

@@ -977,12 +977,47 @@ class TableTagger:
                 content_by_page[page_num] = seen
 
             cells: List[Any] = []
+            table_count = 0
 
-            def collect(element: Any) -> None:
+            def collect(element: Any, parent: Any = None) -> bool:
+                nonlocal table_count
                 if not hasattr(element, "get"):
-                    return
+                    return True
                 element_type = str(element.get(Name.S, "")).lstrip("/")
+                parent_type = (
+                    str(parent.get(Name.S, "")).lstrip("/")
+                    if hasattr(parent, "get")
+                    else ""
+                )
+                declared_parent = element.get(Name.P)
+                if parent is not None and not cls._same_object(declared_parent, parent):
+                    return False
+                if element_type == "Table":
+                    table_count += 1
+                    kids = element.get(Name.K)
+                    if not isinstance(kids, Array) or not kids:
+                        return False
+                    if any(
+                        not hasattr(kid, "get")
+                        or str(kid.get(Name.S, "")).lstrip("/") != "TR"
+                        for kid in kids
+                    ):
+                        return False
+                elif element_type == "TR":
+                    if parent_type != "Table":
+                        return False
+                    kids = element.get(Name.K)
+                    if not isinstance(kids, Array) or not kids:
+                        return False
+                    if any(
+                        not hasattr(kid, "get")
+                        or str(kid.get(Name.S, "")).lstrip("/") not in ("TH", "TD")
+                        for kid in kids
+                    ):
+                        return False
                 if element_type in ("TH", "TD"):
+                    if parent_type != "TR":
+                        return False
                     cells.append(element)
                 kids = element.get(Name.K)
                 if isinstance(kids, Array):
@@ -991,14 +1026,18 @@ class TableTagger:
                             hasattr(kid, "get")
                             and kid.get(Name.Type) == Name.StructElem
                         ):
-                            collect(kid)
+                            if not collect(kid, element):
+                                return False
                 elif hasattr(kids, "get") and kids.get(Name.Type) == Name.StructElem:
-                    collect(kids)
+                    if not collect(kids, element):
+                        return False
+                return True
 
             root_kids = pdf.Root[Name.StructTreeRoot].get(Name.K, Array([]))
             for root_kid in root_kids if isinstance(root_kids, Array) else [root_kids]:
-                collect(root_kid)
-            if len(cells) != expected_cells:
+                if not collect(root_kid):
+                    return False
+            if table_count <= 0 or len(cells) != expected_cells:
                 return False
 
             for cell in cells:
@@ -1039,7 +1078,11 @@ class TableTagger:
     @staticmethod
     def _same_object(first: Any, second: Any) -> bool:
         try:
-            return first.objgen == second.objgen
+            first_objgen = first.objgen
+            second_objgen = second.objgen
+            if first_objgen == (0, 0) or second_objgen == (0, 0):
+                return first is second
+            return first_objgen == second_objgen
         except Exception:
             return first is second
 
@@ -1084,7 +1127,9 @@ class TableTagger:
                     if table_info.rows >= 2 and table_info.cols >= 2:
                         tables.append(table_info)
             except Exception as exc:
-                logger.warning("Table detection failed on page %d: %s", page_num, exc)
+                raise ValueError(
+                    f"table detection incomplete on page {page_num + 1}"
+                ) from exc
         return tables
 
     def _parse_table(self, table, page_num: int, table_index: int = 0) -> TableInfo:

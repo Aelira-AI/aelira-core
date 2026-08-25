@@ -389,6 +389,31 @@ def test_existing_parent_tree_owner_and_marked_non_table_content_survive(tmp_pat
         assert _same_object(original_owner[Name.K][Name.Pg], pdf.pages[0].obj)
 
 
+def test_nested_parent_tree_routes_table_to_manual_without_mutation(tmp_path):
+    source = Path(_make_table_pdf(tmp_path / "nested-parent-tree.pdf"))
+    with pikepdf.open(source, allow_overwriting_input=True) as pdf:
+        child = Dictionary({"/Limits": Array([0, 0]), "/Nums": Array([])})
+        pdf.Root[Name.StructTreeRoot] = pdf.make_indirect(
+            Dictionary(
+                {
+                    "/Type": Name.StructTreeRoot,
+                    "/K": Array([]),
+                    "/ParentTree": Dictionary({"/Kids": Array([child])}),
+                }
+            )
+        )
+        pdf.save(source)
+    before = source.read_bytes()
+
+    result = _remediate(source, tmp_path)
+
+    assert source.read_bytes() == before
+    assert result.output_file is None
+    assert result.fixed_count == 0
+    assert result.manual_count == 1
+    assert result.manual_issues[0].reason == TABLE_STRUCTURE_NOT_VERIFIED
+
+
 def test_existing_structure_root_without_mark_info_can_be_completed(tmp_path):
     source = Path(_make_table_pdf(tmp_path / "root-without-mark-info.pdf"))
     with pikepdf.open(source, allow_overwriting_input=True) as pdf:
@@ -410,6 +435,28 @@ def test_existing_structure_root_without_mark_info_can_be_completed(tmp_path):
     with pikepdf.open(result.output_file) as pdf:
         assert pdf.Root[Name.MarkInfo][Name.Marked] is True
         assert TableTagger.verify_file(result.output_file, 4) is True
+
+
+def test_saved_verifier_rejects_cell_outside_its_declared_row(tmp_path):
+    source = Path(_make_table_pdf(tmp_path / "broken-cell-parent.pdf"))
+    result = _remediate(source, tmp_path)
+    assert result.output_file is not None
+
+    output = Path(result.output_file)
+    with pikepdf.open(output, allow_overwriting_input=True) as pdf:
+        elements = [
+            element
+            for kid in pdf.Root[Name.StructTreeRoot][Name.K]
+            for element in _walk_struct_elements(kid)
+        ]
+        table = next(
+            element for element in elements if element.get(Name.S) == Name.Table
+        )
+        cell = next(element for element in elements if element.get(Name.S) == Name.TH)
+        cell[Name.P] = table
+        pdf.save(output)
+
+    assert TableTagger.verify_file(str(output), 4) is False
 
 
 def test_empty_cell_stays_manual_and_creates_no_output_or_structure(tmp_path):

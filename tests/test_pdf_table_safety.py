@@ -255,6 +255,25 @@ def test_detected_table_count_over_200_is_too_complex_before_any_write(
     _assert_no_structure_tree(path)
 
 
+def test_exact_amplification_limits_are_not_classified_as_too_complex():
+    tables = [_table(1, 50) for _ in range(200)]
+
+    assert TableTagger._safety_error_code(tables) is None
+    assert TableTagger._safety_error_code([_table(1, 64)]) is None
+
+
+@pytest.mark.parametrize(
+    "tables",
+    [
+        [_table(1, 65)],
+        [_table(1, 50) for _ in range(200)] + [_table(1, 1)],
+        [_table(1, 50) for _ in range(199)] + [_table(1, 51)],
+    ],
+)
+def test_amplification_limits_fail_closed_only_when_exceeded(tables):
+    assert TableTagger._safety_error_code(tables) == TABLE_STRUCTURE_TOO_COMPLEX
+
+
 def test_too_complex_valid_first_issue_is_not_saved_when_later_is_42x205(
     monkeypatch, tmp_path
 ):
@@ -347,7 +366,7 @@ def test_detector_exception_stays_manual_not_failed(monkeypatch, tmp_path):
     assert remediator._table_fixed_issue_ids == set()
 
 
-def test_too_complex_mixed_title_and_42x205_preflights_before_backup_and_load(
+def test_too_complex_mixed_title_and_42x205_refuses_before_backup_and_load(
     monkeypatch, tmp_path
 ):
     remediator = _remediator(
@@ -383,16 +402,22 @@ def test_too_complex_mixed_title_and_42x205_preflights_before_backup_and_load(
 
     result = remediator.remediate()
 
-    assert events[:3] == ["preflight", "backup", "load"]
-    assert events.count("preflight") == 1
+    assert events == ["preflight"]
     assert tagger_factory.call_count == 0
-    assert result.fixed_count == 1
-    assert result.fixed_issues[0].category.value == "title"
+    assert result.fixed_count == 0
     assert result.manual_count == 1
     assert result.manual_issues[0].reason == TABLE_STRUCTURE_TOO_COMPLEX
+    assert (
+        result.manual_issues[0].metadata["remediation_error_code"]
+        == TABLE_STRUCTURE_TOO_COMPLEX
+    )
     assert result.failed_count == 0
-    assert result.output_file is not None
-    assert Path(result.output_file).exists()
+    assert result.skipped_count == 1
+    assert result.output_file is None
+    assert result.backup_path is None
+    assert (tmp_path / "backups").exists() is False
+    assert Path(remediator._get_output_path()).exists() is False
+    _assert_no_structure_tree(Path(remediator.file_path))
 
 
 @pytest.mark.parametrize("failure_at", ["constructor_setup", "detection"])

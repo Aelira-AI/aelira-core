@@ -166,6 +166,39 @@ def test_missing_pymupdf_fails_closed():
     assert result.error_code == TABLE_STRUCTURE_NOT_VERIFIED
 
 
+def test_partial_page_detection_failure_closes_document_and_fails_closed(monkeypatch):
+    import src.education.remediation.table_tagger as table_tagger_module
+
+    successful_page = SimpleNamespace(find_tables=lambda: SimpleNamespace(tables=[]))
+
+    def fail_detection():
+        raise RuntimeError("detector failure")
+
+    failed_page = SimpleNamespace(find_tables=fail_detection)
+
+    class Document:
+        def __init__(self):
+            self.closed = False
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, page_num):
+            return [successful_page, failed_page][page_num]
+
+        def close(self):
+            self.closed = True
+
+    document = Document()
+    monkeypatch.setattr(table_tagger_module.fitz, "open", lambda _path: document)
+
+    result = TableTagger(use_ai=False).detect_tables("unused.pdf")
+
+    assert result.success is False
+    assert result.error_code == TABLE_STRUCTURE_NOT_VERIFIED
+    assert document.closed is True
+
+
 def test_no_unbound_structure_builder_remains_reachable():
     tagger = TableTagger(use_ai=False)
 
