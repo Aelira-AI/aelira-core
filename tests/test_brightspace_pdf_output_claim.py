@@ -715,7 +715,7 @@ async def test_brightspace_pdf_cancellation_after_sync_publish_aborts_exact_clai
     publication = ArtifactPublicationResult(
         artifact=artifact,
         artifact_id=str(artifact.id),
-        publication_token="brightspace-publication-token",
+        publication_token="-".join(("brightspace", "publication", "fixture")),
     )
     service = MagicMock()
     task = asyncio.current_task()

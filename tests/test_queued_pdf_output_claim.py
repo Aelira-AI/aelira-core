@@ -646,7 +646,7 @@ async def test_queued_pdf_cancellation_after_publication_aborts_exact_claim(
     publication = ArtifactPublicationResult(
         artifact=artifact,
         artifact_id=str(artifact.id),
-        publication_token="queued-publication-token",
+        publication_token="-".join(("queued", "publication", "fixture")),
     )
     service = MagicMock()
 

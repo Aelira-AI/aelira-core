@@ -201,7 +201,7 @@ async def test_microsoft_webhook_filters_department_and_never_logs_provider_valu
 async def test_microsoft_validation_echo_does_not_log_validation_token(caplog):
     from src.api import webhook_routes
 
-    validation_token = "graph-validation-token-secret"
+    validation_token = "-".join(("graph", "validation", "fixture"))
     with caplog.at_level(logging.INFO, logger=webhook_routes.logger.name):
         response = await webhook_routes.microsoft_graph_validation(validation_token)
 

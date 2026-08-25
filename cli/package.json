@@ -1,7 +1,7 @@
 {
   "name": "@aelira/cli",
   "description": "AI-powered accessibility testing CLI for WCAG compliance - Higher Education Edition",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "author": "Reg Crampton",
   "bin": {
     "aelira": "./bin/run.js"
