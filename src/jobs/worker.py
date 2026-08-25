@@ -11,6 +11,7 @@ from src.db.database import SessionLocal
 from src.services.artifact_orphan_quarantine import ArtifactOrphanScanner
 from src.services.durable_maintenance import DurableMaintenanceRunner
 from src.services.canvas_reconciliation_service import CanvasReconciliationService
+from src.services.canvas_content_provenance import maintain_canvas_content_evidence
 from src.services.remediation_artifact_service import (
     RemediationArtifactCleanup,
     RemediationArtifactService,
@@ -56,6 +57,8 @@ async def run_maintenance_loop() -> None:
         try:
             with SessionLocal() as db:
                 await asyncio.to_thread(runner.run_once, db)
+            with SessionLocal() as db:
+                await asyncio.to_thread(maintain_canvas_content_evidence, db)
         except asyncio.CancelledError:
             raise
         except Exception:

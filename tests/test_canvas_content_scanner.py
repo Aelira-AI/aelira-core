@@ -802,6 +802,14 @@ class TestCanvasContentScannerFiles:
 class TestStaleDetection:
     """Test stale content detection during write-back."""
 
+    @pytest.fixture(autouse=True)
+    def current_candidate(self):
+        with patch(
+            "src.education.canvas_content_scanner.lock_current_canvas_content_candidate",
+            side_effect=lambda _db, row: row,
+        ):
+            yield
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("missing_side", ["stored", "current"])
     async def test_write_back_fails_closed_when_version_baseline_is_missing(
@@ -821,6 +829,7 @@ class TestStaleDetection:
         cloud_file.needs_rescan = False
         canvas_client = AsyncMock()
         db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
         scanner = CanvasContentScanner(
             canvas_client=canvas_client,
             db=db,
@@ -844,6 +853,7 @@ class TestStaleDetection:
 
         canvas_client = AsyncMock()
         db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
         department_id = str(uuid.uuid4())
         credential_id = str(uuid.uuid4())
 
@@ -897,6 +907,7 @@ class TestStaleDetection:
 
         canvas_client = AsyncMock()
         db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
         department_id = str(uuid.uuid4())
         credential_id = str(uuid.uuid4())
 
@@ -954,11 +965,69 @@ class TestStaleDetection:
         db.add.assert_called()
 
     @pytest.mark.asyncio
+    async def test_write_back_rejects_candidate_replaced_after_intent_commit(self):
+        from src.education.canvas_content_scanner import CanvasContentScanner
+
+        scan_time = datetime(2026, 3, 20, 10, 0, 0, tzinfo=timezone.utc)
+        original = MagicMock()
+        original.id = str(uuid.uuid4())
+        original.content_source = "page"
+        original.content_slug = "test-page"
+        original.provider_file_id = "page-1"
+        original.provider_parent_id = "COURSE123"
+        original.content_updated_at = scan_time
+        original.content_body = "<p>Original</p>"
+        original.remediated_body = "<p>First candidate</p>"
+        original.writeback_status = "approved"
+        original.needs_rescan = False
+        original.provider_metadata = {
+            "canvas_content_candidate": {"fingerprint": "a" * 64}
+        }
+        replacement = MagicMock()
+        replacement.content_body = original.content_body
+        replacement.remediated_body = "<p>Replacement candidate</p>"
+        replacement.writeback_status = "approved"
+        replacement.provider_metadata = {
+            "canvas_content_candidate": {"fingerprint": "b" * 64}
+        }
+        persisted_log = MagicMock()
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+        db.get.return_value = persisted_log
+        scanner = CanvasContentScanner(
+            canvas_client=AsyncMock(),
+            db=db,
+            department_id="dept-1",
+            credential_id="cred-1",
+        )
+        scanner._get_canvas_updated_at = AsyncMock(return_value=scan_time)
+        scanner._update_canvas_content = AsyncMock()
+
+        with patch(
+            "src.education.canvas_content_scanner.lock_current_canvas_content_candidate",
+            side_effect=[original, replacement],
+        ):
+            result = await scanner.write_back_content(original, approved_by="user-1")
+
+        assert result == {
+            "success": False,
+            "stale": True,
+            "error": "Remediated content changed before write-back",
+        }
+        scanner._update_canvas_content.assert_not_awaited()
+        assert persisted_log.reconciliation_status == "manual_required"
+        assert (
+            persisted_log.reconciliation_last_error
+            == "canvas_candidate_changed_before_writeback"
+        )
+
+    @pytest.mark.asyncio
     async def test_write_back_assignment_calls_update_assignment(self):
         from src.education.canvas_content_scanner import CanvasContentScanner
 
         canvas_client = AsyncMock()
         db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
         department_id = str(uuid.uuid4())
         credential_id = str(uuid.uuid4())
 

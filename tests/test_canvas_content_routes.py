@@ -724,7 +724,11 @@ class TestApproveContent:
         )
         mock_session.query.return_value.filter.return_value.first.return_value = cf
 
-        response = client.post(f"/canvas/content/{cf.id}/approve")
+        with patch(
+            "src.api.canvas_content_routes.lock_current_canvas_content_candidate",
+            return_value=cf,
+        ):
+            response = client.post(f"/canvas/content/{cf.id}/approve")
 
         assert response.status_code == 200
         data = response.json()
@@ -842,10 +846,14 @@ class TestBatchApprove:
             cf2,
         ]
 
-        response = client.post(
-            "/canvas/content/batch-approve",
-            json={"cloud_file_ids": [cf1.id, cf2.id]},
-        )
+        with patch(
+            "src.api.canvas_content_routes.lock_current_canvas_content_candidate",
+            side_effect=lambda _db, row: row,
+        ):
+            response = client.post(
+                "/canvas/content/batch-approve",
+                json={"cloud_file_ids": [cf1.id, cf2.id]},
+            )
 
         assert response.status_code == 200
         data = response.json()
@@ -1063,7 +1071,17 @@ class TestBatchWriteback:
 
 
 class TestWriteback:
-    """Tests for POST /canvas/content/{cloud_file_id}/writeback."""
+    """Tests for Canvas content remediation and write-back routes."""
+
+    @pytest.fixture(autouse=True)
+    def durable_canvas_enqueue(self):
+        job = SimpleNamespace(id="canvas-job-1", status="pending")
+        with patch(
+            "src.api.canvas_content_routes.enqueue_canvas_content_remediation",
+            return_value=job,
+        ) as enqueue:
+            self.canvas_enqueue = enqueue
+            yield
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_writeback_calls_scanner(
@@ -1131,13 +1149,15 @@ class TestWriteback:
 
             response = client.post(f"/canvas/content/{cf.id}/remediate")
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         data = response.json()
-        assert data["success"] is True
-        assert data["verified"] is True
-        assert data["fixed_count"] == 2
-        assert data["issues_introduced"] == 0
-        scanner_instance.remediate_content_item.assert_awaited_once()
+        assert data == {
+            "job_id": "canvas-job-1",
+            "cloud_file_id": cf.id,
+            "status": "pending",
+            "status_url": (f"/canvas/content/{cf.id}/remediation/jobs/canvas-job-1"),
+        }
+        scanner_instance.remediate_content_item.assert_not_awaited()
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_content_remediation_defaults_to_deterministic_without_policy_lookup(
@@ -1163,16 +1183,9 @@ class TestWriteback:
             scanner_cls.return_value = scanner
             response = client.post(f"/canvas/content/{cf.id}/remediate")
 
-        assert response.status_code == 200
-        assert response.json()["ai_used"] is False
-        assert response.json()["external_ai_used"] is False
-        scanner.remediate_content_item.assert_awaited_once_with(
-            cf,
-            remediation_client=None,
-            alt_text_client=None,
-            requested_purposes=set(),
-            remediation_origin="manual",
-        )
+        assert response.status_code == 202
+        scanner.remediate_content_item.assert_not_awaited()
+        assert self.canvas_enqueue.call_args.kwargs["options"]["use_ai"] is False
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_requested_html_ai_denied_returns_403_before_canvas_or_remediation(
@@ -1192,10 +1205,10 @@ class TestWriteback:
                 f"/canvas/content/{cf.id}/remediate", json={"use_ai": True}
             )
 
-        assert response.status_code == 403
-        assert response.json()["detail"] == "LMS AI remediation is not permitted"
+        assert response.status_code == 202
         mock_get_client.assert_not_awaited()
         scanner_cls.assert_not_called()
+        assert self.canvas_enqueue.call_args.kwargs["options"]["use_ai"] is True
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_alt_text_policy_is_independent_and_denial_remains_manual(
@@ -1229,14 +1242,12 @@ class TestWriteback:
                 json={"use_ai": True, "generate_alt_text": True},
             )
 
-        assert response.status_code == 200
-        call = scanner.remediate_content_item.await_args
-        assert call.kwargs["remediation_client"] is remediation_client
-        assert call.kwargs["alt_text_client"] is None
-        decisions = response.json()["purpose_decisions"]
-        assert decisions == {
-            "remediation": "allowed_not_used",
-            "alt_text": "denied_at_dispatch",
+        assert response.status_code == 202
+        scanner.remediate_content_item.assert_not_awaited()
+        assert self.canvas_enqueue.call_args.kwargs["options"] == {
+            "use_ai": True,
+            "generate_alt_text": True,
+            "actor_id": "test-user-123",
         }
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
@@ -1274,14 +1285,9 @@ class TestWriteback:
                 f"/canvas/content/{cf.id}/remediate", json={"use_ai": True}
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         data = response.json()
-        assert data["success"] is False
-        assert data["error"] == "Content remediation failed"
-        assert data["error_code"] == "REMEDIATION_FAILED"
-        assert data["ai_used"] is False
-        assert data["external_ai_used"] is False
-        assert data["purpose_decisions"]["remediation"] == "denied_at_dispatch"
+        assert data["status"] == "pending"
         assert "SENSITIVE" not in str(data)
         assert "SENSITIVE CLOSE DETAIL" not in caplog.text
         assert all(record.exc_info is None for record in caplog.records)
@@ -1320,12 +1326,9 @@ class TestWriteback:
                 f"/canvas/content/{cf.id}/remediate", json={"use_ai": True}
             )
 
+        assert response.status_code == 202
         data = response.json()
-        assert data["success"] is False
-        assert data["ai_used"] is True
-        assert data["external_ai_used"] is True
-        assert data["provider"] == "gemini"
-        assert data["purpose_decisions"]["remediation"] == "attempted_failed"
+        assert data["status"] == "pending"
         assert "secret" not in str(data).lower()
         assert "raw close secret" not in caplog.text
         assert all(record.exc_info is None for record in caplog.records)
@@ -1340,10 +1343,8 @@ class TestWriteback:
 
         response = client.post(f"/canvas/content/{cf.id}/remediate")
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is False
-        assert "scan-based" in data["error"]
+        assert response.status_code == 400
+        assert "scan-based" in response.json()["detail"]
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_writeback_legacy_null_file_row_uses_the_upload_path(

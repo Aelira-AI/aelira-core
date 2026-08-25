@@ -23,14 +23,19 @@ from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_prin
 from src.db.database import get_db_dependency
 from src.db.models import (
     CloudFile,
+    CloudJobQueue,
+    CloudJobStatus,
     CloudOAuthCredentials,
     CloudProvider,
     ContentWritebackLog,
+    Scan,
     ScanResult,
     UserRole,
 )
 from src.education.canvas_content_scanner import CanvasContentScanner
 from src.integrations.canvas.content_models import CanvasContentType
+from src.jobs.canvas_content_job import _Candidate, handle_canvas_content_job
+from src.jobs.contracts import JobContext, JobSuccess
 
 pytestmark = pytest.mark.integration
 
@@ -115,6 +120,9 @@ def seeded(db):
     db.query(ContentWritebackLog).filter(
         ContentWritebackLog.cloud_file_id == page.id
     ).delete()
+    if page.last_scan_id:
+        db.query(ScanResult).filter(ScanResult.scan_id == page.last_scan_id).delete()
+        db.query(Scan).filter(Scan.id == page.last_scan_id).delete()
     db.query(CloudFile).filter(CloudFile.id == page.id).delete()
     db.query(CloudOAuthCredentials).filter(
         CloudOAuthCredentials.id == credential.id
@@ -174,24 +182,62 @@ async def test_scan_remediate_approve_write_back(db, seeded, client):
     assert len(listed) == 1
     assert listed[0]["compliance_score"] == 90.0
 
-    # 3. Remediate, with the verification rescan finding the image fixed.
-    with patch.object(
-        scanner,
-        "_run_axe_scan",
-        new=AsyncMock(return_value=_axe([], passes=10)),
+    # 3. Enqueue a durable immutable snapshot and execute it under a worker claim.
+    queued = client.post(f"/canvas/content/{page.id}/remediate")
+    assert queued.status_code == 202
+    job = db.get(CloudJobQueue, queued.json()["job_id"])
+    assert job is not None
+    assert job.max_retries == 0
+    claim_token = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    job.status = CloudJobStatus.PROCESSING.value
+    job.claim_token = claim_token
+    job.worker_id = "journey-worker"
+    job.claimed_at = now
+    job.heartbeat_at = now
+    job.lease_expires_at = now
+    job.attempt_count = 1
+    db.commit()
+    context = JobContext(
+        job_id=str(job.id),
+        job_type="canvas_content",
+        payload=job.payload,
+        claim_token=claim_token,
+        worker_id="journey-worker",
+        attempt_count=1,
+        report_progress=AsyncMock(return_value=True),
+    )
+    with patch(
+        "src.jobs.canvas_content_job._remediate_snapshot",
+        return_value=_Candidate(
+            '<p>Welcome</p><img src="chart.png" alt="Chart">',
+            1,
+            0,
+            0,
+            100.0,
+        ),
     ):
-        remediated = await scanner.remediate_content_item(page)
+        remediated = await handle_canvas_content_job(context, db, MagicMock())
 
-    assert remediated["success"] is True
+    assert isinstance(remediated, JobSuccess)
+    job = db.get(CloudJobQueue, job.id)
+    job.status = CloudJobStatus.COMPLETED.value
+    job.progress = 100
+    job.result_data = remediated.result
+    job.claim_token = None
+    job.worker_id = None
+    job.claimed_at = None
+    job.heartbeat_at = None
+    job.lease_expires_at = None
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
     db.refresh(page)
     assert page.remediated_body is not None
     assert page.writeback_status == "pending_review"
-    # The score that counts is the one the rescan measured, not one
-    # inferred from how many fixers ran.
-    assert remediated["verified"] is True
+    assert remediated.result["verified"] is False
     assert page.remediated_compliance_score == 100.0
     assert page.remediated_issues_remaining == 0
-    assert remediated["issues_introduced"] == 0
+    assert remediated.result["issues_introduced"] == 0
 
     # 4. The review view reports the split and where it came from.
     diff = client.get(f"/canvas/content/{page.id}/diff")
@@ -199,7 +245,7 @@ async def test_scan_remediate_approve_write_back(db, seeded, client):
     body = diff.json()
     assert body["original_html"] == ORIGINAL_BODY
     assert body["issues"][0]["id"] == "image-alt"
-    assert body["issues_verified_by_rescan"] is True
+    assert body["issues_verified_by_rescan"] is False
 
     # 5. Approve.
     approve = client.post(f"/canvas/content/{page.id}/approve")

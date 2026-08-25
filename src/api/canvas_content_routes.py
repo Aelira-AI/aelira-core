@@ -30,10 +30,11 @@ SECURITY:
 
 import logging
 import hashlib
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -44,10 +45,13 @@ from ..auth.canvas_permissions import (
     require_lti_course_access,
 )
 from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
-from ..ai.lms_remediation_client import LMSRemediationClient
+from ..ai.lms_remediation_client import (
+    LMSRemediationClient as LMSRemediationClient,
+)
 from ..db.database import get_db_dependency
 from ..db.models import (
     CloudFile,
+    CloudJobQueue,
     CloudJobType,
     CloudOAuthCredentials,
     CloudProvider,
@@ -55,6 +59,8 @@ from ..db.models import (
     ScanResult,
 )
 from ..education.canvas_content_scanner import CanvasContentScanner
+from ..jobs.canvas_content_job import enqueue_canvas_content_remediation
+from ..jobs.contracts import sanitize_json
 from ..integrations.canvas.content_models import CanvasContentType
 from ..middleware.quota import require_feature
 from ..services.remediation_artifact_service import (
@@ -62,6 +68,8 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
+from ..services.job_enqueue_service import JobEnqueueError
+from ..services.canvas_content_provenance import lock_current_canvas_content_candidate
 from ..utils.security import require_persisted_canvas_origin
 from .canvas_routes import _get_canvas_client
 
@@ -901,7 +909,16 @@ async def get_content_diff(
     # than assumed; the old behaviour counted every issue as fixed the
     # moment a remediated body existed, which was a guess dressed as a
     # measurement.
-    verified = cf.remediated_issues_fixed is not None
+    candidate_metadata = (
+        cf.provider_metadata.get("canvas_content_candidate")
+        if isinstance(cf.provider_metadata, dict)
+        else None
+    )
+    verified = (
+        candidate_metadata.get("verified") is True
+        if isinstance(candidate_metadata, dict)
+        else cf.remediated_issues_fixed is not None
+    )
     issues_fixed = 0
     issues_remaining = 0
     issues: List[ContentIssueDetail] = []
@@ -941,21 +958,88 @@ async def get_content_diff(
 
 
 class ContentRemediateResponse(BaseModel):
-    """Result of remediating a single content item."""
+    """Reconnectable acknowledgement for durable stored-content remediation."""
 
-    success: bool
-    verified: bool = False
-    fixed_count: int = 0
-    manual_count: int = 0
-    issues_remaining: int = 0
-    issues_introduced: int = 0
-    remediated_score: Optional[float] = None
-    error: Optional[str] = None
+    job_id: str
+    cloud_file_id: str
+    status: str
+    status_url: str
+
+
+class ContentRemediationJobStatus(BaseModel):
+    """Bounded public projection of one tenant-fenced Canvas job."""
+
+    job_id: str
+    cloud_file_id: str
+    status: str
+    status_url: str
+    progress: int = 0
+    progress_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     error_code: Optional[str] = None
-    ai_used: bool = False
-    external_ai_used: bool = False
-    provider: Optional[str] = None
-    purpose_decisions: Dict[str, str] = Field(default_factory=dict)
+    fixed_count: Optional[int] = None
+    manual_count: Optional[int] = None
+    failed_count: Optional[int] = None
+    remediated_score: Optional[float] = None
+    verified: Optional[bool] = None
+    issues_remaining: Optional[int] = None
+
+
+_CANVAS_PUBLIC_JOB_ERRORS = frozenset(
+    {
+        "invalid_job_payload",
+        "canvas_content_stale_snapshot",
+        "canvas_content_remediation_failed",
+        "canvas_content_invalid_output",
+        "job_execution_timeout",
+        "job_lease_expired",
+    }
+)
+
+
+def _content_remediation_status_url(cloud_file_id: str, job_id: str) -> str:
+    return f"/canvas/content/{cloud_file_id}/remediation/jobs/{job_id}"
+
+
+def _content_remediation_job_shape(
+    job: CloudJobQueue, cloud_file_id: str
+) -> ContentRemediationJobStatus:
+    safe = sanitize_json(job.result_data)
+    result = safe if isinstance(safe, dict) else {}
+    public_messages = {
+        "pending": "Queued",
+        "processing": "Remediating content",
+        "completed": "Completed",
+        "failed": "Failed",
+    }
+    error_code = (
+        job.last_error_code
+        if isinstance(job.last_error_code, str)
+        and job.last_error_code in _CANVAS_PUBLIC_JOB_ERRORS
+        else None
+    )
+    return ContentRemediationJobStatus(
+        job_id=str(job.id),
+        cloud_file_id=cloud_file_id,
+        status=str(job.status),
+        status_url=_content_remediation_status_url(cloud_file_id, str(job.id)),
+        progress=max(0, min(100, int(job.progress or 0))),
+        progress_message=public_messages.get(str(job.status)),
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        error_code=error_code,
+        fixed_count=result.get("fixed_count"),
+        manual_count=result.get("manual_count"),
+        failed_count=result.get("failed_count"),
+        remediated_score=result.get("remediated_compliance_score"),
+        verified=result.get("verified"),
+        issues_remaining=result.get("issues_remaining"),
+    )
 
 
 class ContentRemediateRequest(BaseModel):
@@ -965,7 +1049,11 @@ class ContentRemediateRequest(BaseModel):
     generate_alt_text: bool = False
 
 
-@router.post("/{cloud_file_id}/remediate", response_model=ContentRemediateResponse)
+@router.post(
+    "/{cloud_file_id}/remediate",
+    response_model=ContentRemediateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def remediate_content_item(
     cloud_file_id: str,
     request: Optional[ContentRemediateRequest] = Body(default=None),
@@ -973,7 +1061,7 @@ async def remediate_content_item(
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> ContentRemediateResponse:
     """
-    Remediate one content item and verify the result by rescanning it.
+    Durably enqueue one immutable stored-content snapshot.
 
     Content items are remediated in place from their stored HTML. Files go
     through the scan-based remediation endpoint instead, because they are
@@ -991,128 +1079,99 @@ async def remediate_content_item(
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
     if _is_canvas_file(cf):
-        return ContentRemediateResponse(
-            success=False,
-            error="Files are remediated through the scan-based endpoint",
+        raise HTTPException(
+            status_code=400,
+            detail="Files are remediated through the scan-based endpoint",
         )
 
     if not cf.content_body:
-        return ContentRemediateResponse(
-            success=False,
-            error="This item has no content to remediate",
+        raise HTTPException(
+            status_code=400,
+            detail="This item has no content to remediate",
         )
 
     intent = request or ContentRemediateRequest()
-    remediation_client = None
-    alt_text_client = None
-    purpose_decisions = {
-        "remediation": "not_requested",
-        "alt_text": "not_requested",
-    }
-    if intent.use_ai:
-        remediation_client = LMSRemediationClient.bind_if_allowed(
-            department_id=auth_department_id,
-            purpose="remediation",
-            actor_id=principal.user_id,
-            cloud_file_id=str(cf.id),
-        )
-        if remediation_client is None:
-            raise HTTPException(
-                status_code=403,
-                detail="LMS AI remediation is not permitted",
-            )
-        purpose_decisions["remediation"] = "allowed_not_used"
-    if intent.generate_alt_text:
-        alt_text_client = LMSRemediationClient.bind_if_allowed(
-            department_id=auth_department_id,
-            purpose="alt_text",
-            actor_id=principal.user_id,
-            cloud_file_id=str(cf.id),
-        )
-        purpose_decisions["alt_text"] = (
-            "allowed_not_used" if alt_text_client is not None else "denied_at_dispatch"
-        )
-
-    requested_purposes = {
-        purpose
-        for purpose, requested in (
-            ("remediation", intent.use_ai),
-            ("alt_text", intent.generate_alt_text),
-        )
-        if requested
-    }
-    result: Dict[str, Any] = {
-        "success": False,
-        "ai_used": False,
-        "external_ai_used": False,
-        "provider": None,
-        "purpose_decisions": purpose_decisions,
-    }
-
     try:
-        credential, api_client = await _get_canvas_client(auth_department_id, db)
-        try:
-            scanner = CanvasContentScanner(
-                canvas_client=api_client,
-                db=db,
-                department_id=auth_department_id,
-                credential_id=credential.id,
-            )
-            result = await scanner.remediate_content_item(
-                cf,
-                remediation_client=remediation_client,
-                alt_text_client=alt_text_client,
-                requested_purposes=requested_purposes,
-                remediation_origin="manual",
-            )
-        finally:
-            await api_client.close()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(
-            "Content remediation failed",
-            extra={
-                "cloud_file_id": str(cf.id),
-                "department_id": auth_department_id,
-                "error_type": type(exc).__name__,
+        job = enqueue_canvas_content_remediation(
+            db,
+            cloud_file=cf,
+            options={
+                "use_ai": intent.use_ai,
+                "generate_alt_text": intent.generate_alt_text,
+                "actor_id": principal.user_id,
             },
         )
-        return ContentRemediateResponse(
-            success=False,
-            error="Content remediation failed",
-            error_code="REMEDIATION_FAILED",
-            ai_used=bool(result.get("ai_used", False)),
-            external_ai_used=bool(result.get("external_ai_used", False)),
-            provider=result.get("provider"),
-            purpose_decisions=result.get("purpose_decisions", purpose_decisions),
-        )
-
-    if not result.get("success"):
-        return ContentRemediateResponse(
-            success=False,
-            error="Content remediation failed",
-            error_code="REMEDIATION_FAILED",
-            manual_count=result.get("manual_count", 0),
-            ai_used=bool(result.get("ai_used", False)),
-            external_ai_used=bool(result.get("external_ai_used", False)),
-            provider=result.get("provider"),
-            purpose_decisions=result.get("purpose_decisions", purpose_decisions),
-        )
-
+        db.commit()
+    except JobEnqueueError as exc:
+        db.rollback()
+        code = str(exc)
+        raise HTTPException(
+            status_code=413 if code == "canvas_content_snapshot_too_large" else 400,
+            detail=code,
+        ) from None
     return ContentRemediateResponse(
-        success=True,
-        verified=bool(result.get("verified")),
-        fixed_count=result.get("fixed_count", 0),
-        manual_count=result.get("manual_count", 0),
-        issues_remaining=result.get("issues_remaining", 0),
-        issues_introduced=result.get("issues_introduced", 0),
-        remediated_score=result.get("remediated_score"),
-        ai_used=bool(result.get("ai_used", False)),
-        external_ai_used=bool(result.get("external_ai_used", False)),
-        provider=result.get("provider"),
-        purpose_decisions=result.get("purpose_decisions", purpose_decisions),
+        job_id=str(job.id),
+        cloud_file_id=str(cf.id),
+        status=str(job.status),
+        status_url=_content_remediation_status_url(str(cf.id), str(job.id)),
     )
+
+
+@router.get(
+    "/{cloud_file_id}/remediation/jobs/{job_id}",
+    response_model=ContentRemediationJobStatus,
+)
+async def get_content_remediation_job(
+    cloud_file_id: str,
+    job_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+) -> ContentRemediationJobStatus:
+    cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
+    await require_feature(
+        db, principal.department_id, "lms_integration", "Canvas LMS Integration"
+    )
+    job = (
+        db.query(CloudJobQueue)
+        .filter(
+            CloudJobQueue.id == job_id,
+            CloudJobQueue.cloud_file_id == cf.id,
+            CloudJobQueue.department_id == principal.department_id,
+            CloudJobQueue.job_type == "canvas_content",
+        )
+        .first()
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Remediation job not found")
+    return _content_remediation_job_shape(job, str(cf.id))
+
+
+@router.get(
+    "/{cloud_file_id}/remediation/latest",
+    response_model=ContentRemediationJobStatus,
+)
+async def get_latest_content_remediation_job(
+    cloud_file_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+) -> ContentRemediationJobStatus:
+    cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
+    await require_feature(
+        db, principal.department_id, "lms_integration", "Canvas LMS Integration"
+    )
+    job = (
+        db.query(CloudJobQueue)
+        .filter(
+            CloudJobQueue.cloud_file_id == cf.id,
+            CloudJobQueue.department_id == principal.department_id,
+            CloudJobQueue.job_type == "canvas_content",
+        )
+        .order_by(CloudJobQueue.created_at.desc(), CloudJobQueue.id.desc())
+        .first()
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Remediation job not found")
+    return _content_remediation_job_shape(job, str(cf.id))
 
 
 @router.post("/{cloud_file_id}/approve", response_model=ApproveRejectResponse)
@@ -1160,6 +1219,14 @@ async def approve_content(
     if not cf.remediated_body:
         raise HTTPException(status_code=400, detail="No remediated content to approve")
 
+    current_candidate = lock_current_canvas_content_candidate(db, cf)
+    if current_candidate is None:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Remediated content is stale or unverified; run remediation again",
+        )
+    cf = current_candidate
     cf.writeback_status = "approved"
     db.commit()
 
@@ -1301,6 +1368,7 @@ async def batch_approve_content(
             status_code=400, detail="Batch contains unapprovable content"
         )
 
+    cloud_files.sort(key=lambda item: str(item.id))
     try:
         for cf in cloud_files:
             if _is_canvas_file(cf):
@@ -1311,9 +1379,12 @@ async def batch_approve_content(
                     approved_by_ref=f"{principal.auth_method}:{user_id}",
                 )
             else:
-                cf.writeback_status = "approved"
+                current_candidate = lock_current_canvas_content_candidate(db, cf)
+                if current_candidate is None:
+                    raise ValueError("stale_canvas_candidate")
+                current_candidate.writeback_status = "approved"
         db.commit()
-    except ArtifactError:
+    except (ArtifactError, ValueError):
         db.rollback()
         raise HTTPException(status_code=400, detail="Batch approval failed") from None
 
