@@ -58,7 +58,13 @@ def _canonical_json(value: Any) -> bytes:
 def canvas_candidate_fingerprint(
     *,
     department_id: str,
+    credential_id: str,
     cloud_file_id: str,
+    provider_file_id: str,
+    provider_parent_id: str,
+    content_source: str,
+    content_slug: str | None,
+    content_updated_at: str,
     source_sha256: str,
     scan_id: str,
     producer_job_id: str,
@@ -67,7 +73,14 @@ def canvas_candidate_fingerprint(
 ) -> str:
     material = {
         "department_id": department_id,
+        "credential_id": credential_id,
         "cloud_file_id": cloud_file_id,
+        "provider": CloudProvider.CANVAS.value,
+        "provider_file_id": provider_file_id,
+        "provider_parent_id": provider_parent_id,
+        "content_source": content_source,
+        "content_slug": content_slug,
+        "content_updated_at": content_updated_at,
         "source_sha256": source_sha256,
         "scan_id": scan_id,
         "producer_job_id": producer_job_id,
@@ -251,6 +264,12 @@ def install_canvas_content_owner(
 def publish_canvas_content_candidate(
     cloud_file: CloudFile,
     *,
+    credential_id: str,
+    provider_file_id: str,
+    provider_parent_id: str,
+    content_source: str,
+    content_slug: str | None,
+    content_updated_at: str,
     source_sha256: str,
     scan_id: str,
     producer_job_id: str,
@@ -260,7 +279,13 @@ def publish_canvas_content_candidate(
     metadata = _metadata(cloud_file)
     fingerprint = canvas_candidate_fingerprint(
         department_id=cloud_file.department_id,
+        credential_id=credential_id,
         cloud_file_id=str(cloud_file.id),
+        provider_file_id=provider_file_id,
+        provider_parent_id=provider_parent_id,
+        content_source=content_source,
+        content_slug=content_slug,
+        content_updated_at=content_updated_at,
         source_sha256=source_sha256,
         scan_id=scan_id,
         producer_job_id=producer_job_id,
@@ -289,6 +314,8 @@ def publish_canvas_content_candidate(
 def canvas_content_candidate_is_current(
     db: Session, cloud_file: CloudFile, *, lock_job: bool = False
 ) -> bool:
+    if cloud_file.provider != CloudProvider.CANVAS.value:
+        return False
     if cloud_file.content_source in (None, "file"):
         return bool(cloud_file.has_remediated_version)
     if not isinstance(cloud_file.content_body, str) or not isinstance(
@@ -307,7 +334,29 @@ def canvas_content_candidate_is_current(
     snapshot_sha256 = candidate.get("snapshot_sha256")
     expected_fingerprint = canvas_candidate_fingerprint(
         department_id=cloud_file.department_id,
+        credential_id=cloud_file.credential_id,
         cloud_file_id=str(cloud_file.id),
+        provider_file_id=cloud_file.provider_file_id,
+        provider_parent_id=(
+            cloud_file.provider_parent_id
+            if isinstance(cloud_file.provider_parent_id, str)
+            else ""
+        ),
+        content_source=(
+            cloud_file.content_source
+            if isinstance(cloud_file.content_source, str)
+            else ""
+        ),
+        content_slug=(
+            cloud_file.content_slug
+            if isinstance(cloud_file.content_slug, str)
+            else None
+        ),
+        content_updated_at=(
+            cloud_file.content_updated_at.isoformat()
+            if isinstance(cloud_file.content_updated_at, datetime)
+            else ""
+        ),
         source_sha256=source_sha256,
         scan_id=scan_id if isinstance(scan_id, str) else "",
         producer_job_id=job_id if isinstance(job_id, str) else "",
@@ -335,8 +384,10 @@ def canvas_content_candidate_is_current(
         CloudJobQueue.job_type == "canvas_content",
         CloudJobQueue.cloud_file_id == cloud_file.id,
         CloudJobQueue.provider == CloudProvider.CANVAS.value,
+        CloudJobQueue.credential_id == cloud_file.credential_id,
         CloudJobQueue.provider_file_id == cloud_file.provider_file_id,
         CloudJobQueue.status == CloudJobStatus.COMPLETED.value,
+        CloudJobQueue.max_retries == 0,
     )
     if lock_job:
         query = query.with_for_update()
@@ -348,9 +399,18 @@ def canvas_content_candidate_is_current(
         == {
             "version": 1,
             "department_id": cloud_file.department_id,
+            "credential_id": cloud_file.credential_id,
             "cloud_file_id": str(cloud_file.id),
             "provider": CloudProvider.CANVAS.value,
             "provider_file_id": cloud_file.provider_file_id,
+            "provider_parent_id": cloud_file.provider_parent_id,
+            "content_source": cloud_file.content_source,
+            "content_slug": cloud_file.content_slug,
+            "content_updated_at": (
+                cloud_file.content_updated_at.isoformat()
+                if isinstance(cloud_file.content_updated_at, datetime)
+                else ""
+            ),
             "scan_id": scan_id,
             "content_sha256": source_sha256,
             "snapshot_sha256": snapshot_sha256,

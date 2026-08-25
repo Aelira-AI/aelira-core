@@ -17,6 +17,13 @@ _JSON = sa.JSON().with_variant(JSONB(), "postgresql")
 _TABLE = "canvas_content_remediation_evidence"
 
 
+def _lower_hex_64(column: str) -> str:
+    stripped = column
+    for character in "0123456789abcdef":
+        stripped = f"replace({stripped}, '{character}', '')"
+    return f"length({column}) = 64 AND {column} = lower({column}) AND {stripped} = ''"
+
+
 def upgrade() -> None:
     op.create_table(
         _TABLE,
@@ -59,9 +66,8 @@ def upgrade() -> None:
         ),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint(
-            "length(source_sha256) = 64 AND source_sha256 = lower(source_sha256) "
-            "AND length(candidate_sha256) = 64 "
-            "AND candidate_sha256 = lower(candidate_sha256)",
+            f"{_lower_hex_64('source_sha256')} AND "
+            f"{_lower_hex_64('candidate_sha256')}",
             name="ck_canvas_content_evidence_hashes",
         ),
         sa.CheckConstraint(

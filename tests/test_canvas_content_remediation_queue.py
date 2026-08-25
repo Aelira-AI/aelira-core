@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,11 +18,15 @@ from sqlalchemy.exc import IntegrityError
 from src.db.models import CloudJobStatus
 from src.jobs.canvas_content_job import (
     MAX_COMPRESSED_BYTES,
+    MAX_ENCODED_SNAPSHOT_CHARS,
     MAX_OUTPUT_BYTES,
     MAX_QUEUE_PAYLOAD_BYTES,
     MAX_SNAPSHOT_BYTES,
     _decode_snapshot,
+    _dependency_matches_canvas_content,
     _encode_snapshot,
+    _snapshot_material,
+    _snapshot_is_valid,
     handle_canvas_content_job,
 )
 from src.jobs.contracts import JobContext, JobFailure, JobSuccess
@@ -43,9 +48,14 @@ def _snapshot() -> dict:
     return {
         "version": 1,
         "department_id": "dept-1",
+        "credential_id": "credential-1",
         "cloud_file_id": "file-1",
         "provider": "canvas",
         "provider_file_id": "page-1",
+        "provider_parent_id": "course-1",
+        "content_source": "page",
+        "content_slug": "page-slug",
+        "content_updated_at": "2026-08-25T09:00:00+00:00",
         "scan_id": "scan-1",
         "content_body": "<p>source</p>",
         "content_sha256": canvas_content_sha256("<p>source</p>"),
@@ -86,10 +96,34 @@ def test_snapshot_tampering_is_rejected(tamper):
         _decode_snapshot(payload)
 
 
+def test_oversized_encoded_snapshot_is_rejected_before_base64_allocation(monkeypatch):
+    from src.jobs import canvas_content_job as module
+
+    decode = MagicMock(side_effect=AssertionError("decode must not run"))
+    monkeypatch.setattr(module.base64, "b64decode", decode)
+
+    with pytest.raises(ValueError, match="invalid_job_payload"):
+        _decode_snapshot(
+            {
+                "version": 1,
+                "snapshot": "A" * (MAX_ENCODED_SNAPSHOT_CHARS + 1),
+                "snapshot_sha256": "a" * 64,
+            }
+        )
+
+    decode.assert_not_called()
+
+
 def test_candidate_fingerprint_binds_every_authority_dimension():
     values = {
         "department_id": "dept-1",
+        "credential_id": "credential-1",
         "cloud_file_id": "file-1",
+        "provider_file_id": "page-1",
+        "provider_parent_id": "course-1",
+        "content_source": "page",
+        "content_slug": "page-slug",
+        "content_updated_at": "2026-08-25T09:00:00+00:00",
         "source_sha256": "a" * 64,
         "scan_id": "scan-1",
         "producer_job_id": "job-1",
@@ -107,9 +141,13 @@ def _current_graph():
     cloud_file = SimpleNamespace(
         id="file-1",
         department_id="dept-1",
+        credential_id="credential-1",
         provider="canvas",
         provider_file_id="page-1",
+        provider_parent_id="course-1",
         content_source="page",
+        content_slug="page-slug",
+        content_updated_at=datetime(2026, 8, 25, 9, tzinfo=timezone.utc),
         content_body="<p>source</p>",
         remediated_body="<p>candidate</p>",
         last_scan_id="scan-1",
@@ -117,6 +155,12 @@ def _current_graph():
     )
     publish_canvas_content_candidate(
         cloud_file,
+        credential_id=cloud_file.credential_id,
+        provider_file_id=cloud_file.provider_file_id,
+        provider_parent_id=cloud_file.provider_parent_id,
+        content_source=cloud_file.content_source,
+        content_slug=cloud_file.content_slug,
+        content_updated_at=cloud_file.content_updated_at.isoformat(),
         source_sha256=canvas_content_sha256(cloud_file.content_body),
         scan_id=cloud_file.last_scan_id,
         producer_job_id="job-1",
@@ -125,13 +169,25 @@ def _current_graph():
     )
     job = SimpleNamespace(
         id="job-1",
+        department_id="dept-1",
+        job_type="canvas_content",
+        cloud_file_id="file-1",
+        provider="canvas",
+        credential_id="credential-1",
+        provider_file_id="page-1",
         status=CloudJobStatus.COMPLETED.value,
+        max_retries=0,
         execution_context={
             "version": 1,
             "department_id": "dept-1",
+            "credential_id": "credential-1",
             "cloud_file_id": "file-1",
             "provider": "canvas",
             "provider_file_id": "page-1",
+            "provider_parent_id": "course-1",
+            "content_source": "page",
+            "content_slug": "page-slug",
+            "content_updated_at": "2026-08-25T09:00:00+00:00",
             "scan_id": "scan-1",
             "content_sha256": canvas_content_sha256("<p>source</p>"),
             "snapshot_sha256": "b" * 64,
@@ -163,6 +219,270 @@ def test_stale_source_scan_candidate_or_job_is_rejected(stale):
     assert canvas_content_candidate_is_current(db, cloud_file) is False
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("credential_id", "credential-2"),
+        ("provider_file_id", "page-2"),
+        ("provider_parent_id", "course-2"),
+        ("content_source", "assignment"),
+        ("content_slug", "changed-slug"),
+        ("content_updated_at", datetime(2026, 8, 26, 9, tzinfo=timezone.utc)),
+    ],
+)
+def test_current_candidate_rejects_canvas_target_drift(field, replacement):
+    db, cloud_file, _job = _current_graph()
+    setattr(cloud_file, field, replacement)
+
+    assert canvas_content_candidate_is_current(db, cloud_file) is False
+
+
+def test_snapshot_validation_rejects_canvas_target_tampering():
+    snapshot = _snapshot()
+    from src.jobs import canvas_content_job as module
+
+    snapshot["issues_sha256"] = module.hashlib.sha256(
+        module._canonical_json(snapshot["issues"])
+    ).hexdigest()
+    snapshot["options_sha256"] = module.hashlib.sha256(
+        module._canonical_json(snapshot["options"])
+    ).hexdigest()
+    assert _snapshot_is_valid(snapshot) is True
+
+    snapshot["content_source"] = "file"
+    assert _snapshot_is_valid(snapshot) is False
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("version", 2),
+        ("last_compliance_score", float("nan")),
+        ("last_compliance_score", -1.0),
+        ("last_compliance_score", 101.0),
+    ],
+)
+def test_snapshot_validation_rejects_unsupported_or_unbounded_values(
+    field, replacement
+):
+    from src.jobs import canvas_content_job as module
+
+    snapshot = _snapshot()
+    snapshot["issues_sha256"] = module.hashlib.sha256(
+        module._canonical_json(snapshot["issues"])
+    ).hexdigest()
+    snapshot["options_sha256"] = module.hashlib.sha256(
+        module._canonical_json(snapshot["options"])
+    ).hexdigest()
+    snapshot[field] = replacement
+
+    assert _snapshot_is_valid(snapshot) is False
+
+
+def test_snapshot_validation_rejects_noncanonical_json_without_raising():
+    snapshot = _snapshot()
+    snapshot["options"] = {"use_ai": float("nan")}
+
+    assert _snapshot_is_valid(snapshot) is False
+
+
+def test_active_dedupe_binds_the_complete_immutable_snapshot(monkeypatch):
+    from src.jobs import canvas_content_job as module
+
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        department_id="dept-1",
+        credential_id="credential-1",
+        provider_file_id="page-1",
+        provider_parent_id="course-1",
+        content_source="page",
+        content_slug="page-slug",
+        content_updated_at=datetime(2026, 8, 25, 9, tzinfo=timezone.utc),
+        last_scan_id="scan-1",
+        content_body="<p>source</p>",
+    )
+    monkeypatch.setattr(
+        module,
+        "_scan_evidence",
+        lambda _db, _cloud_file: ([{"id": "image-alt"}], 75.0),
+    )
+    _, _, baseline = _snapshot_material(MagicMock(), cloud_file, {"use_ai": False})
+
+    for field, replacement in (
+        ("credential_id", "credential-2"),
+        ("provider_file_id", "page-2"),
+        ("provider_parent_id", "course-2"),
+        ("content_source", "assignment"),
+        ("content_slug", "other-slug"),
+        ("content_updated_at", datetime(2026, 8, 25, 10, tzinfo=timezone.utc)),
+    ):
+        original = getattr(cloud_file, field)
+        setattr(cloud_file, field, replacement)
+        _, _, changed = _snapshot_material(MagicMock(), cloud_file, {"use_ai": False})
+        setattr(cloud_file, field, original)
+        assert changed != baseline
+
+
+def test_dependency_must_own_the_exact_canvas_scan_and_options():
+    cloud_file = SimpleNamespace(
+        id="file-1",
+        department_id="dept-1",
+        credential_id="credential-1",
+        provider_file_id="page-1",
+        provider_parent_id="course-1",
+        content_source="page",
+        last_scan_id="scan-1",
+    )
+    dependency = SimpleNamespace(
+        payload={
+            "scan_kind": "canvas_content",
+            "cloud_file_id": "file-1",
+            "credential_id": "credential-1",
+            "provider": "canvas",
+            "provider_file_id": "page-1",
+            "course_id": "course-1",
+            "content_source": "page",
+            "scan_options": {"use_ai": False},
+        }
+    )
+    db = MagicMock()
+    db.execute.return_value.scalar_one_or_none.return_value = dependency
+
+    assert (
+        _dependency_matches_canvas_content(
+            db,
+            dependency_id="scan-job-1",
+            source_scan_id="scan-1",
+            cloud_file=cloud_file,
+            options={"use_ai": False},
+        )
+        is True
+    )
+
+    dependency.payload["course_id"] = "course-2"
+    assert (
+        _dependency_matches_canvas_content(
+            db,
+            dependency_id="scan-job-1",
+            source_scan_id="scan-1",
+            cloud_file=cloud_file,
+            options={"use_ai": False},
+        )
+        is False
+    )
+
+    dependency.payload["course_id"] = "course-1"
+    assert (
+        _dependency_matches_canvas_content(
+            db,
+            dependency_id="scan-job-1",
+            source_scan_id="scan-2",
+            cloud_file=cloud_file,
+            options={"use_ai": False},
+        )
+        is False
+    )
+
+
+def test_output_limit_is_rechecked_after_html_normalization(monkeypatch):
+    from src.education.remediation import html_remediator as html_module
+    from src.jobs import canvas_content_job as module
+
+    class FakeRemediator:
+        def __init__(self, file_path, *_args, **_kwargs):
+            self.file_path = file_path
+
+        def remediate(self):
+            return SimpleNamespace(
+                success=True,
+                output_file=self.file_path,
+                fixed_count=0,
+                manual_count=1,
+                failed_count=0,
+                remediated_compliance_score=75.0,
+            )
+
+    snapshot = _snapshot()
+    monkeypatch.setattr(module, "MAX_OUTPUT_BYTES", 1024)
+    monkeypatch.setattr(module, "_sanitize_html", lambda _body: "x" * 1025)
+    monkeypatch.setattr(html_module, "HtmlRemediator", FakeRemediator)
+
+    with pytest.raises(ValueError, match="canvas_content_invalid_output"):
+        module._remediate_snapshot(snapshot, "job-1")
+
+
+@pytest.mark.parametrize(
+    "result_values",
+    [
+        {"fixed_count": True},
+        {"manual_count": 1.5},
+        {"failed_count": "0"},
+        {"remediated_compliance_score": float("inf")},
+        {"remediated_compliance_score": 101.0},
+    ],
+)
+def test_remediator_result_scalars_are_exact_and_bounded(monkeypatch, result_values):
+    from src.education.remediation import html_remediator as html_module
+    from src.jobs import canvas_content_job as module
+
+    class FakeRemediator:
+        def __init__(self, file_path, *_args, **_kwargs):
+            self.file_path = file_path
+
+        def remediate(self):
+            values = {
+                "success": True,
+                "output_file": self.file_path,
+                "fixed_count": 0,
+                "manual_count": 1,
+                "failed_count": 0,
+                "remediated_compliance_score": 75.0,
+                **result_values,
+            }
+            return SimpleNamespace(**values)
+
+    monkeypatch.setattr(html_module, "HtmlRemediator", FakeRemediator)
+
+    with pytest.raises(ValueError, match="canvas_content_invalid_output"):
+        module._remediate_snapshot(_snapshot(), "job-1")
+
+
+def test_public_job_shape_allowlists_scalar_result_fields():
+    from src.api.canvas_content_routes import _content_remediation_job_shape
+
+    job = SimpleNamespace(
+        id="job-1",
+        status="completed",
+        progress=500,
+        created_at=None,
+        updated_at=None,
+        started_at=None,
+        completed_at=None,
+        last_error_code="unsafe-provider-exception",
+        result_data={
+            "fixed_count": "unsafe-provider-output",
+            "manual_count": -1,
+            "failed_count": 1,
+            "remediated_compliance_score": float("inf"),
+            "verified": "yes",
+            "issues_remaining": 999999,
+            "provider_payload": {"secret": "must not escape"},
+        },
+    )
+
+    public = _content_remediation_job_shape(job, "file-1")
+
+    assert public.progress == 100
+    assert public.error_code is None
+    assert public.fixed_count is None
+    assert public.manual_count is None
+    assert public.failed_count == 1
+    assert public.remediated_score is None
+    assert public.verified is None
+    assert public.issues_remaining is None
+    assert "provider_payload" not in public.model_dump()
+
+
 def test_evidence_diagnostics_are_allowlisted_and_bounded():
     diagnostics = _allowlisted_diagnostics(
         {
@@ -180,13 +500,13 @@ def test_evidence_diagnostics_are_allowlisted_and_bounded():
                 "snapshot_sha256": "d" * 64,
                 "provider_payload": {"secret": "must not persist"},
             },
-            "unrelated": "/private/container/path",
+            "unrelated": "unsafe-diagnostic-value",
         }
     )
     encoded = str(diagnostics).encode()
 
     assert b"secret" not in encoded
-    assert b"private" not in encoded
+    assert b"unsafe" not in encoded
     assert len(encoded) <= EVIDENCE_MAX_BYTES
     assert EVIDENCE_MAX_ROWS_PER_FILE == 20
 
@@ -382,6 +702,21 @@ def test_migration_upgrades_and_downgrades_supported_sqlite(monkeypatch):
                 {"source": "a" * 64, "candidate": "b" * 64},
             )
         savepoint.rollback()
+
+        invalid_hash_savepoint = connection.begin_nested()
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                sa.text(
+                    "INSERT INTO canvas_content_remediation_evidence "
+                    "(id, department_id, cloud_file_id, source_sha256, "
+                    "candidate_sha256, quarantine_reason, diagnostics, "
+                    "stored_bytes, lifecycle_state, expires_at) VALUES "
+                    "('bad-hash', 'dept-1', 'file-1', :source, :candidate, "
+                    "'reason', '{}', 2, 'current', CURRENT_TIMESTAMP)"
+                ),
+                {"source": "z" * 64, "candidate": "b" * 64},
+            )
+        invalid_hash_savepoint.rollback()
 
         migration.downgrade()
         assert (

@@ -864,6 +864,8 @@ class TestStaleDetection:
 
         # Cloud file was scanned at scan_time
         cloud_file = MagicMock()
+        cloud_file.department_id = department_id
+        cloud_file.credential_id = credential_id
         cloud_file.content_source = "page"
         cloud_file.content_slug = "test-page"
         cloud_file.provider_parent_id = "COURSE123"
@@ -917,6 +919,8 @@ class TestStaleDetection:
 
         cloud_file = MagicMock()
         cloud_file.id = str(uuid.uuid4())
+        cloud_file.department_id = department_id
+        cloud_file.credential_id = credential_id
         cloud_file.content_source = "page"
         cloud_file.content_slug = "test-page"
         cloud_file.content_body = "<p>Original</p>"
@@ -971,6 +975,8 @@ class TestStaleDetection:
         scan_time = datetime(2026, 3, 20, 10, 0, 0, tzinfo=timezone.utc)
         original = MagicMock()
         original.id = str(uuid.uuid4())
+        original.department_id = "dept-1"
+        original.credential_id = "cred-1"
         original.content_source = "page"
         original.content_slug = "test-page"
         original.provider_file_id = "page-1"
@@ -1020,6 +1026,69 @@ class TestStaleDetection:
             persisted_log.reconciliation_last_error
             == "canvas_candidate_changed_before_writeback"
         )
+        assert replacement.writeback_status == "reconciliation_failed"
+
+    @pytest.mark.asyncio
+    async def test_write_back_unknown_outcome_is_manual_and_blocks_retry(self):
+        from src.education.canvas_content_scanner import CanvasContentScanner
+
+        scan_time = datetime(2026, 3, 20, 10, 0, 0, tzinfo=timezone.utc)
+        cloud_file = MagicMock()
+        cloud_file.id = str(uuid.uuid4())
+        cloud_file.department_id = "dept-1"
+        cloud_file.credential_id = "cred-1"
+        cloud_file.content_source = "page"
+        cloud_file.content_slug = "test-page"
+        cloud_file.provider_file_id = "page-1"
+        cloud_file.provider_parent_id = "COURSE123"
+        cloud_file.content_updated_at = scan_time
+        cloud_file.content_body = "<p>Original</p>"
+        cloud_file.remediated_body = "<p>Candidate</p>"
+        cloud_file.writeback_status = "approved"
+        cloud_file.needs_rescan = False
+        cloud_file.provider_metadata = {
+            "canvas_content_candidate": {"fingerprint": "a" * 64}
+        }
+        persisted_log = MagicMock()
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+        db.get.return_value = persisted_log
+        scanner = CanvasContentScanner(
+            canvas_client=AsyncMock(),
+            db=db,
+            department_id="dept-1",
+            credential_id="cred-1",
+        )
+        scanner._get_canvas_updated_at = AsyncMock(return_value=scan_time)
+        scanner._update_canvas_content = AsyncMock(
+            side_effect=RuntimeError("untrusted provider details")
+        )
+
+        with patch(
+            "src.education.canvas_content_scanner.lock_current_canvas_content_candidate",
+            side_effect=[cloud_file, cloud_file],
+        ):
+            result = await scanner.write_back_content(cloud_file, approved_by="user-1")
+
+        assert result == {
+            "success": False,
+            "stale": False,
+            "error": "Canvas write-back outcome requires manual reconciliation",
+        }
+        assert persisted_log.reconciliation_status == "manual_required"
+        assert persisted_log.reconciliation_last_error == (
+            "canvas_writeback_outcome_unknown"
+        )
+        assert cloud_file.writeback_status == "reconciliation_failed"
+
+        retry = await scanner.write_back_content(cloud_file, approved_by="user-1")
+
+        assert retry == {
+            "success": False,
+            "stale": False,
+            "error": "Content is not approved for write-back",
+        }
+        assert scanner._update_canvas_content.await_count == 1
 
     @pytest.mark.asyncio
     async def test_write_back_assignment_calls_update_assignment(self):
@@ -1037,6 +1106,8 @@ class TestStaleDetection:
 
         cloud_file = MagicMock()
         cloud_file.id = str(uuid.uuid4())
+        cloud_file.department_id = department_id
+        cloud_file.credential_id = credential_id
         cloud_file.content_source = "assignment"
         cloud_file.provider_file_id = "42"
         cloud_file.content_body = "<p>Original desc</p>"

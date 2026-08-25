@@ -7,9 +7,19 @@ import hashlib
 import inspect
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stable_canvas_origin():
+    """Keep reconciliation unit tests independent of external DNS."""
+    with patch(
+        "src.services.canvas_reconciliation_service.require_persisted_canvas_origin",
+        return_value="https://canvas.instructure.com",
+    ):
+        yield
 
 
 def _graph(*, attempts: int = 0):
@@ -93,6 +103,32 @@ class FakeDB:
 
     def rollback(self):
         return None
+
+
+class FakeBackfillQuery:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def filter(self, *_args):
+        return self
+
+    def order_by(self, *_args):
+        return self
+
+    def limit(self, _limit):
+        return self
+
+    def with_for_update(self, **_kwargs):
+        return self
+
+    def all(self):
+        return self.rows
+
+
+class FakeBackfillDB(FakeDB):
+    def query(self, _model):
+        logs = self.objects["ContentWritebackLog"].values()
+        return FakeBackfillQuery(list(logs))
 
 
 @pytest.mark.asyncio
@@ -314,3 +350,35 @@ def test_reconciliation_creation_and_backfill_are_durable():
     assert "enqueue_cloud_job" in creation_source
     assert "with_for_update(skip_locked=True)" in backfill_source
     assert "enqueue_cloud_job" in backfill_source
+
+
+def test_html_intent_backfill_fails_closed_without_file_reconciliation_loop():
+    from src.services.canvas_reconciliation_service import CanvasReconciliationService
+
+    _, log, cloud, credential, artifact = _graph()
+    log.artifact_id = None
+    log.artifact_checksum = None
+    log.provider_result = {
+        "kind": "canvas_html",
+        "provider_file_id": "page-3",
+        "source_sha256": "b" * 64,
+        "candidate_sha256": "c" * 64,
+        "candidate_fingerprint": "d" * 64,
+    }
+    db = FakeBackfillDB(log, cloud, credential, artifact)
+    now = datetime.now(timezone.utc)
+
+    with patch(
+        "src.services.canvas_reconciliation_service.enqueue_cloud_job"
+    ) as enqueue:
+        count = CanvasReconciliationService(artifact_service=MagicMock()).backfill(
+            db, now=now
+        )
+
+    assert count == 0
+    enqueue.assert_not_called()
+    assert log.reconciliation_status == "manual_required"
+    assert log.reconciliation_resolution == "manual_required"
+    assert log.reconciliation_resolved_at == now
+    assert log.reconciliation_last_error == "canvas_html_outcome_requires_review"
+    assert cloud.writeback_status == "reconciliation_failed"

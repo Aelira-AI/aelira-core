@@ -9,6 +9,7 @@ import gzip
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -24,6 +25,8 @@ from src.db.models import (
     CloudProvider,
     Scan,
     ScanResult,
+    ScanStatus,
+    ScanType,
 )
 from src.education.canvas_content_scanner import (
     _sanitize_html,
@@ -45,6 +48,7 @@ MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
 MAX_COMPRESSED_BYTES = 180 * 1024
 MAX_QUEUE_PAYLOAD_BYTES = 262_144
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+MAX_ENCODED_SNAPSHOT_CHARS = ((MAX_COMPRESSED_BYTES + 2) // 3) * 4
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -76,7 +80,13 @@ def _decode_snapshot(payload: Any) -> dict[str, Any]:
         raise ValueError("invalid_job_payload")
     encoded = payload.get("snapshot")
     expected = payload.get("snapshot_sha256")
-    if not isinstance(encoded, str) or not isinstance(expected, str):
+    if (
+        not isinstance(encoded, str)
+        or len(encoded) > MAX_ENCODED_SNAPSHOT_CHARS
+        or not isinstance(expected, str)
+        or len(expected) != 64
+        or any(character not in "0123456789abcdef" for character in expected)
+    ):
         raise ValueError("invalid_job_payload")
     try:
         compressed = base64.b64decode(encoded, validate=True)
@@ -97,32 +107,57 @@ def _decode_snapshot(payload: Any) -> dict[str, Any]:
     return snapshot
 
 
-def _scan_issues(db: Session, cloud_file: CloudFile) -> list[dict[str, Any]]:
-    result = (
-        db.query(ScanResult)
-        .join(Scan, Scan.id == ScanResult.scan_id)
+def _scan_evidence(
+    db: Session, cloud_file: CloudFile
+) -> tuple[list[dict[str, Any]], float]:
+    row = (
+        db.query(Scan, ScanResult)
+        .join(ScanResult, ScanResult.scan_id == Scan.id)
         .filter(
-            ScanResult.scan_id == cloud_file.last_scan_id,
+            Scan.id == cloud_file.last_scan_id,
             Scan.department_id == cloud_file.department_id,
+            Scan.status == ScanStatus.COMPLETED,
+            Scan.scan_type == ScanType.CANVAS_CONTENT,
         )
         .one_or_none()
     )
+    if row is None:
+        raise JobEnqueueError("invalid_canvas_content")
+    _scan, result = row
     raw = result.issues if result is not None else []
     safe = sanitize_json(raw)
-    return safe if isinstance(safe, list) else []
+    issues = safe if isinstance(safe, list) else []
+    score = result.compliance_score
+    if (
+        type(score) not in (int, float)
+        or not math.isfinite(float(score))
+        or not 0.0 <= float(score) <= 100.0
+    ):
+        raise JobEnqueueError("invalid_canvas_content")
+    return issues, float(score)
+
+
+def _content_updated_at(cloud_file: CloudFile) -> str:
+    value = cloud_file.content_updated_at
+    return value.isoformat() if hasattr(value, "isoformat") else ""
 
 
 def _snapshot_material(
     db: Session, cloud_file: CloudFile, options: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
-    issues = _scan_issues(db, cloud_file)
+    issues, compliance_score = _scan_evidence(db, cloud_file)
     source_sha256 = canvas_content_sha256(cloud_file.content_body)
     snapshot = {
         "version": SNAPSHOT_VERSION,
         "department_id": cloud_file.department_id,
+        "credential_id": cloud_file.credential_id,
         "cloud_file_id": str(cloud_file.id),
         "provider": CloudProvider.CANVAS.value,
         "provider_file_id": cloud_file.provider_file_id,
+        "provider_parent_id": cloud_file.provider_parent_id,
+        "content_source": cloud_file.content_source,
+        "content_slug": cloud_file.content_slug,
+        "content_updated_at": _content_updated_at(cloud_file),
         "scan_id": cloud_file.last_scan_id,
         "content_body": cloud_file.content_body,
         "content_sha256": source_sha256,
@@ -130,20 +165,54 @@ def _snapshot_material(
         "issues_sha256": hashlib.sha256(_canonical_json(issues)).hexdigest(),
         "options": options,
         "options_sha256": hashlib.sha256(_canonical_json(options)).hexdigest(),
-        "last_compliance_score": cloud_file.last_compliance_score,
+        "last_compliance_score": compliance_score,
     }
     payload, snapshot_sha256 = _encode_snapshot(snapshot)
-    dedupe_digest = hashlib.sha256(
-        ":".join(
-            (
-                source_sha256,
-                str(cloud_file.last_scan_id),
-                snapshot["issues_sha256"],
-                snapshot["options_sha256"],
-            )
-        ).encode()
-    ).hexdigest()
-    return snapshot, payload, f"canvas-content:{cloud_file.id}:{dedupe_digest}"
+    return snapshot, payload, f"canvas-content:{cloud_file.id}:{snapshot_sha256}"
+
+
+def _dependency_matches_canvas_content(
+    db: Session,
+    *,
+    dependency_id: str,
+    source_scan_id: str,
+    cloud_file: CloudFile,
+    options: dict[str, Any],
+) -> bool:
+    if cloud_file.last_scan_id != source_scan_id:
+        return False
+    dependency = db.execute(
+        select(CloudJobQueue).where(
+            CloudJobQueue.id == dependency_id,
+            CloudJobQueue.department_id == cloud_file.department_id,
+            CloudJobQueue.job_type == "scan",
+            CloudJobQueue.cloud_file_id == cloud_file.id,
+            CloudJobQueue.provider == CloudProvider.CANVAS.value,
+            CloudJobQueue.credential_id == cloud_file.credential_id,
+            CloudJobQueue.provider_file_id == cloud_file.provider_file_id,
+            CloudJobQueue.status.in_(
+                (
+                    CloudJobStatus.PROCESSING.value,
+                    CloudJobStatus.COMPLETED.value,
+                )
+            ),
+        )
+    ).scalar_one_or_none()
+    if dependency is None or not isinstance(dependency.payload, dict):
+        return False
+    expected = {
+        "scan_kind": "canvas_content",
+        "cloud_file_id": str(cloud_file.id),
+        "credential_id": cloud_file.credential_id,
+        "provider": CloudProvider.CANVAS.value,
+        "provider_file_id": cloud_file.provider_file_id,
+        "course_id": cloud_file.provider_parent_id,
+        "content_source": cloud_file.content_source,
+    }
+    if any(dependency.payload.get(key) != value for key, value in expected.items()):
+        return False
+    dependency_options = sanitize_json(dependency.payload.get("scan_options") or {})
+    return dependency_options == options
 
 
 def enqueue_canvas_content_remediation(
@@ -152,6 +221,7 @@ def enqueue_canvas_content_remediation(
     cloud_file: CloudFile,
     options: dict[str, Any] | None = None,
     depends_on_job_id: str | None = None,
+    dependency_scan_id: str | None = None,
 ) -> CloudJobQueue:
     """Atomically bind an active job to an immutable source/scan/options tuple."""
     if (
@@ -176,9 +246,40 @@ def enqueue_canvas_content_remediation(
         .with_for_update()
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
-    if locked is None:
+    if (
+        locked is None
+        or locked.content_source in (None, "file")
+        or not isinstance(locked.content_body, str)
+        or not locked.content_body
+        or not isinstance(locked.last_scan_id, str)
+        or not locked.last_scan_id
+        or not isinstance(locked.credential_id, str)
+        or not locked.credential_id
+        or not isinstance(locked.provider_file_id, str)
+        or not locked.provider_file_id
+        or not isinstance(locked.provider_parent_id, str)
+        or not locked.provider_parent_id
+        or not _content_updated_at(locked)
+        or (
+            locked.content_source == "page"
+            and (not isinstance(locked.content_slug, str) or not locked.content_slug)
+        )
+    ):
         raise JobEnqueueError("invalid_canvas_content")
     snapshot, payload, dedupe_key = _snapshot_material(db, locked, safe_options)
+    if depends_on_job_id is not None:
+        if not isinstance(dependency_scan_id, str) or not dependency_scan_id:
+            raise JobEnqueueError("dependency_scope_mismatch")
+        if not _dependency_matches_canvas_content(
+            db,
+            dependency_id=depends_on_job_id,
+            source_scan_id=dependency_scan_id,
+            cloud_file=locked,
+            options=safe_options,
+        ):
+            raise JobEnqueueError("dependency_scope_mismatch")
+    elif dependency_scan_id is not None:
+        raise JobEnqueueError("dependency_scope_mismatch")
     job = enqueue_cloud_job(
         db,
         department_id=locked.department_id,
@@ -194,9 +295,14 @@ def enqueue_canvas_content_remediation(
         execution_context={
             "version": SNAPSHOT_VERSION,
             "department_id": locked.department_id,
+            "credential_id": locked.credential_id,
             "cloud_file_id": str(locked.id),
             "provider": CloudProvider.CANVAS.value,
             "provider_file_id": locked.provider_file_id,
+            "provider_parent_id": locked.provider_parent_id,
+            "content_source": locked.content_source,
+            "content_slug": locked.content_slug,
+            "content_updated_at": _content_updated_at(locked),
             "scan_id": locked.last_scan_id,
             "content_sha256": snapshot["content_sha256"],
             "snapshot_sha256": payload["snapshot_sha256"],
@@ -215,10 +321,15 @@ def enqueue_canvas_content_remediation(
 
 def _snapshot_is_valid(snapshot: dict[str, Any]) -> bool:
     required = {
+        "version": int,
         "department_id": str,
+        "credential_id": str,
         "cloud_file_id": str,
         "provider": str,
         "provider_file_id": str,
+        "provider_parent_id": str,
+        "content_source": str,
+        "content_updated_at": str,
         "scan_id": str,
         "content_body": str,
         "content_sha256": str,
@@ -227,16 +338,55 @@ def _snapshot_is_valid(snapshot: dict[str, Any]) -> bool:
         "options": dict,
         "options_sha256": str,
     }
+    content_slug = snapshot.get("content_slug")
+    score = snapshot.get("last_compliance_score")
+    try:
+        issues_sha256 = hashlib.sha256(
+            _canonical_json(snapshot.get("issues"))
+        ).hexdigest()
+        options_sha256 = hashlib.sha256(
+            _canonical_json(snapshot.get("options"))
+        ).hexdigest()
+    except (TypeError, ValueError, OverflowError):
+        return False
     return not any(
         type(snapshot.get(key)) is not kind for key, kind in required.items()
     ) and (
-        snapshot["provider"] == CloudProvider.CANVAS.value
+        snapshot["version"] == SNAPSHOT_VERSION
+        and snapshot["provider"] == CloudProvider.CANVAS.value
+        and all(
+            snapshot[key]
+            for key in (
+                "department_id",
+                "credential_id",
+                "cloud_file_id",
+                "provider_file_id",
+                "provider_parent_id",
+                "content_source",
+                "content_updated_at",
+                "scan_id",
+            )
+        )
+        and snapshot["content_source"]
+        in {"page", "assignment", "announcement", "quiz", "discussion"}
+        and (content_slug is None or isinstance(content_slug, str))
+        and (
+            snapshot["content_source"] != "page"
+            or isinstance(content_slug, str)
+            and bool(content_slug)
+        )
         and canvas_content_sha256(snapshot["content_body"])
         == snapshot["content_sha256"]
-        and hashlib.sha256(_canonical_json(snapshot["issues"])).hexdigest()
-        == snapshot["issues_sha256"]
-        and hashlib.sha256(_canonical_json(snapshot["options"])).hexdigest()
-        == snapshot["options_sha256"]
+        and issues_sha256 == snapshot["issues_sha256"]
+        and options_sha256 == snapshot["options_sha256"]
+        and type(score) in (int, float)
+        and math.isfinite(float(score))
+        and 0.0 <= float(score) <= 100.0
+        and all(
+            len(snapshot[key]) == 64
+            and all(character in "0123456789abcdef" for character in snapshot[key])
+            for key in ("content_sha256", "issues_sha256", "options_sha256")
+        )
     )
 
 
@@ -253,9 +403,14 @@ def _authority_is_current(
     )
     owner = metadata.get("canvas_content_remediation")
     return bool(
-        job.status == CloudJobStatus.PROCESSING.value
+        context.job_type == CANVAS_CONTENT_JOB_TYPE
+        and job.status == CloudJobStatus.PROCESSING.value
         and job.claim_token == context.claim_token
         and job.worker_id == context.worker_id
+        and job.job_type == CANVAS_CONTENT_JOB_TYPE
+        and job.provider == CloudProvider.CANVAS.value
+        and job.credential_id == snapshot["credential_id"]
+        and job.max_retries == 0
         and job.department_id == snapshot["department_id"]
         and job.cloud_file_id == snapshot["cloud_file_id"]
         and job.provider_file_id == snapshot["provider_file_id"]
@@ -264,15 +419,25 @@ def _authority_is_current(
         == {
             "version": SNAPSHOT_VERSION,
             "department_id": snapshot["department_id"],
+            "credential_id": snapshot["credential_id"],
             "cloud_file_id": snapshot["cloud_file_id"],
             "provider": CloudProvider.CANVAS.value,
             "provider_file_id": snapshot["provider_file_id"],
+            "provider_parent_id": snapshot["provider_parent_id"],
+            "content_source": snapshot["content_source"],
+            "content_slug": snapshot["content_slug"],
+            "content_updated_at": snapshot["content_updated_at"],
             "scan_id": snapshot["scan_id"],
             "content_sha256": snapshot["content_sha256"],
             "snapshot_sha256": context.payload.get("snapshot_sha256"),
         }
         and cloud_file.department_id == snapshot["department_id"]
+        and cloud_file.credential_id == snapshot["credential_id"]
         and cloud_file.provider_file_id == snapshot["provider_file_id"]
+        and cloud_file.provider_parent_id == snapshot["provider_parent_id"]
+        and cloud_file.content_source == snapshot["content_source"]
+        and cloud_file.content_slug == snapshot["content_slug"]
+        and _content_updated_at(cloud_file) == snapshot["content_updated_at"]
         and cloud_file.last_scan_id == snapshot["scan_id"]
         and isinstance(cloud_file.content_body, str)
         and canvas_content_sha256(cloud_file.content_body) == snapshot["content_sha256"]
@@ -373,10 +538,17 @@ def _remediate_snapshot(snapshot: dict[str, Any], job_id: str) -> _Candidate:
         except UnicodeDecodeError as exc:
             raise ValueError("canvas_content_invalid_output") from exc
         body = sanitize_for_postgres(_sanitize_html(_unwrap_html_fragment(document)))
+        if not isinstance(body, str) or len(body.encode("utf-8")) > MAX_OUTPUT_BYTES:
+            raise ValueError("canvas_content_invalid_output")
     total = len(issues)
-    fixed = int(result.fixed_count or 0)
-    manual = int(result.manual_count or 0)
-    failed = int(getattr(result, "failed_count", 0) or 0)
+    raw_counts = (
+        result.fixed_count,
+        result.manual_count,
+        getattr(result, "failed_count", 0),
+    )
+    if any(type(value) is not int for value in raw_counts):
+        raise ValueError("canvas_content_invalid_output")
+    fixed, manual, failed = raw_counts
     if any(value < 0 or value > total for value in (fixed, manual, failed)):
         raise ValueError("canvas_content_invalid_output")
     accounted = fixed + manual + failed
@@ -385,7 +557,7 @@ def _remediate_snapshot(snapshot: dict[str, Any], job_id: str) -> _Candidate:
     elif accounted > total:
         raise ValueError("canvas_content_invalid_output")
     score = getattr(result, "remediated_compliance_score", None)
-    if not isinstance(score, (int, float)):
+    if score is None:
         original = snapshot.get("last_compliance_score")
         score = (
             min(
@@ -395,6 +567,13 @@ def _remediate_snapshot(snapshot: dict[str, Any], job_id: str) -> _Candidate:
             if isinstance(original, (int, float)) and total
             else (float(original) if isinstance(original, (int, float)) else None)
         )
+    if (
+        type(score) not in (int, float)
+        or not math.isfinite(float(score))
+        or not 0.0 <= float(score) <= 100.0
+    ):
+        raise ValueError("canvas_content_invalid_output")
+    score = float(score)
     return _Candidate(body, fixed, manual, failed, score)
 
 
@@ -444,6 +623,12 @@ async def handle_canvas_content_job(
     )
     publish_canvas_content_candidate(
         cloud_file,
+        credential_id=snapshot["credential_id"],
+        provider_file_id=snapshot["provider_file_id"],
+        provider_parent_id=snapshot["provider_parent_id"],
+        content_source=snapshot["content_source"],
+        content_slug=snapshot["content_slug"],
+        content_updated_at=snapshot["content_updated_at"],
         source_sha256=snapshot["content_sha256"],
         scan_id=snapshot["scan_id"],
         producer_job_id=context.job_id,
@@ -469,6 +654,7 @@ async def handle_canvas_content_job(
 __all__ = [
     "CANVAS_CONTENT_JOB_TYPE",
     "MAX_COMPRESSED_BYTES",
+    "MAX_ENCODED_SNAPSHOT_CHARS",
     "MAX_OUTPUT_BYTES",
     "MAX_QUEUE_PAYLOAD_BYTES",
     "MAX_SNAPSHOT_BYTES",

@@ -38,6 +38,14 @@ import uuid
 JOB_JSON = JSON().with_variant(JSONB, "postgresql")
 
 
+def _lower_hex_64_constraint(column: str) -> str:
+    """Portable PostgreSQL/SQLite exact lowercase SHA-256 constraint."""
+    stripped = column
+    for character in "0123456789abcdef":
+        stripped = f"replace({stripped}, '{character}', '')"
+    return f"length({column}) = 64 AND {column} = lower({column}) AND {stripped} = ''"
+
+
 class Base(DeclarativeBase):
     """SQLAlchemy 2.0 declarative base class for all models."""
 
@@ -1281,9 +1289,8 @@ class CanvasContentRemediationEvidence(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "length(source_sha256) = 64 AND source_sha256 = lower(source_sha256) "
-            "AND length(candidate_sha256) = 64 "
-            "AND candidate_sha256 = lower(candidate_sha256)",
+            f"{_lower_hex_64_constraint('source_sha256')} AND "
+            f"{_lower_hex_64_constraint('candidate_sha256')}",
             name="ck_canvas_content_evidence_hashes",
         ),
         CheckConstraint(

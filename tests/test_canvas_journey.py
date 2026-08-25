@@ -109,6 +109,7 @@ def seeded(db):
         mime_type="text/html",
         file_size_bytes=len(ORIGINAL_BODY),
         content_source=CanvasContentType.PAGE.value,
+        content_slug="welcome-page",
         content_body=ORIGINAL_BODY,
         content_updated_at=datetime.now(timezone.utc),
     )

@@ -978,12 +978,16 @@ async def _handle_canvas_content_scan(
         ):
             from .canvas_content_job import enqueue_canvas_content_remediation
 
+            dependency_scan_id = result.get("scan_id")
+            if not isinstance(dependency_scan_id, str) or not dependency_scan_id:
+                raise ScanJobFailed("INVALID_JOB_SCOPE")
             db.refresh(cloud_file)
             remediation_job = enqueue_canvas_content_remediation(
                 db,
                 cloud_file=cloud_file,
                 options=scan_options,
                 depends_on_job_id=str(job.id),
+                dependency_scan_id=dependency_scan_id,
             )
             db.commit()
             result["remediation_job_id"] = str(remediation_job.id)

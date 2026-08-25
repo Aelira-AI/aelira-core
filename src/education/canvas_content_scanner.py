@@ -1803,6 +1803,16 @@ class CanvasContentScanner:
                 "error": "Remediated content is stale or unverified",
             }
         cloud_file = current
+        if (
+            cloud_file.department_id != self.department_id
+            or cloud_file.credential_id != self.credential_id
+        ):
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Canvas connection changed; re-scan required before write-back",
+            }
         if not cloud_file.remediated_body or cloud_file.writeback_status != "approved":
             self.db.rollback()
             return {
@@ -1843,7 +1853,9 @@ class CanvasContentScanner:
             self.db.query(ContentWritebackLog.id)
             .filter(
                 ContentWritebackLog.cloud_file_id == cloud_file.id,
-                ContentWritebackLog.reconciliation_status == "reconciliation_required",
+                ContentWritebackLog.reconciliation_status.in_(
+                    ("reconciliation_required", "manual_required")
+                ),
             )
             .first()
         )
@@ -1882,6 +1894,7 @@ class CanvasContentScanner:
                 "provider_file_id": cloud_file.provider_file_id,
                 "source_sha256": expected_source_sha256,
                 "candidate_sha256": expected_candidate_sha256,
+                "candidate_fingerprint": expected_fingerprint,
             },
         )
         self.db.add(writeback_log)
@@ -1917,6 +1930,8 @@ class CanvasContentScanner:
                     "canvas_candidate_changed_before_writeback"
                 )
                 persisted.reconciliation_resolved_at = datetime.now(timezone.utc)
+                if current is not None:
+                    current.writeback_status = "reconciliation_failed"
                 self.db.commit()
             return {
                 "success": False,
@@ -1945,7 +1960,7 @@ class CanvasContentScanner:
             cloud_file.needs_rescan = False
             self.db.commit()
             return {"success": True, "stale": False}
-        except Exception:
+        except Exception as exc:
             self.db.rollback()
             persisted = self.db.get(ContentWritebackLog, log_id)
             if persisted is not None:
@@ -1953,10 +1968,14 @@ class CanvasContentScanner:
                 persisted.reconciliation_resolution = "manual_required"
                 persisted.reconciliation_last_error = "canvas_writeback_outcome_unknown"
                 persisted.reconciliation_resolved_at = datetime.now(timezone.utc)
+                cloud_file.writeback_status = "reconciliation_failed"
                 self.db.commit()
-            logger.exception(
+            logger.error(
                 "Canvas content write-back outcome requires reconciliation",
-                extra={"cloud_file_id": cloud_file.id},
+                extra={
+                    "cloud_file_id": cloud_file.id,
+                    "error_type": type(exc).__name__,
+                },
             )
             return {
                 "success": False,

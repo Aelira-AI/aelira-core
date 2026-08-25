@@ -1121,6 +1121,26 @@ class TestWriteback:
         assert response.status_code == 404
 
     @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
+    def test_writeback_does_not_expose_unexpected_exception_text(
+        self, mock_get_client, client, mock_session, override_deps
+    ):
+        cf = _make_cloud_file(
+            writeback_status="approved",
+            remediated_body="<p>Fixed</p>",
+        )
+        mock_session.query.return_value.filter.return_value.first.return_value = cf
+        mock_get_client.side_effect = RuntimeError(
+            "unsafe-runtime-detail provider-secret"
+        )
+
+        response = client.post(f"/canvas/content/{cf.id}/writeback")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Canvas content write-back failed"}
+        assert "unsafe-runtime-detail" not in response.text
+        assert "provider-secret" not in response.text
+
+    @patch("src.api.canvas_content_routes._get_canvas_client", new_callable=AsyncMock)
     def test_remediating_a_content_item_uses_the_content_path(
         self, mock_get_client, client, mock_session, override_deps
     ):

@@ -138,6 +138,17 @@ class CanvasReconciliationService:
         log.reconciliation_lease_expires_at = None
 
     @staticmethod
+    def _requires_html_manual_review(log: ContentWritebackLog) -> bool:
+        """Identify content-update intents that cannot be proved by file hashes."""
+        provider_result = log.provider_result
+        return (
+            type(provider_result) is dict
+            and provider_result.get("kind") == "canvas_html"
+            and log.artifact_id is None
+            and log.artifact_checksum is None
+        )
+
+    @staticmethod
     def _lock_log(db: Any, log_id: str) -> ContentWritebackLog | None:
         """Lock one ambiguity row; small unit fakes retain a direct-get seam."""
         if not hasattr(db, "execute"):
@@ -388,6 +399,18 @@ class CanvasReconciliationService:
         for log in rows:
             cloud_file = db.get(CloudFile, log.cloud_file_id)
             if cloud_file is None or cloud_file.provider != "canvas":
+                continue
+            # Stored Canvas HTML has no immutable provider artifact that can be
+            # observed and hash-proved after a crash. Never feed that intent to
+            # the file reconciliation worker, which would otherwise fail and be
+            # re-enqueued forever. Preserve the ambiguity for human resolution.
+            if self._requires_html_manual_review(log):
+                log.reconciliation_status = "manual_required"
+                log.reconciliation_resolution = "manual_required"
+                log.reconciliation_resolved_at = now
+                log.reconciliation_last_error = "canvas_html_outcome_requires_review"
+                cloud_file.writeback_status = "reconciliation_failed"
+                self._clear_lease(log)
                 continue
             try:
                 enqueue_cloud_job(

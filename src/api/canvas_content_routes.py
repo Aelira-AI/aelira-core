@@ -30,6 +30,7 @@ SECURITY:
 
 import logging
 import hashlib
+import math
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -1004,6 +1005,17 @@ def _content_remediation_status_url(cloud_file_id: str, job_id: str) -> str:
     return f"/canvas/content/{cloud_file_id}/remediation/jobs/{job_id}"
 
 
+def _bounded_job_count(value: Any) -> int | None:
+    return value if type(value) is int and 0 <= value <= 256 else None
+
+
+def _bounded_job_score(value: Any) -> float | None:
+    if type(value) not in (int, float):
+        return None
+    score = float(value)
+    return score if math.isfinite(score) and 0.0 <= score <= 100.0 else None
+
+
 def _content_remediation_job_shape(
     job: CloudJobQueue, cloud_file_id: str
 ) -> ContentRemediationJobStatus:
@@ -1033,12 +1045,14 @@ def _content_remediation_job_shape(
         started_at=job.started_at,
         completed_at=job.completed_at,
         error_code=error_code,
-        fixed_count=result.get("fixed_count"),
-        manual_count=result.get("manual_count"),
-        failed_count=result.get("failed_count"),
-        remediated_score=result.get("remediated_compliance_score"),
-        verified=result.get("verified"),
-        issues_remaining=result.get("issues_remaining"),
+        fixed_count=_bounded_job_count(result.get("fixed_count")),
+        manual_count=_bounded_job_count(result.get("manual_count")),
+        failed_count=_bounded_job_count(result.get("failed_count")),
+        remediated_score=_bounded_job_score(result.get("remediated_compliance_score")),
+        verified=(
+            result.get("verified") if type(result.get("verified")) is bool else None
+        ),
+        issues_remaining=_bounded_job_count(result.get("issues_remaining")),
     )
 
 
@@ -1461,12 +1475,19 @@ async def writeback_content(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Write-back failed: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Canvas content write-back failed",
+            extra={
+                "cloud_file_id": cloud_file_id,
+                "department_id": auth_department_id,
+                "error_type": type(exc).__name__,
+            },
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Write-back failed: {str(e)}",
-        )
+            detail="Canvas content write-back failed",
+        ) from None
 
 
 # =============================================================================
