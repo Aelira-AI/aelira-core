@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     cors_allow_headers: List[str] = [
         "Authorization",
         "Content-Type",
+        "Prefer",
         "Accept",
         "Origin",
         "User-Agent",
