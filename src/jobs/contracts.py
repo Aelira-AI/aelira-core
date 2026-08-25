@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -67,6 +68,17 @@ _PUBLIC_JOB_RESULT_FIELDS = frozenset(
         "total_issues",
     }
 )
+_PUBLIC_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_PUBLIC_COUNT_FIELDS = frozenset(
+    {"failed_count", "fixed_count", "manual_count", "skipped_count", "total_issues"}
+)
+_PUBLIC_SCORE_FIELDS = frozenset(
+    {
+        "compliance_improvement",
+        "original_compliance_score",
+        "remediated_compliance_score",
+    }
+)
 
 _PUBLIC_JOB_ERROR_CODES = frozenset(
     {
@@ -94,11 +106,27 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
     """Project internal result data onto the path-free public contract."""
     if not isinstance(value, Mapping):
         return None
-    result = {
-        key: sanitize_json(value[key])
-        for key in _PUBLIC_JOB_RESULT_FIELDS
-        if key in value
-    }
+    result: dict[str, Any] = {}
+    for key in _PUBLIC_JOB_RESULT_FIELDS:
+        if key not in value:
+            continue
+        item = value[key]
+        if key in {"success", "download_available"}:
+            if type(item) is bool:
+                result[key] = item
+        elif key in {"artifact_id", "scan_id"}:
+            if isinstance(item, str) and _PUBLIC_IDENTIFIER_RE.fullmatch(item):
+                result[key] = item
+        elif key in _PUBLIC_COUNT_FIELDS:
+            if type(item) is int and 0 <= item <= 1_000_000:
+                result[key] = item
+        elif key in _PUBLIC_SCORE_FIELDS:
+            if (
+                type(item) in {int, float}
+                and math.isfinite(float(item))
+                and -100.0 <= float(item) <= 100.0
+            ):
+                result[key] = item
     return result or None
 
 

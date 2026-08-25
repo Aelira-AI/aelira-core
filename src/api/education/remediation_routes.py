@@ -1282,7 +1282,7 @@ def _artifact_is_downloadable(
     artifact = db.get(RemediationArtifact, artifact_id)
     if artifact is None:
         return False, None
-    requires_approval = (
+    requires_approval = result.get("download_available") is False or (
         db.query(ScanFix.id)
         .filter(
             ScanFix.scan_id == scan_id,
@@ -1310,12 +1310,13 @@ def _artifact_is_downloadable(
 def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str, Any]:
     result = public_job_result(job.result_data) or {}
     downloadable, artifact = _artifact_is_downloadable(db, job, scan_id)
+    progress = job.progress if type(job.progress) is int else 0
     return {
         "job_id": str(job.id),
         "scan_id": scan_id,
         "status": str(job.status),
         "status_url": _status_url(str(job.id)),
-        "progress": int(job.progress or 0),
+        "progress": min(100, max(0, progress)),
         "progress_message": _PUBLIC_PROGRESS_MESSAGES.get(str(job.status)),
         "created_at": job.created_at,
         "updated_at": job.updated_at,
@@ -1341,6 +1342,7 @@ def _enqueue_scan_remediation(
     scan: Scan,
     principal: AuthenticatedPrincipal,
     options: dict[str, Any],
+    commit: bool = True,
 ) -> CloudJobQueue:
     authorized = authorize_scan_access(db, scan, principal)
     cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized)
@@ -1388,7 +1390,8 @@ def _enqueue_scan_remediation(
                 "originating_route": "education_api",
             },
         )
-        db.commit()
+        if commit:
+            db.commit()
         return job
     except JobEnqueueError as exc:
         db.rollback()
@@ -2693,7 +2696,7 @@ def _stream_remediation_artifact(
     artifact = db.get(RemediationArtifact, artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Remediated file not available")
-    requires_approval = (
+    requires_approval = result.get("download_available") is False or (
         db.query(ScanFix.id)
         .filter(
             ScanFix.scan_id == scan_id,
@@ -2756,26 +2759,21 @@ def download_remediation_job_artifact(
 
 
 @router.post("/code/remediate/{scan_id}")
-def remediate_code_scan(
+async def remediate_code_scan(
     scan_id: str,
+    request: Request,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Remediate a code (HTML) scan using approved ScanFix records.
 
-    This endpoint loads fixes that have been reviewed and approved (or
-    auto-approved) for a code scan, converts them to the format expected
-    by HtmlRemediator, runs the remediator, and returns a structured result.
+    This endpoint verifies that reviewed fixes exist, then queues durable
+    remediation. The worker revalidates approvals before applying them.
 
     Only HTML files can be auto-remediated; CSS and JS files are not supported.
     """
-    from ...education.remediation.html_remediator import HtmlRemediator
-    from ...education.remediation.base import RemediationConfig
-
-    _, user_id, department_id = principal.as_legacy_tuple()
-
-    # 1. Verify scan exists and belongs to user's department
+    # Verify all code-specific preconditions before creating durable work.
     scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -2825,101 +2823,24 @@ def remediate_code_scan(
             detail="No approved fixes to apply. Review and approve fixes first.",
         )
 
-    # 4. Convert ScanFix -> issue dicts for HtmlRemediator
-    issue_dicts = [_scanfix_to_issue_dict(fix) for fix in approved_fixes]
-
-    logger.info(
-        f"Code remediation for scan {scan_id}: {len(issue_dicts)} approved fixes",
-        extra={"user_id": user_id, "department_id": department_id},
+    options = _canonical_remediation_options(
+        RemediationOptions(use_ai=False, generate_alt_text=False),
+        use_ai=False,
+        generate_alt_text=False,
     )
-
-    # 5. Initialize HtmlRemediator
-    config = RemediationConfig(
-        use_ai=False,  # We already have approved fixes; no AI needed
-        verify_fixes=True,
-        create_backup=True,
-        output_directory=str(Path(file_path).parent),
+    options["approved_fixes_only"] = True
+    job = _enqueue_scan_remediation(
+        db,
+        scan=scan,
+        principal=principal,
+        options=options,
     )
-
-    try:
-        remediator = HtmlRemediator(
-            file_path=file_path,
-            issues=issue_dicts,
-            config=config,
-            ai_client=None,
-        )
-
-        # 6. Run remediation
-        result = remediator.remediate()
-
-        # 7. Update ScanFix records — mark applied ones
-        applied_issue_ids = {f.issue_id for f in result.fixed_issues}
-        failed_issue_ids = {f.get("issue_id") for f in result.failed_issues}
-        now = datetime.now(timezone.utc)
-
-        for fix in approved_fixes:
-            fix_issue_id = fix.issue_id or fix.id
-            if fix_issue_id in applied_issue_ids:
-                fix.review_status = "applied"
-                fix.updated_at = now
-            elif fix_issue_id in failed_issue_ids:
-                fix.review_status = "apply_failed"
-                fix.updated_at = now
-
-        # 8. Commit
-        db.commit()
-
-        logger.info(
-            f"Code remediation complete for scan {scan_id}: "
-            f"{result.fixed_count} fixed, {result.manual_count} manual, "
-            f"{result.failed_count} failed",
-            extra={"user_id": user_id, "department_id": department_id},
-        )
-
-        # 9. Return structured result
-        return {
-            "success": result.success,
-            "scan_id": scan_id,
-            "fixes_applied": result.fixed_count,
-            "fixes_failed": result.failed_count,
-            "manual_fixes": result.manual_count,
-            "output_file": result.output_file,
-            "original_score": result.original_compliance_score,
-            "remediated_score": result.remediated_compliance_score,
-            "fixed_issues": [
-                {
-                    "id": f.issue_id,
-                    "category": f.category.value,
-                    "severity": f.severity.value,
-                    "description": f.description,
-                    "fix_method": f.fix_method,
-                }
-                for f in result.fixed_issues
-            ],
-            "manual_issues": [
-                {
-                    "id": m.issue_id,
-                    "category": m.category.value,
-                    "severity": m.severity.value,
-                    "description": m.description,
-                    "reason": m.reason,
-                }
-                for m in result.manual_issues
-            ],
-            "warnings": result.warnings,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"Code remediation failed for scan {scan_id}: {e}",
-            exc_info=True,
-            extra={"user_id": user_id, "department_id": department_id},
-        )
-        raise HTTPException(
-            status_code=500, detail="Code remediation failed. Please try again."
-        )
+    return await _respond_for_enqueued_job(
+        job,
+        scan_id=scan_id,
+        department_id=principal.department_id,
+        respond_async=_prefer_respond_async(request),
+    )
 
 
 @router.get("/scans/{scan_id}/remediated")
@@ -3149,20 +3070,17 @@ async def _batch_remediate_impl(
     """
     Batch remediate multiple scans.
 
-    Starts remediation for multiple scans in the background.
-    Returns immediately with a batch ID to track progress.
+    Atomically queues remediation for multiple scans and returns their job IDs.
     REQUIRES API KEY IN PRODUCTION.
     REQUIRES: bulk_api feature (tier-gated via TIER_QUOTAS; enabled on all core tiers)
     """
-    _, user_id, department_id = principal.as_legacy_tuple()
+    _, _, department_id = principal.as_legacy_tuple()
 
     if not scan_ids:
         raise HTTPException(status_code=400, detail="No scan IDs provided")
 
     if len(scan_ids) > 50:
         raise HTTPException(status_code=400, detail="Maximum 50 scans per batch")
-
-    batch_id = str(uuid.uuid4())
 
     # Resolve and authorize the complete request before feature checks, tasks,
     # writes, or external clients. This makes mixed-scope batches atomic.
@@ -3176,20 +3094,49 @@ async def _batch_remediate_impl(
             raise HTTPException(
                 status_code=400, detail="Scan has no results to remediate"
             )
-        valid_scans.append(scan_id)
+        valid_scans.append(scan)
 
     # Batch remediation requires bulk_api feature.
     await require_feature(db, department_id, "bulk_api", "Batch Remediation")
 
-    # Queue batch remediation in background
-    # For now, return the plan - actual background processing would be added
+    jobs = []
+    try:
+        for scan in valid_scans:
+            authorized = authorize_scan_access(db, scan, principal)
+            cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized)
+            lms_backed = cloud_file is not None and cloud_file.provider in {
+                "canvas",
+                "blackboard",
+                "moodle",
+                "brightspace",
+            }
+            options = _canonical_remediation_options(
+                RemediationOptions(use_ai=use_ai),
+                use_ai=use_ai,
+                generate_alt_text=not lms_backed,
+            )
+            jobs.append(
+                _enqueue_scan_remediation(
+                    db,
+                    scan=scan,
+                    principal=principal,
+                    options=options,
+                    commit=False,
+                )
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    batch_id = str(uuid.uuid4())
     return {
         "success": True,
         "batch_id": batch_id,
-        "total_scans": len(valid_scans),
-        "scans_queued": valid_scans,
+        "total_scans": len(jobs),
+        "scans_queued": [str(scan.id) for scan in valid_scans],
+        "job_ids": [str(job.id) for job in jobs],
         "message": "Batch remediation queued. Check individual scan statuses for progress.",
-        "note": "Batch background processing coming soon. For now, remediate individually.",
     }
 
 

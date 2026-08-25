@@ -24,6 +24,7 @@ from ..db.models import (
     ScanStatus,
     ScanType,
     ScanResult,
+    ScanFix,
     ReviewAuditLog,
     MatterhornResult as MatterhornResultModel,
     CloudFile,
@@ -73,6 +74,7 @@ _EXECUTION_CONTEXT_TEXT_FIELDS = {
 }
 _EXECUTION_CONTEXT_TEXT_RE = re.compile(r"^[A-Za-z0-9_./:-]+$")
 _ALLOWED_PURPOSES = ("remediation", "alt_text")
+_APPROVED_FIX_STATUSES = frozenset({"approved", "edited", "auto_approved"})
 _VERIFICATION_COPY_CHUNK_BYTES = 64 * 1024
 _ThreadResult = TypeVar("_ThreadResult")
 
@@ -194,7 +196,8 @@ def transition_retryable_remediation_job(
         )
 
     retry_count = int(getattr(job, "retry_count", 0) or 0) + 1
-    max_retries = int(getattr(job, "max_retries", 3) or 3)
+    raw_max_retries = getattr(job, "max_retries", 3)
+    max_retries = int(3 if raw_max_retries is None else raw_max_retries)
     job.retry_count = retry_count
     job.error_message = failure.code
     job.result_data = safe_result
@@ -219,6 +222,8 @@ _SAFE_RESULT_FIELDS = {
     "skipped_count",
     "total_issues",
     "compliance_improvement",
+    "original_compliance_score",
+    "remediated_compliance_score",
     "upload_job_id",
     "scan_id",
     "artifact_id",
@@ -613,7 +618,33 @@ async def process_remediation_job(
                 "error": "Scan results not found",
                 "scan_id": scan_id,
             }
-        if not scan_result.issues:
+        approved_fixes: list[ScanFix] = []
+        approved_fixes_only = options.get("approved_fixes_only") is True
+        if approved_fixes_only:
+            scan_type_value = str(
+                getattr(scan.scan_type, "value", scan.scan_type)
+            ).upper()
+            if scan_type_value != "CODE":
+                return {
+                    "success": False,
+                    "error": "invalid_job_payload",
+                    "scan_id": scan_id,
+                }
+            approved_fixes = (
+                db.query(ScanFix)
+                .filter(
+                    ScanFix.scan_id == scan_id,
+                    ScanFix.review_status.in_(tuple(_APPROVED_FIX_STATUSES)),
+                )
+                .all()
+            )
+            if not approved_fixes:
+                return {
+                    "success": False,
+                    "error": "manual_required",
+                    "scan_id": scan_id,
+                }
+        elif not scan_result.issues:
             original_status = scan.status
             original_outcome = scan.remediation_outcome
             original_completed_at = scan.completed_at
@@ -671,7 +702,25 @@ async def process_remediation_job(
         # Managed artifacts supersede caller-visible backup paths.
 
         # 6. Parse issues into RemediationIssue objects
-        issues = scan_result.issues or []
+        issues = (
+            [
+                {
+                    "id": fix.issue_id or fix.id,
+                    "category": fix.category or "other",
+                    "severity": fix.severity or "medium",
+                    "description": fix.description or "",
+                    "location": fix.location,
+                    "original_content": fix.original_content,
+                    "fix_suggestion": fix.fixed_content,
+                    "fixed_content": fix.fixed_content,
+                    "wcag_criteria": fix.wcag_criteria,
+                    "metadata": {},
+                }
+                for fix in approved_fixes
+            ]
+            if approved_fixes_only
+            else (scan_result.issues or [])
+        )
         embedded_alt_manual = []
         if lms_policy_authoritative and scan.scan_type not in (
             "IMAGE",
@@ -1022,7 +1071,19 @@ async def process_remediation_job(
         }
         scan.metadata = metadata
 
-        persist_scan_fixes(db, scan_id, remediation_result.fixed_issues)
+        if approved_fixes_only:
+            applied_ids = {
+                str(getattr(fix, "issue_id", ""))
+                for fix in remediation_result.fixed_issues
+            }
+            applied_at = datetime.now(timezone.utc)
+            for approved_fix in approved_fixes:
+                approved_issue_id = str(approved_fix.issue_id or approved_fix.id)
+                if approved_issue_id in applied_ids:
+                    approved_fix.review_status = "applied"
+                    approved_fix.updated_at = applied_at
+        else:
+            persist_scan_fixes(db, scan_id, remediation_result.fixed_issues)
 
         # Log remediation completion to audit trail
         auto_approved = sum(
@@ -1144,6 +1205,12 @@ async def process_remediation_job(
             "failed_count": remediation_result.failed_count,
             "skipped_count": remediation_result.skipped_count,
             "total_issues": remediation_result.total_issues,
+            "original_compliance_score": getattr(
+                remediation_result, "original_compliance_score", None
+            ),
+            "remediated_compliance_score": getattr(
+                remediation_result, "remediated_compliance_score", None
+            ),
             "compliance_improvement": remediation_result.improvement,
             "upload_job_id": upload_job_id,
             "scan_id": scan_id,
