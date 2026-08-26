@@ -1045,7 +1045,7 @@ def _form_xobject_reaches_image(
     xobjects = resources.get(Name.XObject) if resources is not None else None
     if xobjects is None:
         return False
-    for xobject in xobjects.values():
+    for _, xobject in xobjects.items():
         try:
             subtype = str(xobject.get(Name.Subtype, ""))
             if (
@@ -1458,7 +1458,7 @@ def associate_image_formula(
                 old_kids = rollback["root_kids_object"]
                 if isinstance(old_kids, Array):
                     while len(old_kids):
-                        old_kids.pop()
+                        del old_kids[-1]
                     for child in rollback["root_kids"]:
                         old_kids.append(child)
                     root[Name.K] = old_kids
@@ -1472,7 +1472,7 @@ def associate_image_formula(
                         nums = state["nums_object"]
                         if isinstance(nums, Array):
                             while len(nums):
-                                nums.pop()
+                                del nums[-1]
                             for value in state["nums_values"]:
                                 nums.append(value)
                         node[Name.Nums] = nums
@@ -1483,7 +1483,7 @@ def associate_image_formula(
                         limits = state["limits_object"]
                         if isinstance(limits, Array):
                             while len(limits):
-                                limits.pop()
+                                del limits[-1]
                             for value in state["limits_values"]:
                                 limits.append(value)
                         node[limits_name] = limits
@@ -1493,7 +1493,7 @@ def associate_image_formula(
                     rollback["value_arrays"] + rollback["structure_arrays"]
                 ):
                     while len(array):
-                        array.pop()
+                        del array[-1]
                     for value in values:
                         array.append(value)
             if not rollback["mark_info_existed"] and Name.MarkInfo in pdf.Root:
