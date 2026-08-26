@@ -10,6 +10,7 @@ from typing import List
 import logging
 import os
 from pathlib import Path
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,33 @@ _JWT_SECRET_PLACEHOLDERS = {
     "your-jwt-secret-here",
     "quickstart-insecure-change-me",
 }
+
+_COOKIE_DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _normalize_cookie_domain(value, variable_name: str) -> str:
+    """Return a bare DNS cookie domain or the host-only empty sentinel."""
+    if value is None:
+        return ""
+
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return ""
+
+    candidate = normalized.removeprefix(".")
+    labels = candidate.split(".")
+    if (
+        len(candidate) > 253
+        or len(labels) < 2
+        or any(len(label) > 63 for label in labels)
+        or any(not _COOKIE_DOMAIN_LABEL.fullmatch(label) for label in labels)
+    ):
+        raise ValueError(
+            f"{variable_name} must be a bare DNS domain such as .example.org, "
+            "without a scheme, port, path, wildcard, or trailing dot"
+        )
+
+    return f".{candidate}" if normalized.startswith(".") else candidate
 
 
 class Settings(BaseSettings):
@@ -100,6 +128,7 @@ class Settings(BaseSettings):
         "DNT",
         "Cache-Control",
         "X-Requested-With",
+        "X-CSRF-Token",
         "X-Device-Fingerprint",
         "X-Fingerprint-Quality",
     ]
@@ -203,21 +232,13 @@ class Settings(BaseSettings):
             )
         return v
 
-    @validator("session_cookie_domain")
-    def validate_cookie_domain(cls, v, values):
-        """Warn if cookie domain is not set in production."""
-        env = values.get("env", "development")
-        if isinstance(env, str):
-            env = env.lower()
-        if env == "production" and not v:
-            import warnings
+    @validator("csrf_cookie_domain", pre=True)
+    def validate_csrf_cookie_domain(cls, v):
+        return _normalize_cookie_domain(v, "CSRF_COOKIE_DOMAIN")
 
-            warnings.warn(
-                "SESSION_COOKIE_DOMAIN is not set in production. "
-                "Cookies will only be sent to the exact origin. "
-                "Set SESSION_COOKIE_DOMAIN=.example.com for cross-subdomain auth."
-            )
-        return v
+    @validator("session_cookie_domain", pre=True)
+    def validate_session_cookie_domain(cls, v):
+        return _normalize_cookie_domain(v, "SESSION_COOKIE_DOMAIN")
 
     # Redis
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -311,6 +332,7 @@ class Settings(BaseSettings):
     enable_csrf: bool = os.getenv("ENABLE_CSRF", "true").lower() == "true"
     csrf_cookie_secure: bool = os.getenv("CSRF_COOKIE_SECURE", "true").lower() == "true"
     csrf_cookie_samesite: str = os.getenv("CSRF_COOKIE_SAMESITE", "Lax")
+    csrf_cookie_domain: str = os.getenv("CSRF_COOKIE_DOMAIN", "")
 
     # JWT Authentication (session-based auth)
     # For development: Use JWT_SECRET (HS256 symmetric)

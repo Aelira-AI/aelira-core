@@ -315,18 +315,27 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return response
 
     def _ensure_csrf_cookie(self, request: Request, response: Response) -> None:
-        """Ensure CSRF token cookie exists, generate if missing."""
-        if self.cookie_name not in request.cookies:
+        """Ensure the CSRF token exists at the configured cookie scope.
+
+        Requests do not expose the Domain attribute of an incoming cookie. If
+        a parent domain is configured, reissuing the observed value is the only
+        safe way to promote an existing host-only token without rotating it.
+        """
+        token = request.cookies.get(self.cookie_name)
+        if token and not self.cookie_domain:
+            return
+        if not token:
             token = self._generate_token()
-            response.set_cookie(
-                key=self.cookie_name,
-                value=token,
-                secure=self.cookie_secure,
-                httponly=self.cookie_httponly,
-                samesite=self.cookie_samesite,
-                domain=self.cookie_domain,
-                max_age=86400,  # 24 hours
-            )
+
+        response.set_cookie(
+            key=self.cookie_name,
+            value=token,
+            secure=self.cookie_secure,
+            httponly=self.cookie_httponly,
+            samesite=self.cookie_samesite,
+            domain=self.cookie_domain,
+            max_age=86400,  # 24 hours
+        )
 
 
 def get_csrf_token(request: Request) -> str:
