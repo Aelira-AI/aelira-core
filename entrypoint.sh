@@ -23,5 +23,5 @@ fi
 
 # Queue execution belongs to the worker service; the API intentionally does
 # not start a JobProcessor lifecycle.
-echo "Starting uvicorn (workers=${UVICORN_WORKERS:-1})..."
-exec uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers "${UVICORN_WORKERS:-1}"
+echo "Starting uvicorn (workers=${UVICORN_WORKERS:-2})..."
+exec uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers "${UVICORN_WORKERS:-2}"

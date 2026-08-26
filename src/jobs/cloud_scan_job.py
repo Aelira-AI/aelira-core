@@ -819,6 +819,10 @@ async def handle_scan_job(
         Scan results
     """
     payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
+    from .local_scan_job import LOCAL_SCAN_KINDS, handle_local_scan_job
+
+    if payload.get("scan_kind") in LOCAL_SCAN_KINDS:
+        return await handle_local_scan_job(job, db)
     if any(
         payload.get(field) not in (None, getattr(job, field))
         for field in (

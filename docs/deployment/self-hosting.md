@@ -35,11 +35,10 @@ Two Dockerfiles matter here:
   dependencies, Node.js for Pa11y), copies the venv, runs as a non-root
   `aelira` user, and starts via `entrypoint.sh`. `entrypoint.sh` runs
   `alembic upgrade head` and fails closed if migration fails; only after a
-  successful migration does it exec
-  `uvicorn` with `--workers "${UVICORN_WORKERS:-1}"` — one worker by
-  default, deliberately: the job processor and sync Playwright use are not
-  yet safe across multiple workers (the entrypoint documents why). Override
-  `UVICORN_WORKERS` only if you know those constraints do not apply to you.
+  successful migration does it exec `uvicorn` with
+  `--workers "${UVICORN_WORKERS:-2}"`. Set `UVICORN_WORKERS` to match the
+  host's API capacity; long-running scans execute in the separate durable
+  worker service and use the shared upload volume.
 - **`dashboard/Dockerfile`** — builds the dashboard with `npm ci && npm run
   build` (build args `VITE_API_URL`, `VITE_WEBSITE_URL`), then serves the
   static output from `nginx:alpine` using `dashboard/nginx.conf`.
