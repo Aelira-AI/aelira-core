@@ -24,9 +24,10 @@ from urllib.parse import urlencode
 from fastapi.responses import JSONResponse
 
 from ..db.database import get_db_dependency
-from ..db.models import APIKey, User, Department
+from ..db.models import APIKey, User, Department, UserRole
 from ..auth.dependencies import (
     AuthenticatedPrincipal,
+    get_authenticated_principal,
     get_key_management_principal,
     get_required_api_key,
     resolve_access_token,
@@ -537,16 +538,59 @@ def validate_api_key(
 # ==================== Department Management Endpoints ====================
 
 
+def _enforce_department_creation_principal(
+    principal: AuthenticatedPrincipal,
+) -> AuthenticatedPrincipal:
+    """Allow only normal account administrators to provision departments."""
+    if principal.auth_method == "lti":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="LTI launch sessions cannot create departments",
+        )
+    if principal.user_role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required",
+        )
+    return principal
+
+
+def authorize_department_creation(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db_dependency),
+) -> AuthenticatedPrincipal | None:
+    """Resolve the department-provisioning policy before handler mutation."""
+    settings = get_settings()
+    has_session_cookie = bool(request.cookies.get("aelira_access"))
+    has_authorization_header = bool(request.headers.get("Authorization"))
+    if (
+        settings.allow_public_department_creation
+        and credentials is None
+        and not has_session_cookie
+        and not has_authorization_header
+    ):
+        return None
+
+    principal = get_authenticated_principal(request, credentials, db)
+    return _enforce_department_creation_principal(principal)
+
+
 @router.post("/departments", response_model=DepartmentResponse)
 async def create_department(
     request: CreateDepartmentRequest,
     http_request: Request,
+    _provisioner: AuthenticatedPrincipal | None = Depends(
+        authorize_department_creation
+    ),
     db: Session = Depends(get_db_dependency),
 ):
     """
     Create a new department account
 
-    This endpoint is for initial department signup.
+    By default, this endpoint requires an administrator from a normal session
+    or API key. Operators can explicitly restore anonymous provisioning with
+    ALLOW_PUBLIC_DEPARTMENT_CREATION=true.
 
     Security:
     - Abuse detection (IP tracking, domain limits, bot detection)

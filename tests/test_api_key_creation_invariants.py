@@ -14,7 +14,7 @@ from starlette.requests import Request
 from src.api import auth_routes
 from src.auth.auth_service import AuthService
 from src.auth.session_service import SessionService
-from src.db.models import APIKey, Department, User
+from src.db.models import APIKey, Department, User, UserRole
 from src.services.account_deletion_service import AccountDeletionService
 
 NO_ACTIVE_KEY_DETAIL = (
@@ -78,6 +78,7 @@ def test_magic_link_new_user_does_not_create_or_persist_an_api_key(monkeypatch):
 
     assert is_new is True
     assert user.email == "new.user@example.edu"
+    assert user.role == UserRole.ADMIN
     create_key.assert_not_called()
     assert not any(isinstance(row, APIKey) for row in added)
     assert sum(isinstance(row, User) for row in added) == 1

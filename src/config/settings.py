@@ -374,6 +374,13 @@ class Settings(BaseSettings):
     # admin) works regardless of this flag.
     open_signup: bool = os.getenv("OPEN_SIGNUP", "false").lower() == "true"
 
+    # Creating additional departments is a separate, cross-tenant provisioning
+    # boundary. Keep it administrator-only unless the operator explicitly opts
+    # into the legacy anonymous endpoint for a public demo or similar deployment.
+    allow_public_department_creation: bool = (
+        os.getenv("ALLOW_PUBLIC_DEPARTMENT_CREATION", "false").lower() == "true"
+    )
+
     # Faculty leaderboards / gamification. Off by default: ranking named
     # staff by compliance score is a deliberate institutional choice.
     gamification_enabled: bool = (

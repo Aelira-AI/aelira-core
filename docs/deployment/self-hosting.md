@@ -109,6 +109,31 @@ atomically for every worker, and then restart them. Keep the prior key in your
 protected secret backup until the rollout and restore verification are complete;
 never run workers with mixed old and new values.
 
+## Account and department provisioning
+
+Provisioning is closed by default. On an empty database, the first person to
+complete a verified magic-link login becomes the initial administrator and gets
+the deployment's first department. After that bootstrap, unknown email
+addresses cannot create accounts unless an administrator invites them, an LMS
+launch or domain-matched SSO provisions them, or the operator deliberately sets
+`OPEN_SIGNUP=true`.
+
+Creating another department is a separate operation. `POST /auth/departments`
+accepts a normal `ADMIN` or `SUPER_ADMIN` session, or an API key owned by one of
+those users. LTI launch sessions remain scoped to their existing department and
+cannot use this endpoint. Cookie-authenticated requests must include the
+double-submit `X-CSRF-Token`; API-key requests use `Authorization: Bearer` and
+do not need a CSRF token.
+
+This endpoint creates the department record only. It does not move the caller
+or create an administrator in the new department. Plan that department's
+administrator onboarding separately before treating it as operational.
+
+Set `ALLOW_PUBLIC_DEPARTMENT_CREATION=true` only when anonymous department
+creation is intentional, such as an isolated public demo. Anonymous browser
+clients still need a valid double-submit CSRF token. Keep the default `false`
+for institutional deployments.
+
 ## Postgres, Redis, and the Ollama profile
 
 Both existing compose files use the same two service images for storage:

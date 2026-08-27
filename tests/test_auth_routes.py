@@ -33,16 +33,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from src.api.main import app
 from src.db.database import get_db_dependency
 from src.db.models import (
+    APIKey,
     DeletedEmail,
     Department,
     User,
+    UserRole,
     UserSession,
 )
+from src.auth.dependencies import AuthenticatedPrincipal
 from src.auth.auth_service import AuthService, RateLimiter
 import src.api.auth_routes as auth_routes
 from src.security.abuse_detector import AbuseCheckResult
@@ -454,8 +458,204 @@ class TestAuthHealth:
 # ==================== Department signup (L459-582) ====================
 
 
+class TestDepartmentCreationPolicy:
+    """POST /auth/departments provisioning policy (issue #75)."""
+
+    @staticmethod
+    def _principal(role, auth_method="session"):
+        kwargs = {}
+        if auth_method == "lti":
+            kwargs = {
+                "lti_staff_role": "Administrator",
+                "lti_account_wide": True,
+                "lti_platform": "canvas",
+            }
+        return AuthenticatedPrincipal(
+            api_key=MagicMock(spec=APIKey) if auth_method == "api_key" else None,
+            user_id="provisioner",
+            department_id="existing-dept",
+            user_role=role,
+            auth_method=auth_method,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _allow_handler(monkeypatch):
+        monkeypatch.setattr(
+            auth_routes,
+            "check_signup_abuse",
+            AsyncMock(
+                return_value=AbuseCheckResult(
+                    allowed=True, signals=[], recommended_action="allow"
+                )
+            ),
+        )
+        email_service = MagicMock()
+        email_service.send_email = AsyncMock(return_value={"success": True})
+        monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
+
+    def test_closed_mode_rejects_anonymous_before_mutation(self, client):
+        db = _db_with()
+        _use_db(db)
+        client.cookies.set("csrf_token", "matching-csrf")
+
+        response = client.post(
+            "/auth/departments",
+            headers={"X-CSRF-Token": "matching-csrf"},
+            json={
+                "name": "CS",
+                "institution": "Example University",
+                "contact_email": "cs@example.edu",
+                "contact_name": "Admin",
+            },
+        )
+
+        assert response.status_code == 401
+        db.add.assert_not_called()
+        db.commit.assert_not_called()
+
+    @pytest.mark.parametrize("role", [UserRole.FACULTY])
+    def test_closed_mode_rejects_every_non_admin_role(self, role):
+        with pytest.raises(HTTPException) as exc_info:
+            auth_routes._enforce_department_creation_principal(self._principal(role))
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPER_ADMIN])
+    @pytest.mark.parametrize("auth_method", ["session", "api_key"])
+    def test_normal_admin_principals_are_allowed(self, role, auth_method):
+        principal = self._principal(role, auth_method)
+        assert (
+            auth_routes._enforce_department_creation_principal(principal) is principal
+        )
+
+    def test_lti_admin_cannot_create_cross_department_workspace(self):
+        with pytest.raises(HTTPException) as exc_info:
+            auth_routes._enforce_department_creation_principal(
+                self._principal(UserRole.ADMIN, "lti")
+            )
+        assert exc_info.value.status_code == 403
+
+    def test_lti_admin_route_is_rejected_before_mutation(self, client, monkeypatch):
+        principal = self._principal(UserRole.ADMIN, "lti")
+        monkeypatch.setattr(
+            auth_routes, "get_authenticated_principal", lambda *args: principal
+        )
+        db = _db_with()
+        _use_db(db)
+        client.cookies.set("aelira_access", "lti-session")
+        client.cookies.set("csrf_token", "matching-csrf")
+
+        response = client.post(
+            "/auth/departments",
+            headers={"X-CSRF-Token": "matching-csrf"},
+            json={
+                "name": "CS",
+                "institution": "Example University",
+                "contact_email": "cs@example.edu",
+                "contact_name": "Admin",
+            },
+        )
+
+        assert response.status_code == 403
+        db.add.assert_not_called()
+        db.commit.assert_not_called()
+
+    @pytest.mark.parametrize("auth_method", ["session", "api_key"])
+    def test_admin_authentication_reaches_department_handler(
+        self, client, monkeypatch, auth_method
+    ):
+        self._allow_handler(monkeypatch)
+        principal = self._principal(UserRole.ADMIN, auth_method)
+        monkeypatch.setattr(
+            auth_routes, "get_authenticated_principal", lambda *args: principal
+        )
+        _use_db(_db_with({Department: {"first": None}}))
+        headers = {}
+        if auth_method == "session":
+            client.cookies.set("aelira_access", "valid-session")
+            client.cookies.set("csrf_token", "matching-csrf")
+            headers["X-CSRF-Token"] = "matching-csrf"
+        else:
+            headers["Authorization"] = "Bearer valid-admin-key"
+
+        response = client.post(
+            "/auth/departments",
+            headers=headers,
+            json={
+                "name": "CS",
+                "institution": "Example University",
+                "contact_email": "cs@example.edu",
+                "contact_name": "Admin",
+            },
+        )
+
+        assert response.status_code == 200
+
+    def test_explicit_public_mode_skips_authentication(self, client, monkeypatch):
+        self._allow_handler(monkeypatch)
+        monkeypatch.setattr(
+            auth_routes,
+            "get_settings",
+            lambda: SimpleNamespace(allow_public_department_creation=True),
+        )
+        authenticate = MagicMock()
+        monkeypatch.setattr(auth_routes, "get_authenticated_principal", authenticate)
+        _use_db(_db_with({Department: {"first": None}}))
+        client.cookies.set("csrf_token", "matching-csrf")
+
+        response = client.post(
+            "/auth/departments",
+            headers={"X-CSRF-Token": "matching-csrf"},
+            json={
+                "name": "Open Lab",
+                "institution": "Example University",
+                "contact_email": "lab@example.edu",
+                "contact_name": "Researcher",
+            },
+        )
+
+        assert response.status_code == 200
+        authenticate.assert_not_called()
+
+    @pytest.mark.parametrize("authorization_header", ["Bearer invalid-key", "Bearer "])
+    def test_explicit_public_mode_rejects_invalid_bearer_before_mutation(
+        self, client, monkeypatch, authorization_header
+    ):
+        self._allow_handler(monkeypatch)
+        monkeypatch.setattr(
+            auth_routes,
+            "get_settings",
+            lambda: SimpleNamespace(allow_public_department_creation=True),
+        )
+        db = _db_with()
+        _use_db(db)
+
+        response = client.post(
+            "/auth/departments",
+            headers={"Authorization": authorization_header},
+            json={
+                "name": "Open Lab",
+                "institution": "Example University",
+                "contact_email": "lab@example.edu",
+                "contact_name": "Researcher",
+            },
+        )
+
+        assert response.status_code in {401, 403}
+        db.add.assert_not_called()
+        db.commit.assert_not_called()
+
+
 class TestCreateDepartment:
-    """POST /auth/departments (L459-582) — public."""
+    """POST /auth/departments handler behavior in explicit public mode."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_public_department_creation(self, monkeypatch):
+        monkeypatch.setattr(
+            auth_routes,
+            "get_settings",
+            lambda: SimpleNamespace(allow_public_department_creation=True),
+        )
 
     def test_invalid_payload_is_422(self, client, mock_db):
         # L75: contact_email: EmailStr -> a malformed address fails validation.
