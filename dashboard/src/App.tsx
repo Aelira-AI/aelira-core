@@ -10,6 +10,7 @@ import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 import { Login } from './pages/Login';
 import { VerifyMagicLink } from './pages/VerifyMagicLink';
+import { AcceptInvitation } from './pages/AcceptInvitation';
 import { Dashboard } from './pages/Dashboard';
 import { Upload } from './pages/Upload';
 import { History } from './pages/History';
@@ -82,6 +83,7 @@ function App(): React.ReactElement {
             <Routes>
               <Route path="/login" element={<Login />} />
               <Route path="/auth/verify" element={<VerifyMagicLink />} />
+              <Route path="/accept-invitation" element={<AcceptInvitation />} />
               {/* LTI routes share one launch/session boundary. Child navigation
                   restores the short-lived session and never replays the code. */}
               <Route path="/lti" element={<LTISessionProvider />}>

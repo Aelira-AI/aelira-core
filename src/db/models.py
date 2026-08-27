@@ -125,6 +125,13 @@ class InvitationStatus(str, Enum):
     REVOKED = "revoked"
 
 
+class InvitationPurpose(str, Enum):
+    """Security boundary and token-storage contract for invitations."""
+
+    MEMBER = "member"
+    DEPARTMENT_ADMIN_HANDOFF = "department_admin_handoff"
+
+
 class AuthProvider(str, Enum):
     """Authentication providers for user login"""
 
@@ -1993,8 +2000,14 @@ class UserInvitation(Base):
 
     # Invitation details
     email = Column(String(255), nullable=False)
-    role = Column(SQLEnum(UserRole), default=UserRole.FACULTY)
-    token = Column(String(64), unique=True, nullable=False)  # Secure random token
+    role = Column(SQLEnum(UserRole), nullable=False, default=UserRole.FACULTY)
+    token = Column(String(64), unique=True, nullable=False)
+    purpose = Column(
+        String(50),
+        nullable=False,
+        default=InvitationPurpose.MEMBER.value,
+        server_default=text("'member'"),
+    )
 
     # Inviter tracking
     invited_by = Column(
@@ -2004,11 +2017,13 @@ class UserInvitation(Base):
     # Status
     status = Column(
         SQLEnum(InvitationStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
         default=InvitationStatus.PENDING,
     )
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    delivery_queued_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)  # Default 7 days
     accepted_at = Column(DateTime(timezone=True), nullable=True)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
@@ -2017,6 +2032,45 @@ class UserInvitation(Base):
     department = relationship("Department", backref="invitations")
     inviter = relationship(
         "User", foreign_keys=[invited_by], backref="sent_invitations"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('member', 'department_admin_handoff')",
+            name="ck_user_invitations_purpose",
+        ),
+        CheckConstraint(
+            "purpose != 'department_admin_handoff' OR ("
+            + _lower_hex_64_constraint("token")
+            + ")",
+            name="ck_user_invitations_handoff_token_digest",
+        ),
+        CheckConstraint(
+            "purpose != 'department_admin_handoff' OR (role IS NOT NULL AND role = 'ADMIN')",
+            name="ck_user_invitations_handoff_admin_role",
+        ),
+        CheckConstraint(
+            "purpose != 'department_admin_handoff' OR email = lower(trim(email))",
+            name="ck_user_invitations_handoff_normalized_email",
+        ),
+        CheckConstraint(
+            "purpose != 'department_admin_handoff' OR (status IS NOT NULL AND delivery_queued_at IS NOT NULL)",
+            name="ck_user_invitations_handoff_delivery_queued",
+        ),
+        Index(
+            "uq_user_invitations_department_admin_handoff",
+            "department_id",
+            unique=True,
+            postgresql_where=text("purpose = 'department_admin_handoff'"),
+            sqlite_where=text("purpose = 'department_admin_handoff'"),
+        ),
+        Index(
+            "uq_user_invitations_admin_handoff_email",
+            "email",
+            unique=True,
+            postgresql_where=text("purpose = 'department_admin_handoff'"),
+            sqlite_where=text("purpose = 'department_admin_handoff'"),
+        ),
     )
 
 
@@ -2232,6 +2286,7 @@ class AuditLogAction(str, Enum):
 
     # Cross-tenant provisioning
     DEPARTMENT_PROVISION = "department_provision"
+    DEPARTMENT_ADMIN_HANDOFF = "department_admin_handoff"
 
     # Cloud Integrations
     CLOUD_CONNECT = "cloud_connect"

@@ -87,6 +87,7 @@ const AUTH_ENDPOINTS = [
   '/auth/magic-link/request',
   '/auth/magic-link/check',
   '/auth/magic-link/verify',
+  '/auth/accept-invitation',
   '/auth/google/login',
   '/auth/google/callback',
   '/auth/microsoft/login',

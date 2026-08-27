@@ -13,7 +13,8 @@ from sqlalchemy import create_engine, inspect
 from conftest import require_disposable_postgres_url
 
 ROOT = Path(__file__).parents[1]
-HEAD = "20260825_canvas_queue"
+HEAD = "20260827_admin_handoff"
+CANVAS_HEAD = "20260825_canvas_queue"
 EQUATION_HEAD = "20260824_task8_review"
 V095_HEAD = "20260822_v095_job_quarantine"
 TASK21_HEAD = "20260822_task21_provenance"
@@ -29,7 +30,8 @@ def test_task17b_migrations_are_one_linear_reversible_head():
     scripts = ScriptDirectory.from_config(config)
 
     assert scripts.get_heads() == [HEAD]
-    assert scripts.get_revision(HEAD).down_revision == EQUATION_HEAD
+    assert scripts.get_revision(HEAD).down_revision == CANVAS_HEAD
+    assert scripts.get_revision(CANVAS_HEAD).down_revision == EQUATION_HEAD
     assert scripts.get_revision(EQUATION_HEAD).down_revision == V095_HEAD
     assert scripts.get_revision(V095_HEAD).down_revision == TASK21_HEAD
     assert scripts.get_revision(TASK21_HEAD).down_revision == TASK18_HEAD
