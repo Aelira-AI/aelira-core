@@ -11,9 +11,8 @@
 #   - TLS termination. Put your reverse proxy (nginx, Traefik, Caddy) in
 #     front of api (8000) and dashboard (8080), and set PUBLIC_API_URL /
 #     PUBLIC_DASHBOARD_URL / CORS_ORIGINS in .env to the public hostnames.
-#   - Multi-worker API. UVICORN_WORKERS stays 1 until the job-claim race
-#     (tracked in public issues) is fixed. Scale scanning by hardware, not
-#     workers.
+#   - Horizontal API scaling. This file runs one API service with a configurable
+#     worker count; add replicas through your orchestrator when needed.
 #
 # Images are promoted from verified immutable platform digests; pin a version tag rather
 # than tracking latest in real deployments. To build locally instead:
@@ -69,8 +68,7 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SESSION_REFRESH_GRACE_SECONDS: ${SESSION_REFRESH_GRACE_SECONDS:-10}
       SESSION_REPLAY_ENCRYPTION_KEY: ${SESSION_REPLAY_ENCRYPTION_KEY:?set SESSION_REPLAY_ENCRYPTION_KEY in .env}
-      # Single worker until the job-claim race is fixed (see entrypoint.sh)
-      UVICORN_WORKERS: 1
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
     ports:
       - "${API_BIND:-127.0.0.1:8000}:8000"
     volumes:

@@ -1,11 +1,11 @@
 """Document scanning endpoints — PDF, PPTX, DOCX, XLSX, LaTeX."""
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from typing import Optional, Tuple
 from sqlalchemy.orm import Session
 import logging
+import hashlib
 import os
-import tempfile
 import time
 
 from ...db.database import get_db_dependency
@@ -17,7 +17,6 @@ from ...education.xlsx_processor import XlsxProcessor
 from ...education.latex_processor import LaTeXProcessor
 from ...middleware.quota import increment_usage, require_feature
 from ._shared import (
-    _run_in_thread,
     check_scan_quota,
     validate_uploaded_file,
     get_api_key_or_mock,
@@ -158,7 +157,6 @@ def process_pdf_background(
 
 @router.post("/pdf/scan", response_model=dict)
 async def scan_pdf(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     generate_alt_text: bool = False,
     enhance_descriptions: bool = True,
@@ -224,8 +222,7 @@ async def scan_pdf(
         progress_message="Starting PDF processing...",
     )
     db.add(scan)
-    db.commit()
-    db.refresh(scan)
+    db.flush()
 
     # Save to persistent storage for remediation
     from ...utils.file_storage import save_uploaded_file
@@ -235,12 +232,20 @@ async def scan_pdf(
     storage_path = await save_uploaded_file(file, department_id, scan.id)
     scan.storage_path = storage_path
 
-    # Also save temporarily for immediate processing
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    from ...jobs.local_scan_job import enqueue_local_scan_job
 
+    enqueue_local_scan_job(
+        db,
+        scan=scan,
+        scan_kind="local_pdf",
+        options={
+            "generate_alt_text": generate_alt_text,
+            "enhance_descriptions": enhance_descriptions,
+        },
+        input_sha256=hashlib.sha256(content).hexdigest(),
+    )
     db.commit()
+    db.refresh(scan)
 
     logger.info(
         f"Created scan {scan.id} for PDF: {file.filename} (generate_alt_text={generate_alt_text})"
@@ -249,19 +254,6 @@ async def scan_pdf(
     # Increment usage quota for free tier tracking
     # Note: We count scans, pages are counted during processing
     await increment_usage(db, department_id, scans=1, pages=0)
-
-    # Start background processing (in thread pool to avoid blocking the event loop)
-    background_tasks.add_task(
-        _run_in_thread(
-            process_pdf_background,
-            tmp_path,
-            content,
-            file.filename,
-            scan.id,
-            generate_alt_text,
-            enhance_descriptions,
-        )
-    )
 
     # Return immediately with scan_id
     return {
@@ -483,7 +475,6 @@ def process_pptx_background(
 
 @router.post("/powerpoint/scan", response_model=dict)
 async def scan_powerpoint(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     generate_alt_text: bool = False,
     validate_alt_text: bool = False,
@@ -541,40 +532,33 @@ async def scan_powerpoint(
         progress_message="Starting PowerPoint processing...",
     )
     db.add(scan)
-    db.commit()
-    db.refresh(scan)
+    db.flush()
 
     # Save to persistent storage for remediation
     from ...utils.file_storage import save_uploaded_file
 
     await file.seek(0)
     storage_path = await save_uploaded_file(file, department_id, scan.id)
+    scan.storage_path = storage_path
 
-    # Save temporarily for immediate processing
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    from ...jobs.local_scan_job import enqueue_local_scan_job
+
+    enqueue_local_scan_job(
+        db,
+        scan=scan,
+        scan_kind="local_powerpoint",
+        options={
+            "generate_alt_text": generate_alt_text,
+            "validate_alt_text": validate_alt_text,
+        },
+        input_sha256=hashlib.sha256(content).hexdigest(),
+    )
 
     db.commit()
+    db.refresh(scan)
 
     logger.info(
         f"Created scan {scan.id} for PPTX: {file.filename} (generate_alt_text={generate_alt_text})"
-    )
-
-    # Start background processing (in thread pool to avoid blocking the event loop)
-    background_tasks.add_task(
-        _run_in_thread(
-            process_pptx_background,
-            tmp_path,
-            content,
-            file.filename,
-            scan.id,
-            generate_alt_text,
-            validate_alt_text,
-            storage_path,
-            user_id,
-            department_id,
-        )
     )
 
     # Return immediately with scan_id
@@ -867,7 +851,6 @@ def process_docx_background(
 
 @router.post("/word/scan", response_model=dict)
 async def scan_word_document(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     generate_alt_text: bool = False,
     validate_alt_text: bool = False,
@@ -929,40 +912,33 @@ async def scan_word_document(
         progress_message="Starting Word document processing...",
     )
     db.add(scan)
-    db.commit()
-    db.refresh(scan)
+    db.flush()
 
     # Save to persistent storage for remediation
     from ...utils.file_storage import save_uploaded_file
 
     await file.seek(0)
     storage_path = await save_uploaded_file(file, department_id, scan.id)
+    scan.storage_path = storage_path
 
-    # Save temporarily for immediate processing
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    from ...jobs.local_scan_job import enqueue_local_scan_job
+
+    enqueue_local_scan_job(
+        db,
+        scan=scan,
+        scan_kind="local_word",
+        options={
+            "generate_alt_text": generate_alt_text,
+            "validate_alt_text": validate_alt_text,
+        },
+        input_sha256=hashlib.sha256(content).hexdigest(),
+    )
 
     db.commit()
+    db.refresh(scan)
 
     logger.info(
         f"Created scan {scan.id} for DOCX: {file.filename} (generate_alt_text={generate_alt_text})"
-    )
-
-    # Start background processing (in thread pool to avoid blocking the event loop)
-    background_tasks.add_task(
-        _run_in_thread(
-            process_docx_background,
-            tmp_path,
-            content,
-            file.filename,
-            scan.id,
-            generate_alt_text,
-            validate_alt_text,
-            storage_path,
-            user_id,
-            department_id,
-        )
     )
 
     # Return immediately with scan_id
@@ -1280,7 +1256,6 @@ def process_xlsx_background(
 
 @router.post("/excel/scan", response_model=dict)
 async def scan_excel_spreadsheet(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     generate_chart_descriptions: bool = False,
     generate_alt_text: bool = False,
@@ -1345,40 +1320,33 @@ async def scan_excel_spreadsheet(
         progress_message="Starting Excel spreadsheet processing...",
     )
     db.add(scan)
-    db.commit()
-    db.refresh(scan)
+    db.flush()
 
     # Save to persistent storage for remediation
     from ...utils.file_storage import save_uploaded_file
 
     await file.seek(0)
     storage_path = await save_uploaded_file(file, department_id, scan.id)
+    scan.storage_path = storage_path
 
-    # Save temporarily for immediate processing
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    from ...jobs.local_scan_job import enqueue_local_scan_job
+
+    enqueue_local_scan_job(
+        db,
+        scan=scan,
+        scan_kind="local_excel",
+        options={
+            "generate_chart_descriptions": generate_chart_descriptions,
+            "generate_alt_text": generate_alt_text,
+        },
+        input_sha256=hashlib.sha256(content).hexdigest(),
+    )
 
     db.commit()
+    db.refresh(scan)
 
     logger.info(
         f"Created scan {scan.id} for XLSX: {file.filename} (generate_alt_text={generate_alt_text})"
-    )
-
-    # Start background processing (in thread pool to avoid blocking the event loop)
-    background_tasks.add_task(
-        _run_in_thread(
-            process_xlsx_background,
-            tmp_path,
-            content,
-            file.filename,
-            scan.id,
-            generate_chart_descriptions,
-            generate_alt_text,
-            storage_path,
-            user_id,
-            department_id,
-        )
     )
 
     # Return immediately with scan_id
@@ -1779,7 +1747,6 @@ def process_latex_pdf_background(
 
 @router.post("/latex/scan", response_model=dict)
 async def scan_latex_document(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     use_ollama: bool = True,
     db: Session = Depends(get_db_dependency),
@@ -1799,7 +1766,6 @@ async def scan_latex_document(
     """
     # Delegate to convert_latex_document which handles the actual processing
     return await convert_latex_document(
-        background_tasks=background_tasks,
         file=file,
         use_ollama=use_ollama,
         db=db,
@@ -1809,7 +1775,6 @@ async def scan_latex_document(
 
 @router.post("/latex/convert", response_model=dict)
 async def convert_latex_document(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     use_ollama: bool = True,  #  NEW: Optional Ollama usage
     db: Session = Depends(get_db_dependency),
@@ -1868,8 +1833,7 @@ async def convert_latex_document(
         progress_message="Starting LaTeX processing...",
     )
     db.add(scan)
-    db.commit()
-    db.refresh(scan)
+    db.flush()
 
     # Save to persistent storage for remediation
     from ...utils.file_storage import save_uploaded_file
@@ -1878,46 +1842,22 @@ async def convert_latex_document(
     storage_path = await save_uploaded_file(file, department_id, scan.id)
     scan.storage_path = storage_path
 
-    # Save temporarily for immediate processing
-    suffix = ".pdf" if is_pdf else ".tex"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    from ...jobs.local_scan_job import enqueue_local_scan_job
+
+    enqueue_local_scan_job(
+        db,
+        scan=scan,
+        scan_kind="local_latex_pdf" if is_pdf else "local_latex",
+        options={"use_ollama": use_ollama},
+        input_sha256=hashlib.sha256(content).hexdigest(),
+    )
 
     db.commit()
+    db.refresh(scan)
 
     logger.info(
         f"Created scan {scan.id} for LaTeX: {file.filename} (is_pdf={is_pdf}, use_ollama={use_ollama}, storage={storage_path})"
     )
-
-    # Route to appropriate background processor (in thread pool to avoid blocking the event loop)
-    if is_pdf:
-        # PDF uploaded to LaTeX scanner -> use PDF processor with latex_aware mode
-        background_tasks.add_task(
-            _run_in_thread(
-                process_latex_pdf_background,
-                tmp_path,
-                file.filename,
-                scan.id,
-                use_ollama,
-                user_id,
-                department_id,
-            )
-        )
-    else:
-        # .tex file -> use LaTeX processor
-        background_tasks.add_task(
-            _run_in_thread(
-                process_latex_background,
-                tmp_path,
-                content,
-                file.filename,
-                scan.id,
-                use_ollama,
-                user_id,
-                department_id,
-            )
-        )
 
     # Return immediately with scan_id
     return {

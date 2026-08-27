@@ -1,12 +1,12 @@
 """Web scanning and code scanning endpoints — website, batch, sitemap, static code analysis."""
 
 import logging
+import hashlib
 import os
-import tempfile
 import time
 from typing import List, Optional, Tuple
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,6 @@ from ...middleware.quota import require_feature
 from ...scanners.scan_mode import ScanMode
 from ._shared import (
     MAX_SCANFIX_ISSUES,
-    _run_in_thread,
     _stable_hash,
     get_api_key_or_mock,
     validate_uploaded_file,
@@ -82,7 +81,7 @@ async def scan_website(
     """
     Scan a website for WCAG 2.2 accessibility compliance
 
-    NON-BLOCKING: Returns scan_id immediately, processes in background thread
+    NON-BLOCKING: Returns scan_id immediately, processes in the durable worker
     Use GET /api/education/scans/{scan_id}/progress to check status
 
     REQUIRES API KEY IN PRODUCTION
@@ -157,40 +156,32 @@ async def scan_website(
         progress_message="Scan queued for processing...",
     )
     db.add(scan)
-    db.commit()
-    db.refresh(scan)
+    db.flush()
     scan_id = scan.id
 
-    logger.info(f"Created scan {scan_id} for {url}, starting background process")
+    from ...jobs.local_scan_job import enqueue_local_scan_job
 
-    # Start scan in separate PROCESS with 'spawn' method
-    # Default 'fork' on Linux still copies file descriptors from parent!
-    # 'spawn' starts completely fresh Python interpreter with no inherited state
-    import multiprocessing
+    enqueue_local_scan_job(
+        db,
+        scan=scan,
+        scan_kind="local_web",
+        options={
+            "url": url,
+            "mode": mode.value,
+            "scan_images": scan_images,
+            "scan_multimedia": scan_multimedia,
+            "scan_math": scan_math,
+            "validate_alt_text": validate_alt_text,
+            "max_depth": max_depth,
+            "max_pages": max_pages,
+            "generate_code_fixes": generate_code_fixes,
+            "capture_screenshots": capture_screenshots,
+        },
+    )
+    db.commit()
+    db.refresh(scan)
 
-    ctx = multiprocessing.get_context("spawn")
-    process = ctx.Process(
-        target=process_web_scan_background,
-        args=(
-            scan_id,
-            url,
-            mode.value,
-            scan_images,
-            scan_multimedia,
-            scan_math,
-            validate_alt_text,
-            max_depth,
-            max_pages,
-            generate_code_fixes,
-            capture_screenshots,
-        ),
-        daemon=True,
-        name=f"scan-{scan_id[:8]}",
-    )
-    process.start()
-    logger.info(
-        f"[PROCESS] Started scan process (spawn): PID {process.pid}, name {process.name}"
-    )
+    logger.info(f"Created scan {scan_id} for {url}, queued durable job")
 
     # Return immediately with scan_id
     return {
@@ -291,37 +282,31 @@ async def batch_scan_websites(
         progress_message=f"Batch scan queued ({len(request.urls)} URLs)...",
     )
     db.add(batch_scan)
-    db.commit()
-    db.refresh(batch_scan)
+    db.flush()
     batch_scan_id = batch_scan.id
 
-    logger.info(f"Created batch scan {batch_scan_id}, starting background process")
+    from ...jobs.local_scan_job import enqueue_local_scan_job
 
-    # Start batch scan in separate process
-    import multiprocessing
+    enqueue_local_scan_job(
+        db,
+        scan=batch_scan,
+        scan_kind="local_web_batch",
+        options={
+            "urls": list(request.urls),
+            "mode": request.mode.value,
+            "scan_images": request.scan_images,
+            "scan_multimedia": request.scan_multimedia,
+            "scan_math": request.scan_math,
+            "max_depth": request.max_depth,
+            "max_pages": request.max_pages,
+            "generate_code_fixes": request.generate_code_fixes,
+            "capture_screenshots": request.capture_screenshots,
+        },
+    )
+    db.commit()
+    db.refresh(batch_scan)
 
-    ctx = multiprocessing.get_context("spawn")
-    process = ctx.Process(
-        target=process_batch_web_scan_background,
-        args=(
-            batch_scan_id,
-            request.urls,
-            request.mode.value,
-            request.scan_images,
-            request.scan_multimedia,
-            request.scan_math,
-            request.max_depth,
-            request.max_pages,
-            request.generate_code_fixes,
-            request.capture_screenshots,
-        ),
-        daemon=True,
-        name=f"batch-scan-{batch_scan_id[:8]}",
-    )
-    process.start()
-    logger.info(
-        f"[PROCESS] Started batch scan process: PID {process.pid}, name {process.name}"
-    )
+    logger.info(f"Created batch scan {batch_scan_id}, queued durable job")
 
     return {
         "batch_scan_id": batch_scan_id,
@@ -405,37 +390,31 @@ async def scan_from_sitemap(
         progress_message="Fetching and parsing sitemap...",
     )
     db.add(sitemap_scan)
-    db.commit()
-    db.refresh(sitemap_scan)
+    db.flush()
     sitemap_scan_id = sitemap_scan.id
 
-    logger.info(f"Created sitemap scan {sitemap_scan_id}, starting background process")
+    from ...jobs.local_scan_job import enqueue_local_scan_job
 
-    # Start sitemap scan in separate process
-    import multiprocessing
+    enqueue_local_scan_job(
+        db,
+        scan=sitemap_scan,
+        scan_kind="local_web_sitemap",
+        options={
+            "sitemap_url": request.sitemap_url,
+            "mode": request.mode.value,
+            "scan_images": request.scan_images,
+            "scan_multimedia": request.scan_multimedia,
+            "scan_math": request.scan_math,
+            "max_pages": request.max_pages,
+            "generate_code_fixes": request.generate_code_fixes,
+            "capture_screenshots": request.capture_screenshots,
+            "priority_patterns": list(request.priority_patterns or []),
+        },
+    )
+    db.commit()
+    db.refresh(sitemap_scan)
 
-    ctx = multiprocessing.get_context("spawn")
-    process = ctx.Process(
-        target=process_sitemap_scan_background,
-        args=(
-            sitemap_scan_id,
-            request.sitemap_url,
-            request.mode.value,
-            request.scan_images,
-            request.scan_multimedia,
-            request.scan_math,
-            request.max_pages,
-            request.generate_code_fixes,
-            request.capture_screenshots,
-            request.priority_patterns or [],
-        ),
-        daemon=True,
-        name=f"sitemap-scan-{sitemap_scan_id[:8]}",
-    )
-    process.start()
-    logger.info(
-        f"[PROCESS] Started sitemap scan process: PID {process.pid}, name {process.name}"
-    )
+    logger.info(f"Created sitemap scan {sitemap_scan_id}, queued durable job")
 
     return {
         "scan_id": sitemap_scan_id,
@@ -463,8 +442,7 @@ def process_web_scan_background(
     capture_screenshots: bool,
 ):
     """
-    Background task to process web scan.
-    Runs in separate PROCESS with 'spawn' method, uses sync Playwright API.
+    Durable-worker function for a web scan, using the sync Playwright API.
 
     Args:
         scan_id: Unique scan identifier
@@ -1412,7 +1390,6 @@ def process_code_background(
 
 @router.post("/code/scan", response_model=dict)
 async def scan_code(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     scan_images: bool = False,
     generate_fixes: bool = True,
@@ -1491,34 +1468,33 @@ async def scan_code(
         progress_message="Starting code analysis...",
     )
     db.add(scan)
+    db.flush()
+
+    from ...utils.file_storage import save_uploaded_file
+
+    await file.seek(0)
+    storage_path = await save_uploaded_file(file, department_id, scan.id)
+    scan.storage_path = storage_path
+
+    from ...jobs.local_scan_job import enqueue_local_scan_job
+
+    enqueue_local_scan_job(
+        db,
+        scan=scan,
+        scan_kind="local_code",
+        options={
+            "scan_images": scan_images,
+            "generate_fixes": generate_fixes,
+            "validate_alt_text": validate_alt_text,
+        },
+        input_sha256=hashlib.sha256(content).hexdigest(),
+    )
+
     db.commit()
     db.refresh(scan)
 
-    # Save uploaded file for processing
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
-        temp_file.write(content)
-        temp_path = temp_file.name
-
-    db.commit()
-
     logger.info(
         f"Created scan {scan.id} for Code: {file.filename} (generate_fixes={generate_fixes})"
-    )
-
-    # Start background processing (in thread pool to avoid blocking the event loop)
-    background_tasks.add_task(
-        _run_in_thread(
-            process_code_background,
-            temp_path,
-            content,
-            file.filename,
-            scan.id,
-            scan_images,
-            generate_fixes,
-            validate_alt_text,
-            user_id,
-            department_id,
-        )
     )
 
     # Return immediately with scan_id
