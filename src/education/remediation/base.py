@@ -15,6 +15,7 @@ The remediation system follows a consistent pattern:
 import os
 import uuid
 import logging
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,7 +25,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
-from src.education.math_contracts import MATH_ISSUE_TYPES
+from src.education.math_contracts import (
+    MATH_ISSUE_TYPES,
+    SCANNED_EQUATION_REGION_ISSUE_TYPE,
+)
 
 try:
     from .output_claim import DescriptorBoundOutputClaim
@@ -151,6 +155,7 @@ _CATEGORY_ALIASES = {
     "title": IssueCategory.TITLE,
     "document_title": IssueCategory.TITLE,
     "font_size": IssueCategory.STRUCTURE,
+    SCANNED_EQUATION_REGION_ISSUE_TYPE: IssueCategory.STRUCTURE,
     "1.1.1": IssueCategory.ALT_TEXT,
     "1.3.1": IssueCategory.STRUCTURE,
     "1.4.3": IssueCategory.CONTRAST,
@@ -181,6 +186,16 @@ def classify_issue_category(
         issue,
         metadata if isinstance(metadata, dict) else {},
     )
+    if any(
+        source.get("issue_type") == SCANNED_EQUATION_REGION_ISSUE_TYPE
+        for source in sources
+    ):
+        return IssueCategoryClassification(
+            category=IssueCategory.STRUCTURE,
+            manual_reason=(
+                "scanned_equation_region_requires_exact_subregion_association"
+            ),
+        )
     for source in sources:
         for field in _CATEGORY_FIELD_NAMES:
             value = source.get(field)
@@ -373,6 +388,13 @@ def materialize_manual_issues(
             normalize_category_alias(issue.get("severity", "medium")),
             IssueSeverity.MEDIUM,
         )
+        retained_metadata: Dict[str, Any] = {}
+        source_metadata = issue.get("metadata")
+        if (
+            isinstance(source_metadata, dict)
+            and source_metadata.get("issue_type") == SCANNED_EQUATION_REGION_ISSUE_TYPE
+        ):
+            retained_metadata = _bounded_scanned_region_metadata(source_metadata)
         for node_index in range(node_count):
             records.append(
                 ManualIssue(
@@ -386,10 +408,71 @@ def materialize_manual_issues(
                     reason=issue_reason,
                     recommendation="Review and remediate this issue manually.",
                     wcag_criteria=issue.get("wcag_criteria") or issue.get("wcag"),
-                    metadata={"purpose": issue_purpose, "node_index": node_index},
+                    metadata={
+                        "purpose": issue_purpose,
+                        "node_index": node_index,
+                        **retained_metadata,
+                    },
                 )
             )
     return records
+
+
+def _bounded_scanned_region_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Retain only bounded provenance needed to review a manual scan region."""
+    result: Dict[str, Any] = {
+        "issue_type": SCANNED_EQUATION_REGION_ISSUE_TYPE,
+        "classification_manual_reason": (
+            "scanned_equation_region_requires_exact_subregion_association"
+        ),
+    }
+    text_fields = (
+        "source_kind",
+        "parent_occurrence_id",
+        "region_id",
+        "source_sha256",
+        "crop_pixel_sha256",
+        "detector_version",
+        "threshold_version",
+        "ocr_engine_version",
+        "ocr_tessdata_sha256",
+        "ocr_language",
+        "ocr_config",
+    )
+    for field in text_fields:
+        value = metadata.get(field)
+        if isinstance(value, str) and 0 < len(value) <= 128:
+            result[field] = value
+    integer_fields = (
+        "page_number",
+        "image_xref",
+        "image_index",
+        "occurrence_ordinal",
+        "source_width",
+        "source_height",
+    )
+    for field in integer_fields:
+        value = metadata.get(field)
+        if type(value) is int and 0 <= value <= 25_000_000:
+            result[field] = value
+    for field, expected_length in (
+        ("pixel_bbox", 4),
+        ("pdf_bbox", 4),
+        ("parent_bbox", 4),
+        ("transform", 6),
+    ):
+        value = metadata.get(field)
+        if not isinstance(value, (list, tuple)) or len(value) != expected_length:
+            continue
+        if all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(float(item))
+            and abs(float(item)) <= 25_000_000
+            for item in value
+        ):
+            result[field] = list(value)
+    return result
 
 
 def merge_partitioned_manual_issues(

@@ -3,6 +3,7 @@
 from typing import Any, Mapping, Optional
 
 IMAGE_EQUATION_ISSUE_TYPE = "image_equation_inaccessible"
+SCANNED_EQUATION_REGION_ISSUE_TYPE = "scanned_equation_region_manual"
 
 DOCUMENT_WIDE_MATH_ISSUE_TYPES = frozenset(
     {
