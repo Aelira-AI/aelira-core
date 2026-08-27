@@ -166,9 +166,7 @@ class SessionService:
         )
 
         if not session:
-            logger.debug(
-                f"No valid session found for user {user_id} with jti {access_jti}"
-            )
+            logger.debug("No valid session found for user %s", user_id)
             return None
 
         # Get the user
@@ -347,9 +345,12 @@ class SessionService:
             db.commit()
             logger.warning(f"Refresh replay revoked session {session.id}")
             return None
-        except Exception:
+        except Exception as exc:
             db.rollback()
-            logger.exception("Refresh rotation failed; transaction rolled back")
+            logger.error(
+                "Refresh rotation failed; transaction rolled back: %s",
+                type(exc).__name__,
+            )
             return None
 
     def revoke_session(
@@ -473,7 +474,7 @@ class SessionService:
         db.add(magic_link)
         db.commit()
 
-        logger.info(f"Created magic link for {email}, expires {expires_at}")
+        logger.info("Created magic link %s, expires %s", magic_link.id, expires_at)
         return raw_token
 
     def verify_magic_link(
@@ -811,7 +812,10 @@ class SessionService:
             )
         except Exception as e:
             # Don't fail signup if notification fails
-            logger.warning(f"Failed to send admin notification for new signup: {e}")
+            logger.warning(
+                "Failed to send admin notification for new signup: %s",
+                type(e).__name__,
+            )
 
     def _send_welcome_email(self, email: str, name: str, tier: str) -> None:
         """Send welcome email to new magic link user (fire and forget)."""
@@ -836,10 +840,10 @@ class SessionService:
                     tier=tier,
                 )
             )
-            logger.info(f"Welcome email queued for {email}")
+            logger.info("Welcome email queued")
         except Exception as e:
             # Don't fail signup if email fails
-            logger.warning(f"Failed to send welcome email to {email}: {e}")
+            logger.warning("Failed to send welcome email: %s", type(e).__name__)
 
     def _get_or_create_individual_department(
         self,
@@ -871,9 +875,7 @@ class SessionService:
         db.flush()
         db.refresh(department)
 
-        logger.info(
-            f"Staged individual department {dept_id} for {email} (institution={institution or email_domain})"
-        )
+        logger.info("Staged individual department %s", dept_id)
         return department
 
 

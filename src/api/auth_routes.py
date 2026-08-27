@@ -352,9 +352,9 @@ def create_api_key(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        logger.exception("API key creation transaction failed")
+        logger.error("API key creation transaction failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="API key creation failed",
@@ -433,9 +433,9 @@ def revoke_api_key(
         db.commit()
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        logger.exception("API key revocation transaction failed")
+        logger.error("API key revocation transaction failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="API key revocation failed",
@@ -627,8 +627,8 @@ async def create_department(
 
         if abuse_result.recommended_action == "block":
             logger.warning(
-                f"Blocked department creation: {request.contact_email} from {client_ip} - "
-                f"Reason: {abuse_result.reason}"
+                "Department creation blocked by abuse detector: action=%s",
+                abuse_result.recommended_action,
             )
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -665,9 +665,7 @@ async def create_department(
     db.commit()
     db.refresh(department)
 
-    logger.info(
-        f"Created department: {department.id} ({department.name} at {department.institution})"
-    )
+    logger.info("Created department %s", department.id)
 
     # Send department trial welcome email (non-blocking)
     try:
@@ -689,9 +687,9 @@ async def create_department(
                 text_content=f"The Aelira workspace for {request.name} at {request.institution} is now active!",
             )
         )
-        logger.info(f"Queued department welcome email for {request.contact_email}")
+        logger.info("Queued welcome email for department %s", department.id)
     except Exception as e:
-        logger.warning(f"Failed to send department welcome email: {e}")
+        logger.warning("Failed to send department welcome email: %s", type(e).__name__)
 
     return DepartmentResponse(
         id=department.id,
@@ -861,7 +859,7 @@ async def request_magic_link(
     email_limit_key = f"magic_link_email:{email}"
     email_allowed, _ = RateLimiter.check_rate_limit(email_limit_key, 5)
     if not email_allowed:
-        logger.warning(f"Magic link rate limit exceeded for email: {email}")
+        logger.warning("Magic link rate limit exceeded: dimension=email")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many magic link requests. Please try again later.",
@@ -871,7 +869,7 @@ async def request_magic_link(
     ip_limit_key = f"magic_link_ip:{client_ip}"
     ip_allowed, _ = RateLimiter.check_rate_limit(ip_limit_key, 10)
     if not ip_allowed:
-        logger.warning(f"Magic link rate limit exceeded for IP: {client_ip}")
+        logger.warning("Magic link rate limit exceeded: dimension=ip")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many requests from this location. Please try again later.",
@@ -883,9 +881,7 @@ async def request_magic_link(
 
     blocked, _ = AccountDeletionService.is_email_blocked(db, email)
     if blocked:
-        logger.info(
-            f"Magic link request blocked for deleted/deactivated email: {email}"
-        )
+        logger.info("Magic link request blocked for deleted or deactivated account")
         return {
             "success": True,
             "message": "If an account exists with this email, you will receive a login link.",
@@ -895,7 +891,9 @@ async def request_magic_link(
     # Return the generic response to avoid email enumeration.
     existing_user = db.query(User).filter(User.email == email).first()
     if existing_user is not None and existing_user.is_active is False:
-        logger.warning(f"Magic link request for deactivated account: {email}")
+        logger.warning(
+            "Magic link request blocked for deactivated user %s", existing_user.id
+        )
         return {
             "success": True,
             "message": "If an account exists with this email, you will receive a login link.",
@@ -910,9 +908,7 @@ async def request_magic_link(
     # account-enumeration oracle.
     if existing_user is None and not settings.open_signup:
         if db.query(User).count() > 0:
-            logger.info(
-                f"Magic link request for unknown email with closed signup: {email}"
-            )
+            logger.info("Magic link request ignored because signup is closed")
             return {
                 "success": True,
                 "message": "If an account exists with this email, you will receive a login link.",
@@ -922,7 +918,7 @@ async def request_magic_link(
     # addresses and run the abuse detector.
     if existing_user is None:
         if is_disposable_domain(email.split("@")[1]):
-            logger.info(f"Magic link request from disposable domain: {email}")
+            logger.info("Magic link request ignored for disposable domain")
             return {
                 "success": True,
                 "message": "If an account exists with this email, you will receive a login link.",
@@ -942,9 +938,8 @@ async def request_magic_link(
                 success=False,
             )
             logger.warning(
-                f"Magic link signup blocked by abuse detector: {email} from "
-                f"{client_ip} - action={abuse_result.recommended_action} "
-                f"reason={abuse_result.reason}"
+                "Magic link signup blocked by abuse detector: action=%s",
+                abuse_result.recommended_action,
             )
             if abuse_result.recommended_action == "challenge":
                 raise HTTPException(
@@ -999,9 +994,9 @@ async def request_magic_link(
                     expires_minutes=settings.magic_link_expire_minutes,
                 )
             )
-            logger.info(f"Magic link email queued for {email}")
+            logger.info("Magic link delivery queued")
     except Exception as e:
-        logger.warning(f"Failed to send magic link email to {email}: {e}")
+        logger.warning("Magic link delivery failed: %s", type(e).__name__)
         # Still return success to prevent email enumeration
 
     # Record new signups for IP-velocity / rapid-signup abuse tracking.
@@ -1087,7 +1082,7 @@ async def verify_magic_link(
         )
     except ValueError as e:
         # Blocked or deactivated account
-        logger.warning(f"Magic link verify rejected for {email}: {e}")
+        logger.warning("Magic link verification rejected")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
@@ -1144,7 +1139,9 @@ async def verify_magic_link(
         **cookie_settings,
     )
 
-    logger.info(f"Magic link login successful for {email} (new_user={is_new})")
+    logger.info(
+        "Magic link login successful for user %s (new_user=%s)", user.id, is_new
+    )
     return response
 
 

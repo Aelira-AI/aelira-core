@@ -239,7 +239,7 @@ async def get_google_credential(
             )
 
         except Exception as e:
-            logger.error(f"Failed to refresh Google token: {e}")
+            logger.error("Failed to refresh Google token: %s", type(e).__name__)
             credential.is_active = False
             credential.last_error = f"Token refresh failed: {str(e)}"
             db.commit()
@@ -601,7 +601,7 @@ async def google_callback_get(
     """
     # Handle OAuth errors
     if error:
-        logger.error(f"Google OAuth error: {error}")
+        logger.error("Google OAuth authorization was denied")
         return RedirectResponse(
             url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=oauth_failed&message={error}"
         )
@@ -654,9 +654,7 @@ async def google_callback_get(
         db.add(credential)
         db.commit()
 
-        logger.info(
-            f"Connected Google Workspace for department {department_id} ({token_data.get('email')})"
-        )
+        logger.info("Connected Google Workspace for department %s", department_id)
 
         # Redirect back to frontend with success
         return RedirectResponse(
@@ -664,7 +662,7 @@ async def google_callback_get(
         )
 
     except Exception as e:
-        logger.error(f"Google OAuth callback failed: {e}")
+        logger.error("Google OAuth callback failed: %s", type(e).__name__)
         return RedirectResponse(
             url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=exchange_failed&message={str(e)}"
         )
@@ -722,7 +720,7 @@ async def google_callback(
         db.refresh(credential)
 
         logger.info(
-            f"Connected Google Workspace for department {api_key.department_id} ({token_data.get('email')})"
+            "Connected Google Workspace for department %s", api_key.department_id
         )
 
         return GoogleCredentialResponse(
@@ -736,7 +734,7 @@ async def google_callback(
         )
 
     except Exception as e:
-        logger.error(f"Google OAuth callback failed: {e}")
+        logger.error("Google OAuth callback failed: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"OAuth callback failed: {str(e)}",
@@ -787,7 +785,10 @@ async def disconnect_google(
         access_token = token_manager.decrypt_token(credential.access_token)
         await token_manager.revoke_google_token(access_token)
     except Exception as e:
-        logger.warning(f"Failed to revoke Google token (may already be revoked): {e}")
+        logger.warning(
+            "Failed to revoke Google token (may already be revoked): %s",
+            type(e).__name__,
+        )
 
     try:
         # Finalize children and credential in the same transaction as artifact rows.

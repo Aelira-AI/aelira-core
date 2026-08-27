@@ -162,10 +162,13 @@ class BlackboardLTIService:
                 with open(self.config_file, "r") as f:
                     file_config = json.load(f)
                     self._tool_config = ToolConfDict(file_config)
-                    logger.info(f"Loaded Blackboard LTI config from {self.config_file}")
+                    logger.info("Loaded Blackboard LTI config file")
                     return
             except Exception as e:
-                logger.warning(f"Failed to load Blackboard LTI config file: {e}")
+                logger.warning(
+                    "Failed to load Blackboard LTI config file: %s",
+                    type(e).__name__,
+                )
 
         # Use environment-based config
         self._tool_config = ToolConfDict(default_config)

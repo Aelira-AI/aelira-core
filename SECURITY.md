@@ -72,10 +72,16 @@ If you self-host Aelira, please ensure:
 
 ### Data Handling
 
-- **AI data flows are your choice** - With the Ollama provider, all AI inference runs locally and documents never leave your infrastructure. With a cloud provider (Gemini is the default), document content is sent to that provider's API - review their data terms before enabling it on sensitive content
+- **AI data flows are your choice** - With the Ollama provider, all AI inference runs locally and documents never leave your infrastructure. With a cloud provider, document content is sent to that provider's API - review their data terms before enabling it on sensitive content
 - **No user tracking** - We don't collect analytics on self-hosted instances
 - **Minimal data storage** - Scan results are stored only for your access
 - **No credential storage** - We never store your passwords (bcrypt hashes only)
+
+#### Authentication Logging
+
+Routine application logs may record authentication event types, outcomes, and opaque record or request identifiers when needed for correlation. They must not contain raw email addresses, names, IP addresses, user-agent strings, magic-link or verification tokens, API keys, authorization headers, cookies, session or refresh tokens, or unfiltered exception text. Security audit stores that deliberately retain personal data must be access-controlled and governed by a documented retention period.
+
+This protection is prospective: upgrading cannot rewrite logs emitted by an older release. Operators should inspect active, rotated, centralized, exported, and archived logs for earlier authentication identifiers, then redact or erase affected copies under their institutional policy and applicable law. If an immutable backup cannot be edited safely, restrict access, prevent affected logs from being restored into active systems without scrubbing, and let the backup expire under the shortest applicable retention schedule.
 
 ## Known Security Considerations
 

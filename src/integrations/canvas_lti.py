@@ -246,10 +246,10 @@ class CanvasLTIService:
                 with open(self.config_file, "r") as f:
                     file_config = json.load(f)
                     self._tool_config = ToolConfDict(file_config)
-                    logger.info(f"Loaded LTI config from {self.config_file}")
+                    logger.info("Loaded LTI config file")
                     return
             except Exception as e:
-                logger.warning(f"Failed to load LTI config file: {e}")
+                logger.warning("Failed to load LTI config file: %s", type(e).__name__)
 
         # Use environment-based config with permissive deployment validation.
         # Canvas generates a new deployment_id for each sub-account/context,
@@ -285,10 +285,9 @@ class CanvasLTIService:
 
         if not private_key_path or not os.path.exists(private_key_path):
             logger.warning(
-                "Canvas LTI private key not found (CANVAS_LTI_PRIVATE_KEY_PATH=%r). "
-                "Inbound launches will still verify, but deep linking and grade "
-                "passback cannot be signed and /lti/jwks will publish no keys.",
-                private_key_path,
+                "Canvas LTI private key not found. Inbound launches will still "
+                "verify, but deep linking and grade passback cannot be signed and "
+                "/lti/jwks will publish no keys."
             )
             return
 
@@ -305,13 +304,11 @@ class CanvasLTIService:
                 logger.info("Canvas LTI keypair loaded; JWKS will publish 1 key")
             else:
                 logger.warning(
-                    "Canvas LTI public key not found (CANVAS_LTI_PUBLIC_KEY_PATH=%r); "
-                    "signing works but /lti/jwks will publish no keys, so Canvas "
-                    "cannot verify what we sign.",
-                    public_key_path,
+                    "Canvas LTI public key not found; signing works but /lti/jwks "
+                    "will publish no keys, so Canvas cannot verify what we sign."
                 )
         except Exception as exc:
-            logger.error("Failed to load Canvas LTI keys: %s", exc, exc_info=True)
+            logger.error("Failed to load Canvas LTI keys: %s", type(exc).__name__)
 
     def get_tool_config(self) -> Optional[ToolConfDict]:
         """Get the tool configuration for PyLTI1p3"""

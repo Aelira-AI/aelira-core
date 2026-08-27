@@ -171,7 +171,6 @@ def handle_lti_launch(
             "LTI auto-provisioned user",
             extra={
                 "user_id": user.id,
-                "email": email,
                 "department_id": department_id,
             },
         )
@@ -282,13 +281,7 @@ def handle_lti_launch(
     else:
         redirect_url = f"{dashboard_url}/lti/go?code={code}"
 
-    # Placement and course_id live in the message string deliberately: the
-    # container's stdout formatter drops `extra` fields, which made launches
-    # undiagnosable from logs (cost an hour on 2026-08-18).
-    logger.info(
-        f"LTI launch handled placement={launch_data.placement or 'NONE'} "
-        f"course_id={course_id or 'EMPTY'} user={user.id}"
-    )
+    logger.info("LTI launch handled for user %s", user.id)
     return redirect_url
 
 
@@ -317,7 +310,7 @@ def exchange_code(code: str) -> Optional[Dict]:
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        logger.warning("Corrupt LTI code payload", extra={"key": key})
+        logger.warning("Corrupt LTI code payload")
         return None
 
 
@@ -413,10 +406,7 @@ def store_ags_context(
 
     logger.info(
         "Stored AGS context",
-        extra={
-            "department_id": department_id,
-            "course_id": course_id,
-        },
+        extra={"department_id": department_id},
     )
 
 
@@ -432,8 +422,8 @@ def _store_code(key: str, value: str, ttl: int = 30) -> None:
         try:
             redis.setex(key, ttl, value)
             return
-        except Exception:
-            logger.error("Redis setex failed", exc_info=True)
+        except Exception as exc:
+            logger.error("Redis setex failed: %s", type(exc).__name__)
 
     settings = get_settings()
     if settings.env.lower() not in {"development", "test", "testing"}:
@@ -454,8 +444,8 @@ def _pop_code(key: str) -> Optional[str]:
             if raw is not None:
                 return raw.decode() if isinstance(raw, bytes) else raw
             # Fall through — might be in memory if Redis write failed earlier
-        except Exception:
-            logger.warning("Redis pop failed, trying in-memory", exc_info=True)
+        except Exception as exc:
+            logger.warning("Redis pop failed, trying in-memory: %s", type(exc).__name__)
     local = _code_store.pop(key, None)
     if local is None:
         return None

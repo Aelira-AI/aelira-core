@@ -23,7 +23,6 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 import json
 import logging
-import traceback
 import os
 import hashlib
 import time
@@ -97,9 +96,7 @@ def get_department_from_lti_launch(
     )
 
     if not registration:
-        logger.warning(
-            f"No Canvas LTI registration found for issuer={issuer}, client_id={client_id}"
-        )
+        logger.warning("No Canvas LTI registration found")
         return (
             None,
             None,
@@ -286,7 +283,7 @@ async def lti_login(
         return redirect_response
 
     except Exception as e:
-        logger.error(f"LTI login failed: {e}\n{traceback.format_exc()}")
+        logger.error("LTI login failed: %s", type(e).__name__)
         raise HTTPException(status_code=400, detail="LTI login failed")
 
 
@@ -343,10 +340,7 @@ async def lti_launch(
         )
 
         if error:
-            logger.warning(
-                f"Canvas LTI launch denied: {error} "
-                f"(issuer={issuer}, client_id={client_id})"
-            )
+            logger.warning("Canvas LTI launch denied: registration unavailable")
             # Return user-friendly error page instead of HTTP exception
             return HTMLResponse(
                 content=_render_lti_error_page(
@@ -379,10 +373,9 @@ async def lti_launch(
         update_lti_launch_stats(db, registration)
 
         logger.info(
-            f"Canvas LTI launch: user={launch_data.user_name}, "
-            f"course={launch_data.course_name}, "
-            f"instructor={launch_data.is_instructor}, "
-            f"department={department.name} ({department.tier})"
+            "Canvas LTI launch accepted: instructor=%s, department=%s",
+            launch_data.is_instructor,
+            department.id,
         )
 
         # Check if this is a deep link launch
@@ -406,7 +399,9 @@ async def lti_launch(
                 store_ags_context(launch_data, registration, db, ags_claim)
             except Exception as ags_err:
                 # Non-fatal — log and continue
-                logger.warning(f"Failed to store AGS context: {ags_err}")
+                logger.warning(
+                    "Failed to store AGS context: %s", type(ags_err).__name__
+                )
 
         db.commit()
 
@@ -416,7 +411,7 @@ async def lti_launch(
         logger.warning("Canvas LTI launch denied by staff-only policy")
         return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
-        logger.error(f"Canvas LTI launch failed: {e}")
+        logger.error("Canvas LTI launch failed: %s", type(e).__name__)
         raise HTTPException(status_code=400, detail=f"LTI launch failed: {str(e)}")
 
 
@@ -459,7 +454,7 @@ async def lti_deep_link(
         logger.warning("Canvas LTI deep-link launch denied by staff-only policy")
         return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
-        logger.error(f"Deep link launch failed: {e}")
+        logger.error("Deep link launch failed: %s", type(e).__name__)
         raise HTTPException(status_code=400, detail=f"Deep link failed: {str(e)}")
 
 

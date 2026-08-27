@@ -63,7 +63,9 @@ def process_scheduled_deletions() -> int:
                             f"Skipped deletion for user {user.id} (not eligible)"
                         )
                 except Exception as e:
-                    logger.error(f"Failed to delete user {user.id}: {e}")
+                    logger.error(
+                        "Failed to delete user %s: %s", user.id, type(e).__name__
+                    )
                     # Continue processing other users
                     db.rollback()
 
@@ -73,5 +75,5 @@ def process_scheduled_deletions() -> int:
             return deleted_count
 
         except Exception as e:
-            logger.error(f"Error processing scheduled deletions: {e}")
+            logger.error("Error processing scheduled deletions: %s", type(e).__name__)
             return 0

@@ -270,8 +270,7 @@ def get_authenticated_principal(
             )
             return resolved.principal
 
-        key_preview = token[:8] + "..." if len(token) > 8 else "***"
-        logger.warning(f"Invalid Bearer token attempt: {key_preview}")
+        logger.warning("Invalid Bearer token attempt")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired Bearer token",
@@ -333,7 +332,7 @@ def get_authenticated_principal(
                     )
                     mock_db.commit()
         except Exception as exc:
-            logger.debug(f"Mock auth: dev records already exist or error: {exc}")
+            logger.debug("Mock auth record setup skipped: %s", type(exc).__name__)
 
         return AuthenticatedPrincipal(
             api_key=None,
@@ -443,8 +442,8 @@ def verify_department_access(
     """
     if requested_department_id != authenticated_department_id:
         logger.warning(
-            f"Department access denied: requested={requested_department_id}, "
-            f"authenticated={authenticated_department_id}"
+            "Department access denied for authenticated department %s",
+            authenticated_department_id,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

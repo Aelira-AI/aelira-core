@@ -280,7 +280,9 @@ class AbuseDetector:
 
         except Exception as e:
             # SignupLog table might not exist yet
-            logger.warning(f"IP abuse check error (table may not exist): {e}")
+            logger.warning(
+                "IP abuse check error (table may not exist): %s", type(e).__name__
+            )
 
         return signals
 
@@ -361,7 +363,7 @@ class AbuseDetector:
                 )
 
         except Exception as e:
-            logger.warning(f"Fingerprint check error: {e}")
+            logger.warning("Fingerprint check error: %s", type(e).__name__)
 
         return None
 
@@ -546,5 +548,5 @@ def log_signup(
         db.commit()
 
     except Exception as e:
-        logger.warning(f"Failed to log signup: {e}")
+        logger.warning("Failed to log signup: %s", type(e).__name__)
         # Don't fail the signup if logging fails

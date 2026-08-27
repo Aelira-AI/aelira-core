@@ -140,7 +140,10 @@ return {count, ttl}
             }
 
             logger.debug(
-                f"Rate limit check for {api_key_id}: {current_count}/{limit_per_hour}, allowed={allowed}"
+                "Rate limit check: %s/%s, allowed=%s",
+                current_count,
+                limit_per_hour,
+                allowed,
             )
 
             return allowed, headers
@@ -198,7 +201,10 @@ return {count, ttl}
             }
 
         logger.debug(
-            f"Rate limit check (memory) for {api_key_id}: {count}/{limit_per_hour}, allowed={allowed}"
+            "Rate limit check (memory): %s/%s, allowed=%s",
+            count,
+            limit_per_hour,
+            allowed,
         )
 
         return allowed, headers
@@ -221,11 +227,9 @@ return {count, ttl}
 
                 if keys:
                     redis_client.delete(*keys)
-                    logger.info(
-                        f"Reset rate limit for {api_key_id} (Redis) - deleted {len(keys)} keys"
-                    )
+                    logger.info("Reset Redis rate limit; deleted %s keys", len(keys))
                 else:
-                    logger.debug(f"No rate limit keys found for {api_key_id}")
+                    logger.debug("No Redis rate limit keys found")
             except redis.RedisError:
                 logger.error("Failed to reset rate limit in Redis")
 
@@ -240,7 +244,7 @@ return {count, ttl}
                 del RedisRateLimiter._rate_limits[key]
             if keys_to_delete:
                 logger.info(
-                    f"Reset rate limit for {api_key_id} (memory) - deleted {len(keys_to_delete)} keys"
+                    "Reset in-memory rate limit; deleted %s keys", len(keys_to_delete)
                 )
 
 

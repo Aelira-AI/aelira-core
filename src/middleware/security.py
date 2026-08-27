@@ -289,8 +289,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
         if not cookie_token or not header_token:
             logger.warning(
-                f"CSRF validation failed: missing token. "
-                f"Path: {request.url.path}, Method: {request.method}"
+                "CSRF validation failed: missing token; method=%s", request.method
             )
             # Return JSONResponse instead of raising HTTPException so that
             # CORSMiddleware can add Access-Control-Allow-Origin headers.
@@ -302,8 +301,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
         if not secrets.compare_digest(cookie_token, header_token):
             logger.warning(
-                f"CSRF validation failed: token mismatch. "
-                f"Path: {request.url.path}, Method: {request.method}"
+                "CSRF validation failed: token mismatch; method=%s", request.method
             )
             return JSONResponse(
                 status_code=403,

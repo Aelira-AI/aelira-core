@@ -111,9 +111,7 @@ async def connect_blackboard(
         state=state,
     )
 
-    logger.info(
-        f"Initiated Blackboard OAuth for department {request.department_id} at {request.blackboard_instance_url}"
-    )
+    logger.info("Initiated Blackboard OAuth for department %s", auth_department_id)
 
     return {
         "authorization_url": auth_url,
@@ -188,9 +186,7 @@ async def blackboard_oauth_callback(
             }
             db.commit()
 
-            logger.info(
-                f"Updated Blackboard credentials for department {department_id}"
-            )
+            logger.info("Updated Blackboard credential %s", existing_credential.id)
 
         else:
             # Create new credential
@@ -214,9 +210,7 @@ async def blackboard_oauth_callback(
             db.add(new_credential)
             db.commit()
 
-            logger.info(
-                f"Created new Blackboard credentials for department {department_id}"
-            )
+            logger.info("Created Blackboard credential %s", new_credential.id)
 
         return {
             "success": True,
@@ -229,7 +223,7 @@ async def blackboard_oauth_callback(
         }
 
     except Exception as e:
-        logger.error(f"Blackboard OAuth callback failed: {e}", exc_info=True)
+        logger.error("Blackboard OAuth callback failed: %s", type(e).__name__)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to complete Blackboard OAuth: {str(e)}",

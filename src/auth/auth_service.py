@@ -180,9 +180,7 @@ class AuthService:
         else:
             db.flush()
 
-        logger.info(
-            f"Created API key: {api_key.id} ({key_prefix}...) for user {user_id}"
-        )
+        logger.info("Created API key %s for user %s", api_key.id, user_id)
 
         return api_key, full_key
 
@@ -234,7 +232,7 @@ class AuthService:
                     # Cached key no longer valid, remove stale entry
                     redis_client.delete(cache_key)
             except Exception as e:
-                logger.debug(f"Redis cache lookup failed: {e}")
+                logger.debug("Redis cache lookup failed: %s", type(e).__name__)
 
         # Cache miss — use the random-bearing indexed prefix and bound bcrypt.
         key_prefix = api_key[:20]
@@ -271,13 +269,13 @@ class AuthService:
                         except Exception:
                             pass
 
-                    logger.debug(f"Valid API key: {db_key.id} ({key_prefix}...)")
+                    logger.debug("Valid API key %s", db_key.id)
                     return db_key
             except Exception as e:
-                logger.error(f"Error validating API key: {e}")
+                logger.error("Error validating API key: %s", type(e).__name__)
                 continue
 
-        logger.warning(f"Invalid API key attempted: {key_prefix}...")
+        logger.warning("Invalid API key attempted")
         return None
 
     @staticmethod
@@ -309,9 +307,7 @@ class AuthService:
         )
 
         if not api_key:
-            logger.warning(
-                f"API key {key_id} not found or unauthorized for user {user_id}"
-            )
+            logger.warning("API key not found or unauthorized for user %s", user_id)
             return False
 
         api_key.is_active = False
@@ -320,7 +316,7 @@ class AuthService:
         else:
             db.flush()
 
-        logger.info(f"Revoked API key: {key_id} ({api_key.key_prefix}...)")
+        logger.info("Revoked API key %s", key_id)
         return True
 
     @staticmethod
@@ -400,6 +396,4 @@ class AuthService:
         db.add(usage)
         db.commit()
 
-        logger.debug(
-            f"Tracked API usage: {endpoint} ({status_code}) for key {api_key.id}"
-        )
+        logger.debug("Tracked API usage: status=%s for key %s", status_code, api_key.id)

@@ -189,9 +189,9 @@ async def google_callback(
     settings = get_settings()
     try:
         return await _google_callback_impl(request, code, state, error, db)
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        logger.exception("Unexpected Google OAuth callback failure")
+        logger.error("Unexpected Google OAuth callback failure: %s", type(exc).__name__)
         return _oauth_error_response(settings, "oauth_error")
 
 
@@ -212,7 +212,7 @@ async def _google_callback_impl(
 
     # Check for errors
     if error:
-        logger.warning(f"Google OAuth error: {error}")
+        logger.warning("Google OAuth authorization was denied")
         return _oauth_error_response(settings, "oauth_denied")
 
     # Validate state (CSRF protection) - timing-safe comparison
@@ -237,7 +237,7 @@ async def _google_callback_impl(
             token_data = token_response.json()
 
             if "error" in token_data:
-                logger.error(f"Google token error: {token_data}")
+                logger.error("Google OAuth token exchange was rejected")
                 return _oauth_error_response(settings, "token_error")
 
             # Get user info
@@ -247,8 +247,8 @@ async def _google_callback_impl(
             )
             userinfo = userinfo_response.json()
 
-    except Exception as e:
-        logger.error(f"Google OAuth error: {e}")
+    except Exception as exc:
+        logger.error("Google OAuth exchange failed: %s", type(exc).__name__)
         return _oauth_error_response(settings, "oauth_error")
 
     email = userinfo.get("email", "").lower()
@@ -259,7 +259,7 @@ async def _google_callback_impl(
     # Check if user's tier allows OAuth
     is_allowed, message, department = _check_oauth_tier(db, email)
     if not is_allowed:
-        logger.warning(f"Google OAuth denied for {email}: {message}")
+        logger.warning("Google OAuth account access denied")
         if message == OAUTH_ACCOUNT_UNAVAILABLE:
             return _oauth_error_response(settings, "oauth_error")
         return _oauth_error_response(settings, "tier_required", message)
@@ -282,7 +282,7 @@ async def _google_callback_impl(
 
         blocked, _block_reason = AccountDeletionService.is_email_blocked(db, email)
         if blocked:
-            logger.warning("Google OAuth registration blocked for %s", email)
+            logger.warning("Google OAuth registration blocked")
             return _oauth_error_response(settings, "oauth_error")
 
         # Create new user
@@ -351,7 +351,7 @@ async def _google_callback_impl(
     response.delete_cookie(key="oauth_state")
     response.delete_cookie(key=OAUTH_NEXT_COOKIE)
 
-    logger.info(f"Google OAuth login successful for {email}")
+    logger.info("Google OAuth login successful for user %s", user.id)
     return response
 
 
@@ -430,9 +430,11 @@ async def microsoft_callback(
         return await _microsoft_callback_impl(
             request, code, state, error, error_description, db
         )
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        logger.exception("Unexpected Microsoft OAuth callback failure")
+        logger.error(
+            "Unexpected Microsoft OAuth callback failure: %s", type(exc).__name__
+        )
         return _oauth_error_response(settings, "oauth_error")
 
 
@@ -452,7 +454,7 @@ async def _microsoft_callback_impl(
 
     # Check for errors
     if error:
-        logger.warning(f"Microsoft OAuth error: {error} - {error_description}")
+        logger.warning("Microsoft OAuth authorization was denied")
         return _oauth_error_response(settings, "oauth_denied")
 
     # Validate state - timing-safe comparison
@@ -478,7 +480,7 @@ async def _microsoft_callback_impl(
             token_data = token_response.json()
 
             if "error" in token_data:
-                logger.error(f"Microsoft token error: {token_data}")
+                logger.error("Microsoft OAuth token exchange was rejected")
                 return _oauth_error_response(settings, "token_error")
 
             # Get user info from Graph API
@@ -488,8 +490,8 @@ async def _microsoft_callback_impl(
             )
             userinfo = userinfo_response.json()
 
-    except Exception as e:
-        logger.error(f"Microsoft OAuth error: {e}")
+    except Exception as exc:
+        logger.error("Microsoft OAuth exchange failed: %s", type(exc).__name__)
         return _oauth_error_response(settings, "oauth_error")
 
     email = (userinfo.get("mail") or userinfo.get("userPrincipalName", "")).lower()
@@ -503,7 +505,7 @@ async def _microsoft_callback_impl(
     # Check tier
     is_allowed, message, department = _check_oauth_tier(db, email)
     if not is_allowed:
-        logger.warning(f"Microsoft OAuth denied for {email}: {message}")
+        logger.warning("Microsoft OAuth account access denied")
         if message == OAUTH_ACCOUNT_UNAVAILABLE:
             return _oauth_error_response(settings, "oauth_error")
         return _oauth_error_response(settings, "tier_required", message)
@@ -524,7 +526,7 @@ async def _microsoft_callback_impl(
 
         blocked, _block_reason = AccountDeletionService.is_email_blocked(db, email)
         if blocked:
-            logger.warning("Microsoft OAuth registration blocked for %s", email)
+            logger.warning("Microsoft OAuth registration blocked")
             return _oauth_error_response(settings, "oauth_error")
 
         user = User(
@@ -590,7 +592,7 @@ async def _microsoft_callback_impl(
     response.delete_cookie(key="oauth_state")
     response.delete_cookie(key=OAUTH_NEXT_COOKIE)
 
-    logger.info(f"Microsoft OAuth login successful for {email}")
+    logger.info("Microsoft OAuth login successful for user %s", user.id)
     return response
 
 

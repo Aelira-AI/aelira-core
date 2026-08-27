@@ -170,7 +170,7 @@ async def list_department_users(
         }
 
     except Exception as e:
-        logger.error(f"Error listing users: {e}", exc_info=True)
+        logger.error("Error listing users: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -196,7 +196,7 @@ async def invite_user(
         Invitation details
     """
     _, user_id, department_id, admin_role = admin_info
-    logger.info(f"Inviting user {request.email} to department {department_id}")
+    logger.info("Creating invitation for department %s", department_id)
 
     try:
         # Validate role
@@ -347,10 +347,12 @@ async def invite_user(
                     expires_date=expires_date,
                 )
             )
-            logger.info(f"Invitation email queued for {request.email}")
+            logger.info("Invitation email queued for invitation %s", invitation.id)
         except Exception as email_error:
             # Log email error but don't fail the invitation
-            logger.error(f"Failed to send invitation email: {email_error}")
+            logger.error(
+                "Failed to send invitation email: %s", type(email_error).__name__
+            )
 
         return {
             "success": True,
@@ -365,7 +367,7 @@ async def invite_user(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error inviting user: {e}", exc_info=True)
+        logger.error("Error inviting user: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -389,7 +391,7 @@ async def remove_user(
         Success message
     """
     _, user_id, department_id, admin_role = admin_info
-    logger.info(f"Removing user {target_user_id} from department {department_id}")
+    logger.info("Removing a user from department %s", department_id)
 
     try:
         # Get target user
@@ -433,7 +435,7 @@ async def remove_user(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error removing user: {e}", exc_info=True)
+        logger.error("Error removing user: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -457,7 +459,7 @@ async def update_user_role(
         Updated user info
     """
     _, user_id, department_id, admin_role = admin_info
-    logger.info(f"Updating role for user {target_user_id} to {request.role}")
+    logger.info("Updating a user role for department %s", department_id)
 
     try:
         # Validate role
@@ -512,7 +514,7 @@ async def update_user_role(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error updating user role: {e}", exc_info=True)
+        logger.error("Error updating user role: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -604,7 +606,7 @@ async def list_invitations(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error listing invitations: {e}", exc_info=True)
+        logger.error("Error listing invitations: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -626,7 +628,7 @@ async def revoke_invitation(
         Success message
     """
     _, user_id, department_id, role = admin_info
-    logger.info(f"Revoking invitation {invitation_id}")
+    logger.info("Revoking an invitation for department %s", department_id)
 
     try:
         invitation = (
@@ -660,7 +662,7 @@ async def revoke_invitation(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error revoking invitation: {e}", exc_info=True)
+        logger.error("Error revoking invitation: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -682,7 +684,7 @@ async def resend_invitation(
         Updated invitation details
     """
     _, user_id, department_id, role = admin_info
-    logger.info(f"Resending invitation {invitation_id}")
+    logger.info("Resending an invitation for department %s", department_id)
 
     try:
         invitation = (
@@ -758,10 +760,12 @@ async def resend_invitation(
                     expires_date=expires_date,
                 )
             )
-            logger.info(f"Invitation email resent to {invitation.email}")
+            logger.info("Invitation email resent for invitation %s", invitation.id)
         except Exception as email_error:
             # Log email error but don't fail the resend
-            logger.error(f"Failed to resend invitation email: {email_error}")
+            logger.error(
+                "Failed to resend invitation email: %s", type(email_error).__name__
+            )
 
         return {
             "success": True,
@@ -773,7 +777,7 @@ async def resend_invitation(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error resending invitation: {e}", exc_info=True)
+        logger.error("Error resending invitation: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -898,7 +902,7 @@ async def get_department_stats(
         }
 
     except Exception as e:
-        logger.error(f"Error getting department stats: {e}", exc_info=True)
+        logger.error("Error getting department stats: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -933,7 +937,7 @@ async def accept_invitation(
     Returns:
         Created user info
     """
-    logger.info(f"Accepting invitation for email: {request.email}")
+    logger.info("Accepting an invitation")
 
     try:
         # Find invitation by token
@@ -1008,5 +1012,5 @@ async def accept_invitation(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error accepting invitation: {e}", exc_info=True)
+        logger.error("Error accepting invitation: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail=str(e))

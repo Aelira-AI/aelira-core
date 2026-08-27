@@ -238,7 +238,7 @@ async def get_microsoft_credential(
             )
 
         except Exception as e:
-            logger.error(f"Failed to refresh Microsoft token: {e}")
+            logger.error("Failed to refresh Microsoft token: %s", type(e).__name__)
             credential.is_active = False
             credential.last_error = f"Token refresh failed: {str(e)}"
             db.commit()
@@ -342,7 +342,7 @@ async def microsoft_callback_get(
     """
     # Handle OAuth errors
     if error:
-        logger.error(f"Microsoft OAuth error: {error}")
+        logger.error("Microsoft OAuth authorization was denied")
         return RedirectResponse(
             url=f"http://localhost:5173/integrations?error=oauth_failed&message={error}"
         )
@@ -392,9 +392,7 @@ async def microsoft_callback_get(
         db.add(credential)
         db.commit()
 
-        logger.info(
-            f"Connected Microsoft 365 for department {department_id} ({token_data.get('email')})"
-        )
+        logger.info("Connected Microsoft 365 for department %s", department_id)
 
         # Redirect back to frontend with success
         return RedirectResponse(
@@ -402,7 +400,7 @@ async def microsoft_callback_get(
         )
 
     except Exception as e:
-        logger.error(f"Microsoft OAuth callback failed: {e}")
+        logger.error("Microsoft OAuth callback failed: %s", type(e).__name__)
         return RedirectResponse(
             url=f"http://localhost:5173/integrations?error=exchange_failed&message={str(e)}"
         )
@@ -459,9 +457,7 @@ async def microsoft_callback(
         db.commit()
         db.refresh(credential)
 
-        logger.info(
-            f"Connected Microsoft 365 for department {api_key.department_id} ({token_data.get('email')})"
-        )
+        logger.info("Connected Microsoft 365 for department %s", api_key.department_id)
 
         return MicrosoftCredentialResponse(
             id=credential.id,
@@ -474,7 +470,7 @@ async def microsoft_callback(
         )
 
     except Exception as e:
-        logger.error(f"Microsoft OAuth callback failed: {e}")
+        logger.error("Microsoft OAuth callback failed: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"OAuth callback failed: {str(e)}",

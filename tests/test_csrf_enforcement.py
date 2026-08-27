@@ -99,6 +99,31 @@ async def test_cookie_post_without_token_is_403(path):
 
 
 @pytest.mark.asyncio
+async def test_csrf_failure_log_omits_attacker_controlled_path_and_tokens(caplog):
+    mw = _mw()
+    call_next = AsyncMock()
+    path_canary = "/auth/keys/LOG_CANARY_PATH_TOKEN"
+    cookie_canary = "LOG_CANARY_CSRF_COOKIE"
+    header_canary = "LOG_CANARY_CSRF_HEADER"
+    req = _request(
+        "DELETE",
+        path_canary,
+        cookies={"aelira_access": "session", "csrf_token": cookie_canary},
+        headers={"X-CSRF-Token": header_canary},
+    )
+
+    with caplog.at_level("DEBUG", logger="src.middleware.security"):
+        response = await mw.dispatch(req, call_next)
+
+    assert response.status_code == 403
+    assert "token mismatch; method=DELETE" in caplog.text
+    assert path_canary not in caplog.text
+    assert cookie_canary not in caplog.text
+    assert header_canary not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_cookie_post_with_matching_token_passes():
     mw = _mw()
     call_next = AsyncMock(return_value=MagicMock())
