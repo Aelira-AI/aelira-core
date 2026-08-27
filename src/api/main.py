@@ -358,9 +358,8 @@ async def metrics_middleware(request: Request, call_next):
     method = request.method
     path = request.url.path
 
-    # Log incoming request
-    client_ip = request.client.host if request.client else "unknown"
-    logger.info(f"[MIDDLEWARE] {method} {path} from {client_ip}")
+    # Keep request logs useful without copying client identifiers into log stores.
+    logger.info("[MIDDLEWARE] request received; method=%s", method)
 
     try:
         response = await call_next(request)

@@ -25,7 +25,6 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 import logging
-import traceback
 import os
 
 from src.integrations.brightspace_lti import (
@@ -97,9 +96,7 @@ def get_department_from_lti_launch(
     )
 
     if not registration:
-        logger.warning(
-            f"No Brightspace LTI registration found for issuer={issuer}, client_id={client_id}"
-        )
+        logger.warning("No Brightspace LTI registration found")
         return (
             None,
             None,
@@ -291,7 +288,7 @@ async def brightspace_lti_login(
         return redirect_response
 
     except Exception as e:
-        logger.error(f"Brightspace LTI login failed: {e}\n{traceback.format_exc()}")
+        logger.error("Brightspace LTI login failed: %s", type(e).__name__)
         raise HTTPException(status_code=400, detail="LTI login failed")
 
 
@@ -348,10 +345,7 @@ async def brightspace_lti_launch(
         )
 
         if error:
-            logger.warning(
-                f"Brightspace LTI launch denied: {error} "
-                f"(issuer={issuer}, client_id={client_id})"
-            )
+            logger.warning("Brightspace LTI launch denied: registration unavailable")
             return HTMLResponse(
                 content=_render_lti_error_page(
                     "LTI Registration Required",
@@ -383,10 +377,9 @@ async def brightspace_lti_launch(
         update_lti_launch_stats(db, registration)
 
         logger.info(
-            f"Brightspace LTI launch: user={launch_data.user_name}, "
-            f"course={launch_data.course_name}, "
-            f"instructor={launch_data.is_instructor}, "
-            f"department={department.name} ({department.tier})"
+            "Brightspace LTI launch accepted: instructor=%s, department=%s",
+            launch_data.is_instructor,
+            department.id,
         )
 
         # Check if this is a deep link launch
@@ -410,7 +403,9 @@ async def brightspace_lti_launch(
                 store_ags_context(launch_data, registration, db, ags_claim)
             except Exception as ags_err:
                 # Non-fatal -- log and continue
-                logger.warning(f"Failed to store AGS context: {ags_err}")
+                logger.warning(
+                    "Failed to store AGS context: %s", type(ags_err).__name__
+                )
 
         db.commit()
 
@@ -420,7 +415,7 @@ async def brightspace_lti_launch(
         logger.warning("Brightspace LTI launch denied by staff-only policy")
         return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
-        logger.error(f"Brightspace LTI launch failed: {e}\n{traceback.format_exc()}")
+        logger.error("Brightspace LTI launch failed: %s", type(e).__name__)
         raise HTTPException(status_code=400, detail=f"LTI launch failed: {str(e)}")
 
 
@@ -464,7 +459,7 @@ async def brightspace_lti_deep_link(
         logger.warning("Brightspace deep-link launch denied by staff-only policy")
         return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
-        logger.error(f"Brightspace deep link launch failed: {e}")
+        logger.error("Brightspace deep link launch failed: %s", type(e).__name__)
         raise HTTPException(status_code=400, detail=f"Deep link failed: {str(e)}")
 
 

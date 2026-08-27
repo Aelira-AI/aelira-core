@@ -44,9 +44,7 @@ class JWTService:
                         self._private_key = f.read()
                     logger.info("Loaded JWT private key from file")
                 except FileNotFoundError:
-                    logger.error(
-                        f"JWT private key file not found: {self.settings.jwt_private_key_path}"
-                    )
+                    logger.error("JWT private key file not found")
                     raise ValueError("JWT_PRIVATE_KEY_PATH file not found")
 
             if self.settings.jwt_public_key_path:
@@ -55,9 +53,7 @@ class JWTService:
                         self._public_key = f.read()
                     logger.info("Loaded JWT public key from file")
                 except FileNotFoundError:
-                    logger.error(
-                        f"JWT public key file not found: {self.settings.jwt_public_key_path}"
-                    )
+                    logger.error("JWT public key file not found")
                     raise ValueError("JWT_PUBLIC_KEY_PATH file not found")
         else:
             # HS256: Use symmetric secret
@@ -193,7 +189,7 @@ class JWTService:
             logger.debug("Token has expired")
             return None
         except jwt.InvalidTokenError as e:
-            logger.warning(f"Invalid token: {e}")
+            logger.warning("Invalid token: %s", type(e).__name__)
             return None
 
     def verify_access_token(self, token: str) -> Optional[Dict[str, Any]]:

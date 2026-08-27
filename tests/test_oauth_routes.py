@@ -191,14 +191,20 @@ def test_oauth_callback_revalidates_cookie_redirects_and_clears_it(
 
 @pytest.mark.parametrize("provider", ["google", "microsoft"])
 def test_oauth_error_redirect_is_safe_and_clears_continuation(
-    client, oauth_settings, provider
+    client, oauth_settings, provider, caplog
 ):
-    response = client.get(
-        f"/auth/{provider}/callback",
-        params={"error": "access_denied"},
-        headers={"cookie": "oauth_next=//evil.example; oauth_state=csrf-state"},
-        follow_redirects=False,
-    )
+    provider_error = "LOG_CANARY_PROVIDER_ERROR"
+    provider_description = "LOG_CANARY_PROVIDER_DESCRIPTION"
+    with caplog.at_level("DEBUG"):
+        response = client.get(
+            f"/auth/{provider}/callback",
+            params={
+                "error": provider_error,
+                "error_description": provider_description,
+            },
+            headers={"cookie": "oauth_next=//evil.example; oauth_state=csrf-state"},
+            follow_redirects=False,
+        )
 
     assert response.headers["location"] == (
         f"{oauth_settings.magic_link_base_url}/login?error=oauth_denied"
@@ -211,6 +217,13 @@ def test_oauth_error_redirect_is_safe_and_clears_continuation(
     assert any(
         value.startswith("oauth_state=") and "Max-Age=0" in value for value in cleared
     )
+    application_log = "\n".join(
+        record.getMessage()
+        for record in caplog.records
+        if record.name.startswith("src.")
+    )
+    assert provider_error not in application_log
+    assert provider_description not in application_log
 
 
 @pytest.mark.parametrize("provider", ["google", "microsoft"])
@@ -260,7 +273,7 @@ def test_missing_callback_state_redirects_safely_and_clears_one_time_cookies(
     ],
 )
 def test_unexpected_oauth_callback_failure_redirects_safely_and_clears_cookies(
-    client, oauth_settings, monkeypatch, provider, userinfo
+    client, oauth_settings, monkeypatch, provider, userinfo, caplog
 ):
     db = MagicMock()
     app.dependency_overrides[oauth_routes.get_db_dependency] = lambda: db
@@ -270,20 +283,23 @@ def test_unexpected_oauth_callback_failure_redirects_safely_and_clears_cookies(
         lambda: _FakeOAuthClient(userinfo),
     )
 
+    failure_detail = "LOG_CANARY_OAUTH_BACKEND_FAILURE"
+
     def fail_tier_check(_db, _email):
-        raise RuntimeError("sensitive backend failure")
+        raise RuntimeError(failure_detail)
 
     monkeypatch.setattr(oauth_routes, "_check_oauth_tier", fail_tier_check)
 
     try:
-        response = client.get(
-            f"/auth/{provider}/callback",
-            params={"code": "code", "state": "csrf-state"},
-            headers={
-                "cookie": "oauth_state=csrf-state; oauth_next=/private/destination"
-            },
-            follow_redirects=False,
-        )
+        with caplog.at_level("DEBUG"):
+            response = client.get(
+                f"/auth/{provider}/callback",
+                params={"code": "code", "state": "csrf-state"},
+                headers={
+                    "cookie": "oauth_state=csrf-state; oauth_next=/private/destination"
+                },
+                follow_redirects=False,
+            )
     finally:
         app.dependency_overrides.pop(oauth_routes.get_db_dependency, None)
 
@@ -291,7 +307,13 @@ def test_unexpected_oauth_callback_failure_redirects_safely_and_clears_cookies(
     assert response.headers["location"] == (
         f"{oauth_settings.magic_link_base_url}/login?error=oauth_error"
     )
-    assert "sensitive backend failure" not in response.headers["location"]
+    assert failure_detail not in response.headers["location"]
+    assert failure_detail not in caplog.text
+    assert "RuntimeError" in caplog.text
+    oauth_records = [
+        record for record in caplog.records if record.name == oauth_routes.logger.name
+    ]
+    assert all(record.exc_info is None for record in oauth_records)
     cleared = response.headers.get_list("set-cookie")
     assert any(
         value.startswith("oauth_next=") and "Max-Age=0" in value for value in cleared

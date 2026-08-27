@@ -79,9 +79,7 @@ def get_department_from_lti_launch(
     )
 
     if not registration:
-        logger.warning(
-            f"No LTI registration found for issuer={issuer}, client_id={client_id}"
-        )
+        logger.warning("No Blackboard LTI registration found")
         return (
             None,
             None,
@@ -192,7 +190,7 @@ async def blackboard_lti_login(
         return RedirectResponse(url=redirect_url, status_code=302)
 
     except Exception as e:
-        logger.error(f"Blackboard LTI login failed: {e}")
+        logger.error("Blackboard LTI login failed: %s", type(e).__name__)
         raise HTTPException(status_code=400, detail=f"LTI login failed: {str(e)}")
 
 
@@ -245,10 +243,7 @@ async def blackboard_lti_launch(
         )
 
         if error:
-            logger.warning(
-                f"Blackboard LTI launch denied: {error} "
-                f"(issuer={issuer}, client_id={client_id})"
-            )
+            logger.warning("Blackboard LTI launch denied: registration unavailable")
             # Return user-friendly error page instead of HTTP exception
             return HTMLResponse(
                 content=_render_lti_error_page(
@@ -281,10 +276,9 @@ async def blackboard_lti_launch(
         update_lti_launch_stats(db, registration)
 
         logger.info(
-            f"Blackboard LTI launch: user={launch_data.user_name}, "
-            f"course={launch_data.course_name}, "
-            f"instructor={launch_data.is_instructor}, "
-            f"department={department.name} ({department.tier})"
+            "Blackboard LTI launch accepted: instructor=%s, department=%s",
+            launch_data.is_instructor,
+            department.id,
         )
 
         # Check if this is a deep link launch
@@ -311,7 +305,7 @@ async def blackboard_lti_launch(
         return RedirectResponse(url=redirect_url, status_code=302)
 
     except Exception as e:
-        logger.error(f"Blackboard LTI launch failed: {e}")
+        logger.error("Blackboard LTI launch failed: %s", type(e).__name__)
         raise HTTPException(status_code=400, detail=f"LTI launch failed: {str(e)}")
 
 
@@ -351,7 +345,7 @@ async def blackboard_lti_deep_link(
         )
 
     except Exception as e:
-        logger.error(f"Blackboard deep link launch failed: {e}")
+        logger.error("Blackboard deep link launch failed: %s", type(e).__name__)
         raise HTTPException(status_code=400, detail=f"Deep link failed: {str(e)}")
 
 

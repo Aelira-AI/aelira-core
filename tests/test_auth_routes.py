@@ -766,17 +766,22 @@ class TestMagicLinkRequest:
         response = client.post("/auth/magic-link/request", json={})
         assert response.status_code == 422
 
-    def test_email_rate_limited_is_429(self, client, monkeypatch):
+    def test_email_rate_limited_is_429(self, client, monkeypatch, caplog):
         # L1005-1013: RateLimiter fails the 5/hour email check -> 429.
         monkeypatch.setattr(
             RateLimiter, "check_rate_limit", staticmethod(lambda *a, **k: (False, {}))
         )
         _use_db(_db_with())
-        response = client.post("/auth/magic-link/request", json={"email": EDU_EMAIL})
+        with caplog.at_level("DEBUG"):
+            response = client.post(
+                "/auth/magic-link/request", json={"email": EDU_EMAIL}
+            )
         assert response.status_code == 429
         assert "Too many magic link requests" in response.json()["detail"]
+        assert EDU_EMAIL not in caplog.text
+        assert "dimension=email" in caplog.text
 
-    def test_ip_rate_limited_is_429(self, client, monkeypatch):
+    def test_ip_rate_limited_is_429(self, client, monkeypatch, caplog):
         # L1015-1023: email check (limit=5) passes, IP check (limit=10) fails -> 429.
         def fake_rate_limit(key, limit, *a, **k):
             return (limit != 10, {})
@@ -785,9 +790,18 @@ class TestMagicLinkRequest:
             RateLimiter, "check_rate_limit", staticmethod(fake_rate_limit)
         )
         _use_db(_db_with())
-        response = client.post("/auth/magic-link/request", json={"email": EDU_EMAIL})
+        private_ip = "203.0.113.77"
+        with caplog.at_level("DEBUG"):
+            response = client.post(
+                "/auth/magic-link/request",
+                json={"email": EDU_EMAIL},
+                headers={"x-forwarded-for": private_ip},
+            )
         assert response.status_code == 429
         assert "Too many requests from this location" in response.json()["detail"]
+        assert EDU_EMAIL not in caplog.text
+        assert private_ip not in caplog.text
+        assert "dimension=ip" in caplog.text
 
     def test_blocked_email_returns_generic_success(self, client, monkeypatch):
         # L1025-1037: is_email_blocked True -> same generic response used for
@@ -1015,7 +1029,9 @@ class TestMagicLinkVerify:
         assert response.status_code == 403
         assert response.json()["detail"] == "This account has been deactivated."
 
-    def test_happy_path_sets_session_cookies(self, client, mock_db, monkeypatch):
+    def test_happy_path_sets_session_cookies(
+        self, client, mock_db, monkeypatch, caplog
+    ):
         # L1211-1263: valid link -> session created, cookies set, success body.
         # NB: name= is reserved by the Mock constructor; set it as an attribute.
         fake_user = MagicMock(id="user-9", email=EDU_EMAIL, role=None)
@@ -1035,9 +1051,12 @@ class TestMagicLinkVerify:
             datetime.now(timezone.utc),
         )
         monkeypatch.setattr(auth_routes, "get_session_service", lambda: session_service)
-        response = client.post(
-            "/auth/magic-link/verify", json={"email": EDU_EMAIL, "token": "tok"}
-        )
+        magic_token = "LOG_CANARY_MAGIC_TOKEN"
+        with caplog.at_level("DEBUG"):
+            response = client.post(
+                "/auth/magic-link/verify",
+                json={"email": EDU_EMAIL, "token": magic_token},
+            )
         assert response.status_code == 200
         body = response.json()
         # L1224-1233: success body with user info and is_new_user flag.
@@ -1050,6 +1069,11 @@ class TestMagicLinkVerify:
         # L1249-1260: both session cookies set.
         assert "aelira_access" in response.cookies
         assert "aelira_refresh" in response.cookies
+        assert "user-9" in caplog.text
+        assert EDU_EMAIL not in caplog.text
+        assert magic_token not in caplog.text
+        assert "access-tok" not in caplog.text
+        assert "refresh-tok" not in caplog.text
 
 
 # ==================== Session management (L1269-1461, L1829-2034) ====================

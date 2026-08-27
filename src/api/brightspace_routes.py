@@ -434,7 +434,7 @@ async def connect_brightspace(
         )
 
         logger.info(
-            f"Initiated Brightspace OAuth for department {request.department_id} at {instance_origin}"
+            "Initiated Brightspace OAuth for department %s", request.department_id
         )
 
         return {
@@ -540,9 +540,7 @@ async def brightspace_oauth_callback(
                 existing.updated_at = datetime.now(timezone.utc)
                 db.commit()
 
-                logger.info(
-                    f"Updated existing Brightspace credential for user {user_info.UniqueName}"
-                )
+                logger.info("Updated Brightspace credential %s", existing.id)
             else:
                 # Create new credential
                 credential = CloudOAuthCredentials(
@@ -570,9 +568,7 @@ async def brightspace_oauth_callback(
                 db.add(credential)
                 db.commit()
 
-                logger.info(
-                    f"Created new Brightspace credential for user {user_info.UniqueName}"
-                )
+                logger.info("Created Brightspace credential %s", credential.id)
 
             dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard.example.com")
             return RedirectResponse(
@@ -583,7 +579,7 @@ async def brightspace_oauth_callback(
             await api_client.close()
 
     except Exception as e:
-        logger.error(f"Brightspace OAuth callback failed: {e}")
+        logger.error("Brightspace OAuth callback failed: %s", type(e).__name__)
         dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard.example.com")
         return RedirectResponse(
             url=f"{dashboard_url}/integrations?brightspace=error&message={str(e)[:100]}",

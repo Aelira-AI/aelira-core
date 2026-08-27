@@ -92,7 +92,7 @@ aelira-core/
 
 - Type hints on all function signatures
 - Pydantic models for API request/response schemas
-- Structured logging with contextual fields
+- Use structured logging with event and outcome fields. Authentication paths must follow the privacy contract in `SECURITY.md`: never log direct identifiers, credentials, tokens, headers, cookies, or unfiltered exception text; use opaque record or request identifiers when correlation is necessary.
 - Follow existing patterns in the codebase
 - Lint with `ruff check .` and format-check with `black --check src/ tests/ scripts/` — this is what CI runs (`.github/workflows/ci.yml`); `black` is pinned to `26.3.1`
 

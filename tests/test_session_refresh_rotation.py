@@ -190,6 +190,7 @@ def test_production_requires_valid_replay_encryption_key():
             database_url="postgresql://user:secret@localhost/test",
             jwt_secret="test-only-secret",
             env="production",
+            allow_mock_auth=False,
             session_replay_encryption_key="not-a-fernet-key",
         )
 
@@ -325,7 +326,7 @@ def test_unusable_session_or_user_cannot_refresh(state):
         assert session.revoked_at is not None
 
 
-def test_encryption_error_rolls_back_without_rotating_row():
+def test_encryption_error_rolls_back_without_rotating_row(caplog):
     service = _service()
     token, raw, _ = service.jwt_service.create_refresh_token(
         user_id="user-1", session_id="session-1"
@@ -333,14 +334,20 @@ def test_encryption_error_rolls_back_without_rotating_row():
     session = _session(service, raw)
     old_hash = session.refresh_token_hash
     db = _DB(session, _user())
+    failure_detail = "LOG_CANARY_REFRESH_FAILURE"
     service._replay_cipher = SimpleNamespace(
-        encrypt=lambda _value: (_ for _ in ()).throw(RuntimeError("crypto failed"))
+        encrypt=lambda _value: (_ for _ in ()).throw(RuntimeError(failure_detail))
     )
 
-    assert service.refresh_session(db, token) is None
+    with caplog.at_level("DEBUG"):
+        assert service.refresh_session(db, token) is None
     assert db.rollbacks == 1
     assert db.commits == 0
     assert session.refresh_token_hash == old_hash
+    assert failure_detail not in caplog.text
+    assert token not in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
 
 
 @pytest.mark.integration

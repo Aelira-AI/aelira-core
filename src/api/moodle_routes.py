@@ -135,9 +135,7 @@ async def connect_moodle(
             state=state,
         )
 
-        logger.info(
-            f"Initiated Moodle OAuth for department {request.department_id} at {request.moodle_instance_url}"
-        )
+        logger.info("Initiated Moodle OAuth for department %s", request.department_id)
 
         return {
             "authorization_url": auth_url,
@@ -234,9 +232,7 @@ async def moodle_oauth_callback(
                 db.commit()
 
                 credential_id = existing.id
-                logger.info(
-                    f"Updated existing Moodle credential for user {user_info.email}"
-                )
+                logger.info("Updated existing Moodle credential %s", existing.id)
             else:
                 # Create new credential
                 credential = CloudOAuthCredentials(
@@ -261,7 +257,7 @@ async def moodle_oauth_callback(
                 db.commit()
 
                 credential_id = credential.id
-                logger.info(f"Created new Moodle credential for user {user_info.email}")
+                logger.info("Created new Moodle credential %s", credential.id)
 
             return {
                 "success": True,
@@ -278,7 +274,7 @@ async def moodle_oauth_callback(
             await api_client.close()
 
     except Exception as e:
-        logger.error(f"Moodle OAuth callback failed: {e}")
+        logger.error("Moodle OAuth callback failed: %s", type(e).__name__)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to complete Moodle authentication: {str(e)}",

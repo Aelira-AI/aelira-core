@@ -239,7 +239,7 @@ class CanvasOAuthService:
             logger.info("Canvas token marked for expiration (no revoke endpoint)")
             return True
         except Exception as e:
-            logger.error(f"Error revoking Canvas token: {e}")
+            logger.error("Error revoking Canvas token: %s", type(e).__name__)
             return False
 
     def is_token_expired(self, expires_at: Optional[datetime]) -> bool:

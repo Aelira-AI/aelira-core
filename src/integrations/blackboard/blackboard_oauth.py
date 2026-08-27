@@ -89,9 +89,7 @@ class BlackboardOAuthService:
         query_string = "&".join(f"{k}={v}" for k, v in params.items())
         auth_url = f"{auth_endpoint}?{query_string}"
 
-        logger.info(
-            f"Generated Blackboard authorization URL for {blackboard_instance_url}"
-        )
+        logger.info("Generated Blackboard authorization URL")
         return auth_url
 
     async def exchange_code_for_token(
@@ -133,9 +131,7 @@ class BlackboardOAuthService:
             expires_in = token_data.get("expires_in", 3600)
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
-            logger.info(
-                f"Successfully exchanged authorization code for Blackboard token at {blackboard_instance_url}"
-            )
+            logger.info("Successfully exchanged Blackboard authorization code")
 
             return BlackboardOAuthCredential(
                 access_token=token_data["access_token"],
@@ -187,9 +183,7 @@ class BlackboardOAuthService:
             new_access_token = token_data["access_token"]
             new_refresh_token = token_data.get("refresh_token", refresh_token)
 
-            logger.info(
-                f"Successfully refreshed Blackboard access token for {blackboard_instance_url}"
-            )
+            logger.info("Successfully refreshed Blackboard access token")
 
             return new_access_token, new_refresh_token, expires_at
 

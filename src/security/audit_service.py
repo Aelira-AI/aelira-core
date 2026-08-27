@@ -110,7 +110,7 @@ class AuditService:
             return audit_log
 
         except Exception as e:
-            logger.error(f"Failed to create audit log: {e}")
+            logger.error("Failed to create audit log: %s", type(e).__name__)
             self.db.rollback()
             # Don't raise - audit logging should not break the main flow
             return None

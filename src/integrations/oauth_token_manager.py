@@ -197,10 +197,10 @@ class OAuthTokenManager:
                 return access_token, new_refresh_token, expires_at
 
             except httpx.HTTPStatusError as e:
-                logger.error(f"Google token refresh failed: {e.response.text}")
+                logger.error("Google token refresh failed: HTTPStatusError")
                 raise TokenRefreshError(f"Google token refresh failed: {e}")
             except Exception as e:
-                logger.error(f"Google token refresh error: {e}")
+                logger.error("Google token refresh error: %s", type(e).__name__)
                 raise TokenRefreshError(f"Google token refresh error: {e}")
 
     async def refresh_microsoft_token(
@@ -256,10 +256,10 @@ class OAuthTokenManager:
                 return access_token, new_refresh_token, expires_at
 
             except httpx.HTTPStatusError as e:
-                logger.error(f"Microsoft token refresh failed: {e.response.text}")
+                logger.error("Microsoft token refresh failed: HTTPStatusError")
                 raise TokenRefreshError(f"Microsoft token refresh failed: {e}")
             except Exception as e:
-                logger.error(f"Microsoft token refresh error: {e}")
+                logger.error("Microsoft token refresh error: %s", type(e).__name__)
                 raise TokenRefreshError(f"Microsoft token refresh error: {e}")
 
     async def refresh_token(
@@ -580,7 +580,7 @@ class OAuthTokenManager:
                 # Google returns 200 on success
                 return response.status_code == 200
             except Exception as e:
-                logger.error(f"Failed to revoke Google token: {e}")
+                logger.error("Failed to revoke Google token: %s", type(e).__name__)
                 return False
 
     async def revoke_microsoft_token(self, refresh_token: str) -> bool:

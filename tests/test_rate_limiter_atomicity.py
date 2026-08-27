@@ -79,6 +79,20 @@ def test_concurrent_redis_requests_allow_exactly_limit(monkeypatch):
     assert fake.expire_calls == 1
 
 
+def test_redis_rate_limit_log_omits_bucket_identifier(monkeypatch, caplog):
+    fake = AtomicFakeRedis()
+    monkeypatch.setattr(redis_rate_limiter, "get_redis_client", lambda: fake)
+    identifier = "magic_link_email:private.person+log-canary@example.edu"
+
+    with caplog.at_level("DEBUG", logger=redis_rate_limiter.logger.name):
+        allowed, _headers = RedisRateLimiter.check_rate_limit(identifier, 5)
+
+    assert allowed is True
+    assert identifier not in caplog.text
+    assert "private.person+log-canary@example.edu" not in caplog.text
+    assert "Rate limit check: 1/5, allowed=True" in caplog.text
+
+
 def test_concurrent_memory_fallback_allows_exactly_limit(monkeypatch):
     monkeypatch.setattr(redis_rate_limiter, "get_redis_client", lambda: None)
     RedisRateLimiter.reset_rate_limit("memory-concurrent")
@@ -92,6 +106,21 @@ def test_concurrent_memory_fallback_allows_exactly_limit(monkeypatch):
         )
 
     assert sum(outcomes) == 25
+
+
+def test_memory_rate_limit_log_omits_bucket_identifier(monkeypatch, caplog):
+    monkeypatch.setattr(redis_rate_limiter, "get_redis_client", lambda: None)
+    identifier = "magic_link_ip:203.0.113.77"
+
+    try:
+        with caplog.at_level("DEBUG", logger=redis_rate_limiter.logger.name):
+            allowed, _headers = RedisRateLimiter.check_rate_limit(identifier, 5)
+        assert allowed is True
+        assert identifier not in caplog.text
+        assert "203.0.113.77" not in caplog.text
+        assert "Rate limit check (memory): 1/5, allowed=True" in caplog.text
+    finally:
+        RedisRateLimiter.reset_rate_limit(identifier)
 
 
 def test_memory_reset_uses_the_same_class_level_lock(monkeypatch):

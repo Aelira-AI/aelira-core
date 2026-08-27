@@ -169,8 +169,10 @@ class AccountDeletionService:
         )
 
         logger.info(
-            f"Account deactivated: user={user.id}, email_hash={email_hash[:12]}..., "
-            f"sessions_revoked={revoked_count}, keys_deactivated={len(keys)}"
+            "Account deactivated: user=%s, sessions_revoked=%s, keys_deactivated=%s",
+            user.id,
+            revoked_count,
+            len(keys),
         )
 
         return {
@@ -233,10 +235,12 @@ class AccountDeletionService:
                         text_content=text_body,
                     )
                 )
-                logger.info(f"Deletion confirmation email queued for {user.email}")
+                logger.info("Deletion confirmation email queued for user %s", user.id)
         except Exception as e:
             logger.error(
-                f"Failed to send deletion confirmation email to {user.email}: {e}"
+                "Failed to send deletion confirmation email for user %s: %s",
+                user.id,
+                type(e).__name__,
             )
             # Don't fail the request if email fails — code is still stored
 
@@ -401,9 +405,13 @@ class AccountDeletionService:
                         text_content=text_body,
                     )
                 )
-                logger.info(f"Deletion scheduled email queued for {user.email}")
+                logger.info("Deletion scheduled email queued for user %s", user.id)
         except Exception as e:
-            logger.error(f"Failed to send deletion scheduled email: {e}")
+            logger.error(
+                "Failed to send deletion scheduled email for user %s: %s",
+                user.id,
+                type(e).__name__,
+            )
 
         logger.info(
             f"Account deletion confirmed: user={user.id}, scheduled_for={scheduled_for.isoformat()}"
@@ -598,9 +606,7 @@ class AccountDeletionService:
             },
         )
 
-        logger.info(
-            f"Account deletion executed: user={user_id}, email_hash={email_hash[:12]}..."
-        )
+        logger.info("Account deletion executed: user=%s", user_id)
         return True
 
     def export_user_data(self, db: DBSession, user: User) -> dict:
