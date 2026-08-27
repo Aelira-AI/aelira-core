@@ -1095,6 +1095,15 @@ class PdfRemediator(BaseRemediator):
         Overrides the base class to attach per-fix confidence, fix method,
         WCAG criteria, and review-needed flags to every FixedIssue.
         """
+        classification_reason = issue.metadata.get("classification_manual_reason")
+        if classification_reason:
+            self._add_manual_issue(
+                issue,
+                reason=str(classification_reason),
+                recommendation="Review the issue category and apply the fix manually.",
+            )
+            return
+
         # Delegate to base for category-disabled / can't-auto-fix checks
         if not self._is_category_enabled(issue.category):
             self._add_manual_issue(

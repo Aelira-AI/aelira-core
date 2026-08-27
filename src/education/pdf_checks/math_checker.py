@@ -2,11 +2,19 @@
 
 import logging
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import fitz
 
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+from src.education.pdf_checks.equation_region_detector import (
+    MAX_CANDIDATES_PER_DOCUMENT,
+    MAX_CANDIDATES_PER_PAGE,
+    MAX_REGION_PAGES_PER_DOCUMENT,
+    RasterEquationRegionDetector,
+    is_full_page_raster_occurrence,
+)
+from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 from src.education.pdf_checks.models import PDFImageIssue
 
 try:
@@ -82,12 +90,52 @@ class MathEquationChecker:
 
     _LOCAL_EQUATION_CUE = re.compile(r"\b(?:equation|formula)\b", re.IGNORECASE)
 
+    def __init__(
+        self, *, region_detector: Optional[RasterEquationRegionDetector] = None
+    ) -> None:
+        self.region_detector = region_detector or RasterEquationRegionDetector()
+
     def find_image_equation_candidates(
         self, file_path: str, image_issues: List[PDFImageIssue]
     ) -> List[Dict]:
         """Create conservative candidates from exact, locally cued occurrences."""
         candidates: List[Dict] = []
+        region_candidates: List[Dict] = []
+        region_limit_exceeded = False
         with fitz.open(file_path) as doc:
+            region_sources = []
+            for page_index, page in enumerate(doc):
+                try:
+                    occurrences = _displayed_image_occurrences(page, page_index + 1)
+                except Exception:
+                    continue
+                if len(occurrences) != 1:
+                    continue
+                occurrence = occurrences[0]
+                if not is_full_page_raster_occurrence(page, occurrence):
+                    continue
+                region_sources.append((page_index, occurrence))
+                if len(region_sources) > MAX_REGION_PAGES_PER_DOCUMENT:
+                    region_limit_exceeded = True
+                    region_sources = []
+                    break
+
+            for page_index, occurrence in region_sources:
+                page = doc[page_index]
+                try:
+                    page_regions = self.region_detector.find_regions(
+                        doc, page, occurrence
+                    )
+                except Exception:
+                    continue
+                if len(page_regions) > MAX_CANDIDATES_PER_PAGE:
+                    continue
+                region_candidates.extend(page_regions)
+                if len(region_candidates) > MAX_CANDIDATES_PER_DOCUMENT:
+                    region_limit_exceeded = True
+                    region_candidates = []
+                    break
+
             for issue in image_issues:
                 page_index = issue.page_number - 1
                 if page_index < 0 or page_index >= len(doc):
@@ -95,6 +143,15 @@ class MathEquationChecker:
                 page = doc[page_index]
                 bbox = fitz.Rect(issue.bbox)
                 if bbox.is_empty or bbox.is_infinite:
+                    continue
+                # A page-sized scan cannot safely use the whole-image equation
+                # path.  Region findings have a separate manual-only contract.
+                if is_full_page_raster_occurrence(
+                    page,
+                    {
+                        "bbox": issue.bbox,
+                    },
+                ):
                     continue
                 nearby = fitz.Rect(
                     max(page.rect.x0, bbox.x0 - 24),
@@ -135,7 +192,9 @@ class MathEquationChecker:
                         },
                     }
                 )
-        return candidates
+        if region_limit_exceeded:
+            region_candidates = []
+        return candidates + region_candidates
 
     def check(self, file_path: str, text: str, structure: Dict) -> List[Dict]:
         """Check for math/equation accessibility issues in a PDF.
