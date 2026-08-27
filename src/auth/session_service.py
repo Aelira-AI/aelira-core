@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 _FIRST_ADMIN_BOOTSTRAP_LOCK_NAMESPACE = 0x41454C49
 _FIRST_ADMIN_BOOTSTRAP_LOCK_KEY = 0x424F4F54
 
+# Stable two-part PostgreSQL advisory key: "AELI" / "SIGN". Open-signup
+# provisioning is short and infrequent, so one transaction-scoped lock keeps
+# both same-email idempotency and the deployment-wide account limit coherent.
+_OPEN_SIGNUP_LOCK_NAMESPACE = 0x41454C49
+_OPEN_SIGNUP_LOCK_KEY = 0x5349474E
+
 
 class SessionService:
     """Service for user session management"""
@@ -634,6 +640,10 @@ class SessionService:
                 return result
 
             is_bootstrap = db.query(User).count() == 0
+            if not is_bootstrap:
+                # Another email won first-admin bootstrap. End this read-only
+                # transaction before entering the separate signup lock domain.
+                db.commit()
         else:
             # A concurrent creator may have committed this exact account between
             # the initial lookup and the populated-database observation.
@@ -647,6 +657,27 @@ class SessionService:
                 "Account provisioning is closed on this deployment. "
                 "Ask your administrator for an invitation."
             )
+
+        if not is_bootstrap:
+            db.execute(
+                text("SELECT pg_advisory_xact_lock(:namespace, :lock_key)"),
+                {
+                    "namespace": _OPEN_SIGNUP_LOCK_NAMESPACE,
+                    "lock_key": _OPEN_SIGNUP_LOCK_KEY,
+                },
+            )
+
+            # A competing worker may have committed this account while this
+            # transaction waited for the provisioning lock.
+            user = db.query(User).filter(User.email == normalized_email).first()
+            if user:
+                try:
+                    result = self._complete_existing_magic_link_user(db, user)
+                except ValueError:
+                    db.rollback()
+                    raise
+                db.commit()  # Release the transaction-scoped signup lock.
+                return result
 
         if is_bootstrap:
             import uuid as uuid_mod
@@ -670,6 +701,7 @@ class SessionService:
                 db.query(Department).filter(Department.tier == "individual").count()
             )
             if individual_count >= INDIVIDUAL_ACCOUNT_LIMIT:
+                db.rollback()  # Release the transaction-scoped signup lock.
                 raise ValueError(
                     "Self-service signups are currently full. "
                     "Ask your administrator or try again later."
@@ -836,11 +868,11 @@ class SessionService:
             max_users=1,
         )
         db.add(department)
-        db.commit()
+        db.flush()
         db.refresh(department)
 
         logger.info(
-            f"Created individual department {dept_id} for {email} (institution={institution or email_domain})"
+            f"Staged individual department {dept_id} for {email} (institution={institution or email_domain})"
         )
         return department
 
