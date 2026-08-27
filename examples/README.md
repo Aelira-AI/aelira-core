@@ -8,6 +8,8 @@ For format-by-format scan/remediation boundaries, dependencies, current API and
 CLI entry points, output expectations, and human-review guidance, start with the
 [document remediation hub](../docs/document-remediation/README.md).
 
+The PDF safety architecture documented there is present on `main` after v0.9.5, is not part of v0.9.5, and can enter a future release only through a later release process. Its merge created no release or deployment. The direct example below scans only; managed PDF remediation additionally uses the exact-byte output-claim lifecycle described in the hub.
+
 | Example | What it shows | Needs a running server? |
 |---------|---------------|-------------------------|
 | [`scan_pdf_direct.py`](scan_pdf_direct.py) | Scan a PDF by importing the engine directly — embed the processors in your own batch job or CI check | No |
@@ -89,7 +91,7 @@ Processor scans for WCAG violations → returns structured results
 Results stored in database → displayed in dashboard
     |
     v
-(Optional) Remediator generates fixed file
+(Optional) Remediator generates a candidate, validates it, and for managed PDFs publishes the exact claimed bytes
 ```
 
 Each processor follows the same pattern:

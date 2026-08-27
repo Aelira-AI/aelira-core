@@ -226,3 +226,111 @@ def test_office_output_does_not_claim_artifacts_with_manual_or_failed_work():
     )
     assert "zero manual" in office
     assert "zero failed" in office
+
+
+def test_pdf_docs_describe_merged_ocr_and_immutable_original_boundaries():
+    pdf = _text(DOCS / "pdf.md").lower()
+    for contract in (
+        "preserved in the delivered pdf",
+        "per page",
+        "partial direct text",
+        "signed",
+        "xfa",
+        "english",
+        "original pdf remains immutable",
+        "prior valid output",
+    ):
+        assert contract in pdf, f"PDF OCR/original boundary missing {contract!r}"
+
+
+def test_pdf_docs_describe_accessible_html_and_embedded_image_safety():
+    pdf = _text(DOCS / "pdf.md").lower()
+    for contract in (
+        "normalized and escaped",
+        "passive allowlist",
+        "event attributes",
+        "inline styles",
+        "unsafe urls",
+        "png and jpeg data urls",
+        "dimension and pixel",
+        "structural verification",
+        "exact eof",
+        "trailing data",
+    ):
+        assert contract in pdf, f"accessible-HTML safety boundary missing {contract!r}"
+
+
+def test_managed_pdf_docs_describe_exact_claim_publication_and_cleanup():
+    corpus = "\n".join(
+        (
+            _text(DOCS / "README.md"),
+            _text(DOCS / "pdf.md"),
+            _text(ROOT / "docs" / "deployment" / "self-hosting.md"),
+        )
+    ).lower()
+    for contract in (
+        "private, unlinked",
+        "output claim",
+        "read-only",
+        "non-inheritable",
+        "single owner",
+        "descriptor-bound",
+        "exact claimed stream",
+        "size, sha-256, mime type, scan type, and filename",
+        "db-first",
+        "artifact id",
+        "publication token",
+        "cleanup warning",
+        "retained path",
+        "unix",
+    ):
+        assert contract in corpus, f"managed PDF lifecycle missing {contract!r}"
+
+
+def test_operator_cleanup_recovery_names_the_real_maintenance_loop():
+    self_hosting = _text(ROOT / "docs" / "deployment" / "self-hosting.md")
+    for contract in (
+        "python -m src.jobs.worker",
+        "DURABLE_MAINTENANCE_INTERVAL_SECONDS",
+        "REMEDIATION_ARTIFACT_STAGING_GRACE_SECONDS",
+        "REMEDIATION_ARTIFACT_CLEANUP_BATCH_SIZE",
+        "publication_cleanup_pending",
+    ):
+        assert contract in self_hosting
+    assert "bounded artifact cleanup workflow" not in self_hosting
+
+
+def test_operator_docs_describe_current_parent_cleanup_fence():
+    self_hosting = _text(ROOT / "docs" / "deployment" / "self-hosting.md")
+    assert "Until Task16B" not in self_hosting
+    for contract in (
+        "database cleanup fence",
+        "publication and cleanup cannot both own",
+        "do not scan the artifact directory",
+    ):
+        assert contract in self_hosting
+
+
+def test_post_v095_pdf_hardening_is_not_claimed_as_released():
+    pages = (
+        ROOT / "README.md",
+        ROOT / "examples" / "README.md",
+        DOCS / "README.md",
+        DOCS / "pdf.md",
+        ROOT / "docs" / "deployment" / "self-hosting.md",
+        ROOT / "SECURITY.md",
+    )
+    corpus = "\n".join(_text(page) for page in pages).lower()
+    assert "present on `main`" in corpus
+    assert "not part of v0.9.5" in corpus
+    assert "future release" in corpus
+    assert "no release or deployment" in corpus
+
+    canonical_pdf = _text(DOCS / "pdf.md").lower()
+    for boundary in (
+        "present on `main`",
+        "not part of v0.9.5",
+        "future release",
+        "no release or deployment",
+    ):
+        assert boundary in canonical_pdf

@@ -12,6 +12,8 @@
 
 > **Status: 0.9.6 beta.** The engine — scanning, deterministic scoring, remediation — is complete and tested (1,500+ backend tests). LMS integration maturity varies by platform: Canvas is production-verified, the others range from beta to untested (see the [integration status table](#lms-integration-status) below). Pre-1.0 means we're still hardening operational edges. Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. Known work is tracked openly in the issues.
 
+> **Main-branch release boundary (24 August 2026):** PDF OCR-output preservation, accessible-HTML sanitization, and descriptor-bound PDF publication are present on `main` after v0.9.5. They are not part of v0.9.5. A future release may include them after its own release gates; this merge created no release or deployment. The immutable v0.9.5 tag and release remain unchanged.
+
 Most accessibility tools tell you a PDF has no tags, an image has no alt text, and a table has no headers. Someone still has to open the file and fix it. Aelira does the fixing: you give it a document, it gives you back a remediated one, with a report of what changed and why.
 
 It is built for institutions working toward WCAG 2.1 AA, including US public entities under the DOJ ADA Title II rule (**26 April 2027** for jurisdictions of 50,000+, **26 April 2028** for smaller entities).
@@ -59,7 +61,7 @@ For document work, upload a file and get back a remediated file rather than only
 
 | Content | What it does |
 |---|---|
-| **PDF** | Scans text/OCR and structure; applies bounded metadata, tag, bookmark, table, and alt-text fixes where the file exposes a safe target |
+| **PDF** | Scans text/OCR and structure; applies bounded metadata, tag, bookmark, table, and alt-text fixes where the file exposes a safe target. On `main`, eligible image-only pages are OCR'd in a private working copy and the searchable text is preserved in the delivered PDF; ambiguous or unsupported cases fail closed. |
 | **Word, PowerPoint, Excel** | Format-specific structure, alternative-text, contrast, table, slide, and workbook checks with partial original-format remediation |
 | **LaTeX** | Remediates and returns `.tex` source directly, converts supported equations to MathML/ARIA descriptions, and can optionally produce PDF/HTML |
 | **Web pages** | axe-core and Pa11y detection, with generated code fixes |
