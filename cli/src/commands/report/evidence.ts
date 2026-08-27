@@ -11,15 +11,12 @@ export default class ReportEvidence extends Command {
       required: false,
     }),
   }
-
   static description = 'Download an accessibility evidence report for scanned content'
-
   static examples = [
     '<%= config.bin %> <%= command.id %>',
     '<%= config.bin %> <%= command.id %> dept-123',
     '<%= config.bin %> <%= command.id %> dept-123 --output evidence-report.pdf',
   ]
-
   static flags = {
     'api-url': Flags.string({
       default: 'http://localhost:8000',

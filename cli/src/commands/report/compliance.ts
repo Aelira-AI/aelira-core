@@ -4,6 +4,9 @@ import * as fs from 'node:fs/promises'
 
 import { ApiClient } from '../../utils/api-client.js'
 
+const finiteOrNull = (value: unknown): null | number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null
+
 export default class ReportCompliance extends Command {
   static args = {
     department_id: Args.string({
@@ -238,9 +241,6 @@ static flags = {
   }
 
   private toEvidenceStatistics(stats: any): any {
-    const finiteOrNull = (value: unknown): number | null =>
-      typeof value === 'number' && Number.isFinite(value) ? value : null
-
     return {
       average_scan_score: finiteOrNull(
         stats?.compliance_scores?.average ?? stats?.average_score,

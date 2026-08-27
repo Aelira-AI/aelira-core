@@ -23,7 +23,7 @@ describe('report evidence command', () => {
         headers: { 'content-type': 'application/pdf' },
         status: 200,
       })
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = (async (input: Request | URL | string) => {
       const url = String(input)
       requestedUrls.push(url)
       return respond(url)
@@ -99,6 +99,7 @@ describe('report evidence command', () => {
           }
       return Response.json(data)
     }
+
     const output = path.join(testDir, 'scan-evidence.json')
     const { stderr } = await runCommand([
       'report',
@@ -136,6 +137,7 @@ describe('report evidence command', () => {
         headers: { 'content-type': 'application/pdf' },
       })
     }
+
     const output = path.join(testDir, 'compatibility.pdf')
     const { stdout } = await runCommand([
       'report',
