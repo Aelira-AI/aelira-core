@@ -24,7 +24,7 @@ from typing import Optional, Tuple
 
 import bcrypt
 from cryptography.fernet import Fernet
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.orm import Session as DBSession
 
 from ..db.models import User, UserSession, MagicLink, Department, AuthProvider
@@ -498,18 +498,35 @@ class SessionService:
 
         for link in magic_links:
             try:
-                if bcrypt.checkpw(
+                matches = bcrypt.checkpw(
                     token.encode("utf-8"), link.token_hash.encode("utf-8")
-                ):
-                    # Mark as used
-                    link.used_at = datetime.now(timezone.utc)
-                    db.commit()
-                    logger.info(f"Magic link verified for {email}")
-                    return link
-            except Exception:
+                )
+            except ValueError:
                 continue
 
-        logger.warning(f"Invalid magic link attempt for {email}")
+            if not matches:
+                continue
+
+            claimed_at = datetime.now(timezone.utc)
+            claim = db.execute(
+                update(MagicLink)
+                .where(MagicLink.id == link.id)
+                .where(MagicLink.used_at.is_(None))
+                .where(MagicLink.expires_at > claimed_at)
+                .values(used_at=claimed_at)
+                .execution_options(synchronize_session=False)
+            )
+            if claim.rowcount != 1:
+                db.rollback()
+                logger.warning("Magic link was already used or expired")
+                return None
+
+            db.commit()
+            db.refresh(link)
+            logger.info("Magic link verified")
+            return link
+
+        logger.warning("Invalid magic link attempt")
         return None
 
     def check_magic_link(
