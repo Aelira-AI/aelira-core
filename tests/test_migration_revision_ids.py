@@ -42,6 +42,7 @@ def test_scan_fix_review_evidence_columns_are_nullable_and_bounded():
     assert ScanFix.__table__.c.provider_used.nullable is True
     assert ScanFix.__table__.c.provider_used.type.length == 64
     assert ScanFix.__table__.c.verification_evidence.nullable is True
+    assert ScanFix.__table__.c.source_locator.nullable is True
     assert ScanFix.__table__.c.occurrence_key.nullable is False
     assert ScanFix.__table__.c.occurrence_key.type.length == 64
     assert "uq_scan_fixes_scan_occurrence" in {
@@ -50,6 +51,47 @@ def test_scan_fix_review_evidence_columns_are_nullable_and_bounded():
     assert "ck_scan_fixes_source_kind" in {
         constraint.name for constraint in ScanFix.__table__.constraints
     }
+    assert "ck_scan_fixes_source_locator" in {
+        constraint.name for constraint in ScanFix.__table__.constraints
+    }
+
+
+def test_region_provenance_migration_preserves_rows_and_is_reversible():
+    scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    revision = scripts.get_revision("20260828_region_provenance")
+    assert revision is not None
+    assert revision.down_revision == "20260827_admin_handoff"
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE scan_fixes ("
+                "id VARCHAR(36) PRIMARY KEY, source_kind VARCHAR(32))"
+            )
+        )
+        connection.execute(
+            text("INSERT INTO scan_fixes (id, source_kind) VALUES ('fix-1', NULL)")
+        )
+        module = revision.module
+        module.op = Operations(MigrationContext.configure(connection))
+        module.upgrade()
+        module.upgrade()
+        columns = {
+            column["name"]: column
+            for column in inspect(connection).get_columns("scan_fixes")
+        }
+        assert columns["source_locator"]["nullable"] is True
+        assert str(columns["source_locator"]["type"]).upper() == "JSON"
+        assert (
+            connection.execute(text("SELECT id FROM scan_fixes")).scalar_one()
+            == "fix-1"
+        )
+
+        module.downgrade()
+        assert "source_locator" not in {
+            column["name"] for column in inspect(connection).get_columns("scan_fixes")
+        }
 
 
 def test_image_equation_review_evidence_upgrade_is_idempotent_on_existing_table():

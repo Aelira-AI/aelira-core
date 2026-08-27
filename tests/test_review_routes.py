@@ -126,6 +126,35 @@ class TestFixSummary:
         data = fix.model_dump()
         assert data["page_number"] is None
 
+    def test_exposes_typed_region_provenance(self):
+        from tests.test_image_equation_review_gate import _locator
+
+        locator = _locator()
+        fix = FixSummary(
+            id="fix-region",
+            category="structure",
+            severity="high",
+            description="Printed equation region",
+            confidence=0.55,
+            fix_method="ai_vision",
+            needs_review=True,
+            review_status="pending",
+            source_kind="image_equation",
+            source_locator=locator,
+        )
+
+        data = fix.model_dump(mode="json")
+        assert data["source_kind"] == "image_equation"
+        assert data["source_locator"]["region_id"] == locator["region_id"]
+        assert data["source_locator"]["pixel_bbox"] == locator["pixel_bbox"]
+        with pytest.raises(ValidationError):
+            FixSummary(
+                **{
+                    **data,
+                    "source_locator": {**locator, "provider_payload": "secret"},
+                }
+            )
+
 
 class TestQueueItem:
     """Tests for the QueueItem response model."""

@@ -145,7 +145,7 @@ class MathEquationChecker:
                 if bbox.is_empty or bbox.is_infinite:
                     continue
                 # A page-sized scan cannot safely use the whole-image equation
-                # path.  Region findings have a separate manual-only contract.
+                # path. Region findings use a separate exact-crop contract.
                 if is_full_page_raster_occurrence(
                     page,
                     {

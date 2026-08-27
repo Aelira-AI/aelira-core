@@ -198,12 +198,20 @@ def test_supported_scan_yields_stable_manual_region_and_valid_evidence(tmp_path)
     assert len(first) == 1
     assert first == second
     candidate = first[0]
+    assert candidate["id"] == candidate["region_id"]
     assert candidate["issue_type"] == SCANNED_EQUATION_REGION_ISSUE_TYPE
     assert candidate["metadata"]["source_kind"] == "page_raster_region"
-    assert candidate["metadata"]["classification_manual_reason"]
+    assert "classification_manual_reason" not in candidate["metadata"]
     assert candidate["bbox"] != candidate["metadata"]["parent_bbox"]
     assert len(candidate["metadata"]["source_sha256"]) == 64
     assert len(candidate["metadata"]["crop_pixel_sha256"]) == 64
+    with fitz.open(path) as document:
+        resolved = detector.resolve_evidence(document, candidate["metadata"])
+    assert resolved is not None
+    assert resolved.crop_size == (
+        candidate["metadata"]["pixel_bbox"][2] - candidate["metadata"]["pixel_bbox"][0],
+        candidate["metadata"]["pixel_bbox"][3] - candidate["metadata"]["pixel_bbox"][1],
+    )
     assert detector.validate_evidence(str(path), candidate["metadata"])
     assert ocr.calls == 2
 
@@ -442,7 +450,7 @@ def test_component_cap_counts_objects_not_horizontal_raster_runs():
     assert _bounded_component_count(ink) == 99
 
 
-def test_region_issue_has_no_math_fixer_route(tmp_path):
+def test_region_issue_uses_the_distinct_concrete_math_route(tmp_path):
     path = tmp_path / "scan.pdf"
     _write_scan_pdf(path)
     checker, _, _ = _checker(_ocr_data())
@@ -450,20 +458,18 @@ def test_region_issue_has_no_math_fixer_route(tmp_path):
         0
     ]
 
-    assert math_issue_type_from(candidate) is None
-    assert SCANNED_EQUATION_REGION_ISSUE_TYPE not in MathFixer.HANDLED_ISSUE_TYPES
-    assert candidate["metadata"]["classification_manual_reason"] == (
-        "scanned_equation_region_requires_exact_subregion_association"
-    )
+    assert math_issue_type_from(candidate) == SCANNED_EQUATION_REGION_ISSUE_TYPE
+    assert SCANNED_EQUATION_REGION_ISSUE_TYPE in MathFixer.HANDLED_ISSUE_TYPES
+    assert "classification_manual_reason" not in candidate["metadata"]
 
     direct = object.__new__(PdfRemediator)
     direct.config = RemediationConfig()
     normalized = direct._normalize_issues([candidate])[0]
     assert normalized.metadata["region_id"] == candidate["region_id"]
-    assert normalized.metadata["classification_manual_reason"]
+    assert "classification_manual_reason" not in normalized.metadata
 
 
-def test_authoritative_queue_partition_retains_bounded_region_evidence(tmp_path):
+def test_authoritative_queue_routes_bounded_region_evidence_to_remediator(tmp_path):
     path = tmp_path / "scan.pdf"
     _write_scan_pdf(path)
     checker, _, _ = _checker(_ocr_data())
@@ -473,25 +479,16 @@ def test_authoritative_queue_partition_retains_bounded_region_evidence(tmp_path)
 
     classification = classify_issue_category(candidate, authoritative=True)
     automatic, manual = _partition_authoritative_document_issues([candidate])
-    records = materialize_manual_issues(
-        manual, reason="partitioned_manual", purpose="document"
-    )
+    records = materialize_manual_issues(manual, reason="manual", purpose="document")
 
     assert classification.category == IssueCategory.STRUCTURE
-    assert classification.manual_reason == (
-        "scanned_equation_region_requires_exact_subregion_association"
-    )
-    assert automatic == []
-    assert manual == [candidate]
-    assert len(records) == 1
-    assert records[0].metadata["region_id"] == candidate["region_id"]
-    assert (
-        records[0].metadata["source_sha256"] == candidate["metadata"]["source_sha256"]
-    )
-    assert records[0].metadata["pdf_bbox"] == candidate["bbox"]
+    assert classification.manual_reason is None
+    assert automatic == [candidate]
+    assert manual == []
+    assert records == []
 
 
-def test_pdf_remediator_honors_manual_only_region_before_any_fixer():
+def test_pdf_remediator_honors_explicit_manual_reason_before_any_fixer():
     issue = RemediationIssue(
         category=IssueCategory.ALT_TEXT,
         severity=IssueSeverity.HIGH,
@@ -507,7 +504,7 @@ def test_pdf_remediator_honors_manual_only_region_before_any_fixer():
     recorded = []
     remediator._add_manual_issue = lambda *args, **kwargs: recorded.append(kwargs)
     remediator._is_category_enabled = lambda category: pytest.fail(
-        "manual-only findings must stop before category dispatch"
+        "explicit manual findings must stop before category dispatch"
     )
 
     remediator._process_issue(issue, object())

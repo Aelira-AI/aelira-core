@@ -16,7 +16,7 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 from latex2mathml.converter import convert as latex_to_mathml
 
-from .equation_image_source import ValidatedEquationImage
+from .equation_image_source import ValidatedEquationRaster
 
 ASSET_DIR = Path(__file__).parent / "assets" / "math-font"
 FONT_PATH = ASSET_DIR / "STIXTwoMath-Regular.ttf"
@@ -263,7 +263,7 @@ class EquationVerifier:
         self.config = config or VerifierConfig()
 
     def verify(
-        self, source: ValidatedEquationImage, latex: str
+        self, source: ValidatedEquationRaster, latex: str
     ) -> EquationVerificationEvidence:
         try:
             mathml = self.converter(latex)

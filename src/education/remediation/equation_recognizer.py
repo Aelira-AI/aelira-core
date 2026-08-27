@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from .equation_image_source import ValidatedEquationImage
+from .equation_image_source import ValidatedEquationRaster
 
 
 class EquationRecognitionRejected(ValueError):
@@ -38,7 +38,7 @@ class EquationRecognizer:
         self.max_latex_chars = max_latex_chars
         self.max_response_chars = max_response_chars
 
-    def recognize(self, image: ValidatedEquationImage) -> EquationRecognition:
+    def recognize(self, image: ValidatedEquationRaster) -> EquationRecognition:
         client = self.alt_text_client
         if client is None:
             raise EquationRecognitionRejected("alt_text_client_unavailable")

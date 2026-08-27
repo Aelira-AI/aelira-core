@@ -23,8 +23,16 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
+from src.education.equation_region_contract import PageRasterRegionLocator
 from src.education.math_contracts import (
     MATH_ISSUE_TYPES,
     SCANNED_EQUATION_REGION_ISSUE_TYPE,
@@ -190,12 +198,7 @@ def classify_issue_category(
         source.get("issue_type") == SCANNED_EQUATION_REGION_ISSUE_TYPE
         for source in sources
     ):
-        return IssueCategoryClassification(
-            category=IssueCategory.STRUCTURE,
-            manual_reason=(
-                "scanned_equation_region_requires_exact_subregion_association"
-            ),
-        )
+        return IssueCategoryClassification(category=IssueCategory.STRUCTURE)
     for source in sources:
         for field in _CATEGORY_FIELD_NAMES:
             value = source.get(field)
@@ -332,11 +335,20 @@ class FixedIssue(BaseModel):
     provider_used: Optional[str] = Field(default=None, min_length=1, max_length=64)
     model_used: Optional[str] = Field(default=None, min_length=1, max_length=50)
     source_kind: Optional[str] = Field(default=None, min_length=1, max_length=32)
+    source_locator: Optional[PageRasterRegionLocator] = None
     verification_evidence: Optional[VerificationEvidence] = None
     verification_passed: bool = True
     notes: Optional[str] = None
     wcag_criteria: Optional[str] = None
     page_number: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _region_locator_requires_image_equation_source(self) -> "FixedIssue":
+        if self.source_locator is not None and self.source_kind != "image_equation":
+            raise ValueError(
+                "page raster region locator requires image_equation source"
+            )
+        return self
 
 
 class ManualIssue(BaseModel):
@@ -419,12 +431,9 @@ def materialize_manual_issues(
 
 
 def _bounded_scanned_region_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """Retain only bounded provenance needed to review a manual scan region."""
+    """Retain only bounded provenance needed to remediate one scan region."""
     result: Dict[str, Any] = {
         "issue_type": SCANNED_EQUATION_REGION_ISSUE_TYPE,
-        "classification_manual_reason": (
-            "scanned_equation_region_requires_exact_subregion_association"
-        ),
     }
     text_fields = (
         "source_kind",
@@ -755,14 +764,19 @@ class BaseRemediator(ABC):
         """
         from src.education.math_contracts import (
             IMAGE_EQUATION_ISSUE_TYPE,
+            SCANNED_EQUATION_REGION_ISSUE_TYPE,
             math_issue_type_from,
         )
 
         self.file_path = file_path
         configured = config or RemediationConfig()
+        visual_equation_types = {
+            IMAGE_EQUATION_ISSUE_TYPE,
+            SCANNED_EQUATION_REGION_ISSUE_TYPE,
+        }
         has_image_equation = any(
             isinstance(raw_issue, dict)
-            and math_issue_type_from(raw_issue) == IMAGE_EQUATION_ISSUE_TYPE
+            and math_issue_type_from(raw_issue) in visual_equation_types
             for raw_issue in issues
         )
         # Exact image-equation recognition is never a legacy/ambient AI
@@ -1148,6 +1162,7 @@ class BaseRemediator(ABC):
         provider_used: Optional[str] = None,
         model_used: Optional[str] = None,
         source_kind: Optional[str] = None,
+        source_locator: Optional[PageRasterRegionLocator | Dict[str, Any]] = None,
         verification_evidence: Optional[Dict[str, Any]] = None,
         wcag_criteria: Optional[str] = None,
         page_number: Optional[int] = None,
@@ -1168,6 +1183,7 @@ class BaseRemediator(ABC):
                 provider_used=provider_used,
                 model_used=model_used,
                 source_kind=source_kind,
+                source_locator=source_locator,
                 verification_evidence=verification_evidence,
                 notes=notes,
                 wcag_criteria=wcag_criteria,
