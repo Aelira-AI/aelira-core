@@ -10,15 +10,17 @@ Provides endpoints for:
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import List, Literal, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 from dataclasses import dataclass
 import hashlib
 import logging
 import os
+import secrets
 from urllib.parse import urlencode
 
 from fastapi.responses import JSONResponse
@@ -31,6 +33,9 @@ from ..db.models import (
     UserRole,
     AuditLogAction,
     AuditLogStatus,
+    InvitationPurpose,
+    InvitationStatus,
+    UserInvitation,
 )
 from ..auth.dependencies import (
     AuthenticatedPrincipal,
@@ -51,8 +56,7 @@ from ..security.abuse_detector import check_signup_abuse, log_signup
 from ..security.disposable_domains import is_disposable_domain
 from ..security.audit_service import AuditPersistenceError, get_audit_service
 from ..security.client_ip import get_client_ip
-from ..services.email_templates import render_department_welcome_email
-from ..config.settings import get_settings as get_app_settings
+from ..services.account_deletion_service import AccountDeletionService
 
 logger = logging.getLogger(__name__)
 
@@ -90,13 +94,20 @@ class CreateAPIKeyResponse(BaseModel):
 
 
 class CreateDepartmentRequest(BaseModel):
-    name: str
-    institution: str
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=255)
+    institution: str = Field(min_length=1, max_length=255)
     contact_email: EmailStr
-    contact_name: str
+    contact_name: str = Field(min_length=1, max_length=255)
+    first_admin_email: Optional[EmailStr] = None
     # Default from DEFAULT_DEPARTMENT_TIER: "department" (unlimited) for
     # self-hosted installs; a hosted service sets it to a limited tier.
-    tier: str = os.getenv("DEFAULT_DEPARTMENT_TIER", "department")
+    tier: str = Field(
+        default=os.getenv("DEFAULT_DEPARTMENT_TIER", "department"),
+        min_length=1,
+        max_length=50,
+    )
 
 
 class DepartmentResponse(BaseModel):
@@ -545,7 +556,7 @@ def validate_api_key(
 
 # ==================== Department Management Endpoints ====================
 
-ProvisioningOutcome = Literal["created", "rejected"]
+ProvisioningOutcome = Literal["created", "reused", "rejected"]
 ProvisioningReason = Literal[
     "missing_credentials",
     "credentials_rejected",
@@ -555,6 +566,9 @@ ProvisioningReason = Literal[
     "abuse_blocked",
     "abuse_challenge_required",
     "duplicate_department",
+    "admin_email_unavailable",
+    "handoff_revoked",
+    "email_unavailable",
 ]
 ProvisioningActorClass = Literal[
     "authenticated", "anonymous_public", "anonymous_closed", "unresolved_credentials"
@@ -596,7 +610,7 @@ def _audit_department_provisioning(
             action=AuditLogAction.DEPARTMENT_PROVISION,
             status=(
                 AuditLogStatus.SUCCESS
-                if outcome == "created"
+                if outcome != "rejected"
                 else AuditLogStatus.FAILURE
             ),
             user_id=provisioner.user_id if provisioner else None,
@@ -621,6 +635,151 @@ def _audit_department_provisioning(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Department provisioning audit is unavailable",
         ) from None
+
+
+def _normalized_email(value: str) -> str:
+    return value.strip().lower()
+
+
+def _canonical_text(value: str) -> str:
+    return value.strip().lower()
+
+
+def _handoff_token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _lock_department_identity(db: Session, *, name: str, institution: str) -> None:
+    """Serialize canonical duplicate checks on PostgreSQL."""
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    identity = f"{_canonical_text(institution)}\x00{_canonical_text(name)}"
+    lock_key = int.from_bytes(
+        hashlib.sha256(identity.encode("utf-8")).digest()[:8],
+        byteorder="big",
+        signed=True,
+    )
+    db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+
+
+def _lock_admin_handoff_email(db: Session, *, email: str) -> None:
+    """Serialize globally unique first-administrator email claims on PostgreSQL."""
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    lock_key = int.from_bytes(
+        hashlib.sha256(f"admin-handoff\x00{email}".encode("utf-8")).digest()[:8],
+        byteorder="big",
+        signed=True,
+    )
+    db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+
+
+def _handoff_delivery_cooldown_active(invitation: UserInvitation) -> bool:
+    queued_at = invitation.delivery_queued_at
+    if queued_at is None:
+        return False
+    now = datetime.now(timezone.utc)
+    if queued_at.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    return queued_at > now - timedelta(minutes=15)
+
+
+def _audit_admin_handoff(
+    *,
+    db: Session,
+    request: Request,
+    provisioner: AuthenticatedPrincipal | None,
+    target_department_id: str,
+    invitation_id: str,
+    outcome: Literal["issued", "reissued"],
+) -> None:
+    """Stage a bounded tenant-targeted first-admin handoff event."""
+    get_audit_service(db).log_action(
+        action=AuditLogAction.DEPARTMENT_ADMIN_HANDOFF,
+        status=AuditLogStatus.SUCCESS,
+        user_id=provisioner.user_id if provisioner else None,
+        department_id=target_department_id,
+        resource_type="invitation",
+        resource_id=invitation_id,
+        ip_address=get_client_ip(request),
+        details={
+            "actor_class": "authenticated" if provisioner else "anonymous_public",
+            "auth_method": provisioner.auth_method if provisioner else "public",
+            "outcome": outcome,
+            "role": UserRole.ADMIN.value,
+        },
+        commit=False,
+    )
+
+
+def _department_response(department: Department) -> DepartmentResponse:
+    return DepartmentResponse(
+        id=department.id,
+        name=department.name,
+        institution=department.institution,
+        contact_email=department.contact_email,
+        tier=department.tier,
+        max_users=department.max_users,
+        created_at=department.created_at,
+    )
+
+
+async def _send_admin_handoff_email(
+    *,
+    department_id: str,
+    department_name: str,
+    institution: str,
+    recipient_email: str,
+    raw_token: str,
+    expires_at: datetime,
+) -> None:
+    settings = get_settings()
+    email_service = get_email_service()
+    dashboard_url = settings.public_dashboard_url
+    accept_url = f"{dashboard_url.rstrip('/')}/accept-invitation#token={raw_token}"
+    try:
+        result = await email_service.send_admin_handoff_invitation(
+            to_email=recipient_email,
+            department_name=department_name,
+            institution=institution,
+            accept_url=accept_url,
+            expires_date=expires_at.strftime("%B %d, %Y at %I:%M %p UTC"),
+        )
+        if not result.get("success"):
+            logger.warning(
+                "Administrator handoff email was not accepted for department %s",
+                department_id,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Administrator handoff email delivery failed for department %s: %s",
+            department_id,
+            type(exc).__name__,
+        )
+
+
+def _queue_admin_handoff_email(
+    *,
+    department: Department,
+    recipient_email: str,
+    raw_token: str,
+    expires_at: datetime,
+) -> None:
+    department_id = department.id
+    department_name = department.name
+    institution = department.institution
+    asyncio.create_task(
+        _send_admin_handoff_email(
+            department_id=department_id,
+            department_name=department_name,
+            institution=institution,
+            recipient_email=recipient_email,
+            raw_token=raw_token,
+            expires_at=expires_at,
+        )
+    )
 
 
 def authorize_department_creation(
@@ -710,6 +869,11 @@ async def create_department(
     - Abuse detection (IP tracking, domain limits, bot detection)
     - Rate limiting on signup attempts
     """
+    contact_email = _normalized_email(str(request.contact_email))
+    first_admin_email = _normalized_email(
+        str(request.first_admin_email or request.contact_email)
+    )
+
     # Get client info for abuse detection
     client_ip = get_client_ip(http_request)
     user_agent = http_request.headers.get("user-agent")
@@ -718,7 +882,7 @@ async def create_department(
     # Check for abuse before proceeding
     abuse_result = await check_signup_abuse(
         db=db,
-        email=request.contact_email,
+        email=first_admin_email,
         ip_address=client_ip,
         user_agent=user_agent,
         fingerprint=fingerprint,
@@ -727,7 +891,7 @@ async def create_department(
     if not abuse_result.allowed:
         log_signup(
             db=db,
-            email=request.contact_email,
+            email=first_admin_email,
             ip_address=client_ip,
             user_agent=user_agent,
             fingerprint=fingerprint,
@@ -761,53 +925,201 @@ async def create_department(
             detail="Additional verification is required before provisioning",
         )
 
-    # Check if department already exists
-    existing = (
-        db.query(Department)
-        .filter(
-            Department.name == request.name,
-            Department.institution == request.institution,
-        )
-        .first()
-    )
-
-    if existing:
+    email_service = get_email_service()
+    if not email_service.is_configured():
         _audit_department_provisioning(
             db=db,
             request=http_request,
             provisioner=_provisioner,
             outcome="rejected",
-            reason="duplicate_department",
-            target_department_id=existing.id,
+            reason="email_unavailable",
         )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Department already exists"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email delivery must be configured before provisioning",
         )
 
-    # Create department
-    department = Department(
-        name=request.name,
-        institution=request.institution,
-        contact_email=request.contact_email,
-        contact_name=request.contact_name,
-        tier=request.tier,
-        max_users=5 if request.tier == "trial" else 50,
-        trial_ends_at=datetime.utcnow() + timedelta(days=30),
-    )
-
+    raw_handoff_token: str | None = None
     try:
+        _lock_department_identity(
+            db, name=request.name, institution=request.institution
+        )
+        _lock_admin_handoff_email(db, email=first_admin_email)
+        email_blocked, _ = AccountDeletionService.is_email_blocked(
+            db,
+            first_admin_email,
+            commit_expired_cleanup=False,
+        )
+        if email_blocked:
+            db.rollback()
+            _audit_department_provisioning(
+                db=db,
+                request=http_request,
+                provisioner=_provisioner,
+                outcome="rejected",
+                reason="admin_email_unavailable",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The administrator email is unavailable",
+            )
+        existing = (
+            db.query(Department)
+            .filter(
+                func.lower(func.trim(Department.name)) == _canonical_text(request.name),
+                func.lower(func.trim(Department.institution))
+                == _canonical_text(request.institution),
+            )
+            .with_for_update()
+            .first()
+        )
+
+        if existing is not None:
+            handoff = (
+                db.query(UserInvitation)
+                .filter(
+                    UserInvitation.department_id == existing.id,
+                    UserInvitation.purpose
+                    == InvitationPurpose.DEPARTMENT_ADMIN_HANDOFF.value,
+                )
+                .with_for_update()
+                .first()
+            )
+            exact_retry = (
+                _canonical_text(existing.name) == _canonical_text(request.name)
+                and _canonical_text(existing.institution)
+                == _canonical_text(request.institution)
+                and _normalized_email(existing.contact_email) == contact_email
+                and _canonical_text(existing.contact_name or "")
+                == _canonical_text(request.contact_name)
+                and str(existing.tier) == request.tier
+                and handoff is not None
+                and _normalized_email(handoff.email) == first_admin_email
+                and _provisioner is not None
+                and bool(_provisioner.user_id)
+                and handoff.invited_by == _provisioner.user_id
+            )
+            if not exact_retry:
+                db.rollback()
+                _audit_department_provisioning(
+                    db=db,
+                    request=http_request,
+                    provisioner=_provisioner,
+                    outcome="rejected",
+                    reason="duplicate_department",
+                    target_department_id=existing.id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A department with this identity already exists",
+                )
+
+            assert handoff is not None
+            if handoff.status == InvitationStatus.EXPIRED or (
+                handoff.status == InvitationStatus.PENDING
+                and not _handoff_delivery_cooldown_active(handoff)
+            ):
+                raw_handoff_token = secrets.token_urlsafe(48)
+                handoff.token = _handoff_token_digest(raw_handoff_token)
+                handoff.status = InvitationStatus.PENDING
+                handoff.expires_at = datetime.utcnow() + timedelta(days=7)
+                handoff.revoked_at = None
+                handoff.delivery_queued_at = datetime.now(timezone.utc)
+                _audit_admin_handoff(
+                    db=db,
+                    request=http_request,
+                    provisioner=_provisioner,
+                    target_department_id=existing.id,
+                    invitation_id=handoff.id,
+                    outcome="reissued",
+                )
+            elif handoff.status == InvitationStatus.REVOKED:
+                db.rollback()
+                _audit_department_provisioning(
+                    db=db,
+                    request=http_request,
+                    provisioner=_provisioner,
+                    outcome="rejected",
+                    reason="handoff_revoked",
+                    target_department_id=existing.id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="The administrator handoff has been revoked",
+                )
+
+            _audit_department_provisioning(
+                db=db,
+                request=http_request,
+                provisioner=_provisioner,
+                outcome="reused",
+                target_department_id=existing.id,
+                commit=False,
+            )
+            db.commit()
+            response = _department_response(existing)
+            if raw_handoff_token is not None:
+                _queue_admin_handoff_email(
+                    department=existing,
+                    recipient_email=first_admin_email,
+                    raw_token=raw_handoff_token,
+                    expires_at=handoff.expires_at,
+                )
+            logger.info("Reused department provisioning %s", existing.id)
+            return response
+
+        existing_admin_email = (
+            db.query(User).filter(func.lower(User.email) == first_admin_email).first()
+        )
+        existing_pending_invitation = (
+            db.query(UserInvitation)
+            .filter(
+                func.lower(UserInvitation.email) == first_admin_email,
+                UserInvitation.status == InvitationStatus.PENDING,
+            )
+            .first()
+        )
+        if existing_admin_email is not None or existing_pending_invitation is not None:
+            db.rollback()
+            _audit_department_provisioning(
+                db=db,
+                request=http_request,
+                provisioner=_provisioner,
+                outcome="rejected",
+                reason="admin_email_unavailable",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The administrator email is unavailable",
+            )
+
+        department = Department(
+            name=request.name,
+            institution=request.institution,
+            contact_email=contact_email,
+            contact_name=request.contact_name,
+            tier=request.tier,
+            max_users=5 if request.tier == "trial" else 50,
+            trial_ends_at=datetime.utcnow() + timedelta(days=30),
+        )
         db.add(department)
         db.flush()
         db.refresh(department)
-        response = DepartmentResponse(
-            id=department.id,
-            name=department.name,
-            institution=department.institution,
-            contact_email=department.contact_email,
-            tier=department.tier,
-            max_users=department.max_users,
-            created_at=department.created_at,
+        raw_handoff_token = secrets.token_urlsafe(48)
+        handoff = UserInvitation(
+            department_id=department.id,
+            email=first_admin_email,
+            role=UserRole.ADMIN,
+            token=_handoff_token_digest(raw_handoff_token),
+            purpose=InvitationPurpose.DEPARTMENT_ADMIN_HANDOFF.value,
+            invited_by=_provisioner.user_id if _provisioner else None,
+            status=InvitationStatus.PENDING,
+            delivery_queued_at=datetime.now(timezone.utc),
+            expires_at=datetime.utcnow() + timedelta(days=7),
         )
+        db.add(handoff)
+        db.flush()
+        response = _department_response(department)
         _audit_department_provisioning(
             db=db,
             request=http_request,
@@ -816,7 +1128,17 @@ async def create_department(
             target_department_id=department.id,
             commit=False,
         )
+        _audit_admin_handoff(
+            db=db,
+            request=http_request,
+            provisioner=_provisioner,
+            target_department_id=department.id,
+            invitation_id=handoff.id,
+            outcome="issued",
+        )
         db.commit()
+    except HTTPException:
+        raise
     except Exception:
         db.rollback()
         logger.error("Department provisioning persistence failed")
@@ -827,29 +1149,16 @@ async def create_department(
 
     logger.info("Created department %s", department.id)
 
-    # Send department trial welcome email (non-blocking)
     try:
-        app_settings = get_app_settings()
-        email_service = get_email_service()
-
-        html_content = render_department_welcome_email(
-            name=request.contact_name,
-            department_name=request.name,
-            institution=request.institution,
-            dashboard_url=f"{app_settings.magic_link_base_url}/dashboard",
+        _queue_admin_handoff_email(
+            department=department,
+            recipient_email=first_admin_email,
+            raw_token=raw_handoff_token,
+            expires_at=handoff.expires_at,
         )
-
-        asyncio.create_task(
-            email_service.send_email(
-                to_emails=[request.contact_email],
-                subject=f"Welcome to Aelira - {request.name}",
-                html_content=html_content,
-                text_content=f"The Aelira workspace for {request.name} at {request.institution} is now active!",
-            )
-        )
-        logger.info("Queued welcome email for department %s", department.id)
-    except Exception as e:
-        logger.warning("Failed to send department welcome email: %s", type(e).__name__)
+        logger.info("Queued administrator handoff for department %s", department.id)
+    except Exception as exc:
+        logger.warning("Failed to send administrator handoff: %s", type(exc).__name__)
 
     return response
 

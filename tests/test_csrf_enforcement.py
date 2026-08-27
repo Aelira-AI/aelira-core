@@ -86,6 +86,10 @@ def test_dashboard_mutation_is_not_exempt(path):
     assert _mw()._is_exempt(path) is False, path
 
 
+def test_one_time_invitation_bearer_endpoint_is_csrf_exempt():
+    assert _mw()._is_exempt("/auth/accept-invitation") is True
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", DASHBOARD_MUTATION_ROUTES)
 async def test_cookie_post_without_token_is_403(path):

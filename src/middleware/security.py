@@ -166,6 +166,8 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         "/auth/magic-link/request",
         "/auth/magic-link/check",
         "/auth/magic-link/verify",
+        # One-time invitation bearer token is the authorization boundary.
+        "/auth/accept-invitation",
         # Session refresh (uses httpOnly refresh token cookie)
         "/auth/session/refresh",
         # OAuth callbacks (token comes from OAuth provider)

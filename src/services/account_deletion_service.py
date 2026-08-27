@@ -53,9 +53,17 @@ class AccountDeletionService:
         return hashlib.sha256(email.lower().strip().encode("utf-8")).hexdigest()
 
     @staticmethod
-    def is_email_blocked(db: DBSession, email: str) -> Tuple[bool, Optional[str]]:
+    def is_email_blocked(
+        db: DBSession,
+        email: str,
+        *,
+        commit_expired_cleanup: bool = True,
+    ) -> Tuple[bool, Optional[str]]:
         """
         Check if an email is blocked from re-registration.
+
+        Locked workflows can set ``commit_expired_cleanup=False`` so removing an
+        expired cooldown remains part of their surrounding transaction.
 
         Returns:
             (is_blocked, reason_message)
@@ -83,7 +91,10 @@ class AccountDeletionService:
 
         # Cooldown expired — allow re-registration, remove block
         db.delete(record)
-        db.commit()
+        if commit_expired_cleanup:
+            db.commit()
+        else:
+            db.flush()
         return False, None
 
     def deactivate_account(

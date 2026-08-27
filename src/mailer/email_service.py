@@ -185,18 +185,20 @@ class EmailService:
                 if response.status_code in (200, 202):
                     message_id = response.headers.get("X-Message-Id", "")
                     logger.info(
-                        f"Email sent via SendGrid to {to_emails}, message_id={message_id}"
+                        "Email sent via SendGrid recipient_count=%s message_id=%s",
+                        len(to_emails),
+                        message_id,
                     )
                     return {"success": True, "message_id": message_id}
                 else:
                     logger.error(
-                        f"SendGrid error: {response.status_code} - {response.text}"
+                        "SendGrid email rejected: status=%s", response.status_code
                     )
-                    return {"success": False, "error": response.text}
+                    return {"success": False, "error": "Email delivery failed"}
 
         except Exception as e:
-            logger.error(f"SendGrid send failed: {e}")
-            return {"success": False, "error": str(e)}
+            logger.error("SendGrid send failed: %s", type(e).__name__)
+            return {"success": False, "error": "Email delivery failed"}
 
     async def _send_via_smtp(
         self,
@@ -231,12 +233,12 @@ class EmailService:
                     server.login(self.smtp_user, self.smtp_password)
                 server.sendmail(from_email, to_emails, msg.as_string())
 
-            logger.info(f"Email sent via SMTP to {to_emails}")
+            logger.info("Email sent via SMTP recipient_count=%s", len(to_emails))
             return {"success": True}
 
         except Exception as e:
-            logger.error(f"SMTP send failed: {e}")
-            return {"success": False, "error": str(e)}
+            logger.error("SMTP send failed: %s", type(e).__name__)
+            return {"success": False, "error": "Email delivery failed"}
 
     def render_template(
         self,
@@ -867,6 +869,59 @@ Aelira is an accessibility compliance platform that helps you make your course m
 If you weren't expecting this invitation, you can safely ignore this email.
 
 Questions? Contact support@example.com""",
+        )
+
+    async def send_admin_handoff_invitation(
+        self,
+        *,
+        to_email: str,
+        department_name: str,
+        institution: str,
+        accept_url: str,
+        expires_date: str,
+    ) -> Dict[str, Any]:
+        """Send the one-time first-administrator handoff link."""
+        safe_department = html_lib.escape(department_name)
+        safe_institution = html_lib.escape(institution)
+        safe_url = html_lib.escape(accept_url, quote=True)
+        safe_expiry = html_lib.escape(expires_date)
+        content = f"""
+            <h2 style="color: #1a1a2e; text-align: center; margin: 0 0 24px 0;">
+                Complete administrator setup
+            </h2>
+            <p style="line-height: 1.6; text-align: center; margin-bottom: 24px;">
+                The <strong>{safe_department}</strong> workspace for
+                <strong>{safe_institution}</strong> is ready. Confirm this email address
+                to become its first department administrator.
+            </p>
+            <div style="text-align: center; margin: 32px 0;">
+                <a href="{safe_url}"
+                   style="background-color: #7C3AED; color: white; padding: 16px 32px;
+                          text-decoration: none; border-radius: 8px; display: inline-block;
+                          font-weight: 600; font-size: 16px;">
+                    Complete administrator setup
+                </a>
+            </div>
+            <p style="color: #92400e; font-size: 14px; text-align: center;">
+                This one-time link expires on {safe_expiry}.
+            </p>
+            <p style="color: #666; font-size: 12px; word-break: break-all;">
+                If the button does not work, copy this link into your browser:<br>
+                {safe_url}
+            </p>
+            <p style="color: #6b7280; font-size: 12px; text-align: center;">
+                If you were not expecting this workspace, ignore this email.
+            </p>
+        """
+        return await self.send_email(
+            to_emails=[to_email],
+            subject="Complete your Aelira administrator setup",
+            html_content=get_email_wrapper(content),
+            text_content=(
+                f"The {department_name} workspace for {institution} is ready.\n\n"
+                f"Complete administrator setup: {accept_url}\n\n"
+                f"This one-time link expires on {expires_date}."
+            ),
         )
 
 

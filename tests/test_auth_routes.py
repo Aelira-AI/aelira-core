@@ -84,6 +84,7 @@ def _db_with(mapping=None):
         q.filter.return_value = q
         q.filter_by.return_value = q
         q.order_by.return_value = q
+        q.with_for_update.return_value = q
         spec = mapping.get(model, {})
         q.first.return_value = spec.get("first")
         q.all.return_value = spec.get("all", [])
@@ -500,7 +501,10 @@ class TestDepartmentCreationPolicy:
             ),
         )
         email_service = MagicMock()
-        email_service.send_email = AsyncMock(return_value={"success": True})
+        email_service.is_configured.return_value = True
+        email_service.send_admin_handoff_invitation = AsyncMock(
+            return_value={"success": True}
+        )
         monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
 
     def test_closed_mode_rejects_anonymous_before_mutation(self, client):
@@ -692,11 +696,14 @@ class TestDepartmentCreationPolicy:
 
         assert response.status_code == 200
         audits = _added(db, AuditLog)
-        assert len(audits) == 1
-        assert audits[0].user_id == "provisioner"
-        assert audits[0].department_id == "existing-dept"
-        assert audits[0].resource_id == response.json()["id"]
-        assert audits[0].details == {
+        assert len(audits) == 2
+        provisioning_audit = next(
+            audit for audit in audits if audit.action == "department_provision"
+        )
+        assert provisioning_audit.user_id == "provisioner"
+        assert provisioning_audit.department_id == "existing-dept"
+        assert provisioning_audit.resource_id == response.json()["id"]
+        assert provisioning_audit.details == {
             "actor_class": "authenticated",
             "auth_method": auth_method,
             "outcome": "created",
@@ -729,11 +736,14 @@ class TestDepartmentCreationPolicy:
         assert response.status_code == 200
         authenticate.assert_not_called()
         audits = _added(db, AuditLog)
-        assert len(audits) == 1
-        assert audits[0].user_id is None
-        assert audits[0].department_id is None
-        assert audits[0].resource_id == response.json()["id"]
-        assert audits[0].details == {
+        assert len(audits) == 2
+        provisioning_audit = next(
+            audit for audit in audits if audit.action == "department_provision"
+        )
+        assert provisioning_audit.user_id is None
+        assert provisioning_audit.department_id is None
+        assert provisioning_audit.resource_id == response.json()["id"]
+        assert provisioning_audit.details == {
             "actor_class": "anonymous_public",
             "auth_method": "public",
             "outcome": "created",
@@ -859,8 +869,7 @@ class TestCreateDepartment:
         assert len(audits) == 1
         assert audits[0].details["reason"] == "abuse_challenge_required"
 
-    def test_already_exists_is_400(self, client, monkeypatch):
-        # L513-526: an existing Department row with the same name+institution -> 400.
+    def test_conflicting_duplicate_is_409(self, client, monkeypatch):
         monkeypatch.setattr(
             auth_routes,
             "check_signup_abuse",
@@ -870,6 +879,9 @@ class TestCreateDepartment:
                 )
             ),
         )
+        email_service = MagicMock()
+        email_service.is_configured.return_value = True
+        monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
         existing = MagicMock(id="existing-department")
         db = _db_with({Department: {"first": existing}})
         _use_db(db)
@@ -882,7 +894,7 @@ class TestCreateDepartment:
                 "contact_name": "Prof X",
             },
         )
-        assert response.status_code == 400
+        assert response.status_code == 409
         assert _added(db, Department) == []
         audits = _added(db, AuditLog)
         assert len(audits) == 1
@@ -899,12 +911,13 @@ class TestCreateDepartment:
                 )
             ),
         )
-        # L547-572: unlike magic-link/request and signup_individual, this
-        # handler does NOT gate on email_service.is_configured() -- it calls
-        # send_email() directly inside a bare try/except, so send_email must
-        # itself be awaitable (asyncio.create_task requires a coroutine).
+        # Provisioning requires configured mail and queues the handoff after
+        # the department transaction commits.
         email_service = MagicMock()
-        email_service.send_email = AsyncMock(return_value={"success": True})
+        email_service.is_configured.return_value = True
+        email_service.send_admin_handoff_invitation = AsyncMock(
+            return_value={"success": True}
+        )
         monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
         db = _db_with({Department: {"first": None}})
         _use_db(db)
@@ -925,8 +938,10 @@ class TestCreateDepartment:
         assert body["name"] == "CS"
         assert body["max_users"] == 5  # L535: trial tier -> 5
         audits = _added(db, AuditLog)
-        assert len(audits) == 1
-        audit = audits[0]
+        assert len(audits) == 2
+        audit = next(
+            audit for audit in audits if audit.action == "department_provision"
+        )
         assert audit.status == "success"
         assert audit.ip_address == "unknown"
         assert audit.user_agent is None
@@ -947,7 +962,10 @@ class TestCreateDepartment:
             auth_routes, "get_client_ip", lambda _request: "198.51.100.7"
         )
         email_service = MagicMock()
-        email_service.send_email = AsyncMock(return_value={"success": True})
+        email_service.is_configured.return_value = True
+        email_service.send_admin_handoff_invitation = AsyncMock(
+            return_value={"success": True}
+        )
         monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
         db = _db_with({Department: {"first": None}})
         _use_db(db)
@@ -965,6 +983,105 @@ class TestCreateDepartment:
         assert response.status_code == 200
         assert abuse_check.await_args.kwargs["ip_address"] == "198.51.100.7"
         assert _added(db, AuditLog)[0].ip_address == "198.51.100.7"
+
+    def test_abuse_check_uses_normalized_first_admin_email(self, client, monkeypatch):
+        abuse_check = AsyncMock(
+            return_value=AbuseCheckResult(
+                allowed=True, signals=[], recommended_action="allow"
+            )
+        )
+        monkeypatch.setattr(auth_routes, "check_signup_abuse", abuse_check)
+        email_service = MagicMock()
+        email_service.is_configured.return_value = True
+        email_service.send_admin_handoff_invitation = AsyncMock(
+            return_value={"success": True}
+        )
+        monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
+        db = _db_with({Department: {"first": None}})
+        _use_db(db)
+
+        response = client.post(
+            "/auth/departments",
+            json={
+                "name": "CS",
+                "institution": "Stanford",
+                "contact_email": "operations@stanford.edu",
+                "contact_name": "Prof X",
+                "first_admin_email": "FIRST.ADMIN@stanford.edu",
+            },
+        )
+
+        assert response.status_code == 200
+        assert abuse_check.await_args.kwargs["email"] == "first.admin@stanford.edu"
+
+    def test_unconfigured_email_rejects_before_department_mutation(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr(
+            auth_routes,
+            "check_signup_abuse",
+            AsyncMock(
+                return_value=AbuseCheckResult(
+                    allowed=True, signals=[], recommended_action="allow"
+                )
+            ),
+        )
+        email_service = MagicMock()
+        email_service.is_configured.return_value = False
+        monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
+        db = _db_with()
+        _use_db(db)
+
+        response = client.post(
+            "/auth/departments",
+            json={
+                "name": "CS",
+                "institution": "Stanford",
+                "contact_email": "admin@stanford.edu",
+                "contact_name": "Prof X",
+            },
+        )
+
+        assert response.status_code == 503
+        assert _added(db, Department) == []
+        assert _added(db, AuditLog)[0].details["reason"] == "email_unavailable"
+
+    def test_deleted_email_block_prevents_admin_handoff(self, client, monkeypatch):
+        monkeypatch.setattr(
+            auth_routes,
+            "check_signup_abuse",
+            AsyncMock(
+                return_value=AbuseCheckResult(
+                    allowed=True, signals=[], recommended_action="allow"
+                )
+            ),
+        )
+        email_service = MagicMock()
+        email_service.is_configured.return_value = True
+        monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
+        blocked = MagicMock(cooldown_until=None)
+        db = _db_with(
+            {
+                Department: {"first": None},
+                DeletedEmail: {"first": blocked},
+                User: {"first": None},
+            }
+        )
+        _use_db(db)
+
+        response = client.post(
+            "/auth/departments",
+            json={
+                "name": "CS",
+                "institution": "Stanford",
+                "contact_email": "admin@stanford.edu",
+                "contact_name": "Prof X",
+            },
+        )
+
+        assert response.status_code == 409
+        assert _added(db, Department) == []
+        assert _added(db, AuditLog)[0].details["reason"] == "admin_email_unavailable"
 
 
 # ==================== Individual faculty signup (L647-891) ====================

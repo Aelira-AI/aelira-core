@@ -126,14 +126,39 @@ cannot use this endpoint. Cookie-authenticated requests must include the
 double-submit `X-CSRF-Token`; API-key requests use `Authorization: Bearer` and
 do not need a CSRF token.
 
-This endpoint creates the department record only. It does not move the caller
-or create an administrator in the new department. Plan that department's
-administrator onboarding separately before treating it as operational.
+The request's `contact_email` is also the first administrator by default. Set
+`first_admin_email` when the operational contact and the person receiving
+administrator access are different. The server always assigns the handoff to
+the newly created department with the `ADMIN` role; neither the caller nor an
+email domain can select another tenant or elevate the recipient to
+`SUPER_ADMIN`.
+
+Provisioning stores the department, its single first-administrator handoff, and
+the required audit records in one transaction. The emailed link opens the
+dashboard's `/accept-invitation` page. The recipient confirms the invited email
+and their name there; acceptance creates the target department's administrator
+account but does not create a login session. They then use the normal magic-link
+login and can manage users from `/admin` within that department.
+
+Treat outbound email as part of the provisioning run: configure SMTP and set
+`PUBLIC_DASHBOARD_URL` before creating departments. The raw handoff token is
+only sent in the email and is never returned by the API or stored in plaintext.
+An authenticated exact repeat from the administrator who created the department
+reuses the existing department and handoff rather than creating duplicates. It
+preserves the active link and suppresses duplicate email for 15 minutes; after
+that delivery window, or after expiry, it rotates the token and queues a fresh
+link. Anonymous provisioning cannot recover an existing handoff, and a repeat
+from another operator, a different administrator, or materially different
+department details is rejected. Expired links cannot create accounts; replaying
+an already accepted link reports the completed result without creating another
+user. Failed background delivery is recorded in server logs, and the original
+operator can retry after the delivery window.
 
 Set `ALLOW_PUBLIC_DEPARTMENT_CREATION=true` only when anonymous department
 creation is intentional, such as an isolated public demo. Anonymous browser
-clients still need a valid double-submit CSRF token. Keep the default `false`
-for institutional deployments.
+clients still need a valid double-submit CSRF token and receive the same
+tenant-bound administrator handoff; the anonymous source is recorded explicitly
+in the audit trail. Keep the default `false` for institutional deployments.
 
 ## Postgres, Redis, and the Ollama profile
 

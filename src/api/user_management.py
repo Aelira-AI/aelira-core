@@ -10,13 +10,13 @@ Author: Aelira Team
 Created: January 11, 2026
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import Optional, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from datetime import datetime, timedelta, timezone
+import hashlib
 import secrets
 import logging
 
@@ -27,12 +27,18 @@ from ..db.models import (
     UserRole,
     Department,
     UserInvitation,
+    InvitationPurpose,
     InvitationStatus,
+    AuditLogAction,
+    AuditLogStatus,
     Scan,
     ScanResult,
 )
 from ..config.settings import get_tier_quota, get_settings
 from ..mailer.email_service import get_email_service
+from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
+from ..security.audit_service import get_audit_service
+from ..services.account_deletion_service import AccountDeletionService
 import asyncio
 
 # Setup logging
@@ -64,45 +70,20 @@ class DepartmentStatsResponse(BaseModel):
 
 # Auth dependency - require ADMIN or SUPER_ADMIN role
 def get_admin_api_key(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(
-        HTTPBearer(auto_error=False)
-    ),
-    db: Session = Depends(get_db_dependency),
-) -> Tuple[APIKey, str, str, UserRole]:
-    """Get API key and verify admin role."""
-    from ..config.settings import get_settings
-    from ..auth.auth_service import AuthService
-
-    settings = get_settings()
-
-    # Development mode - return mock admin (requires explicit opt-in)
-    if settings.env == "development" and getattr(settings, "allow_mock_auth", False):
-        if credentials:
-            api_key = AuthService.validate_api_key(db, credentials.credentials)
-            if api_key:
-                # Get user role
-                user = db.query(User).filter(User.id == api_key.user_id).first()
-                if user and user.role in [UserRole.ADMIN, UserRole.SUPER_ADMIN]:
-                    return api_key, api_key.user_id, api_key.department_id, user.role
-
-        # Mock admin for development
-        logger.warning("Using mock admin credentials - development mode only")
-        return None, "test-admin-123", "dev-dept-local", UserRole.ADMIN
-
-    # Production - require valid API key and admin role
-    if not credentials:
-        raise HTTPException(status_code=401, detail="API key required")
-
-    api_key = AuthService.validate_api_key(db, credentials.credentials)
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Invalid or expired API key")
-
-    # Verify admin role
-    user = db.query(User).filter(User.id == api_key.user_id).first()
-    if not user or user.role not in [UserRole.ADMIN, UserRole.SUPER_ADMIN]:
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+) -> Tuple[Optional[APIKey], str, str, UserRole]:
+    """Admit normal admin sessions and API keys, never LTI launch scope."""
+    if principal.auth_method == "lti" or principal.user_role not in {
+        UserRole.ADMIN,
+        UserRole.SUPER_ADMIN,
+    }:
         raise HTTPException(status_code=403, detail="Admin access required")
-
-    return api_key, api_key.user_id, api_key.department_id, user.role
+    return (
+        principal.api_key,
+        principal.user_id,
+        principal.department_id,
+        principal.user_role,
+    )
 
 
 # ==================== User Management Endpoints ====================
@@ -913,15 +894,51 @@ accept_router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 class AcceptInvitationRequest(BaseModel):
-    token: str
-    email: str
-    name: Optional[str] = None
-    picture_url: Optional[str] = None
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    token: str = Field(min_length=32, max_length=128)
+    email: EmailStr
+    name: Optional[str] = Field(default=None, max_length=255)
+    picture_url: Optional[str] = Field(default=None, max_length=512)
+
+
+def _invitation_token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _invitation_expired(expires_at: datetime) -> bool:
+    now = datetime.now(timezone.utc)
+    if expires_at.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    return expires_at < now
+
+
+def _audit_invitation_acceptance(
+    *,
+    db: Session,
+    invitation: UserInvitation,
+    http_request: Request,
+    outcome: str,
+    status_value: AuditLogStatus,
+    user_id: str | None = None,
+) -> None:
+    get_audit_service(db).log_action(
+        action=AuditLogAction.USER_INVITE_ACCEPTED,
+        status=status_value,
+        user_id=user_id,
+        department_id=invitation.department_id,
+        resource_type="invitation",
+        resource_id=invitation.id,
+        request=http_request,
+        details={"outcome": outcome, "purpose": invitation.purpose},
+        commit=False,
+    )
 
 
 @accept_router.post("/accept-invitation")
 async def accept_invitation(
-    request: AcceptInvitationRequest,
+    payload: AcceptInvitationRequest,
+    http_request: Request,
     db: Session = Depends(get_db_dependency),
 ):
     """
@@ -929,9 +946,8 @@ async def accept_invitation(
 
     Args:
         token: Invitation token from email
-        google_id: Google OAuth ID
         email: User's email (must match invitation)
-        name: User's name from Google
+        name: User's display name
         picture_url: Profile picture URL
 
     Returns:
@@ -940,77 +956,213 @@ async def accept_invitation(
     logger.info("Accepting an invitation")
 
     try:
-        # Find invitation by token
+        normalized_email = str(payload.email).strip().lower()
+        token_digest = _invitation_token_digest(payload.token)
         invitation = (
             db.query(UserInvitation)
-            .filter(UserInvitation.token == request.token)
+            .filter(
+                or_(
+                    and_(
+                        UserInvitation.purpose
+                        == InvitationPurpose.DEPARTMENT_ADMIN_HANDOFF.value,
+                        UserInvitation.token == token_digest,
+                    ),
+                    and_(
+                        UserInvitation.purpose
+                        != InvitationPurpose.DEPARTMENT_ADMIN_HANDOFF.value,
+                        UserInvitation.token == payload.token,
+                    ),
+                )
+            )
+            .with_for_update()
             .first()
         )
 
         if not invitation:
-            raise HTTPException(status_code=404, detail="Invalid invitation token")
+            raise HTTPException(
+                status_code=404,
+                detail="Invitation is invalid or unavailable",
+            )
 
-        # Check status
+        is_admin_handoff = (
+            invitation.purpose == InvitationPurpose.DEPARTMENT_ADMIN_HANDOFF.value
+        )
+
         if invitation.status == InvitationStatus.REVOKED:
             raise HTTPException(
-                status_code=400, detail="This invitation has been revoked"
+                status_code=400,
+                detail=(
+                    "Invitation could not be accepted"
+                    if is_admin_handoff
+                    else "This invitation is no longer available"
+                ),
             )
 
         if invitation.status == InvitationStatus.ACCEPTED:
+            if is_admin_handoff and invitation.email.lower() == normalized_email:
+                accepted_user = (
+                    db.query(User)
+                    .filter(
+                        func.lower(User.email) == normalized_email,
+                        User.department_id == invitation.department_id,
+                        User.role.in_([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+                        User.is_active.is_(True),
+                    )
+                    .first()
+                )
+                if accepted_user is not None:
+                    return {
+                        "success": True,
+                        "outcome": "already_accepted",
+                        "login_required": True,
+                        "message": "Administrator setup is already complete. Log in to continue.",
+                    }
             raise HTTPException(
-                status_code=400, detail="This invitation has already been used"
+                status_code=400 if is_admin_handoff else 409,
+                detail=(
+                    "Invitation could not be accepted"
+                    if is_admin_handoff
+                    else "This invitation has already been used"
+                ),
             )
 
-        # Check expiration
-        if invitation.expires_at < datetime.utcnow():
+        if _invitation_expired(invitation.expires_at):
             invitation.status = InvitationStatus.EXPIRED
+            _audit_invitation_acceptance(
+                db=db,
+                invitation=invitation,
+                http_request=http_request,
+                outcome="expired",
+                status_value=AuditLogStatus.FAILURE,
+            )
             db.commit()
-            raise HTTPException(status_code=400, detail="This invitation has expired")
-
-        # Verify email matches
-        if invitation.email.lower() != request.email.lower():
             raise HTTPException(
-                status_code=400, detail="Email does not match invitation"
+                status_code=400,
+                detail=(
+                    "Invitation could not be accepted"
+                    if is_admin_handoff
+                    else "This invitation has expired"
+                ),
             )
 
-        # Check if user already exists
-        existing_user = db.query(User).filter(User.email == request.email).first()
-        if existing_user:
+        if invitation.email.lower() != normalized_email:
+            _audit_invitation_acceptance(
+                db=db,
+                invitation=invitation,
+                http_request=http_request,
+                outcome="email_mismatch",
+                status_value=AuditLogStatus.FAILURE,
+            )
+            db.commit()
             raise HTTPException(
-                status_code=400, detail="A user with this email already exists"
+                status_code=400,
+                detail=(
+                    "Invitation could not be accepted"
+                    if is_admin_handoff
+                    else "Email does not match invitation"
+                ),
             )
 
-        # Create user (google_id is set later via OAuth flow, not from request)
-        user = User(
-            email=request.email,
-            name=request.name,
-            picture_url=request.picture_url,
-            department_id=invitation.department_id,
-            role=invitation.role,
-            is_active=True,
+        email_blocked, _ = AccountDeletionService.is_email_blocked(
+            db,
+            normalized_email,
+            commit_expired_cleanup=False,
         )
+        if email_blocked:
+            _audit_invitation_acceptance(
+                db=db,
+                invitation=invitation,
+                http_request=http_request,
+                outcome="email_blocked",
+                status_value=AuditLogStatus.FAILURE,
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Invitation could not be accepted"
+                    if is_admin_handoff
+                    else "This email is not available for registration"
+                ),
+            )
 
-        db.add(user)
+        existing_user = (
+            db.query(User).filter(func.lower(User.email) == normalized_email).first()
+        )
+        if existing_user:
+            if existing_user.department_id != invitation.department_id:
+                _audit_invitation_acceptance(
+                    db=db,
+                    invitation=invitation,
+                    http_request=http_request,
+                    outcome="email_bound_to_other_department",
+                    status_value=AuditLogStatus.FAILURE,
+                )
+                db.commit()
+                raise HTTPException(
+                    status_code=400 if is_admin_handoff else 409,
+                    detail=(
+                        "Invitation could not be accepted"
+                        if is_admin_handoff
+                        else "This email is already assigned to another department"
+                    ),
+                )
+            if not is_admin_handoff:
+                raise HTTPException(
+                    status_code=409, detail="A user with this email already exists"
+                )
+            user = existing_user
+            user.role = UserRole.ADMIN
+            user.is_active = True
+            if payload.name:
+                user.name = payload.name
+            if payload.picture_url:
+                user.picture_url = payload.picture_url
+        else:
+            user = User(
+                email=normalized_email,
+                name=payload.name,
+                picture_url=payload.picture_url,
+                department_id=invitation.department_id,
+                role=invitation.role,
+                is_active=True,
+            )
+            db.add(user)
+            db.flush()
 
-        # Mark invitation as accepted
+        user.email_verified = True
+        user.email_verified_at = datetime.utcnow()
         invitation.status = InvitationStatus.ACCEPTED
         invitation.accepted_at = datetime.utcnow()
-
+        _audit_invitation_acceptance(
+            db=db,
+            invitation=invitation,
+            http_request=http_request,
+            outcome="accepted",
+            status_value=AuditLogStatus.SUCCESS,
+            user_id=user.id,
+        )
         db.commit()
         db.refresh(user)
 
         return {
             "success": True,
+            "outcome": "accepted",
             "user_id": user.id,
             "email": user.email,
             "role": user.role.value,
             "department_id": user.department_id,
-            "message": "Account created successfully",
+            "login_required": True,
+            "message": (
+                "Administrator setup is complete. Log in to continue."
+                if is_admin_handoff
+                else "Account created successfully"
+            ),
         }
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as exc:
         db.rollback()
-        logger.error("Error accepting invitation: %s", type(e).__name__)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error accepting invitation: %s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Invitation could not be accepted")
