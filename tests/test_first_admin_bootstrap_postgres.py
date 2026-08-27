@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from threading import Barrier
+from threading import Barrier, Lock
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import os
@@ -16,6 +16,8 @@ from sqlalchemy.orm import sessionmaker
 
 from src.auth.session_service import SessionService
 from src.db.models import Base, DeletedEmail, Department, User, UserRole
+
+EXPECTED_ISOLATION_LEVEL = "READ COMMITTED"
 
 
 def _postgres_url() -> str:
@@ -88,6 +90,7 @@ def _isolated_database():
 
     engine = create_engine(
         database_url,
+        isolation_level=EXPECTED_ISOLATION_LEVEL,
         pool_size=2,
         max_overflow=0,
         connect_args={"options": f"-csearch_path={schema}"},
@@ -227,6 +230,198 @@ def test_populated_open_signup_still_creates_faculty_workspace():
             assert db.query(Department).count() == 2
             department = db.query(Department).filter_by(contact_email=email).one()
             assert department.tier == "individual"
+
+
+@pytest.mark.integration
+def test_concurrent_open_signup_returns_one_account_and_workspace():
+    with _isolated_database() as (engine, session_factory):
+        _seed_admin(session_factory)
+        service = _service()
+        service.settings.open_signup = True
+        normalized_email = f"faculty-{uuid.uuid4().hex}@example.edu"
+        emails = [normalized_email.upper(), normalized_email]
+        lookup_barrier = Barrier(2)
+        lookup_lock = Lock()
+
+        def synchronize_second_user_miss(
+            connection, cursor, statement, parameters, context, executemany
+        ):
+            normalized = " ".join(statement.lower().split())
+            if (
+                normalized.startswith("select")
+                and "from users" in normalized
+                and "where users.email =" in normalized
+            ):
+                with lookup_lock:
+                    lookup_count = connection.info.get("signup_user_lookups", 0) + 1
+                    connection.info["signup_user_lookups"] = lookup_count
+                if lookup_count == 2:
+                    lookup_barrier.wait(timeout=10)
+
+        event.listen(engine, "after_cursor_execute", synchronize_second_user_miss)
+
+        def provision(email: str):
+            with session_factory() as db:
+                connection = db.connection()
+                backend_pid = connection.execute(
+                    text("SELECT pg_backend_pid()")
+                ).scalar_one()
+                isolation_level = connection.get_isolation_level()
+                db.execute(text("SET LOCAL lock_timeout = '10s'"))
+                try:
+                    user, is_new = service.get_or_create_user_for_magic_link(db, email)
+                    return (
+                        "ok",
+                        is_new,
+                        user.id,
+                        user.email,
+                        backend_pid,
+                        isolation_level,
+                    )
+                except Exception as exc:
+                    db.rollback()
+                    return "error", type(exc).__name__, str(exc), backend_pid
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(provision, emails))
+        finally:
+            event.remove(engine, "after_cursor_execute", synchronize_second_user_miss)
+
+        assert [result[0] for result in results] == ["ok", "ok"], results
+        assert sorted(result[1] for result in results) == [False, True]
+        assert len({result[2] for result in results}) == 1
+        assert {result[3] for result in results} == {normalized_email}
+        assert len({result[4] for result in results}) == 2
+        assert {result[5] for result in results} == {EXPECTED_ISOLATION_LEVEL}
+
+        with session_factory() as db:
+            users = db.query(User).filter(User.email == normalized_email).all()
+            departments = (
+                db.query(Department).filter(Department.tier == "individual").all()
+            )
+            assert len(users) == 1
+            assert len(departments) == 1
+            assert departments[0].contact_email.lower() == normalized_email
+            assert users[0].department_id == departments[0].id
+
+        service._notify_admins_new_signup.assert_called_once()
+        service._send_welcome_email.assert_called_once()
+
+
+@pytest.mark.integration
+def test_concurrent_open_signup_respects_final_account_slot(monkeypatch):
+    with _isolated_database() as (engine, session_factory):
+        _seed_admin(session_factory)
+        service = _service()
+        service.settings.open_signup = True
+        monkeypatch.setattr("src.config.settings.INDIVIDUAL_ACCOUNT_LIMIT", 1)
+        emails = [
+            f"first-{uuid.uuid4().hex}@example.edu",
+            f"second-{uuid.uuid4().hex}@example.edu",
+        ]
+        lookup_barrier = Barrier(2)
+        lookup_lock = Lock()
+
+        def synchronize_second_user_miss(
+            connection, cursor, statement, parameters, context, executemany
+        ):
+            normalized = " ".join(statement.lower().split())
+            if (
+                normalized.startswith("select")
+                and "from users" in normalized
+                and "where users.email =" in normalized
+            ):
+                with lookup_lock:
+                    lookup_count = connection.info.get("limit_user_lookups", 0) + 1
+                    connection.info["limit_user_lookups"] = lookup_count
+                if lookup_count == 2:
+                    lookup_barrier.wait(timeout=10)
+
+        event.listen(engine, "after_cursor_execute", synchronize_second_user_miss)
+
+        def provision(email: str):
+            with session_factory() as db:
+                backend_pid = db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                db.execute(text("SET LOCAL lock_timeout = '10s'"))
+                try:
+                    user, is_new = service.get_or_create_user_for_magic_link(db, email)
+                    return "ok", is_new, user.email, backend_pid
+                except ValueError as exc:
+                    db.rollback()
+                    return "full", str(exc), backend_pid
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(provision, emails))
+        finally:
+            event.remove(engine, "after_cursor_execute", synchronize_second_user_miss)
+
+        assert sorted(result[0] for result in results) == ["full", "ok"], results
+        success = next(result for result in results if result[0] == "ok")
+        rejected = next(result for result in results if result[0] == "full")
+        assert success[1] is True
+        assert success[2] in emails
+        assert "Self-service signups are currently full" in rejected[1]
+        assert success[3] != rejected[2]
+
+        with session_factory() as db:
+            assert db.query(User).count() == 2
+            assert db.query(Department).count() == 2
+            assert db.query(Department).filter_by(tier="individual").count() == 1
+
+        service._notify_admins_new_signup.assert_called_once()
+        service._send_welcome_email.assert_called_once()
+
+
+@pytest.mark.integration
+def test_open_signup_user_insert_failure_rolls_back_individual_department():
+    with _isolated_database() as (engine, session_factory):
+        _seed_admin(session_factory)
+        service = _service()
+        service.settings.open_signup = True
+        email = f"failure-{uuid.uuid4().hex}@example.edu"
+
+        def fail_user_insert(
+            connection, cursor, statement, parameters, context, executemany
+        ):
+            if statement.lstrip().lower().startswith("insert into users"):
+                raise RuntimeError("forced open-signup user insert failure")
+
+        event.listen(engine, "before_cursor_execute", fail_user_insert)
+        try:
+            with session_factory() as db:
+                with pytest.raises(
+                    RuntimeError, match="forced open-signup user insert failure"
+                ):
+                    service.get_or_create_user_for_magic_link(db, email)
+                db.rollback()
+        finally:
+            event.remove(engine, "before_cursor_execute", fail_user_insert)
+
+        with session_factory() as db:
+            assert db.query(User).filter(User.email == email).count() == 0
+            assert db.query(Department).filter_by(contact_email=email).count() == 0
+
+
+@pytest.mark.integration
+def test_open_signup_limit_rejects_without_mutation(monkeypatch):
+    with _isolated_database() as (_, session_factory):
+        _seed_admin(session_factory)
+        service = _service()
+        service.settings.open_signup = True
+        email = f"limited-{uuid.uuid4().hex}@example.edu"
+        monkeypatch.setattr("src.config.settings.INDIVIDUAL_ACCOUNT_LIMIT", 0)
+
+        with session_factory() as db:
+            with pytest.raises(
+                ValueError, match="Self-service signups are currently full"
+            ):
+                service.get_or_create_user_for_magic_link(db, email)
+
+        with session_factory() as db:
+            assert db.query(User).count() == 1
+            assert db.query(Department).count() == 1
 
 
 @pytest.mark.integration
