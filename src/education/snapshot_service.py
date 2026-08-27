@@ -91,7 +91,7 @@ class SnapshotService:
         Returns:
             ComplianceSnapshot object
         """
-        logger.info(f"Capturing daily snapshot for department: {department_id}")
+        logger.info("Capturing daily department snapshot")
 
         today = date.today()
 
@@ -111,7 +111,7 @@ class SnapshotService:
         try:
             stats = ComplianceDashboard.get_department_compliance(db, department_id)
         except ValueError:
-            logger.warning(f"Department not found: {department_id}")
+            logger.warning("Department snapshot target not found")
             raise
 
         # Calculate days until deadline
@@ -120,7 +120,7 @@ class SnapshotService:
 
         # Create or update snapshot
         if existing:
-            logger.info(f"Updating existing snapshot for {today}")
+            logger.info("Updating existing daily snapshot")
             snapshot = existing
         else:
             snapshot = ComplianceSnapshot(
@@ -153,9 +153,7 @@ class SnapshotService:
         db.commit()
         db.refresh(snapshot)
 
-        logger.info(
-            f"Snapshot captured: score={stats.avg_compliance_score}, issues={stats.total_issues}"
-        )
+        logger.info("Daily department snapshot captured")
         return snapshot
 
     @staticmethod
@@ -178,7 +176,7 @@ class SnapshotService:
                 snapshot = SnapshotService.capture_daily_snapshot(db, dept.id)
                 snapshots.append(snapshot)
             except Exception as e:
-                logger.error(f"Failed to capture snapshot for {dept.id}: {e}")
+                logger.error("Department snapshot failed (%s)", type(e).__name__)
                 continue
 
         logger.info(f"Captured {len(snapshots)} snapshots")
@@ -201,7 +199,7 @@ class SnapshotService:
         Returns:
             List of TrendPoint objects for charting
         """
-        logger.info(f"Getting {days}-day historical trend for {department_id}")
+        logger.info("Getting department historical trend")
 
         cutoff_date = datetime.utcnow() - timedelta(days=days)
 

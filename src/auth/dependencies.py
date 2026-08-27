@@ -269,10 +269,7 @@ def get_authenticated_principal(
 
         resolved = resolve_access_token(db, token, session_service=session_service)
         if resolved is not None:
-            logger.debug(
-                f"{resolved.principal.auth_method} Bearer auth for user "
-                f"{resolved.principal.user_id}"
-            )
+            logger.debug("Bearer authentication succeeded")
             return resolved.principal
 
         logger.warning("Invalid Bearer token attempt")
@@ -289,10 +286,7 @@ def get_authenticated_principal(
             db, access_token, session_service=session_service
         )
         if resolved is not None:
-            logger.debug(
-                f"{resolved.principal.auth_method} cookie auth for user "
-                f"{resolved.principal.user_id}"
-            )
+            logger.debug("Cookie authentication succeeded")
             return resolved.principal
         logger.debug("Invalid session cookie, will fall through to other auth methods")
 
@@ -446,10 +440,7 @@ def verify_department_access(
         HTTPException 403: If user doesn't have access to the department
     """
     if requested_department_id != authenticated_department_id:
-        logger.warning(
-            "Department access denied for authenticated department %s",
-            authenticated_department_id,
-        )
+        logger.warning("Department access denied")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have access to this department",
