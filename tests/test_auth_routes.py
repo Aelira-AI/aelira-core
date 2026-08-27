@@ -996,6 +996,8 @@ class TestMagicLinkVerify:
             "/auth/magic-link/verify", json={"email": EDU_EMAIL, "token": "bad"}
         )
         assert response.status_code == 400
+        session_service.get_or_create_user_for_magic_link.assert_not_called()
+        session_service.create_session.assert_not_called()
 
     def test_blocked_account_is_403(self, client, mock_db, monkeypatch):
         # L1196-1209: get_or_create_user_for_magic_link raising ValueError -> 403.
