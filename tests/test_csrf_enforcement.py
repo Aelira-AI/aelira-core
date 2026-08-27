@@ -58,12 +58,17 @@ def _full_middleware_client():
         )
         return {"reached": True, "key_id": key_id, "principal": principal}
 
+    @app.post("/auth/departments")
+    async def create_department():
+        return {"reached": True}
+
     return TestClient(app)
 
 
 DASHBOARD_MUTATION_ROUTES = [
     "/education/scan",
     "/auth/keys",
+    "/auth/departments",
     "/auth/profile",
     "/alerts/settings",
     "/analytics/snapshots",
@@ -187,6 +192,53 @@ def test_key_mutation_with_invalid_session_cookie_and_valid_api_key_fails_closed
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("cookies", "headers", "detail"),
+    [
+        (
+            {"aelira_access": "valid-session"},
+            {},
+            "CSRF token missing",
+        ),
+        (
+            {
+                "aelira_access": "valid-session",
+                "csrf_token": "cookie-token",
+            },
+            {"X-CSRF-Token": "different-token"},
+            "CSRF token invalid",
+        ),
+    ],
+)
+def test_department_creation_cookie_auth_fails_closed_on_csrf(cookies, headers, detail):
+    client = _full_middleware_client()
+
+    response = client.post(
+        "/auth/departments",
+        cookies=cookies,
+        headers=headers,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"].startswith(detail)
+
+
+def test_department_creation_cookie_auth_with_matching_csrf_reaches_endpoint():
+    client = _full_middleware_client()
+
+    response = client.post(
+        "/auth/departments",
+        cookies={
+            "aelira_access": "valid-session",
+            "csrf_token": "matching-token",
+        },
+        headers={"X-CSRF-Token": "matching-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"reached": True}
 
 
 @pytest.mark.asyncio

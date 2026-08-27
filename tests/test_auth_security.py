@@ -136,9 +136,8 @@ class TestPublicEndpoints:
         data = response.json()
         assert data["status"] == "healthy"
 
-    def test_create_department_is_public(self, client):
-        """Create department (signup) should be accessible without existing auth."""
-        # This is intentional - new users need to sign up
+    def test_create_department_is_closed_by_default(self, client):
+        """Department creation should require an administrator by default."""
         response = client.post(
             "/auth/departments",
             json={
@@ -149,13 +148,10 @@ class TestPublicEndpoints:
                 "tier": "trial",
             },
         )
-        # Should succeed (200) or conflict (400) if already exists
-        # NOT 401/403
         assert response.status_code in [
-            200,
-            400,
-            422,
-        ], f"Expected 200/400/422, got {response.status_code}: {response.text}"
+            401,
+            403,
+        ], f"Expected 401/403, got {response.status_code}: {response.text}"
 
 
 class TestEducationEndpointsSecurity:
