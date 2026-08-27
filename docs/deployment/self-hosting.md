@@ -185,6 +185,20 @@ container on port 8000 and the dashboard container on port 80, and that
 `PUBLIC_API_URL` / `PUBLIC_DASHBOARD_URL` / `CORS_ORIGINS` match whatever
 public hostnames you put in front of them.
 
+The shipped API commands disable Uvicorn's automatic proxy-header rewriting so
+the application has one client-address trust boundary. `TRUSTED_PROXY_CIDRS`
+is empty by default, which means `X-Forwarded-For` and `X-Real-IP` are ignored
+and the direct transport peer is authoritative. If your proxy connects from
+loopback, set `TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128`; for a container
+network, configure only that network's exact CIDR. The resolver walks a
+forwarded chain from the trusted edge toward the client and uses the first
+untrusted address, so a caller-prepended value does not win. Invalid chain
+values fall back to the direct peer. Configure every trusted proxy to append
+its observed peer to `X-Forwarded-For`, or to overwrite the header at the
+public edge rather than passing a caller-supplied value through unchanged.
+Custom ASGI servers or middleware must also leave `scope["client"]` unchanged
+and must not pre-process proxy headers.
+
 
 ## Backups
 

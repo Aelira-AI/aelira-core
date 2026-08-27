@@ -26,6 +26,7 @@ from ..db.models import User, Department, AuthProvider, UserRole
 from ..auth.session_service import get_session_service
 from ..auth.auth_service import RateLimiter
 from ..config.settings import get_settings
+from ..security.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -301,11 +302,8 @@ async def _google_callback_impl(
         db.flush()
 
     # Get client info for session
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent")
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
 
     # Create session
     access_token, refresh_token, access_exp, refresh_exp = (
@@ -543,11 +541,8 @@ async def _microsoft_callback_impl(
         db.flush()
 
     # Get client info
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent")
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
 
     # Create session
     access_token, refresh_token, access_exp, refresh_exp = (
@@ -618,10 +613,7 @@ async def oauth_status(
     settings = get_settings()
 
     # Rate limit by IP (60/hour - generous for UI but prevents enumeration abuse)
-    client_ip = request.client.host if request.client else "unknown"
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
+    client_ip = get_client_ip(request)
 
     ip_limit_key = f"oauth_status_ip:{client_ip}"
     ip_allowed, _ = RateLimiter.check_rate_limit(ip_limit_key, 60)

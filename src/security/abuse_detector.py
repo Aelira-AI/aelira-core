@@ -549,4 +549,5 @@ def log_signup(
 
     except Exception as e:
         logger.warning("Failed to log signup: %s", type(e).__name__)
+        db.rollback()
         # Don't fail the signup if logging fails

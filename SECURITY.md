@@ -81,6 +81,8 @@ If you self-host Aelira, please ensure:
 
 Routine application logs may record authentication event types, outcomes, and opaque record or request identifiers when needed for correlation. They must not contain raw email addresses, names, IP addresses, user-agent strings, magic-link or verification tokens, API keys, authorization headers, cookies, session or refresh tokens, or unfiltered exception text. Security audit stores that deliberately retain personal data must be access-controlled and governed by a documented retention period.
 
+Department-provisioning audit events intentionally retain the client IP selected by the configured trusted-proxy resolver because cross-tenant creation is a security event. They do not retain the submitted contact details, user agent, device fingerprint, credentials, headers, cookies, or exception text. Restrict these audit rows to security administrators and include them in the deployment's retention and deletion policy.
+
 This protection is prospective: upgrading cannot rewrite logs emitted by an older release. Operators should inspect active, rotated, centralized, exported, and archived logs for earlier authentication identifiers, then redact or erase affected copies under their institutional policy and applicable law. If an immutable backup cannot be edited safely, restrict access, prevent affected logs from being restored into active systems without scrubbing, and let the backup expire under the shortest applicable retention schedule.
 
 ## Known Security Considerations

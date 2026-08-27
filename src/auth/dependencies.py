@@ -239,20 +239,8 @@ def get_authenticated_principal(
                 and owner.is_active is True
                 and str(owner.department_id) == str(api_key.department_id)
             ):
-                allowed, rate_headers = RateLimiter.check_rate_limit(
-                    api_key.id, api_key.rate_limit_per_hour
-                )
-                if not allowed:
-                    raise HTTPException(
-                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                        detail=(
-                            "Rate limit exceeded. Limit: "
-                            f"{api_key.rate_limit_per_hour} requests/hour"
-                        ),
-                        headers=rate_headers,
-                    )
                 try:
-                    return AuthenticatedPrincipal(
+                    principal = AuthenticatedPrincipal(
                         api_key=api_key,
                         user_id=str(owner.id),
                         department_id=str(owner.department_id),
@@ -261,6 +249,23 @@ def get_authenticated_principal(
                     )
                 except ValueError:
                     pass
+                else:
+                    # Retain only the validated, bounded principal so callers
+                    # can audit a rate-limit denial without retaining the key.
+                    request.state.authenticated_principal = principal
+                    allowed, rate_headers = RateLimiter.check_rate_limit(
+                        api_key.id, api_key.rate_limit_per_hour
+                    )
+                    if not allowed:
+                        raise HTTPException(
+                            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail=(
+                                "Rate limit exceeded. Limit: "
+                                f"{api_key.rate_limit_per_hour} requests/hour"
+                            ),
+                            headers=rate_headers,
+                        )
+                    return principal
 
         resolved = resolve_access_token(db, token, session_service=session_service)
         if resolved is not None:

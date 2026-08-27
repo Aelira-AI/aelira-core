@@ -7,7 +7,7 @@ and that mock credentials are NOT used in production mode.
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import os
 
 
@@ -15,8 +15,14 @@ import os
 def client():
     """Create test client."""
     from src.api.main import app
+    from src.db.database import get_db_dependency
 
-    return TestClient(app)
+    db = MagicMock()
+    app.dependency_overrides[get_db_dependency] = lambda: db
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.pop(get_db_dependency, None)
 
 
 @pytest.fixture

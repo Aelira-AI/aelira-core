@@ -44,7 +44,7 @@ docker compose -f docker-compose.dev.yml up -d
 
 # Without Docker
 source venv/bin/activate
-uvicorn src.api.main:app --reload --port 8000
+uvicorn src.api.main:app --reload --port 8000 --no-proxy-headers
 ```
 
 ### Running the Dashboard
