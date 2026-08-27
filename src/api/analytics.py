@@ -11,15 +11,15 @@ Author: Aelira Team
 Created: November 30, 2025
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, status
 from pydantic import BaseModel
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime
 import logging
 
 from ..db.database import get_db_dependency
-from ..db.models import APIKey
+from ..db.models import UserRole
 from ..education.snapshot_service import SnapshotService
 from ..education.issue_tracking_service import (
     IssueTrackingService,
@@ -52,12 +52,42 @@ class BulkUpdateRequest(BaseModel):
     status: str
 
 
-# Secure API key authentication dependency
-# NOTE: Imported from auth.dependencies for session cookie support
-from ..auth.dependencies import get_required_api_key  # noqa: E402
+from ..auth.dependencies import (  # noqa: E402
+    AuthenticatedPrincipal,
+    get_authenticated_principal,
+    verify_department_access,
+)
 
-# Alias for backward compatibility
-get_api_key_or_mock = get_required_api_key
+
+def _authorize_department_analytics(
+    principal: AuthenticatedPrincipal, requested_department_id: str
+) -> str:
+    """Return canonical tenant scope before any department-wide analytics work."""
+
+    if principal.auth_method == "lti" and not principal.lti_account_wide:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    verify_department_access(requested_department_id, principal.department_id)
+    return principal.department_id
+
+
+def _require_global_snapshot_authority(principal: AuthenticatedPrincipal) -> None:
+    """Restrict all-department snapshot capture to platform operators."""
+
+    if (
+        principal.auth_method == "lti"
+        or principal.user_role is not UserRole.SUPER_ADMIN
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+
+def _internal_error(action: str, public_detail: str, error: Exception) -> HTTPException:
+    """Log a bounded failure class and return a stable public error."""
+
+    logger.error("%s failed (%s)", action, type(error).__name__)
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=public_detail,
+    )
 
 
 # ==================== Snapshot Endpoints ====================
@@ -67,7 +97,7 @@ get_api_key_or_mock = get_required_api_key
 async def capture_snapshot(
     department_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Manually trigger a compliance snapshot capture for a department.
@@ -77,8 +107,8 @@ async def capture_snapshot(
     Returns:
         Captured snapshot data
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Manual snapshot capture for department: {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Manual compliance snapshot capture requested")
 
     try:
         snapshot = SnapshotService.capture_daily_snapshot(db, department_id)
@@ -90,17 +120,16 @@ async def capture_snapshot(
             "total_issues": snapshot.total_issues,
             "days_until_deadline": snapshot.days_until_deadline,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Department not found")
     except Exception as e:
-        logger.error(f"Error capturing snapshot: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("Snapshot capture", "Unable to capture snapshot", e)
 
 
 @router.post("/snapshots/capture-all")
 async def capture_all_snapshots(
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Capture snapshots for all active departments.
@@ -110,7 +139,7 @@ async def capture_all_snapshots(
     Returns:
         Summary of captured snapshots
     """
-    _, user_id, _ = api_key_info
+    _require_global_snapshot_authority(principal)
     logger.info("Capturing snapshots for all departments")
 
     try:
@@ -121,8 +150,9 @@ async def capture_all_snapshots(
             "departments": [s.department_id for s in snapshots],
         }
     except Exception as e:
-        logger.error(f"Error capturing all snapshots: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(
+            "All-department snapshot capture", "Unable to capture snapshots", e
+        )
 
 
 @router.get("/trend/{department_id}")
@@ -130,7 +160,7 @@ async def get_historical_trend(
     department_id: str,
     days: int = Query(default=30, ge=7, le=365),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get historical compliance trend data from snapshots.
@@ -143,8 +173,8 @@ async def get_historical_trend(
     Returns:
         Array of trend data points for charting
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Getting {days}-day historical trend for {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Getting %s-day historical trend", days)
 
     try:
         trend_points = SnapshotService.get_historical_trend(db, department_id, days)
@@ -167,8 +197,9 @@ async def get_historical_trend(
             ],
         }
     except Exception as e:
-        logger.error(f"Error getting historical trend: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(
+            "Historical trend lookup", "Unable to retrieve historical trend", e
+        )
 
 
 @router.get("/trend/{department_id}/analysis")
@@ -177,7 +208,7 @@ async def get_trend_analysis(
     current_period: int = Query(default=7, ge=1, le=30),
     comparison_period: int = Query(default=7, ge=1, le=30),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Analyze trend comparing current period to previous period.
@@ -187,8 +218,8 @@ async def get_trend_analysis(
     Returns:
         Comparison metrics and trend direction
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Getting trend analysis for {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Getting compliance trend analysis")
 
     try:
         analysis = SnapshotService.analyze_trend(
@@ -213,15 +244,14 @@ async def get_trend_analysis(
             },
         }
     except Exception as e:
-        logger.error(f"Error getting trend analysis: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("Trend analysis", "Unable to retrieve trend analysis", e)
 
 
 @router.get("/projection/{department_id}")
 async def get_deadline_projection(
     department_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get projection for April 2027 deadline compliance.
@@ -231,15 +261,16 @@ async def get_deadline_projection(
     Returns:
         Projection data including likelihood of meeting deadline
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Getting deadline projection for {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Getting deadline projection")
 
     try:
         projection = SnapshotService.get_deadline_projection(db, department_id)
         return {"department_id": department_id, "projection": projection}
     except Exception as e:
-        logger.error(f"Error getting deadline projection: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(
+            "Deadline projection", "Unable to retrieve deadline projection", e
+        )
 
 
 # ==================== Issue Tracking Endpoints ====================
@@ -254,7 +285,7 @@ async def get_department_issues(
     limit: int = Query(default=100, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get all tracked issues for a department with optional filters.
@@ -269,8 +300,8 @@ async def get_department_issues(
     Returns:
         List of issues with metadata
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Getting issues for department {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Getting tracked accessibility issues")
 
     try:
         issues = IssueTrackingService.get_department_issues(
@@ -302,15 +333,14 @@ async def get_department_issues(
             ],
         }
     except Exception as e:
-        logger.error(f"Error getting department issues: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("Issue listing", "Unable to retrieve tracked issues", e)
 
 
 @router.get("/issues/{department_id}/stats")
 async def get_issue_stats(
     department_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get issue statistics for a department.
@@ -318,8 +348,8 @@ async def get_issue_stats(
     Returns:
         Counts by status and resolution rate
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Getting issue stats for department {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Getting tracked issue statistics")
 
     try:
         stats = IssueTrackingService.get_issue_stats(db, department_id)
@@ -339,8 +369,9 @@ async def get_issue_stats(
             },
         }
     except Exception as e:
-        logger.error(f"Error getting issue stats: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(
+            "Issue statistics", "Unable to retrieve issue statistics", e
+        )
 
 
 @router.patch("/issues/{issue_id}/status")
@@ -348,7 +379,7 @@ async def update_issue_status(
     issue_id: str,
     request: UpdateIssueStatusRequest,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Update the status of a tracked issue.
@@ -361,15 +392,16 @@ async def update_issue_status(
     Returns:
         Updated issue
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Updating issue {issue_id} status to {request.status}")
+    _authorize_department_analytics(principal, principal.department_id)
+    logger.info("Updating tracked issue status")
 
     try:
         issue = IssueTrackingService.update_issue_status(
             db,
             issue_id,
+            principal.department_id,
             request.status,
-            user_id,
+            principal.user_id,
             request.resolution_notes,
             request.resolution_method,
         )
@@ -380,11 +412,10 @@ async def update_issue_status(
             "new_status": issue.status.value,
             "updated_at": issue.updated_at.isoformat() if issue.updated_at else None,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Issue not found")
     except Exception as e:
-        logger.error(f"Error updating issue status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("Issue status update", "Unable to update issue", e)
 
 
 @router.post("/issues/{issue_id}/assign")
@@ -392,7 +423,7 @@ async def assign_issue(
     issue_id: str,
     request: AssignIssueRequest,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Assign an issue to a team member.
@@ -402,12 +433,16 @@ async def assign_issue(
     Returns:
         Updated issue with assignment info
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Assigning issue {issue_id} to {request.assigned_to}")
+    _authorize_department_analytics(principal, principal.department_id)
+    logger.info("Assigning tracked issue")
 
     try:
         issue = IssueTrackingService.assign_issue(
-            db, issue_id, request.assigned_to, user_id
+            db,
+            issue_id,
+            principal.department_id,
+            request.assigned_to,
+            principal.user_id,
         )
 
         return {
@@ -417,11 +452,10 @@ async def assign_issue(
             "assigned_at": issue.assigned_at.isoformat() if issue.assigned_at else None,
             "status": issue.status.value,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Issue or assignee not found")
     except Exception as e:
-        logger.error(f"Error assigning issue: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("Issue assignment", "Unable to assign issue", e)
 
 
 @router.post("/issues/{issue_id}/note")
@@ -429,7 +463,7 @@ async def add_issue_note(
     issue_id: str,
     request: AddNoteRequest,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Add a note to an issue for team collaboration.
@@ -439,11 +473,17 @@ async def add_issue_note(
     Returns:
         Updated issue with new note
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Adding note to issue {issue_id}")
+    _authorize_department_analytics(principal, principal.department_id)
+    logger.info("Adding tracked issue note")
 
     try:
-        issue = IssueTrackingService.add_issue_note(db, issue_id, request.note, user_id)
+        issue = IssueTrackingService.add_issue_note(
+            db,
+            issue_id,
+            principal.department_id,
+            request.note,
+            principal.user_id,
+        )
 
         return {
             "success": True,
@@ -451,18 +491,17 @@ async def add_issue_note(
             "notes": issue.notes,
             "updated_at": issue.updated_at.isoformat() if issue.updated_at else None,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Issue not found")
     except Exception as e:
-        logger.error(f"Error adding note: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("Issue note update", "Unable to add issue note", e)
 
 
 @router.post("/issues/bulk-update")
 async def bulk_update_issues(
     request: BulkUpdateRequest,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Bulk update status for multiple issues.
@@ -472,20 +511,23 @@ async def bulk_update_issues(
     Returns:
         Count of updated issues
     """
-    _, user_id, _ = api_key_info
-    logger.info(f"Bulk updating {len(request.issue_ids)} issues to {request.status}")
+    _authorize_department_analytics(principal, principal.department_id)
+    logger.info("Bulk updating %s tracked issues", len(request.issue_ids))
 
     try:
         count = IssueTrackingService.bulk_update_status(
-            db, request.issue_ids, request.status, user_id
+            db,
+            request.issue_ids,
+            principal.department_id,
+            request.status,
+            principal.user_id,
         )
 
         return {"success": True, "updated_count": count, "new_status": request.status}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid issue update request")
     except Exception as e:
-        logger.error(f"Error in bulk update: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("Bulk issue update", "Unable to update issues", e)
 
 
 # ==================== Report & Certificate Endpoints ====================
@@ -496,7 +538,7 @@ async def generate_compliance_report(
     department_id: str,
     include_ai_recommendations: bool = Query(default=True),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Generate a comprehensive PDF compliance report for a department.
@@ -516,8 +558,8 @@ async def generate_compliance_report(
     from ..education.compliance_dashboard import ComplianceDashboard
     from ..education.compliance_report_generator import ComplianceReportGenerator
 
-    _, user_id, _ = api_key_info
-    logger.info(f"Generating compliance report for department: {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Generating compliance report")
 
     try:
         # Get department compliance stats
@@ -542,7 +584,7 @@ async def generate_compliance_report(
                 "on_track_for_deadline": analysis.on_track_for_deadline,
             }
         except Exception as e:
-            logger.warning(f"Could not get trend analysis: {e}")
+            logger.warning("Trend analysis unavailable (%s)", type(e).__name__)
 
         # Get issue stats
         issue_stats = None
@@ -560,7 +602,7 @@ async def generate_compliance_report(
                 "resolution_rate": stats_obj.resolution_rate,
             }
         except Exception as e:
-            logger.warning(f"Could not get issue stats: {e}")
+            logger.warning("Issue statistics unavailable (%s)", type(e).__name__)
 
         # Generate AI recommendations if requested
         ai_recommendations = None
@@ -572,7 +614,7 @@ async def generate_compliance_report(
                     )
                 )
             except Exception as e:
-                logger.warning(f"Could not generate AI recommendations: {e}")
+                logger.warning("AI recommendations unavailable (%s)", type(e).__name__)
 
         # Generate PDF report
         pdf_bytes = ComplianceReportGenerator.generate_department_report(
@@ -598,15 +640,16 @@ async def generate_compliance_report(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error generating compliance report: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(
+            "Compliance report generation", "Unable to generate compliance report", e
+        )
 
 
 @router.get("/certificate/{department_id}")
 async def generate_compliance_certificate(
     department_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Generate a professional compliance certificate for a department.
@@ -626,8 +669,8 @@ async def generate_compliance_certificate(
     from ..education.compliance_dashboard import ComplianceDashboard
     from ..education.compliance_certificate import ComplianceCertificate
 
-    _, user_id, _ = api_key_info
-    logger.info(f"Generating compliance certificate for department: {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Generating compliance certificate")
 
     try:
         # Get department compliance stats
@@ -674,15 +717,18 @@ async def generate_compliance_certificate(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error generating compliance certificate: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(
+            "Compliance certificate generation",
+            "Unable to generate compliance certificate",
+            e,
+        )
 
 
 @router.get("/certificate/{department_id}/eligibility")
 async def check_certificate_eligibility(
     department_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Check if a department is eligible for a compliance certificate.
@@ -693,7 +739,7 @@ async def check_certificate_eligibility(
     from ..education.compliance_dashboard import ComplianceDashboard
     from ..education.compliance_certificate import ComplianceCertificate
 
-    _, user_id, _ = api_key_info
+    department_id = _authorize_department_analytics(principal, department_id)
 
     try:
         stats = ComplianceDashboard.get_department_compliance(db, department_id)
@@ -719,8 +765,9 @@ async def check_certificate_eligibility(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error checking certificate eligibility: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(
+            "Certificate eligibility", "Unable to check report eligibility", e
+        )
 
 
 def _get_points_to_next_level(score: float) -> float:
@@ -748,7 +795,7 @@ async def export_scans_csv(
     ),
     date_to: Optional[str] = Query(default=None, description="End date (YYYY-MM-DD)"),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Export all scan data for a department as CSV.
@@ -765,8 +812,8 @@ async def export_scans_csv(
     from fastapi.responses import Response
     from ..db.models import Scan, ScanResult
 
-    _, user_id, _ = api_key_info
-    logger.info(f"Exporting CSV for department: {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Exporting scan CSV")
 
     try:
         # Build query
@@ -864,8 +911,7 @@ async def export_scans_csv(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting CSV: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("CSV export", "Unable to export scan data", e)
 
 
 @router.get("/export/{department_id}/excel")
@@ -876,7 +922,7 @@ async def export_scans_excel(
     ),
     date_to: Optional[str] = Query(default=None, description="End date (YYYY-MM-DD)"),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Export all scan data for a department as Excel (.xlsx).
@@ -901,8 +947,8 @@ async def export_scans_excel(
     from ..db.models import Scan, ScanResult
     from ..education.compliance_dashboard import ComplianceDashboard
 
-    _, user_id, _ = api_key_info
-    logger.info(f"Exporting Excel for department: {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Exporting scan workbook")
 
     try:
         # Build query
@@ -1143,8 +1189,7 @@ async def export_scans_excel(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting Excel: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("Workbook export", "Unable to export scan data", e)
 
 
 @router.get("/export/{department_id}/bulk")
@@ -1161,7 +1206,7 @@ async def export_bulk_zip(
     ),
     date_to: Optional[str] = Query(default=None, description="End date (YYYY-MM-DD)"),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Export all department data as a ZIP file.
@@ -1190,8 +1235,8 @@ async def export_bulk_zip(
     from ..education.compliance_report_generator import ComplianceReportGenerator
     from ..education.compliance_certificate import ComplianceCertificate
 
-    _, user_id, _ = api_key_info
-    logger.info(f"Exporting bulk ZIP for department: {department_id}")
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Exporting bulk analytics archive")
 
     try:
         # Create ZIP in memory
@@ -1313,7 +1358,9 @@ async def export_bulk_zip(
                     )
                     zip_file.writestr("compliance_report.pdf", pdf_bytes)
             except Exception as e:
-                logger.warning(f"Could not generate compliance report for ZIP: {e}")
+                logger.warning(
+                    "Bulk compliance report unavailable (%s)", type(e).__name__
+                )
 
             # 3. Add certificate.pdf (if eligible and requested)
             if include_certificate:
@@ -1339,7 +1386,9 @@ async def export_bulk_zip(
                                     f"certificate_{level_name}.pdf", cert_bytes
                                 )
                 except Exception as e:
-                    logger.warning(f"Could not generate certificate for ZIP: {e}")
+                    logger.warning(
+                        "Bulk certificate output unavailable (%s)", type(e).__name__
+                    )
 
             # 4. Add individual scan PDFs (if requested)
             if include_pdfs and scans:
@@ -1379,7 +1428,8 @@ async def export_bulk_zip(
                             )
                     except Exception as e:
                         logger.warning(
-                            f"Could not generate PDF for scan {scan.id}: {e}"
+                            "Individual scan report unavailable (%s)",
+                            type(e).__name__,
                         )
 
             # 5. Add README.txt
@@ -1418,8 +1468,7 @@ Generated by Aelira - https://example.com
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting bulk ZIP: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error("Bulk export", "Unable to export analytics archive", e)
 
 
 # ==================== ML-based Compliance Prediction ====================
@@ -1429,7 +1478,7 @@ Generated by Aelira - https://example.com
 async def predict_deadline_compliance(
     department_id: str,
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     ML-based prediction of April 2027 deadline compliance
@@ -1456,6 +1505,8 @@ async def predict_deadline_compliance(
 
     Note: Requires at least 7 days of scanning history for accurate predictions.
     """
+    department_id = _authorize_department_analytics(principal, department_id)
+
     try:
         from ..education.compliance_predictor import predict_compliance
 
@@ -1463,8 +1514,9 @@ async def predict_deadline_compliance(
         return result
 
     except Exception as e:
-        logger.error(f"Error predicting compliance: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(
+            "Compliance prediction", "Unable to generate compliance prediction", e
+        )
 
 
 # ==================== Alt Text Quality Analytics ====================
@@ -1475,7 +1527,7 @@ async def get_alt_text_quality_metrics(
     department_id: str,
     days: int = Query(default=30, ge=1, le=365),
     db: Session = Depends(get_db_dependency),
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
     Get aggregate alt text quality metrics for a department
@@ -1498,6 +1550,8 @@ async def get_alt_text_quality_metrics(
     Query params:
     - days: Number of days to analyze (default 30, max 365)
     """
+    department_id = _authorize_department_analytics(principal, department_id)
+
     try:
         from ..db.models import Scan, ScanResult
 
@@ -1621,8 +1675,11 @@ async def get_alt_text_quality_metrics(
         }
 
     except Exception as e:
-        logger.error(f"Error getting alt text quality metrics: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(
+            "Alt-text quality analytics",
+            "Unable to retrieve alt-text quality metrics",
+            e,
+        )
 
 
 # Alias for education router compatibility

@@ -21,6 +21,7 @@ import uuid
 import hashlib
 
 from ..db.models import (
+    AuditLogAction,
     IssueTracking,
     IssueStatus,
     IssuePriority,
@@ -28,6 +29,7 @@ from ..db.models import (
     ScanResult,
     User,
 )
+from ..security.audit_service import AuditService
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,65 @@ class IssueTrackingService:
     """
     Service for managing tracked issues across scans
     """
+
+    @staticmethod
+    def _get_issue_for_department(
+        db: Session, issue_id: str, department_id: str
+    ) -> IssueTracking:
+        """Return one tenant-owned issue without revealing foreign IDs."""
+
+        issue = (
+            db.query(IssueTracking)
+            .filter(
+                IssueTracking.id == issue_id,
+                IssueTracking.department_id == department_id,
+            )
+            .first()
+        )
+        if not issue:
+            raise ValueError("Issue not found")
+        return issue
+
+    @staticmethod
+    def _get_active_user_for_department(
+        db: Session, user_id: str, department_id: str
+    ) -> User:
+        """Return an active tenant member without revealing foreign IDs."""
+
+        user = (
+            db.query(User)
+            .filter(
+                User.id == user_id,
+                User.department_id == department_id,
+                User.is_active.is_(True),
+            )
+            .first()
+        )
+        if not user:
+            raise ValueError("User not found")
+        return user
+
+    @staticmethod
+    def _stage_audit(
+        db: Session,
+        *,
+        action: AuditLogAction,
+        user_id: str,
+        department_id: str,
+        resource_id: Optional[str] = None,
+        details: Optional[dict] = None,
+    ) -> None:
+        """Stage an attributable audit entry in the mutation transaction."""
+
+        AuditService(db).log_action(
+            action=action,
+            user_id=user_id,
+            department_id=department_id,
+            resource_type="issue_tracking",
+            resource_id=resource_id,
+            details=details,
+            commit=False,
+        )
 
     @staticmethod
     def generate_issue_hash(
@@ -132,6 +193,14 @@ class IssueTrackingService:
         }
         priority = severity_map.get(severity.lower(), IssuePriority.MEDIUM)
 
+        scan = (
+            db.query(Scan)
+            .filter(Scan.id == scan_id, Scan.department_id == department_id)
+            .first()
+        )
+        if not scan:
+            raise ValueError("Scan not found")
+
         # Generate issue hash
         issue_hash = IssueTrackingService.generate_issue_hash(
             scan_id,
@@ -148,6 +217,7 @@ class IssueTrackingService:
             .filter(
                 and_(
                     IssueTracking.scan_id == scan_id,
+                    IssueTracking.department_id == department_id,
                     IssueTracking.issue_hash == issue_hash,
                 )
             )
@@ -155,7 +225,7 @@ class IssueTrackingService:
         )
 
         if existing:
-            logger.debug(f"Issue already tracked: {issue_hash[:8]}")
+            logger.debug("Issue already tracked for scan")
             return existing
 
         # Create new tracked issue
@@ -179,7 +249,7 @@ class IssueTrackingService:
         db.commit()
         db.refresh(issue)
 
-        logger.info(f"Created tracked issue: {issue.id[:8]} ({issue_type})")
+        logger.info("Created tracked issue")
         return issue
 
     @staticmethod
@@ -228,18 +298,17 @@ class IssueTrackingService:
                 )
                 tracked_issues.append(tracked)
             except Exception as e:
-                logger.error(f"Failed to create tracked issue: {e}")
+                logger.error("Tracked issue creation failed (%s)", type(e).__name__)
                 continue
 
-        logger.info(
-            f"Created {len(tracked_issues)} tracked issues from scan {scan.id[:8]}"
-        )
+        logger.info("Created tracked issues from scan")
         return tracked_issues
 
     @staticmethod
     def update_issue_status(
         db: Session,
         issue_id: str,
+        department_id: str,
         new_status: str,
         user_id: Optional[str] = None,
         resolution_notes: Optional[str] = None,
@@ -251,6 +320,7 @@ class IssueTrackingService:
         Args:
             db: Database session
             issue_id: ID of the issue to update
+            department_id: Authenticated department that owns the issue
             new_status: New status (OPEN, IN_PROGRESS, RESOLVED, WONT_FIX, FALSE_POSITIVE)
             user_id: ID of user making the change
             resolution_notes: Notes about the resolution
@@ -259,9 +329,9 @@ class IssueTrackingService:
         Returns:
             Updated IssueTracking object
         """
-        issue = db.query(IssueTracking).filter(IssueTracking.id == issue_id).first()
-        if not issue:
-            raise ValueError(f"Issue not found: {issue_id}")
+        issue = IssueTrackingService._get_issue_for_department(
+            db, issue_id, department_id
+        )
 
         # Map status string to enum
         status_map = {
@@ -274,6 +344,11 @@ class IssueTrackingService:
         status = status_map.get(new_status.lower())
         if not status:
             raise ValueError(f"Invalid status: {new_status}")
+
+        if user_id is not None:
+            IssueTrackingService._get_active_user_for_department(
+                db, user_id, department_id
+            )
 
         # Update status
         issue.status = status
@@ -292,15 +367,29 @@ class IssueTrackingService:
             if resolution_method:
                 issue.resolution_method = resolution_method
 
+        if user_id is not None:
+            IssueTrackingService._stage_audit(
+                db,
+                action=AuditLogAction.ISSUE_STATUS_UPDATE,
+                user_id=user_id,
+                department_id=department_id,
+                resource_id=issue_id,
+                details={"status": status.value},
+            )
+
         db.commit()
         db.refresh(issue)
 
-        logger.info(f"Updated issue {issue_id[:8]} status to {new_status}")
+        logger.info("Updated tracked issue status")
         return issue
 
     @staticmethod
     def assign_issue(
-        db: Session, issue_id: str, assigned_to: str, assigned_by: str
+        db: Session,
+        issue_id: str,
+        department_id: str,
+        assigned_to: str,
+        assigned_by: str,
     ) -> IssueTracking:
         """
         Assign an issue to a team member.
@@ -308,15 +397,25 @@ class IssueTrackingService:
         Args:
             db: Database session
             issue_id: ID of the issue to assign
+            department_id: Authenticated department that owns the issue and assignee
             assigned_to: User ID to assign to
             assigned_by: User ID making the assignment
 
         Returns:
             Updated IssueTracking object
         """
-        issue = db.query(IssueTracking).filter(IssueTracking.id == issue_id).first()
-        if not issue:
-            raise ValueError(f"Issue not found: {issue_id}")
+        issue = IssueTrackingService._get_issue_for_department(
+            db, issue_id, department_id
+        )
+        try:
+            IssueTrackingService._get_active_user_for_department(
+                db, assigned_to, department_id
+            )
+            IssueTrackingService._get_active_user_for_department(
+                db, assigned_by, department_id
+            )
+        except ValueError:
+            raise ValueError("Assignee not found")
 
         issue.assigned_to = assigned_to
         issue.assigned_by = assigned_by
@@ -327,15 +426,27 @@ class IssueTrackingService:
         if issue.status == IssueStatus.OPEN:
             issue.status = IssueStatus.IN_PROGRESS
 
+        IssueTrackingService._stage_audit(
+            db,
+            action=AuditLogAction.ISSUE_ASSIGN,
+            user_id=assigned_by,
+            department_id=department_id,
+            resource_id=issue_id,
+        )
+
         db.commit()
         db.refresh(issue)
 
-        logger.info(f"Assigned issue {issue_id[:8]} to user {assigned_to[:8]}")
+        logger.info("Assigned tracked issue to department member")
         return issue
 
     @staticmethod
     def add_issue_note(
-        db: Session, issue_id: str, note: str, user_id: str
+        db: Session,
+        issue_id: str,
+        department_id: str,
+        note: str,
+        user_id: str,
     ) -> IssueTracking:
         """
         Add a note to an issue for team collaboration.
@@ -345,19 +456,22 @@ class IssueTrackingService:
         Args:
             db: Database session
             issue_id: ID of the issue
+            department_id: Authenticated department that owns the issue and actor
             note: Note text to add
             user_id: ID of user adding the note
 
         Returns:
             Updated IssueTracking object
         """
-        issue = db.query(IssueTracking).filter(IssueTracking.id == issue_id).first()
-        if not issue:
-            raise ValueError(f"Issue not found: {issue_id}")
+        issue = IssueTrackingService._get_issue_for_department(
+            db, issue_id, department_id
+        )
 
         # Get user name
-        user = db.query(User).filter(User.id == user_id).first()
-        user_name = user.name if user else "Unknown"
+        user = IssueTrackingService._get_active_user_for_department(
+            db, user_id, department_id
+        )
+        user_name = user.name or "Member"
 
         # Append note with timestamp
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
@@ -370,28 +484,39 @@ class IssueTrackingService:
 
         issue.updated_at = datetime.utcnow()
 
+        IssueTrackingService._stage_audit(
+            db,
+            action=AuditLogAction.ISSUE_NOTE_ADD,
+            user_id=user_id,
+            department_id=department_id,
+            resource_id=issue_id,
+        )
+
         db.commit()
         db.refresh(issue)
 
-        logger.info(f"Added note to issue {issue_id[:8]}")
+        logger.info("Added note to tracked issue")
         return issue
 
     @staticmethod
-    def mark_auto_fixed(db: Session, issue_id: str, fix_result: str) -> IssueTracking:
+    def mark_auto_fixed(
+        db: Session, issue_id: str, department_id: str, fix_result: str
+    ) -> IssueTracking:
         """
         Mark an issue as auto-fixed by AI remediation.
 
         Args:
             db: Database session
             issue_id: ID of the issue
+            department_id: Authenticated department that owns the issue
             fix_result: JSON string describing the fix applied
 
         Returns:
             Updated IssueTracking object
         """
-        issue = db.query(IssueTracking).filter(IssueTracking.id == issue_id).first()
-        if not issue:
-            raise ValueError(f"Issue not found: {issue_id}")
+        issue = IssueTrackingService._get_issue_for_department(
+            db, issue_id, department_id
+        )
 
         issue.auto_fix_applied = True
         issue.auto_fix_result = fix_result
@@ -403,7 +528,7 @@ class IssueTrackingService:
         db.commit()
         db.refresh(issue)
 
-        logger.info(f"Marked issue {issue_id[:8]} as auto-fixed")
+        logger.info("Marked tracked issue as auto-fixed")
         return issue
 
     @staticmethod
@@ -434,8 +559,17 @@ class IssueTrackingService:
         query = (
             db.query(IssueTracking, Scan, User)
             .join(Scan, IssueTracking.scan_id == Scan.id)
-            .outerjoin(User, IssueTracking.assigned_to == User.id)
-            .filter(IssueTracking.department_id == department_id)
+            .outerjoin(
+                User,
+                and_(
+                    IssueTracking.assigned_to == User.id,
+                    User.department_id == department_id,
+                ),
+            )
+            .filter(
+                IssueTracking.department_id == department_id,
+                Scan.department_id == department_id,
+            )
         )
 
         # Apply filters
@@ -566,6 +700,7 @@ class IssueTrackingService:
     def bulk_update_status(
         db: Session,
         issue_ids: List[str],
+        department_id: str,
         new_status: str,
         user_id: Optional[str] = None,
     ) -> int:
@@ -575,6 +710,7 @@ class IssueTrackingService:
         Args:
             db: Database session
             issue_ids: List of issue IDs to update
+            department_id: Authenticated department that owns every requested issue
             new_status: New status to set
             user_id: ID of user making the change
 
@@ -592,6 +728,27 @@ class IssueTrackingService:
         if not status:
             raise ValueError(f"Invalid status: {new_status}")
 
+        if user_id is not None:
+            IssueTrackingService._get_active_user_for_department(
+                db, user_id, department_id
+            )
+
+        unique_issue_ids = list(dict.fromkeys(issue_ids))
+        if not unique_issue_ids:
+            raise ValueError("At least one issue is required")
+
+        owned_count = (
+            db.query(func.count(IssueTracking.id))
+            .filter(
+                IssueTracking.department_id == department_id,
+                IssueTracking.id.in_(unique_issue_ids),
+            )
+            .scalar()
+            or 0
+        )
+        if owned_count != len(unique_issue_ids):
+            raise ValueError("One or more issues not found")
+
         now = datetime.utcnow()
 
         # Build update dict
@@ -607,11 +764,27 @@ class IssueTrackingService:
 
         count = (
             db.query(IssueTracking)
-            .filter(IssueTracking.id.in_(issue_ids))
+            .filter(
+                IssueTracking.department_id == department_id,
+                IssueTracking.id.in_(unique_issue_ids),
+            )
             .update(update_dict, synchronize_session=False)
         )
 
+        if count != len(unique_issue_ids):
+            db.rollback()
+            raise ValueError("One or more issues not found")
+
+        if user_id is not None:
+            IssueTrackingService._stage_audit(
+                db,
+                action=AuditLogAction.ISSUE_BULK_UPDATE,
+                user_id=user_id,
+                department_id=department_id,
+                details={"status": status.value, "issue_count": count},
+            )
+
         db.commit()
 
-        logger.info(f"Bulk updated {count} issues to status {new_status}")
+        logger.info("Bulk updated %s tracked issues", count)
         return count

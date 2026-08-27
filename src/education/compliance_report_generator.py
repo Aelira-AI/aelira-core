@@ -179,7 +179,10 @@ Return ONLY valid JSON array, no other text."""
                     return recommendations
 
         except Exception as e:
-            logger.warning(f"AI recommendations failed, using rule-based fallback: {e}")
+            logger.warning(
+                "AI recommendations failed; using rule-based fallback (%s)",
+                type(e).__name__,
+            )
 
         # Fallback to rule-based recommendations
         return _generate_recommendations(stats)

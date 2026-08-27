@@ -2314,6 +2314,12 @@ class AuditLogAction(str, Enum):
     REMEDIATION_FAILED = "remediation_failed"
     REMEDIATION_DOWNLOAD = "remediation_download"
 
+    # Accessibility issue collaboration
+    ISSUE_STATUS_UPDATE = "issue_status_update"
+    ISSUE_ASSIGN = "issue_assign"
+    ISSUE_NOTE_ADD = "issue_note_add"
+    ISSUE_BULK_UPDATE = "issue_bulk_update"
+
     # LMS AI policy governance and execution
     LMS_AI_POLICY_UPDATE = "lms_ai_policy_update"
     LMS_AI_EXECUTION = "lms_ai_execution"

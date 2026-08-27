@@ -226,7 +226,7 @@ class ComplianceDashboard:
         Returns:
             ComplianceStats object with all metrics
         """
-        logger.info(f"Generating compliance stats for department: {department_id}")
+        logger.info("Generating department compliance stats")
 
         # Get department info
         dept = db.query(Department).filter(Department.id == department_id).first()
@@ -485,7 +485,7 @@ class ComplianceDashboard:
         Returns:
             List of PriorityIssue objects, sorted by severity and date
         """
-        logger.info(f"Getting priority issues for department: {department_id}")
+        logger.info("Getting department priority issues")
 
         # Get all scans with results
         scans = (
@@ -591,7 +591,7 @@ class ComplianceDashboard:
         Returns:
             List of FacultyLeaderboard objects, sorted by compliance score
         """
-        logger.info(f"Generating faculty leaderboard for department: {department_id}")
+        logger.info("Generating department faculty leaderboard")
 
         # Get all faculty in department
         faculty = (
@@ -707,9 +707,7 @@ class ComplianceDashboard:
         """
         from collections import defaultdict
 
-        logger.info(
-            f"Generating {days}-day compliance trend for department: {department_id}"
-        )
+        logger.info("Generating department compliance trend")
 
         # Get scans from last N days (use timezone-aware datetime)
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)

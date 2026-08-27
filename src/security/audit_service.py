@@ -117,12 +117,7 @@ class AuditService:
             # Routine audit logging remains best-effort for existing callers.
             return None
 
-        logger.debug(
-            "Audit log created: action=%s, user_id=%s, status=%s",
-            action,
-            user_id,
-            status,
-        )
+        logger.debug("Audit log created: action=%s, status=%s", action, status)
         return audit_log
 
     def log_login_success(
