@@ -72,7 +72,7 @@ class ProviderInfo(BaseModel):
 class ProviderListResponse(BaseModel):
     """Response listing all providers."""
 
-    primary: str
+    primary: Optional[str]
     fallback: Optional[str]
     providers: Dict[str, ProviderInfo]
 
@@ -453,7 +453,7 @@ async def list_providers(
             )
 
     return ProviderListResponse(
-        primary=manager.primary_type.value,
+        primary=manager.primary_type.value if manager.primary_type else None,
         fallback=manager.fallback_type.value if manager.fallback_type else None,
         providers=providers,
     )
@@ -498,7 +498,7 @@ async def set_primary_provider(
     return {
         "success": True,
         "message": f"Set {request.provider} as {action} provider",
-        "primary": manager.primary_type.value,
+        "primary": manager.primary_type.value if manager.primary_type else None,
         "fallback": manager.fallback_type.value if manager.fallback_type else None,
     }
 

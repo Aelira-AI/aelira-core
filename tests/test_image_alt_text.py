@@ -2,11 +2,41 @@
 
 import ast
 import inspect
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import os
 from src.education.image_alt_text import ImageAltTextGenerator
+
+
+def _vision_manager(
+    *,
+    primary,
+    provider,
+    model,
+    content="Blue square",
+    success=True,
+    error=None,
+    attempted=None,
+):
+    if attempted is None:
+        attempted = [primary, provider] if primary != provider else [provider]
+    manager = MagicMock()
+    manager.primary_type = SimpleNamespace(value=primary)
+    manager.fallback_type = None
+    manager.analyze_image = AsyncMock(
+        return_value=SimpleNamespace(
+            success=success,
+            content=content,
+            provider=provider,
+            model=model,
+            inference_time=0.2,
+            error=error,
+            metadata={"attempted_providers": attempted},
+        )
+    )
+    return manager
 
 
 @pytest.fixture
@@ -115,14 +145,11 @@ async def test_injected_lms_client_is_the_only_alt_text_transport(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_legacy_gemini_success_records_bounded_external_usage(tmp_path):
+async def test_manager_gemini_success_records_bounded_external_usage(tmp_path):
     generator = ImageAltTextGenerator(allow_legacy_transport=True)
-    generator.use_gemini = True
-    generator.vision_model = "gemini-safe"
+    manager = _vision_manager(primary="gemini", provider="gemini", model="gemini-safe")
 
-    with patch.object(
-        generator, "_generate_with_gemini", return_value=("Blue square", 0.2)
-    ):
+    with patch("src.ai.providers.get_provider_manager", return_value=manager):
         result = await generator.generate_alt_text(_image(tmp_path))
 
     assert result["success"] is True
@@ -137,14 +164,11 @@ async def test_legacy_gemini_success_records_bounded_external_usage(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_direct_ollama_success_records_local_usage(tmp_path):
+async def test_manager_ollama_success_records_local_usage(tmp_path):
     generator = ImageAltTextGenerator(allow_legacy_transport=True)
-    generator.use_gemini = False
-    generator.ollama_fallback = "llava-safe"
+    manager = _vision_manager(primary="ollama", provider="ollama", model="llava-safe")
 
-    with patch.object(
-        generator, "_generate_with_ollama", return_value=("Blue square", 0.1)
-    ):
+    with patch("src.ai.providers.get_provider_manager", return_value=manager):
         await generator.generate_alt_text(_image(tmp_path))
 
     assert dict(generator.usage_metadata) == {
@@ -158,20 +182,11 @@ async def test_direct_ollama_success_records_local_usage(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_gemini_failure_then_ollama_success_preserves_external_attempt(tmp_path):
+async def test_manager_fallback_success_preserves_external_attempt(tmp_path):
     generator = ImageAltTextGenerator(allow_legacy_transport=True)
-    generator.use_gemini = True
-    generator.vision_model = "gemini-safe"
-    generator.ollama_fallback = "llava-safe"
+    manager = _vision_manager(primary="gemini", provider="ollama", model="llava-safe")
 
-    with (
-        patch.object(
-            generator, "_generate_with_gemini", return_value=("ERROR: unavailable", 0.2)
-        ),
-        patch.object(
-            generator, "_generate_with_ollama", return_value=("Blue square", 0.1)
-        ),
-    ):
+    with patch("src.ai.providers.get_provider_manager", return_value=manager):
         await generator.generate_alt_text(_image(tmp_path))
 
     assert dict(generator.usage_metadata) == {
@@ -185,25 +200,21 @@ async def test_gemini_failure_then_ollama_success_preserves_external_attempt(tmp
 
 
 @pytest.mark.asyncio
-async def test_legacy_failures_remain_attempted_and_usage_resets_without_leakage(
+async def test_manager_failures_remain_bounded_and_usage_resets_without_leakage(
     tmp_path,
 ):
     generator = ImageAltTextGenerator(allow_legacy_transport=True)
-    generator.use_gemini = True
-    generator.ollama_fallback = "llava-safe"
+    failed_manager = _vision_manager(
+        primary="gemini",
+        provider="ollama",
+        model="",
+        content="",
+        success=False,
+        error="SENSITIVE provider failure",
+        attempted=["gemini", "ollama"],
+    )
 
-    with (
-        patch.object(
-            generator,
-            "_generate_with_gemini",
-            return_value=("ERROR: SENSITIVE gemini failure", 0.2),
-        ),
-        patch.object(
-            generator,
-            "_generate_with_ollama",
-            return_value=("ERROR: SENSITIVE ollama failure", 0.1),
-        ),
-    ):
+    with patch("src.ai.providers.get_provider_manager", return_value=failed_manager):
         result = await generator.generate_alt_text(_image(tmp_path))
 
     usage = dict(generator.usage_metadata)
@@ -212,15 +223,17 @@ async def test_legacy_failures_remain_attempted_and_usage_resets_without_leakage
         "ai_used": False,
         "external_ai_used": True,
         "providers_attempted": ("gemini", "ollama"),
-        "provider": "ollama",
-        "model": "llava-safe",
+        "provider": None,
+        "model": None,
         "outcome": "attempted_failed",
     }
     assert "SENSITIVE" not in str(usage)
 
-    generator.use_gemini = False
-    with patch.object(
-        generator, "_generate_with_ollama", return_value=("Blue square", 0.1)
+    successful_manager = _vision_manager(
+        primary="ollama", provider="ollama", model="llava-safe"
+    )
+    with patch(
+        "src.ai.providers.get_provider_manager", return_value=successful_manager
     ):
         await generator.generate_alt_text(_image(tmp_path))
     assert generator.usage_metadata["providers_attempted"] == ("ollama",)
@@ -321,16 +334,15 @@ def test_lms_vision_paths_have_no_direct_legacy_transport_or_manager_acquisition
 
 
 def test_health_check(generator):
-    """Test Gemini/Ollama vision model availability."""
+    """Test provider-neutral vision model availability."""
     result = generator.health_check()
     print("\n=== Health Check ===")
     print(f"Status: {result['status']}")
-    print(f"Gemini Model: {result.get('gemini_model', 'N/A')}")
-    print(f"Gemini Configured: {result.get('gemini_configured', False)}")
-    print(f"Use Gemini: {result.get('use_gemini', False)}")
+    print(f"Provider: {result.get('provider', 'N/A')}")
+    print(f"Vision Model: {result.get('vision_model', 'N/A')}")
     print(f"Features: {result.get('features', [])}")
 
-    assert result["status"] in ["healthy", "model_missing", "unhealthy", "degraded"]
+    assert result["status"] in ["healthy", "disabled", "unhealthy", "degraded"]
 
 
 @pytest.mark.asyncio

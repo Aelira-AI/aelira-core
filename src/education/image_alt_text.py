@@ -1,4 +1,4 @@
-"""Image alt text generation using Gemini API (primary) with Ollama fallback."""
+"""Image alt text generation through configured or purpose-bound AI providers."""
 
 import base64
 import asyncio
@@ -41,9 +41,9 @@ class ImageAltTextGenerator:
     def __init__(self, lms_client=None, *, allow_legacy_transport: bool = False):
         """Create a generator without implicitly enabling any provider.
 
-        LMS callers inject a purpose-bound compatibility client. Legacy
-        non-LMS callers must opt in explicitly to the historical Gemini/
-        Ollama transport.
+        LMS callers inject a purpose-bound compatibility client. Non-LMS
+        callers must opt in explicitly before the global provider manager may
+        select a configured vision provider.
         """
         self.lms_client = lms_client
         self.settings = get_settings()
@@ -91,11 +91,12 @@ class ImageAltTextGenerator:
         if provider != "unknown" and provider not in self._usage["providers_attempted"]:
             self._usage["providers_attempted"].append(provider)
         self._usage["external_ai_used"] = self._usage["external_ai_used"] or external
-        self._usage["provider"] = provider if provider != "unknown" else None
         self._usage["outcome"] = "attempted_failed"
 
     def _record_result(self, *, provider: str, model: Any, success: bool) -> None:
-        self._usage["provider"] = provider if provider != "unknown" else None
+        self._usage["provider"] = (
+            provider if success and provider != "unknown" else None
+        )
         self._usage["model"] = (
             model
             if isinstance(model, str)
@@ -190,27 +191,79 @@ class ImageAltTextGenerator:
         if not self.allow_legacy_transport:
             return "ERROR: AI transport not authorized", 0.0, "none", ""
 
-        provider = "gemini"
-        if self.use_gemini:
-            self._record_attempt("gemini", external=True)
-            content, elapsed = await self._generate_with_gemini(
-                image_path, prompt, max_tokens=max_tokens
+        try:
+            from src.ai.providers import get_provider_manager
+
+            manager = get_provider_manager()
+        except Exception:
+            self._record_result(provider="unknown", model=None, success=False)
+            return "ERROR: provider_call_failed", 0.0, "none", ""
+        allowed_providers = {
+            "gemini",
+            "ollama",
+            "anthropic",
+            "openai",
+            "xai",
+            "local",
+        }
+
+        try:
+            image_data = Path(image_path).read_bytes()
+            result = await manager.analyze_image(
+                image_data=image_data,
+                prompt=prompt,
+                max_tokens=max_tokens,
             )
-            if not content.startswith("ERROR:"):
-                self._record_result(
-                    provider="gemini", model=self.vision_model, success=True
-                )
-                return content, elapsed, provider, self.vision_model
-            logger.warning("Gemini vision failed; trying explicit legacy Ollama")
-        provider = "ollama"
-        self._record_attempt("ollama", external=False)
-        content, elapsed = await self._generate_with_ollama(image_path, prompt)
-        self._record_result(
-            provider="ollama",
-            model=self.ollama_fallback,
-            success=not content.startswith("ERROR:"),
+        except Exception:
+            self._record_result(provider="unknown", model=None, success=False)
+            return "ERROR: provider_call_failed", 0.0, "none", ""
+
+        result_provider = getattr(result, "provider", None)
+        provider = (
+            result_provider.casefold()
+            if isinstance(result_provider, str)
+            and result_provider.casefold() in allowed_providers
+            else "unknown"
         )
-        return content, elapsed, provider, self.ollama_fallback
+        model = getattr(result, "model", "")
+        metadata = getattr(result, "metadata", None)
+        raw_attempts = (
+            metadata.get("attempted_providers") if isinstance(metadata, dict) else None
+        )
+        attempts = []
+        if isinstance(raw_attempts, (list, tuple)):
+            attempts = [
+                value.casefold()
+                for value in raw_attempts
+                if isinstance(value, str) and value.casefold() in allowed_providers
+            ]
+        elif provider != "unknown":
+            attempts = [provider]
+        for attempted_provider in attempts:
+            self._record_attempt(
+                attempted_provider,
+                external=attempted_provider not in {"ollama", "local"},
+            )
+        elapsed = getattr(result, "inference_time", 0.0)
+        if not isinstance(elapsed, (int, float)) or elapsed < 0:
+            elapsed = 0.0
+
+        if not getattr(result, "success", False) or provider == "unknown":
+            self._record_result(provider=provider, model=model, success=False)
+            return (
+                "ERROR: provider_call_failed",
+                elapsed,
+                provider if provider != "unknown" else "none",
+                model,
+            )
+
+        content = getattr(result, "content", None)
+        if not isinstance(content, str) or not content.strip():
+            self._record_result(provider=provider, model=model, success=False)
+            return "ERROR: invalid_provider_response", elapsed, provider, model
+
+        self._record_result(provider=provider, model=model, success=True)
+        return content.strip(), elapsed, provider, model
 
     def _encode_image(self, image_path: str) -> str:
         """Encode image to base64 for API calls."""
@@ -1607,13 +1660,43 @@ Respond in this exact JSON format:
                 "features": [],
             }
 
-        health = {
-            "status": "healthy",
-            "gemini_configured": bool(self.gemini_api_key),
-            "gemini_model": self.vision_model,
-            "use_gemini": self.use_gemini,
-            "ollama_fallback": self.ollama_fallback,
-            "ollama_host": self.ollama_host,
+        try:
+            from src.ai.providers import get_provider_manager
+
+            manager_health = get_provider_manager().health_check()
+        except Exception:
+            manager_health = {
+                "status": "unhealthy",
+                "primary_provider": None,
+                "fallback_provider": None,
+                "providers": {},
+            }
+
+        primary_provider = manager_health.get("primary_provider")
+        fallback_provider = manager_health.get("fallback_provider")
+        provider_health_by_name = manager_health.get("providers", {})
+        selected_provider = primary_provider or fallback_provider
+        primary_health = provider_health_by_name.get(primary_provider, {})
+        fallback_health = provider_health_by_name.get(fallback_provider, {})
+        if (
+            primary_health.get("status") != "healthy"
+            and fallback_health.get("status") == "healthy"
+        ):
+            selected_provider = fallback_provider
+        provider_health = provider_health_by_name.get(selected_provider, {})
+        status = provider_health.get(
+            "status", manager_health.get("status", "unhealthy")
+        )
+        if selected_provider is None:
+            status = "disabled"
+
+        return {
+            "status": status,
+            "provider": selected_provider,
+            "vision_model": provider_health.get("vision_model"),
+            "vision_available": provider_health.get("status") == "healthy",
+            "transport": "provider_manager" if selected_provider else "none",
+            "provider_manager_status": manager_health.get("status", "unhealthy"),
             "features": [
                 "generate_alt_text",
                 "validate_alt_text",
@@ -1623,29 +1706,3 @@ Respond in this exact JSON format:
                 "batch_analyze_images",
             ],
         }
-
-        if not self.use_gemini:
-            # Check Ollama availability
-            try:
-                import ollama
-
-                models_response = ollama.list()
-                if hasattr(models_response, "models"):
-                    available = [m.model for m in models_response.models]
-                elif isinstance(models_response, dict) and "models" in models_response:
-                    available = [m["name"] for m in models_response["models"]]
-                else:
-                    available = []
-
-                vision_available = any(
-                    self.ollama_fallback in name for name in available
-                )
-                health["ollama_available"] = vision_available
-                if not vision_available:
-                    health["status"] = "degraded"
-                    health["warning"] = f"Ollama model {self.ollama_fallback} not found"
-            except Exception as e:
-                health["status"] = "degraded"
-                health["ollama_error"] = str(e)
-
-        return health

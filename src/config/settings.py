@@ -64,10 +64,14 @@ class Settings(BaseSettings):
     # =====================================================
     # LLM Provider Configuration
     # =====================================================
-    # Primary provider: gemini, ollama, openai, anthropic
-    llm_provider: str = os.getenv("LLM_PROVIDER", "gemini")
+    # Primary provider: gemini, ollama, openai, anthropic, xai, or none.
+    # Open-core does not choose a vendor for the operator.
+    llm_provider: str = os.getenv("LLM_PROVIDER", "none")
     # Fallback provider (used when primary fails). Set to "none" to disable.
-    llm_fallback_provider: str = os.getenv("LLM_FALLBACK_PROVIDER", "ollama")
+    llm_fallback_provider: str = os.getenv("LLM_FALLBACK_PROVIDER", "none")
+    # Semantic retrieval is independent from text generation. Keep it disabled
+    # unless the operator explicitly chooses the local Ollama embedding lane.
+    embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "none").strip().lower()
 
     # API Configuration
     api_title: str = "Aelira ADA Compliance API"
@@ -247,7 +251,7 @@ class Settings(BaseSettings):
     # Ollama (fallback for local/air-gapped deployments)
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
-    # Gemini API (primary cloud provider for speed and accuracy)
+    # Gemini API (optional cloud provider)
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     gemini_api_base: str = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -264,8 +268,9 @@ class Settings(BaseSettings):
     gemini_text_model: str = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
     gemini_code_model: str = os.getenv("GEMINI_CODE_MODEL", "gemini-2.5-flash")
 
-    # Fallback to Ollama if Gemini unavailable
-    use_gemini: bool = os.getenv("USE_GEMINI", "true").lower() == "true"
+    # Legacy compatibility flag for private direct-client methods. Global AI
+    # routing is controlled exclusively by LLM_PROVIDER.
+    use_gemini: bool = os.getenv("USE_GEMINI", "false").lower() == "true"
     # =====================================================
     # Ollama Model Configuration (Mar 2026 — tested)
     # =====================================================

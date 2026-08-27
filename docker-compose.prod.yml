@@ -4,7 +4,7 @@
 #   docker compose -f docker-compose.prod.yml up -d
 #
 # With fully local AI (documents never leave this host):
-#   docker compose -f docker-compose.prod.yml --profile ollama up -d
+#   LLM_PROVIDER=ollama EMBEDDING_PROVIDER=ollama docker compose -f docker-compose.prod.yml --profile ollama up -d
 #   docker exec aelira-ollama ollama pull qwen2.5vl:3b && ollama pull gemma3:4b && ollama pull qwen2.5-coder:7b && ollama pull nomic-embed-text
 #
 # What this file deliberately does NOT do:
@@ -69,6 +69,19 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SESSION_REFRESH_GRACE_SECONDS: ${SESSION_REFRESH_GRACE_SECONDS:-10}
       SESSION_REPLAY_ENCRYPTION_KEY: ${SESSION_REPLAY_ENCRYPTION_KEY:?set SESSION_REPLAY_ENCRYPTION_KEY in .env}
+      # Open-core makes no implicit provider choice. Set one in .env or on the command line.
+      LLM_PROVIDER: ${LLM_PROVIDER:-none}
+      LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-none}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-none}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      OLLAMA_TEXT_MODEL: ${OLLAMA_TEXT_MODEL:-gemma3:4b}
+      OLLAMA_CODE_MODEL: ${OLLAMA_CODE_MODEL:-qwen2.5-coder:7b}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-qwen2.5vl:3b}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
       # Single worker until the job-claim race is fixed (see entrypoint.sh)
       UVICORN_WORKERS: 1
     ports:

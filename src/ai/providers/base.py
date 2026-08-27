@@ -65,6 +65,7 @@ class LLMResponse:
         provider: str,
         model: str,
         inference_time: float = 0.0,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> "LLMResponse":
         """Create an error response."""
         return cls(
@@ -74,6 +75,7 @@ class LLMResponse:
             model=model,
             inference_time=inference_time,
             error=error,
+            metadata=metadata or {},
         )
 
     @classmethod

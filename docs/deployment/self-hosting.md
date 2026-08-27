@@ -87,7 +87,8 @@ is `.env.example`):
 | `REMEDIATION_ARTIFACT_RETENTION_DAYS`, `REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS`, `REMEDIATION_ARTIFACT_WRITTEN_RETENTION_DAYS` | Artifact retention windows | Defaults to 30 days while pending, a 30-day writeback deadline after approval, and 7 days after writeback. Approval sets the artifact expiry to the approved-retention deadline; an idempotent approval retry does not extend it. See `.env.example` for all bounded cleanup and size settings. |
 | `ALLOW_MOCK_AUTH` | Dev-only auth bypass | Must **not** be `true` in `production`/`staging` — `Settings` raises at startup if it is (`validate_mock_auth`). Leave unset. |
 | SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `FROM_EMAIL`, `FROM_NAME` | Transactional email (magic links, alerts) | Read in `src/mailer/email_service.py`. Defaults assume SendGrid (`smtp.sendgrid.net`); any SMTP provider works. If `SMTP_HOST` is set, the mailer treats it as a trusted network target for its own connection handling. |
-| One LLM provider's credentials | AI-generated explanations/remediation | `LLM_PROVIDER` (`gemini`/`ollama`/`openai`/`anthropic`) plus that provider's key (`GEMINI_API_KEY`, etc.), or `OLLAMA_HOST` if running the Ollama profile below. |
+| One LLM provider's credentials | AI-generated explanations/remediation | AI defaults to disabled. Set `LLM_PROVIDER` to `gemini`, `ollama`, `openai`, `anthropic`, or `xai`, plus that provider's key or `OLLAMA_HOST`. `LLM_FALLBACK_PROVIDER` is independently opt-in. |
+| `EMBEDDING_PROVIDER` | Optional semantic WCAG retrieval | Defaults to `none`; exact rule-ID grounding still works. Set `ollama` only when you want semantic search and have the embedding model installed. |
 
 Branding/contact fields (`BRAND_NAME`, `PUBLIC_WEBSITE_URL`, `SUPPORT_EMAIL`)
 are also read from environment variables in `settings.py` — worth setting so
@@ -123,7 +124,7 @@ Ollama is optional and gated behind a Compose profile in both existing
 files (`profiles: ["ollama"]`), so it only starts when you ask for it:
 
 ```bash
-docker compose -f docker-compose.prod.yml --profile ollama up -d
+LLM_PROVIDER=ollama EMBEDDING_PROVIDER=ollama docker compose -f docker-compose.prod.yml --profile ollama up -d
 docker exec <ollama-container> ollama pull gemma3:4b   # or a larger model per docker-compose.dev.yml's guidance
 ```
 
@@ -135,8 +136,8 @@ configuration](canvas-lti.md) checklist. It covers the staff-visible placement
 settings and required numeric Canvas course-ID custom field.
 
 Run Ollama when you want documents to never leave your own infrastructure —
-no cloud API call for remediation text at all. Without it, set `LLM_PROVIDER=gemini`
-(or `openai`/`anthropic`) and supply that provider's API key.
+no cloud API call for remediation text at all. Otherwise select Gemini,
+OpenAI, Anthropic, or xAI explicitly and supply that provider's API key.
 
 ## Reverse proxy / TLS
 

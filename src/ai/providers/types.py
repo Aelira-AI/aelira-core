@@ -1,14 +1,7 @@
-"""
-Type definitions for LLM providers.
+"""Provider-neutral type and model configuration definitions.
 
-Gemini Model Benchmarks (January 2026):
-- gemini-3-flash-preview: 100% accuracy, 5.4s avg - BEST ACCURACY (paid tier default)
-- gemini-2.5-flash: 87% accuracy, 5.4s avg
-- gemini-2.5-flash: recommended default (Tier 1: 1,000 RPM)
-
-Users on paid tiers can choose their preferred model via:
-- PUT /llm/providers/gemini/models
-- Or bring their own API key via POST /llm/providers/add
+Open-core users explicitly choose any supported provider, may override its
+models, and can bring their own API key via ``POST /llm/providers/add``.
 """
 
 from enum import Enum

@@ -31,7 +31,18 @@ No `.env` file, no configuration. When it comes up:
 - API and interactive docs: <http://localhost:8000/docs>
 - Health check: <http://localhost:8000/health>
 
-That gets you scanning immediately. AI-generated fixes need a model, which is the one thing you have to choose — and it is genuinely your choice: bring your own key for Gemini, OpenAI, Anthropic, or xAI, point the OpenAI provider at any OpenAI-compatible endpoint, or run models locally with `--profile ollama` and keep every document on your own hardware. Nothing is sent anywhere you did not configure.
+That gets you scanning immediately, with AI disabled. AI-generated fixes need a
+provider, and open-core does not choose one for you: set `LLM_PROVIDER` to
+`gemini`, `openai`, `anthropic`, `xai`, or `ollama`, then supply that provider's
+key or local endpoint. Point `openai` at any OpenAI-compatible endpoint, or run
+fully local AI with:
+
+```bash
+LLM_PROVIDER=ollama EMBEDDING_PROVIDER=ollama docker compose -f docker-compose.quickstart.yml --profile ollama up -d
+```
+
+Fallback is opt-in through `LLM_FALLBACK_PROVIDER`. Nothing is sent to an AI
+service you did not select.
 
 ## Four equal product pillars
 
@@ -84,7 +95,12 @@ If your compliance reports have to be reproducible, that distinction matters mor
 pytest tests/test_severity_determinism.py
 ```
 
-Explanations are grounded too. A knowledge base of 112 WCAG guidelines is retrieved against, so a cited criterion is one that was looked up rather than recalled:
+Explanations are grounded too. On first startup, Aelira seeds its bundled WCAG
+corpus. Known scanner rule IDs use exact corpus lookup, so this grounding works
+with every generation provider and needs no embedding service. Optional
+free-text semantic search is enabled separately with
+`EMBEDDING_PROVIDER=ollama`; only then does startup generate missing Ollama
+embeddings. The explicit scripts remain available for operator repair:
 
 ```bash
 python scripts/seed_wcag_guidelines.py

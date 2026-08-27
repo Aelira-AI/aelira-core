@@ -18,9 +18,9 @@ suggestions, never different scores.
 
 | Lane | Used for | Env var |
 |---|---|---|
-| **Vision** | Alt text for images, chart/diagram descriptions, OCR-assisted understanding | `OLLAMA_FALLBACK_VISION` |
-| **Text** | Human-readable issue explanations and recommendations | `OLLAMA_FALLBACK_TEXT` |
-| **Code** | Structural HTML/ARIA fix suggestions (headings, scope attributes, labels) | `OLLAMA_FALLBACK_CODE` |
+| **Vision** | Alt text for images, chart/diagram descriptions, OCR-assisted understanding | `OLLAMA_VISION_MODEL` |
+| **Text** | Human-readable issue explanations and recommendations | `OLLAMA_TEXT_MODEL` |
+| **Code** | Structural HTML/ARIA fix suggestions (headings, scope attributes, labels) | `OLLAMA_CODE_MODEL` |
 | **Embeddings** | WCAG guideline retrieval, so explanations cite the right criteria | `OLLAMA_EMBEDDING_MODEL` |
 
 Speech is always local and does not use Ollama: `faster-whisper` transcribes
@@ -38,9 +38,19 @@ These ship as the defaults and were benchmarked against accessibility tasks
 | Code | `qwen2.5-coder:7b` | ~4.7 GB | 16 GB RAM or 8 GB VRAM | Best HTML structure, ARIA, and scope-attribute output in testing |
 | Embeddings | `nomic-embed-text` | ~0.3 GB | anywhere | Standard, fast, good WCAG retrieval quality |
 
+Select local generation with `LLM_PROVIDER=ollama`. Exact WCAG rule grounding
+does not need embeddings. To add optional free-text semantic retrieval, also
+set `EMBEDDING_PROVIDER=ollama`; only then will startup probe the configured
+embedding model and generate missing vectors. It never downloads a model
+implicitly, and an absent model does not stop startup.
+
 ```bash
 ollama pull qwen2.5vl:3b && ollama pull gemma3:4b && ollama pull qwen2.5-coder:7b && ollama pull nomic-embed-text
 ```
+
+The older `OLLAMA_FALLBACK_TEXT`, `OLLAMA_FALLBACK_CODE`, and
+`OLLAMA_FALLBACK_VISION` names remain accepted for compatibility, but the
+canonical `OLLAMA_*_MODEL` variables above take precedence.
 
 ## Hardware tiers
 

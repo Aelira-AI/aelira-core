@@ -1178,12 +1178,12 @@ async def test_image_analysis_missing_optional_alt_text_is_manual_required(tmp_p
             ("ERROR: SENSITIVE ollama failure", 0.1),
             ("gemini", "ollama"),
             True,
-            "ollama",
+            None,
             False,
         ),
     ],
 )
-async def test_legacy_image_terminal_audit_uses_generator_transport_metadata(
+async def test_global_image_terminal_audit_uses_manager_transport_metadata(
     tmp_path,
     caplog,
     use_gemini,
@@ -1197,7 +1197,6 @@ async def test_legacy_image_terminal_audit_uses_generator_transport_metadata(
     from PIL import Image
 
     from src.api.education.remediation_routes import remediate_scan
-    from src.education.image_alt_text import ImageAltTextGenerator
 
     path = tmp_path / "image.png"
     Image.new("RGB", (10, 10), color="blue").save(path)
@@ -1213,6 +1212,41 @@ async def test_legacy_image_terminal_audit_uses_generator_transport_metadata(
         ollama_fallback_vision="llava-safe",
     )
 
+    if use_gemini and gemini_result and not gemini_result[0].startswith("ERROR:"):
+        manager_provider = "gemini"
+        manager_model = "gemini-safe"
+        manager_content, manager_elapsed = gemini_result
+        manager_success = True
+        manager_error = None
+    elif ollama_result and not ollama_result[0].startswith("ERROR:"):
+        manager_provider = "ollama"
+        manager_model = "llava-safe"
+        manager_content, manager_elapsed = ollama_result
+        manager_success = True
+        manager_error = None
+    else:
+        manager_provider = "ollama"
+        manager_model = ""
+        manager_content = ""
+        manager_elapsed = 0.1
+        manager_success = False
+        manager_error = "SENSITIVE provider failure"
+
+    manager = MagicMock()
+    manager.primary_type = SimpleNamespace(value="gemini" if use_gemini else "ollama")
+    manager.fallback_type = SimpleNamespace(value="ollama")
+    manager.analyze_image = AsyncMock(
+        return_value=SimpleNamespace(
+            success=manager_success,
+            content=manager_content,
+            provider=manager_provider,
+            model=manager_model,
+            inference_time=manager_elapsed,
+            error=manager_error,
+            metadata={"attempted_providers": list(expected_attempts)},
+        )
+    )
+
     patches = [
         patch(
             "src.api.education.remediation_routes.ScanService.get_scan_with_result",
@@ -1220,23 +1254,8 @@ async def test_legacy_image_terminal_audit_uses_generator_transport_metadata(
         ),
         patch("src.education.image_alt_text.get_settings", return_value=settings),
         patch("src.security.audit_service.AuditService", return_value=audit),
+        patch("src.ai.providers.get_provider_manager", return_value=manager),
     ]
-    if gemini_result is not None:
-        patches.append(
-            patch.object(
-                ImageAltTextGenerator,
-                "_generate_with_gemini",
-                new=AsyncMock(return_value=gemini_result),
-            )
-        )
-    if ollama_result is not None:
-        patches.append(
-            patch.object(
-                ImageAltTextGenerator,
-                "_generate_with_ollama",
-                new=AsyncMock(return_value=ollama_result),
-            )
-        )
 
     with ExitStack() as stack:
         for active_patch in patches:
@@ -1263,7 +1282,9 @@ async def test_legacy_image_terminal_audit_uses_generator_transport_metadata(
     assert terminal["alt_text_attempted"] is True
     assert terminal["alt_text_used"] is expected_success
     assert terminal["alt_text_external_ai_used"] is expected_external
-    assert terminal["providers"] == {"alt_text": expected_provider}
+    assert terminal["providers"] == (
+        {"alt_text": expected_provider} if expected_provider else {}
+    )
     assert terminal["providers_attempted"] == {"alt_text": expected_attempts}
     assert terminal["purpose_outcomes"]["alt_text"] == (
         "used" if expected_success else "attempted_failed"

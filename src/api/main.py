@@ -24,8 +24,7 @@ import tempfile
 import logging
 from pathlib import Path
 
-from src.ai.ollama_client import OllamaClient
-from src.ai.gemini_client import get_gemini_client
+from src.ai.gemini_client import get_accessibility_ai_client
 from src.ai.providers import (
     get_provider_manager,
     initialize_provider_manager,
@@ -228,10 +227,10 @@ app.include_router(review_router, prefix="/api")  # Remediation review workflow
 app.include_router(job_worker_router)  # Durable queue worker health/metrics only
 
 
-# Startup/Shutdown event handlers for RAG knowledge base and LLM providers
+# Startup/Shutdown event handlers for the WCAG knowledge base and LLM providers
 @app.on_event("startup")
 async def startup_event():
-    """Initialize RAG knowledge base and LLM providers on API startup."""
+    """Initialize configured LLM providers and the WCAG knowledge base."""
     # SECURITY: Fail fast if mock auth is misconfigured in production
     if settings.env == "production" and settings.allow_mock_auth:
         logger.critical(
@@ -243,24 +242,34 @@ async def startup_event():
 
         sys.exit(1)
 
-    logger.info("Initializing RAG knowledge base...")
-    try:
-        await ollama_client.initialize()
-        logger.info("RAG knowledge base initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize RAG knowledge base: {e}")
-        logger.warning("API will fall back to non-RAG classification")
-
-    # Initialize the new LLM provider system
     logger.info("Initializing LLM provider manager...")
     try:
-        await initialize_provider_manager()
+        provider_ready = await initialize_provider_manager()
         manager = get_provider_manager()
-        logger.info(
-            f"LLM provider manager initialized (primary: {manager.primary_type.value})"
-        )
+        primary_name = manager.primary_type.value if manager.primary_type else "none"
+        if manager.primary_type is None and manager.fallback_type is None:
+            logger.info("AI inference is disabled; no LLM provider was selected")
+        elif provider_ready:
+            logger.info(f"LLM provider manager initialized (primary: {primary_name})")
+        else:
+            logger.warning(
+                f"No configured LLM provider initialized (primary: {primary_name})"
+            )
     except Exception as e:
         logger.error(f"Failed to initialize LLM provider manager: {e}")
+
+    logger.info("Initializing WCAG knowledge base...")
+    rag_ready = False
+    try:
+        rag_ready = await accessibility_ai_client.initialize_rag()
+        if rag_ready:
+            logger.info("WCAG knowledge base initialized")
+        else:
+            logger.info("API continuing without WCAG corpus grounding")
+    except Exception as e:
+        logger.error(f"Failed to initialize WCAG knowledge base: {e}")
+        logger.warning("API will fall back to ungrounded classification")
+    accessibility_ai_client.enable_rag = rag_ready
 
     # Start scan timeout monitor (auto-fails stuck scans)
     try:
@@ -274,13 +283,13 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Close RAG knowledge base and LLM providers on API shutdown."""
-    logger.info("Closing RAG knowledge base...")
+    """Close the WCAG knowledge base and LLM providers."""
+    logger.info("Closing WCAG knowledge base...")
     try:
-        await ollama_client.close()
-        logger.info("RAG knowledge base closed successfully")
+        await accessibility_ai_client.close_rag()
+        logger.info("WCAG knowledge base closed successfully")
     except Exception as e:
-        logger.error(f"Error closing RAG knowledge base: {e}")
+        logger.error(f"Error closing WCAG knowledge base: {e}")
 
     # Close the LLM provider manager
     logger.info("Closing LLM provider manager...")
@@ -385,15 +394,9 @@ async def metrics_middleware(request: Request, call_next):
         ACTIVE_CONNECTIONS.dec()
 
 
-# Initialize AI clients
-# Gemini is primary (fast cloud API), Ollama is fallback (local/air-gapped)
-gemini_client = get_gemini_client()
-
-# Initialize Ollama client with RAG enabled (for fallback and RAG features)
-ollama_client = OllamaClient(
-    host=settings.ollama_host,
-    enable_rag=True,  # Enable RAG for consistent classifications
-)
+# Compatibility analysis adapter. Its public methods route through the global
+# ProviderManager; the legacy class name is retained only for import stability.
+accessibility_ai_client = get_accessibility_ai_client()
 
 
 # Pydantic models
@@ -437,7 +440,7 @@ class BatchAnalysisRequest(BaseModel):
 # Helper function for image-alt violations
 async def generate_image_alt_text(
     html_snippet: str, base_url: Optional[str] = None
-) -> Optional[str]:
+) -> Optional[dict]:
     """
     Extract image from HTML and generate AI alt text using vision model.
 
@@ -446,7 +449,7 @@ async def generate_image_alt_text(
         base_url: Base URL to resolve relative image paths (optional)
 
     Returns:
-        AI-generated alt text or None if failed
+        Provider-attributed alt-text result or None if generation failed
     """
     try:
         # Extract src attribute from img tag
@@ -511,7 +514,7 @@ async def generate_image_alt_text(
             )
 
             if result.get("success"):
-                return result.get("alt_text")
+                return result
         finally:
             # Clean up temp file
             try:
@@ -843,60 +846,14 @@ async def get_csrf_token_endpoint(request: Request):
 
 @app.get("/api/ai/health")
 async def ai_health():
-    """Check AI models status and availability.
-
-    Returns health info for both Gemini (primary) and Ollama (fallback).
-    """
-    # Get Gemini health (primary provider)
-    gemini_health = gemini_client.health_check()
-
-    # Get Ollama health (fallback provider)
-    ollama_health = ollama_client.health_check()
-
-    # Determine overall status
-    if gemini_health.get("use_gemini") and gemini_health.get("gemini_configured"):
-        overall_status = "healthy"
-        primary_provider = "gemini"
-    elif ollama_health.get("status") == "healthy":
-        overall_status = "degraded"
-        primary_provider = "ollama"
-    else:
-        overall_status = "unhealthy"
-        primary_provider = "none"
-
-    return {
-        "status": overall_status,
-        "primary_provider": primary_provider,
-        "gemini": {
-            "configured": gemini_health.get("gemini_configured", False),
-            "enabled": gemini_health.get("use_gemini", False),
-            "text_model": gemini_health.get("gemini_text_model"),
-            "code_model": gemini_health.get("gemini_code_model"),
-            "vision_model": settings.gemini_vision_model,
-        },
-        "ollama_fallback": {
-            "status": ollama_health.get("status"),
-            "host": gemini_health.get("ollama_host"),
-            "fallback_text_model": gemini_health.get("ollama_fallback"),
-            "fallback_vision_model": settings.ollama_fallback_vision,
-            "available_models": ollama_health.get("available_models", []),
-            "rag_enabled": ollama_health.get("rag_enabled", False),
-        },
-        "model_config": {
-            "vision": {
-                "primary": settings.gemini_vision_model,
-                "fallback": settings.ollama_fallback_vision,
-            },
-            "text": {
-                "primary": settings.gemini_text_model,
-                "fallback": settings.ollama_fallback_text,
-            },
-            "code": {
-                "primary": settings.gemini_code_model,
-                "fallback": settings.ollama_fallback_text,
-            },
-        },
+    """Report the actual configured providers and WCAG grounding state."""
+    health = get_provider_manager().health_check()
+    health["wcag_grounding"] = {
+        "corpus_enabled": accessibility_ai_client.enable_rag,
+        "corpus_initialized": accessibility_ai_client._kb_initialized,
+        "embedding_provider": getattr(settings, "embedding_provider", "none"),
     }
+    return health
 
 
 # AI analysis endpoints (PROTECTED - requires API key)
@@ -909,44 +866,34 @@ async def analyze_violation(
 
     Requires authentication via API key.
 
-    Uses Gemini with RAG-enhanced WCAG context for grounded, consistent classifications.
+    Uses the configured provider with exact WCAG corpus grounding.
 
      For image-alt violations, uses vision AI to generate proper alt text!
     """
     try:
-        # Step 1: Classify issue severity using Gemini with RAG-enhanced WCAG context
-        classification_result = await gemini_client.classify_severity_with_rag(
-            rule_id=request.rule_id,
-            impact=request.impact,
-            html_snippet=request.html_snippet,
-            selector=request.selector,
-            violation_description=None,
-        )
-
-        if classification_result.get("success"):
-            classification = {
-                "severity": classification_result.get("severity", "Medium"),
-                "explanation": classification_result.get("explanation", ""),
-                "business_impact": classification_result.get("business_impact", ""),
-                "provider": classification_result.get("provider"),
-                "model": classification_result.get("model"),
-                "inference_time": classification_result.get("inference_time", 0),
-                "rag_enabled": classification_result.get("rag_enabled", False),
-                "rag_guidelines": classification_result.get("rag_guidelines", []),
-            }
-        else:
-            # Fallback to Ollama RAG classification
-            logger.warning(
-                "Gemini RAG classification failed, falling back to Ollama RAG"
-            )
-            classification = await ollama_client.classify_issue_with_rag(
+        classification_result = (
+            await accessibility_ai_client.classify_severity_with_rag(
                 rule_id=request.rule_id,
                 impact=request.impact,
                 html_snippet=request.html_snippet,
                 selector=request.selector,
                 violation_description=None,
             )
-            classification["provider"] = "ollama"
+        )
+
+        classification = {
+            "severity": classification_result.get("severity", "Medium"),
+            "severity_source": classification_result.get("severity_source"),
+            "explanation": classification_result.get("explanation", ""),
+            "business_impact": classification_result.get("business_impact", ""),
+            "provider": classification_result.get("provider"),
+            "model": classification_result.get("model"),
+            "inference_time": classification_result.get("inference_time", 0),
+            "rag_enabled": classification_result.get("rag_enabled", False),
+            "rag_guidelines": classification_result.get("rag_guidelines", []),
+        }
+        if classification_result.get("error"):
+            classification["error"] = classification_result["error"]
 
         # Step 2: Generate fix if requested and severity is High/Critical
         if request.generate_fix and classification.get("severity") in [
@@ -955,8 +902,9 @@ async def analyze_violation(
         ]:
             # For image-alt violations, use vision AI to generate alt text
             if request.rule_id == "image-alt":
-                ai_alt_text = await generate_image_alt_text(request.html_snippet)
-                if ai_alt_text:
+                image_result = await generate_image_alt_text(request.html_snippet)
+                if image_result:
+                    ai_alt_text = image_result["alt_text"]
                     src_match = re.search(r'src=["\'](.*?)["\']', request.html_snippet)
                     src = src_match.group(1) if src_match else "image.jpg"
 
@@ -973,14 +921,15 @@ async def analyze_violation(
 2. Verify the description accurately represents the image content
 3. Test with screen reader to ensure proper announcement
 """,
-                        "model": f"{settings.gemini_vision_model} (vision)",
-                        "inference_time": 0.0,
+                        "model": image_result.get("model"),
+                        "inference_time": image_result.get("inference_time", 0.0),
                         "ai_generated_alt_text": ai_alt_text,
-                        "provider": "gemini",
+                        "provider": image_result.get("provider"),
                     }
                 else:
-                    # Fallback to Gemini code fix generation
-                    fix_result = await gemini_client.generate_code_fix(
+                    # Vision failed closed; a configured text/code provider may
+                    # still produce a code-only remediation for human review.
+                    fix_result = await accessibility_ai_client.generate_code_fix(
                         html_snippet=request.html_snippet,
                         rule_id=request.rule_id,
                         issue_description=classification.get("explanation", ""),
@@ -995,8 +944,7 @@ async def analyze_violation(
                         "vision_ai_failed": True,
                     }
             else:
-                # Non-image violations: use Gemini code fix generation
-                fix_result = await gemini_client.generate_code_fix(
+                fix_result = await accessibility_ai_client.generate_code_fix(
                     html_snippet=request.html_snippet,
                     rule_id=request.rule_id,
                     issue_description=classification.get("explanation", ""),
@@ -1031,7 +979,7 @@ async def batch_analyze_violations(
     This endpoint is designed for CLI tools that scan entire pages
     and need efficient AI analysis of all violations at once.
 
-    Uses Gemini with RAG-enhanced WCAG context for grounded, consistent classifications.
+    Uses the configured provider with exact WCAG corpus grounding.
     Returns AI classification for all issues, plus code fixes for
     Critical/High severity violations if requested.
     """
@@ -1039,36 +987,29 @@ async def batch_analyze_violations(
 
     for violation in request.violations:
         try:
-            # Step 1: Classify with Gemini + RAG (primary) or Ollama RAG (fallback)
-            classification_result = await gemini_client.classify_severity_with_rag(
-                rule_id=violation.rule_id,
-                impact=violation.impact,
-                html_snippet=violation.html_snippet,
-                selector=violation.selector,
-                violation_description=violation.description,
-            )
-
-            if classification_result.get("success"):
-                classification = {
-                    "severity": classification_result.get("severity", "Medium"),
-                    "explanation": classification_result.get("explanation", ""),
-                    "business_impact": classification_result.get("business_impact", ""),
-                    "provider": classification_result.get("provider"),
-                    "model": classification_result.get("model"),
-                    "inference_time": classification_result.get("inference_time", 0),
-                    "rag_enabled": classification_result.get("rag_enabled", False),
-                    "rag_guidelines": classification_result.get("rag_guidelines", []),
-                }
-            else:
-                # Fallback to Ollama RAG classification
-                classification = await ollama_client.classify_issue_with_rag(
+            classification_result = (
+                await accessibility_ai_client.classify_severity_with_rag(
                     rule_id=violation.rule_id,
                     impact=violation.impact,
                     html_snippet=violation.html_snippet,
                     selector=violation.selector,
                     violation_description=violation.description,
                 )
-                classification["provider"] = "ollama"
+            )
+
+            classification = {
+                "severity": classification_result.get("severity", "Medium"),
+                "severity_source": classification_result.get("severity_source"),
+                "explanation": classification_result.get("explanation", ""),
+                "business_impact": classification_result.get("business_impact", ""),
+                "provider": classification_result.get("provider"),
+                "model": classification_result.get("model"),
+                "inference_time": classification_result.get("inference_time", 0),
+                "rag_enabled": classification_result.get("rag_enabled", False),
+                "rag_guidelines": classification_result.get("rag_guidelines", []),
+            }
+            if classification_result.get("error"):
+                classification["error"] = classification_result["error"]
 
             violation_result = {
                 "id": violation.id,
@@ -1082,8 +1023,9 @@ async def batch_analyze_violations(
                 "High",
             ]:
                 if violation.rule_id == "image-alt":
-                    ai_alt_text = await generate_image_alt_text(violation.html_snippet)
-                    if ai_alt_text:
+                    image_result = await generate_image_alt_text(violation.html_snippet)
+                    if image_result:
+                        ai_alt_text = image_result["alt_text"]
                         src_match = re.search(
                             r'src=["\'](.*?)["\']', violation.html_snippet
                         )
@@ -1102,14 +1044,13 @@ async def batch_analyze_violations(
 2. Verify the description accurately represents the image content
 3. Test with screen reader to ensure proper announcement
 """,
-                            "model": f"{settings.gemini_vision_model} (vision)",
-                            "inference_time": 0.0,
+                            "model": image_result.get("model"),
+                            "inference_time": image_result.get("inference_time", 0.0),
                             "ai_generated_alt_text": ai_alt_text,
-                            "provider": "gemini",
+                            "provider": image_result.get("provider"),
                         }
                     else:
-                        # Fallback to Gemini code fix
-                        fix_result = await gemini_client.generate_code_fix(
+                        fix_result = await accessibility_ai_client.generate_code_fix(
                             html_snippet=violation.html_snippet,
                             rule_id=violation.rule_id,
                             issue_description=classification.get("explanation", ""),
@@ -1124,8 +1065,7 @@ async def batch_analyze_violations(
                             "vision_ai_failed": True,
                         }
                 else:
-                    # Non-image violations: use Gemini code fix generation
-                    fix_result = await gemini_client.generate_code_fix(
+                    fix_result = await accessibility_ai_client.generate_code_fix(
                         html_snippet=violation.html_snippet,
                         rule_id=violation.rule_id,
                         issue_description=classification.get("explanation", ""),
@@ -1158,7 +1098,7 @@ async def batch_analyze_violations(
 async def test_ai(
     api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
 ):
-    """Test AI integration with a sample violation using Gemini.
+    """Test AI integration with a sample violation using the configured provider.
 
     Requires authentication via API key.
     """
@@ -1170,14 +1110,13 @@ async def test_ai(
     }
 
     try:
-        # Test Gemini classification
-        result = await gemini_client.classify_severity(**sample_violation)
+        result = await accessibility_ai_client.classify_severity(**sample_violation)
 
         return {
             "message": "AI test successful",
             "sample_violation": sample_violation,
             "ai_analysis": result,
-            "provider": result.get("provider", "gemini"),
+            "provider": result.get("provider", "none"),
             "model": result.get("model"),
             "inference_time": result.get("inference_time"),
         }

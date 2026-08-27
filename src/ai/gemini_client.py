@@ -1,4 +1,4 @@
-"""Gemini API client for text and code generation with Ollama fallback.
+"""Provider-neutral accessibility analysis compatibility client.
 
 Enhanced with RAG (Retrieval-Augmented Generation) for grounding
 severity classifications in canonical WCAG guidelines.
@@ -10,6 +10,8 @@ import logging
 from typing import Dict, Any, Optional
 
 from src.config.settings import get_settings
+from .providers.base import LLMResponse
+from .providers.manager import ProviderManager, get_provider_manager
 from .wcag_knowledge_base import WCAGKnowledgeBase
 from .severity_rules import resolve_severity
 
@@ -17,18 +19,30 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiClient:
-    """Unified client for Gemini API calls with Ollama fallback."""
+    """Preserve the legacy analysis API while routing through ProviderManager.
+
+    The class name remains for import compatibility. Public generation methods
+    honor ``LLM_PROVIDER`` and its explicitly configured fallback; the private
+    direct Gemini/Ollama transports are retained only for older callers that
+    import them directly.
+    """
 
     # Models that use thinking mode and need higher token limits
     THINKING_MODELS = ["gemini-2.5", "gemini-3"]
 
-    def __init__(self, enable_rag: bool = True):
-        """Initialize Gemini client with settings.
+    def __init__(
+        self,
+        enable_rag: bool = True,
+        provider_manager: Optional[ProviderManager] = None,
+    ):
+        """Initialize the compatibility client.
 
         Args:
             enable_rag: Enable RAG for grounding classifications in WCAG knowledge base
+            provider_manager: Optional manager injection for tests or policy-bound callers
         """
         self.settings = get_settings()
+        self.provider_manager = provider_manager or get_provider_manager()
         self.api_key = self.settings.gemini_api_key
         self.api_base = self.settings.gemini_api_base
         self.text_model = self.settings.gemini_text_model
@@ -43,7 +57,7 @@ class GeminiClient:
         # run Gemini-only on purpose (e.g. hosts without the resources for local
         # inference), so a disabled fallback must stay disabled.
         self.fallback_enabled = str(
-            getattr(self.settings, "llm_fallback_provider", "ollama")
+            getattr(self.settings, "llm_fallback_provider", "none")
         ).strip().lower() not in ("none", "", "disabled")
 
         # RAG knowledge base for grounding classifications
@@ -53,11 +67,31 @@ class GeminiClient:
 
         if enable_rag:
             try:
-                self.kb = WCAGKnowledgeBase(ollama_host=self.ollama_host)
-                logger.info("RAG knowledge base configured for Gemini client")
+                self.kb = WCAGKnowledgeBase(
+                    ollama_host=self.ollama_host,
+                    embedding_model=self.settings.ollama_embedding_model,
+                    embedding_provider=getattr(
+                        self.settings, "embedding_provider", "none"
+                    ),
+                )
+                logger.info("WCAG knowledge base configured for AI analysis")
             except Exception as e:
                 logger.warning(f"RAG knowledge base not available: {e}")
                 self.enable_rag = False
+
+    @staticmethod
+    def _response_dict(response: LLMResponse) -> Dict[str, Any]:
+        """Translate the shared provider response into the legacy dictionary."""
+        result = {
+            "success": response.success,
+            "content": response.content,
+            "inference_time": response.inference_time,
+            "provider": response.provider,
+            "model": response.model,
+        }
+        if response.error:
+            result["error"] = response.error
+        return result
 
     async def initialize_rag(self) -> bool:
         """Initialize RAG knowledge base connection (call once at startup)."""
@@ -69,11 +103,19 @@ class GeminiClient:
 
         try:
             await self.kb.initialize()
+            # Corpus seeding is provider-independent. A disabled embedding
+            # backend only removes optional semantic search; exact rule-ID
+            # grounding remains ready after the seed completes.
+            await self.kb.bootstrap()
             self._kb_initialized = True
-            logger.info("RAG knowledge base initialized successfully")
+            logger.info("WCAG knowledge base initialized successfully")
             return True
         except Exception as e:
             logger.error(f"Failed to initialize RAG knowledge base: {e}")
+            try:
+                await self.kb.close()
+            except Exception:
+                logger.debug("WCAG knowledge base cleanup also failed", exc_info=True)
             self.enable_rag = False
             return False
 
@@ -286,7 +328,7 @@ class GeminiClient:
         temperature: float = 0.3,
         system_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Generate text using Gemini (or Ollama fallback).
+        """Generate text through the configured provider manager.
 
         Args:
             prompt: The input prompt
@@ -297,44 +339,13 @@ class GeminiClient:
         Returns:
             Dict with content, inference_time, provider, model
         """
-        provider = "gemini"
-        model = self.text_model
-
-        if self.use_gemini:
-            content, elapsed = await self._call_gemini(
-                prompt, model, max_tokens, temperature, system_prompt
-            )
-
-            if content.startswith("ERROR:") and self.fallback_enabled:
-                logger.warning(f"Gemini failed, trying Ollama: {content}")
-                provider = "ollama"
-                model = self.ollama_fallback
-                content, elapsed = self._call_ollama(
-                    prompt, model, max_tokens, temperature, system_prompt
-                )
-        else:
-            provider = "ollama"
-            model = self.ollama_fallback
-            content, elapsed = self._call_ollama(
-                prompt, model, max_tokens, temperature, system_prompt
-            )
-
-        if content.startswith("ERROR:"):
-            return {
-                "success": False,
-                "error": content,
-                "inference_time": elapsed,
-                "provider": provider,
-                "model": model,
-            }
-
-        return {
-            "success": True,
-            "content": content,
-            "inference_time": elapsed,
-            "provider": provider,
-            "model": model,
-        }
+        response = await self.provider_manager.generate_text(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+        )
+        return self._response_dict(response)
 
     def generate_text_sync(
         self,
@@ -343,45 +354,14 @@ class GeminiClient:
         temperature: float = 0.3,
         system_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Synchronous version of generate_text."""
-        provider = "gemini"
-        model = self.text_model
-
-        if self.use_gemini:
-            content, elapsed = self._call_gemini_sync(
-                prompt, model, max_tokens, temperature, system_prompt
-            )
-
-            if content.startswith("ERROR:") and self.fallback_enabled:
-                logger.warning(f"Gemini failed, trying Ollama: {content}")
-                provider = "ollama"
-                model = self.ollama_fallback
-                content, elapsed = self._call_ollama(
-                    prompt, model, max_tokens, temperature, system_prompt
-                )
-        else:
-            provider = "ollama"
-            model = self.ollama_fallback
-            content, elapsed = self._call_ollama(
-                prompt, model, max_tokens, temperature, system_prompt
-            )
-
-        if content.startswith("ERROR:"):
-            return {
-                "success": False,
-                "error": content,
-                "inference_time": elapsed,
-                "provider": provider,
-                "model": model,
-            }
-
-        return {
-            "success": True,
-            "content": content,
-            "inference_time": elapsed,
-            "provider": provider,
-            "model": model,
-        }
+        """Synchronous version of :meth:`generate_text`."""
+        response = self.provider_manager.generate_text_sync(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+        )
+        return self._response_dict(response)
 
     async def generate_code_fix(
         self,
@@ -428,32 +408,21 @@ EXPLANATION:
 [your explanation here]
 """
 
-        provider = "gemini"
-        model = self.code_model
+        response = await self.provider_manager.generate_code(
+            prompt=prompt,
+            language="html",
+            max_tokens=1000,
+            temperature=0.2,
+        )
+        content = response.content
+        elapsed = response.inference_time
+        provider = response.provider
+        model = response.model
 
-        if self.use_gemini:
-            content, elapsed = await self._call_gemini(
-                prompt, model, max_tokens=1000, temperature=0.2
-            )
-
-            if content.startswith("ERROR:") and self.fallback_enabled:
-                logger.warning(f"Gemini failed for code fix, trying Ollama: {content}")
-                provider = "ollama"
-                model = self.ollama_fallback
-                content, elapsed = self._call_ollama(
-                    prompt, model, max_tokens=1000, temperature=0.2
-                )
-        else:
-            provider = "ollama"
-            model = self.ollama_fallback
-            content, elapsed = self._call_ollama(
-                prompt, model, max_tokens=1000, temperature=0.2
-            )
-
-        if content.startswith("ERROR:"):
+        if not response.success:
             return {
                 "success": False,
-                "error": content,
+                "error": response.error or "Code generation failed",
                 "inference_time": elapsed,
                 "provider": provider,
                 "model": model,
@@ -537,34 +506,18 @@ Respond ONLY with valid JSON:
   "business_impact": "Legal/business risk"
 }}"""
 
-        provider = "gemini"
-        model = self.text_model
+        generated = await self.generate_text(prompt, max_tokens=300, temperature=0.3)
+        content = generated.get("content", "")
+        elapsed = generated.get("inference_time", 0.0)
+        provider = generated.get("provider", "none")
+        model = generated.get("model", "")
 
-        if self.use_gemini:
-            content, elapsed = await self._call_gemini(
-                prompt, model, max_tokens=300, temperature=0.3
-            )
-
-            if content.startswith("ERROR:") and self.fallback_enabled:
-                logger.warning(f"Gemini failed for classification: {content}")
-                provider = "ollama"
-                model = self.ollama_fallback
-                content, elapsed = self._call_ollama(
-                    prompt, model, max_tokens=300, temperature=0.3
-                )
-        else:
-            provider = "ollama"
-            model = self.ollama_fallback
-            content, elapsed = self._call_ollama(
-                prompt, model, max_tokens=300, temperature=0.3
-            )
-
-        if content.startswith("ERROR:"):
+        if not generated.get("success"):
             # Severity survives a provider outage: it was computed before the
             # model was called and does not depend on it. Only the prose is lost.
             return {
                 "success": False,
-                "error": content,
+                "error": generated.get("error", "Text generation failed"),
                 "severity": resolution.severity,
                 "severity_source": resolution.source,
                 "explanation": "",
@@ -621,9 +574,8 @@ Respond ONLY with valid JSON:
     ) -> Dict[str, Any]:
         """Classify accessibility issue severity with RAG-enhanced context.
 
-        Uses WCAG knowledge base to retrieve relevant guidelines and severity
-        criteria, then sends to Gemini with grounded context for more
-        consistent classifications.
+        Uses the WCAG knowledge base to retrieve the exact rule and sends that
+        grounded context through the configured provider manager.
 
         Args:
             rule_id: WCAG rule ID (e.g., "button-name")
@@ -649,13 +601,11 @@ Respond ONLY with valid JSON:
         start_time = time.perf_counter()
 
         try:
-            # Create search query from violation context
-            search_query = (
-                f"{rule_id} {violation_description or ''} {html_snippet[:100]}"
-            )
-
-            # Retrieve relevant WCAG guidelines via semantic search
-            guidelines = await self.kb.search(search_query, top_k=2, min_similarity=0.4)
+            # Axe already gives us a stable rule ID. Exact lookup is stronger
+            # than semantic similarity here and keeps canonical grounding
+            # available when an operator has not configured embeddings.
+            guideline = await self.kb.get_by_rule_id(rule_id)
+            guidelines = [guideline] if guideline else []
 
             if not guidelines:
                 logger.debug(
@@ -698,34 +648,19 @@ Respond ONLY with valid JSON:
   "business_impact": "Legal/business risk based on WCAG level"
 }}"""
 
-            provider = "gemini"
-            model = self.text_model
-
-            if self.use_gemini:
-                content, elapsed = await self._call_gemini(
-                    prompt, model, max_tokens=400, temperature=0.2
-                )
-
-                if content.startswith("ERROR:") and self.fallback_enabled:
-                    logger.warning(f"Gemini failed for RAG classification: {content}")
-                    provider = "ollama"
-                    model = self.ollama_fallback
-                    content, elapsed = self._call_ollama(
-                        prompt, model, max_tokens=400, temperature=0.2
-                    )
-            else:
-                provider = "ollama"
-                model = self.ollama_fallback
-                content, elapsed = self._call_ollama(
-                    prompt, model, max_tokens=400, temperature=0.2
-                )
+            generated = await self.generate_text(
+                prompt, max_tokens=400, temperature=0.2
+            )
+            content = generated.get("content", "")
+            provider = generated.get("provider", "none")
+            model = generated.get("model", "")
 
             total_time = time.perf_counter() - start_time
 
-            if content.startswith("ERROR:"):
+            if not generated.get("success"):
                 return {
                     "success": False,
-                    "error": content,
+                    "error": generated.get("error", "Text generation failed"),
                     "severity": resolution.severity,
                     "severity_source": resolution.source,
                     "explanation": "",
@@ -792,8 +727,7 @@ Respond ONLY with valid JSON:
             logger.error(
                 "RAG retrieval failed for rule_id=%s; falling back to ungrounded "
                 "classification. Explanations will not cite retrieved WCAG text. "
-                "Check the embedding model and that wcag_guidelines is seeded "
-                "and embedded. Cause: %s",
+                "Check that wcag_guidelines is seeded and reachable. Cause: %s",
                 rule_id,
                 e,
                 exc_info=True,
@@ -806,43 +740,13 @@ Respond ONLY with valid JSON:
             return result
 
     def health_check(self) -> Dict[str, Any]:
-        """Check if AI services are available."""
-        health = {
-            "status": "healthy",
-            "gemini_configured": bool(self.api_key),
-            "gemini_text_model": self.text_model,
-            "gemini_code_model": self.code_model,
-            "use_gemini": self.use_gemini,
-            "ollama_fallback": self.ollama_fallback,
-            "ollama_host": self.ollama_host,
-            "rag_enabled": self.enable_rag,
-            "rag_initialized": self._kb_initialized,
+        """Check the configured provider chain and WCAG corpus state."""
+        health = self.provider_manager.health_check()
+        health["wcag_grounding"] = {
+            "corpus_enabled": self.enable_rag,
+            "corpus_initialized": self._kb_initialized,
+            "embedding_provider": getattr(self.settings, "embedding_provider", "none"),
         }
-
-        if not self.use_gemini:
-            # Check Ollama availability
-            try:
-                import ollama
-
-                models_response = ollama.list()
-                if hasattr(models_response, "models"):
-                    available = [m.model for m in models_response.models]
-                elif isinstance(models_response, dict) and "models" in models_response:
-                    available = [m["name"] for m in models_response["models"]]
-                else:
-                    available = []
-
-                fallback_available = any(
-                    self.ollama_fallback in name for name in available
-                )
-                health["ollama_available"] = fallback_available
-                if not fallback_available:
-                    health["status"] = "degraded"
-                    health["warning"] = f"Ollama model {self.ollama_fallback} not found"
-            except Exception as e:
-                health["status"] = "degraded"
-                health["ollama_error"] = str(e)
-
         return health
 
 
@@ -850,9 +754,14 @@ Respond ONLY with valid JSON:
 _gemini_client: Optional[GeminiClient] = None
 
 
-def get_gemini_client() -> GeminiClient:
-    """Get global Gemini client instance (singleton)."""
+def get_accessibility_ai_client() -> GeminiClient:
+    """Get the global provider-neutral accessibility analysis adapter."""
     global _gemini_client
     if _gemini_client is None:
         _gemini_client = GeminiClient()
     return _gemini_client
+
+
+def get_gemini_client() -> GeminiClient:
+    """Backward-compatible alias for :func:`get_accessibility_ai_client`."""
+    return get_accessibility_ai_client()

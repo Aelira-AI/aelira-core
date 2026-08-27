@@ -20,12 +20,16 @@ import json
 import sys
 from typing import List, Optional
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from src.ai.wcag_bootstrap import create_embedding_text  # noqa: E402
+
 # Configuration
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://aelira:localdev123@localhost:5432/aelira_dev"
 )
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-EMBEDDING_MODEL = "nomic-embed-text"
+EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 
 
 async def check_ollama_model(client: httpx.AsyncClient) -> bool:
@@ -62,40 +66,6 @@ async def generate_embedding(
     except Exception as e:
         print(f"Failed to generate embedding: {e}")
         return None
-
-
-def create_embedding_text(row: dict) -> str:
-    """Create rich text for embedding from guideline data."""
-    # Combine relevant fields for semantic search
-    parts = [
-        f"Rule: {row['rule_id']}",
-        f"Title: {row['title']}",
-        f"WCAG {row['wcag_criterion']} Level {row['wcag_level']}",
-        f"Principle: {row['principle']}",
-        f"Guideline: {row['guideline']}",
-        f"Description: {row['description']}",
-    ]
-
-    # Add severity criteria if available
-    if row.get("severity_criteria"):
-        severity = row["severity_criteria"]
-        if isinstance(severity, str):
-            try:
-                severity = json.loads(severity)
-            except (json.JSONDecodeError, TypeError):
-                pass
-        if isinstance(severity, dict):
-            parts.append("Severity Criteria:")
-            for level, desc in severity.items():
-                parts.append(f"  {level}: {desc}")
-
-    # Add tags
-    if row.get("tags"):
-        tags = row["tags"]
-        if tags:
-            parts.append(f"Tags: {', '.join(tags)}")
-
-    return "\n".join(parts)
 
 
 async def main():
