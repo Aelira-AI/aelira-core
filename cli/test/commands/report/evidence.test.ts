@@ -23,7 +23,7 @@ describe('report evidence command', () => {
         headers: { 'content-type': 'application/pdf' },
         status: 200,
       })
-    globalThis.fetch = (async (input: Request | URL | string) => {
+    globalThis.fetch = (async (input: Request | string | URL) => {
       const url = String(input)
       requestedUrls.push(url)
       return respond(url)
