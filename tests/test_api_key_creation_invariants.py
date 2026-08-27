@@ -83,6 +83,9 @@ def test_magic_link_new_user_does_not_create_or_persist_an_api_key(monkeypatch):
     assert not any(isinstance(row, APIKey) for row in added)
     assert sum(isinstance(row, User) for row in added) == 1
     assert sum(isinstance(row, Department) for row in added) == 1
+    db.commit.assert_called_once()
+    lock_statement = str(db.execute.call_args.args[0])
+    assert "pg_advisory_xact_lock" in lock_statement
 
 
 def test_legacy_session_dependency_without_active_key_returns_compat_identity_and_never_creates(

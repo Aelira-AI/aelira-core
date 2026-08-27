@@ -32,8 +32,10 @@ for pattern in unsafe_patterns:
         )
 
 # Create engine
+DATABASE_ISOLATION_LEVEL = "READ COMMITTED"
 engine = create_engine(
     DATABASE_URL,
+    isolation_level=DATABASE_ISOLATION_LEVEL,
     echo=os.getenv("SQL_ECHO", "false").lower() == "true",  # Log SQL queries in dev
     pool_size=10,  # Connection pool size (per worker process)
     max_overflow=20,  # Max connections beyond pool_size

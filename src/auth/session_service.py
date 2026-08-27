@@ -24,6 +24,7 @@ from typing import Optional, Tuple
 
 import bcrypt
 from cryptography.fernet import Fernet
+from sqlalchemy import text
 from sqlalchemy.orm import Session as DBSession
 
 from ..db.models import User, UserSession, MagicLink, Department, AuthProvider
@@ -32,6 +33,11 @@ from ..config.settings import get_settings
 from ..mailer.email_service import get_email_service
 
 logger = logging.getLogger(__name__)
+
+# Stable two-part PostgreSQL advisory key: "AELI" / "BOOT". Transaction-scoped
+# locking coordinates independent API workers and cannot leak through the pool.
+_FIRST_ADMIN_BOOTSTRAP_LOCK_NAMESPACE = 0x41454C49
+_FIRST_ADMIN_BOOTSTRAP_LOCK_KEY = 0x424F4F54
 
 
 class SessionService:
@@ -566,20 +572,12 @@ class SessionService:
         Returns:
             Tuple of (User, is_new_user)
         """
+        normalized_email = email.lower()
+
         # Check if user exists
-        user = db.query(User).filter(User.email == email.lower()).first()
+        user = db.query(User).filter(User.email == normalized_email).first()
         if user:
-            # Deactivated accounts cannot log back in via magic link
-            if user.is_active is False:
-                raise ValueError(
-                    "This account has been deactivated. Please contact support."
-                )
-            # Mark email as verified (magic link proves email ownership)
-            if not user.email_verified:
-                user.email_verified = True
-                user.email_verified_at = datetime.now(timezone.utc)
-                db.commit()
-            return user, False
+            return self._complete_existing_magic_link_user(db, user)
 
         # Check if email is blocked (deactivated/deleted account)
         from ..services.account_deletion_service import AccountDeletionService
@@ -599,7 +597,35 @@ class SessionService:
         #    INDIVIDUAL_ACCOUNT_LIMIT).
         is_bootstrap = db.query(User).count() == 0
 
+        if is_bootstrap:
+            # The count is only a cheap candidate check. Both contenders may
+            # observe zero, so the decision is repeated after a database lock.
+            # PostgreSQL's supported READ COMMITTED default refreshes visibility
+            # for each statement after a waiting worker acquires the lock.
+            db.execute(
+                text("SELECT pg_advisory_xact_lock(:namespace, :lock_key)"),
+                {
+                    "namespace": _FIRST_ADMIN_BOOTSTRAP_LOCK_NAMESPACE,
+                    "lock_key": _FIRST_ADMIN_BOOTSTRAP_LOCK_KEY,
+                },
+            )
+
+            user = db.query(User).filter(User.email == normalized_email).first()
+            if user:
+                result = self._complete_existing_magic_link_user(db, user)
+                db.commit()  # Release the transaction-scoped bootstrap lock.
+                return result
+
+            is_bootstrap = db.query(User).count() == 0
+        else:
+            # A concurrent creator may have committed this exact account between
+            # the initial lookup and the populated-database observation.
+            user = db.query(User).filter(User.email == normalized_email).first()
+            if user:
+                return self._complete_existing_magic_link_user(db, user)
+
         if not is_bootstrap and not self.settings.open_signup:
+            db.rollback()  # Also releases a held transaction-scoped lock.
             raise ValueError(
                 "Account provisioning is closed on this deployment. "
                 "Ask your administrator for an invitation."
@@ -618,11 +644,8 @@ class SessionService:
                 tier=os.getenv("DEFAULT_DEPARTMENT_TIER", "department"),
             )
             db.add(department)
-            db.commit()
-            db.refresh(department)
-            logger.info(
-                f"First-run bootstrap: created department {department.id} for {email}"
-            )
+            db.flush()
+            logger.info("First-run bootstrap staged department %s", department.id)
         else:
             from ..config.settings import INDIVIDUAL_ACCOUNT_LIMIT
 
@@ -641,7 +664,7 @@ class SessionService:
         from ..db.models import UserRole
 
         user = User(
-            email=email.lower(),
+            email=normalized_email,
             name=name or email.split("@")[0],
             department_id=department.id,
             role=UserRole.ADMIN if is_bootstrap else UserRole.FACULTY,
@@ -655,7 +678,7 @@ class SessionService:
         db.commit()
         db.refresh(user)
 
-        logger.info(f"Created new user {user.id} via magic link for {email}")
+        logger.info("Created new user %s via magic link", user.id)
 
         # Send admin notification for new signup (fire and forget)
         self._notify_admins_new_signup(
@@ -666,6 +689,22 @@ class SessionService:
         self._send_welcome_email(email, user.name, department.tier)
 
         return user, True
+
+    @staticmethod
+    def _complete_existing_magic_link_user(
+        db: DBSession,
+        user: User,
+    ) -> Tuple[User, bool]:
+        """Apply magic-link verification state to an existing account."""
+        if user.is_active is False:
+            raise ValueError(
+                "This account has been deactivated. Please contact support."
+            )
+        if not user.email_verified:
+            user.email_verified = True
+            user.email_verified_at = datetime.now(timezone.utc)
+            db.commit()
+        return user, False
 
     def _notify_admins_new_signup(
         self,
