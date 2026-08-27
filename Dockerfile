@@ -145,7 +145,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Entrypoint runs alembic migrations then starts uvicorn
-# NOTE: Using 1 worker until we migrate to proper task queue (Celery/RQ)
-# Multiple workers cause deadlocks with sync Playwright in BackgroundTasks
+# Entrypoint runs alembic migrations then starts the configurable API workers.
+# Long-running scans execute in the separate durable worker service.
 ENTRYPOINT ["/app/entrypoint.sh"]

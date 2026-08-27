@@ -7,7 +7,7 @@ import tempfile
 import time
 from typing import Optional, Tuple
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from ...db.database import get_db_dependency
@@ -15,7 +15,6 @@ from ...db.models import APIKey, ScanType
 from ...education.multimedia_processor import MultimediaProcessor
 from ...middleware.quota import require_feature
 from ._shared import (
-    _run_in_thread,
     get_api_key_or_mock,
     validate_uploaded_file,
 )
@@ -312,7 +311,6 @@ def process_multimedia_background(
 
 @router.post("/multimedia/scan", response_model=dict)
 async def scan_multimedia(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     generate_captions: bool = True,
     generate_audio_descriptions: bool = True,
@@ -394,39 +392,37 @@ async def scan_multimedia(
         progress_message="Starting multimedia processing...",
     )
     db.add(scan)
+    db.flush()
+
+    from ...utils.file_storage import save_uploaded_file
+
+    await file.seek(0)
+    storage_path = await save_uploaded_file(file, department_id, scan.id)
+    scan.storage_path = storage_path
+
+    from ...jobs.local_scan_job import enqueue_local_scan_job
+
+    enqueue_local_scan_job(
+        db,
+        scan=scan,
+        scan_kind="local_multimedia",
+        options={
+            "generate_captions": generate_captions,
+            "generate_audio_descriptions": generate_audio_descriptions,
+            "generate_spoken_descriptions": generate_spoken_descriptions,
+            "detect_flashing": detect_flashing,
+            "generate_transcript": generate_transcript,
+            "whisper_model": whisper_model,
+        },
+        input_sha256=hashlib.sha256(content).hexdigest(),
+    )
+
     db.commit()
     db.refresh(scan)
-
-    # Save temporarily for immediate processing
-    ext = os.path.splitext(file.filename)[1]
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-
-    db.commit()
 
     logger.info(
         f"Created scan {scan.id} for Multimedia: {file.filename} "
         f"(captions={generate_captions}, audio_desc={generate_audio_descriptions})"
-    )
-
-    # Start background processing (in thread pool to avoid blocking the event loop)
-    background_tasks.add_task(
-        _run_in_thread(
-            process_multimedia_background,
-            tmp_path,
-            content,
-            file.filename,
-            scan.id,
-            generate_captions,
-            generate_audio_descriptions,
-            generate_spoken_descriptions,
-            detect_flashing,
-            generate_transcript,
-            whisper_model,
-            user_id,
-            department_id,
-        )
     )
 
     # Return immediately with scan_id

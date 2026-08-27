@@ -91,10 +91,10 @@ instead of requiring a manual download/upload round-trip.
 `job_processor.py` is a background worker that polls a job queue table
 (`cloud_job_queue`) and dispatches to registered handlers —
 `cloud_scan_job.py`, `cloud_sync_job.py`, `remediation_job.py`,
-`upload_job.py`, `email_alert_job.py`, `account_deletion_job.py`. This is
-what drives asynchronous cloud-integration work; document uploads via the
-scan endpoints below use FastAPI `BackgroundTasks` directly rather than this
-queue.
+`upload_job.py`, `email_alert_job.py`, `account_deletion_job.py`, and the local
+scan dispatcher. This drives asynchronous cloud integration, uploaded
+document, code, multimedia, and website scanning work. API routes persist the
+input and enqueue a tenant-fenced job; the dedicated worker executes it.
 
 ### Dashboard (`dashboard/`)
 
