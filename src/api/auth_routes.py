@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 from datetime import datetime, timedelta
 import asyncio
 from dataclasses import dataclass
@@ -24,7 +24,14 @@ from urllib.parse import urlencode
 from fastapi.responses import JSONResponse
 
 from ..db.database import get_db_dependency
-from ..db.models import APIKey, User, Department, UserRole
+from ..db.models import (
+    APIKey,
+    User,
+    Department,
+    UserRole,
+    AuditLogAction,
+    AuditLogStatus,
+)
 from ..auth.dependencies import (
     AuthenticatedPrincipal,
     get_authenticated_principal,
@@ -42,7 +49,8 @@ from ..config.settings import get_settings
 from ..mailer.email_service import get_email_service
 from ..security.abuse_detector import check_signup_abuse, log_signup
 from ..security.disposable_domains import is_disposable_domain
-from ..security.audit_service import get_audit_service
+from ..security.audit_service import AuditPersistenceError, get_audit_service
+from ..security.client_ip import get_client_ip
 from ..services.email_templates import render_department_welcome_email
 from ..config.settings import get_settings as get_app_settings
 
@@ -537,6 +545,21 @@ def validate_api_key(
 
 # ==================== Department Management Endpoints ====================
 
+ProvisioningOutcome = Literal["created", "rejected"]
+ProvisioningReason = Literal[
+    "missing_credentials",
+    "credentials_rejected",
+    "lti_not_allowed",
+    "role_not_allowed",
+    "rate_limited",
+    "abuse_blocked",
+    "abuse_challenge_required",
+    "duplicate_department",
+]
+ProvisioningActorClass = Literal[
+    "authenticated", "anonymous_public", "anonymous_closed", "unresolved_credentials"
+]
+
 
 def _enforce_department_creation_principal(
     principal: AuthenticatedPrincipal,
@@ -553,6 +576,51 @@ def _enforce_department_creation_principal(
             detail="Administrator access required",
         )
     return principal
+
+
+def _audit_department_provisioning(
+    *,
+    db: Session,
+    request: Request,
+    provisioner: AuthenticatedPrincipal | None,
+    outcome: ProvisioningOutcome,
+    reason: ProvisioningReason | None = None,
+    target_department_id: str | None = None,
+    actor_class: ProvisioningActorClass | None = None,
+    auth_method: str | None = None,
+    commit: bool = True,
+):
+    """Persist a bounded cross-tenant provisioning event."""
+    try:
+        return get_audit_service(db).log_action(
+            action=AuditLogAction.DEPARTMENT_PROVISION,
+            status=(
+                AuditLogStatus.SUCCESS
+                if outcome == "created"
+                else AuditLogStatus.FAILURE
+            ),
+            user_id=provisioner.user_id if provisioner else None,
+            department_id=provisioner.department_id if provisioner else None,
+            resource_type="department",
+            resource_id=target_department_id,
+            ip_address=get_client_ip(request),
+            details={
+                "actor_class": actor_class
+                or ("authenticated" if provisioner else "anonymous_public"),
+                "auth_method": auth_method
+                or (provisioner.auth_method if provisioner else "public"),
+                "outcome": outcome,
+                **({"reason": reason} if reason else {}),
+            },
+            commit=commit,
+            required=commit,
+        )
+    except AuditPersistenceError:
+        logger.error("Required department provisioning audit is unavailable")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Department provisioning audit is unavailable",
+        ) from None
 
 
 def authorize_department_creation(
@@ -572,8 +640,54 @@ def authorize_department_creation(
     ):
         return None
 
-    principal = get_authenticated_principal(request, credentials, db)
-    return _enforce_department_creation_principal(principal)
+    principal: AuthenticatedPrincipal | None = None
+    try:
+        principal = get_authenticated_principal(request, credentials, db)
+        return _enforce_department_creation_principal(principal)
+    except HTTPException as exc:
+        principal = principal or getattr(request.state, "authenticated_principal", None)
+        unresolved_method = (
+            "bearer"
+            if has_authorization_header
+            else "session" if has_session_cookie else "none"
+        )
+        reason: ProvisioningReason
+        if principal is not None:
+            if (
+                principal.auth_method == "api_key"
+                and exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+            ):
+                reason = "rate_limited"
+            else:
+                reason = (
+                    "lti_not_allowed"
+                    if principal.auth_method == "lti"
+                    else "role_not_allowed"
+                )
+        else:
+            reason = (
+                "credentials_rejected"
+                if unresolved_method != "none"
+                else "missing_credentials"
+            )
+        _audit_department_provisioning(
+            db=db,
+            request=request,
+            provisioner=principal,
+            outcome="rejected",
+            reason=reason,
+            actor_class=(
+                "authenticated"
+                if principal
+                else (
+                    "unresolved_credentials"
+                    if unresolved_method != "none"
+                    else "anonymous_closed"
+                )
+            ),
+            auth_method=principal.auth_method if principal else unresolved_method,
+        )
+        raise
 
 
 @router.post("/departments", response_model=DepartmentResponse)
@@ -597,14 +711,9 @@ async def create_department(
     - Rate limiting on signup attempts
     """
     # Get client info for abuse detection
-    client_ip = http_request.client.host if http_request.client else "unknown"
+    client_ip = get_client_ip(http_request)
     user_agent = http_request.headers.get("user-agent")
     fingerprint = http_request.headers.get("x-device-fingerprint")
-
-    # Forward IP headers (if behind proxy)
-    forwarded_for = http_request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
 
     # Check for abuse before proceeding
     abuse_result = await check_signup_abuse(
@@ -625,6 +734,19 @@ async def create_department(
             success=False,
         )
 
+        outcome = (
+            "abuse_blocked"
+            if abuse_result.recommended_action == "block"
+            else "abuse_challenge_required"
+        )
+        _audit_department_provisioning(
+            db=db,
+            request=http_request,
+            provisioner=_provisioner,
+            outcome="rejected",
+            reason=outcome,
+        )
+
         if abuse_result.recommended_action == "block":
             logger.warning(
                 "Department creation blocked by abuse detector: action=%s",
@@ -634,6 +756,10 @@ async def create_department(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many signup attempts. Please try again later.",
             )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Additional verification is required before provisioning",
+        )
 
     # Check if department already exists
     existing = (
@@ -646,6 +772,14 @@ async def create_department(
     )
 
     if existing:
+        _audit_department_provisioning(
+            db=db,
+            request=http_request,
+            provisioner=_provisioner,
+            outcome="rejected",
+            reason="duplicate_department",
+            target_department_id=existing.id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Department already exists"
         )
@@ -661,9 +795,35 @@ async def create_department(
         trial_ends_at=datetime.utcnow() + timedelta(days=30),
     )
 
-    db.add(department)
-    db.commit()
-    db.refresh(department)
+    try:
+        db.add(department)
+        db.flush()
+        db.refresh(department)
+        response = DepartmentResponse(
+            id=department.id,
+            name=department.name,
+            institution=department.institution,
+            contact_email=department.contact_email,
+            tier=department.tier,
+            max_users=department.max_users,
+            created_at=department.created_at,
+        )
+        _audit_department_provisioning(
+            db=db,
+            request=http_request,
+            provisioner=_provisioner,
+            outcome="created",
+            target_department_id=department.id,
+            commit=False,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("Department provisioning persistence failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Department could not be created",
+        )
 
     logger.info("Created department %s", department.id)
 
@@ -691,15 +851,7 @@ async def create_department(
     except Exception as e:
         logger.warning("Failed to send department welcome email: %s", type(e).__name__)
 
-    return DepartmentResponse(
-        id=department.id,
-        name=department.name,
-        institution=department.institution,
-        contact_email=department.contact_email,
-        tier=department.tier,
-        max_users=department.max_users,
-        created_at=department.created_at,
-    )
+    return response
 
 
 @router.get("/departments/{department_id}", response_model=DepartmentResponse)
@@ -847,11 +999,8 @@ async def request_magic_link(
     settings = get_settings()
 
     # Get client info
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent")
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
 
     email = request_body.email.lower()
 
@@ -1058,11 +1207,8 @@ async def verify_magic_link(
     settings = get_settings()
 
     # Get client info
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent")
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
 
     # Verify the magic link
     magic_link = session_service.verify_magic_link(db, email.lower(), token)
@@ -1246,11 +1392,8 @@ async def refresh_session(
     settings = get_settings()
 
     # Get client info
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent")
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
 
     # Get refresh token from cookie
     refresh_token = request.cookies.get("aelira_refresh")

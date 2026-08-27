@@ -13,8 +13,13 @@ from sqlalchemy.orm import Session
 from fastapi import Request
 
 from ..db.models import AuditLog, AuditLogAction, AuditLogStatus
+from .client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
+
+
+class AuditPersistenceError(RuntimeError):
+    """Raised when a security-required audit event cannot be persisted."""
 
 
 class AuditService:
@@ -53,7 +58,8 @@ class AuditService:
         details: Optional[Dict[str, Any]] = None,
         request: Optional[Request] = None,
         commit: bool = True,
-    ) -> AuditLog:
+        required: bool = False,
+    ) -> AuditLog | None:
         """
         Log an audit event.
 
@@ -101,19 +107,23 @@ class AuditService:
         try:
             self.db.add(audit_log)
             self.db.commit()
-            self.db.refresh(audit_log)
-
-            logger.debug(
-                f"Audit log created: action={action}, user_id={user_id}, status={status}"
-            )
-
-            return audit_log
-
         except Exception as e:
             logger.error("Failed to create audit log: %s", type(e).__name__)
             self.db.rollback()
-            # Don't raise - audit logging should not break the main flow
+            if required:
+                raise AuditPersistenceError(
+                    "Required security audit event could not be persisted"
+                ) from None
+            # Routine audit logging remains best-effort for existing callers.
             return None
+
+        logger.debug(
+            "Audit log created: action=%s, user_id=%s, status=%s",
+            action,
+            user_id,
+            status,
+        )
+        return audit_log
 
     def log_login_success(
         self,
@@ -514,23 +524,8 @@ class AuditService:
         )
 
     def _get_client_ip(self, request: Request) -> str:
-        """Extract client IP from request, handling proxies."""
-        # Check for forwarded IP (behind load balancer/proxy)
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            # Take the first IP in the chain (original client)
-            return forwarded.split(",")[0].strip()
-
-        # Check for real IP header (Nginx)
-        real_ip = request.headers.get("x-real-ip")
-        if real_ip:
-            return real_ip
-
-        # Fall back to direct client IP
-        if request.client:
-            return request.client.host
-
-        return "unknown"
+        """Extract a client IP across the configured trusted-proxy boundary."""
+        return get_client_ip(request)
 
 
 def get_audit_service(db: Session) -> AuditService:

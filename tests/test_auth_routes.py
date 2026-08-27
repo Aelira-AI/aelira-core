@@ -40,6 +40,7 @@ from src.api.main import app
 from src.db.database import get_db_dependency
 from src.db.models import (
     APIKey,
+    AuditLog,
     DeletedEmail,
     Department,
     User,
@@ -123,6 +124,14 @@ def mock_db():
 
 def _use_db(db):
     app.dependency_overrides[get_db_dependency] = lambda: db
+
+
+def _added(db, model):
+    return [
+        call.args[0]
+        for call in db.add.call_args_list
+        if isinstance(call.args[0], model)
+    ]
 
 
 def _fake_api_key(**overrides):
@@ -511,8 +520,94 @@ class TestDepartmentCreationPolicy:
         )
 
         assert response.status_code == 401
-        db.add.assert_not_called()
-        db.commit.assert_not_called()
+        assert _added(db, Department) == []
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        assert audits[0].details == {
+            "actor_class": "anonymous_closed",
+            "auth_method": "none",
+            "outcome": "rejected",
+            "reason": "missing_credentials",
+        }
+        db.commit.assert_called_once()
+
+    def test_required_rejection_audit_failure_is_generic_and_unchained(self, caplog):
+        canary = "private-database-driver-canary"
+        db = _db_with()
+        db.commit.side_effect = RuntimeError(canary)
+        _use_db(db)
+        safe_client = TestClient(app, raise_server_exceptions=False)
+        safe_client.cookies.set("csrf_token", "matching-csrf")
+
+        response = safe_client.post(
+            "/auth/departments",
+            headers={"X-CSRF-Token": "matching-csrf"},
+            json={
+                "name": "CS",
+                "institution": "Example University",
+                "contact_email": "cs@example.edu",
+                "contact_name": "Admin",
+            },
+        )
+
+        assert response.status_code == 500
+        assert response.json() == {
+            "detail": "Department provisioning audit is unavailable"
+        }
+        assert canary not in caplog.text
+        db.rollback.assert_called_once()
+
+    def test_rate_limited_api_key_retains_actor_and_source_department(
+        self, client, monkeypatch
+    ):
+        owner = MagicMock(
+            spec=User,
+            id="admin-user",
+            department_id="source-department",
+            role=UserRole.ADMIN,
+            is_active=True,
+        )
+        key = _fake_api_key(
+            user_id=owner.id,
+            department_id=owner.department_id,
+            user=owner,
+        )
+        monkeypatch.setattr(
+            AuthService,
+            "validate_api_key",
+            staticmethod(lambda _db, _token: key),
+        )
+        monkeypatch.setattr(
+            RateLimiter,
+            "check_rate_limit",
+            staticmethod(lambda *_args, **_kwargs: (False, {"Retry-After": "30"})),
+        )
+        db = _db_with({User: {"first": owner}})
+        _use_db(db)
+
+        response = client.post(
+            "/auth/departments",
+            headers={"Authorization": "Bearer rate-limited-key"},
+            json={
+                "name": "CS",
+                "institution": "Example University",
+                "contact_email": "cs@example.edu",
+                "contact_name": "Admin",
+            },
+        )
+
+        assert response.status_code == 429
+        assert _added(db, Department) == []
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        assert audits[0].user_id == "admin-user"
+        assert audits[0].department_id == "source-department"
+        assert audits[0].details == {
+            "actor_class": "authenticated",
+            "auth_method": "api_key",
+            "outcome": "rejected",
+            "reason": "rate_limited",
+        }
 
     @pytest.mark.parametrize("role", [UserRole.FACULTY])
     def test_closed_mode_rejects_every_non_admin_role(self, role):
@@ -557,8 +652,13 @@ class TestDepartmentCreationPolicy:
         )
 
         assert response.status_code == 403
-        db.add.assert_not_called()
-        db.commit.assert_not_called()
+        assert _added(db, Department) == []
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        assert audits[0].user_id == "provisioner"
+        assert audits[0].department_id == "existing-dept"
+        assert audits[0].details["reason"] == "lti_not_allowed"
+        db.commit.assert_called_once()
 
     @pytest.mark.parametrize("auth_method", ["session", "api_key"])
     def test_admin_authentication_reaches_department_handler(
@@ -569,7 +669,8 @@ class TestDepartmentCreationPolicy:
         monkeypatch.setattr(
             auth_routes, "get_authenticated_principal", lambda *args: principal
         )
-        _use_db(_db_with({Department: {"first": None}}))
+        db = _db_with({Department: {"first": None}})
+        _use_db(db)
         headers = {}
         if auth_method == "session":
             client.cookies.set("aelira_access", "valid-session")
@@ -590,6 +691,16 @@ class TestDepartmentCreationPolicy:
         )
 
         assert response.status_code == 200
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        assert audits[0].user_id == "provisioner"
+        assert audits[0].department_id == "existing-dept"
+        assert audits[0].resource_id == response.json()["id"]
+        assert audits[0].details == {
+            "actor_class": "authenticated",
+            "auth_method": auth_method,
+            "outcome": "created",
+        }
 
     def test_explicit_public_mode_skips_authentication(self, client, monkeypatch):
         self._allow_handler(monkeypatch)
@@ -600,7 +711,8 @@ class TestDepartmentCreationPolicy:
         )
         authenticate = MagicMock()
         monkeypatch.setattr(auth_routes, "get_authenticated_principal", authenticate)
-        _use_db(_db_with({Department: {"first": None}}))
+        db = _db_with({Department: {"first": None}})
+        _use_db(db)
         client.cookies.set("csrf_token", "matching-csrf")
 
         response = client.post(
@@ -616,6 +728,16 @@ class TestDepartmentCreationPolicy:
 
         assert response.status_code == 200
         authenticate.assert_not_called()
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        assert audits[0].user_id is None
+        assert audits[0].department_id is None
+        assert audits[0].resource_id == response.json()["id"]
+        assert audits[0].details == {
+            "actor_class": "anonymous_public",
+            "auth_method": "public",
+            "outcome": "created",
+        }
 
     @pytest.mark.parametrize("authorization_header", ["Bearer invalid-key", "Bearer "])
     def test_explicit_public_mode_rejects_invalid_bearer_before_mutation(
@@ -642,8 +764,13 @@ class TestDepartmentCreationPolicy:
         )
 
         assert response.status_code in {401, 403}
-        db.add.assert_not_called()
-        db.commit.assert_not_called()
+        assert _added(db, Department) == []
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        assert audits[0].details["actor_class"] == "unresolved_credentials"
+        assert audits[0].details["auth_method"] == "bearer"
+        assert audits[0].details["reason"] == "credentials_rejected"
+        db.commit.assert_called_once()
 
 
 class TestCreateDepartment:
@@ -683,7 +810,8 @@ class TestCreateDepartment:
                 )
             ),
         )
-        _use_db(_db_with())
+        db = _db_with()
+        _use_db(db)
         response = client.post(
             "/auth/departments",
             json={
@@ -694,6 +822,42 @@ class TestCreateDepartment:
             },
         )
         assert response.status_code == 429
+        assert _added(db, Department) == []
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        assert audits[0].details["reason"] == "abuse_blocked"
+
+    def test_abuse_challenge_is_rejected_and_audited(self, client, monkeypatch):
+        monkeypatch.setattr(
+            auth_routes,
+            "check_signup_abuse",
+            AsyncMock(
+                return_value=AbuseCheckResult(
+                    allowed=False,
+                    signals=[],
+                    recommended_action="challenge",
+                    challenge_type="manual_review",
+                )
+            ),
+        )
+        db = _db_with()
+        _use_db(db)
+
+        response = client.post(
+            "/auth/departments",
+            json={
+                "name": "CS",
+                "institution": "Stanford",
+                "contact_email": "cs@stanford.edu",
+                "contact_name": "Prof X",
+            },
+        )
+
+        assert response.status_code == 403
+        assert _added(db, Department) == []
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        assert audits[0].details["reason"] == "abuse_challenge_required"
 
     def test_already_exists_is_400(self, client, monkeypatch):
         # L513-526: an existing Department row with the same name+institution -> 400.
@@ -706,8 +870,9 @@ class TestCreateDepartment:
                 )
             ),
         )
-        existing = MagicMock()
-        _use_db(_db_with({Department: {"first": existing}}))
+        existing = MagicMock(id="existing-department")
+        db = _db_with({Department: {"first": existing}})
+        _use_db(db)
         response = client.post(
             "/auth/departments",
             json={
@@ -718,6 +883,11 @@ class TestCreateDepartment:
             },
         )
         assert response.status_code == 400
+        assert _added(db, Department) == []
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        assert audits[0].resource_id == "existing-department"
+        assert audits[0].details["reason"] == "duplicate_department"
 
     def test_happy_path(self, client, monkeypatch):
         monkeypatch.setattr(
@@ -736,7 +906,8 @@ class TestCreateDepartment:
         email_service = MagicMock()
         email_service.send_email = AsyncMock(return_value={"success": True})
         monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
-        _use_db(_db_with({Department: {"first": None}}))
+        db = _db_with({Department: {"first": None}})
+        _use_db(db)
         response = client.post(
             "/auth/departments",
             json={
@@ -753,6 +924,47 @@ class TestCreateDepartment:
         body = response.json()
         assert body["name"] == "CS"
         assert body["max_users"] == 5  # L535: trial tier -> 5
+        audits = _added(db, AuditLog)
+        assert len(audits) == 1
+        audit = audits[0]
+        assert audit.status == "success"
+        assert audit.ip_address == "unknown"
+        assert audit.user_agent is None
+        assert audit.resource_id == body["id"]
+        serialized = str(audit.details)
+        assert "cs@stanford.edu" not in serialized
+        assert "Prof X" not in serialized
+        assert "Stanford" not in serialized
+
+    def test_shared_client_ip_reaches_abuse_check_and_audit(self, client, monkeypatch):
+        abuse_check = AsyncMock(
+            return_value=AbuseCheckResult(
+                allowed=True, signals=[], recommended_action="allow"
+            )
+        )
+        monkeypatch.setattr(auth_routes, "check_signup_abuse", abuse_check)
+        monkeypatch.setattr(
+            auth_routes, "get_client_ip", lambda _request: "198.51.100.7"
+        )
+        email_service = MagicMock()
+        email_service.send_email = AsyncMock(return_value={"success": True})
+        monkeypatch.setattr(auth_routes, "get_email_service", lambda: email_service)
+        db = _db_with({Department: {"first": None}})
+        _use_db(db)
+
+        response = client.post(
+            "/auth/departments",
+            json={
+                "name": "CS",
+                "institution": "Stanford",
+                "contact_email": "cs@stanford.edu",
+                "contact_name": "Prof X",
+            },
+        )
+
+        assert response.status_code == 200
+        assert abuse_check.await_args.kwargs["ip_address"] == "198.51.100.7"
+        assert _added(db, AuditLog)[0].ip_address == "198.51.100.7"
 
 
 # ==================== Individual faculty signup (L647-891) ====================

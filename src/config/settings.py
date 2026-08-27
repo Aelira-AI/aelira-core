@@ -10,6 +10,7 @@ from typing import List
 import logging
 import os
 from pathlib import Path
+from ipaddress import ip_network
 import re
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,30 @@ def _normalize_cookie_domain(value, variable_name: str) -> str:
         )
 
     return f".{candidate}" if normalized.startswith(".") else candidate
+
+
+def _normalize_trusted_proxy_cidrs(value: object) -> str:
+    """Validate and canonicalize a comma-separated trusted-proxy allowlist."""
+    if value is None:
+        return ""
+
+    raw_value = str(value).strip()
+    if not raw_value:
+        return ""
+
+    raw_entries = raw_value.split(",")
+    if any(not entry.strip() for entry in raw_entries):
+        raise ValueError("TRUSTED_PROXY_CIDRS cannot contain empty entries")
+    entries = [entry.strip() for entry in raw_entries]
+    normalized: list[str] = []
+    for entry in entries:
+        try:
+            normalized.append(str(ip_network(entry, strict=True)))
+        except ValueError as exc:
+            raise ValueError(
+                "TRUSTED_PROXY_CIDRS must contain comma-separated IPv4 or IPv6 CIDRs"
+            ) from exc
+    return ",".join(normalized)
 
 
 class Settings(BaseSettings):
@@ -380,6 +405,15 @@ class Settings(BaseSettings):
     allow_public_department_creation: bool = (
         os.getenv("ALLOW_PUBLIC_DEPARTMENT_CREATION", "false").lower() == "true"
     )
+
+    # Forwarded client-address headers are untrusted unless the transport peer
+    # belongs to this explicit proxy allowlist. Empty is the secure default.
+    trusted_proxy_cidrs: str = ""
+
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def validate_trusted_proxy_cidrs(cls, value: object) -> str:
+        return _normalize_trusted_proxy_cidrs(value)
 
     # Faculty leaderboards / gamification. Off by default: ranking named
     # staff by compliance score is a deliberate institutional choice.

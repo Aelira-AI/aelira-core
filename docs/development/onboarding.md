@@ -189,7 +189,7 @@ cd dashboard && npm install && npm run dev
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-uvicorn src.api.main:app --reload --port 8000
+uvicorn src.api.main:app --reload --port 8000 --no-proxy-headers
 ```
 
 You'll still need Postgres and Redis reachable at whatever `DATABASE_URL`

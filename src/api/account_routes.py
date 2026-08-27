@@ -18,6 +18,7 @@ from ..db.database import get_db_dependency
 from ..db.models import APIKey, User
 from ..auth.dependencies import get_required_api_key
 from ..services.account_deletion_service import get_account_deletion_service
+from ..security.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,8 @@ def _get_user(db: Session, user_id: str) -> User:
 
 
 def _get_client_ip(request: Request) -> str:
-    """Extract client IP from request."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """Extract client IP across the configured trusted-proxy boundary."""
+    return get_client_ip(request)
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────

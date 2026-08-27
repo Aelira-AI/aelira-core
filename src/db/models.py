@@ -2230,6 +2230,9 @@ class AuditLogAction(str, Enum):
     USER_ROLE_CHANGE = "user_role_change"
     USER_PROFILE_UPDATE = "user_profile_update"
 
+    # Cross-tenant provisioning
+    DEPARTMENT_PROVISION = "department_provision"
+
     # Cloud Integrations
     CLOUD_CONNECT = "cloud_connect"
     CLOUD_DISCONNECT = "cloud_disconnect"
