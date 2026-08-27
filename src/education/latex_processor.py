@@ -1024,23 +1024,23 @@ REQUIREMENTS:
                     ai_label = result["content"].strip()
                     if ai_label and len(ai_label) > 10:
                         logger.info(
-                            f"[LaTeX+Gemini] Generated context-aware ARIA label (provider: {result.get('provider')})"
+                            f"[LaTeX+AI] Generated context-aware ARIA label (provider: {result.get('provider')})"
                         )
                         return ai_label
                     else:
                         logger.warning(
-                            "[LaTeX+Gemini] ARIA label too short, using heuristic"
+                            "[LaTeX+AI] ARIA label too short, using heuristic"
                         )
                         return heuristic_label
                 else:
                     logger.warning(
-                        f"[LaTeX+Gemini] Generation failed: {result.get('error')}, using heuristic"
+                        f"[LaTeX+AI] Generation failed: {result.get('error')}, using heuristic"
                     )
                     return heuristic_label
 
             except Exception as e:
                 logger.warning(
-                    f"[LaTeX+Gemini] ARIA generation failed: {e}, using heuristic"
+                    f"[LaTeX+AI] ARIA generation failed: {e}, using heuristic"
                 )
                 return heuristic_label
         else:

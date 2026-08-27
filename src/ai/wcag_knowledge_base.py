@@ -77,6 +77,7 @@ class WCAGKnowledgeBase:
         database_url: Optional[str] = None,
         ollama_host: Optional[str] = None,
         embedding_model: str = "nomic-embed-text",
+        embedding_provider: Optional[str] = None,
     ):
         """
         Initialize WCAG Knowledge Base.
@@ -85,6 +86,9 @@ class WCAGKnowledgeBase:
             database_url: PostgreSQL connection string (defaults to env var)
             ollama_host: Ollama API host (defaults to env var)
             embedding_model: Embedding model name (default: nomic-embed-text)
+            embedding_provider: Semantic embedding backend. Only ``ollama`` is
+                currently supported; defaults to ``EMBEDDING_PROVIDER`` or
+                ``none``.
         """
         # Get DATABASE_URL from parameter or environment (required)
         self.database_url = database_url or os.getenv("DATABASE_URL")
@@ -97,6 +101,12 @@ class WCAGKnowledgeBase:
             "OLLAMA_HOST", "http://localhost:11434"
         )
         self.embedding_model = embedding_model
+        configured_provider = (
+            embedding_provider
+            if embedding_provider is not None
+            else os.getenv("EMBEDDING_PROVIDER", "none")
+        )
+        self.embedding_provider = str(configured_provider).strip().lower() or "none"
 
         self.pool: Optional[asyncpg.Pool] = None
         self.http_client: Optional[httpx.AsyncClient] = None
@@ -121,6 +131,12 @@ class WCAGKnowledgeBase:
             await self.http_client.aclose()
         logger.info("WCAG Knowledge Base closed")
 
+    async def bootstrap(self):
+        """Seed and embed the bundled corpus when startup finds it uninitialized."""
+        from src.ai.wcag_bootstrap import bootstrap_wcag_knowledge_base
+
+        return await bootstrap_wcag_knowledge_base(self)
+
     async def generate_embedding(self, text: str) -> List[float]:
         """
         Generate embedding for query text using Ollama.
@@ -131,6 +147,11 @@ class WCAGKnowledgeBase:
         Returns:
             768-dimensional embedding vector
         """
+        if self.embedding_provider != "ollama":
+            raise RuntimeError(
+                "semantic embeddings are disabled; set EMBEDDING_PROVIDER=ollama "
+                "to enable them"
+            )
         if self.http_client is None:
             raise RuntimeError(
                 "WCAGKnowledgeBase HTTP client not initialized - call initialize() first"
@@ -186,6 +207,14 @@ class WCAGKnowledgeBase:
                 "Knowledge base not initialized. Call initialize() first."
             )
 
+        if self.embedding_provider != "ollama":
+            logger.debug(
+                "Semantic WCAG search skipped because embedding provider %s "
+                "is not enabled",
+                self.embedding_provider,
+            )
+            return []
+
         try:
             # Generate embedding for query
             query_embedding = await self.generate_embedding(query)
@@ -219,8 +248,8 @@ class WCAGKnowledgeBase:
             if not rows:
                 logger.warning(
                     "WCAG knowledge base has no embedded guidelines; "
-                    "run scripts/seed_wcag_guidelines.py then "
-                    "scripts/generate_wcag_embeddings.py"
+                    "install the configured embedding model and restart the API. "
+                    "See docs/deployment/local-ai-models.md"
                 )
                 return []
 

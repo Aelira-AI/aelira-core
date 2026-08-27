@@ -16,12 +16,9 @@ from .openai_provider import OpenAIProvider
 from .anthropic_provider import AnthropicProvider
 from .xai_provider import XAIProvider
 from ..cache import get_llm_cache, hash_image_data
-from src.config.settings import get_settings
 from src.utils.async_helpers import run_async_from_sync
 
 logger = logging.getLogger(__name__)
-
-settings = get_settings()
 
 
 class ProviderRateLimiter:
@@ -191,13 +188,19 @@ class ProviderManager:
         Initialize provider manager.
 
         Args:
-            primary_provider: Primary provider to use. Defaults to LLM_PROVIDER env var or gemini.
-            fallback_provider: Fallback provider. Defaults to LLM_FALLBACK_PROVIDER env var or ollama.
+            primary_provider: Primary provider to use. Defaults to the explicit
+                LLM_PROVIDER environment value; no value leaves inference disabled.
+            fallback_provider: Fallback provider. Defaults to the explicit
+                LLM_FALLBACK_PROVIDER environment value; no value disables fallback.
             configs: Optional provider configurations. If not provided, uses env vars.
         """
-        # Load from environment or use defaults
-        self.primary_type = primary_provider or self._get_env_provider(
-            "LLM_PROVIDER", ProviderType.GEMINI
+        # Open-core has no preferred cloud vendor. A provider exists only when
+        # the operator explicitly selects one through construction or the
+        # environment.
+        self.primary_type: Optional[ProviderType] = (
+            primary_provider
+            if primary_provider is not None
+            else self._get_env_provider("LLM_PROVIDER")
         )
         # Fallback defaults to None (disabled).
         # Set LLM_FALLBACK_PROVIDER=ollama to enable Ollama fallback.
@@ -235,6 +238,15 @@ class ProviderManager:
             )
         return default
 
+    @staticmethod
+    def _model_from_environment(name: str, legacy_name: str, default: str) -> str:
+        """Read the canonical model variable with legacy fallback compatibility."""
+        configured = os.getenv(name, "").strip()
+        if configured:
+            return configured
+        legacy = os.getenv(legacy_name, "").strip()
+        return legacy or default
+
     def _build_default_configs(self):
         """Build default configs from environment variables."""
         # Gemini config
@@ -248,7 +260,7 @@ class ProviderManager:
                 ),
                 text_model=os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"),
                 code_model=os.getenv("GEMINI_CODE_MODEL", "gemini-2.5-flash"),
-                vision_model=os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash-image"),
+                vision_model=os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash"),
             )
 
         # Ollama config
@@ -256,9 +268,15 @@ class ProviderManager:
             self.configs[ProviderType.OLLAMA] = ProviderConfig(
                 provider_type=ProviderType.OLLAMA,
                 host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-                text_model=os.getenv("OLLAMA_FALLBACK_TEXT", "gemma3:4b"),
-                code_model=os.getenv("OLLAMA_FALLBACK_CODE", "qwen2.5-coder:7b"),
-                vision_model=os.getenv("OLLAMA_FALLBACK_VISION", "qwen2.5vl:3b"),
+                text_model=self._model_from_environment(
+                    "OLLAMA_TEXT_MODEL", "OLLAMA_FALLBACK_TEXT", "gemma3:4b"
+                ),
+                code_model=self._model_from_environment(
+                    "OLLAMA_CODE_MODEL", "OLLAMA_FALLBACK_CODE", "qwen2.5-coder:7b"
+                ),
+                vision_model=self._model_from_environment(
+                    "OLLAMA_VISION_MODEL", "OLLAMA_FALLBACK_VISION", "qwen2.5vl:3b"
+                ),
                 embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
             )
 
@@ -321,26 +339,29 @@ class ProviderManager:
             raise ValueError(f"Unknown provider type: {provider_type}")
 
     async def initialize(self) -> bool:
-        """Initialize all configured providers."""
+        """Initialize only the explicitly selected primary and fallback providers."""
         if self._initialized:
             return True
 
         success = False
 
         # Initialize primary provider
-        try:
-            self._providers[self.primary_type] = self._create_provider(
-                self.primary_type
-            )
-            if await self._providers[self.primary_type].initialize():
-                logger.info(f"Primary provider {self.primary_type.value} initialized")
-                success = True
-            else:
-                logger.warning(
-                    f"Primary provider {self.primary_type.value} failed to initialize"
+        if self.primary_type is not None:
+            try:
+                self._providers[self.primary_type] = self._create_provider(
+                    self.primary_type
                 )
-        except Exception as e:
-            logger.error(f"Error initializing primary provider: {e}")
+                if await self._providers[self.primary_type].initialize():
+                    logger.info(
+                        f"Primary provider {self.primary_type.value} initialized"
+                    )
+                    success = True
+                else:
+                    logger.warning(
+                        f"Primary provider {self.primary_type.value} failed to initialize"
+                    )
+            except Exception as e:
+                logger.error(f"Error initializing primary provider: {e}")
 
         # Initialize fallback provider
         if self.fallback_type and self.fallback_type != self.primary_type:
@@ -381,6 +402,11 @@ class ProviderManager:
         if provider_type:
             return self._providers.get(provider_type)
         return self._providers.get(self.primary_type)
+
+    def _selected_provider_name(self, provider: Optional[ProviderType] = None) -> str:
+        """Return a bounded cache/telemetry label for the selected route."""
+        selected = provider or self.primary_type or self.fallback_type
+        return selected.value if selected is not None else "none"
 
     def get_available_providers(self) -> List[ProviderType]:
         """Get list of available (initialized) providers."""
@@ -429,6 +455,7 @@ class ProviderManager:
         # Try each provider with rate limiting
         rate_limiter = get_rate_limiter()
         last_error = None
+        attempted_providers: List[str] = []
 
         for ptype in providers_to_try:
             provider_instance = self._providers[ptype]
@@ -444,6 +471,7 @@ class ProviderManager:
                 continue
 
             try:
+                attempted_providers.append(ptype.value)
                 method = getattr(provider_instance, method_name)
                 response = await method(**kwargs)
 
@@ -451,6 +479,9 @@ class ProviderManager:
                 rate_limiter.record_request(ptype.value)
 
                 if response.success:
+                    response.metadata["attempted_providers"] = (
+                        attempted_providers.copy()
+                    )
                     return response
 
                 # Log the error and try next provider
@@ -468,8 +499,9 @@ class ProviderManager:
         # All providers failed
         return LLMResponse.error_response(
             error=f"All providers failed. Last error: {last_error}",
-            provider="fallback_chain",
+            provider=attempted_providers[-1] if attempted_providers else "none",
             model="",
+            metadata={"attempted_providers": attempted_providers},
         )
 
     async def generate_text(
@@ -497,7 +529,7 @@ class ProviderManager:
         """
         # Check cache first (only for deterministic prompts with low temperature)
         cache = get_llm_cache()
-        provider_name = provider.value if provider else self.primary_type.value
+        provider_name = self._selected_provider_name(provider)
 
         if use_cache and temperature <= 0.3:
             cached = cache.get(prompt, provider=provider_name)
@@ -509,7 +541,7 @@ class ProviderManager:
                     provider=provider_name,
                     model="cached",
                     inference_time=0.0,
-                    metadata={"cached": True},
+                    metadata={"cached": True, "attempted_providers": []},
                 )
 
         # Generate fresh response
@@ -584,7 +616,7 @@ class ProviderManager:
         """
         # Generate image hash for cache key
         image_hash = hash_image_data(image_data)
-        provider_name = provider.value if provider else self.primary_type.value
+        provider_name = self._selected_provider_name(provider)
 
         # Check cache first
         cache = get_llm_cache()
@@ -598,7 +630,11 @@ class ProviderManager:
                     provider=provider_name,
                     model="cached",
                     inference_time=0.0,
-                    metadata={"cached": True, "image_hash": image_hash},
+                    metadata={
+                        "cached": True,
+                        "image_hash": image_hash,
+                        "attempted_providers": [],
+                    },
                 )
 
         # Generate fresh response
@@ -659,7 +695,7 @@ class ProviderManager:
         This matches the format returned by the old gemini_client.generate_text_sync().
         """
         if response.success:
-            return {
+            result = {
                 "success": True,
                 "content": response.content,
                 "inference_time": response.inference_time or 0.0,
@@ -667,13 +703,16 @@ class ProviderManager:
                 "model": response.model,
             }
         else:
-            return {
+            result = {
                 "success": False,
                 "error": response.error or "Unknown error",
                 "inference_time": response.inference_time or 0.0,
                 "provider": response.provider,
                 "model": response.model,
             }
+        if response.metadata:
+            result["metadata"] = response.metadata
+        return result
 
     def generate_text_sync(
         self,
@@ -787,23 +826,31 @@ class ProviderManager:
         """Check health of all providers."""
         result = {
             "status": "healthy",
-            "primary_provider": self.primary_type.value,
+            "primary_provider": (
+                self.primary_type.value if self.primary_type is not None else None
+            ),
             "fallback_provider": (
                 self.fallback_type.value if self.fallback_type else None
             ),
             "providers": {},
         }
 
-        has_healthy = False
+        healthy: set[ProviderType] = set()
         for ptype, provider in self._providers.items():
             health = provider.health_check()
             result["providers"][ptype.value] = health
             if health.get("status") == "healthy":
-                has_healthy = True
+                healthy.add(ptype)
 
-        if not has_healthy:
+        if not healthy:
             result["status"] = "unhealthy"
-        elif len(self._providers) < 2:
+        elif self.primary_type is not None and self.primary_type not in healthy:
+            result["status"] = "degraded"
+        elif (
+            self.fallback_type is not None
+            and self.fallback_type != self.primary_type
+            and self.fallback_type not in healthy
+        ):
             result["status"] = "degraded"
 
         return result

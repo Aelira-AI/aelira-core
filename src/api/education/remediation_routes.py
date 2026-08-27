@@ -3177,6 +3177,8 @@ async def health_check():
         "status": "healthy",
         "service": "education-api-v2",
         "database": "enabled",
+        "vision_provider": vision_health.get("provider"),
+        "vision_status": vision_health.get("status"),
         "vision_model": vision_health.get("vision_model"),
         "vision_available": vision_health.get("vision_available", False),
         "features": [
@@ -3186,7 +3188,7 @@ async def health_check():
             "latex-mathml",
             "database-storage",
             "scan-history",
-            "ollama-aria-labels",
+            "ai-aria-labels",
             "image-alt-text",
             "code-scanning",
             "compliance-dashboard",

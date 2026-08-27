@@ -11,13 +11,12 @@
 #   docker compose -f docker-compose.quickstart.yml --profile ollama up -d
 #   docker exec aelira-ollama ollama pull gemma3:4b
 #   docker exec aelira-ollama ollama pull nomic-embed-text
-#   docker exec aelira-api python scripts/seed_wcag_guidelines.py
-#   docker exec aelira-api python scripts/generate_wcag_embeddings.py
 #
 # nomic-embed-text powers the WCAG knowledge-base retrieval that grounds
-# issue explanations with correct criteria citations. Severity scoring is
-# deterministic and needs no model; without the embedding model the API
-# logs a warning and explanations fall back to ungrounded text.
+# issue explanations with correct criteria citations. API startup seeds the
+# bundled corpus and embeds it when this model is available. Severity scoring
+# is deterministic and needs no model; without the embedding model the API
+# logs one actionable warning and explanations fall back to ungrounded text.
 #
 # WARNING: This config uses insecure defaults. Do NOT use in production.
 # For production, use docker-compose.prod.yml with a configured .env file.
@@ -87,8 +86,31 @@ services:
       ALLOW_MOCK_AUTH: "true"
       DEBUG: "true"
       LOG_LEVEL: info
-      LLM_FALLBACK_PROVIDER: none
+      LLM_PROVIDER: ${LLM_PROVIDER:-none}
+      LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-none}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-none}
       OLLAMA_HOST: http://ollama:11434
+      OLLAMA_TEXT_MODEL: ${OLLAMA_TEXT_MODEL:-gemma3:4b}
+      OLLAMA_CODE_MODEL: ${OLLAMA_CODE_MODEL:-qwen2.5-coder:7b}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-qwen2.5vl:3b}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_TEXT_MODEL: ${GEMINI_TEXT_MODEL:-gemini-2.5-flash}
+      GEMINI_CODE_MODEL: ${GEMINI_CODE_MODEL:-gemini-2.5-flash}
+      GEMINI_VISION_MODEL: ${GEMINI_VISION_MODEL:-gemini-2.5-flash}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-https://api.openai.com/v1}
+      OPENAI_TEXT_MODEL: ${OPENAI_TEXT_MODEL:-gpt-4o-mini}
+      OPENAI_CODE_MODEL: ${OPENAI_CODE_MODEL:-gpt-4o}
+      OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_TEXT_MODEL: ${ANTHROPIC_TEXT_MODEL:-claude-3-5-sonnet-20241022}
+      ANTHROPIC_CODE_MODEL: ${ANTHROPIC_CODE_MODEL:-claude-3-5-sonnet-20241022}
+      ANTHROPIC_VISION_MODEL: ${ANTHROPIC_VISION_MODEL:-claude-3-5-sonnet-20241022}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      XAI_TEXT_MODEL: ${XAI_TEXT_MODEL:-grok-2}
+      XAI_CODE_MODEL: ${XAI_CODE_MODEL:-grok-2}
+      XAI_VISION_MODEL: ${XAI_VISION_MODEL:-grok-2-vision}
       REMEDIATION_ARTIFACT_DIR: /app/uploads/remediation-artifacts
       REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS: ${REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS:-30}
     volumes:

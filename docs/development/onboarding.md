@@ -55,7 +55,8 @@ remediator for the file type.
   `types.py`, plus one module per provider: `gemini_provider.py`,
   `ollama_provider.py`, `openai_provider.py`, `anthropic_provider.py`,
   `xai_provider.py`). `get_provider_manager()` returns the configured
-  primary/fallback pair (`LLM_PROVIDER` / `LLM_FALLBACK_PROVIDER`).
+  explicit primary/fallback pair (`LLM_PROVIDER` /
+  `LLM_FALLBACK_PROVIDER`). With neither set, AI inference is disabled.
 - **Severity is computed, not generated** — `src/ai/severity_rules.py`
   (`resolve_severity()` / `severity_for()`) is a pure function of the rule ID
   and the scanner's impact rating: no I/O, no model call, same input always
@@ -70,8 +71,12 @@ remediator for the file type.
   pgvector — the corpus is small enough that an index isn't worth the extra
   requirement for self-hosters) so the AI-written explanation for a violation
   cites a WCAG guideline that was actually looked up, not recalled. The
-  corpus is seeded by `scripts/seed_wcag_guidelines.py` and embedded by
-  `scripts/generate_wcag_embeddings.py`.
+  API automatically seeds an empty corpus at startup. Known scanner rule IDs
+  use exact lookup without vectors. Optional semantic search is independent:
+  `EMBEDDING_PROVIDER=ollama` embeds missing rows with the configured model. The
+  `scripts/seed_wcag_guidelines.py` and
+  `scripts/generate_wcag_embeddings.py` entry points remain available for
+  explicit operator repair.
 
 ### Integrations (`src/integrations/`)
 
@@ -150,16 +155,17 @@ docker compose -f docker-compose.quickstart.yml up -d
 
 No `.env` file needed — Postgres, Redis, and the API come up with insecure
 defaults baked into `docker-compose.quickstart.yml` itself (see the warning
-at the top of that file: **not for production**). Add
-`--profile ollama` to also start a local Ollama container for AI
-remediation. API and docs land on `http://localhost:8000/docs`.
+at the top of that file: **not for production**). AI is disabled until chosen.
+For local AI, run
+`LLM_PROVIDER=ollama EMBEDDING_PROVIDER=ollama docker compose -f docker-compose.quickstart.yml --profile ollama up -d`.
+API and docs land on `http://localhost:8000/docs`.
 
 ### 2. Full dev stack (`docker-compose.dev.yml`)
 
 ```bash
 cp .env.example .env
-# edit .env — at minimum GEMINI_API_KEY if you want cloud AI, or leave it
-# unset and use --profile ollama for local inference
+# edit .env — select any supported LLM_PROVIDER and supply its key/endpoint,
+# or choose ollama and use --profile ollama for local inference
 docker compose -f docker-compose.dev.yml up -d --build
 docker compose -f docker-compose.dev.yml exec api alembic upgrade head
 docker compose -f docker-compose.dev.yml exec api pytest
@@ -202,8 +208,12 @@ hit immediately:
 - `DATABASE_URL`, `REDIS_URL` — required; `Settings` raises if `DATABASE_URL`
   is empty or matches a known-unsafe placeholder (`src/config/settings.py`).
 - `LLM_PROVIDER` / `LLM_FALLBACK_PROVIDER` — which AI backend to use
-  (`gemini`, `ollama`, `openai`, `anthropic`) and what to fall back to.
-- `GEMINI_API_KEY` or `OLLAMA_HOST` — depending on which provider you pick.
+  (`gemini`, `ollama`, `openai`, `anthropic`, `xai`, or `none`) and what to
+  fall back to. Both default to `none`.
+- `EMBEDDING_PROVIDER` — optional semantic WCAG retrieval (`none` or
+  `ollama`); exact rule grounding works when it is `none`.
+- The selected provider's key/endpoint: `GEMINI_API_KEY`, `OPENAI_API_KEY`,
+  `ANTHROPIC_API_KEY`, `XAI_API_KEY`, or `OLLAMA_HOST`.
 - `JWT_SECRET` — needed for auth; generate one with
   `python3 -c "import secrets; print(secrets.token_urlsafe(64))"` (from the
   comment in `.env.example`).

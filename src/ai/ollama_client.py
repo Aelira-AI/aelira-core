@@ -120,7 +120,11 @@ class OllamaClient:
     """
 
     def __init__(
-        self, host: str = None, enable_rag: bool = True, model_profile: str = None
+        self,
+        host: str = None,
+        enable_rag: bool = True,
+        model_profile: str = None,
+        embedding_model: str = "nomic-embed-text",
     ):
         """Initialize Ollama client.
 
@@ -129,6 +133,7 @@ class OllamaClient:
             enable_rag: Enable RAG-based classification (default: True)
             model_profile: Model profile to use (minimal|recommended|performance|legacy)
                           Defaults to AELIRA_MODEL_PROFILE env var or "recommended"
+            embedding_model: Ollama model used for WCAG retrieval embeddings
         """
         self.host = host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
@@ -159,17 +164,25 @@ class OllamaClient:
         self.enable_rag = enable_rag
         self.kb: Optional[WCAGKnowledgeBase] = None
         if enable_rag:
-            self.kb = WCAGKnowledgeBase(ollama_host=self.host)
+            self.kb = WCAGKnowledgeBase(
+                ollama_host=self.host,
+                embedding_model=embedding_model,
+            )
 
-    async def initialize(self):
+    async def initialize(self) -> bool:
         """Initialize RAG knowledge base if enabled."""
         if self.enable_rag and self.kb:
             try:
                 await self.kb.initialize()
-                logger.info("RAG knowledge base initialized successfully")
+                result = await self.kb.bootstrap()
+                if not result.grounding_available and not result.embedding_in_progress:
+                    self.enable_rag = False
+                    return False
+                return True
             except Exception as e:
                 logger.error(f"Failed to initialize RAG knowledge base: {e}")
                 self.enable_rag = False  # Disable RAG on failure
+        return False
 
     async def close(self):
         """Close RAG knowledge base if initialized."""
