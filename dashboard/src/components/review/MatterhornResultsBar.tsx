@@ -5,47 +5,47 @@ interface MatterhornResultsBarProps {
   total: number;
   passed: number;
   failed: number;
-  compliance: string;
+  result: string;
 }
 
-function getComplianceLevelStyle(level: string): { label: string; color: string; bg: string } {
-  switch (level.toLowerCase()) {
-    case 'fully_compliant':
+function getValidatorResultStyle(result: string): { label: string; color: string; bg: string } {
+  switch (result.toLowerCase()) {
+    case 'all_recorded_checkpoints_passed':
       return {
-        label: 'Fully Compliant',
+        label: 'All recorded checks passed',
         color: 'text-[var(--feature-success-content)]',
         bg: 'bg-[var(--feature-success-surface)]',
       };
-    case 'largely_compliant':
+    case 'recorded_checkpoint_results_available':
       return {
-        label: 'Largely Compliant',
+        label: 'Recorded checks available',
         color: 'text-[var(--feature-info-content)]',
         bg: 'bg-[var(--feature-info-surface)]',
       };
-    case 'partially_compliant':
+    case 'recorded_checkpoint_failures':
       return {
-        label: 'Partially Compliant',
-        color: 'text-[var(--feature-warning-content)]',
-        bg: 'bg-[var(--feature-warning-surface)]',
-      };
-    case 'non_compliant':
-      return {
-        label: 'Non-Compliant',
+        label: 'Recorded check failures',
         color: 'text-[var(--feature-danger-content)]',
         bg: 'bg-[var(--feature-danger-surface)]',
       };
+    case 'not_run':
+      return {
+        label: 'Validator not run',
+        color: 'text-[var(--content-tertiary)]',
+        bg: 'bg-[var(--surface-tertiary)]',
+      };
     default:
       return {
-        label: level.replace(/_/g, ' '),
+        label: 'Recorded checks available',
         color: 'text-[var(--content-tertiary)]',
         bg: 'bg-[var(--surface-tertiary)]',
       };
   }
 }
 
-export function MatterhornResultsBar({ total, passed, failed, compliance }: MatterhornResultsBarProps): React.ReactElement {
+export function MatterhornResultsBar({ total, passed, failed, result }: MatterhornResultsBarProps): React.ReactElement {
   const warnings = total - passed - failed;
-  const levelStyle = getComplianceLevelStyle(compliance);
+  const resultStyle = getValidatorResultStyle(result);
 
   return (
     <div
@@ -73,8 +73,8 @@ export function MatterhornResultsBar({ total, passed, failed, compliance }: Matt
         </div>
       </div>
 
-      <span className={`text-xs font-medium px-2.5 py-1 rounded ${levelStyle.bg} ${levelStyle.color}`}>
-        {levelStyle.label}
+      <span className={`text-xs font-medium px-2.5 py-1 rounded ${resultStyle.bg} ${resultStyle.color}`}>
+        {resultStyle.label}
       </span>
     </div>
   );

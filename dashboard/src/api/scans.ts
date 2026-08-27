@@ -46,12 +46,6 @@ export interface IssueFilters {
   offset?: number;
 }
 
-export interface ReportOptions {
-  include_ai_recommendations?: boolean;
-  include_trends?: boolean;
-  include_issues?: boolean;
-}
-
 export interface RemediationOptions {
   use_ai?: boolean;
   verify_fixes?: boolean;
@@ -99,13 +93,6 @@ export interface IssueStats {
   by_status: Record<string, number>;
   by_severity: Record<string, number>;
   resolution_rate: number;
-}
-
-export interface CertificateEligibility {
-  eligible: boolean;
-  current_score: number;
-  required_score: number;
-  missing_requirements: string[];
 }
 
 export interface RemediationResult {
@@ -526,53 +513,15 @@ export const scansApi = {
     return response.data;
   },
 
-  // ==================== Compliance Reports & Certificates ====================
+  // ==================== Accessibility Evidence Reports ====================
 
   /**
-   * Generate compliance report (PDF)
+   * Generate a PDF record of scanned-content evidence and limitations.
    */
-  generateComplianceReport: async (
-    departmentId: string,
-    options: ReportOptions = {}
-  ): Promise<Blob> => {
-    const params = new URLSearchParams();
-    if (options.include_ai_recommendations !== undefined) {
-      params.append('include_ai_recommendations', String(options.include_ai_recommendations));
-    }
-    if (options.include_trends !== undefined) {
-      params.append('include_trends', String(options.include_trends));
-    }
-    if (options.include_issues !== undefined) {
-      params.append('include_issues', String(options.include_issues));
-    }
-
-    const response = await apiClient.get<Blob>(
-      `/analytics/report/${departmentId}${params.toString() ? '?' + params.toString() : ''}`,
-      {
-        responseType: 'blob',
-        timeout: 120000, // 2 minutes for AI recommendations
-      }
-    );
-    return response.data;
-  },
-
-  /**
-   * Check certificate eligibility
-   */
-  checkCertificateEligibility: async (departmentId: string): Promise<CertificateEligibility> => {
-    const response = await apiClient.get<CertificateEligibility>(
-      `/analytics/certificate/${departmentId}/eligibility`
-    );
-    return response.data;
-  },
-
-  /**
-   * Generate compliance certificate (PDF)
-   */
-  generateCertificate: async (departmentId: string): Promise<Blob> => {
-    const response = await apiClient.get<Blob>(`/analytics/certificate/${departmentId}`, {
+  generateEvidenceReport: async (departmentId: string): Promise<Blob> => {
+    const response = await apiClient.get<Blob>(`/analytics/evidence-report/${departmentId}`, {
       responseType: 'blob',
-      timeout: 30000,
+      timeout: 120000,
     });
     return response.data;
   },

@@ -145,7 +145,7 @@ Line numbers drift as the file grows (it's 1400+ lines and actively maintained) 
 | FileUploader.tsx | Fixed | Added aria-labels to icon buttons |
 | FolderTree.tsx | Fixed | Added aria-expanded, aria-labels |
 | FolderSelectionModal.tsx | Fixed | Added dialog role attributes |
-| ComplianceActions.tsx | Pass | Proper heading hierarchy |
+| EvidenceReportAction.tsx | Pass | Proper heading hierarchy and bounded report description |
 | IssueList.tsx | Pass | Semantic structure |
 | DeleteConfirmModal | Pass | role="dialog", aria-modal, aria-labelledby |
 | CookieBanner.tsx | Pass | role="dialog"/aria-modal/aria-labelledby on the banner and preferences modal; decorative dismiss backdrop is role="presentation" aria-hidden |

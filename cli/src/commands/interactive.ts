@@ -48,16 +48,16 @@ ${pc.dim(`  Version ${version} - Higher Education MVP`)}
     }
   }
 
-  private async handleComplianceReport(): Promise<void> {
+  private async handleEvidenceReport(): Promise<void> {
     const deptId = await this.promptForInput('Enter department ID (press Enter for default):')
 
     const s = spinner()
-    s.start('Generating compliance report...')
+    s.start('Generating accessibility evidence report...')
 
     try {
-      await (deptId ? this.config.runCommand('report', ['compliance', deptId]) : this.config.runCommand('report', ['compliance']));
+      await (deptId ? this.config.runCommand('report', ['evidence', deptId]) : this.config.runCommand('report', ['evidence']));
 
-      s.stop('Report generated!')
+      s.stop('Evidence report generated!')
     } catch (error: any) {
       s.stop('Report generation failed')
       this.error(error)
@@ -332,8 +332,9 @@ ${pc.bold('Media Processing:')}
 ${pc.bold('Code Scanning:')}
   aelira scan code <file>        Source code accessibility
 
-${pc.bold('Compliance:')}
-  aelira report compliance       Generate department report
+${pc.bold('Evidence reporting:')}
+  aelira report evidence         Download accessibility evidence report
+  aelira report compliance       Deprecated scan-statistics compatibility view
 
 ${pc.bold('Configuration:')}
   aelira config show             Show current configuration
@@ -362,7 +363,7 @@ ${pc.dim('For more info: https://github.com/Aelira-AI/aelira-core/tree/main/cli/
           { label: '📄 Scan Documents (PDF, PPT, LaTeX)', value: 'scan_documents' },
           { label: '🎥 Scan Media (Images, Videos)', value: 'scan_media' },
           { label: '💻 Scan Source Code', value: 'scan_code' },
-          { label: '📊 Generate Compliance Report', value: 'compliance_report' },
+          { label: '📊 Download Accessibility Evidence Report', value: 'evidence_report' },
           { label: '⚙️  Settings & Configuration', value: 'settings' },
           { label: '❓ Help & Documentation', value: 'help' },
           { label: '👋 Exit', value: 'exit' },
@@ -375,8 +376,8 @@ ${pc.dim('For more info: https://github.com/Aelira-AI/aelira-core/tree/main/cli/
       }
 
       switch (action) {
-        case 'compliance_report': {
-          await this.handleComplianceReport()
+        case 'evidence_report': {
+          await this.handleEvidenceReport()
           break
         }
 

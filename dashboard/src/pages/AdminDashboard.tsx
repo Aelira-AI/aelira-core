@@ -201,7 +201,7 @@ export function AdminDashboard(): React.ReactElement {
           filename = `scans_export_${departmentId}_${new Date().toISOString().split('T')[0]}.xlsx`;
           break;
         case 'bulk':
-          blob = await adminApi.bulkExport(departmentId, { include_certificate: true });
+          blob = await adminApi.bulkExport(departmentId, { include_evidence_report: true });
           filename = `aelira_export_${departmentId}_${new Date().toISOString().split('T')[0]}.zip`;
           break;
         default:

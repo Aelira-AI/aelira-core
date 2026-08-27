@@ -50,7 +50,7 @@ export interface ExportOptions {
 
 export interface BulkExportOptions extends ExportOptions {
   include_pdfs?: boolean;
-  include_certificate?: boolean;
+  include_evidence_report?: boolean;
 }
 
 export type LMSAIProvider = 'ollama' | 'gemini' | 'openai' | 'anthropic' | 'xai';
@@ -216,7 +216,7 @@ export const adminApi = {
   bulkExport: async (departmentId: string, options: BulkExportOptions = {}): Promise<Blob> => {
     const params = new URLSearchParams();
     if (options.include_pdfs !== undefined) params.append('include_pdfs', String(options.include_pdfs));
-    if (options.include_certificate !== undefined) params.append('include_certificate', String(options.include_certificate));
+    if (options.include_evidence_report !== undefined) params.append('include_evidence_report', String(options.include_evidence_report));
     if (options.date_from) params.append('date_from', options.date_from);
     if (options.date_to) params.append('date_to', options.date_to);
 

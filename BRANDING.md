@@ -33,7 +33,7 @@ VITE_LOGO_LIGHT="/branding/your-logo-light.svg"
 VITE_LOGO_DARK="/branding/your-logo-dark.svg"
 ```
 
-Backend, for emails, reports and certificates:
+Backend, for emails and accessibility evidence reports:
 
 ```bash
 BRAND_NAME="Example University Accessibility"

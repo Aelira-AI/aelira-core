@@ -1,6 +1,6 @@
-"""Audit trail export report generator.
+"""Bounded review-evidence export generator.
 
-Generates compliance audit reports in JSON, CSV, and PDF formats for
+Generates bounded audit evidence in JSON, CSV, and PDF formats for
 the review workflow. Used by the GET /reviews/{scan_id}/audit/export endpoint.
 
 PDF reports include:
@@ -9,7 +9,7 @@ PDF reports include:
 - Fixes Applied table
 - Review History (chronological audit log)
 - Matterhorn Protocol results (for PDF scans)
-- WCAG Conformance Statement
+- Scope and limitations
 """
 
 import csv
@@ -33,6 +33,8 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+
+from src.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -73,37 +75,66 @@ def _safe_str(value: Any, default: str = "") -> str:
     return str(value)
 
 
-def _compute_compliance_level(total: int, failed: int) -> str:
-    """Determine compliance level from Matterhorn results.
-
-    Delegates to the canonical implementation in review_routes to avoid
-    duplication.  Falls back to inline logic if the import fails (e.g.
-    during isolated unit tests).
-    """
-    try:
-        from src.api.review_routes import compute_compliance_level
-
-        return compute_compliance_level(total, failed)
-    except ImportError:
-        pass
+def _validator_result(total: int, passed: int, failed: int) -> str:
+    """Summarize recorded checkpoints without making a conformance claim."""
     if total == 0:
-        return "not_validated"
-    if failed == 0:
-        return "compliant"
-    if failed <= total * 0.2:
-        return "partial"
-    return "non_compliant"
+        return "not_run"
+    if failed > 0:
+        return "recorded_checkpoint_failures"
+    if passed == total:
+        return "all_recorded_checkpoints_passed"
+    return "recorded_checkpoint_results_available"
 
 
-def _compliance_label(level: str) -> str:
-    """Human-readable compliance level label."""
+def _validator_result_label(result: str) -> str:
+    """Human-readable label for the recorded Matterhorn result."""
     labels = {
-        "compliant": "WCAG 2.1 Level AA Compliant",
-        "partial": "Partial Compliance — Minor Issues Remain",
-        "non_compliant": "Non-Compliant — Significant Issues Found",
-        "not_validated": "Not Validated — No Matterhorn Checkpoints Run",
+        "all_recorded_checkpoints_passed": "All recorded Matterhorn checkpoints passed",
+        "recorded_checkpoint_failures": "Recorded Matterhorn checkpoint failures remain",
+        "recorded_checkpoint_results_available": "Recorded Matterhorn checkpoint results available",
+        "not_run": "No recorded Matterhorn checkpoints",
     }
-    return labels.get(level, level)
+    return labels.get(result, result)
+
+
+def bounded_audit_details(details: Any) -> Any:
+    """Remove legacy conformance labels from public audit detail payloads."""
+    if isinstance(details, list):
+        return [bounded_audit_details(item) for item in details]
+    if not isinstance(details, dict):
+        return details
+
+    legacy_keys = {"compliance_level", "matterhorn_compliance", "compliance"}
+    legacy_values = [details.get(key) for key in legacy_keys if key in details]
+    bounded = {
+        key: bounded_audit_details(value)
+        for key, value in details.items()
+        if key not in legacy_keys
+    }
+
+    if legacy_values and "validator_result" not in bounded:
+        total = details.get("total")
+        passed = details.get("passed")
+        failed = details.get("failed")
+        if all(isinstance(value, int) for value in (total, passed, failed)):
+            validator_result = _validator_result(total, passed, failed)
+        else:
+            legacy_value = str(legacy_values[0]).lower()
+            if legacy_value in {"compliant", "fully_compliant"}:
+                validator_result = "all_recorded_checkpoints_passed"
+            elif legacy_value in {
+                "partial",
+                "partially_compliant",
+                "non_compliant",
+            }:
+                validator_result = "recorded_checkpoint_failures"
+            elif legacy_value in {"not_validated", "not_run"}:
+                validator_result = "not_run"
+            else:
+                validator_result = "recorded_checkpoint_results_available"
+        bounded = {"validator_result": validator_result, **bounded}
+
+    return bounded
 
 
 class AuditReportGenerator:
@@ -143,7 +174,7 @@ class AuditReportGenerator:
         )
         rejected_count = sum(1 for f in fixes if f.review_status == "rejected")
 
-        compliance_level = _compute_compliance_level(mh_total, mh_failed)
+        validator_result = _validator_result(mh_total, mh_passed, mh_failed)
 
         applied_count = sum(1 for f in fixes if f.review_status != "rejected")
         fix_rate = round(applied_count / len(fixes) * 100, 1) if fixes else 0.0
@@ -173,7 +204,8 @@ class AuditReportGenerator:
                 "matterhorn_total": mh_total,
                 "matterhorn_passed": mh_passed,
                 "matterhorn_failed": mh_failed,
-                "compliance_level": compliance_level,
+                "validator_result": validator_result,
+                "is_conformance_determination": False,
             },
             "fixes": [
                 {
@@ -196,7 +228,7 @@ class AuditReportGenerator:
                     "id": e.id,
                     "action": e.action,
                     "user_name": e.user_name,
-                    "details": e.details,
+                    "details": bounded_audit_details(e.details),
                     "created_at": _isoformat(e.created_at),
                 }
                 for e in audit_entries
@@ -291,7 +323,8 @@ class AuditReportGenerator:
             details_str = ""
             if e.details:
                 # Flatten details dict to a readable string
-                details_str = "; ".join(f"{k}={v}" for k, v in e.details.items())
+                public_details = bounded_audit_details(e.details)
+                details_str = "; ".join(f"{k}={v}" for k, v in public_details.items())
             writer.writerow(
                 [
                     e.id,
@@ -337,7 +370,7 @@ class AuditReportGenerator:
         matterhorn_results: list,
         department: Any,
     ) -> bytes:
-        """Generate a branded PDF compliance report.
+        """Generate branded accessibility review evidence.
 
         The report includes:
         1. Header with Aelira logo (gracefully skipped if missing)
@@ -346,7 +379,7 @@ class AuditReportGenerator:
         4. Fixes Applied table
         5. Review History
         6. Matterhorn Results (if applicable)
-        7. WCAG Conformance Statement
+        7. Scope and limitations
 
         Args:
             scan: Scan database model instance.
@@ -441,8 +474,16 @@ class AuditReportGenerator:
                 except Exception:
                     pass
 
+        settings = get_settings()
+        publisher_name = (settings.brand_name or "").strip() or "Accessibility Review"
+        support_email = (settings.support_email or "").strip()
+        if "example.com" in support_email.lower() or support_email.lower().endswith(
+            ".invalid"
+        ):
+            support_email = ""
+
         # -- Title --
-        story.append(Paragraph("Compliance Audit Report", title_style))
+        story.append(Paragraph("Accessibility Review Evidence", title_style))
         story.append(
             Paragraph(
                 f"{department.name} &mdash; {department.institution}",
@@ -459,7 +500,7 @@ class AuditReportGenerator:
             ["Scan Type:", scan_type_str.upper() if scan_type_str else "N/A"],
             ["Department:", department.name],
             ["Institution:", department.institution],
-            ["Generated By:", "Aelira Compliance Platform"],
+            ["Generated By:", publisher_name],
         ]
         meta_table = Table(meta_data, colWidths=[1.8 * inch, 4.2 * inch])
         meta_table.setStyle(
@@ -491,14 +532,14 @@ class AuditReportGenerator:
         approval_rate = (
             round(approved_count / total_fixes * 100, 1) if total_fixes else 0.0
         )
-        compliance_level = _compute_compliance_level(mh_total, mh_failed)
+        validator_result = _validator_result(mh_total, mh_passed, mh_failed)
 
         # ==========================================================
         # Section 1: Executive Summary
         # ==========================================================
         story.append(Paragraph("Executive Summary", heading_style))
         summary_text = (
-            f"This report documents the accessibility compliance audit for "
+            f"This report records the accessibility review evidence stored for "
             f"<b>{scan.file_name}</b> scanned on "
             f"{_isoformat(scan.created_at)[:10] if scan.created_at else 'N/A'}."
             f"<br/><br/>"
@@ -507,7 +548,7 @@ class AuditReportGenerator:
             f"&bull; Fixes Approved: <b>{approved_count}</b> ({approval_rate}%)<br/>"
             f"&bull; Fixes Rejected: <b>{rejected_count}</b><br/>"
             f"&bull; Matterhorn Checkpoints: <b>{mh_passed}/{mh_total} passed</b><br/>"
-            f"&bull; Compliance Level: <b>{_compliance_label(compliance_level)}</b>"
+            f"&bull; Recorded Validator Result: <b>{_validator_result_label(validator_result)}</b>"
         )
         story.append(Paragraph(summary_text, body_style))
         story.append(Spacer(1, 0.3 * inch))
@@ -570,7 +611,10 @@ class AuditReportGenerator:
             story.append(issue_table)
         else:
             story.append(
-                Paragraph("<i>No issues were found during scanning.</i>", body_style)
+                Paragraph(
+                    "<i>No recorded finding or fix entries were available for this export.</i>",
+                    body_style,
+                )
             )
 
         story.append(Spacer(1, 0.3 * inch))
@@ -621,7 +665,9 @@ class AuditReportGenerator:
             )
             story.append(fix_table)
         else:
-            story.append(Paragraph("<i>No fixes were applied.</i>", body_style))
+            story.append(
+                Paragraph("<i>No recorded fix entries were available.</i>", body_style)
+            )
 
         story.append(Spacer(1, 0.3 * inch))
 
@@ -795,7 +841,10 @@ class AuditReportGenerator:
             for e in audit_entries:
                 details_str = ""
                 if e.details:
-                    details_str = "; ".join(f"{k}={v}" for k, v in e.details.items())
+                    public_details = bounded_audit_details(e.details)
+                    details_str = "; ".join(
+                        f"{k}={v}" for k, v in public_details.items()
+                    )
                 audit_rows.append(
                     [
                         _isoformat(e.created_at)[:19].replace("T", " "),
@@ -920,42 +969,22 @@ class AuditReportGenerator:
             story.append(Spacer(1, 0.3 * inch))
 
         # ==========================================================
-        # Section 6: WCAG Conformance Statement
+        # Section 6: Scope and Limitations
         # ==========================================================
-        story.append(Paragraph("WCAG Conformance Statement", heading_style))
+        story.append(Paragraph("Scope and Limitations", heading_style))
 
-        conformance_text = (
-            f"Based on the automated scan and Matterhorn Protocol validation, "
-            f"the document <b>{scan.file_name}</b> has been evaluated against "
-            f"WCAG 2.1 Level AA success criteria.<br/><br/>"
-            f"<b>Assessment Result:</b> {_compliance_label(compliance_level)}<br/><br/>"
+        limitations_text = (
+            f"This export records the automated scan, Matterhorn checkpoint results, "
+            f"and review actions stored for <b>{scan.file_name}</b>.<br/><br/>"
+            f"<b>Recorded Validator Result:</b> {_validator_result_label(validator_result)} "
+            f"({mh_failed} failed of {mh_total} recorded checkpoints).<br/><br/>"
+            "Matterhorn results are format-validator evidence. Automated checks and "
+            "recorded review actions do not determine WCAG conformance or legal "
+            "compliance, and they do not replace manual testing with assistive "
+            "technology or review of requirements outside the recorded checks."
         )
 
-        if compliance_level == "compliant":
-            conformance_text += (
-                "All evaluated checkpoints have passed. The document meets "
-                "WCAG 2.1 Level AA conformance requirements based on the "
-                "automated checks performed."
-            )
-        elif compliance_level == "partial":
-            conformance_text += (
-                "The document meets most WCAG 2.1 Level AA requirements but "
-                f"has {mh_failed} checkpoint failure(s) that should be addressed "
-                "to achieve full conformance."
-            )
-        elif compliance_level == "non_compliant":
-            conformance_text += (
-                f"The document has {mh_failed} Matterhorn checkpoint failure(s) "
-                "and does not meet WCAG 2.1 Level AA conformance requirements. "
-                "Remediation is required before the document can be considered compliant."
-            )
-        else:
-            conformance_text += (
-                "No Matterhorn Protocol checkpoints were evaluated for this "
-                "document. A full PDF/UA validation is recommended."
-            )
-
-        story.append(Paragraph(conformance_text, body_style))
+        story.append(Paragraph(limitations_text, body_style))
 
         # -- Footer --
         story.append(Spacer(1, 0.5 * inch))
@@ -966,13 +995,11 @@ class AuditReportGenerator:
             textColor=colors.HexColor(_MEDIUM_GRAY),
             alignment=TA_CENTER,
         )
-        story.append(
-            Paragraph(
-                f"<i>Generated by Aelira Compliance Platform on {report_date}. "
-                f"For questions, contact support@example.com</i>",
-                footer_style,
-            )
-        )
+        footer_text = f"<i>Generated by {publisher_name} on {report_date}."
+        if support_email:
+            footer_text += f" For questions, contact {support_email}."
+        footer_text += "</i>"
+        story.append(Paragraph(footer_text, footer_style))
 
         # Build and return
         doc.build(story)

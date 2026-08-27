@@ -99,8 +99,8 @@ aelira scan ppt ./BIO101/slides/ --batch --fix-contrast
 # Step 3: Convert LaTeX equations
 aelira scan latex ./BIO101/equations.tex --format html --output accessible-equations.html
 
-# Step 4: Generate department compliance report
-aelira report compliance dept-biology --format pdf --output BIO101-compliance.pdf
+# Step 4: Download the accessibility evidence report
+aelira report evidence dept-biology --output BIO101-evidence.pdf
 ```
 
 **Output:**
@@ -133,15 +133,15 @@ aelira scan pdf syllabus.pdf --generate-alt-text --verbose
 # Review issues, then export accessible version
 aelira scan pdf syllabus.pdf --export-html syllabus-accessible.html
 
-# Generate report for compliance office
-aelira scan pdf syllabus.pdf --pdf syllabus-compliance-report.pdf
+# Generate scan report for accessibility review
+aelira scan pdf syllabus.pdf --pdf syllabus-scan-report.pdf
 ```
 
 **Workflow:**
 1. Scan identifies 18 images without alt text
 2. AI generates descriptions for all images
 3. Export HTML version with alt text embedded
-4. Submit PDF report to compliance office
+4. Submit PDF scan report to the accessibility review team
 
 ---
 
@@ -191,43 +191,35 @@ echo "All captions processed!"
 **IT Director audits entire Computer Science department:**
 
 ```bash
-# Generate comprehensive compliance report
-aelira report compliance dept-cs --format pdf --output CS-Audit-Nov-2025.pdf
+# Download the bounded accessibility evidence report
+aelira report evidence dept-cs --output CS-Evidence-Nov-2025.pdf
 
-# Check specific date range
-aelira report compliance dept-cs --date-range 2025-10-01:2025-11-01
-
-# Export data for analysis
-aelira report compliance dept-cs --format json --output cs-compliance.json
+# Export scan evidence statistics through the deprecated compatibility view
+aelira report compliance dept-cs --format json --output cs-scan-evidence.json
 ```
 
 **Output:**
 ```
-📊 Department Compliance Report
+Department Scan Evidence Statistics
 
 Department: Computer Science (dept-cs)
 Faculty: 47 professors
 Report Period: October 1 - November 1, 2025
 
-Progress Summary:
+Scan Evidence Summary:
   Files Scanned: 2,847
-  Total Issues: 8,456
-  Resolved Issues: 6,789 (80%)
-  Compliance Score: 82/100
+  Total Findings: 8,456
+  Findings Marked Resolved: 6,789
+  Average Scan Score: 82/100
 
-April 2027 Deadline Status:
-  ████████████████░░░░ 82% complete
-  Projected Completion: March 15, 2027
-  Estimated Hours Remaining: 342 hours
-
-Critical Issues (28 remaining):
+Critical Findings (28 remaining):
   - 18 PDFs with missing headings
   - 10 videos without captions
 
-Recommendations:
-  1. Focus on video caption compliance (10 files)
-  2. PDF heading structure needs attention (18 files)
-  3. On track to meet April 2027 ADA Title II deadline
+Review Notes:
+  1. Validate the 10 caption findings manually
+  2. Review heading structure in the 18 flagged PDFs
+  3. Use the evidence report's methods and limitations when interpreting results
 ```
 
 ---
@@ -303,7 +295,7 @@ jobs:
         run: |
           aelira scan ./dist/index.html --format json --output accessibility-report.json
           score=$(jq '.compliance_score' accessibility-report.json)
-          echo "Compliance Score: $score/100"
+          echo "Automated scan score: $score/100"
 
           if [ "$score" -lt 80 ]; then
             echo "❌ Accessibility score below threshold (80)"
@@ -402,9 +394,9 @@ aelira scan ppt "$COURSE_DIR/slides/" --batch --fix-contrast > "$OUTPUT_DIR/ppt-
 echo "🔬 Converting LaTeX..."
 find "$COURSE_DIR" -name "*.tex" -exec aelira scan latex {} --output {}.mathml \;
 
-# Generate compliance report
-echo "📊 Generating Compliance Report..."
-aelira report compliance dept-math --format pdf --output "$OUTPUT_DIR/compliance-report.pdf"
+# Download the accessibility evidence report
+echo "📊 Generating Accessibility Evidence Report..."
+aelira report evidence dept-math --output "$OUTPUT_DIR/evidence-report.pdf"
 
 echo "✅ Course processing complete!"
 echo "Reports saved to: $OUTPUT_DIR"
@@ -412,35 +404,34 @@ echo "Reports saved to: $OUTPUT_DIR"
 
 ---
 
-### Weekly Compliance Check
+### Weekly Accessibility Evidence Check
 
 ```bash
 #!/bin/bash
-# weekly-compliance.sh - Run every Monday at 8 AM
+# weekly-evidence.sh - Run every Monday at 8 AM
 
 # Departments to check
 DEPARTMENTS=("cs" "biology" "engineering" "math" "physics")
 
 DATE=$(date +%Y-%m-%d)
-REPORT_DIR="./compliance-reports/$DATE"
+REPORT_DIR="./evidence-reports/$DATE"
 
 mkdir -p "$REPORT_DIR"
 
 for dept in "${DEPARTMENTS[@]}"; do
   echo "📊 Checking department: $dept"
 
-  aelira report compliance "dept-$dept" \
-    --format pdf \
-    --output "$REPORT_DIR/$dept-compliance.pdf"
+  aelira report evidence "dept-$dept" \
+    --output "$REPORT_DIR/$dept-evidence.pdf"
 
-  echo "✓ Report saved: $dept-compliance.pdf"
+  echo "✓ Evidence report saved: $dept-evidence.pdf"
 done
 
-# Email reports to compliance office
-echo "📧 Emailing reports to compliance@university.edu"
+# Share reports with the accessibility review team
+echo "📧 Sharing reports with accessibility-review@university.edu"
 # (Add email command here)
 
-echo "✅ Weekly compliance check complete!"
+echo "✅ Weekly accessibility evidence check complete!"
 ```
 
 ---
@@ -504,11 +495,11 @@ canvas-cli export --course-id 12345 --output ./canvas-export/
 # Scan all materials
 aelira scan pdf ./canvas-export/files/ --batch --generate-alt-text
 
-# Generate report for course
-aelira report compliance dept-cs --format pdf --output canvas-course-12345-report.pdf
+# Generate evidence report for the course
+aelira report evidence dept-cs --output canvas-course-12345-evidence.pdf
 
 # Upload report back to Canvas
-canvas-cli upload --course-id 12345 --file canvas-course-12345-report.pdf
+canvas-cli upload --course-id 12345 --file canvas-course-12345-evidence.pdf
 ```
 
 ---
@@ -532,23 +523,17 @@ bb-cli upload --course-id CS101 --directory ./blackboard-export-fixed/
 
 ```bash
 #!/bin/bash
-# notify-compliance.sh - Send Slack notifications
+# notify-evidence.sh - Send a Slack notification when evidence is refreshed
 
 WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
 
-# Run compliance check
-SCORE=$(aelira report compliance dept-cs --format json | jq '.compliance_score')
+# Download the latest bounded evidence report
+aelira report evidence dept-cs --output department-evidence.pdf
 
 # Send to Slack
-if [ "$SCORE" -lt 80 ]; then
-  curl -X POST -H 'Content-type: application/json' \
-    --data "{\"text\":\"⚠️ Department compliance score: $SCORE/100 (below threshold)\"}" \
-    "$WEBHOOK_URL"
-else
-  curl -X POST -H 'Content-type: application/json' \
-    --data "{\"text\":\"✅ Department compliance score: $SCORE/100 (on track!)\"}" \
-    "$WEBHOOK_URL"
-fi
+curl -X POST -H 'Content-type: application/json' \
+  --data '{"text":"The latest accessibility scan evidence report is ready for review. It records automated findings and limitations, not a conformance or legal determination."}' \
+  "$WEBHOOK_URL"
 ```
 
 ---
@@ -619,14 +604,14 @@ echo "accessibility-reports/" >> .gitignore
 
 # Or commit for team visibility
 git add reports/
-git commit -m "docs: add accessibility compliance reports"
+git commit -m "docs: add accessibility evidence reports"
 ```
 
 ### 3. Schedule Regular Scans
 
 ```bash
 # Add to crontab (every Monday at 8 AM)
-0 8 * * 1 /usr/local/bin/aelira report compliance dept-cs --format pdf --output /reports/weekly-$(date +\%Y-\%m-\%d).pdf
+0 8 * * 1 /usr/local/bin/aelira report evidence dept-cs --output /reports/weekly-evidence-$(date +\%Y-\%m-\%d).pdf
 ```
 
 ### 4. Combine Multiple Commands
@@ -635,7 +620,7 @@ git commit -m "docs: add accessibility compliance reports"
 # Process everything at once
 aelira scan pdf ./course/ --batch --generate-alt-text && \
 aelira scan ppt ./course/ --batch --fix-contrast && \
-aelira report compliance dept-cs --pdf final-report.pdf
+aelira report evidence dept-cs --output final-evidence-report.pdf
 ```
 
 ---

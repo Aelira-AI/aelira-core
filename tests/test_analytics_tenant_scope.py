@@ -1,9 +1,11 @@
 """Tenant and authority boundaries for department-wide analytics."""
 
 import asyncio
+from io import BytesIO
 import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import zipfile
 
 import pytest
 from fastapi import HTTPException
@@ -13,8 +15,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import CheckConstraint, MetaData, create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from pypdf import PdfReader
 
 from src.api import analytics
+from src.api.education import compliance_routes
 from src.api.main import app
 from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from src.db.database import get_db_dependency
@@ -26,11 +30,14 @@ from src.db.models import (
     IssueStatus,
     IssueTracking,
     Scan,
+    ScanFix,
+    ScanResult,
     ScanStatus,
     ScanType,
     User,
     UserRole,
 )
+from src.education.accessibility_evidence_report import AccessibilityEvidenceReport
 
 DEPARTMENT = "department-one"
 OTHER_DEPARTMENT = "department-two"
@@ -47,7 +54,10 @@ def tenant_db():
         "cloud_oauth_credentials",
         "departments",
         "issue_tracking",
+        "matterhorn_results",
         "remediation_artifacts",
+        "scan_fixes",
+        "scan_results",
         "scans",
         "users",
     }
@@ -109,6 +119,50 @@ def _seed_tenant_issue_rows(db):
                 department_id=OTHER_DEPARTMENT,
                 role=UserRole.ADMIN,
                 is_active=True,
+            ),
+        ]
+    )
+    db.flush()
+    db.add_all(
+        [
+            ScanResult(
+                id="result-one",
+                scan_id="scan-one",
+                compliance_score=95,
+                wcag_level="AA",
+                high_issues=1,
+                medium_issues=1,
+                critical_issues=0,
+                low_issues=0,
+                issues=[
+                    {"type": "missing_alt", "severity": "high", "wcag": "1.1.1"},
+                    {
+                        "type": "heading_order",
+                        "severity": "medium",
+                        "wcag": "1.3.1",
+                    },
+                ],
+                scan_mode="comprehensive",
+                engines_used=["axe-core"],
+            ),
+            ScanResult(
+                id="result-other",
+                scan_id="scan-other",
+                compliance_score=99,
+                wcag_level="AA",
+                high_issues=1,
+                medium_issues=0,
+                critical_issues=0,
+                low_issues=0,
+                issues=[
+                    {
+                        "type": "missing_label",
+                        "severity": "high",
+                        "wcag": "1.3.1",
+                    }
+                ],
+                scan_mode="quick",
+                engines_used=["axe-core"],
             ),
         ]
     )
@@ -214,6 +268,7 @@ DEPARTMENT_ROUTE_CASES = [
         },
     ),
     (analytics.get_issue_stats, {}),
+    (analytics.generate_accessibility_evidence_report, {}),
     (analytics.generate_compliance_report, {"include_ai_recommendations": False}),
     (analytics.generate_compliance_certificate, {}),
     (analytics.check_certificate_eligibility, {}),
@@ -334,6 +389,219 @@ def test_issue_mutation_http_routes_persist_only_owned_rows_and_audits(tenant_db
     ]
     assert all(audit.user_id == "user-one" for audit in audits)
     assert all(audit.department_id == DEPARTMENT for audit in audits)
+
+
+def _pdf_text(content: bytes) -> str:
+    return "\n".join(
+        page.extract_text() or "" for page in PdfReader(BytesIO(content)).pages
+    )
+
+
+def test_evidence_report_and_legacy_aliases_are_bounded(tenant_db):
+    _seed_tenant_issue_rows(tenant_db)
+    app.dependency_overrides[get_db_dependency] = lambda: tenant_db
+    app.dependency_overrides[get_authenticated_principal] = lambda: _principal(
+        UserRole.ADMIN
+    )
+    client = TestClient(app)
+    try:
+        canonical = client.get(f"/analytics/evidence-report/{DEPARTMENT}")
+        report_alias = client.get(f"/analytics/report/{DEPARTMENT}")
+        retired_alias = client.get(f"/analytics/certificate/{DEPARTMENT}")
+        retired_availability = client.get(
+            f"/analytics/certificate/{DEPARTMENT}/eligibility"
+        )
+    finally:
+        app.dependency_overrides.pop(get_db_dependency, None)
+        app.dependency_overrides.pop(get_authenticated_principal, None)
+
+    for response in (canonical, report_alias, retired_alias):
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/pdf"
+        assert (
+            "accessibility_evidence_report_" in response.headers["content-disposition"]
+        )
+        text = _pdf_text(response.content)
+        assert "Accessibility Evidence Report" in text
+        assert "Coverage" in text
+        assert "Methodology" in text
+        assert "Unresolved Findings" in text
+        assert "Verification" in text
+        assert "Applicable Standard Metadata" in text
+        assert "Limitations" in text
+        assert "BRONZE" not in text
+        assert "GOLD" not in text
+        assert "PLATINUM" not in text
+        assert "support@example.com" not in text
+        assert "meets WCAG" not in text
+
+    assert "deprecation" not in canonical.headers
+    assert report_alias.headers["deprecation"] == "true"
+    assert retired_alias.headers["deprecation"] == "true"
+    assert retired_availability.status_code == 200
+    availability = retired_availability.json()
+    assert availability["eligible"] is False
+    assert availability["certificate_level"] is None
+    assert availability["points_to_next_level"] is None
+    assert availability["report_available"] is True
+    assert availability["report_kind"] == "accessibility_evidence_report"
+
+
+def test_bulk_legacy_flag_can_only_include_evidence_artifact(tenant_db):
+    _seed_tenant_issue_rows(tenant_db)
+    app.dependency_overrides[get_db_dependency] = lambda: tenant_db
+    app.dependency_overrides[get_authenticated_principal] = lambda: _principal(
+        UserRole.ADMIN
+    )
+    try:
+        response = TestClient(app).get(
+            f"/analytics/export/{DEPARTMENT}/bulk",
+            params={"include_certificate": "true", "include_pdfs": "false"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db_dependency, None)
+        app.dependency_overrides.pop(get_authenticated_principal, None)
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        assert "accessibility_evidence_report.pdf" in names
+        assert not any("certificate" in name.lower() for name in names)
+        manifest = archive.read("README.txt").decode()
+        assert "Accessibility Evidence Export" in manifest
+        assert "certificate" not in manifest.lower()
+        assert "example.com" not in manifest
+        evidence_text = _pdf_text(archive.read("accessibility_evidence_report.pdf"))
+        assert "Accessibility Evidence Report" in evidence_text
+        assert "meets WCAG" not in evidence_text
+
+
+def test_legacy_education_report_rejects_cross_tenant_before_generation():
+    db = MagicMock()
+
+    with patch(
+        "src.education.accessibility_evidence_report.AccessibilityEvidenceReport.generate"
+    ) as generate:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                compliance_routes.generate_compliance_pdf_report(
+                    department_id=OTHER_DEPARTMENT,
+                    db=db,
+                    api_key_info=(None, "user-one", DEPARTMENT),
+                )
+            )
+
+    assert exc.value.status_code == 403
+    generate.assert_not_called()
+    db.query.assert_not_called()
+
+
+def test_legacy_education_report_returns_same_bounded_artifact():
+    pdf = b"%PDF-bounded-evidence"
+
+    with patch(
+        "src.education.accessibility_evidence_report.AccessibilityEvidenceReport.generate",
+        return_value=({"report_kind": "accessibility_evidence_report"}, pdf),
+    ) as generate:
+        response = asyncio.run(
+            compliance_routes.generate_compliance_pdf_report(
+                department_id=DEPARTMENT,
+                db=MagicMock(),
+                api_key_info=(None, "user-one", DEPARTMENT),
+            )
+        )
+
+    assert response.body == pdf
+    assert response.headers["deprecation"] == "true"
+    assert "accessibility_evidence_report_" in response.headers["content-disposition"]
+    generate.assert_called_once()
+
+
+def test_evidence_snapshot_is_tenant_bounded_and_not_a_conformance_decision(tenant_db):
+    _seed_tenant_issue_rows(tenant_db)
+    result = tenant_db.query(ScanResult).filter(ScanResult.id == "result-one").one()
+    result.compliance_score = 100
+    tenant_db.commit()
+
+    report = AccessibilityEvidenceReport.collect(tenant_db, DEPARTMENT)
+
+    assert report["subject"]["department_name"] == "Accessibility"
+    assert report["coverage"]["total_scans"] == 1
+    assert report["score"]["average"] == 100
+    assert report["score"]["is_conformance_determination"] is False
+    assert report["unresolved_findings"]["total"] == 2
+    assert report["verification"]["status"] == "automated_evidence_only"
+    assert "Other University" not in str(report)
+    assert "missing_label" not in str(report)
+
+
+def test_pending_human_review_blocks_recorded_review_status(tenant_db):
+    _seed_tenant_issue_rows(tenant_db)
+    tenant_db.add(
+        ScanFix(
+            id="fix-one",
+            scan_id="scan-one",
+            issue_id="issue-one",
+            occurrence_key="occurrence-one",
+            category="image_alt",
+            severity="high",
+            description="Alternative text requires review",
+            fixed_content="Proposed description",
+            fix_method="ai_vision",
+            confidence=0.5,
+            needs_review=True,
+            review_status="pending",
+        )
+    )
+    tenant_db.commit()
+
+    report = AccessibilityEvidenceReport.collect(tenant_db, DEPARTMENT)
+
+    assert report["verification"]["status"] == "human_review_incomplete"
+    assert report["verification"]["pending_manual_reviews"] == 1
+
+
+def test_department_without_scans_is_not_assessed(tenant_db):
+    tenant_db.add(
+        Department(
+            id="department-empty",
+            name="New Department",
+            institution="Example University",
+            contact_email="new@example.edu",
+        )
+    )
+    tenant_db.commit()
+
+    report = AccessibilityEvidenceReport.collect(tenant_db, "department-empty")
+
+    assert report["coverage"]["total_scans"] == 0
+    assert report["score"]["average"] is None
+    assert report["verification"]["status"] == "not_assessed"
+    assert report["unresolved_findings"]["total"] == 0
+
+
+def test_evidence_report_uses_only_configured_public_publisher_metadata(tenant_db):
+    _seed_tenant_issue_rows(tenant_db)
+    configured = SimpleNamespace(
+        brand_name="Campus Accessibility Office",
+        public_website_url="https://accessibility.example.invalid",
+        support_email="accessibility@campus.edu",
+    )
+
+    with patch(
+        "src.education.accessibility_evidence_report.get_settings",
+        return_value=configured,
+    ):
+        report, pdf = AccessibilityEvidenceReport.generate(tenant_db, DEPARTMENT)
+
+    assert report["support"] == {
+        "brand_name": "Campus Accessibility Office",
+        "support_email": "accessibility@campus.edu",
+    }
+    text = _pdf_text(pdf)
+    assert "Campus Accessibility Office" in text
+    assert "accessibility@campus.edu" in text
+    assert "accessibility.example.invalid" not in text
 
 
 def test_department_denial_log_does_not_record_tenant_identifiers(caplog):

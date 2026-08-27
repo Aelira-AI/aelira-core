@@ -7,17 +7,14 @@ import { ApiClient } from '../../utils/api-client.js'
 export default class ReportCompliance extends Command {
   static args = {
     department_id: Args.string({
-      description: 'Department ID for compliance reporting',
+      description: 'Department ID for scan-evidence statistics',
       required: false,
     }),
   }
-static description = 'Generate department-wide compliance reports with priority issue ranking'
+static description = 'Deprecated scan-evidence statistics view; use `report evidence` for PDFs'
 static examples = [
-    '<%= config.bin %> <%= command.id %>',
-    '<%= config.bin %> <%= command.id %> dept-123',
     '<%= config.bin %> <%= command.id %> dept-123 --format json',
-    '<%= config.bin %> <%= command.id %> dept-123 --pdf report.pdf',
-    '<%= config.bin %> <%= command.id %> --api-url http://localhost:8000',
+    '<%= config.bin %> <%= command.id %> dept-123 --pdf evidence-report.pdf',
   ]
 static flags = {
     'api-url': Flags.string({
@@ -35,7 +32,7 @@ static flags = {
       description: 'Output file path (for JSON format)',
     }),
     pdf: Flags.string({
-      description: 'Generate PDF report and save to specified path',
+      description: 'Download the accessibility evidence report PDF to this path',
     }),
     timer: Flags.boolean({
       default: false,
@@ -48,11 +45,14 @@ static flags = {
     const startTime = Date.now()
     const api = new ApiClient({ apiUrl: flags['api-url'] })
 
-    intro('Aelira CLI - Compliance Report Generator')
+    this.warn(
+      '`aelira report compliance` is deprecated; use `aelira report evidence` for the bounded PDF report.',
+    )
+    intro('Aelira CLI - Scan Evidence Statistics')
 
     try {
       const s = spinner()
-      s.start('Fetching compliance data...')
+      s.start('Fetching scan evidence statistics...')
 
       const departmentId = args.department_id || 'default'
 
@@ -73,23 +73,26 @@ static flags = {
       const reportData = {
         department_id: departmentId,
         generated_at: new Date().toISOString(),
-        issues,
-        stats,
+        report_kind: 'scan_evidence_statistics',
+        scope_notice:
+          "These statistics summarize Aelira's automated checks of scanned content. This scan evidence summary does not determine conformance with an accessibility standard or legal requirement.",
+        findings: this.toFindings(issues),
+        scan_statistics: this.toEvidenceStatistics(stats),
       }
 
       // Generate PDF if requested
       if (flags.pdf) {
         const pdfSpinner = spinner()
-        pdfSpinner.start('Generating PDF report...')
+        pdfSpinner.start('Generating accessibility evidence report...')
 
         const response = await api.get(
-          `/education/compliance/${departmentId}/report/pdf`,
-          { headers: { Accept: 'application/pdf' }, timeout: 60_000 },
+          `/analytics/evidence-report/${departmentId}`,
+          { headers: { Accept: 'application/pdf' }, timeout: 120_000 },
         )
 
         const pdfBuffer = Buffer.from(await response.arrayBuffer())
         await fs.writeFile(flags.pdf, pdfBuffer)
-        pdfSpinner.stop(`PDF report saved to ${flags.pdf}`)
+        pdfSpinner.stop(`Accessibility evidence report saved to ${flags.pdf}`)
       }
 
       // Output results
@@ -103,13 +106,13 @@ static flags = {
 
         if (flags.output) {
           await fs.writeFile(flags.output, JSON.stringify(output, null, 2))
-          outro(`✅ Compliance report saved to ${flags.output}`)
+          outro(`Scan evidence statistics saved to ${flags.output}`)
         } else {
           this.log(JSON.stringify(output, null, 2))
         }
       } else {
         this.displayReport(reportData)
-        outro('✨ Compliance report generated!')
+        outro('Scan evidence statistics generated')
       }
 
       if (flags.timer) {
@@ -122,28 +125,27 @@ static flags = {
   }
 
   private displayReport(report: any): void {
-    const { department_id, issues, stats } = report
+    const { department_id, findings, scan_statistics } = report
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-    this.log(`  Department Compliance Report`)
+    this.log(`  Department Scan Evidence Statistics`)
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
     this.log(`  Department ID: ${department_id}`)
     this.log(`  Generated: ${new Date(report.generated_at).toLocaleString()}\n`)
 
-    this.renderStats(stats)
+    this.log(`  ${report.scope_notice}\n`)
+
+    this.renderStats(scan_statistics)
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.renderPriorityIssues(issues)
+    this.renderPriorityIssues(findings)
 
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-    this.renderRecommendations(stats)
-
-    this.log('')
-    this.log('  📄 Use --pdf report.pdf to generate a downloadable PDF report')
-    this.log('  📊 Use --format json for detailed data export')
+    this.log('  Use --pdf evidence-report.pdf to download the bounded evidence PDF')
+    this.log('  Use --format json for scan evidence statistics and findings')
   }
 
   private renderFileTypes(fileTypes: any): void {
@@ -159,15 +161,17 @@ static flags = {
 
   private renderPriorityIssues(issues: any): void {
     if (!issues || issues.length === 0) {
-      this.log('  ✅ No critical issues found!\n')
+      this.log('  No scan findings returned.\n')
       return
     }
 
-    this.log('  🔥 Top Priority Issues:\n')
+    this.log('  Priority Scan Findings:\n')
 
     issues.slice(0, 10).forEach((issue: any, index: number) => {
-      this.log(`  ${index + 1}. [${issue.severity?.toUpperCase() || 'UNKNOWN'}] ${issue.title}`)
-      this.log(`     File: ${issue.filename || 'Unknown'}`)
+      this.log(
+        `  ${index + 1}. [${issue.severity?.toUpperCase() || 'UNKNOWN'}] ${issue.issue_type || issue.title || issue.description || 'Recorded finding'}`,
+      )
+      this.log(`     File: ${issue.file_name || issue.filename || 'Unknown'}`)
       if (issue.description) {
         this.log(`     ${issue.description}`)
       }
@@ -184,28 +188,10 @@ static flags = {
     }
   }
 
-  private renderRecommendations(stats: any): void {
-    this.log('  💡 Recommendations:\n')
-
-    if (stats && stats.average_score < 70) {
-      this.log('  • Focus on Critical and High severity issues first')
-      this.log('  • Consider bulk remediation for PDFs and PowerPoints')
-      this.log('  • Review LaTeX equations for MathML conversion')
-    } else if (stats && stats.average_score < 85) {
-      this.log('  • Address remaining High severity issues')
-      this.log('  • Review Medium severity issues for quick wins')
-      this.log('  • Ensure all images have alt text')
-    } else {
-      this.log('  • Maintain current compliance standards')
-      this.log('  • Address Low severity issues when time permits')
-      this.log('  • Consider automated monitoring for new content')
-    }
-  }
-
   private renderSeverityCounts(severity: any): void {
     if (!severity) return
 
-    this.log('  ⚠️  Issues by Severity:')
+    this.log('  Findings by Severity:')
     this.log(`  - Critical: ${severity.critical || 0}`)
     this.log(`  - High: ${severity.high || 0}`)
     this.log(`  - Medium: ${severity.medium || 0}`)
@@ -220,16 +206,15 @@ static flags = {
   private renderStats(stats: any): void {
     if (!stats) return
 
-    this.log('  📊 Overall Statistics:')
-    this.log(`  - Total Files Scanned: ${stats.total_files || 0}`)
-    this.log(`  - Average Compliance Score: ${stats.average_score ? stats.average_score.toFixed(1) : 'N/A'}/100`)
+    this.log('  Scan Statistics:')
+    this.log(`  - Total Files Scanned: ${stats.total_files_scanned || 0}`)
     this.log(
-      `  - Files Meeting Threshold: ${stats.compliant_files || 0}/${stats.total_files || 0} (${stats.compliance_percentage ? stats.compliance_percentage.toFixed(1) : 0}%)`
+      `  - Average Scan Score: ${stats.average_scan_score === null ? 'N/A' : `${stats.average_scan_score.toFixed(1)}/100`}`,
     )
     this.log('')
 
     this.renderFileTypes(stats.file_types)
-    this.renderSeverityCounts(stats.issues_by_severity)
+    this.renderSeverityCounts(stats.findings_by_severity)
     this.renderTrend(stats.trend)
   }
 
@@ -237,14 +222,45 @@ static flags = {
     if (!trend) return
 
     this.log('  📈 Trend Analysis:')
-    this.log(`  - Last Week Score: ${trend.last_week_score ? trend.last_week_score.toFixed(1) : 'N/A'}/100`)
-    this.log(`  - Current Score: ${trend.current_score ? trend.current_score.toFixed(1) : 'N/A'}/100`)
+    this.log(
+      `  - Last Week Scan Score: ${trend.last_week_scan_score === null ? 'N/A' : `${trend.last_week_scan_score.toFixed(1)}/100`}`,
+    )
+    this.log(
+      `  - Current Scan Score: ${trend.current_scan_score === null ? 'N/A' : `${trend.current_scan_score.toFixed(1)}/100`}`,
+    )
 
-    if (trend.improvement !== undefined) {
-      const arrow = trend.improvement >= 0 ? '↑' : '↓'
-      this.log(`  - Change: ${arrow} ${Math.abs(trend.improvement).toFixed(1)} points`)
+    if (trend.change_points !== null) {
+      const arrow = trend.change_points >= 0 ? '↑' : '↓'
+      this.log(`  - Change: ${arrow} ${Math.abs(trend.change_points).toFixed(1)} points`)
     }
 
     this.log('')
+  }
+
+  private toEvidenceStatistics(stats: any): any {
+    const finiteOrNull = (value: unknown): number | null =>
+      typeof value === 'number' && Number.isFinite(value) ? value : null
+
+    return {
+      average_scan_score: finiteOrNull(
+        stats?.compliance_scores?.average ?? stats?.average_score,
+      ),
+      file_types: stats?.scan_types ?? stats?.file_types ?? {},
+      findings_by_severity: stats?.issues ?? stats?.issues_by_severity ?? {},
+      total_files_scanned:
+        stats?.overview?.total_files_scanned ?? stats?.total_files ?? 0,
+      trend: stats?.trend
+        ? {
+            change_points: finiteOrNull(stats.trend.improvement),
+            current_scan_score: finiteOrNull(stats.trend.current_score),
+            last_week_scan_score: finiteOrNull(stats.trend.last_week_score),
+          }
+        : null,
+    }
+  }
+
+  private toFindings(payload: any): any[] {
+    if (Array.isArray(payload)) return payload
+    return Array.isArray(payload?.issues) ? payload.issues : []
   }
 }

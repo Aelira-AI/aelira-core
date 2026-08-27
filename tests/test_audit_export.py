@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pypdf import PdfReader
 
 pytestmark = pytest.mark.unit
 
@@ -266,6 +267,49 @@ class TestGenerateJSON:
         assert result["audit_trail"][0]["action"] == "fix_approve"
         assert result["audit_trail"][0]["user_name"] == "Jane Doe"
 
+    def test_legacy_matterhorn_audit_details_are_bounded_in_every_export(self):
+        from src.education.reports.compliance_report import AuditReportGenerator
+
+        legacy_entry = _make_audit_entry(
+            action="matterhorn_validation",
+            details={
+                "total": 10,
+                "passed": 8,
+                "failed": 2,
+                "warnings": 0,
+                "compliance_level": "non_compliant",
+            },
+        )
+        args = {
+            "scan": _make_scan(),
+            "fixes": [],
+            "audit_entries": [legacy_entry],
+            "matterhorn_results": [],
+            "department": _make_department(),
+        }
+
+        json_result = AuditReportGenerator.generate_json(**args)
+        json_details = json_result["audit_trail"][0]["details"]
+        assert json_details["validator_result"] == "recorded_checkpoint_failures"
+        assert "compliance_level" not in json_details
+
+        csv_result = AuditReportGenerator.generate_csv(**args)
+        assert "validator_result=recorded_checkpoint_failures" in csv_result
+        assert "compliance_level" not in csv_result
+        assert "non_compliant" not in csv_result
+
+        pdf_result = AuditReportGenerator.generate_pdf(**args)
+        pdf_text = " ".join(
+            "\n".join(
+                page.extract_text() or ""
+                for page in PdfReader(io.BytesIO(pdf_result)).pages
+            ).split()
+        )
+        compact_pdf_text = "".join(pdf_text.split())
+        assert "validator_result=recorded_checkpoint_failures" in compact_pdf_text
+        assert "compliance_level" not in pdf_text
+        assert "non_compliant" not in pdf_text
+
     def test_json_contains_matterhorn_results(self):
         from src.education.reports.compliance_report import AuditReportGenerator
 
@@ -301,7 +345,9 @@ class TestGenerateJSON:
         assert summary["matterhorn_passed"] == 3
         assert summary["matterhorn_failed"] == 1
 
-    def test_json_compliance_level_compliant(self):
+    def test_json_records_all_validator_checkpoints_passed_without_conformance_claim(
+        self,
+    ):
         from src.education.reports.compliance_report import AuditReportGenerator
 
         all_pass = [
@@ -315,9 +361,12 @@ class TestGenerateJSON:
             matterhorn_results=all_pass,
             department=_make_department(),
         )
-        assert result["summary"]["compliance_level"] == "compliant"
+        assert (
+            result["summary"]["validator_result"] == "all_recorded_checkpoints_passed"
+        )
+        assert "compliance_level" not in result["summary"]
 
-    def test_json_compliance_level_not_validated(self):
+    def test_json_records_validator_not_run_without_conformance_claim(self):
         from src.education.reports.compliance_report import AuditReportGenerator
 
         result = AuditReportGenerator.generate_json(
@@ -327,7 +376,8 @@ class TestGenerateJSON:
             matterhorn_results=[],
             department=_make_department(),
         )
-        assert result["summary"]["compliance_level"] == "not_validated"
+        assert result["summary"]["validator_result"] == "not_run"
+        assert "compliance_level" not in result["summary"]
 
     def test_json_empty_data(self):
         from src.education.reports.compliance_report import AuditReportGenerator
@@ -609,6 +659,31 @@ class TestGeneratePDF:
         )
         assert result[:4] == b"%PDF"
 
+    def test_pdf_keeps_validator_results_bounded(self):
+        from src.education.reports.compliance_report import AuditReportGenerator
+
+        result = AuditReportGenerator.generate_pdf(
+            scan=_make_scan(),
+            fixes=_sample_fixes(),
+            audit_entries=_sample_audit_entries(),
+            matterhorn_results=[
+                _make_matterhorn("mh-001", "01-001", "Document is tagged", "pass")
+            ],
+            department=_make_department(),
+        )
+        text = "\n".join(
+            page.extract_text() or "" for page in PdfReader(io.BytesIO(result)).pages
+        )
+        normalized = " ".join(text.split())
+
+        assert "Accessibility Review Evidence" in normalized
+        assert "Scope and Limitations" in normalized
+        assert "do not determine WCAG conformance or legal compliance" in normalized
+        assert "WCAG Conformance Statement" not in normalized
+        assert "meets WCAG" not in normalized
+        assert "WCAG 2.1 Level AA Compliant" not in normalized
+        assert "support@example.com" not in normalized
+
 
 # ===========================================================================
 # Endpoint tests via FastAPI TestClient
@@ -761,3 +836,5 @@ class TestExportEndpoint:
         response = client.get("/api/reviews/scan-001/audit/export?format=pdf")
         disposition = response.headers.get("content-disposition", "")
         assert "scan-001" in disposition
+        assert "accessibility-review-evidence" in disposition
+        assert "compliance-report" not in disposition

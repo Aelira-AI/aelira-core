@@ -63,6 +63,10 @@ class EmailService:
         self.from_email = from_email or os.getenv("FROM_EMAIL", "noreply@example.com")
         self.from_name = from_name or os.getenv("FROM_NAME", "Aelira Accessibility")
         self.sendgrid_api_key = sendgrid_api_key or os.getenv("SENDGRID_API_KEY", "")
+        self.public_dashboard_url = os.getenv(
+            "PUBLIC_DASHBOARD_URL", "http://localhost:5173"
+        ).rstrip("/")
+        self.support_email = os.getenv("SUPPORT_EMAIL", "").strip()
 
         # Template directory
         self.template_dir = Path(__file__).parent / "templates"
@@ -458,8 +462,8 @@ class EmailService:
                             <td style="text-align: right;">{files_scanned}</td>
                         </tr>
                         <tr>
-                            <td style="padding: 8px 0;"><strong>Average Compliance Score:</strong></td>
-                            <td style="text-align: right; color: {'#22c55e' if average_score >= 90 else '#f59e0b' if average_score >= 70 else '#ef4444'};">
+                            <td style="padding: 8px 0;"><strong>Average Scan Score:</strong></td>
+                            <td style="text-align: right; color: #2563eb;">
                                 {average_score:.0f}%
                             </td>
                         </tr>
@@ -475,7 +479,8 @@ class EmailService:
                 </div>
 
                 <p style="color: #666; font-size: 14px;">
-                    Remember: The WCAG 2.1 compliance deadline is April 26, 2027.
+                    These automated scan results are evidence with documented limitations;
+                    they do not determine accessibility-standard conformance or legal compliance.
                 </p>
             """,
             },
@@ -692,6 +697,8 @@ class EmailService:
             "scans_limit": "Unlimited",
             "pages_limit": "Unlimited",
         }
+        dashboard_url = f"{self.public_dashboard_url}/dashboard"
+        safe_dashboard_url = html_lib.escape(dashboard_url, quote=True)
 
         content = f"""
             <h2 style="color: #1a1a2e; margin: 0 0 16px 0;">Welcome, {html_lib.escape(name)}!</h2>
@@ -710,7 +717,7 @@ class EmailService:
                     <li>Up to {tier_info['pages_limit']} pages per document</li>
                     <li>PDF, Word, PowerPoint, Excel, Images</li>
                     <li>AI-powered alt text generation</li>
-                    <li>WCAG 2.1 AA compliance reports</li>
+                    <li>Accessibility evidence reports with recorded findings and limitations</li>
                 </ul>
             </div>
 
@@ -719,11 +726,11 @@ class EmailService:
                 <li>Upload a document from your dashboard</li>
                 <li>Review the accessibility scan results</li>
                 <li>Use auto-remediation to fix issues automatically</li>
-                <li>Download your compliant document</li>
+                <li>Download the remediated document for review</li>
             </ol>
 
             <div style="text-align: center; margin: 32px 0;">
-                <a href="https://dashboard.example.com/dashboard"
+                <a href="{safe_dashboard_url}"
                    style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: white; padding: 16px 32px;
                           text-decoration: none; border-radius: 8px; display: inline-block;
                           font-weight: 600; font-size: 16px;">
@@ -733,9 +740,9 @@ class EmailService:
 
             <div style="background: #fffbeb; border-radius: 8px; padding: 16px; margin-top: 24px;">
                 <p style="color: #92400e; margin: 0; font-size: 14px;">
-                    <strong>Deadline Reminder:</strong> The WCAG 2.1 compliance deadline
-                    for educational institutions is April 26, 2027. Start scanning your
-                    documents now to ensure compliance.
+                    Automated scans and remediation records are accessibility evidence.
+                    They do not determine conformance with an accessibility standard or
+                    legal requirement.
                 </p>
             </div>
         """
@@ -745,7 +752,20 @@ class EmailService:
             to_emails=[to_email],
             subject=f"Welcome to Aelira, {name}!",
             html_content=html,
-            text_content=f"Welcome to Aelira, {name}!\n\nYour account is now active. Visit https://dashboard.example.com to start scanning your documents for accessibility compliance.\n\nPlan: {tier_info['display_name']}\n- {tier_info['scans_limit']} document scans per month\n- Up to {tier_info['pages_limit']} pages per document\n\nThe WCAG 2.1 compliance deadline is April 26, 2027.\n\nNeed help? Contact support@example.com",
+            text_content=(
+                f"Welcome to Aelira, {name}!\n\nYour account is now active. "
+                f"Visit {dashboard_url} to start reviewing your documents for accessibility.\n\n"
+                f"Plan: {tier_info['display_name']}\n"
+                f"- {tier_info['scans_limit']} document scans per month\n"
+                f"- Up to {tier_info['pages_limit']} pages per document\n\n"
+                "Automated scans and remediation records are accessibility evidence; "
+                "they do not determine conformance with an accessibility standard or legal requirement."
+                + (
+                    f"\n\nNeed help? Contact {self.support_email}"
+                    if self.support_email
+                    else ""
+                )
+            ),
         )
 
     async def send_admin_notification(
@@ -852,6 +872,10 @@ class EmailService:
             },
         )
 
+        support_line = (
+            f"\n\nQuestions? Contact {self.support_email}" if self.support_email else ""
+        )
+
         return await self.send_email(
             to_emails=[to_email],
             subject=f"You're invited to join {department_name} on Aelira",
@@ -864,11 +888,9 @@ Accept your invitation: {accept_url}
 
 This invitation expires on {expires_date}.
 
-Aelira is an accessibility compliance platform that helps you make your course materials WCAG 2.1 compliant before the April 26, 2027 deadline.
+Aelira helps your team scan, remediate, and review course materials for accessibility. Its automated results are evidence with documented limitations, not a conformance or legal determination.
 
-If you weren't expecting this invitation, you can safely ignore this email.
-
-Questions? Contact support@example.com""",
+If you weren't expecting this invitation, you can safely ignore this email.{support_line}""",
         )
 
     async def send_admin_handoff_invitation(

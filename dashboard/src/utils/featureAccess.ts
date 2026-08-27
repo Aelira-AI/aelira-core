@@ -38,7 +38,7 @@ export interface TierFeatures {
   // Advanced Features
   showVideoProcessing: boolean;
   showBulkAPI: boolean;
-  showComplianceCertificates: boolean;
+  showEvidenceReports: boolean;
 
   // Labels
   departmentLabel: string;
@@ -100,7 +100,7 @@ const TIER_FEATURES: Record<TierKey, TierFeatures> = {
     // Advanced Features — everything
     showVideoProcessing: true,
     showBulkAPI: true,
-    showComplianceCertificates: true,
+    showEvidenceReports: true,
 
     // Labels
     departmentLabel: 'Account',
@@ -131,7 +131,7 @@ const TIER_FEATURES: Record<TierKey, TierFeatures> = {
     // Advanced Features — everything
     showVideoProcessing: true,
     showBulkAPI: true,
-    showComplianceCertificates: true,
+    showEvidenceReports: true,
 
     // Labels
     departmentLabel: 'Department',

@@ -7,7 +7,7 @@ import { unwrapResponse } from '../utils/apiUnwrap';
 import { TrendGraph } from '../components/TrendGraph';
 
 import { AnalyticsDashboard } from '../components/AnalyticsDashboard';
-import { ComplianceActions } from '../components/ComplianceActions';
+import { EvidenceReportAction } from '../components/EvidenceReportAction';
 import { useAuth } from '../context/auth-context';
 import { useToast } from '../context/toast-context';
 import { useFeatureAccess } from '../hooks/useFeatureAccess';
@@ -395,7 +395,7 @@ export function Dashboard(): React.ReactElement {
                   </span>
                   <span className="inline-flex items-center gap-1.5 text-secondary">
                     <CheckCircle className="w-4 h-4 text-[var(--feature-success-content)]" />
-                    WCAG 2.1 AA compliance reports
+                    Accessibility evidence reports with recorded findings and limitations
                   </span>
                 </div>
               </div>
@@ -505,12 +505,9 @@ export function Dashboard(): React.ReactElement {
               <AnalyticsDashboard departmentId={departmentId} />
             </div>
 
-            {/* Compliance Reports & Certificates */}
+            {/* Accessibility Evidence Report */}
             <div className="mb-8">
-              <ComplianceActions
-                departmentId={departmentId}
-                complianceScore={stats?.avgCompliance || 0}
-              />
+              <EvidenceReportAction departmentId={departmentId} />
             </div>
 
             {/* Review Summary Card */}

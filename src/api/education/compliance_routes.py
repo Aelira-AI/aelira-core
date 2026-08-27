@@ -259,114 +259,36 @@ async def generate_compliance_pdf_report(
     db: Session = Depends(get_db_dependency),
     api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_api_key_or_mock),
 ):
-    """
-    Generate a legal-ready PDF compliance report for the department
-
-     Legal compliance PDF generation
-    REQUIRES API KEY IN PRODUCTION
-
-    Generates a comprehensive PDF report suitable for:
-    - DOJ audit documentation
-    - Section 504 compliance reviews
-    - Internal department tracking
-    - University administration reporting
-    - April 2027 deadline documentation
-
-    The report includes:
-    - Executive summary with compliance rate
-    - Department-wide statistics
-    - Issue breakdown by severity
-    - Faculty participation metrics
-    - Recommendations for remediation
-    - April 2027 deadline tracking
-
-    Returns:
-        PDF file download (application/pdf)
-    """
+    """Compatibility route for the bounded accessibility evidence report."""
     from fastapi.responses import Response
+    from ...education.accessibility_evidence_report import AccessibilityEvidenceReport
 
-    _, user_id, department_id_from_token = api_key_info
-    logger.info(f"Generating compliance PDF report for department: {department_id}")
+    _, _user_id, department_id_from_token = api_key_info
+    if department_id != department_id_from_token:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    logger.info("Generating accessibility evidence report")
 
     try:
-        from ...education.compliance_dashboard import ComplianceDashboard
-        from ...education.compliance_report_generator import ComplianceReportGenerator
-
-        # Get comprehensive stats
-        stats_obj = ComplianceDashboard.get_department_compliance(db, department_id)
-
-        # Convert to dict for report generator
-        stats = {
-            "department_id": stats_obj.department_id,
-            "department_name": stats_obj.department_name,
-            "institution": stats_obj.institution,
-            "overview": {
-                "total_scans": stats_obj.total_scans,
-                "total_files_scanned": stats_obj.total_files_scanned,
-                "total_pages_slides": stats_obj.total_pages_slides,
-                "compliance_rate": stats_obj.compliance_rate,
-            },
-            "compliance_scores": {
-                "average": stats_obj.avg_compliance_score,
-                "minimum": stats_obj.min_compliance_score,
-                "maximum": stats_obj.max_compliance_score,
-            },
-            "issues": {
-                "critical": stats_obj.total_critical,
-                "high": stats_obj.total_high,
-                "medium": stats_obj.total_medium,
-                "low": stats_obj.total_low,
-                "total": stats_obj.total_issues,
-            },
-            "scan_types": {
-                "pdf": stats_obj.pdf_scans,
-                "powerpoint": stats_obj.powerpoint_scans,
-                "latex": stats_obj.latex_scans,
-                "image": stats_obj.image_scans,
-                "video": stats_obj.video_scans,
-                "website": stats_obj.website_scans,
-                "code": stats_obj.code_scans,
-                "multimedia": stats_obj.multimedia_scans,
-            },
-            "compliance_breakdown": {
-                "compliant": stats_obj.files_compliant,
-                "needs_work": stats_obj.files_needs_work,
-                "critical": stats_obj.files_critical,
-            },
-            "activity": {
-                "scans_last_7_days": stats_obj.scans_last_7_days,
-                "scans_last_30_days": stats_obj.scans_last_30_days,
-                "scans_this_month": stats_obj.scans_this_month,
-            },
-            "april_2026_deadline": {
-                "days_remaining": stats_obj.days_until_deadline,
-                "estimated_hours_remaining": stats_obj.estimated_hours_remaining,
-                "on_track": stats_obj.on_track,
-            },
-            "faculty": {
-                "active_faculty": stats_obj.active_faculty,
-                "total_faculty": stats_obj.total_faculty,
-                "participation_rate": stats_obj.faculty_participation_rate,
-            },
-        }
-
-        # Generate PDF
-        pdf_bytes = ComplianceReportGenerator.generate_department_report(stats)
-
-        # Return as downloadable file
-        filename = f"compliance_report_{stats_obj.department_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf"
+        _report, pdf_bytes = AccessibilityEvidenceReport.generate(db, department_id)
+        filename = (
+            f"accessibility_evidence_report_{datetime.now().strftime('%Y%m%d')}.pdf"
+        )
 
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Deprecation": "true",
+                "Link": f'</analytics/evidence-report/{department_id}>; rel="successor-version"',
+            },
         )
 
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Department not found")
     except Exception as e:
-        logger.error(f"Error generating compliance PDF: {str(e)}", exc_info=True)
+        logger.error("Accessibility evidence report failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500,
-            detail="Failed to generate compliance PDF. Please try again.",
+            detail="Unable to generate accessibility evidence report",
         )
