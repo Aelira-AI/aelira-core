@@ -1249,6 +1249,17 @@ async def process_remediation_job(
                         )
                     )
 
+                validator_result = (
+                    "recorded_checkpoint_failures"
+                    if matterhorn.failed > 0
+                    else (
+                        "all_recorded_checkpoints_passed"
+                        if matterhorn.total > 0
+                        and matterhorn.passed == matterhorn.total
+                        else "recorded_checkpoint_results_available"
+                    )
+                )
+
                 db.add(
                     ReviewAuditLog(
                         id=str(uuid.uuid4()),
@@ -1259,7 +1270,7 @@ async def process_remediation_job(
                             "passed": matterhorn.passed,
                             "failed": matterhorn.failed,
                             "warnings": matterhorn.warnings,
-                            "compliance_level": matterhorn.compliance_level,
+                            "validator_result": validator_result,
                         },
                     )
                 )
@@ -1270,7 +1281,7 @@ async def process_remediation_job(
                         "scan_id": scan_id,
                         "passed": matterhorn.passed,
                         "failed": matterhorn.failed,
-                        "compliance": matterhorn.compliance_level,
+                        "validator_result": validator_result,
                     },
                 )
             except ImportError:

@@ -28,7 +28,7 @@ This opens the main menu where you can:
 - Scan Documents (PDF, PowerPoint, LaTeX)
 - Scan Media (Images, Videos)
 - Scan Source Code
-- Generate Compliance Report
+- Download Accessibility Evidence Report
 - Settings & Configuration
 - Help & Documentation
 
@@ -481,59 +481,57 @@ aelira remediate abc123 --download --output fixed_document.pdf
 
 ---
 
-## Compliance Reporting Commands
+## Accessibility Evidence Reporting Commands
 
-### `aelira report compliance` - Department Compliance Report
+### `aelira report evidence` - Accessibility Evidence Report
 
-Generate department-wide compliance reports with priority issue ranking.
+Download a PDF record of Aelira's scanned-content findings, methods, and
+limitations. The report does not determine conformance with an accessibility
+standard or legal requirement.
+
+```bash
+aelira report evidence [department_id]
+  --api-url <url>
+  --output <file>
+  --timer
+```
+
+**Examples:**
+```bash
+aelira report evidence dept-123
+aelira report evidence dept-123 --output evidence-report.pdf
+```
+
+---
+
+### `aelira report compliance` - Deprecated Scan-Evidence Statistics View
+
+This compatibility command exposes console or JSON scan statistics and
+findings. Its `--pdf` option downloads the same bounded accessibility evidence
+report as `aelira report evidence`; it does not make a conformance or legal
+determination.
 
 ```bash
 aelira report compliance [department_id]
   --api-url <url>
   --format console|json
-  --output <file>
-  --pdf <file>
+  --output <file>                # JSON output path
+  --pdf <file>                   # Evidence report PDF path
   --timer
 ```
 
 **Examples:**
 ```bash
-aelira report compliance
-aelira report compliance dept-123
-aelira report compliance dept-123 --pdf report.pdf
+# Export scan statistics and findings
+aelira report compliance dept-123 --format json --output scan-evidence.json
+
+# Download the canonical evidence report through the compatibility command
+aelira report compliance dept-123 --pdf evidence-report.pdf
 ```
 
----
-
-### `aelira report certificate` - Compliance Certificate
-
-Generate a professional compliance certificate (Bronze/Silver/Gold/Platinum).
-
-Certificate levels based on compliance score:
-- **Platinum** (95-100%): Exceptional Compliance Achievement
-- **Gold** (90-94%): Excellent Compliance Achievement
-- **Silver** (80-89%): Good Compliance Achievement
-- **Bronze** (70-79%): Basic Compliance Achievement
-
-```bash
-aelira report certificate [department_id]
-  --api-url <url>
-  --check-eligibility       # Check eligibility without generating
-  --output <file>
-  --timer
-```
-
-**Examples:**
-```bash
-# Check if eligible for certificate
-aelira report certificate --check-eligibility
-
-# Generate certificate
-aelira report certificate dept-123
-
-# Save to specific path
-aelira report certificate dept-123 --output certificate.pdf
-```
+`aelira report certificate` remains as a deprecated alias. It downloads the
+same accessibility evidence report and does not perform an eligibility or
+score-threshold check.
 
 ---
 
@@ -1160,7 +1158,7 @@ npm run build
 ./bin/dev.js scan test-sample.html
 ./bin/dev.js scan pdf test-files/sample.pdf
 ./bin/dev.js scan docx test-files/document.docx
-./bin/dev.js report compliance
+./bin/dev.js report evidence
 ./bin/dev.js issues stats
 ```
 
@@ -1187,7 +1185,7 @@ The API will be available at `http://localhost:8000` (see the root `README.md` f
 
 **LMS & cloud** — Canvas course scanning and per-file remediation; cloud integration status, OAuth connect, folder selection, and background sync for Google, Microsoft, Blackboard.
 
-**Reporting** — department compliance reports, historical trend analytics with deadline projection, and Bronze/Silver/Gold/Platinum compliance certificates.
+**Reporting** — accessibility evidence reports for scanned content and historical trend analytics with deadline projection. Evidence reports describe Aelira's checks and limitations; they are not accessibility or legal determinations.
 
 **Team & CI** — issue tracker with assignments and filters; `aelira ci` emits exit codes, JUnit XML, and badges for pipelines; CSV/JSON export of scan history.
 

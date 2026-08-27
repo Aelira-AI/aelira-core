@@ -43,7 +43,7 @@ export interface UseFeatureAccessResult {
   // Advanced feature accessors
   showVideoProcessing: boolean;
   showBulkAPI: boolean;
-  showComplianceCertificates: boolean;
+  showEvidenceReports: boolean;
 
   // Helper function for custom feature checks
   hasFeature: (featureName: FeatureKey) => boolean;
@@ -90,7 +90,7 @@ export function useFeatureAccess(): UseFeatureAccessResult {
     // Advanced feature accessors
     showVideoProcessing: features.showVideoProcessing,
     showBulkAPI: features.showBulkAPI,
-    showComplianceCertificates: features.showComplianceCertificates,
+    showEvidenceReports: features.showEvidenceReports,
 
     // Helper function for custom feature checks
     hasFeature: (featureName: FeatureKey) => hasFeatureUtil(tier, featureName),

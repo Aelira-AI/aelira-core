@@ -463,7 +463,7 @@ async def handle_blackboard_deep_link_launch(
                 <button class="scan-option" onclick="selectContent('compliance')">
                     <div class="icon"></div>
                     <div class="title">Compliance Dashboard</div>
-                    <div class="description">Track compliance progress with reports and certificates</div>
+                    <div class="description">Review scan evidence, trends, and items needing manual follow-up</div>
                 </button>
             </div>
 

@@ -21,7 +21,7 @@ Complete reference for all Aelira CLI commands.
 - [Cloud Integrations](#cloud-integrations)
 - [Canvas](#canvas)
 - [Issue Management](#issue-management)
-- [Compliance Reports](#compliance-reports)
+- [Accessibility Evidence Reports](#accessibility-evidence-reports)
 - [Export](#export)
 - [Utilities](#utilities)
 - [CI/CD Integration](#cicd-integration)
@@ -90,7 +90,7 @@ aelira interactive
 3. Scan Media (Images, Videos)
 4. Scan Source Code
 5. Cloud Integrations
-6. Generate Compliance Report
+6. Download Accessibility Evidence Report
 7. Help & Documentation
 8. Exit
 
@@ -204,7 +204,7 @@ aelira scan pdf <file|directory> [options]
 - `--export-html <file>` - Export accessible HTML version
 - `--batch` - Process all PDFs in directory
 - `--ocr` - Force OCR processing
-- `--pdf <file>` - Generate compliance report PDF
+- `--pdf <file>` - Generate a PDF scan report
 
 **Examples:**
 ```bash
@@ -886,11 +886,36 @@ aelira issues export --format csv --output issues.csv
 
 ---
 
-## Compliance Reports
+## Accessibility Evidence Reports
 
-### `aelira report compliance` - Department Compliance Report
+### `aelira report evidence` - Accessibility Evidence Report
 
-Generate department-wide compliance statistics.
+Download a PDF record of Aelira's scanned-content findings, methods, and
+limitations. It does not determine conformance with an accessibility standard
+or legal requirement.
+
+**Usage:**
+```bash
+aelira report evidence [department-id] [options]
+```
+
+**Flags:**
+- `--api-url <url>` - Aelira API URL
+- `--output <file>` - Evidence report PDF path
+- `--timer` - Show performance timing information
+
+**Examples:**
+```bash
+# Download an evidence report
+aelira report evidence dept-123 --output evidence-report.pdf
+```
+
+---
+
+### `aelira report compliance` - Deprecated Scan-Evidence Statistics View
+
+This compatibility command exposes console or JSON scan statistics and
+findings. Its PDF option downloads the canonical accessibility evidence report.
 
 **Usage:**
 ```bash
@@ -898,44 +923,24 @@ aelira report compliance [department-id] [options]
 ```
 
 **Flags:**
-- `--format <console|pdf|json>` - Output format
-- `--output <file>` - Save report to file
-- `--date-range <start:end>` - Filter by date range
+- `--api-url <url>` - Aelira API URL
+- `--format <console|json>` - Statistics output format
+- `--output <file>` - JSON output path
+- `--pdf <file>` - Accessibility evidence report PDF path
+- `--timer` - Show performance timing information
 
 **Examples:**
 ```bash
-# Console report
-aelira report compliance
+# Export scan evidence statistics
+aelira report compliance dept-123 --format json --output scan-evidence.json
 
-# PDF report
-aelira report compliance --format pdf --output compliance-report.pdf
-
-# Date range filter
-aelira report compliance --date-range 2025-12-01:2026-01-25
+# Download the evidence PDF through the compatibility command
+aelira report compliance dept-123 --pdf evidence-report.pdf
 ```
 
----
-
-### `aelira report certificate` - Compliance Certificate
-
-Generate compliance certificates (Bronze/Silver/Gold/Platinum).
-
-**Usage:**
-```bash
-aelira report certificate [options]
-```
-
-**Certificate Levels:**
-- **Bronze:** 60-74% compliance
-- **Silver:** 75-84% compliance
-- **Gold:** 85-94% compliance
-- **Platinum:** 95%+ compliance
-
-**Examples:**
-```bash
-# Generate certificate
-aelira report certificate --output certificate.pdf
-```
+`aelira report certificate` is a deprecated alias for `aelira report evidence`.
+It downloads the same evidence PDF without eligibility, threshold, or award
+logic.
 
 ---
 

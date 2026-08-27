@@ -530,258 +530,131 @@ async def bulk_update_issues(
         raise _internal_error("Bulk issue update", "Unable to update issues", e)
 
 
-# ==================== Report & Certificate Endpoints ====================
+# ==================== Accessibility Evidence Report Endpoints ====================
+
+
+def _evidence_pdf_response(
+    db: Session, department_id: str, *, deprecated_alias: bool = False
+):
+    from fastapi.responses import Response
+    from ..education.accessibility_evidence_report import AccessibilityEvidenceReport
+
+    _report, pdf_bytes = AccessibilityEvidenceReport.generate(db, department_id)
+    filename = f"accessibility_evidence_report_{datetime.now().strftime('%Y%m%d')}.pdf"
+    headers = {
+        "Content-Disposition": f"attachment; filename={filename}",
+        "Content-Length": str(len(pdf_bytes)),
+    }
+    if deprecated_alias:
+        headers.update(
+            {
+                "Deprecation": "true",
+                "Link": f'</analytics/evidence-report/{department_id}>; rel="successor-version"',
+            }
+        )
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+@router.get("/evidence-report/{department_id}")
+async def generate_accessibility_evidence_report(
+    department_id: str,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Generate a bounded report of recorded accessibility evidence."""
+
+    department_id = _authorize_department_analytics(principal, department_id)
+    logger.info("Generating accessibility evidence report")
+    try:
+        return _evidence_pdf_response(db, department_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Department not found")
+    except Exception as e:
+        raise _internal_error(
+            "Accessibility evidence report generation",
+            "Unable to generate accessibility evidence report",
+            e,
+        )
 
 
 @router.get("/report/{department_id}")
 async def generate_compliance_report(
     department_id: str,
-    include_ai_recommendations: bool = Query(default=True),
+    include_ai_recommendations: bool = Query(
+        default=False,
+        deprecated=True,
+        description="Retained for compatibility and ignored by evidence reports",
+    ),
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
-    """
-    Generate a comprehensive PDF compliance report for a department.
+    """Compatibility alias for the bounded accessibility evidence report."""
 
-    Enhanced with:
-    - AI-powered recommendations via Gemini (optional)
-    - Historical trend analysis
-    - Issue tracking status
-
-    Args:
-        include_ai_recommendations: Whether to generate AI recommendations (default True)
-
-    Returns:
-        PDF file as attachment
-    """
-    from fastapi.responses import Response
-    from ..education.compliance_dashboard import ComplianceDashboard
-    from ..education.compliance_report_generator import ComplianceReportGenerator
-
+    del include_ai_recommendations
     department_id = _authorize_department_analytics(principal, department_id)
-    logger.info("Generating compliance report")
-
     try:
-        # Get department compliance stats
-        stats_obj = ComplianceDashboard.get_department_compliance(db, department_id)
-        if not stats_obj:
-            raise HTTPException(status_code=404, detail="Department not found")
-        stats = stats_obj.to_report_dict()
-
-        # Get trend analysis
-        trend_analysis = None
-        try:
-            analysis = SnapshotService.analyze_trend(db, department_id, 7, 7)
-            trend_analysis = {
-                "current_avg_score": analysis.current_avg_score,
-                "previous_avg_score": analysis.previous_avg_score,
-                "score_change": analysis.score_change,
-                "score_change_pct": analysis.score_change_pct,
-                "current_total_issues": analysis.current_total_issues,
-                "previous_total_issues": analysis.previous_total_issues,
-                "issues_change": analysis.issues_change,
-                "trend_direction": analysis.trend_direction,
-                "on_track_for_deadline": analysis.on_track_for_deadline,
-            }
-        except Exception as e:
-            logger.warning("Trend analysis unavailable (%s)", type(e).__name__)
-
-        # Get issue stats
-        issue_stats = None
-        try:
-            stats_obj = IssueTrackingService.get_issue_stats(db, department_id)
-            issue_stats = {
-                "total_issues": stats_obj.total_issues,
-                "open_issues": stats_obj.open_issues,
-                "in_progress_issues": stats_obj.in_progress_issues,
-                "resolved_issues": stats_obj.resolved_issues,
-                "wont_fix_issues": stats_obj.wont_fix_issues,
-                "false_positive_issues": stats_obj.false_positive_issues,
-                "auto_fixable_issues": stats_obj.auto_fixable_issues,
-                "auto_fixed_issues": stats_obj.auto_fixed_issues,
-                "resolution_rate": stats_obj.resolution_rate,
-            }
-        except Exception as e:
-            logger.warning("Issue statistics unavailable (%s)", type(e).__name__)
-
-        # Generate AI recommendations if requested
-        ai_recommendations = None
-        if include_ai_recommendations:
-            try:
-                ai_recommendations = (
-                    await ComplianceReportGenerator.generate_ai_recommendations(
-                        stats, trend_analysis, issue_stats
-                    )
-                )
-            except Exception as e:
-                logger.warning("AI recommendations unavailable (%s)", type(e).__name__)
-
-        # Generate PDF report
-        pdf_bytes = ComplianceReportGenerator.generate_department_report(
-            stats=stats,
-            trend_analysis=trend_analysis,
-            issue_stats=issue_stats,
-            ai_recommendations=ai_recommendations,
-        )
-
-        # Return as PDF download
-        filename = (
-            f"compliance_report_{department_id}_{datetime.now().strftime('%Y%m%d')}.pdf"
-        )
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": str(len(pdf_bytes)),
-            },
-        )
-
-    except HTTPException:
-        raise
+        return _evidence_pdf_response(db, department_id, deprecated_alias=True)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Department not found")
     except Exception as e:
         raise _internal_error(
-            "Compliance report generation", "Unable to generate compliance report", e
+            "Legacy report generation",
+            "Unable to generate accessibility evidence report",
+            e,
         )
 
 
-@router.get("/certificate/{department_id}")
+@router.get("/certificate/{department_id}", deprecated=True)
 async def generate_compliance_certificate(
     department_id: str,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
-    """
-    Generate a professional compliance certificate for a department.
-
-    Certificate levels based on compliance score:
-    - Platinum (95-100%): Exceptional Compliance Achievement
-    - Gold (90-94%): Excellent Compliance Achievement
-    - Silver (80-89%): Good Compliance Achievement
-    - Bronze (70-79%): Basic Compliance Achievement
-
-    Returns 404 if department score is below 70% (no certificate available).
-
-    Returns:
-        PDF certificate as attachment
-    """
-    from fastapi.responses import Response
-    from ..education.compliance_dashboard import ComplianceDashboard
-    from ..education.compliance_certificate import ComplianceCertificate
+    """Deprecated alias that returns the bounded evidence artifact."""
 
     department_id = _authorize_department_analytics(principal, department_id)
-    logger.info("Generating compliance certificate")
-
     try:
-        # Get department compliance stats
-        stats = ComplianceDashboard.get_department_compliance(db, department_id)
-        if not stats:
-            raise HTTPException(status_code=404, detail="Department not found")
-
-        # Get compliance score
-        avg_score = stats.avg_compliance_score
-        if avg_score < 70:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Department compliance score ({avg_score}/100) is below the minimum threshold (70) for certificate generation",
-            )
-
-        # Generate certificate
-        pdf_bytes = ComplianceCertificate.generate_certificate(
-            department_name=stats.department_name,
-            institution=stats.institution,
-            compliance_score=avg_score,
-            total_scans=stats.total_scans,
-            files_analyzed=stats.total_files_scanned,
-        )
-
-        if not pdf_bytes:
-            raise HTTPException(
-                status_code=500, detail="Failed to generate certificate"
-            )
-
-        # Determine certificate level for filename
-        level = ComplianceCertificate.get_certificate_level(avg_score)
-        level_name = level["name"].lower() if level else "certificate"
-
-        filename = f"compliance_certificate_{level_name}_{department_id}_{datetime.now().strftime('%Y%m%d')}.pdf"
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": str(len(pdf_bytes)),
-            },
-        )
-
-    except HTTPException:
-        raise
+        return _evidence_pdf_response(db, department_id, deprecated_alias=True)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Department not found")
     except Exception as e:
         raise _internal_error(
-            "Compliance certificate generation",
-            "Unable to generate compliance certificate",
+            "Retired report alias",
+            "Unable to generate accessibility evidence report",
             e,
         )
 
 
-@router.get("/certificate/{department_id}/eligibility")
+@router.get("/certificate/{department_id}/eligibility", deprecated=True)
 async def check_certificate_eligibility(
     department_id: str,
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
-    """
-    Check if a department is eligible for a compliance certificate.
+    """Neutral compatibility response for the retired score eligibility API."""
 
-    Returns:
-        Eligibility status and potential certificate level
-    """
-    from ..education.compliance_dashboard import ComplianceDashboard
-    from ..education.compliance_certificate import ComplianceCertificate
+    from ..education.accessibility_evidence_report import AccessibilityEvidenceReport
 
     department_id = _authorize_department_analytics(principal, department_id)
-
     try:
-        stats = ComplianceDashboard.get_department_compliance(db, department_id)
-        if not stats:
-            raise HTTPException(status_code=404, detail="Department not found")
-
-        avg_score = stats.avg_compliance_score
-        level = ComplianceCertificate.get_certificate_level(avg_score)
-
+        report = AccessibilityEvidenceReport.collect(db, department_id)
         return {
             "department_id": department_id,
-            "compliance_score": avg_score,
-            "eligible": level is not None,
-            "certificate_level": level["name"] if level else None,
-            "description": (
-                level["description"] if level else "Score below minimum threshold (70%)"
-            ),
-            "points_to_next_level": (
-                _get_points_to_next_level(avg_score) if level else 70 - avg_score
-            ),
+            "compliance_score": report["score"]["average"],
+            "eligible": False,
+            "certificate_level": None,
+            "description": "Score-based report awards have been retired.",
+            "points_to_next_level": None,
+            "report_available": True,
+            "report_kind": AccessibilityEvidenceReport.REPORT_KIND,
+            "successor_url": f"/analytics/evidence-report/{department_id}",
         }
-
-    except HTTPException:
-        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Department not found")
     except Exception as e:
         raise _internal_error(
-            "Certificate eligibility", "Unable to check report eligibility", e
+            "Retired eligibility alias", "Unable to check report availability", e
         )
-
-
-def _get_points_to_next_level(score: float) -> float:
-    """Calculate points needed to reach next certificate level."""
-    if score >= 95:
-        return 0  # Already at Platinum
-    elif score >= 90:
-        return 95 - score  # Points to Platinum
-    elif score >= 80:
-        return 90 - score  # Points to Gold
-    elif score >= 70:
-        return 80 - score  # Points to Silver
-    else:
-        return 70 - score  # Points to Bronze
 
 
 # ==================== Export Endpoints ====================
@@ -1198,8 +1071,13 @@ async def export_bulk_zip(
     include_pdfs: bool = Query(
         default=False, description="Include individual scan PDFs"
     ),
-    include_certificate: bool = Query(
-        default=True, description="Include certificate if eligible"
+    include_evidence_report: Optional[bool] = Query(
+        default=None, description="Include the bounded accessibility evidence report"
+    ),
+    include_certificate: Optional[bool] = Query(
+        default=None,
+        deprecated=True,
+        description="Legacy alias for include_evidence_report",
     ),
     date_from: Optional[str] = Query(
         default=None, description="Start date (YYYY-MM-DD)"
@@ -1213,13 +1091,13 @@ async def export_bulk_zip(
 
     Contents:
     - summary.csv: All scan data
-    - compliance_report.pdf: Department compliance report
-    - certificate.pdf: Compliance certificate (if eligible and requested)
+    - accessibility_evidence_report.pdf: Bounded scan and review evidence
     - individual_reports/: Per-scan PDF reports (if requested)
 
     Args:
         include_pdfs: Include individual scan PDF reports (default False)
-        include_certificate: Include certificate if eligible (default True)
+        include_evidence_report: Include the evidence report (default True)
+        include_certificate: Deprecated alias for include_evidence_report
         date_from: Optional start date filter (YYYY-MM-DD)
         date_to: Optional end date filter (YYYY-MM-DD)
 
@@ -1231,12 +1109,17 @@ async def export_bulk_zip(
     from io import BytesIO, StringIO
     from fastapi.responses import Response
     from ..db.models import Scan, ScanResult
-    from ..education.compliance_dashboard import ComplianceDashboard
-    from ..education.compliance_report_generator import ComplianceReportGenerator
-    from ..education.compliance_certificate import ComplianceCertificate
+    from ..education.accessibility_evidence_report import AccessibilityEvidenceReport
 
     department_id = _authorize_department_analytics(principal, department_id)
     logger.info("Exporting bulk analytics archive")
+
+    if isinstance(include_evidence_report, bool):
+        include_report = include_evidence_report
+    elif isinstance(include_certificate, bool):
+        include_report = include_certificate
+    else:
+        include_report = True
 
     try:
         # Create ZIP in memory
@@ -1314,83 +1197,19 @@ async def export_bulk_zip(
 
             zip_file.writestr("summary.csv", csv_output.getvalue())
 
-            # 2. Add compliance_report.pdf
-            try:
-                stats = ComplianceDashboard.get_department_compliance(db, department_id)
-                if stats:
-                    stats_dict = stats.to_report_dict()
-                    # Get trend analysis
-                    trend_analysis = None
-                    try:
-                        analysis = SnapshotService.analyze_trend(
-                            db, department_id, 7, 7
-                        )
-                        trend_analysis = {
-                            "current_avg_score": analysis.current_avg_score,
-                            "previous_avg_score": analysis.previous_avg_score,
-                            "score_change": analysis.score_change,
-                            "trend_direction": analysis.trend_direction,
-                            "on_track_for_deadline": analysis.on_track_for_deadline,
-                        }
-                    except Exception:
-                        pass
-
-                    # Get issue stats
-                    issue_stats = None
-                    try:
-                        stats_obj = IssueTrackingService.get_issue_stats(
-                            db, department_id
-                        )
-                        issue_stats = {
-                            "total_issues": stats_obj.total_issues,
-                            "open_issues": stats_obj.open_issues,
-                            "resolved_issues": stats_obj.resolved_issues,
-                            "resolution_rate": stats_obj.resolution_rate,
-                        }
-                    except Exception:
-                        pass
-
-                    pdf_bytes = ComplianceReportGenerator.generate_department_report(
-                        stats=stats_dict,
-                        trend_analysis=trend_analysis,
-                        issue_stats=issue_stats,
-                        ai_recommendations=None,  # Skip AI for bulk export speed
-                    )
-                    zip_file.writestr("compliance_report.pdf", pdf_bytes)
-            except Exception as e:
-                logger.warning(
-                    "Bulk compliance report unavailable (%s)", type(e).__name__
-                )
-
-            # 3. Add certificate.pdf (if eligible and requested)
-            if include_certificate:
+            # 2. Add the same bounded evidence artifact served by the API.
+            if include_report:
                 try:
-                    if stats:
-                        avg_score = stats.avg_compliance_score
-                        if avg_score >= 70:
-                            cert_bytes = ComplianceCertificate.generate_certificate(
-                                department_name=stats.department_name,
-                                institution=stats.institution,
-                                compliance_score=avg_score,
-                                total_scans=stats.total_scans,
-                                files_analyzed=stats.total_files_scanned,
-                            )
-                            if cert_bytes:
-                                level = ComplianceCertificate.get_certificate_level(
-                                    avg_score
-                                )
-                                level_name = (
-                                    level["name"].lower() if level else "certificate"
-                                )
-                                zip_file.writestr(
-                                    f"certificate_{level_name}.pdf", cert_bytes
-                                )
+                    _report, evidence_pdf = AccessibilityEvidenceReport.generate(
+                        db, department_id
+                    )
+                    zip_file.writestr("accessibility_evidence_report.pdf", evidence_pdf)
                 except Exception as e:
                     logger.warning(
-                        "Bulk certificate output unavailable (%s)", type(e).__name__
+                        "Bulk evidence report unavailable (%s)", type(e).__name__
                     )
 
-            # 4. Add individual scan PDFs (if requested)
+            # 3. Add individual scan PDFs (if requested)
             if include_pdfs and scans:
                 from ..education.pdf_report_generator import (
                     AccessibilityPDFReportGenerator,
@@ -1432,21 +1251,19 @@ async def export_bulk_zip(
                             type(e).__name__,
                         )
 
-            # 5. Add README.txt
-            readme_content = f"""Aelira Accessibility Compliance Export
-======================================
+            # 4. Add README.txt
+            readme_content = f"""Aelira Accessibility Evidence Export
+=====================================
 
-Department ID: {department_id}
 Export Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 Total Scans: {len(scans)}
 
 Contents:
 - summary.csv: All scan data in CSV format
-- compliance_report.pdf: Department compliance report
-{"- certificate_*.pdf: Compliance certificate" if include_certificate else ""}
+{"- accessibility_evidence_report.pdf: Bounded scan, finding, methodology, and review evidence" if include_report else ""}
 {"- individual_reports/: Per-scan PDF reports" if include_pdfs else ""}
 
-Generated by Aelira - https://example.com
+This export records only the scans and checks present in this deployment. It does not determine whether content meets an accessibility standard or legal requirement.
 """
             zip_file.writestr("README.txt", readme_content)
 

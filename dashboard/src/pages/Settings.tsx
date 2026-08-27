@@ -96,7 +96,7 @@ export default function Settings(): React.ReactElement {
     isIndividualTier,
     showVideoProcessing,
     showBulkAPI,
-    showComplianceCertificates,
+    showEvidenceReports,
     showIntegrations,
     showBulkUpload,
     showTeamFeatures,
@@ -553,7 +553,7 @@ export default function Settings(): React.ReactElement {
                   <FeatureItem label="Bulk Upload" available={showBulkUpload} />
                   <FeatureItem label="LMS Integrations" available={showIntegrations} />
                   <FeatureItem label="Team Collaboration" available={showTeamFeatures} />
-                  <FeatureItem label="Compliance Certificates" available={showComplianceCertificates} />
+                  <FeatureItem label="Accessibility Evidence Reports" available={showEvidenceReports} />
                 </div>
               </div>
               <div>

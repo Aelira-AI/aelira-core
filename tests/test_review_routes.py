@@ -28,6 +28,7 @@ from src.api.review_routes import (
     AuditEntry,
     compute_compliance_level,
     compute_doc_status,
+    compute_validator_result,
 )
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,31 @@ class TestComputeComplianceLevel:
     def test_non_compliant_boundary_with_5_total(self):
         # 2 out of 5 = 40% > 20%
         assert compute_compliance_level(total=5, failed=2) == "non_compliant"
+
+
+class TestComputeValidatorResult:
+    """Tests for the non-conformance validator summary exposed by the API."""
+
+    def test_not_run_when_no_checkpoints(self):
+        assert compute_validator_result(total=0, passed=0, failed=0) == "not_run"
+
+    def test_all_recorded_checkpoints_passed(self):
+        assert (
+            compute_validator_result(total=5, passed=5, failed=0)
+            == "all_recorded_checkpoints_passed"
+        )
+
+    def test_failures_take_precedence(self):
+        assert (
+            compute_validator_result(total=5, passed=4, failed=1)
+            == "recorded_checkpoint_failures"
+        )
+
+    def test_non_pass_non_fail_results_are_neutral(self):
+        assert (
+            compute_validator_result(total=5, passed=4, failed=0)
+            == "recorded_checkpoint_results_available"
+        )
 
 
 class TestComputeDocStatus:
@@ -257,7 +283,7 @@ class TestDocumentReview:
             matterhorn_total=10,
             matterhorn_passed=8,
             matterhorn_failed=2,
-            compliance_level="partial",
+            validator_result="recorded_checkpoint_failures",
         )
         data = doc.model_dump()
         assert data["scan_id"] == "scan-001"
@@ -266,7 +292,8 @@ class TestDocumentReview:
         assert data["matterhorn_total"] == 10
         assert data["matterhorn_passed"] == 8
         assert data["matterhorn_failed"] == 2
-        assert data["compliance_level"] == "partial"
+        assert data["validator_result"] == "recorded_checkpoint_failures"
+        assert "compliance_level" not in data
 
     def test_empty_fixes_list(self):
         doc = DocumentReview(
@@ -276,10 +303,10 @@ class TestDocumentReview:
             matterhorn_total=0,
             matterhorn_passed=0,
             matterhorn_failed=0,
-            compliance_level="not_validated",
+            validator_result="not_run",
         )
         assert doc.fixes == []
-        assert doc.compliance_level == "not_validated"
+        assert doc.validator_result == "not_run"
 
 
 # ---------------------------------------------------------------------------

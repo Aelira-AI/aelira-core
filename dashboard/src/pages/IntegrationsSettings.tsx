@@ -256,7 +256,7 @@ export function IntegrationsSettings(): React.ReactElement {
               <div>
                 <span style={{ color: 'var(--content-primary)' }}>Weekly Summary</span>
                 <p className="text-sm" style={{ color: 'var(--content-secondary)' }}>
-                  Receive a weekly compliance report
+                  Receive a weekly accessibility scan evidence summary
                 </p>
               </div>
               <input

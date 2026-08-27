@@ -34,7 +34,10 @@ from ..db.models import (
     User,
 )
 from ..education.equation_region_contract import PageRasterRegionLocator
-from ..education.reports.compliance_report import AuditReportGenerator
+from ..education.reports.compliance_report import (
+    AuditReportGenerator,
+    bounded_audit_details,
+)
 from ..services.scan_fix_service import (
     apply_authenticated_batch_review,
     invalidate_current_artifact_approvals,
@@ -122,7 +125,7 @@ class DocumentReview(BaseModel):
     matterhorn_total: int
     matterhorn_passed: int
     matterhorn_failed: int
-    compliance_level: str
+    validator_result: str
 
 
 class FixAction(BaseModel):
@@ -187,6 +190,17 @@ def compute_compliance_level(total: int, failed: int) -> str:
     if failed <= total * 0.2:
         return "partial"
     return "non_compliant"
+
+
+def compute_validator_result(total: int, passed: int, failed: int) -> str:
+    """Summarize recorded validator checkpoints without asserting conformance."""
+    if total == 0:
+        return "not_run"
+    if failed > 0:
+        return "recorded_checkpoint_failures"
+    if passed == total:
+        return "all_recorded_checkpoints_passed"
+    return "recorded_checkpoint_results_available"
 
 
 def compute_doc_status(needs_review_count: int) -> str:
@@ -425,7 +439,7 @@ def get_document_review(
     failed = sum(1 for m in matterhorn if m.status == "fail")
     total = len(matterhorn)
 
-    compliance = compute_compliance_level(total, failed)
+    validator_result = compute_validator_result(total, passed, failed)
 
     return DocumentReview(
         scan_id=scan_id,
@@ -454,7 +468,7 @@ def get_document_review(
         matterhorn_total=total,
         matterhorn_passed=passed,
         matterhorn_failed=failed,
-        compliance_level=compliance,
+        validator_result=validator_result,
     )
 
 
@@ -578,10 +592,10 @@ def export_audit_trail(
     db: Session = Depends(get_db_dependency),
     auth_result=Depends(get_auth),
 ):
-    """Export the audit trail and compliance data in JSON, CSV, or PDF format.
+    """Export bounded scan, validator, remediation, and review evidence.
 
-    Generates a comprehensive report including issues found, fixes applied,
-    review history, Matterhorn results, and WCAG conformance statement.
+    The export records issues, fixes, review history, and Matterhorn results;
+    it does not make an accessibility-standard or legal determination.
     """
     _, _user_id, department_id = auth_result
 
@@ -686,7 +700,7 @@ def export_audit_trail(
             content=pdf_bytes,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f'attachment; filename="compliance-report-{safe_id}.pdf"',
+                "Content-Disposition": f'attachment; filename="accessibility-review-evidence-{safe_id}.pdf"',
             },
         )
 
@@ -728,7 +742,7 @@ def get_audit_trail(
                 id=e.id,
                 action=e.action,
                 user_name=user_name or "System",
-                details=e.details,
+                details=bounded_audit_details(e.details),
                 created_at=e.created_at,
             )
         )

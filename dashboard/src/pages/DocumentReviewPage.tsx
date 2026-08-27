@@ -31,7 +31,7 @@ interface DocumentReview {
   matterhorn_total: number;
   matterhorn_passed: number;
   matterhorn_failed: number;
-  compliance_level: string;
+  validator_result: string;
   total_fixes: number;
   needs_review_count: number;
   auto_approved_count: number;
@@ -464,7 +464,7 @@ export function DocumentReviewPage(): React.ReactElement {
           total={review.matterhorn_total}
           passed={review.matterhorn_passed}
           failed={review.matterhorn_failed}
-          compliance={review.compliance_level}
+          result={review.validator_result}
         />
       </div>
     </div>

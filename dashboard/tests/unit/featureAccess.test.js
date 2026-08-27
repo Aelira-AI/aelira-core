@@ -48,7 +48,7 @@ describe('getFeatures', () => {
     assert.equal(features.showCustomAPIKeys, true);
     assert.equal(features.showVideoProcessing, true);
     assert.equal(features.showBulkAPI, true);
-    assert.equal(features.showComplianceCertificates, true);
+    assert.equal(features.showEvidenceReports, true);
     assert.equal(features.showQuotaBar, false);
   });
 
@@ -68,7 +68,7 @@ describe('getFeatures', () => {
     assert.equal(features.showCustomAPIKeys, true);
     assert.equal(features.showVideoProcessing, true);
     assert.equal(features.showBulkAPI, true);
-    assert.equal(features.showComplianceCertificates, true);
+    assert.equal(features.showEvidenceReports, true);
     assert.equal(features.showQuotaBar, false);
   });
 
