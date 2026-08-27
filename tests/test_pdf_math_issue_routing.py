@@ -55,11 +55,14 @@ def test_math_contract_is_immutable_and_canonical():
         DOCUMENT_WIDE_MATH_ISSUE_TYPES,
         IMAGE_EQUATION_ISSUE_TYPE,
         MATH_ISSUE_TYPES,
+        SCANNED_EQUATION_REGION_ISSUE_TYPE,
     )
 
     assert IMAGE_EQUATION_ISSUE_TYPE == "image_equation_inaccessible"
     assert isinstance(MATH_ISSUE_TYPES, frozenset)
-    assert CONCRETE_MATH_ISSUE_TYPES == frozenset({IMAGE_EQUATION_ISSUE_TYPE})
+    assert CONCRETE_MATH_ISSUE_TYPES == frozenset(
+        {IMAGE_EQUATION_ISSUE_TYPE, SCANNED_EQUATION_REGION_ISSUE_TYPE}
+    )
     assert CONCRETE_MATH_ISSUE_TYPES.isdisjoint(DOCUMENT_WIDE_MATH_ISSUE_TYPES)
 
 
@@ -147,8 +150,13 @@ def test_image_candidate_fails_closed_until_recognition_pipeline_exists():
     assert result.error == "alt_text_client_unavailable"
 
 
-def test_image_equation_disables_legacy_manager_alias_and_keeps_one_manual(tmp_path):
-    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+@pytest.mark.parametrize(
+    "issue_type",
+    ["image_equation_inaccessible", "scanned_equation_region_manual"],
+)
+def test_visual_equation_disables_legacy_manager_alias_and_keeps_one_manual(
+    tmp_path, issue_type
+):
     from src.education.remediation.pdf_remediator import PdfRemediator
 
     class Manager:
@@ -164,7 +172,7 @@ def test_image_equation_disables_legacy_manager_alias_and_keeps_one_manual(tmp_p
     manager = Manager()
     remediator = PdfRemediator(
         str(path),
-        [_raw(IMAGE_EQUATION_ISSUE_TYPE)],
+        [_raw(issue_type)],
         RemediationConfig(allow_legacy_nested_ai=True),
         manager,
     )
@@ -182,8 +190,13 @@ def test_image_equation_disables_legacy_manager_alias_and_keeps_one_manual(tmp_p
     assert remediator.result.manual_issues[0].reason == "alt_text_client_unavailable"
 
 
-def test_image_equation_accepts_only_explicit_alt_text_purpose_client(tmp_path):
-    from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
+@pytest.mark.parametrize(
+    "issue_type",
+    ["image_equation_inaccessible", "scanned_equation_region_manual"],
+)
+def test_visual_equation_accepts_only_explicit_alt_text_purpose_client(
+    tmp_path, issue_type
+):
 
     path = tmp_path / "equation.pdf"
     path.write_bytes(b"%PDF-probe")
@@ -192,14 +205,14 @@ def test_image_equation_accepts_only_explicit_alt_text_purpose_client(tmp_path):
 
     allowed = _ProbeRemediator(
         str(path),
-        [_raw(IMAGE_EQUATION_ISSUE_TYPE)],
+        [_raw(issue_type)],
         RemediationConfig(allow_legacy_nested_ai=True),
         manager,
         alt_text_client=explicit,
     )
     rejected = _ProbeRemediator(
         str(path),
-        [_raw(IMAGE_EQUATION_ISSUE_TYPE)],
+        [_raw(issue_type)],
         RemediationConfig(allow_legacy_nested_ai=True),
         manager,
         alt_text_client=manager,

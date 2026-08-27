@@ -806,6 +806,7 @@ class ScanFix(Base):
     provider_used = Column(String(64), nullable=True)
     model_used = Column(String(50), nullable=True)
     source_kind = Column(String(32), nullable=True)
+    source_locator = Column(JOB_JSON, nullable=True)
     verification_evidence = Column(JOB_JSON, nullable=True)
     confidence = Column(Float, nullable=False, default=1.0, server_default="1.0")
     needs_review = Column(
@@ -838,6 +839,10 @@ class ScanFix(Base):
         CheckConstraint(
             "source_kind IS NULL OR source_kind = 'image_equation'",
             name="ck_scan_fixes_source_kind",
+        ),
+        CheckConstraint(
+            "source_locator IS NULL OR source_kind = 'image_equation'",
+            name="ck_scan_fixes_source_locator",
         ),
         UniqueConstraint(
             "scan_id", "occurrence_key", name="uq_scan_fixes_scan_occurrence"

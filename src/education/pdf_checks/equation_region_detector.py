@@ -1,7 +1,7 @@
 """Fail-closed printed-equation region discovery for full-page raster scans.
 
-The detector deliberately emits manual findings only.  It does not classify a
-crop as mathematics and has no dependency on the equation remediation path.
+The detector emits bounded review-gated candidates. It does not itself classify
+a crop as mathematics or send page content to an AI provider.
 """
 
 from __future__ import annotations
@@ -84,6 +84,17 @@ class _OCRLine:
     bbox: Tuple[int, int, int, int]
     confidence: float
     tokens: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedRasterEquationRegion:
+    """Exact revalidated crop pixels from one immutable page raster."""
+
+    crop_mode: str
+    crop_size: Tuple[int, int]
+    crop_pixels: bytes
+    source_sha256: str
+    crop_pixel_sha256: str
 
 
 def _canonical_digest(value: Mapping[str, Any]) -> str:
@@ -191,7 +202,7 @@ def _bounded_component_count(ink: np.ndarray) -> Optional[int]:
 
 
 class RasterEquationRegionDetector:
-    """Discover one provable manual equation region on an eligible scan page."""
+    """Discover one provable equation region on an eligible scan page."""
 
     def __init__(
         self,
@@ -220,7 +231,7 @@ class RasterEquationRegionDetector:
         page: fitz.Page,
         occurrence: Mapping[str, Any],
     ) -> List[Dict[str, Any]]:
-        """Return either one bounded manual finding or no finding."""
+        """Return either one bounded review-gated candidate or no finding."""
         try:
             eligible = self._eligible_page(page, occurrence)
         except Exception:
@@ -285,26 +296,24 @@ class RasterEquationRegionDetector:
         evidence["region_id"] = "eqregion-v1-" + _canonical_digest(evidence)[:24]
         metadata = {
             "issue_type": SCANNED_EQUATION_REGION_ISSUE_TYPE,
-            "classification_manual_reason": (
-                "scanned_equation_region_requires_exact_subregion_association"
-            ),
             "rule": "WCAG 1.1.1",
             **evidence,
         }
         return [
             {
+                "id": evidence["region_id"],
                 "category": "structure",
                 "severity": "high",
                 "rule": "WCAG 1.1.1",
-                "message": "Printed equation region in scanned page requires manual remediation",
+                "message": "Printed equation region requires accessible math association",
                 "impact": "Screen readers cannot interpret equation pixels as mathematical content",
                 "location": (
                     f"Page {evidence['page_number']}, region {evidence['region_id']}"
                 ),
                 "element": "Scanned equation region",
                 "suggested_fix": (
-                    "Review this bounded region manually; automatic subregion Formula "
-                    "association is not available"
+                    "Use exact subregion Formula association and require explicit "
+                    "human approval before publication"
                 ),
                 "issue_type": SCANNED_EQUATION_REGION_ISSUE_TYPE,
                 "page_number": evidence["page_number"],
@@ -331,103 +340,116 @@ class RasterEquationRegionDetector:
         self._ocr_identity = (version, tessdata_sha256)
         return self._ocr_identity
 
-    def validate_evidence(self, file_path: str, metadata: Mapping[str, Any]) -> bool:
-        """Re-resolve immutable source and crop evidence without running OCR."""
+    def resolve_evidence(
+        self, doc: fitz.Document, metadata: Mapping[str, Any]
+    ) -> Optional[ResolvedRasterEquationRegion]:
+        """Re-resolve immutable source and return only the proven crop pixels."""
         try:
             page_number = int(metadata["page_number"])
-            with fitz.open(file_path) as doc:
-                if page_number < 1 or page_number > len(doc):
-                    return False
-                page = doc[page_number - 1]
-                from src.education.pdf_checks.image_checker import (
-                    _displayed_image_occurrences,
-                )
+            if page_number < 1 or page_number > len(doc):
+                return None
+            page = doc[page_number - 1]
+            from src.education.pdf_checks.image_checker import (
+                _displayed_image_occurrences,
+            )
 
-                matches = [
-                    item
-                    for item in _displayed_image_occurrences(page, page_number)
-                    if item["occurrence_id"] == metadata.get("parent_occurrence_id")
-                ]
-                if len(matches) != 1:
-                    return False
-                try:
-                    eligible = self._eligible_page(page, matches[0])
-                except Exception:
-                    return False
-                if eligible is None:
-                    return False
-                page_bbox, transform = eligible
-                source = self._load_source(doc, int(matches[0]["image_xref"]))
-                if source is None:
-                    return False
-                image, source_sha256 = source
-                if source_sha256 != metadata.get("source_sha256"):
-                    return False
-                if metadata.get("parent_bbox") != [
-                    round(value, 6) for value in page_bbox
-                ]:
-                    return False
-                if metadata.get("transform") != [
-                    round(value, 6) for value in transform
-                ]:
-                    return False
-                if metadata.get("source_width") != image.width:
-                    return False
-                if metadata.get("source_height") != image.height:
-                    return False
-                for key in ("image_xref", "image_index", "occurrence_ordinal"):
-                    if metadata.get(key) != matches[0][key]:
-                        return False
-                if metadata.get("source_kind") != "page_raster_region":
-                    return False
-                if metadata.get("detector_version") != DETECTOR_VERSION:
-                    return False
-                if metadata.get("threshold_version") != THRESHOLD_VERSION:
-                    return False
-                if metadata.get("ocr_language") != OCR_LANGUAGE:
-                    return False
-                if metadata.get("ocr_config") != OCR_CONFIG:
-                    return False
-                ocr_engine_version = metadata.get("ocr_engine_version")
-                if ocr_engine_version not in SUPPORTED_OCR_VERSIONS:
-                    return False
-                if (
-                    metadata.get("ocr_tessdata_sha256")
-                    not in SUPPORTED_ENG_TESSDATA_SHA256
-                ):
-                    return False
-                raw_bbox = metadata.get("pixel_bbox")
-                if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
-                    return False
-                if any(
-                    not isinstance(value, int) or isinstance(value, bool)
-                    for value in raw_bbox
-                ):
-                    return False
-                pixel_bbox = tuple(int(value) for value in raw_bbox)
-                if not self._valid_pixel_bbox(pixel_bbox, image.size):
-                    return False
-                crop = image.crop(pixel_bbox)
-                if _pixel_digest(crop) != metadata.get("crop_pixel_sha256"):
-                    return False
-                mapped = self._map_to_pdf_bbox(pixel_bbox, image.size, page_bbox)
-                stored_pdf_bbox = _float_bbox(metadata.get("pdf_bbox", ()))
-                if (
-                    mapped is None
-                    or stored_pdf_bbox is None
-                    or not all(
-                        abs(left - right) <= 1e-6
-                        for left, right in zip(mapped, stored_pdf_bbox)
-                    )
-                ):
-                    return False
-                try:
-                    identity = {key: metadata[key] for key in _REGION_ID_FIELDS}
-                except KeyError:
-                    return False
-                return metadata.get("region_id") == (
-                    "eqregion-v1-" + _canonical_digest(identity)[:24]
+            matches = [
+                item
+                for item in _displayed_image_occurrences(page, page_number)
+                if item["occurrence_id"] == metadata.get("parent_occurrence_id")
+            ]
+            if len(matches) != 1:
+                return None
+            try:
+                eligible = self._eligible_page(page, matches[0])
+            except Exception:
+                return None
+            if eligible is None:
+                return None
+            page_bbox, transform = eligible
+            source = self._load_source(doc, int(matches[0]["image_xref"]))
+            if source is None:
+                return None
+            image, source_sha256 = source
+            if source_sha256 != metadata.get("source_sha256"):
+                return None
+            if metadata.get("parent_bbox") != [round(value, 6) for value in page_bbox]:
+                return None
+            if metadata.get("transform") != [round(value, 6) for value in transform]:
+                return None
+            if metadata.get("source_width") != image.width:
+                return None
+            if metadata.get("source_height") != image.height:
+                return None
+            for key in ("image_xref", "image_index", "occurrence_ordinal"):
+                if metadata.get(key) != matches[0][key]:
+                    return None
+            if metadata.get("source_kind") != "page_raster_region":
+                return None
+            if metadata.get("detector_version") != DETECTOR_VERSION:
+                return None
+            if metadata.get("threshold_version") != THRESHOLD_VERSION:
+                return None
+            if metadata.get("ocr_language") != OCR_LANGUAGE:
+                return None
+            if metadata.get("ocr_config") != OCR_CONFIG:
+                return None
+            ocr_engine_version = metadata.get("ocr_engine_version")
+            if ocr_engine_version not in SUPPORTED_OCR_VERSIONS:
+                return None
+            if metadata.get("ocr_tessdata_sha256") not in SUPPORTED_ENG_TESSDATA_SHA256:
+                return None
+            raw_bbox = metadata.get("pixel_bbox")
+            if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                return None
+            if any(
+                not isinstance(value, int) or isinstance(value, bool)
+                for value in raw_bbox
+            ):
+                return None
+            pixel_bbox = tuple(int(value) for value in raw_bbox)
+            if not self._valid_pixel_bbox(pixel_bbox, image.size):
+                return None
+            crop = image.crop(pixel_bbox)
+            crop_pixel_sha256 = _pixel_digest(crop)
+            if crop_pixel_sha256 != metadata.get("crop_pixel_sha256"):
+                return None
+            mapped = self._map_to_pdf_bbox(pixel_bbox, image.size, page_bbox)
+            stored_pdf_bbox = _float_bbox(metadata.get("pdf_bbox", ()))
+            if (
+                mapped is None
+                or stored_pdf_bbox is None
+                or not all(
+                    abs(left - right) <= 1e-6
+                    for left, right in zip(mapped, stored_pdf_bbox)
                 )
+            ):
+                return None
+            try:
+                identity = {key: metadata[key] for key in _REGION_ID_FIELDS}
+            except KeyError:
+                return None
+            if metadata.get("region_id") != (
+                "eqregion-v1-" + _canonical_digest(identity)[:24]
+            ):
+                return None
+            return ResolvedRasterEquationRegion(
+                crop_mode=crop.mode,
+                crop_size=crop.size,
+                crop_pixels=crop.tobytes(),
+                source_sha256=source_sha256,
+                crop_pixel_sha256=crop_pixel_sha256,
+            )
+        except Exception:
+            return None
+
+    def validate_evidence(self, file_path: str, metadata: Mapping[str, Any]) -> bool:
+        """Compatibility wrapper for path-based evidence validation."""
+        try:
+            with fitz.open(file_path) as doc:
+                if self.resolve_evidence(doc, metadata) is None:
+                    return False
+            return True
         except Exception:
             return False
 

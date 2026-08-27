@@ -76,7 +76,10 @@ from .content_tagger import ContentTagger
 from .content_tagger_v2 import (
     ContentTaggerV2,
     associate_image_formula,
+    associate_scanned_region_formula,
+    preflight_scanned_region_render_budget,
     verify_image_formula_association,
+    verify_scanned_region_formula_association,
 )
 from .table_tagger import (
     MAX_TABLE_CELLS,
@@ -91,7 +94,8 @@ from .form_fixer import FormFixer
 from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
 from .font_unicode_fixer import FontUnicodeFixer
-from .math_fixer import MathFixer
+from .math_fixer import MathFixer, PendingScannedRegionAssociation
+from .equation_image_source import WorkingEquationRegionOccurrence
 from src.education.math_contracts import CONCRETE_MATH_ISSUE_TYPES
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 
@@ -100,6 +104,10 @@ from .contrast_flagger import ContrastFlagger
 from .output_claim import DescriptorBoundOutputClaim
 
 logger = logging.getLogger(__name__)
+
+_MAX_SCANNED_REGION_ASSOCIATIONS = 32
+_MAX_SCANNED_REGION_ASSOCIATIONS_PER_PAGE = 1
+_MAX_SCANNED_REGION_PAGES = 8
 
 
 _ALLOWED_PYMUPDF_HTML_TAGS = frozenset(
@@ -1468,6 +1476,9 @@ class PdfRemediator(BaseRemediator):
                 output_type="pdf",
                 progress_bar=False,
                 use_threads=True,
+                tesseract_pagesegmode=6,
+                tesseract_oem=3,
+                tesseract_timeout=15.0,
             )
         except (
             ocrmypdf.exceptions.PriorOcrFoundError,
@@ -2162,8 +2173,7 @@ class PdfRemediator(BaseRemediator):
                 )
         elif mode & 0o022:
             raise RuntimeError(
-                f"Bound {purpose} '{path}' is unexpectedly permissive "
-                f"(mode {mode:#o})"
+                f"Bound {purpose} '{path}' is unexpectedly permissive (mode {mode:#o})"
             )
 
     @staticmethod
@@ -2516,6 +2526,7 @@ class PdfRemediator(BaseRemediator):
             working_struct_tree = self._struct_tree
             working_fitz = self._pdf
             transaction_fitz = None
+            verification_output_path: Optional[str] = None
             try:
                 pending_requests = [
                     staged.pending_association
@@ -2529,11 +2540,60 @@ class PdfRemediator(BaseRemediator):
                         int(pending.image_index),
                         int(pending.occurrence_ordinal),
                         str(pending.occurrence_id),
+                        (
+                            str(pending.locator.region_id)
+                            if isinstance(pending, PendingScannedRegionAssociation)
+                            else ""
+                        ),
                     )
                     for pending in pending_requests
                 ]
                 if len(occurrence_keys) != len(set(occurrence_keys)):
                     raise RuntimeError("Duplicate pending image-equation occurrence")
+
+                region_requests = [
+                    pending
+                    for pending in pending_requests
+                    if isinstance(pending, PendingScannedRegionAssociation)
+                ]
+                region_ids = [pending.locator.region_id for pending in region_requests]
+                if len(region_ids) != len(set(region_ids)):
+                    raise RuntimeError("Duplicate pending scanned-equation region")
+                if len(region_requests) > _MAX_SCANNED_REGION_ASSOCIATIONS:
+                    raise RuntimeError("Too many pending scanned-equation regions")
+                regions_per_page: Dict[int, int] = {}
+                for pending in region_requests:
+                    page_number = int(pending.page_number)
+                    regions_per_page[page_number] = (
+                        regions_per_page.get(page_number, 0) + 1
+                    )
+                if any(
+                    count > _MAX_SCANNED_REGION_ASSOCIATIONS_PER_PAGE
+                    for count in regions_per_page.values()
+                ):
+                    raise RuntimeError(
+                        "Too many pending scanned-equation regions on one page"
+                    )
+                if len(regions_per_page) > _MAX_SCANNED_REGION_PAGES:
+                    raise RuntimeError(
+                        "Too many pages with pending scanned-equation regions"
+                    )
+                for left_index, left in enumerate(region_requests):
+                    for right in region_requests[left_index + 1 :]:
+                        if left.page_number != right.page_number:
+                            continue
+                        left_box = left.locator.pixel_bbox
+                        right_box = right.locator.pixel_bbox
+                        overlaps = not (
+                            left_box[2] <= right_box[0]
+                            or right_box[2] <= left_box[0]
+                            or left_box[3] <= right_box[1]
+                            or right_box[3] <= left_box[1]
+                        )
+                        if overlaps:
+                            raise RuntimeError(
+                                "Overlapping pending scanned-equation regions"
+                            )
 
                 if pending_requests:
                     transaction_bytes = BytesIO()
@@ -2546,10 +2606,20 @@ class PdfRemediator(BaseRemediator):
                     )
                     working_fitz = transaction_fitz
 
+                if region_requests:
+                    preflight_scanned_region_render_budget(
+                        working_fitz, regions_per_page
+                    )
+
                 working_pending_requests = []
                 for pending in pending_requests:
                     occurrences = _displayed_image_occurrences(
                         working_fitz[pending.page_number - 1], pending.page_number
+                    )
+                    expected_bbox = (
+                        pending.working_parent_bbox
+                        if isinstance(pending, PendingScannedRegionAssociation)
+                        else pending.bbox
                     )
                     matches = [
                         occurrence
@@ -2559,7 +2629,7 @@ class PdfRemediator(BaseRemediator):
                         == pending.occurrence_ordinal
                         and all(
                             abs(left - right) <= 1e-6
-                            for left, right in zip(occurrence["bbox"], pending.bbox)
+                            for left, right in zip(occurrence["bbox"], expected_bbox)
                         )
                     ]
                     if len(matches) != 1:
@@ -2568,14 +2638,64 @@ class PdfRemediator(BaseRemediator):
                     image_bytes = working_fitz.extract_image(
                         occurrence["image_xref"]
                     ).get("image")
-                    working_pending_requests.append(
-                        replace(
-                            pending,
-                            image_xref=occurrence["image_xref"],
-                            occurrence_id=occurrence["occurrence_id"],
-                            image_stream_sha256=hashlib.sha256(image_bytes).hexdigest(),
+                    if not isinstance(image_bytes, bytes):
+                        raise RuntimeError(
+                            "Pending image source changed in transaction"
                         )
-                    )
+                    image_sha256 = hashlib.sha256(image_bytes).hexdigest()
+                    if isinstance(pending, PendingScannedRegionAssociation):
+                        if image_sha256 != pending.locator.source_sha256:
+                            raise RuntimeError(
+                                "Pending scanned-region source changed in transaction"
+                            )
+                        infos = list(
+                            working_fitz[pending.page_number - 1].get_image_info(
+                                xrefs=True
+                            )
+                        )
+                        try:
+                            transform = tuple(
+                                float(value)
+                                for value in infos[occurrence["image_index"]][
+                                    "transform"
+                                ]
+                            )
+                        except Exception as exc:
+                            raise RuntimeError(
+                                "Pending scanned-region transform changed in transaction"
+                            ) from exc
+                        if any(
+                            abs(left - right) > 1e-6
+                            for left, right in zip(
+                                transform, pending.working_occurrence.transform
+                            )
+                        ):
+                            raise RuntimeError(
+                                "Pending scanned-region transform changed in transaction"
+                            )
+                        working_pending_requests.append(
+                            replace(
+                                pending,
+                                working_occurrence=WorkingEquationRegionOccurrence(
+                                    page_number=pending.page_number,
+                                    image_xref=occurrence["image_xref"],
+                                    image_index=occurrence["image_index"],
+                                    occurrence_ordinal=occurrence["occurrence_ordinal"],
+                                    bbox=tuple(occurrence["bbox"]),
+                                    occurrence_id=occurrence["occurrence_id"],
+                                    transform=transform,
+                                ),
+                            )
+                        )
+                    else:
+                        working_pending_requests.append(
+                            replace(
+                                pending,
+                                image_xref=occurrence["image_xref"],
+                                occurrence_id=occurrence["occurrence_id"],
+                                image_stream_sha256=image_sha256,
+                            )
+                        )
 
                 # Apply pending bookmarks via pikepdf BEFORE saving
                 # (PyMuPDF's set_toc changes are lost when saving with pikepdf)
@@ -2633,32 +2753,89 @@ class PdfRemediator(BaseRemediator):
                             f"Content stream tagging failed (non-fatal): {e2}"
                         )
 
+                association_indices = sorted(
+                    range(len(self._pending_image_equations)),
+                    key=lambda index: (
+                        int(working_pending_requests[index].page_number),
+                        float(working_pending_requests[index].bbox[1]),
+                        float(working_pending_requests[index].bbox[0]),
+                        int(working_pending_requests[index].image_index),
+                        int(working_pending_requests[index].occurrence_ordinal),
+                    ),
+                )
                 staged_associations = []
-                for pending_index, (issue, staged) in enumerate(
-                    self._pending_image_equations
-                ):
+                associated_pending_requests = []
+                for pending_index in association_indices:
+                    issue, staged = self._pending_image_equations[pending_index]
                     pending = staged.pending_association
                     if pending is None:
                         raise RuntimeError(
                             "Missing typed image-equation association request"
                         )
-                    association = associate_image_formula(
-                        working_pdf,
-                        working_fitz,
-                        working_pending_requests[pending_index],
-                    )
-                    if not association.success:
-                        raise RuntimeError(
-                            "Exact image-equation association failed: "
-                            f"{association.error or 'unknown'}"
+                    working_pending = working_pending_requests[pending_index]
+                    if isinstance(working_pending, PendingScannedRegionAssociation):
+                        association = associate_scanned_region_formula(
+                            working_pdf,
+                            working_fitz,
+                            working_pending,
                         )
+                    else:
+                        association = associate_image_formula(
+                            working_pdf,
+                            working_fitz,
+                            working_pending,
+                        )
+                        if not association.success:
+                            raise RuntimeError(
+                                "Exact image-equation association failed: "
+                                f"{association.error or 'unknown'}"
+                            )
                     staged_associations.append((issue, staged, association))
+                    associated_pending_requests.append(working_pending)
 
-                working_pdf.save(output_path)
-                for issue, staged, association in staged_associations:
-                    if not verify_image_formula_association(
-                        output_path, staged.pending_association, association
-                    ):
+                output_parent = Path(output_path).parent
+                output_parent.mkdir(parents=True, exist_ok=True)
+                verification_fd, verification_output_path = tempfile.mkstemp(
+                    prefix=f".{Path(output_path).name}.verify-",
+                    suffix=".pdf",
+                    dir=str(output_parent),
+                )
+                os.close(verification_fd)
+                working_pdf.save(verification_output_path)
+                allowed_region_mcids: Dict[tuple[int, int], set[int]] = {}
+                for association_index, (_, _, association) in enumerate(
+                    staged_associations
+                ):
+                    working_pending = associated_pending_requests[association_index]
+                    if not isinstance(working_pending, PendingScannedRegionAssociation):
+                        continue
+                    key = (
+                        int(working_pending.page_number),
+                        int(working_pending.image_xref),
+                    )
+                    allowed_region_mcids.setdefault(key, set()).add(
+                        int(association.mcid)
+                    )
+                for association_index, (issue, staged, association) in enumerate(
+                    staged_associations
+                ):
+                    working_pending = associated_pending_requests[association_index]
+                    if isinstance(working_pending, PendingScannedRegionAssociation):
+                        key = (
+                            int(working_pending.page_number),
+                            int(working_pending.image_xref),
+                        )
+                        verified = verify_scanned_region_formula_association(
+                            verification_output_path,
+                            working_pending,
+                            association,
+                            allowed_region_mcids=allowed_region_mcids[key],
+                        )
+                    else:
+                        verified = verify_image_formula_association(
+                            verification_output_path, working_pending, association
+                        )
+                    if not verified:
                         raise RuntimeError(
                             "Post-save image-equation association verification failed"
                         )
@@ -2666,21 +2843,33 @@ class PdfRemediator(BaseRemediator):
                     getattr(self, "_table_expected_bound_cells", 0)
                 )
                 if expected_table_cells and not TableTagger.verify_file(
-                    output_path, expected_table_cells
+                    verification_output_path, expected_table_cells
                 ):
                     raise RuntimeError(
                         "Post-save table association verification failed"
                     )
+                if transaction_fitz is not None:
+                    transaction_fitz.close()
+                    transaction_fitz = None
+                os.replace(verification_output_path, output_path)
+                verification_output_path = None
                 self._verified_image_equations = staged_associations
                 if working_pdf is not self._pikepdf_doc:
                     original_pdf = self._pikepdf_doc
                     self._pikepdf_doc = working_pdf
                     self._struct_tree = working_struct_tree
-                    original_pdf.close()
-                if transaction_fitz is not None:
-                    transaction_fitz.close()
+                    try:
+                        original_pdf.close()
+                    except Exception as close_error:
+                        logger.warning(
+                            "Saved PDF committed but prior pikepdf handle did not "
+                            "close cleanly: %s",
+                            close_error,
+                        )
                 logger.info("Successfully saved PDF with structure tree modifications")
             except Exception as e:
+                if verification_output_path is not None:
+                    Path(verification_output_path).unlink(missing_ok=True)
                 if transaction_fitz is not None:
                     transaction_fitz.close()
                 if working_pdf is not self._pikepdf_doc:
@@ -2819,8 +3008,7 @@ class PdfRemediator(BaseRemediator):
             self._add_fixed_issue(
                 original,
                 fixed_content=(
-                    "Resolved by content tagging pass: "
-                    f"{issue_type.replace('_', ' ')}"
+                    f"Resolved by content tagging pass: {issue_type.replace('_', ' ')}"
                 ),
                 fix_method=FixMethod.RULE.value,
                 confidence=confidence,
@@ -2851,6 +3039,12 @@ class PdfRemediator(BaseRemediator):
             remaining_manual.remove(matching[0])
             self.result.manual_count -= 1
             evidence = asdict(staged.verification_evidence)
+            pending = staged.pending_association
+            source_locator = (
+                pending.locator.model_dump(mode="json")
+                if isinstance(pending, PendingScannedRegionAssociation)
+                else None
+            )
             self._add_fixed_issue(
                 issue,
                 fixed_content=staged.aria_label,
@@ -2860,6 +3054,7 @@ class PdfRemediator(BaseRemediator):
                 provider_used=staged.provider_used,
                 model_used=staged.model_used,
                 source_kind="image_equation",
+                source_locator=source_locator,
                 verification_evidence=evidence,
                 wcag_criteria="1.1.1",
                 page_number=staged.page_number,
@@ -4072,7 +4267,7 @@ class PdfRemediator(BaseRemediator):
         prompt = f"""Generate concise, descriptive alt text for an image in a PDF document.
 
 Page context:
-{context_text if context_text else 'No context available'}
+{context_text if context_text else "No context available"}
 
 Image location: Page {page_num}
 

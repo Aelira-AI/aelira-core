@@ -6,10 +6,11 @@ import hashlib
 import warnings
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
 from PIL import Image, UnidentifiedImageError
 
+from src.education.equation_region_contract import PageRasterRegionLocator
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 
 
@@ -44,6 +45,66 @@ class ValidatedEquationImage:
     width: int
     height: int
     identity: EquationImageIdentity
+
+
+@dataclass(frozen=True)
+class WorkingEquationRegionOccurrence:
+    """Current working-copy identity after safe OCR/serialization remapping."""
+
+    page_number: int
+    image_xref: int
+    image_index: int
+    occurrence_ordinal: int
+    bbox: tuple[float, float, float, float]
+    occurrence_id: str
+    transform: tuple[float, float, float, float, float, float]
+
+
+@dataclass(frozen=True)
+class ValidatedEquationRegion:
+    """Provider-safe normalized payload for one exact page-raster crop."""
+
+    jpeg_bytes: bytes
+    mime_type: str
+    source_sha256: str
+    normalized_sha256: str
+    width: int
+    height: int
+    identity: PageRasterRegionLocator
+    working_occurrence: WorkingEquationRegionOccurrence
+
+
+class ValidatedEquationRaster(Protocol):
+    """Minimum payload consumed by recognition and round-trip verification."""
+
+    jpeg_bytes: bytes
+    mime_type: str
+    normalized_sha256: str
+    width: int
+    height: int
+
+
+def _deterministic_jpeg(image: Image.Image) -> bytes:
+    if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+        rgba = image.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, "white")
+        background.alpha_composite(rgba)
+        rgb = background.convert("RGB")
+    else:
+        rgb = image.convert("RGB")
+    output = BytesIO()
+    rgb.save(
+        output,
+        format="JPEG",
+        quality=95,
+        subsampling=0,
+        optimize=False,
+        progressive=False,
+    )
+    jpeg = output.getvalue()
+    if not _complete_jpeg(jpeg):
+        raise ImageSourceRejected("normalization_failed")
+    return jpeg
 
 
 def _complete_png(data: bytes) -> bool:
@@ -193,23 +254,7 @@ class EquationImageSource:
                 raise ImageSourceRejected("dimension_limit")
             if width * height > self.limits.max_pixels:
                 raise ImageSourceRejected("pixel_limit")
-            if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
-                rgba = image.convert("RGBA")
-                background = Image.new("RGBA", rgba.size, "white")
-                background.alpha_composite(rgba)
-                rgb = background.convert("RGB")
-            else:
-                rgb = image.convert("RGB")
-            output = BytesIO()
-            rgb.save(
-                output,
-                format="JPEG",
-                quality=95,
-                subsampling=0,
-                optimize=False,
-                progressive=False,
-            )
-            jpeg = output.getvalue()
+            jpeg = _deterministic_jpeg(image)
         except ImageSourceRejected:
             raise
         except Exception as exc:
@@ -217,8 +262,6 @@ class EquationImageSource:
         finally:
             image.close()
 
-        if not _complete_jpeg(jpeg):
-            raise ImageSourceRejected("normalization_failed")
         return ValidatedEquationImage(
             jpeg_bytes=jpeg,
             mime_type="image/jpeg",
@@ -293,6 +336,184 @@ class EquationImageSource:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ImageSourceRejected("occurrence_identity_mismatch") from exc
+
+
+class EquationRegionSource:
+    """Revalidate and normalize only an exact #208 page-raster crop."""
+
+    def __init__(self, resolver: Callable[[Any, Mapping[str, Any]], Any] | None = None):
+        self._resolver = resolver or self._resolve_working_region
+
+    def extract(
+        self, document: Any, metadata: Mapping[str, Any]
+    ) -> ValidatedEquationRegion:
+        identity = self._identity(metadata)
+        try:
+            resolved = self._resolver(document, metadata)
+        except Exception as exc:
+            raise ImageSourceRejected("region_evidence_mismatch") from exc
+        if resolved is None:
+            raise ImageSourceRejected("region_evidence_mismatch")
+        try:
+            crop_mode = str(resolved.crop_mode)
+            crop_size = tuple(resolved.crop_size)
+            crop_pixels = bytes(resolved.crop_pixels)
+            if (
+                resolved.source_sha256 != identity.source_sha256
+                or resolved.crop_pixel_sha256 != identity.crop_pixel_sha256
+                or len(crop_size) != 2
+                or crop_size
+                != (
+                    identity.pixel_bbox[2] - identity.pixel_bbox[0],
+                    identity.pixel_bbox[3] - identity.pixel_bbox[1],
+                )
+            ):
+                raise ImageSourceRejected("region_evidence_mismatch")
+            image = Image.frombytes(crop_mode, crop_size, crop_pixels)
+            try:
+                jpeg = _deterministic_jpeg(image)
+            finally:
+                image.close()
+        except ImageSourceRejected:
+            raise
+        except Exception as exc:
+            raise ImageSourceRejected("normalization_failed") from exc
+        return ValidatedEquationRegion(
+            jpeg_bytes=jpeg,
+            mime_type="image/jpeg",
+            source_sha256=identity.source_sha256,
+            normalized_sha256=hashlib.sha256(jpeg).hexdigest(),
+            width=int(crop_size[0]),
+            height=int(crop_size[1]),
+            identity=identity,
+            working_occurrence=getattr(
+                resolved,
+                "working_occurrence",
+                WorkingEquationRegionOccurrence(
+                    page_number=identity.page_number,
+                    image_xref=identity.image_xref,
+                    image_index=identity.image_index,
+                    occurrence_ordinal=identity.occurrence_ordinal,
+                    bbox=identity.parent_bbox,
+                    occurrence_id=identity.parent_occurrence_id,
+                    transform=identity.transform,
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _resolve_working_region(document: Any, metadata: Mapping[str, Any]) -> Any:
+        """Uniquely remap detector evidence across an OCR working-copy rewrite."""
+        from types import SimpleNamespace
+
+        from src.education.pdf_checks.equation_region_detector import (
+            DETECTOR_VERSION,
+            OCR_CONFIG,
+            OCR_LANGUAGE,
+            RasterEquationRegionDetector,
+            SUPPORTED_ENG_TESSDATA_SHA256,
+            SUPPORTED_OCR_VERSIONS,
+            THRESHOLD_VERSION,
+            _pixel_digest,
+        )
+
+        locator = PageRasterRegionLocator.from_evidence(metadata)
+        if (
+            locator.detector_version != DETECTOR_VERSION
+            or locator.threshold_version != THRESHOLD_VERSION
+            or locator.ocr_engine_version not in SUPPORTED_OCR_VERSIONS
+            or locator.ocr_tessdata_sha256 not in SUPPORTED_ENG_TESSDATA_SHA256
+            or locator.ocr_language != OCR_LANGUAGE
+            or locator.ocr_config != OCR_CONFIG
+        ):
+            return None
+        try:
+            page = document[locator.page_number - 1]
+            occurrences = _displayed_image_occurrences(page, locator.page_number)
+            infos = list(page.get_image_info(xrefs=True))
+        except Exception:
+            return None
+        if (
+            len(occurrences) != 1
+            or int(getattr(page, "rotation", 0) or 0) != 0
+            or page.get_drawings()
+        ):
+            return None
+        matches = []
+        for occurrence in occurrences:
+            if (
+                occurrence["image_index"] != locator.image_index
+                or occurrence["occurrence_ordinal"] != locator.occurrence_ordinal
+                or any(
+                    abs(float(current) - float(expected)) > 1e-6
+                    for current, expected in zip(
+                        occurrence["bbox"], locator.parent_bbox
+                    )
+                )
+                or occurrence["image_index"] >= len(infos)
+            ):
+                continue
+            info = infos[occurrence["image_index"]]
+            try:
+                transform = tuple(float(value) for value in info.get("transform", ()))
+            except (TypeError, ValueError):
+                continue
+            if (
+                len(transform) != 6
+                or int(info.get("xref") or 0) != occurrence["image_xref"]
+                or any(
+                    abs(current - expected) > 1e-6
+                    for current, expected in zip(transform, locator.transform)
+                )
+            ):
+                continue
+            source = RasterEquationRegionDetector._load_source(
+                document, occurrence["image_xref"]
+            )
+            if source is None:
+                continue
+            image, source_sha256 = source
+            try:
+                if source_sha256 != locator.source_sha256 or image.size != (
+                    locator.source_width,
+                    locator.source_height,
+                ):
+                    continue
+                crop = image.crop(locator.pixel_bbox)
+                try:
+                    crop_pixel_sha256 = _pixel_digest(crop)
+                    if crop_pixel_sha256 != locator.crop_pixel_sha256:
+                        continue
+                    matches.append(
+                        SimpleNamespace(
+                            crop_mode=crop.mode,
+                            crop_size=crop.size,
+                            crop_pixels=crop.tobytes(),
+                            source_sha256=source_sha256,
+                            crop_pixel_sha256=crop_pixel_sha256,
+                            working_occurrence=WorkingEquationRegionOccurrence(
+                                page_number=locator.page_number,
+                                image_xref=occurrence["image_xref"],
+                                image_index=occurrence["image_index"],
+                                occurrence_ordinal=occurrence["occurrence_ordinal"],
+                                bbox=tuple(occurrence["bbox"]),
+                                occurrence_id=occurrence["occurrence_id"],
+                                transform=transform,  # type: ignore[arg-type]
+                            ),
+                        )
+                    )
+                finally:
+                    crop.close()
+            finally:
+                image.close()
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _identity(metadata: Mapping[str, Any]) -> PageRasterRegionLocator:
+        try:
+            return PageRasterRegionLocator.from_evidence(metadata)
+        except (TypeError, ValueError) as exc:
+            raise ImageSourceRejected("region_identity_mismatch") from exc
 
 
 def prepare_equation_image(

@@ -33,6 +33,7 @@ from ..db.models import (
     ReviewAuditLog,
     User,
 )
+from ..education.equation_region_contract import PageRasterRegionLocator
 from ..education.reports.compliance_report import AuditReportGenerator
 from ..services.scan_fix_service import (
     apply_authenticated_batch_review,
@@ -89,6 +90,8 @@ class FixSummary(BaseModel):
     wcag_criteria: Optional[str] = None
     location: Optional[str] = None
     review_notes: Optional[str] = None
+    source_kind: Optional[str] = None
+    source_locator: Optional[PageRasterRegionLocator] = None
 
 
 class QueueItem(BaseModel):
@@ -443,6 +446,8 @@ def get_document_review(
                 wcag_criteria=f.wcag_criteria,
                 location=f.location,
                 review_notes=f.review_notes,
+                source_kind=f.source_kind,
+                source_locator=f.source_locator,
             )
             for f in fixes
         ],

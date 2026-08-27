@@ -21,9 +21,17 @@ import re
 import hashlib
 import math
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
-from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE, MATH_ISSUE_TYPES
+from src.education.equation_region_contract import PageRasterRegionLocator
+from src.education.math_contracts import (
+    IMAGE_EQUATION_ISSUE_TYPE,
+    MATH_ISSUE_TYPES,
+    SCANNED_EQUATION_REGION_ISSUE_TYPE,
+)
+
+if TYPE_CHECKING:
+    from .equation_image_source import WorkingEquationRegionOccurrence
 
 try:
     from latex2mathml.converter import convert as latex_to_mathml
@@ -80,6 +88,57 @@ class PendingEquationAssociation:
     provider_used: Optional[str]
     model_used: Optional[str]
     verification_evidence: MathVerificationEvidence
+
+
+@dataclass(frozen=True)
+class PendingScannedRegionAssociation:
+    """Verified crop awaiting exact clipped marked-content association."""
+
+    locator: PageRasterRegionLocator
+    working_occurrence: "WorkingEquationRegionOccurrence"
+    normalized_crop_sha256: str
+    alt_text: str
+    mathml_string: str
+    provider_used: Optional[str]
+    model_used: Optional[str]
+    verification_evidence: MathVerificationEvidence
+
+    @property
+    def page_number(self) -> int:
+        return int(self.working_occurrence.page_number)
+
+    @property
+    def image_xref(self) -> int:
+        return int(self.working_occurrence.image_xref)
+
+    @property
+    def image_index(self) -> int:
+        return int(self.working_occurrence.image_index)
+
+    @property
+    def occurrence_ordinal(self) -> int:
+        return int(self.working_occurrence.occurrence_ordinal)
+
+    @property
+    def occurrence_id(self) -> str:
+        return str(self.working_occurrence.occurrence_id)
+
+    @property
+    def bbox(self) -> tuple[float, float, float, float]:
+        """Exact Formula region bbox; never the whole-page source bbox."""
+        return self.locator.pdf_bbox
+
+    @property
+    def region_bbox(self) -> tuple[float, float, float, float]:
+        return self.locator.pdf_bbox
+
+    @property
+    def parent_bbox(self) -> tuple[float, float, float, float]:
+        return self.locator.parent_bbox
+
+    @property
+    def working_parent_bbox(self) -> tuple[float, float, float, float]:
+        return tuple(self.working_occurrence.bbox)  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +265,9 @@ class MathFixResult:
     provider_used: Optional[str] = None
     model_used: Optional[str] = None
     verification_evidence: Optional[MathVerificationEvidence] = None
-    pending_association: Optional[PendingEquationAssociation] = None
+    pending_association: Optional[
+        PendingEquationAssociation | PendingScannedRegionAssociation
+    ] = None
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +308,7 @@ class MathFixer:
         ai_client: Optional[Any] = None,
         alt_text_client: Optional[Any] = None,
         image_source: Optional[Any] = None,
+        region_source: Optional[Any] = None,
         equation_recognizer: Optional[Any] = None,
         equation_verifier: Optional[Any] = None,
     ) -> None:
@@ -258,6 +320,10 @@ class MathFixer:
             from .equation_image_source import EquationImageSource
 
             image_source = EquationImageSource()
+        if region_source is None:
+            from .equation_image_source import EquationRegionSource
+
+            region_source = EquationRegionSource()
         if equation_recognizer is None and alt_text_client is not None:
             from .equation_recognizer import EquationRecognizer
 
@@ -267,6 +333,7 @@ class MathFixer:
 
             equation_verifier = EquationVerifier()
         self.image_source = image_source
+        self.region_source = region_source
         self.equation_recognizer = equation_recognizer
         self.equation_verifier = equation_verifier
 
@@ -353,6 +420,8 @@ class MathFixer:
             )
         if issue_type == IMAGE_EQUATION_ISSUE_TYPE:
             return self._prepare_image_equation(metadata)
+        if issue_type == SCANNED_EQUATION_REGION_ISSUE_TYPE:
+            return self._prepare_scanned_equation_region(metadata)
 
         # Determine page number (1-indexed)
         page_number: int = int(metadata.get("page_number", 1) or 1)
@@ -411,6 +480,43 @@ class MathFixer:
 
     def _prepare_image_equation(self, metadata: dict[str, Any]) -> MathFixResult:
         page_number = int(metadata.get("page_number", 1) or 1)
+        unavailable = self._visual_equation_dependency_error(page_number)
+        if unavailable is not None:
+            return unavailable
+        try:
+            validated = self.image_source.extract(self.fitz_doc, metadata)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="equation_image_source_rejected",
+                page_number=page_number,
+            )
+        return self._prepare_validated_equation(
+            validated, page_number=page_number, scanned_region=False
+        )
+
+    def _prepare_scanned_equation_region(
+        self, metadata: dict[str, Any]
+    ) -> MathFixResult:
+        page_number = int(metadata.get("page_number", 1) or 1)
+        unavailable = self._visual_equation_dependency_error(page_number)
+        if unavailable is not None:
+            return unavailable
+        try:
+            validated = self.region_source.extract(self.fitz_doc, metadata)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="equation_region_source_rejected",
+                page_number=page_number,
+            )
+        return self._prepare_validated_equation(
+            validated, page_number=page_number, scanned_region=True
+        )
+
+    def _visual_equation_dependency_error(
+        self, page_number: int
+    ) -> Optional[MathFixResult]:
         if self.equation_recognizer is None:
             return MathFixResult(
                 success=False,
@@ -423,12 +529,22 @@ class MathFixer:
                 error="equation_verifier_unavailable",
                 page_number=page_number,
             )
-        try:
-            validated = self.image_source.extract(self.fitz_doc, metadata)
-        except Exception:
+        return None
+
+    def _prepare_validated_equation(
+        self, validated: Any, *, page_number: int, scanned_region: bool
+    ) -> MathFixResult:
+        """Recognize and verify one already source-bound equation raster."""
+        if self.equation_recognizer is None:
             return MathFixResult(
                 success=False,
-                error="equation_image_source_rejected",
+                error="alt_text_client_unavailable",
+                page_number=page_number,
+            )
+        if self.equation_verifier is None:
+            return MathFixResult(
+                success=False,
+                error="equation_verifier_unavailable",
                 page_number=page_number,
             )
         try:
@@ -500,23 +616,45 @@ class MathFixer:
             )
         aria_label = self._generate_aria_label(recognition.latex)
         identity = validated.identity
-        pending = PendingEquationAssociation(
-            page_number=identity.page_number,
-            image_xref=identity.image_xref,
-            image_index=identity.image_index,
-            occurrence_ordinal=identity.occurrence_ordinal,
-            bbox=identity.bbox,
-            occurrence_id=identity.occurrence_id,
-            image_stream_sha256=validated.source_sha256,
-            alt_text=aria_label,
-            mathml_string=mathml_string,
-            provider_used=getattr(recognition, "provider", None),
-            model_used=getattr(recognition, "model", None),
-            verification_evidence=evidence,
-        )
+        if scanned_region:
+            if not isinstance(identity, PageRasterRegionLocator):
+                return MathFixResult(
+                    success=False,
+                    error="equation_region_source_rejected",
+                    page_number=page_number,
+                )
+            pending: PendingEquationAssociation | PendingScannedRegionAssociation = (
+                PendingScannedRegionAssociation(
+                    locator=identity,
+                    working_occurrence=validated.working_occurrence,
+                    normalized_crop_sha256=validated.normalized_sha256,
+                    alt_text=aria_label,
+                    mathml_string=mathml_string,
+                    provider_used=getattr(recognition, "provider", None),
+                    model_used=getattr(recognition, "model", None),
+                    verification_evidence=evidence,
+                )
+            )
+            pending_error = "scanned_equation_region_association_pending"
+        else:
+            pending = PendingEquationAssociation(
+                page_number=identity.page_number,
+                image_xref=identity.image_xref,
+                image_index=identity.image_index,
+                occurrence_ordinal=identity.occurrence_ordinal,
+                bbox=identity.bbox,
+                occurrence_id=identity.occurrence_id,
+                image_stream_sha256=validated.source_sha256,
+                alt_text=aria_label,
+                mathml_string=mathml_string,
+                provider_used=getattr(recognition, "provider", None),
+                model_used=getattr(recognition, "model", None),
+                verification_evidence=evidence,
+            )
+            pending_error = "image_equation_association_pending"
         return MathFixResult(
             success=False,
-            error="image_equation_association_pending",
+            error=pending_error,
             equation_text=recognition.latex,
             aria_label=aria_label,
             page_number=page_number,

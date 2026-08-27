@@ -21,6 +21,10 @@ from ..db.models import (
     Scan,
     ScanFix,
 )
+from ..education.equation_region_contract import (
+    canonical_region_locator,
+    valid_region_locator,
+)
 from ..education.remediation.base import FixedIssue, VerificationEvidence
 from ..utils.sanitization import sanitize_for_postgres
 
@@ -41,6 +45,7 @@ _CANONICAL_FIELDS = (
     "provider_used",
     "model_used",
     "source_kind",
+    "source_locator",
     "verification_evidence",
     "confidence",
     "needs_review",
@@ -222,6 +227,19 @@ def valid_image_equation_evidence(value: Any) -> bool:
 
 def _occurrence_key(fix: Any) -> str:
     """Bind durable identity to one stable document occurrence."""
+    raw_locator = getattr(fix, "source_locator", None)
+    if raw_locator is not None:
+        locator = canonical_region_locator(raw_locator)
+        payload = json.dumps(
+            {
+                "version": "page-raster-region-occurrence-v1",
+                "source_locator": locator,
+            },
+            sort_keys=True,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
     issue_id = sanitize_for_postgres(getattr(fix, "issue_id", None))
     location = sanitize_for_postgres(getattr(fix, "location", None))
     page_number = getattr(fix, "page_number", None)
@@ -238,6 +256,11 @@ def _occurrence_key(fix: Any) -> str:
 def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
     """Build one canonical row, overriding forgeable image-review flags."""
     source_kind = getattr(fix, "source_kind", None)
+    source_locator = (
+        canonical_region_locator(getattr(fix, "source_locator", None))
+        if getattr(fix, "source_locator", None) is not None
+        else None
+    )
     raw_confidence = float(getattr(fix, "confidence", math.nan))
     if not math.isfinite(raw_confidence) or not 0.0 <= raw_confidence <= 1.0:
         raise ValueError("fix confidence is invalid")
@@ -258,7 +281,11 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
         needs_review = True
         review_status = "pending"
     else:
-        if source_kind is not None or evidence is not None:
+        if (
+            source_kind is not None
+            or source_locator is not None
+            or evidence is not None
+        ):
             raise ValueError("verification evidence requires a supported source kind")
         fix_method = fix.fix_method
         confidence = raw_confidence
@@ -289,6 +316,7 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
         provider_used=getattr(fix, "provider_used", None),
         model_used=getattr(fix, "model_used", None),
         source_kind=source_kind,
+        source_locator=source_locator,
         verification_evidence=evidence,
         confidence=confidence,
         needs_review=needs_review,
@@ -383,6 +411,10 @@ def image_equation_review_blockers(fixes: Iterable[Any]) -> list[str]:
         or not 0.0 <= float(getattr(fix, "confidence", math.nan)) <= 0.55
         or not getattr(fix, "provider_used", None)
         or not getattr(fix, "model_used", None)
+        or (
+            getattr(fix, "source_locator", None) is not None
+            and not valid_region_locator(getattr(fix, "source_locator", None))
+        )
         for fix in image_fixes
     ):
         blockers.append("image_equation_provenance_invalid")
