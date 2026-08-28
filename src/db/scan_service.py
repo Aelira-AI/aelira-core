@@ -485,48 +485,45 @@ class ScanService:
             Dictionary with stats (total_scans, avg_compliance_score, etc.)
         """
 
-        scans = db.query(Scan).filter(Scan.department_id == department_id).all()
+        from ..education.current_compliance import get_department_current_compliance
 
-        if not scans:
-            return {
-                "total_scans": 0,
-                "avg_compliance_score": 0,
-                "total_pages": 0,
-                "total_issues": 0,
-            }
-
-        # Calculate stats
-        total_scans = len(scans)
-        total_pages = sum(scan.pages or 0 for scan in scans)
-
-        # Get compliance scores
-        results = (
-            db.query(ScanResult)
-            .filter(ScanResult.scan_id.in_([scan.id for scan in scans]))
-            .all()
-        )
-
-        avg_score = (
-            sum(r.compliance_score for r in results) / len(results) if results else 0
-        )
-        total_issues = sum(
-            r.critical_issues + r.high_issues + r.medium_issues + r.low_issues
-            for r in results
+        projection = get_department_current_compliance(db, department_id)
+        now = datetime.now().astimezone()
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        scans_this_month = sum(
+            1
+            for scan in projection.historical_scans
+            if scan.created_at is not None
+            and (
+                scan.created_at
+                if scan.created_at.tzinfo is not None
+                else scan.created_at.replace(tzinfo=now.tzinfo)
+            )
+            >= month_start
         )
 
         return {
-            "total_scans": total_scans,
-            "avg_compliance_score": round(avg_score, 2),
-            "total_pages": total_pages,
-            "total_issues": total_issues,
+            # Compatibility aliases retain their original names while the
+            # explicit fields distinguish current stock from historical flow.
+            "total_scans": projection.historical_scan_count,
+            "historical_scan_count": projection.historical_scan_count,
+            "enrolled_document_count": projection.enrolled_document_count,
+            "verified_document_count": projection.verified_document_count,
+            "unverified_document_count": projection.unverified_document_count,
+            "avg_compliance_score": (
+                round(projection.average_compliance_score, 2)
+                if projection.average_compliance_score is not None
+                else None
+            ),
+            "total_pages": projection.total_pages,
+            "total_issues": projection.total_issues,
+            "scans_this_month": scans_this_month,
             "scans_by_type": {
-                "pdf": sum(1 for s in scans if s.scan_type == ScanType.PDF),
-                "powerpoint": sum(
-                    1 for s in scans if s.scan_type == ScanType.POWERPOINT
-                ),
-                "word": sum(1 for s in scans if s.scan_type == ScanType.WORD),
-                "excel": sum(1 for s in scans if s.scan_type == ScanType.EXCEL),
-                "latex": sum(1 for s in scans if s.scan_type == ScanType.LATEX),
+                "pdf": projection.scan_type_count(ScanType.PDF),
+                "powerpoint": projection.scan_type_count(ScanType.POWERPOINT),
+                "word": projection.scan_type_count(ScanType.WORD),
+                "excel": projection.scan_type_count(ScanType.EXCEL),
+                "latex": projection.scan_type_count(ScanType.LATEX),
             },
         }
 

@@ -83,10 +83,10 @@ export interface Scan {
   status: ScanStatus;
   file_name: string;
   file_path?: string;
-  compliance_score?: number;
+  compliance_score?: number | null;
   progress?: number;
   progress_message?: string;
-  issues_count?: number;
+  issues_count?: number | null;
   critical_count?: number;
   high_count?: number;
   medium_count?: number;
@@ -145,7 +145,7 @@ export interface ListScansResponse {
 }
 
 export interface ScanDetailResult {
-  compliance_score: number;
+  compliance_score: number | null;
   wcag_level?: string;
   issues: Issue[];
   summary?: ScanSummary;
@@ -160,7 +160,7 @@ export interface ScanDetailResponse extends Scan {
   scan_id?: string;
   result?: ScanDetailResult | null;
   issues: Issue[];
-  compliance_score: number;
+  compliance_score: number | null;
   summary?: ScanSummary;
 }
 

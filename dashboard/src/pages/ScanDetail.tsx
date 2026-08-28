@@ -26,7 +26,7 @@ interface Scan {
   type: string;
   uploaded_at: string;
   status: string;
-  compliance_score: number;
+  compliance_score: number | null;
   issues: Issue[];
 }
 
@@ -71,7 +71,7 @@ export function ScanDetail(): React.ReactElement {
           type: data.scan_type?.toLowerCase() || 'unknown',
           uploaded_at: data.created_at,
           status: scanStatus?.toLowerCase(),
-          compliance_score: data.result?.compliance_score || 0,
+          compliance_score: data.result?.compliance_score ?? null,
           // Backend returns issues as flat array (with counts in summary)
           issues: Array.isArray(data.result?.issues)
             ? data.result.issues
@@ -87,7 +87,9 @@ export function ScanDetail(): React.ReactElement {
           hasTrackedView.current = true;
           trackEvent('dash-scan-viewed', {
             scan_type: data.scan_type || transformedScan.type,
-            score: Math.round(transformedScan.compliance_score || 0),
+            score: transformedScan.compliance_score == null
+              ? null
+              : Math.round(transformedScan.compliance_score),
             issue_count: transformedScan.issues?.length || 0,
           });
         }
@@ -291,14 +293,24 @@ export function ScanDetail(): React.ReactElement {
         )}
 
         {/* Compliance Score */}
-        {!isProcessing && (
+        {!isProcessing && scan.compliance_score != null && (
           <div className="mb-6">
             <ComplianceScore score={scan.compliance_score} />
           </div>
         )}
 
+        {!isProcessing && scan.compliance_score == null && (
+          <div className="card mb-6" role="status">
+            <div className="text-sm font-medium text-secondary mb-1">Compliance score</div>
+            <div className="text-2xl font-bold text-primary">Unverified</div>
+            <p className="text-sm text-tertiary mt-1">
+              This scan has no verified result, so its score and issue findings are unavailable.
+            </p>
+          </div>
+        )}
+
         {/* Issue Summary */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
+        {scan.compliance_score != null && <div className="grid grid-cols-4 gap-4 mb-6">
           <div className="card border-2 border-[var(--feature-danger-content)] bg-[var(--feature-danger-surface)]">
             <div className="text-sm font-medium text-secondary mb-1">Critical</div>
             <div className="text-3xl font-bold text-[var(--feature-danger-content)]">{issuesBySeverity.critical}</div>
@@ -315,7 +327,7 @@ export function ScanDetail(): React.ReactElement {
             <div className="text-sm font-medium text-secondary mb-1">Low</div>
             <div className="text-3xl font-bold text-secondary">{issuesBySeverity.low}</div>
           </div>
-        </div>
+        </div>}
 
         {/* Data Visualizations */}
         {!isProcessing && scan.issues.length > 0 && (
@@ -326,12 +338,12 @@ export function ScanDetail(): React.ReactElement {
         )}
 
         {/* Issues List */}
-        <div className="mb-6">
+        {scan.compliance_score != null && <div className="mb-6">
           <h2 className="text-xl font-semibold text-primary mb-4">
             Issues Found ({scan.issues.length})
           </h2>
           <IssueList issues={scan.issues} scanType={scan.type} />
-        </div>
+        </div>}
       </div>
     </div>
   );

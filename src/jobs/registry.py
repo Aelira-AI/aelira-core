@@ -121,11 +121,13 @@ def adapt_legacy_handler(
                 public_details = public_details or None
             if failure_kind == "retryable":
                 return JobFailure.retryable(
-                    code if isinstance(code, str) else "handler_failed"
+                    code if isinstance(code, str) else "handler_failed",
+                    public_details,
                 )
             if failure_kind == "indeterminate":
                 return JobFailure.indeterminate(
-                    code if isinstance(code, str) else "handler_failed"
+                    code if isinstance(code, str) else "handler_failed",
+                    public_details,
                 )
             return JobFailure.deterministic(
                 code if isinstance(code, str) else "handler_failed",

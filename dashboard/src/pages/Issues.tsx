@@ -69,7 +69,6 @@ interface Scan {
   filename: string;
   type: string;
   issues: ApiIssue[];
-  compliance_score: number;
 }
 
 interface Filters {
@@ -435,7 +434,7 @@ export function Issues(): React.ReactElement {
 
         // Fetch issues for each scan
         const scansWithIssues = await Promise.all(
-          scansList.map(async (scan: { scan_id?: string; id?: string; file_name?: string; scan_type?: string; compliance_score?: number }) => {
+          scansList.map(async (scan: { scan_id?: string; id?: string; file_name?: string; scan_type?: string }) => {
             try {
               const details = await scansApi.getScan(scan.scan_id || scan.id || '');
               const scanResult = details as unknown as { result?: { issues?: ApiIssue[] } };
@@ -444,7 +443,6 @@ export function Issues(): React.ReactElement {
                 filename: scan.file_name || 'Unknown',
                 type: scan.scan_type?.toLowerCase() || 'unknown',
                 issues: scanResult.result?.issues || details.issues || [],
-                compliance_score: scan.compliance_score || 0,
               };
             } catch {
               return {
@@ -452,7 +450,6 @@ export function Issues(): React.ReactElement {
                 filename: scan.file_name || 'Unknown',
                 type: scan.scan_type?.toLowerCase() || 'unknown',
                 issues: [],
-                compliance_score: scan.compliance_score || 0,
               };
             }
           })

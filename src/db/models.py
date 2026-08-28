@@ -502,6 +502,15 @@ class Scan(Base):
     # Ownership
     user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
     department_id = Column(String(36), ForeignKey("departments.id"), nullable=False)
+    # Stable source identity. Provider-backed creators override this with
+    # CloudFile.id; new standalone attempts receive an explicit opaque identity.
+    # NULL is reserved for legacy rows whose provenance cannot be proven.
+    document_id = Column(
+        String(36), nullable=True, default=lambda: str(uuid.uuid4()), index=True
+    )
+    # Provider disconnects delete CloudFile rows but retain scan history, so
+    # provenance cannot depend on the related row still existing.
+    document_source = Column(String(32), nullable=True, default="standalone")
     artifact_cleanup_token = Column(String(64), nullable=True)
     artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
 

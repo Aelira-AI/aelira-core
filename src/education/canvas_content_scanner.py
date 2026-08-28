@@ -739,6 +739,8 @@ class CanvasContentScanner:
             file_name=cloud_file.file_name,
             user_id=None,
             department_id=self.department_id,
+            document_id=cloud_file.id,
+            document_source="cloud_file",
         )
         self.db.add(scan)
         self.db.flush()
@@ -1053,6 +1055,8 @@ class CanvasContentScanner:
                         file_name=f"{cloud_file.file_name} (remediated)",
                         user_id=None,
                         department_id=self.department_id,
+                        document_id=cloud_file.id,
+                        document_source="cloud_file",
                         completed_at=datetime.now(timezone.utc),
                     )
                 )

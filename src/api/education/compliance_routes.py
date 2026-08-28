@@ -58,6 +58,10 @@ async def get_department_compliance_stats(
             "overview": {
                 "total_scans": stats.total_scans,
                 "total_files_scanned": stats.total_files_scanned,
+                "historical_scan_count": stats.total_scans,
+                "enrolled_document_count": stats.enrolled_documents,
+                "verified_document_count": stats.verified_documents,
+                "unverified_document_count": stats.documents_without_verified_state,
                 "total_pages_slides": stats.total_pages_slides,
                 "compliance_rate": stats.compliance_rate,
             },

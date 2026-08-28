@@ -16,7 +16,7 @@ Created: November 30, 2025
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datetime import datetime, timedelta, date
 from dataclasses import dataclass
 import logging
@@ -40,7 +40,7 @@ class TrendPoint:
     """Single data point in a trend chart"""
 
     date: str
-    avg_compliance_score: float
+    avg_compliance_score: Optional[float]
     scan_count: int
     total_issues: int
     files_compliant: int
@@ -52,10 +52,10 @@ class TrendPoint:
 class TrendAnalysis:
     """Analysis comparing two time periods"""
 
-    current_avg_score: float
-    previous_avg_score: float
-    score_change: float
-    score_change_pct: float
+    current_avg_score: Optional[float]
+    previous_avg_score: Optional[float]
+    score_change: Optional[float]
+    score_change_pct: Optional[float]
     current_total_issues: int
     previous_total_issues: int
     issues_change: int
@@ -284,7 +284,7 @@ class SnapshotService:
             date_key = scan.created_at.date().isoformat()
             result = results_by_scan.get(scan.id)
 
-            if result:
+            if result and result.compliance_score is not None:
                 data_by_date[date_key]["scores"].append(result.compliance_score)
                 data_by_date[date_key]["issues"] += (
                     result.critical_issues
@@ -305,13 +305,15 @@ class SnapshotService:
         for date_str in sorted(data_by_date.keys()):
             data = data_by_date[date_str]
             avg_score = (
-                sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0
+                sum(data["scores"]) / len(data["scores"]) if data["scores"] else None
             )
 
             trend_points.append(
                 TrendPoint(
                     date=date_str,
-                    avg_compliance_score=round(avg_score, 2),
+                    avg_compliance_score=(
+                        round(avg_score, 2) if avg_score is not None else None
+                    ),
                     scan_count=len(data["scores"]),
                     total_issues=data["issues"],
                     files_compliant=data["compliant"],
@@ -371,21 +373,37 @@ class SnapshotService:
         )
 
         # Calculate averages
-        current_scores = [s.avg_compliance_score for s in current_snapshots]
-        previous_scores = [s.avg_compliance_score for s in previous_snapshots]
+        current_scores = [
+            s.avg_compliance_score
+            for s in current_snapshots
+            if s.avg_compliance_score is not None
+        ]
+        previous_scores = [
+            s.avg_compliance_score
+            for s in previous_snapshots
+            if s.avg_compliance_score is not None
+        ]
 
-        current_avg = sum(current_scores) / len(current_scores) if current_scores else 0
+        current_avg = (
+            sum(current_scores) / len(current_scores) if current_scores else None
+        )
         previous_avg = (
-            sum(previous_scores) / len(previous_scores) if previous_scores else 0
+            sum(previous_scores) / len(previous_scores) if previous_scores else None
         )
 
         current_issues = sum(s.total_issues for s in current_snapshots)
         previous_issues = sum(s.total_issues for s in previous_snapshots)
 
         # Calculate changes
-        score_change = current_avg - previous_avg
+        score_change = (
+            current_avg - previous_avg
+            if current_avg is not None and previous_avg is not None
+            else None
+        )
         score_change_pct = (
-            (score_change / previous_avg * 100) if previous_avg > 0 else 0
+            score_change / previous_avg * 100
+            if score_change is not None and previous_avg > 0
+            else (0 if score_change is not None else None)
         )
 
         issues_change = current_issues - previous_issues
@@ -394,7 +412,9 @@ class SnapshotService:
         )
 
         # Determine trend direction
-        if score_change > 2:
+        if score_change is None:
+            trend_direction = "insufficient_data"
+        elif score_change > 2:
             trend_direction = "improving"
         elif score_change < -2:
             trend_direction = "declining"
@@ -403,15 +423,21 @@ class SnapshotService:
 
         # Check if on track for deadline
         (SnapshotService.DEADLINE_DATE - now).days
-        on_track = current_avg >= 80 or (
-            current_avg >= 70 and trend_direction == "improving"
+        on_track = current_avg is not None and (
+            current_avg >= 80 or (current_avg >= 70 and trend_direction == "improving")
         )
 
         return TrendAnalysis(
-            current_avg_score=round(current_avg, 2),
-            previous_avg_score=round(previous_avg, 2),
-            score_change=round(score_change, 2),
-            score_change_pct=round(score_change_pct, 2),
+            current_avg_score=(
+                round(current_avg, 2) if current_avg is not None else None
+            ),
+            previous_avg_score=(
+                round(previous_avg, 2) if previous_avg is not None else None
+            ),
+            score_change=(round(score_change, 2) if score_change is not None else None),
+            score_change_pct=(
+                round(score_change_pct, 2) if score_change_pct is not None else None
+            ),
             current_total_issues=current_issues,
             previous_total_issues=previous_issues,
             issues_change=issues_change,
@@ -436,15 +462,23 @@ class SnapshotService:
         # Get 30-day trend
         trend = SnapshotService.get_historical_trend(db, department_id, days=30)
 
-        if len(trend) < 7:
+        verified_scores = [
+            point.avg_compliance_score
+            for point in trend
+            if point.avg_compliance_score is not None
+        ]
+
+        if len(verified_scores) < 7:
             return {
                 "projection_available": False,
-                "message": "Need at least 7 days of data for projection",
+                "message": (
+                    "Need at least 7 days of verified compliance data for projection"
+                ),
             }
 
         # Calculate improvement rate (points per day)
-        first_week_avg = sum(p.avg_compliance_score for p in trend[:7]) / 7
-        last_week_avg = sum(p.avg_compliance_score for p in trend[-7:]) / 7
+        first_week_avg = sum(verified_scores[:7]) / 7
+        last_week_avg = sum(verified_scores[-7:]) / 7
         improvement_rate = (last_week_avg - first_week_avg) / 21  # Over ~3 weeks
 
         # Days until deadline

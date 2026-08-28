@@ -11,8 +11,8 @@ interface Scan {
   type: string;
   uploaded_at: string;
   status: string;
-  compliance_score: number;
-  issues_count: number;
+  compliance_score: number | null;
+  issues_count: number | null;
 }
 
 interface DeleteConfirmModalProps {
@@ -169,16 +169,16 @@ export function History(): React.ReactElement {
           scan_type?: string;
           created_at?: string;
           status?: string;
-          compliance_score?: number;
-          total_issues?: number;
+          compliance_score?: number | null;
+          total_issues?: number | null;
         }) => ({
           id: scan.scan_id || scan.id || '',
           filename: scan.file_name || 'Unknown',
           type: scan.scan_type?.toLowerCase() || 'unknown',
           uploaded_at: scan.created_at || '',
           status: scan.status?.toLowerCase() || 'unknown',
-          compliance_score: scan.compliance_score || 0,
-          issues_count: scan.total_issues || 0
+          compliance_score: scan.compliance_score ?? null,
+          issues_count: scan.total_issues ?? null
         }));
 
         setScans(transformedScans);
@@ -329,12 +329,14 @@ export function History(): React.ReactElement {
                       </div>
                     </div>
                   </div>
-                  <span className={`px-2.5 py-1 text-xs font-semibold rounded-full shrink-0 ml-2 ${getScoreColor(scan.compliance_score)}`}>
-                    {scan.compliance_score}/100
+                  <span className={`px-2.5 py-1 text-xs font-semibold rounded-full shrink-0 ml-2 ${scan.compliance_score == null ? 'text-tertiary bg-[var(--surface-tertiary)]' : getScoreColor(scan.compliance_score)}`}>
+                    {scan.compliance_score == null ? 'Unverified' : `${scan.compliance_score}/100`}
                   </span>
                 </div>
                 <div className="flex items-center justify-between pt-3 border-t border-[var(--border-primary)]">
-                  <span className="text-sm text-secondary">{scan.issues_count} issues</span>
+                  <span className="text-sm text-secondary">
+                    {scan.issues_count == null ? 'Issues unavailable' : `${scan.issues_count} issues`}
+                  </span>
                   <div className="flex items-center space-x-1">
                     <button
                       onClick={() => navigate(`/scan/${scan.id}`)}
@@ -434,12 +436,14 @@ export function History(): React.ReactElement {
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`px-3 py-1 text-sm font-semibold rounded-full ${getScoreColor(scan.compliance_score)}`}>
-                          {scan.compliance_score}/100
+                        <span className={`px-3 py-1 text-sm font-semibold rounded-full ${scan.compliance_score == null ? 'text-tertiary bg-[var(--surface-tertiary)]' : getScoreColor(scan.compliance_score)}`}>
+                          {scan.compliance_score == null ? 'Unverified' : `${scan.compliance_score}/100`}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="text-sm text-primary">{scan.issues_count} issues</span>
+                        <span className="text-sm text-primary">
+                          {scan.issues_count == null ? 'Issues unavailable' : `${scan.issues_count} issues`}
+                        </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right">
                         <div className="flex items-center justify-end space-x-2">
