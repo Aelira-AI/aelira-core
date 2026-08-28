@@ -100,7 +100,7 @@ async def get_scan_history(
                         + scan.result.low_issues
                     )
                     if scan.result
-                    else 0
+                    else None
                 ),
                 "created_at": scan.created_at.isoformat(),
                 "completed_at": (

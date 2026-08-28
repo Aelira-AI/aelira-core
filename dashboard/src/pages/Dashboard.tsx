@@ -13,19 +13,16 @@ import { useToast } from '../context/toast-context';
 import { useFeatureAccess } from '../hooks/useFeatureAccess';
 import { trackEvent } from '../utils/analytics';
 import {
+  normalizeCurrentComplianceStats,
+  type CurrentDashboardStats,
+  type RawCurrentComplianceStats,
+} from '../utils/currentCompliance';
+import {
   US_ADA_TITLE_II_DEADLINE,
   US_ADA_TITLE_II_DEADLINE_LABEL,
 } from '../utils/deadlines';
 
 const WELCOME_BANNER_KEY = 'aelira_welcome_dismissed';
-
-interface DashboardStats {
-  totalScans: number;
-  avgCompliance: number;
-  filesProcessed: number;
-  issuesFound: number;
-  scansThisMonth: number;
-}
 
 interface PriorityIssue {
   file_name: string;
@@ -47,12 +44,12 @@ interface RecentScan {
   filename: string;
   type: string;
   uploaded_at: string;
-  compliance_score: number;
-  issues_count: number;
+  compliance_score: number | null;
+  issues_count: number | null;
 }
 
 export function Dashboard(): React.ReactElement {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [stats, setStats] = useState<CurrentDashboardStats | null>(null);
   const [priorityIssues, setPriorityIssues] = useState<PriorityIssue[]>([]);
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
   const [trendData, setTrendData] = useState<TrendDataPoint[]>([]);
@@ -92,22 +89,8 @@ export function Dashboard(): React.ReactElement {
         const statsData = await scansApi.getGeneralStats();
 
         // API may wrap response in { success, stats: {...} }
-        interface RawStats {
-          total_scans?: number;
-          avg_compliance_score?: number;
-          total_pages?: number;
-          total_issues?: number;
-          scans_this_month?: number;
-        }
-        const statsResult = unwrapResponse<RawStats>(statsData, 'stats');
-
-        setStats({
-          totalScans: statsResult.total_scans || 0,
-          avgCompliance: statsResult.avg_compliance_score || 0,
-          filesProcessed: statsResult.total_pages || 0,  // Use total_pages as filesProcessed
-          issuesFound: statsResult.total_issues || 0,
-          scansThisMonth: statsResult.scans_this_month || 0,
-        });
+        const statsResult = unwrapResponse<RawCurrentComplianceStats>(statsData, 'stats');
+        setStats(normalizeCurrentComplianceStats(statsResult));
 
         // Try to fetch priority issues (may require department ID)
         try {
@@ -125,14 +108,14 @@ export function Dashboard(): React.ReactElement {
           const transformed: RecentScan[] = scansList.map((s: {
             scan_id?: string; id?: string; file_name?: string;
             scan_type?: string; created_at?: string;
-            compliance_score?: number; total_issues?: number;
+            compliance_score?: number | null; total_issues?: number | null;
           }) => ({
             id: s.scan_id || s.id || '',
             filename: s.file_name || 'Unknown',
             type: s.scan_type?.toLowerCase() || 'unknown',
             uploaded_at: s.created_at || '',
-            compliance_score: s.compliance_score || 0,
-            issues_count: s.total_issues || 0,
+            compliance_score: s.compliance_score ?? null,
+            issues_count: s.total_issues ?? null,
           }));
           setRecentScans(transformed);
         } catch (scansErr) {
@@ -236,8 +219,8 @@ export function Dashboard(): React.ReactElement {
     );
   }
 
-  const formatCompliance = (score: number | undefined): string | number => {
-    if (!score) return '--';
+  const formatCompliance = (score: number | null | undefined): string | number => {
+    if (score == null) return '--';
     return Math.round(score);
   };
 
@@ -406,7 +389,7 @@ export function Dashboard(): React.ReactElement {
         {/* Stats Cards */}
         {stats && (
           <>
-            {stats.totalScans === 0 ? (
+            {stats.enrolledDocuments === 0 && stats.historicalScanCount === 0 ? (
               /* Empty stats - show encouraging prompt instead of zeros */
               <div className="card mb-8 text-center py-8">
                 <ScanLine className="w-10 h-10 text-tertiary mx-auto mb-3" aria-hidden="true" />
@@ -423,43 +406,43 @@ export function Dashboard(): React.ReactElement {
             ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
               <div className="card">
-                <div className="text-sm font-medium text-secondary mb-1">Total Scans</div>
-                <div className="text-3xl font-bold text-primary">{stats.totalScans}</div>
+                <div className="text-sm font-medium text-secondary mb-1">Current Documents</div>
+                <div className="text-3xl font-bold text-primary">{stats.enrolledDocuments}</div>
                 <div className="text-sm text-tertiary mt-1">
-                  {stats.scansThisMonth} this month
+                  {stats.verifiedDocuments} verified · {stats.unverifiedDocuments} awaiting results
                 </div>
               </div>
 
               <div className="card">
                 <div className="text-sm font-medium text-secondary mb-1">Avg Compliance</div>
-                <div className={`text-3xl font-bold ${getScoreColor(stats.avgCompliance)}`}>
+                <div className={`text-3xl font-bold ${stats.avgCompliance == null ? 'text-primary' : getScoreColor(stats.avgCompliance)}`}>
                   {formatCompliance(stats.avgCompliance)}
-                  {stats.avgCompliance > 0 && <span className="text-lg">/100</span>}
+                  {stats.avgCompliance != null && <span className="text-lg">/100</span>}
                 </div>
                 <div className="text-sm text-tertiary mt-1">
-                  {stats.avgCompliance >= 90 ? 'Excellent' : stats.avgCompliance >= 70 ? 'Needs improvement' : stats.avgCompliance > 0 ? 'Poor' : 'No scans yet'}
+                  {stats.avgCompliance == null ? 'No verified results' : stats.avgCompliance >= 90 ? 'Excellent' : stats.avgCompliance >= 70 ? 'Needs improvement' : 'Poor'}
                 </div>
               </div>
 
               <div className="card">
-                <div className="text-sm font-medium text-secondary mb-1">Files Processed</div>
-                <div className="text-3xl font-bold text-primary">{stats.filesProcessed}</div>
-                <div className="text-sm text-tertiary mt-1">Total unique files</div>
+                <div className="text-sm font-medium text-secondary mb-1">Scan Attempts</div>
+                <div className="text-3xl font-bold text-primary">{stats.historicalScanCount}</div>
+                <div className="text-sm text-tertiary mt-1">{stats.scansThisMonth} this month</div>
               </div>
 
               <div className="card">
                 <div className="text-sm font-medium text-secondary mb-1">Issues Found</div>
                 <div className="text-3xl font-bold text-primary">{stats.issuesFound}</div>
-                <div className="text-sm text-tertiary mt-1">Total identified</div>
+                <div className="text-sm text-tertiary mt-1">In current verified results</div>
               </div>
 
               {(() => {
                 const deadline = US_ADA_TITLE_II_DEADLINE;
                 const daysLeft = Math.ceil((deadline.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-                const avg = stats.avgCompliance || 0;
-                const isCritical = daysLeft < 90 && avg < 90;
-                const isWarning = daysLeft < 180 && avg < 80;
-                const isAhead = avg >= 90;
+                const avg = stats.avgCompliance;
+                const isCritical = avg != null && daysLeft < 90 && avg < 90;
+                const isWarning = avg != null && daysLeft < 180 && avg < 80;
+                const isAhead = avg != null && avg >= 90;
                 return (
                   <div className="card">
                     <div className="text-sm font-medium text-secondary mb-1 flex items-center gap-1.5">
@@ -674,7 +657,7 @@ export function Dashboard(): React.ReactElement {
                 </button>
               </div>
 
-              {recentScans.length === 0 && stats.totalScans === 0 ? (
+              {recentScans.length === 0 && stats.historicalScanCount === 0 ? (
                 <div className="text-center py-12">
                   <FileText className="w-12 h-12 text-tertiary mx-auto mb-4" aria-hidden="true" />
                   <p className="text-tertiary mb-4">No scans yet. Upload your first document to get started!</p>
@@ -702,13 +685,15 @@ export function Dashboard(): React.ReactElement {
                               <Calendar className="w-3 h-3" />
                               {formatRelativeDate(scan.uploaded_at)}
                             </span>
-                            <span>{scan.issues_count} issues</span>
+                            <span>
+                              {scan.issues_count == null ? 'Issues unavailable' : `${scan.issues_count} issues`}
+                            </span>
                           </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-3 shrink-0 ml-4">
-                        <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${getScoreBgColor(scan.compliance_score)}`}>
-                          {Math.round(scan.compliance_score)}/100
+                        <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${scan.compliance_score == null ? 'text-tertiary bg-[var(--surface-tertiary)]' : getScoreBgColor(scan.compliance_score)}`}>
+                          {scan.compliance_score == null ? 'Unverified' : `${Math.round(scan.compliance_score)}/100`}
                         </span>
                         <button
                           onClick={() => navigate(`/scan/${scan.id}`)}
@@ -747,7 +732,7 @@ export function Dashboard(): React.ReactElement {
                 <div className="text-center py-8">
                   <TrendingUp className="w-8 h-8 text-accent mx-auto mb-2" aria-hidden="true" />
                   <p className="text-secondary">
-                    You have {stats.totalScans} scan{stats.totalScans !== 1 ? 's' : ''} in your history.
+                    You have {stats.historicalScanCount} scan{stats.historicalScanCount !== 1 ? 's' : ''} in your history.
                   </p>
                   <button
                     onClick={() => navigate('/history')}

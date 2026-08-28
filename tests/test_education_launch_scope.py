@@ -267,6 +267,8 @@ def test_course_staff_scan_list_is_query_bound_to_canvas_launch_course(client):
 
     assert response.status_code == 200
     assert response.json()["total_returned"] == 1
+    assert response.json()["scans"][0]["compliance_score"] is None
+    assert response.json()["scans"][0]["total_issues"] is None
     legacy_history.assert_not_called()
     db._list_query.join.assert_called_once()
     predicates = " ".join(

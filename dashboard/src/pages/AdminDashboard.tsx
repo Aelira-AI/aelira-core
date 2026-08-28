@@ -28,8 +28,12 @@ interface DepartmentStats {
   total_users: number;
   active_users: number;
   total_scans: number;
+  historical_scan_count: number;
+  enrolled_document_count: number;
+  verified_document_count: number;
+  unverified_document_count: number;
   scans_this_month: number;
-  avg_compliance_score: number;
+  avg_compliance_score: number | null;
   pending_invitations: number;
 }
 
@@ -275,20 +279,22 @@ export function AdminDashboard(): React.ReactElement {
           </div>
 
           <div className="card">
-            <div className="text-sm font-medium text-secondary mb-1">Total Scans</div>
-            <div className="text-3xl font-bold text-primary">{stats?.total_scans || 0}</div>
+            <div className="text-sm font-medium text-secondary mb-1">Current Documents</div>
+            <div className="text-3xl font-bold text-primary">{stats?.enrolled_document_count ?? 0}</div>
             <div className="text-sm text-tertiary mt-1">
-              {stats?.scans_this_month || 0} this month
+              {stats?.verified_document_count ?? 0} verified · {stats?.historical_scan_count ?? 0} attempts
             </div>
           </div>
 
           <div className="card">
             <div className="text-sm font-medium text-secondary mb-1">Avg Compliance</div>
             <div className="text-3xl font-bold text-primary">
-              {Math.round(stats?.avg_compliance_score || 0)}
-              <span className="text-lg">/100</span>
+              {stats?.avg_compliance_score == null ? '--' : Math.round(stats.avg_compliance_score)}
+              {stats?.avg_compliance_score != null && <span className="text-lg">/100</span>}
             </div>
-            <div className="text-sm text-tertiary mt-1">Across all scans</div>
+            <div className="text-sm text-tertiary mt-1">
+              {stats?.unverified_document_count ?? 0} documents awaiting results
+            </div>
           </div>
 
           <div className="card">

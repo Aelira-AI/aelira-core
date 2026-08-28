@@ -36,8 +36,12 @@ export interface InvitationsListResponse {
 export interface DepartmentStats {
   total_users: number;
   total_scans: number;
+  historical_scan_count: number;
+  enrolled_document_count: number;
+  verified_document_count: number;
+  unverified_document_count: number;
   total_issues: number;
-  avg_compliance_score: number;
+  avg_compliance_score: number | null;
   scans_this_month: number;
   issues_resolved: number;
   active_users: number;

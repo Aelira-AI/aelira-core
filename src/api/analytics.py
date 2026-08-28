@@ -899,7 +899,11 @@ async def export_scans_excel(
             ],
             [
                 "Average Compliance Score",
-                f"{stats.avg_compliance_score:.1f}%" if stats else "N/A",
+                (
+                    f"{stats.avg_compliance_score:.1f}%"
+                    if stats and stats.avg_compliance_score is not None
+                    else "Not assessed"
+                ),
             ],
             [""],
             ["Issues Summary"],
@@ -960,7 +964,11 @@ async def export_scans_excel(
         for row_idx, scan in enumerate(scans, 2):
             result = db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
 
-            compliance_score = result.compliance_score if result else 0
+            compliance_score = (
+                result.compliance_score
+                if result and result.compliance_score is not None
+                else None
+            )
             critical = result.critical_issues if result else 0
             high = result.high_issues if result else 0
             medium = result.medium_issues if result else 0
@@ -973,7 +981,7 @@ async def export_scans_excel(
                 scan.file_name or "",
                 scan.scan_type.value if scan.scan_type else "",
                 scan.status.value if scan.status else "",
-                compliance_score,
+                compliance_score if compliance_score is not None else "Not assessed",
                 critical,
                 high,
                 medium,
@@ -987,7 +995,7 @@ async def export_scans_excel(
                 cell.border = thin_border
 
                 # Color code compliance score
-                if col_idx == 6:  # Compliance Score column
+                if col_idx == 6 and compliance_score is not None:
                     if compliance_score >= 90:
                         cell.fill = green_fill
                     elif compliance_score >= 70:

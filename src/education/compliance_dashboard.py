@@ -29,9 +29,9 @@ from ..db.models import (
     Scan,
     ScanResult,
     ScanType,
-    ScanStatus,
 )
 from .deadline_config import US_ADA_TITLE_II_DEADLINE
+from .current_compliance import get_department_current_compliance
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +46,16 @@ class ComplianceStats:
 
     # Overall stats
     total_scans: int
-    total_files_scanned: int  # Unique files (deduped by hash)
+    total_files_scanned: int  # Documents with a verified current result
     total_pages_slides: int
+    enrolled_documents: int
+    verified_documents: int
+    documents_without_verified_state: int
 
     # Compliance scoring
-    avg_compliance_score: float
-    min_compliance_score: float
-    max_compliance_score: float
+    avg_compliance_score: Optional[float]
+    min_compliance_score: Optional[float]
+    max_compliance_score: Optional[float]
 
     # Issue counts
     total_critical: int
@@ -108,6 +111,10 @@ class ComplianceStats:
             "overview": {
                 "total_scans": self.total_scans,
                 "total_files_scanned": self.total_files_scanned,
+                "historical_scan_count": self.total_scans,
+                "enrolled_document_count": self.enrolled_documents,
+                "verified_document_count": self.verified_documents,
+                "unverified_document_count": self.documents_without_verified_state,
                 "compliance_rate": self.compliance_rate,
             },
             "compliance_scores": {
@@ -233,18 +240,13 @@ class ComplianceDashboard:
         if not dept:
             raise ValueError(f"Department not found: {department_id}")
 
-        # Get all scans for department
-        scans = db.query(Scan).filter(Scan.department_id == department_id).all()
+        projection = get_department_current_compliance(db, department_id)
+        scans = list(projection.historical_scans)
 
-        if not scans:
+        if not scans and projection.enrolled_document_count == 0:
             return ComplianceDashboard._empty_stats(
                 department_id, dept.name, dept.institution, dept
             )
-
-        # Get all scan results
-        scan_ids = [s.id for s in scans]
-        results = db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
-        results_by_scan = {r.scan_id: r for r in results}
 
         # Calculate time-based metrics (use timezone-aware datetimes)
         now = datetime.now(timezone.utc)
@@ -254,36 +256,37 @@ class ComplianceDashboard:
 
         # Count scans by type
         scan_type_counts = {
-            ScanType.PDF: 0,
-            ScanType.POWERPOINT: 0,
-            ScanType.LATEX: 0,
-            ScanType.IMAGE: 0,
-            ScanType.VIDEO: 0,
-            ScanType.WEBSITE: 0,
-            ScanType.CODE: 0,
-            ScanType.MULTIMEDIA: 0,
+            scan_type: projection.scan_type_count(scan_type)
+            for scan_type in (
+                ScanType.PDF,
+                ScanType.POWERPOINT,
+                ScanType.LATEX,
+                ScanType.IMAGE,
+                ScanType.VIDEO,
+                ScanType.WEBSITE,
+                ScanType.CODE,
+                ScanType.MULTIMEDIA,
+            )
         }
 
-        # Aggregate metrics
-        total_pages = 0
-        compliance_scores = []
-        total_critical = total_high = total_medium = total_low = 0
-        files_compliant = files_needs_work = files_critical = 0
+        total_pages = projection.total_pages
+        compliance_scores = [
+            float(document.result.compliance_score)
+            for document in projection.verified_documents
+        ]
+        total_critical = projection.issue_count("critical")
+        total_high = projection.issue_count("high")
+        total_medium = projection.issue_count("medium")
+        total_low = projection.issue_count("low")
+        files_compliant, files_needs_work, files_critical = (
+            projection.compliance_band_counts(
+                compliant_at=ComplianceDashboard.COMPLIANCE_THRESHOLD,
+                needs_work_at=ComplianceDashboard.NEEDS_WORK_THRESHOLD,
+            )
+        )
         scans_7d = scans_30d = scans_month = 0
-        unique_files = set()
 
         for scan in scans:
-            # Count by type
-            if scan.scan_type in scan_type_counts:
-                scan_type_counts[scan.scan_type] += 1
-
-            # Pages/slides
-            total_pages += scan.pages or 0
-
-            # Unique files (by hash)
-            if scan.file_hash:
-                unique_files.add(scan.file_hash)
-
             # Time-based counts
             if scan.created_at >= seven_days_ago:
                 scans_7d += 1
@@ -292,34 +295,21 @@ class ComplianceDashboard:
             if scan.created_at >= month_start:
                 scans_month += 1
 
-            # Get result
-            result = results_by_scan.get(scan.id)
-            if result:
-                compliance_scores.append(result.compliance_score)
-                total_critical += result.critical_issues
-                total_high += result.high_issues
-                total_medium += result.medium_issues
-                total_low += result.low_issues
-
-                # Categorize compliance
-                if result.compliance_score >= ComplianceDashboard.COMPLIANCE_THRESHOLD:
-                    files_compliant += 1
-                elif (
-                    result.compliance_score >= ComplianceDashboard.NEEDS_WORK_THRESHOLD
-                ):
-                    files_needs_work += 1
-                else:
-                    files_critical += 1
-
         # Calculate averages
         avg_score = (
-            sum(compliance_scores) / len(compliance_scores) if compliance_scores else 0
+            sum(compliance_scores) / len(compliance_scores)
+            if compliance_scores
+            else None
         )
-        min_score = min(compliance_scores) if compliance_scores else 0
-        max_score = max(compliance_scores) if compliance_scores else 0
+        min_score = min(compliance_scores) if compliance_scores else None
+        max_score = max(compliance_scores) if compliance_scores else None
 
         # Compliance rate
-        compliance_rate = (files_compliant / len(scans) * 100) if scans else 0
+        compliance_rate = (
+            files_compliant / projection.verified_document_count * 100
+            if projection.verified_document_count
+            else 0
+        )
 
         # Faculty stats
         total_faculty = (
@@ -368,11 +358,14 @@ class ComplianceDashboard:
             department_name=dept.name,
             institution=dept.institution,
             total_scans=len(scans),
-            total_files_scanned=len(unique_files),
+            total_files_scanned=projection.verified_document_count,
             total_pages_slides=total_pages,
-            avg_compliance_score=round(avg_score, 2),
-            min_compliance_score=round(min_score, 2),
-            max_compliance_score=round(max_score, 2),
+            enrolled_documents=projection.enrolled_document_count,
+            verified_documents=projection.verified_document_count,
+            documents_without_verified_state=projection.unverified_document_count,
+            avg_compliance_score=round(avg_score, 2) if avg_score is not None else None,
+            min_compliance_score=round(min_score, 2) if min_score is not None else None,
+            max_compliance_score=round(max_score, 2) if max_score is not None else None,
             total_critical=total_critical,
             total_high=total_high,
             total_medium=total_medium,
@@ -431,9 +424,12 @@ class ComplianceDashboard:
             total_scans=0,
             total_files_scanned=0,
             total_pages_slides=0,
-            avg_compliance_score=0.0,
-            min_compliance_score=0.0,
-            max_compliance_score=0.0,
+            enrolled_documents=0,
+            verified_documents=0,
+            documents_without_verified_state=0,
+            avg_compliance_score=None,
+            min_compliance_score=None,
+            max_compliance_score=None,
             total_critical=0,
             total_high=0,
             total_medium=0,
@@ -487,22 +483,16 @@ class ComplianceDashboard:
         """
         logger.info("Getting department priority issues")
 
-        # Get all scans with results
-        scans = (
-            db.query(Scan)
-            .filter(Scan.department_id == department_id)
-            .filter(Scan.status == ScanStatus.COMPLETED)
-            .order_by(Scan.created_at.desc())
-            .all()
-        )
+        projection = get_department_current_compliance(db, department_id)
+        scans = [document.scan for document in projection.verified_documents]
 
         if not scans:
             return []
 
-        # Get scan results
-        scan_ids = [s.id for s in scans]
-        results = db.query(ScanResult).filter(ScanResult.scan_id.in_(scan_ids)).all()
-        results_by_scan = {r.scan_id: r for r in results}
+        results_by_scan = {
+            document.scan.id: document.result
+            for document in projection.verified_documents
+        }
 
         # Get users for names (exclude system scans with no user)
         user_ids = list(set(s.user_id for s in scans if s.user_id is not None))

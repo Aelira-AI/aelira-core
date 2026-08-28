@@ -16,7 +16,7 @@ Created: January 2026
 import logging
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 import numpy as np
 
@@ -35,8 +35,8 @@ class PredictionResult:
     will_meet_deadline: bool
     confidence: float  # 0-1 confidence in prediction
     probability_of_compliance: float  # 0-1 probability of meeting deadline
-    projected_score_at_deadline: float
-    current_score: float
+    projected_score_at_deadline: Optional[float]
+    current_score: Optional[float]
     days_remaining: int
     risk_level: str  # "low", "medium", "high", "critical"
     risk_factors: List[Dict[str, Any]]
@@ -80,15 +80,25 @@ class CompliancePredictor:
         trend_90 = SnapshotService.get_historical_trend(self.db, department_id, days=90)
         trend_30 = SnapshotService.get_historical_trend(self.db, department_id, days=30)
 
+        verified_trend_90 = [
+            point for point in trend_90 if point.avg_compliance_score is not None
+        ]
+        verified_trend_30 = [
+            point for point in trend_30 if point.avg_compliance_score is not None
+        ]
+
         days_remaining = (DEADLINE_DATE - datetime.utcnow()).days
 
         # Check if we have enough data
-        if len(trend_30) < 7:
+        if len(verified_trend_30) < 7:
             return self._insufficient_data_result(days_remaining)
 
         # Extract features
         features = self._extract_features(
-            trend_90, trend_30, department_id, days_remaining
+            verified_trend_90,
+            verified_trend_30,
+            department_id,
+            days_remaining,
         )
 
         # Run prediction models
@@ -562,8 +572,8 @@ class CompliancePredictor:
             will_meet_deadline=False,
             confidence=0.1,
             probability_of_compliance=0.5,
-            projected_score_at_deadline=0,
-            current_score=0,
+            projected_score_at_deadline=None,
+            current_score=None,
             days_remaining=days_remaining,
             risk_level="unknown",
             risk_factors=[

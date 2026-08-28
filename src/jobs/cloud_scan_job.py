@@ -206,6 +206,8 @@ class CloudScanJob:
         scan = Scan(
             id=str(uuid.uuid4()),
             department_id=self.credential.department_id,
+            document_id=self.cloud_file.id,
+            document_source="cloud_file",
             scan_type=scan_types.get(file_type, ScanType.PDF),
             user_id=dept_user.id if dept_user else "system",
             file_name=self.cloud_file.file_name,
@@ -652,6 +654,8 @@ class CloudScanJob:
             scan = Scan(
                 id=scan_id,
                 department_id=self.credential.department_id,
+                document_id=self.cloud_file.id,
+                document_source="cloud_file",
                 scan_type=scan_type,
                 user_id=scan_user_id,
                 file_name=self.cloud_file.file_name,
@@ -884,6 +888,11 @@ async def handle_scan_job(
     )
     result = await scan_job.run(db)
     if not result.get("success"):
+        # A persisted failed scan is retryable, but its stable document link and
+        # scan ID must survive in the durable job result. Failures without a
+        # persisted scan retain the legacy exception path.
+        if isinstance(result.get("scan_id"), str):
+            return {**result, "failure_kind": "indeterminate"}
         raise ScanJobFailed(result.get("error_code", "SCAN_PROCESSING_FAILED"))
     return result
 

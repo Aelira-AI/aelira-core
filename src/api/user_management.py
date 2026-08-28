@@ -32,8 +32,8 @@ from ..db.models import (
     AuditLogAction,
     AuditLogStatus,
     Scan,
-    ScanResult,
 )
+from ..db.scan_service import ScanService
 from ..config.settings import get_tier_quota, get_settings
 from ..mailer.email_service import get_email_service
 from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
@@ -62,8 +62,12 @@ class DepartmentStatsResponse(BaseModel):
     total_users: int
     active_users: int
     total_scans: int
+    historical_scan_count: int
+    enrolled_document_count: int
+    verified_document_count: int
+    unverified_document_count: int
     scans_this_month: int
-    avg_compliance_score: float
+    avg_compliance_score: Optional[float]
     total_issues: int
     pending_invitations: int
 
@@ -803,52 +807,7 @@ async def get_department_stats(
             or 0
         )
 
-        # Scan counts
-        total_scans = (
-            db.query(func.count(Scan.id))
-            .filter(Scan.department_id == department_id)
-            .scalar()
-            or 0
-        )
-
-        # Scans this month
-        first_of_month = datetime.utcnow().replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-        scans_this_month = (
-            db.query(func.count(Scan.id))
-            .filter(
-                Scan.department_id == department_id, Scan.created_at >= first_of_month
-            )
-            .scalar()
-            or 0
-        )
-
-        # Average compliance score
-
-        avg_score_result = (
-            db.query(func.avg(ScanResult.compliance_score))
-            .join(Scan, ScanResult.scan_id == Scan.id)
-            .filter(Scan.department_id == department_id)
-            .scalar()
-        )
-        avg_compliance_score = float(avg_score_result) if avg_score_result else 0.0
-
-        # Total issues
-        total_issues_result = (
-            db.query(
-                func.sum(
-                    ScanResult.critical_issues
-                    + ScanResult.high_issues
-                    + ScanResult.medium_issues
-                    + ScanResult.low_issues
-                )
-            )
-            .join(Scan, ScanResult.scan_id == Scan.id)
-            .filter(Scan.department_id == department_id)
-            .scalar()
-        )
-        total_issues = int(total_issues_result) if total_issues_result else 0
+        compliance_stats = ScanService.get_department_stats(db, department_id)
 
         # Pending invitations
         pending_invitations = (
@@ -874,10 +833,16 @@ async def get_department_stats(
             "stats": {
                 "total_users": total_users,
                 "active_users": active_users,
-                "total_scans": total_scans,
-                "scans_this_month": scans_this_month,
-                "avg_compliance_score": round(avg_compliance_score, 1),
-                "total_issues": total_issues,
+                "total_scans": compliance_stats["total_scans"],
+                "historical_scan_count": compliance_stats["historical_scan_count"],
+                "enrolled_document_count": compliance_stats["enrolled_document_count"],
+                "verified_document_count": compliance_stats["verified_document_count"],
+                "unverified_document_count": compliance_stats[
+                    "unverified_document_count"
+                ],
+                "scans_this_month": compliance_stats["scans_this_month"],
+                "avg_compliance_score": compliance_stats["avg_compliance_score"],
+                "total_issues": compliance_stats["total_issues"],
                 "pending_invitations": pending_invitations,
             },
         }

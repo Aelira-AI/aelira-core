@@ -19,7 +19,7 @@ interface AnalyticsDashboardProps {
   departmentId: string;
 }
 
-type TrendDirection = 'improving' | 'declining' | 'stable';
+type TrendDirection = 'improving' | 'declining' | 'stable' | 'insufficient_data';
 
 interface DeadlineProjection {
   projection_available: boolean;
@@ -33,10 +33,10 @@ interface DeadlineProjection {
 
 interface TrendAnalysis {
   trend_direction: TrendDirection;
-  current_avg_score: number;
-  previous_avg_score: number;
-  score_change: number;
-  score_change_pct: number;
+  current_avg_score: number | null;
+  previous_avg_score: number | null;
+  score_change: number | null;
+  score_change_pct: number | null;
   issues_change: number;
 }
 
@@ -237,36 +237,52 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
                 <span className="text-sm text-secondary">This Week</span>
                 <span
                   className={`font-bold ${
-                    analysis.current_avg_score >= 90
+                    analysis.current_avg_score === null
+                      ? 'text-tertiary'
+                      : analysis.current_avg_score >= 90
                       ? 'text-[var(--feature-success-content)]'
                       : analysis.current_avg_score >= 70
                         ? 'text-[var(--feature-warning-content)]'
                         : 'text-[var(--feature-danger-content)]'
                   }`}
                 >
-                  {analysis.current_avg_score}/100
+                  {analysis.current_avg_score === null
+                    ? 'Not assessed'
+                    : `${analysis.current_avg_score}/100`}
                 </span>
               </div>
 
               <div className="flex justify-between items-center">
                 <span className="text-sm text-secondary">Last Week</span>
-                <span className="text-primary">{analysis.previous_avg_score}/100</span>
+                <span className="text-primary">
+                  {analysis.previous_avg_score === null
+                    ? 'Not assessed'
+                    : `${analysis.previous_avg_score}/100`}
+                </span>
               </div>
 
               <div className="flex justify-between items-center">
                 <span className="text-sm text-secondary">Change</span>
                 <span
                   className={`font-bold ${
-                    analysis.score_change > 0
+                    analysis.score_change === null
+                      ? 'text-tertiary'
+                      : analysis.score_change > 0
                       ? 'text-[var(--feature-success-content)]'
                       : analysis.score_change < 0
                         ? 'text-[var(--feature-danger-content)]'
                         : 'text-tertiary'
                   }`}
                 >
-                  {analysis.score_change > 0 ? '+' : ''}
-                  {analysis.score_change} pts ({analysis.score_change_pct > 0 ? '+' : ''}
-                  {analysis.score_change_pct}%)
+                  {analysis.score_change === null || analysis.score_change_pct === null ? (
+                    'Not enough data'
+                  ) : (
+                    <>
+                      {analysis.score_change > 0 ? '+' : ''}
+                      {analysis.score_change} pts ({analysis.score_change_pct > 0 ? '+' : ''}
+                      {analysis.score_change_pct}%)
+                    </>
+                  )}
                 </span>
               </div>
 
