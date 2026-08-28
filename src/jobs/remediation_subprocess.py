@@ -39,12 +39,60 @@ class SubprocessRemediationResult:
     output_claim: DescriptorBoundOutputClaim | None = None
 
     def __post_init__(self) -> None:
+        visual_contracts = []
         for key, value in self.values.items():
             if key in {"fixed_issues", "manual_issues"} and isinstance(value, list):
-                value = [
-                    SimpleNamespace(**item) for item in value if isinstance(item, dict)
-                ]
+                records = []
+                for item in value:
+                    if not isinstance(item, dict):
+                        continue
+                    record = dict(item)
+                    contract = record.get("visual_semantic_contract")
+                    if contract is not None:
+                        if key != "fixed_issues":
+                            raise RemediationSubprocessError("remediation_failed")
+                        try:
+                            from src.education.remediation.base import FixedIssue
+                            from src.education.visual_semantic_contract import (
+                                VisualSemanticContractAdapter,
+                            )
+
+                            validated_contract = (
+                                VisualSemanticContractAdapter.validate_python(contract)
+                            )
+                            record["visual_semantic_contract"] = validated_contract
+                            FixedIssue.model_validate(record)
+                        except (TypeError, ValueError) as exc:
+                            raise RemediationSubprocessError(
+                                "remediation_failed"
+                            ) from exc
+                        visual_contracts.append(validated_contract)
+                    records.append(SimpleNamespace(**record))
+                value = records
             setattr(self, key, value)
+        if visual_contracts and (
+            not isinstance(self.output_claim, DescriptorBoundOutputClaim)
+            or self.output_claim.closed
+        ):
+            raise RemediationSubprocessError("remediation_failed")
+        if visual_contracts:
+            assert self.output_claim is not None
+            claimed_sha256 = self.output_claim.sha256
+            for contract in visual_contracts:
+                saved_evidence = [
+                    evidence
+                    for evidence in contract.verification_evidence
+                    if evidence.evidence_kind
+                    in {
+                        "standalone_formula_saved_v1",
+                        "scanned_region_formula_saved_v1",
+                    }
+                ]
+                if (
+                    len(saved_evidence) != 1
+                    or saved_evidence[0].saved_file_sha256 != claimed_sha256
+                ):
+                    raise RemediationSubprocessError("remediation_failed")
         self.output_file = (
             self.output_claim.display_path if self.output_claim is not None else None
         )
@@ -99,11 +147,20 @@ def _safe_issues(value: Any) -> list[dict[str, Any]]:
 
 def _json_record(value: Any) -> dict[str, Any]:
     if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
+        record = value.model_dump(mode="json")
+        if record.get("visual_semantic_contract") is None:
+            record.pop("visual_semantic_contract", None)
+        return record
     if isinstance(value, dict):
-        return value
+        record = dict(value)
+        if record.get("visual_semantic_contract") is None:
+            record.pop("visual_semantic_contract", None)
+        return record
     fields = getattr(value, "__dict__", None)
-    return dict(fields) if isinstance(fields, dict) else {}
+    record = dict(fields) if isinstance(fields, dict) else {}
+    if record.get("visual_semantic_contract") is None:
+        record.pop("visual_semantic_contract", None)
+    return record
 
 
 def _purpose_clients(binding: Any) -> tuple[Any, Any]:

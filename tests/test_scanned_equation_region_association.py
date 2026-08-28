@@ -38,10 +38,7 @@ from src.education.remediation.math_fixer import (
 )
 from src.education.remediation.pdf_structure import PDFStructureTree
 
-MATHML = (
-    '<math xmlns="http://www.w3.org/1998/Math/MathML">'
-    "<mrow><mi>x</mi><mo>+</mo><mi>y</mi><mo>=</mo><mn>2</mn></mrow></math>"
-)
+MATHML = "<math><mrow><mi>x</mi><mo>+</mo><mi>y</mi><mo>=</mo><mn>2</mn></mrow></math>"
 
 
 def _write_scan(path) -> None:
@@ -644,6 +641,27 @@ def test_pdf_writer_remaps_persists_and_postverifies_region(tmp_path):
     remediator._write_pdf_output(fitz_document, str(output))
 
     assert len(remediator._verified_image_equations) == 1
+    _, _, _, contract = remediator._verified_image_equations[0]
+    assert contract.contract_kind == "printed_equation"
+    assert contract.locator.source_kind == "page_raster_region"
+    assert contract.locator.model_dump(mode="json") == pending.locator.model_dump(
+        mode="json"
+    )
+    with fitz.open(output) as saved_pdf:
+        saved_occurrence = _displayed_image_occurrences(saved_pdf[0], 1)[0]
+    saved = next(
+        item
+        for item in contract.verification_evidence
+        if item.evidence_kind == "scanned_region_formula_saved_v1"
+    )
+    assert saved.saved_file_sha256 == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert saved.image_xref == saved_occurrence["image_xref"]
+    assert saved.image_xref != contract.locator.image_xref
+    assert saved.image_stream_sha256 == contract.locator.source_sha256
+    assert (
+        saved.alt_text_sha256
+        == hashlib.sha256(pending.alt_text.encode("utf-8")).hexdigest()
+    )
     remediator._reconcile_verified_image_equations()
     assert remediator.result.manual_count == 0
     assert remediator.result.fixed_count == 1
@@ -651,6 +669,52 @@ def test_pdf_writer_remaps_persists_and_postverifies_region(tmp_path):
     assert fixed.source_kind == "image_equation"
     assert fixed.source_locator is not None
     assert fixed.source_locator.region_id == pending.locator.region_id
+    from pydantic import ValidationError
+
+    from src.education.remediation.base import FixedIssue
+    from src.jobs.remediation_subprocess import (
+        RemediationSubprocessError,
+        SubprocessRemediationResult,
+    )
+
+    valid_record = fixed.model_dump(mode="json")
+    locator_identity = fixed.source_locator.model_dump(
+        mode="json", exclude={"region_id"}
+    )
+    locator_identity["detector_version"] = "different-detector-v1"
+    mismatched_locator = {
+        **locator_identity,
+        "region_id": "eqregion-v1-"
+        + hashlib.sha256(
+            json.dumps(
+                locator_identity,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()[:24],
+    }
+    envelope_mutations = (
+        {"source_kind": "chart"},
+        {"source_locator": mismatched_locator},
+        {
+            "verification_evidence": {
+                **valid_record["verification_evidence"],
+                "rendered_sha256": "0" * 64,
+            }
+        },
+        {"verification_evidence": None},
+        {"provider_used": None},
+        {"model_used": None},
+        {"page_number": None},
+        {"fixed_content": "different accessible equation"},
+    )
+    for mutation in envelope_mutations:
+        forged = {**valid_record, **mutation}
+        with pytest.raises(ValidationError):
+            FixedIssue.model_validate(forged)
+        with pytest.raises(RemediationSubprocessError, match="^remediation_failed$"):
+            SubprocessRemediationResult({"fixed_issues": [forged]})
     remediator._pikepdf_doc.close()
     fitz_document.close()
 
@@ -821,10 +885,16 @@ def test_real_ocr_working_copy_keeps_search_layer_and_exact_region(tmp_path):
     )
     remediator._write_pdf_output(writer_document, str(associated))
     assert len(remediator._verified_image_equations) == 1
-    _, _, result = remediator._verified_image_equations[0]
+    _, _, result, contract = remediator._verified_image_equations[0]
     assert result.ocr_group_owners == (("/P", 0), ("/Artifact", -1))
     assert result.ocr_before_mcids == (0,)
     assert result.ocr_after_mcids == ()
+    saved_evidence = next(
+        item
+        for item in contract.verification_evidence
+        if item.evidence_kind == "scanned_region_formula_saved_v1"
+    )
+    assert saved_evidence.ocr_group_owners == result.ocr_group_owners
     remediator._reconcile_verified_image_equations()
     assert remediator.result.fixed_count == 1
     fixed = remediator.result.fixed_issues[0]
@@ -899,6 +969,7 @@ def test_real_ocr_working_copy_keeps_search_layer_and_exact_region(tmp_path):
         cleanup_claimed_at=None,
         written_back_at=None,
         approval_checksum=None,
+        approval_review_digest=None,
         approved_by_id=None,
         approved_by_ref=None,
         approved_at=None,
@@ -931,6 +1002,7 @@ def test_real_ocr_working_copy_keeps_search_layer_and_exact_region(tmp_path):
     )
 
     assert approved.approval_checksum == artifact_sha256
+    assert approved.approval_review_digest is not None
     with service._open_verified(approved, allowed_lifecycle={"available"}) as stream:
         assert stream.read() == artifact_bytes
 

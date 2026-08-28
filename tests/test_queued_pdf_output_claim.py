@@ -21,15 +21,10 @@ from src.db.models import (
     ScanStatus,
     ScanType,
 )
-from src.education.remediation.base import (
-    FixedIssue,
-    IssueCategory,
-    IssueSeverity,
-    RemediationResult,
-    VerificationEvidence,
-)
+from src.education.remediation.base import RemediationResult
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.services.remediation_artifact_service import ArtifactPublicationResult
+from tests.test_image_equation_review_gate import EVIDENCE, _fix as _typed_equation_fix
 
 
 class _Query:
@@ -180,33 +175,13 @@ async def test_queued_pdf_publishes_and_validates_exact_claim_bytes(
     _, output_path, scan, cloud_file, db, job_data = _context(tmp_path)
     remediation_result = _result(Path(job_data["file_path"]), output_path, payload)
     remediation_result.fixed_issues = [
-        FixedIssue(
+        _typed_equation_fix(
             issue_id="queued-issue-1",
-            category=IssueCategory.STRUCTURE,
-            severity=IssueSeverity.HIGH,
             description="Associated queued image equation",
             location="page 1 / image 0 / occurrence 0",
             fixed_content="Formula, Alt, and MathML",
-            fix_method="ai_vision",
             provider_used="ollama",
             model_used="vision-test",
-            source_kind="image_equation",
-            verification_evidence=VerificationEvidence(
-                passed=True,
-                source_sha256="1" * 64,
-                rendered_sha256="2" * 64,
-                mathml_sha256="3" * 64,
-                renderer_version="chromium-test",
-                comparator_version="pixel-test",
-                font_sha256="4" * 64,
-                threshold_version="printed-equation-v1",
-                ink_iou=0.95,
-                pixel_similarity=0.99,
-                required_ink_iou=0.90,
-                required_pixel_similarity=0.98,
-            ),
-            confidence=0.55,
-            needs_review=True,
             page_number=1,
         )
     ]
@@ -308,7 +283,9 @@ async def test_queued_pdf_publishes_and_validates_exact_claim_bytes(
     assert persisted[0].issue_id == "queued-issue-1"
     assert persisted[0].source_kind == "image_equation"
     assert persisted[0].review_status == "pending"
-    assert persisted[0].verification_evidence["source_sha256"] == "1" * 64
+    assert (
+        persisted[0].verification_evidence["source_sha256"] == EVIDENCE["source_sha256"]
+    )
     assert len(persisted[0].occurrence_key) == 64
 
 
@@ -758,30 +735,12 @@ async def test_queued_image_equation_matterhorn_failure_aborts_exact_staging(
     prior_state = dict(vars(cloud_file))
     remediation_result = _result(Path(job_data["file_path"]), output_path, payload)
     remediation_result.fixed_issues = [
-        FixedIssue(
+        _typed_equation_fix(
             issue_id="equation-1",
-            category=IssueCategory.STRUCTURE,
-            severity=IssueSeverity.HIGH,
             description="verified equation",
             fixed_content="Formula and MathML",
-            fix_method="ai_vision",
-            source_kind="image_equation",
             provider_used="ollama",
             model_used="vision-test",
-            verification_evidence=VerificationEvidence(
-                passed=True,
-                source_sha256="1" * 64,
-                rendered_sha256="2" * 64,
-                mathml_sha256="3" * 64,
-                renderer_version="chromium-test",
-                comparator_version="pixel-test",
-                font_sha256="4" * 64,
-                threshold_version="printed-equation-v1",
-                ink_iou=0.95,
-                pixel_similarity=0.99,
-                required_ink_iou=0.90,
-                required_pixel_similarity=0.98,
-            ),
         )
     ]
     remediator = MagicMock(remediate=MagicMock(return_value=remediation_result))

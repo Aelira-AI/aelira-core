@@ -35,7 +35,10 @@ from src.db.models import (
     ScanType,
     User,
 )
-from src.services.scan_fix_service import artifact_review_blockers
+from src.services.scan_fix_service import (
+    artifact_approval_review_digest,
+    artifact_review_blockers,
+)
 
 
 class ArtifactError(Exception):
@@ -186,6 +189,7 @@ class PreparedRemediationArtifact:
     lifecycle_status: str
     review_status: str
     approval_checksum: str | None
+    approval_review_digest: str | None
     approved_by_id: str | None
     approved_by_ref: str | None
     approved_at: datetime | None
@@ -939,6 +943,7 @@ class RemediationArtifactService:
             lifecycle_status="staging",
             review_status="pending",
             approval_checksum=None,
+            approval_review_digest=None,
             approved_by_id=None,
             approved_by_ref=None,
             approved_at=None,
@@ -1724,7 +1729,7 @@ class RemediationArtifactService:
 
     def _require_approvable_review(
         self, db: Any, artifact: RemediationArtifact, scan: Any
-    ) -> None:
+    ) -> str:
         if (
             scan.status != ScanStatus.COMPLETED
             or scan.remediation_outcome != RemediationOutcome.COMPLETED.value
@@ -1745,7 +1750,17 @@ class RemediationArtifactService:
                 )
             if "fixes_pending_review" in blockers:
                 raise ArtifactAuthorizationError("scan fixes are not all terminal")
-            raise ArtifactAuthorizationError("artifact has no accepted fix")
+            if "no_accepted_fix" in blockers or "no_fixes" in blockers:
+                raise ArtifactAuthorizationError("artifact has no accepted fix")
+            raise ArtifactAuthorizationError(
+                "scan fix review bindings are incomplete or stale"
+            )
+        review_digest = artifact_approval_review_digest(artifact.sha256, fixes)
+        if review_digest is None:
+            raise ArtifactAuthorizationError(
+                "scan fix review bindings are incomplete or stale"
+            )
+        return review_digest
 
     @staticmethod
     def _invalidate_stale_approval(
@@ -1753,6 +1768,7 @@ class RemediationArtifactService:
     ) -> None:
         artifact.review_status = "pending"
         artifact.approval_checksum = None
+        artifact.approval_review_digest = None
         artifact.approved_by_id = None
         artifact.approved_by_ref = None
         artifact.approved_at = None
@@ -1770,6 +1786,32 @@ class RemediationArtifactService:
         )
         db.flush()
 
+    def _persist_stale_approval_invalidation(self, db: Any, artifact_id: str) -> None:
+        """Rollback caller work, then persist only a still-current invalidation."""
+        db.rollback()
+        _, scan, cloud_file, _, artifact = self._lock_existing_artifact(db, artifact_id)
+        if (
+            artifact is None
+            or artifact.review_status != "approved"
+            or artifact.written_back_at is not None
+        ):
+            db.rollback()
+            return
+        try:
+            current_review_digest = self._require_approvable_review(db, artifact, scan)
+        except ArtifactAuthorizationError:
+            stale = True
+        else:
+            stored_review_digest = artifact.approval_review_digest
+            stale = not isinstance(
+                stored_review_digest, str
+            ) or not hmac.compare_digest(stored_review_digest, current_review_digest)
+        if not stale:
+            db.rollback()
+            return
+        self._invalidate_stale_approval(db, artifact, cloud_file)
+        db.commit()
+
     def _require_current_approval(
         self,
         db: Any,
@@ -1778,17 +1820,26 @@ class RemediationArtifactService:
         cloud_file: Any,
     ) -> None:
         try:
-            self._require_approvable_review(db, artifact, scan)
+            current_review_digest = self._require_approvable_review(db, artifact, scan)
         except ArtifactAuthorizationError as exc:
-            if (
-                artifact.review_status == "approved"
-                and artifact.written_back_at is None
-            ):
-                self._invalidate_stale_approval(db, artifact, cloud_file)
+            was_approved = artifact.review_status == "approved"
+            if was_approved and artifact.written_back_at is None:
+                self._persist_stale_approval_invalidation(db, artifact.id)
+            if was_approved:
                 raise ArtifactApprovalStaleError(
                     "artifact approval became stale"
                 ) from exc
             raise
+        stored_review_digest = artifact.approval_review_digest
+        if not isinstance(stored_review_digest, str) or not hmac.compare_digest(
+            stored_review_digest, current_review_digest
+        ):
+            if (
+                artifact.review_status == "approved"
+                and artifact.written_back_at is None
+            ):
+                self._persist_stale_approval_invalidation(db, artifact.id)
+            raise ArtifactApprovalStaleError("artifact approval became stale")
 
     def approve(
         self,
@@ -1816,7 +1867,7 @@ class RemediationArtifactService:
                 and artifact.rejected_by_ref is None
                 and artifact.rejected_at is None
             ):
-                self._require_approvable_review(db, artifact, scan)
+                self._require_current_approval(db, artifact, scan, cloud_file)
                 return artifact
             raise ArtifactAuthorizationError(
                 "approval retry conflicts with durable state"
@@ -1827,6 +1878,7 @@ class RemediationArtifactService:
             or artifact.written_back_at is not None
             or artifact.approved_at is not None
             or artifact.approval_checksum is not None
+            or artifact.approval_review_digest is not None
             or artifact.approved_by_id is not None
             or artifact.approved_by_ref is not None
             or artifact.rejected_by_id is not None
@@ -1834,7 +1886,7 @@ class RemediationArtifactService:
             or artifact.rejected_at is not None
         ):
             raise ArtifactAuthorizationError("artifact is not pending approval")
-        self._require_approvable_review(db, artifact, scan)
+        approval_review_digest = self._require_approvable_review(db, artifact, scan)
         with self.open_verified(
             db,
             artifact,
@@ -1845,6 +1897,7 @@ class RemediationArtifactService:
             pass
         artifact.review_status = "approved"
         artifact.approval_checksum = artifact.sha256
+        artifact.approval_review_digest = approval_review_digest
         artifact.approved_by_id = approved_by_id
         artifact.approved_by_ref = approved_by_ref
         artifact.approved_at = effective_now
@@ -1867,7 +1920,11 @@ class RemediationArtifactService:
                 scan_id=artifact.scan_id,
                 user_id=approved_by_id,
                 action="artifact_approved",
-                details={"artifact_id": artifact.id, "sha256": artifact.sha256},
+                details={
+                    "artifact_id": artifact.id,
+                    "sha256": artifact.sha256,
+                    "approval_review_digest": approval_review_digest,
+                },
             )
         )
         db.flush()
@@ -1895,6 +1952,7 @@ class RemediationArtifactService:
                 and artifact.rejected_by_id == rejected_by_id
                 and artifact.rejected_by_ref == rejected_by_ref
                 and artifact.approval_checksum is None
+                and artifact.approval_review_digest is None
                 and artifact.approved_by_id is None
                 and artifact.approved_by_ref is None
                 and artifact.approved_at is None
@@ -1908,6 +1966,7 @@ class RemediationArtifactService:
             or artifact.review_status != "pending"
             or artifact.written_back_at is not None
             or artifact.approval_checksum is not None
+            or artifact.approval_review_digest is not None
             or artifact.approved_by_id is not None
             or artifact.approved_by_ref is not None
             or artifact.approved_at is not None
@@ -1926,6 +1985,7 @@ class RemediationArtifactService:
             pass
         artifact.review_status = "rejected"
         artifact.approval_checksum = None
+        artifact.approval_review_digest = None
         artifact.approved_by_id = None
         artifact.approved_by_ref = None
         artifact.approved_at = None
@@ -1977,6 +2037,7 @@ class RemediationArtifactService:
                 and hmac.compare_digest(artifact.approval_checksum, artifact.sha256)
                 and artifact.provider_result == sanitized_result
             ):
+                self._require_current_approval(db, artifact, scan, cloud_file)
                 return artifact
             raise ArtifactAuthorizationError(
                 "writeback retry conflicts with durable state"
@@ -2007,6 +2068,7 @@ class RemediationArtifactService:
         if artifact.review_status == "approved" and artifact.written_back_at is None:
             artifact.review_status = "rejected"
             artifact.approval_checksum = None
+            artifact.approval_review_digest = None
             artifact.approved_by_id = None
             artifact.approved_by_ref = None
             artifact.approved_at = None

@@ -75,6 +75,7 @@ def test_artifact_model_has_authority_fields_constraints_indexes_and_relationshi
         "lifecycle_status",
         "review_status",
         "approval_checksum",
+        "approval_review_digest",
         "approved_by_id",
         "approved_by_ref",
         "approved_at",
@@ -323,6 +324,7 @@ def test_migration_chain_schema_order_constraints_indexes_and_reversal(monkeypat
     assert set(models.RemediationArtifact.__table__.c.keys()) - {
         "cleanup_reason",
         "cleanup_owner",
+        "approval_review_digest",
     } == set(migration_columns)
     assert isinstance(migration_columns["size_bytes"].type, BigInteger)
     assert migration_columns["approved_by_ref"].type.length == 255

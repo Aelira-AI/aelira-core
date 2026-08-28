@@ -14,22 +14,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.education.remediation.base import FixedIssue, IssueCategory, IssueSeverity
+from tests.test_visual_semantic_contract import (
+    _contract,
+    _roundtrip,
+    _scanned_saved,
+    _semantic,
+    _standalone_saved,
+)
 
 HASH = "a" * 64
-EVIDENCE = {
-    "passed": True,
-    "source_sha256": HASH,
-    "rendered_sha256": "b" * 64,
-    "mathml_sha256": "c" * 64,
-    "renderer_version": "chromium-1",
-    "comparator_version": "pixel-v1",
-    "font_sha256": "d" * 64,
-    "threshold_version": "printed-equation-v1",
-    "ink_iou": 0.99,
-    "pixel_similarity": 0.99,
-    "required_ink_iou": 0.90,
-    "required_pixel_similarity": 0.98,
-}
+EVIDENCE = {key: value for key, value in _roundtrip().items() if key != "evidence_kind"}
 
 
 def _locator(**overrides):
@@ -82,7 +76,7 @@ def _fix(**overrides):
         "category": IssueCategory.STRUCTURE,
         "severity": IssueSeverity.HIGH,
         "description": "Image equation requires accessible math",
-        "fixed_content": "x squared",
+        "fixed_content": "x plus one",
         "fix_method": "ai_vision",
         "confidence": 0.55,
         "needs_review": True,
@@ -90,8 +84,66 @@ def _fix(**overrides):
         "model_used": "vision-model",
         "source_kind": "image_equation",
         "verification_evidence": EVIDENCE,
+        "page_number": 1,
     }
     values.update(overrides)
+    if "visual_semantic_contract" not in overrides:
+        semantic = _semantic(alt_text=values["fixed_content"])
+        alt_text_sha256 = hashlib.sha256(values["fixed_content"].encode()).hexdigest()
+        locator = values.get("source_locator")
+        if locator is not None:
+            values["page_number"] = locator["page_number"]
+            x0, y0, x1, y1 = locator["pixel_bbox"]
+            scale_x, _, _, scale_y, offset_x, offset_y = locator["transform"]
+            formula_bbox = [
+                offset_x + scale_x * x0 / locator["source_width"],
+                offset_y + scale_y * (1.0 - y1 / locator["source_height"]),
+                offset_x + scale_x * x1 / locator["source_width"],
+                offset_y + scale_y * (1.0 - y0 / locator["source_height"]),
+            ]
+            saved = _scanned_saved(
+                page_number=locator["page_number"],
+                image_xref=locator["image_xref"],
+                image_stream_sha256=locator["source_sha256"],
+                formula_bbox=formula_bbox,
+                alt_text_sha256=alt_text_sha256,
+            )
+        else:
+            seed = "|".join(
+                str(values.get(field))
+                for field in ("issue_id", "location", "page_number")
+            )
+            image_xref = 11 + int(hashlib.sha256(seed.encode()).hexdigest()[:6], 16)
+            page_number = values.get("page_number") or 1
+            bbox = [12.5, 20.0, 240.0, 100.5]
+            occurrence_ordinal = 0
+            identity = f"{page_number}|{image_xref}|0|{occurrence_ordinal}|" + ",".join(
+                f"{value:.6f}" for value in bbox
+            )
+            locator = {
+                "source_kind": "embedded_image_occurrence",
+                "page_number": page_number,
+                "image_xref": image_xref,
+                "image_index": 0,
+                "occurrence_ordinal": occurrence_ordinal,
+                "bbox": bbox,
+                "image_stream_sha256": "4" * 64,
+                "occurrence_id": "imgocc-v1-"
+                + hashlib.sha256(identity.encode()).hexdigest()[:24],
+            }
+            saved = _standalone_saved(
+                page_number=page_number,
+                image_xref=image_xref,
+                occurrence_ordinal=occurrence_ordinal,
+                image_stream_sha256="4" * 64,
+                alt_text_sha256=alt_text_sha256,
+            )
+        values["visual_semantic_contract"] = _contract(
+            locator,
+            saved,
+            semantic=semantic,
+            evidence=[_roundtrip(), saved],
+        )
     return FixedIssue(**values)
 
 
@@ -182,6 +234,168 @@ def test_shared_persistence_forces_image_equation_pending_and_preserves_evidence
     with pytest.raises(ValueError):
         build_scan_fix("scan-1", nan_forgery)
 
+    with pytest.raises(ValueError, match="complete visual contract"):
+        build_scan_fix(
+            "scan-1",
+            _fix(visual_semantic_contract=None),
+        )
+
+
+def test_visual_contract_persistence_covers_both_locator_and_saved_variants():
+    from src.services.scan_fix_service import build_scan_fix
+
+    embedded = build_scan_fix("scan-embedded", _fix())
+    scanned = build_scan_fix("scan-scanned", _fix(source_locator=_locator()))
+
+    assert embedded.visual_semantic_contract["locator"]["source_kind"] == (
+        "embedded_image_occurrence"
+    )
+    assert (
+        embedded.visual_semantic_contract["verification_evidence"][1]["evidence_kind"]
+        == "standalone_formula_saved_v1"
+    )
+    assert scanned.visual_semantic_contract["locator"]["source_kind"] == (
+        "page_raster_region"
+    )
+    assert (
+        scanned.visual_semantic_contract["verification_evidence"][1]["evidence_kind"]
+        == "scanned_region_formula_saved_v1"
+    )
+
+
+def test_review_digest_is_mapping_order_stable_and_list_order_sensitive():
+    from src.services.scan_fix_service import build_scan_fix
+
+    fix = _fix()
+    contract = fix.visual_semantic_contract.model_dump(mode="json")
+    reordered = dict(reversed(list(contract.items())))
+    reordered_fix = fix.model_copy(update={"visual_semantic_contract": reordered})
+    reversed_evidence = _contract(
+        contract["locator"],
+        contract["verification_evidence"][1],
+        evidence=list(reversed(contract["verification_evidence"])),
+    )
+    reversed_fix = fix.model_copy(
+        update={"visual_semantic_contract": reversed_evidence}
+    )
+
+    original_row = build_scan_fix("scan-1", fix)
+    reordered_row = build_scan_fix("scan-1", reordered_fix)
+    reversed_row = build_scan_fix("scan-1", reversed_fix)
+
+    assert original_row.review_digest == reordered_row.review_digest
+    assert original_row.review_digest != reversed_row.review_digest
+
+
+def test_artifact_review_digest_binds_exact_accepted_contracts_and_set():
+    from copy import deepcopy
+
+    from src.services.scan_fix_service import (
+        artifact_approval_review_digest,
+        build_scan_fix,
+    )
+    from src.education.visual_semantic_contract import canonical_sha256
+
+    first = build_scan_fix("scan-1", _fix())
+    second = build_scan_fix(
+        "scan-1", _fix(issue_id="equation-2", location="page 2", page_number=2)
+    )
+    for row in (first, second):
+        row.review_status = "approved"
+        row.reviewed_by = "user-1"
+        row.reviewed_at = datetime.now(timezone.utc)
+        row.approved_review_digest = row.review_digest
+
+    forward = artifact_approval_review_digest(HASH, [first, second])
+    reverse = artifact_approval_review_digest(HASH, [second, first])
+
+    assert forward == reverse
+    assert forward == canonical_sha256(
+        {
+            "artifact_sha256": HASH,
+            "accepted_fixes": sorted(
+                [
+                    {
+                        "occurrence_key": row.occurrence_key,
+                        "approved_review_digest": row.review_digest,
+                    }
+                    for row in (first, second)
+                ],
+                key=lambda item: item["occurrence_key"],
+            ),
+        }
+    )
+    assert forward != artifact_approval_review_digest(HASH, [first])
+
+    original_approval = first.approved_review_digest
+    first.fixed_content = "tampered semantic output"
+    assert artifact_approval_review_digest(HASH, [first, second]) is None
+    first.fixed_content = "x plus one"
+
+    first.source_locator = {"forged": "source"}
+    assert artifact_approval_review_digest(HASH, [first, second]) is None
+    first.source_locator = None
+
+    first.provider_used = "tampered-verifier"
+    assert artifact_approval_review_digest(HASH, [first, second]) is None
+    first.provider_used = "gemini"
+
+    original_contract = deepcopy(first.visual_semantic_contract)
+    first.visual_semantic_contract = deepcopy(original_contract)
+    first.visual_semantic_contract["verification_evidence"][0][
+        "renderer_version"
+    ] = "tampered-renderer"
+    assert artifact_approval_review_digest(HASH, [first, second]) is None
+    first.visual_semantic_contract = original_contract
+
+    first.verification_evidence = {**EVIDENCE, "pixel_similarity": 0.999}
+    assert artifact_approval_review_digest(HASH, [first, second]) is None
+    first.verification_evidence = EVIDENCE
+
+    first.approved_review_digest = original_approval
+    contract = _fix().visual_semantic_contract.model_dump(mode="json")
+    reordered_evidence = _contract(
+        contract["locator"],
+        contract["verification_evidence"][1],
+        evidence=list(reversed(contract["verification_evidence"])),
+    )
+    reordered = build_scan_fix(
+        "scan-1", _fix(visual_semantic_contract=reordered_evidence)
+    )
+    reordered.review_status = "approved"
+    reordered.reviewed_by = "user-1"
+    reordered.reviewed_at = datetime.now(timezone.utc)
+    reordered.approved_review_digest = original_approval
+    assert reordered.review_digest != original_approval
+    assert artifact_approval_review_digest(HASH, [reordered]) is None
+
+
+def test_artifact_review_digest_rejects_stale_missing_and_duplicate_bindings():
+    from src.services.scan_fix_service import (
+        artifact_approval_review_digest,
+        build_scan_fix,
+    )
+
+    first = build_scan_fix("scan-1", _fix())
+    first.review_status = "approved"
+    first.reviewed_by = "user-1"
+    first.reviewed_at = datetime.now(timezone.utc)
+    first.approved_review_digest = first.review_digest
+    duplicate = build_scan_fix("scan-2", _fix())
+    duplicate.review_status = "approved"
+    duplicate.reviewed_by = "user-1"
+    duplicate.reviewed_at = datetime.now(timezone.utc)
+    duplicate.approved_review_digest = duplicate.review_digest
+
+    assert artifact_approval_review_digest(HASH, [first]) is not None
+    assert artifact_approval_review_digest(HASH, [first, duplicate]) is None
+
+    first.approved_review_digest = None
+    assert artifact_approval_review_digest(HASH, [first]) is None
+    first.approved_review_digest = first.review_digest
+    first.occurrence_key = "not-a-digest"
+    assert artifact_approval_review_digest(HASH, [first]) is None
+
 
 def test_region_persistence_is_canonical_review_required_and_occurrence_bound():
     from src.services.scan_fix_service import build_scan_fix
@@ -266,6 +480,7 @@ def test_appending_fix_invalidates_current_artifact_approval(monkeypatch):
         review_status="approved",
         written_back_at=None,
         approval_checksum=HASH,
+        approval_review_digest=HASH,
         approved_by_id="user-1",
         approved_by_ref="reviewer@example.test",
         approved_at=datetime.now(timezone.utc),
@@ -283,6 +498,7 @@ def test_appending_fix_invalidates_current_artifact_approval(monkeypatch):
 
     assert artifact.review_status == "pending"
     assert artifact.approval_checksum is None
+    assert artifact.approval_review_digest is None
 
 
 def test_region_locator_change_replaces_occurrence_and_invalidates_approval(
@@ -296,12 +512,14 @@ def test_region_locator_change_replaces_occurrence_and_invalidates_approval(
     existing.review_status = "approved"
     existing.reviewed_by = "user-1"
     existing.reviewed_at = datetime.now(timezone.utc)
+    existing.approved_review_digest = existing.review_digest
     artifact = SimpleNamespace(
         id="artifact-1",
         cloud_file_id=None,
         review_status="approved",
         written_back_at=None,
         approval_checksum=HASH,
+        approval_review_digest=HASH,
         approved_by_id="user-1",
         approved_by_ref="reviewer@example.test",
         approved_at=datetime.now(timezone.utc),
@@ -323,20 +541,45 @@ def test_region_locator_change_replaces_occurrence_and_invalidates_approval(
 
     assert replacement.id != existing.id
     assert replacement.review_status == "pending"
+    assert replacement.approved_review_digest is None
     db.delete.assert_called_once_with(existing)
     assert artifact.review_status == "pending"
     assert artifact.approval_checksum is None
+    assert artifact.approval_review_digest is None
 
 
-def test_region_locator_survives_subprocess_json_and_queued_persistence():
+def test_region_locator_survives_subprocess_json_and_queued_persistence(tmp_path):
     from src.jobs.remediation_subprocess import (
         SubprocessRemediationResult,
         _json_record,
     )
+    from src.education.remediation.output_claim import DescriptorBoundOutputClaim
     from src.services.scan_fix_service import build_scan_fix
 
     locator = _locator()
-    child_record = _json_record(_fix(source_locator=locator))
+    artifact = tmp_path / "queued.pdf"
+    artifact.write_bytes(b"exact queued artifact bytes")
+    artifact_sha256 = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    x0, y0, x1, y1 = locator["pixel_bbox"]
+    scale_x, _, _, scale_y, offset_x, offset_y = locator["transform"]
+    saved = _scanned_saved(
+        saved_file_sha256=artifact_sha256,
+        page_number=locator["page_number"],
+        image_xref=locator["image_xref"],
+        image_stream_sha256=locator["source_sha256"],
+        formula_bbox=[
+            offset_x + scale_x * x0 / locator["source_width"],
+            offset_y + scale_y * (1.0 - y1 / locator["source_height"]),
+            offset_x + scale_x * x1 / locator["source_width"],
+            offset_y + scale_y * (1.0 - y0 / locator["source_height"]),
+        ],
+    )
+    child_record = _json_record(
+        _fix(
+            source_locator=locator,
+            visual_semantic_contract=_contract(locator, saved),
+        )
+    )
     wire_payload = json.loads(
         json.dumps(
             {"fixed_issues": [child_record]},
@@ -345,7 +588,12 @@ def test_region_locator_survives_subprocess_json_and_queued_persistence():
         )
     )
 
-    queued_result = SubprocessRemediationResult(wire_payload)
+    output_claim = DescriptorBoundOutputClaim.from_path(
+        artifact,
+        display_path=str(artifact),
+        mime="application/pdf",
+    )
+    queued_result = SubprocessRemediationResult(wire_payload, output_claim)
     queued_fix = queued_result.fixed_issues[0]
     persisted = build_scan_fix("scan-queued", queued_fix)
 
@@ -359,6 +607,30 @@ def test_region_locator_survives_subprocess_json_and_queued_persistence():
     )
     assert persisted.review_status == "pending"
     assert persisted.needs_review is True
+    queued_result.close_output_claim()
+
+
+def test_nonvisual_fixed_issue_keeps_pre_contract_subprocess_wire_bytes():
+    from src.jobs.remediation_subprocess import _json_record
+
+    fix = FixedIssue(
+        issue_id="title-1",
+        category=IssueCategory.TITLE,
+        severity=IssueSeverity.MEDIUM,
+        description="Document title was missing",
+        fixed_content="Accessible title",
+        fix_method="rule",
+    )
+    legacy_record = fix.model_dump(mode="json", exclude={"visual_semantic_contract"})
+
+    assert "visual_semantic_contract" not in _json_record(fix)
+    assert _json_record({**legacy_record, "visual_semantic_contract": None}) == (
+        legacy_record
+    )
+    assert (
+        json.dumps(_json_record(fix), allow_nan=False, separators=(",", ":")).encode()
+        == json.dumps(legacy_record, allow_nan=False, separators=(",", ":")).encode()
+    )
 
 
 @pytest.mark.asyncio
@@ -497,20 +769,16 @@ def test_scan_fix_database_constraint_rejects_concurrent_duplicate_occurrence():
 
 
 def test_review_gate_requires_exact_human_approval_for_every_image_equation_fix():
-    from src.services.scan_fix_service import image_equation_review_blockers
-
-    approved = SimpleNamespace(
-        source_kind="image_equation",
-        fix_method="ai_vision",
-        confidence=0.55,
-        needs_review=True,
-        provider_used="gemini",
-        model_used="vision-model",
-        review_status="approved",
-        reviewed_by="user-1",
-        reviewed_at=datetime.now(timezone.utc),
-        verification_evidence=EVIDENCE,
+    from src.services.scan_fix_service import (
+        build_scan_fix,
+        image_equation_review_blockers,
     )
+
+    approved = build_scan_fix("scan-1", _fix())
+    approved.review_status = "approved"
+    approved.reviewed_by = "user-1"
+    approved.reviewed_at = datetime.now(timezone.utc)
+    approved.approved_review_digest = approved.review_digest
     assert image_equation_review_blockers([approved]) == []
 
     for mutation in (
@@ -534,9 +802,11 @@ def test_review_gate_requires_exact_human_approval_for_every_image_equation_fix(
     mixed = SimpleNamespace(**{**approved.__dict__, "review_status": "auto_approved"})
     assert image_equation_review_blockers([approved, mixed])
 
-    approved_region = SimpleNamespace(
-        **{**approved.__dict__, "source_locator": _locator()}
-    )
+    approved_region = build_scan_fix("scan-region", _fix(source_locator=_locator()))
+    approved_region.review_status = "approved"
+    approved_region.reviewed_by = "user-1"
+    approved_region.reviewed_at = datetime.now(timezone.utc)
+    approved_region.approved_review_digest = approved_region.review_digest
     assert image_equation_review_blockers([approved_region]) == []
     forged_region = SimpleNamespace(
         **{
@@ -550,12 +820,74 @@ def test_review_gate_requires_exact_human_approval_for_every_image_equation_fix(
 
 
 def test_image_equation_review_cannot_edit_stale_artifact_metadata():
-    from src.services.scan_fix_service import validate_fix_review_action
+    from src.services.scan_fix_service import build_scan_fix, validate_fix_review_action
 
     image_fix = SimpleNamespace(source_kind="image_equation")
     with pytest.raises(ValueError, match="cannot be edited"):
         validate_fix_review_action(image_fix, "edit")
-    validate_fix_review_action(image_fix, "approve")
+    with pytest.raises(ValueError, match="incomplete or stale"):
+        validate_fix_review_action(image_fix, "approve")
+
+    complete = build_scan_fix("scan-1", _fix())
+    validate_fix_review_action(complete, "approve")
+
+
+def test_human_approval_binds_exact_current_review_digest_and_reject_clears_it():
+    from src.services.scan_fix_service import (
+        bind_fix_review_decision,
+        build_scan_fix,
+    )
+
+    row = build_scan_fix("scan-1", _fix())
+    bind_fix_review_decision(row, "approve")
+    assert row.approved_review_digest == row.review_digest
+
+    row.description = "tampered after review"
+    with pytest.raises(ValueError, match="incomplete or stale"):
+        bind_fix_review_decision(row, "approve")
+
+    bind_fix_review_decision(row, "reject")
+    assert row.approved_review_digest is None
+
+
+@pytest.mark.parametrize(
+    ("raw_contract", "expected_blocker"),
+    [
+        (None, "image_equation_visual_contract_incomplete"),
+        (
+            {"contract_kind": "printed_equation"},
+            "image_equation_visual_contract_invalid",
+        ),
+    ],
+)
+def test_historical_incomplete_or_corrupt_visual_rows_fail_closed(
+    raw_contract, expected_blocker
+):
+    from src.services.scan_fix_service import (
+        image_equation_review_blockers,
+        validate_fix_review_action,
+    )
+
+    historical = SimpleNamespace(
+        source_kind="image_equation",
+        source_locator=None,
+        visual_semantic_contract=raw_contract,
+        review_digest=None,
+        approved_review_digest=None,
+        fix_method="ai_vision",
+        confidence=0.55,
+        needs_review=True,
+        provider_used="gemini",
+        model_used="vision-model",
+        review_status="pending",
+        reviewed_by=None,
+        reviewed_at=None,
+        verification_evidence=EVIDENCE,
+    )
+
+    assert expected_blocker in image_equation_review_blockers([historical])
+    with pytest.raises(ValueError, match="incomplete or stale"):
+        validate_fix_review_action(historical, "approve")
 
 
 def test_artifact_service_and_metadata_share_image_equation_blockers():
@@ -647,10 +979,16 @@ def test_review_graph_invalidation_clears_every_approved_current_sink():
     )
     fix = SimpleNamespace(id="fix-1")
     local = SimpleNamespace(
-        id="artifact-local", cloud_file_id=None, review_status="approved"
+        id="artifact-local",
+        cloud_file_id=None,
+        review_status="approved",
+        approval_review_digest=HASH,
     )
     cloud_artifact = SimpleNamespace(
-        id="artifact-cloud", cloud_file_id="cloud-1", review_status="approved"
+        id="artifact-cloud",
+        cloud_file_id="cloud-1",
+        review_status="approved",
+        approval_review_digest=HASH,
     )
     cloud = SimpleNamespace(
         id="cloud-1",
@@ -696,6 +1034,7 @@ def test_review_graph_invalidation_clears_every_approved_current_sink():
     for artifact in (local, cloud_artifact):
         assert artifact.review_status == "pending"
         assert artifact.approval_checksum is None
+        assert artifact.approval_review_digest is None
         assert artifact.approved_by_id is None
         assert artifact.approved_by_ref is None
         assert artifact.approved_at is None
@@ -743,6 +1082,7 @@ def test_durable_evidence_and_per_fix_audit_survive_session_restart():
         Column("review_status", String(20)),
         Column("written_back_at", String),
         Column("approval_checksum", String(64)),
+        Column("approval_review_digest", String(64)),
         Column("approved_by_id", String(36)),
         Column("approved_by_ref", String(255)),
         Column("approved_at", String),
@@ -787,6 +1127,7 @@ def test_durable_evidence_and_per_fix_audit_survive_session_restart():
         row = session.get(ScanFix, row_id)
         assert row is not None
         assert image_equation_review_blockers([row]) == []
+        assert row.approved_review_digest == row.review_digest
         audits = session.scalars(select(ReviewAuditLog)).all()
         assert len(audits) == 1
         assert audits[0].fix_id == row_id
@@ -799,6 +1140,7 @@ def test_durable_evidence_and_per_fix_audit_survive_session_restart():
         assert retried.id == row_id
         assert retried.review_status == "approved"
         assert retried.reviewed_by == "user-1"
+        assert retried.approved_review_digest == retried.review_digest
         assert session.scalars(select(ReviewAuditLog)).all()[0].fix_id == row_id
 
         changed = persist_scan_fixes(
@@ -806,7 +1148,7 @@ def test_durable_evidence_and_per_fix_audit_survive_session_restart():
             "scan-1",
             [
                 _fix(
-                    fixed_content="changed equation text",
+                    description="Changed image equation review description",
                     source_locator=_locator(),
                 )
             ],
@@ -815,6 +1157,7 @@ def test_durable_evidence_and_per_fix_audit_survive_session_restart():
         assert changed.id == row_id
         assert changed.review_status == "pending"
         assert changed.reviewed_by is None
+        assert changed.approved_review_digest is None
         assert "fix_replaced" in {
             audit.action for audit in session.scalars(select(ReviewAuditLog)).all()
         }
@@ -837,4 +1180,61 @@ def test_generic_fixes_keep_existing_auto_approval_behavior():
     row = build_scan_fix("scan-1", generic)
 
     assert row.review_status == "auto_approved"
+    assert row.visual_semantic_contract is None
+    assert row.approved_review_digest == row.review_digest
     assert image_equation_review_blockers([row]) == []
+
+
+def test_exact_legacy_nonvisual_replay_bootstraps_digests_without_resetting_approval(
+    monkeypatch,
+):
+    from src.services import scan_fix_service
+    from src.db.models import ReviewAuditLog
+
+    fix = FixedIssue(
+        issue_id="language-review-1",
+        category=IssueCategory.LANGUAGE,
+        severity=IssueSeverity.LOW,
+        description="Reviewed language correction",
+        fixed_content="en-AU",
+        fix_method="rule",
+        needs_review=True,
+    )
+    existing = scan_fix_service.build_scan_fix("scan-1", fix)
+    existing.review_status = "approved"
+    existing.reviewed_by = "user-1"
+    existing.reviewed_at = datetime.now(timezone.utc)
+    existing.review_digest = None
+    existing.approved_review_digest = None
+    artifact = SimpleNamespace(
+        id="artifact-1",
+        cloud_file_id=None,
+        review_status="approved",
+        written_back_at=None,
+        approval_checksum=HASH,
+        approval_review_digest=HASH,
+        approved_by_id="user-1",
+        approved_by_ref="reviewer@example.test",
+        approved_at=datetime.now(timezone.utc),
+    )
+    graph = scan_fix_service.ScanReviewGraph(
+        scan=SimpleNamespace(id="scan-1", current_remediation_artifact_id="artifact-1"),
+        fixes=(existing,),
+        artifacts=(artifact,),
+        cloud_files=(),
+    )
+    monkeypatch.setattr(scan_fix_service, "lock_scan_review_graph", lambda db, _: graph)
+    db = MagicMock()
+
+    replayed = scan_fix_service.persist_scan_fixes(db, "scan-1", [fix])[0]
+
+    assert replayed.review_status == "approved"
+    assert replayed.reviewed_by == "user-1"
+    assert replayed.review_digest is not None
+    assert replayed.approved_review_digest == replayed.review_digest
+    assert artifact.review_status == "approved"
+    assert artifact.approval_checksum == HASH
+    assert artifact.approval_review_digest == HASH
+    assert not any(
+        isinstance(call.args[0], ReviewAuditLog) for call in db.add.call_args_list
+    )

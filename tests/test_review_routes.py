@@ -29,6 +29,7 @@ from src.api.review_routes import (
     compute_compliance_level,
     compute_doc_status,
     compute_validator_result,
+    _fix_summary,
 )
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,65 @@ class TestFixSummary:
                     "source_locator": {**locator, "provider_payload": "secret"},
                 }
             )
+
+    @pytest.mark.parametrize(
+        ("raw_contract", "disposition"),
+        [
+            (None, "legacy_incomplete"),
+            (
+                {"contract_kind": "printed_equation", "provider_payload": "secret"},
+                "invalid",
+            ),
+        ],
+    )
+    def test_corrupt_visual_contract_is_sanitized_to_null(
+        self, raw_contract, disposition
+    ):
+        from src.services.scan_fix_service import build_scan_fix
+        from tests.test_image_equation_review_gate import _fix
+
+        row = build_scan_fix("scan-1", _fix())
+        row.visual_semantic_contract = raw_contract
+        row.source_locator = {"provider_payload": "secret"}
+        row.review_digest = "NOT-A-DIGEST"
+        row.approved_review_digest = {"raw": "secret"}
+
+        summary = _fix_summary(row).model_dump(mode="json")
+
+        assert summary["visual_semantic_contract"] is None
+        assert summary["source_locator"] is None
+        assert summary["visual_semantic_disposition"] == disposition
+        assert summary["review_digest"] is None
+        assert summary["approved_review_digest"] is None
+
+    def test_openapi_contract_has_exact_locator_and_evidence_discriminators(self):
+        schema = FixSummary.model_json_schema()
+        contract = schema["$defs"]["PrintedEquationContract"]["properties"]
+
+        contract_union = schema["properties"]["visual_semantic_contract"]["anyOf"][0]
+        assert contract_union["discriminator"]["propertyName"] == "contract_kind"
+        assert contract_union["discriminator"]["mapping"] == {
+            "printed_equation": "#/$defs/PrintedEquationContract"
+        }
+
+        semantic = contract["semantic_output"]
+        assert semantic["discriminator"]["propertyName"] == "semantic_kind"
+        assert semantic["discriminator"]["mapping"] == {
+            "mathml_expression_v1": "#/$defs/MathMLExpressionV1"
+        }
+
+        assert contract["locator"]["discriminator"]["propertyName"] == "source_kind"
+        assert set(contract["locator"]["discriminator"]["mapping"]) == {
+            "embedded_image_occurrence",
+            "page_raster_region",
+        }
+        evidence_items = contract["verification_evidence"]["items"]
+        assert evidence_items["discriminator"]["propertyName"] == "evidence_kind"
+        assert set(evidence_items["discriminator"]["mapping"]) == {
+            "printed_equation_roundtrip_v1",
+            "scanned_region_formula_saved_v1",
+            "standalone_formula_saved_v1",
+        }
 
 
 class TestQueueItem:
