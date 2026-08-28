@@ -186,11 +186,19 @@ class AlertService:
             to_emails = filtered_emails
 
         try:
+            department = None
+            if db and department_id:
+                from ..db.models import Department
+
+                department = (
+                    db.query(Department).filter(Department.id == department_id).first()
+                )
             result = await self.email_service.send_critical_issues(
                 to_emails=to_emails,
                 file_name=file_name,
                 critical_issues=critical_issues,
                 scan_url=scan_url,
+                department=department,
             )
 
             if result.get("success"):
@@ -268,6 +276,7 @@ class AlertService:
         try:
             # Get department name from database if available
             department_name = "Your Department"
+            department = None
             if db and department_id:
                 from ..db.models import Department
 
@@ -287,6 +296,7 @@ class AlertService:
                 total_issues=total_issues,
                 issues_fixed=0,  # Default to 0 (could be calculated if data available)
                 dashboard_url=None,  # Could be passed as parameter if needed
+                department=department,
             )
 
             if result.get("success"):

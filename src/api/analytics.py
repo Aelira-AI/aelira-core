@@ -19,7 +19,8 @@ from datetime import datetime
 import logging
 
 from ..db.database import get_db_dependency
-from ..db.models import UserRole
+from ..db.models import Department, UserRole
+from ..education.deadline_config import DeadlineService
 from ..education.snapshot_service import SnapshotService
 from ..education.issue_tracking_service import (
     IssueTrackingService,
@@ -112,6 +113,7 @@ async def capture_snapshot(
 
     try:
         snapshot = SnapshotService.capture_daily_snapshot(db, department_id)
+        department = db.query(Department).filter(Department.id == department_id).first()
         return {
             "success": True,
             "snapshot_id": snapshot.id,
@@ -119,6 +121,7 @@ async def capture_snapshot(
             "avg_compliance_score": snapshot.avg_compliance_score,
             "total_issues": snapshot.total_issues,
             "days_until_deadline": snapshot.days_until_deadline,
+            "deadline": DeadlineService.for_department(department).to_dict(),
         }
     except ValueError:
         raise HTTPException(status_code=404, detail="Department not found")
@@ -242,6 +245,7 @@ async def get_trend_analysis(
                 "trend_direction": analysis.trend_direction,
                 "on_track_for_deadline": analysis.on_track_for_deadline,
             },
+            "deadline": analysis.deadline,
         }
     except Exception as e:
         raise _internal_error("Trend analysis", "Unable to retrieve trend analysis", e)
@@ -254,12 +258,12 @@ async def get_deadline_projection(
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
-    Get projection for April 2027 deadline compliance.
+    Get an automated scan-score projection for the configured target date.
 
     Based on historical trend and current improvement rate.
 
     Returns:
-        Projection data including likelihood of meeting deadline
+        Projection data and canonical deadline applicability metadata
     """
     department_id = _authorize_department_analytics(principal, department_id)
     logger.info("Getting deadline projection")
@@ -1306,13 +1310,13 @@ async def predict_deadline_compliance(
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
     """
-    ML-based prediction of April 2027 deadline compliance
+    ML-based automated scan-score projection for a configured target date
 
      AI-POWERED COMPLIANCE PREDICTION
     REQUIRES API KEY IN PRODUCTION
 
     Uses multiple predictive models in an ensemble approach to forecast
-    whether the department will meet the April 26, 2027 WCAG compliance deadline.
+    the department's scan-score trajectory against its configured target date.
 
     Models used:
     - Linear trend extrapolation

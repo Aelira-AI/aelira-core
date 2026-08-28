@@ -16,7 +16,7 @@ Created: November 30, 2025
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, date
 from dataclasses import dataclass
 import logging
@@ -30,7 +30,7 @@ from ..db.models import (
     ComplianceSnapshot,
 )
 from .compliance_dashboard import ComplianceDashboard
-from .deadline_config import US_ADA_TITLE_II_DEADLINE
+from .deadline_config import DeadlineService
 
 logger = logging.getLogger(__name__)
 
@@ -61,20 +61,14 @@ class TrendAnalysis:
     issues_change: int
     issues_change_pct: float
     trend_direction: str  # 'improving', 'declining', 'stable'
-    on_track_for_deadline: bool
+    on_track_for_deadline: Optional[bool]
+    deadline: Dict[str, Any]
 
 
 class SnapshotService:
     """
     Service for managing compliance snapshots and historical trending
     """
-
-    # DOJ ADA Title II deadline, sourced from deadline_config (single source of truth).
-    # Currently April 26, 2027 for large public entities (pop >= 50,000); extended
-    # from April 24, 2026 via DOJ Interim Final Rule RIN 1190-AA82 (effective 2026-04-20).
-    DEADLINE_DATE = datetime.combine(
-        US_ADA_TITLE_II_DEADLINE, datetime.max.time()
-    ).replace(microsecond=0)
 
     @staticmethod
     def capture_daily_snapshot(db: Session, department_id: str) -> ComplianceSnapshot:
@@ -114,10 +108,6 @@ class SnapshotService:
             logger.warning("Department snapshot target not found")
             raise
 
-        # Calculate days until deadline
-        now = datetime.utcnow()
-        days_until_deadline = (SnapshotService.DEADLINE_DATE - now).days
-
         # Create or update snapshot
         if existing:
             logger.info("Updating existing daily snapshot")
@@ -146,7 +136,7 @@ class SnapshotService:
         snapshot.files_critical = stats.files_critical
         snapshot.active_faculty = stats.active_faculty
         snapshot.total_faculty = stats.total_faculty
-        snapshot.days_until_deadline = days_until_deadline
+        snapshot.days_until_deadline = stats.days_until_deadline
         snapshot.estimated_hours_remaining = stats.estimated_hours_remaining
         snapshot.on_track = stats.on_track
 
@@ -421,11 +411,17 @@ class SnapshotService:
         else:
             trend_direction = "stable"
 
-        # Check if on track for deadline
-        (SnapshotService.DEADLINE_DATE - now).days
-        on_track = current_avg is not None and (
-            current_avg >= 80 or (current_avg >= 70 and trend_direction == "improving")
-        )
+        department = db.query(Department).filter(Department.id == department_id).first()
+        deadline_info = DeadlineService.for_department(department)
+        on_track = None
+        if (
+            deadline_info.has_deadline
+            and not deadline_info.is_past_deadline
+            and current_avg is not None
+        ):
+            on_track = current_avg >= 80 or (
+                current_avg >= 70 and trend_direction == "improving"
+            )
 
         return TrendAnalysis(
             current_avg_score=(
@@ -444,21 +440,41 @@ class SnapshotService:
             issues_change_pct=round(issues_change_pct, 2),
             trend_direction=trend_direction,
             on_track_for_deadline=on_track,
+            deadline=deadline_info.to_dict(),
         )
 
     @staticmethod
     def get_deadline_projection(db: Session, department_id: str) -> Dict:
         """
-        Project whether department will meet the DOJ ADA Title II deadline.
-
-        The deadline is sourced from ``deadline_config`` (currently April 26,
-        2027 for large public entities; extended from April 24, 2026 via the
-        April 2026 DOJ IFR). Projection is based on historical trend and
-        current pace.
+        Project the department's automated scan score at its configured target date.
 
         Returns:
             Dictionary with projection data
         """
+        department = db.query(Department).filter(Department.id == department_id).first()
+        if department is None:
+            raise ValueError("Department not found")
+        deadline_info = DeadlineService.for_department(department)
+        deadline = deadline_info.to_dict()
+
+        if not deadline_info.has_deadline or deadline_info.is_past_deadline:
+            unavailable_reason = (
+                "deadline_passed"
+                if deadline_info.is_past_deadline
+                else deadline_info.applicability
+            )
+            message = (
+                "The configured target date has passed; projections are unavailable."
+                if deadline_info.is_past_deadline
+                else deadline_info.message
+            )
+            return {
+                "projection_available": False,
+                "unavailable_reason": unavailable_reason,
+                "message": message,
+                "deadline": deadline,
+            }
+
         # Get 30-day trend
         trend = SnapshotService.get_historical_trend(db, department_id, days=30)
 
@@ -474,6 +490,7 @@ class SnapshotService:
                 "message": (
                     "Need at least 7 days of verified compliance data for projection"
                 ),
+                "deadline": deadline,
             }
 
         # Calculate improvement rate (points per day)
@@ -481,8 +498,9 @@ class SnapshotService:
         last_week_avg = sum(verified_scores[-7:]) / 7
         improvement_rate = (last_week_avg - first_week_avg) / 21  # Over ~3 weeks
 
-        # Days until deadline
-        days_remaining = (SnapshotService.DEADLINE_DATE - datetime.utcnow()).days
+        days_remaining = deadline_info.days_remaining
+        if days_remaining is None:
+            raise ValueError("Dated deadline is missing remaining-day metadata")
 
         # Project final score
         projected_score = last_week_avg + (improvement_rate * days_remaining)
@@ -495,6 +513,19 @@ class SnapshotService:
             score_needed / days_remaining if days_remaining > 0 else 0
         )
 
+        if deadline_info.is_past_deadline:
+            recommendation = (
+                "The configured target date has passed; prioritize current "
+                "accessibility work and review the institution profile."
+            )
+        elif will_meet_deadline:
+            recommendation = "Projected automated scan score is on target."
+        else:
+            recommendation = (
+                f"Improve the automated scan score by "
+                f"{improvement_needed_per_day:.2f} points/day to reach the target."
+            )
+
         return {
             "projection_available": True,
             "current_avg_score": round(last_week_avg, 2),
@@ -506,9 +537,6 @@ class SnapshotService:
             "required_improvement_per_day": round(
                 max(0, improvement_needed_per_day), 4
             ),
-            "recommendation": (
-                "On track to meet deadline!"
-                if will_meet_deadline
-                else f"Need to improve {improvement_needed_per_day:.2f} points/day to meet deadline"
-            ),
+            "recommendation": recommendation,
+            "deadline": deadline,
         }

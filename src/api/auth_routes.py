@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from typing import List, Literal, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 import asyncio
@@ -108,6 +108,30 @@ class CreateDepartmentRequest(BaseModel):
         min_length=1,
         max_length=50,
     )
+    country_code: Optional[str] = Field(
+        default=None, min_length=2, max_length=2, pattern=r"^[A-Za-z]{2}$"
+    )
+    regulatory_framework: Optional[
+        Literal[
+            "US_ADA_TITLE_II",
+            "US_SECTION_508",
+            "EU_EAA",
+            "EU_WAD",
+            "UK_PSBAR",
+            "CA_AODA",
+            "AU_DDA",
+            "NONE",
+        ]
+    ] = None
+    title_ii_entity_class: Optional[Literal["large", "small_or_special_district"]] = (
+        None
+    )
+    custom_deadline: Optional[datetime] = None
+
+    @field_validator("country_code")
+    @classmethod
+    def normalize_country_code(cls, value: Optional[str]) -> Optional[str]:
+        return value.upper() if value else None
 
 
 class DepartmentResponse(BaseModel):
@@ -118,6 +142,10 @@ class DepartmentResponse(BaseModel):
     tier: str
     max_users: int
     created_at: datetime
+    country_code: Optional[str] = None
+    regulatory_framework: Optional[str] = None
+    title_ii_entity_class: Optional[str] = None
+    custom_deadline: Optional[datetime] = None
 
 
 class QuotaStatusResponse(BaseModel):
@@ -715,6 +743,10 @@ def _audit_admin_handoff(
 
 
 def _department_response(department: Department) -> DepartmentResponse:
+    country_code = getattr(department, "country_code", None)
+    regulatory_framework = getattr(department, "regulatory_framework", None)
+    title_ii_entity_class = getattr(department, "title_ii_entity_class", None)
+    custom_deadline = getattr(department, "custom_deadline", None)
     return DepartmentResponse(
         id=department.id,
         name=department.name,
@@ -723,6 +755,34 @@ def _department_response(department: Department) -> DepartmentResponse:
         tier=department.tier,
         max_users=department.max_users,
         created_at=department.created_at,
+        country_code=country_code if isinstance(country_code, str) else None,
+        regulatory_framework=(
+            regulatory_framework if isinstance(regulatory_framework, str) else None
+        ),
+        title_ii_entity_class=(
+            title_ii_entity_class if isinstance(title_ii_entity_class, str) else None
+        ),
+        custom_deadline=(
+            custom_deadline if isinstance(custom_deadline, datetime) else None
+        ),
+    )
+
+
+def _new_department_from_request(request: CreateDepartmentRequest) -> Department:
+    """Build a department while preserving an omitted regulatory profile as NULL."""
+
+    return Department(
+        name=request.name,
+        institution=request.institution,
+        contact_email=_normalized_email(str(request.contact_email)),
+        contact_name=request.contact_name,
+        tier=request.tier,
+        max_users=5 if request.tier == "trial" else 50,
+        trial_ends_at=datetime.utcnow() + timedelta(days=30),
+        country_code=request.country_code,
+        regulatory_framework=request.regulatory_framework,
+        title_ii_entity_class=request.title_ii_entity_class,
+        custom_deadline=request.custom_deadline,
     )
 
 
@@ -993,6 +1053,13 @@ async def create_department(
                 and _canonical_text(existing.contact_name or "")
                 == _canonical_text(request.contact_name)
                 and str(existing.tier) == request.tier
+                and getattr(existing, "country_code", None) == request.country_code
+                and getattr(existing, "regulatory_framework", None)
+                == request.regulatory_framework
+                and getattr(existing, "title_ii_entity_class", None)
+                == request.title_ii_entity_class
+                and getattr(existing, "custom_deadline", None)
+                == request.custom_deadline
                 and handoff is not None
                 and _normalized_email(handoff.email) == first_admin_email
                 and _provisioner is not None
@@ -1093,15 +1160,7 @@ async def create_department(
                 detail="The administrator email is unavailable",
             )
 
-        department = Department(
-            name=request.name,
-            institution=request.institution,
-            contact_email=contact_email,
-            contact_name=request.contact_name,
-            tier=request.tier,
-            max_users=5 if request.tier == "trial" else 50,
-            trial_ends_at=datetime.utcnow() + timedelta(days=30),
-        )
+        department = _new_department_from_request(request)
         db.add(department)
         db.flush()
         db.refresh(department)
@@ -1188,15 +1247,7 @@ def get_department(
             status_code=status.HTTP_404_NOT_FOUND, detail="Department not found"
         )
 
-    return DepartmentResponse(
-        id=department.id,
-        name=department.name,
-        institution=department.institution,
-        contact_email=department.contact_email,
-        tier=department.tier,
-        max_users=department.max_users,
-        created_at=department.created_at,
-    )
+    return _department_response(department)
 
 
 # ==================== Individual Faculty Signup ====================

@@ -16,6 +16,8 @@ from pathlib import Path
 import httpx
 
 from src.services.email_templates import (
+    _deadline_for_email,
+    _deadline_guidance_html,
     get_email_wrapper,
 )
 
@@ -375,6 +377,11 @@ class EmailService:
         file_name: str,
         critical_issues: List[Dict[str, Any]],
         scan_url: Optional[str] = None,
+        action_url: Optional[str] = None,
+        action_text: str = "View & Fix Issues",
+        remediate_url: Optional[str] = None,
+        department: Any = None,
+        deadline: Any = None,
     ) -> Dict[str, Any]:
         """Send notification for critical accessibility issues."""
         safe_file_name = html_lib.escape(file_name)
@@ -388,15 +395,21 @@ class EmailService:
                 </li>
             """
 
+        deadline_guidance = _deadline_guidance_html(
+            _deadline_for_email(department, deadline)
+        )
+        resolved_action_url = scan_url or action_url or ""
         html = self.render_template(
             "critical_issues",
             {
                 "title": "Critical Accessibility Issues Detected",
                 "file_name": safe_file_name,
-                "issues_count": len(critical_issues),
+                "critical_count": len(critical_issues),
                 "issues_html": issues_html,
-                "action_url": scan_url or "",
-                "action_text": "View & Fix Issues",
+                "action_url": resolved_action_url,
+                "action_text": action_text,
+                "remediate_url": remediate_url or resolved_action_url,
+                "deadline_guidance_html": deadline_guidance,
                 "message": f"""
                 <p style="color: #ef4444;">
                     <strong>Urgent:</strong> {len(critical_issues)} critical accessibility issues were found
@@ -422,12 +435,26 @@ class EmailService:
         to_emails: List[str],
         department_name: str,
         total_files: int,
-        files_scanned: int,
-        average_score: float,
-        total_issues: int,
-        issues_fixed: int,
+        files_scanned: Optional[int] = None,
+        average_score: float = 0,
+        total_issues: int = 0,
+        issues_fixed: int = 0,
         dashboard_url: str = None,
         unsubscribe_url: str = None,
+        *,
+        scans_this_week: Optional[int] = None,
+        score_change: str = "",
+        critical_count: int = 0,
+        serious_count: int = 0,
+        moderate_count: int = 0,
+        minor_count: int = 0,
+        week_start: str = "",
+        week_end: str = "",
+        days_until_deadline: Optional[int] = None,
+        top_issues_html: str = "",
+        remediate_url: str = "",
+        department: Any = None,
+        deadline: Any = None,
     ) -> Dict[str, Any]:
         """
         Send weekly compliance summary.
@@ -435,17 +462,47 @@ class EmailService:
         This is a MARKETING email - users must be able to unsubscribe.
         Always pass unsubscribe_url for CAN-SPAM/GDPR compliance.
         """
+        del days_until_deadline  # Legacy input; canonical deadline data is authoritative.
+        weekly_scans = files_scanned
+        if weekly_scans is None:
+            weekly_scans = scans_this_week or 0
+
+        severity_total = critical_count + serious_count + moderate_count + minor_count
+
+        def percent(count: int) -> int:
+            return round((count / severity_total) * 100) if severity_total else 0
+
+        deadline_guidance = _deadline_guidance_html(
+            _deadline_for_email(department, deadline)
+        )
         html = self.render_template(
             "weekly_summary",
             {
                 "title": "Weekly Accessibility Summary",
                 "department_name": department_name,
                 "total_files": total_files,
-                "files_scanned": files_scanned,
-                "average_score": f"{average_score:.0f}%",
+                "files_scanned": weekly_scans,
+                "scans_this_week": weekly_scans,
+                "average_score": f"{average_score:.0f}",
                 "total_issues": total_issues,
                 "issues_fixed": issues_fixed,
+                "score_change": score_change,
+                "critical_count": critical_count,
+                "serious_count": serious_count,
+                "moderate_count": moderate_count,
+                "minor_count": minor_count,
+                "critical_percent": percent(critical_count),
+                "serious_percent": percent(serious_count),
+                "moderate_percent": percent(moderate_count),
+                "minor_percent": percent(minor_count),
+                "week_start": week_start,
+                "week_end": week_end,
+                "top_issues_html": top_issues_html
+                or '<p style="color: #666; font-size: 14px;">No issue summary is available for this period.</p>',
+                "remediate_url": remediate_url or dashboard_url or "",
+                "deadline_guidance_html": deadline_guidance,
                 "action_url": dashboard_url or "",
+                "dashboard_url": dashboard_url or "",
                 "action_text": "View Dashboard",
                 "unsubscribe_url": unsubscribe_url or "",
                 "message": f"""
@@ -459,7 +516,7 @@ class EmailService:
                         </tr>
                         <tr>
                             <td style="padding: 8px 0;"><strong>Files Scanned This Week:</strong></td>
-                            <td style="text-align: right;">{files_scanned}</td>
+                            <td style="text-align: right;">{weekly_scans}</td>
                         </tr>
                         <tr>
                             <td style="padding: 8px 0;"><strong>Average Scan Score:</strong></td>

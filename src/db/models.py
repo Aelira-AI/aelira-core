@@ -196,8 +196,11 @@ class Department(Base):
     artifact_cleanup_claimed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Region/Country for deadline tracking
-    country_code = Column(String(2), nullable=True, default="US")  # ISO 3166-1 alpha-2
-    regulatory_framework = Column(String(50), nullable=True, default="US_ADA_TITLE_II")
+    # Missing regulatory configuration stays missing; it must never silently
+    # become a US deadline merely because a profile was not completed.
+    country_code = Column(String(2), nullable=True)  # ISO 3166-1 alpha-2
+    regulatory_framework = Column(String(50), nullable=True)
+    title_ii_entity_class = Column(String(32), nullable=True)
     custom_deadline = Column(
         DateTime(timezone=True), nullable=True
     )  # Override default deadline
@@ -245,6 +248,11 @@ class Department(Base):
             "lms_ai_provider IS NULL OR lms_ai_provider IN "
             "('ollama', 'gemini', 'openai', 'anthropic', 'xai')",
             name="ck_departments_lms_ai_provider",
+        ),
+        CheckConstraint(
+            "title_ii_entity_class IS NULL OR title_ii_entity_class IN "
+            "('large', 'small_or_special_district')",
+            name="ck_departments_title_ii_entity_class",
         ),
         CheckConstraint(
             "jsonb_typeof(lms_ai_purposes::jsonb) = 'array' AND "

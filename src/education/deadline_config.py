@@ -18,8 +18,8 @@ Created: November 30, 2025
 Updated: April 18, 2026 - Applied DOJ April 2026 IFR extension (+1yr on US deadlines)
 """
 
-from datetime import datetime, date
-from typing import Dict, Any, Optional
+from datetime import date, datetime
+from typing import Any, Dict, Literal, Optional
 from dataclasses import dataclass
 from enum import Enum
 
@@ -47,19 +47,62 @@ class RegulatoryFramework(str, Enum):
     NONE = "NONE"  # No specific regulatory requirement
 
 
+class TitleIIEntityClass(str, Enum):
+    """DOJ Title II compliance-date classification selected by the institution."""
+
+    LARGE = "large"
+    SMALL_OR_SPECIAL_DISTRICT = "small_or_special_district"
+
+
+DeadlineApplicability = Literal[
+    "dated_deadline",
+    "ongoing_no_date",
+    "not_applicable",
+    "configuration_required",
+]
+
+
 @dataclass
 class DeadlineInfo:
-    """Information about a compliance deadline"""
+    """Canonical, JSON-serializable compliance deadline metadata."""
 
+    applicability: DeadlineApplicability
     has_deadline: bool
     deadline_date: Optional[date]
+    deadline_label: Optional[str]
     framework_name: str
     framework_code: str
     standard: str  # e.g., "WCAG 2.1 Level AA"
-    description: str
+    message: str
     is_past_deadline: bool = False
     days_remaining: Optional[int] = None
     urgency: str = "none"  # none, low, medium, high, critical
+
+    @property
+    def description(self) -> str:
+        """Backward-compatible alias for callers that still render description."""
+
+        return self.message
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return the canonical JSON-safe representation used by API callers."""
+
+        return {
+            "applicability": self.applicability,
+            "has_deadline": self.has_deadline,
+            "deadline_date": (
+                self.deadline_date.isoformat() if self.deadline_date else None
+            ),
+            "deadline_label": self.deadline_label,
+            "days_remaining": self.days_remaining,
+            "framework_code": self.framework_code,
+            "framework_name": self.framework_name,
+            "standard": self.standard,
+            "urgency": self.urgency,
+            "is_past_deadline": self.is_past_deadline,
+            "message": self.message,
+            "description": self.message,
+        }
 
 
 # Regional deadline configurations
@@ -130,130 +173,241 @@ REGIONAL_DEADLINES: Dict[str, Dict] = {
     },
 }
 
-# EU member states
-EU_COUNTRIES = {
-    "AT",
-    "BE",
-    "BG",
-    "HR",
-    "CY",
-    "CZ",
-    "DK",
-    "EE",
-    "FI",
-    "FR",
-    "DE",
-    "GR",
-    "HU",
-    "IE",
-    "IT",
-    "LV",
-    "LT",
-    "LU",
-    "MT",
-    "NL",
-    "PL",
-    "PT",
-    "RO",
-    "SK",
-    "SI",
-    "ES",
-    "SE",
-}
-
 
 class DeadlineService:
     """Service for managing region-specific compliance deadlines"""
 
-    @staticmethod
+    _IMPLEMENTED_FRAMEWORKS = {
+        RegulatoryFramework.US_ADA_TITLE_II: REGIONAL_DEADLINES["US"],
+        RegulatoryFramework.EU_EAA: REGIONAL_DEADLINES["EU"],
+        RegulatoryFramework.UK_PSBAR: REGIONAL_DEADLINES["GB"],
+        RegulatoryFramework.CA_AODA: REGIONAL_DEADLINES["CA"],
+        RegulatoryFramework.AU_DDA: REGIONAL_DEADLINES["AU"],
+        RegulatoryFramework.NONE: REGIONAL_DEADLINES["DEFAULT"],
+    }
+
+    @classmethod
+    def for_department(
+        cls, department: Any, *, as_of: Optional[date] = None
+    ) -> DeadlineInfo:
+        """Resolve one department's persisted regulatory profile."""
+
+        return cls.get_deadline_info(
+            country_code=getattr(department, "country_code", None),
+            regulatory_framework=getattr(department, "regulatory_framework", None),
+            custom_deadline=getattr(department, "custom_deadline", None),
+            title_ii_entity_class=getattr(department, "title_ii_entity_class", None),
+            as_of=as_of,
+        )
+
+    @classmethod
     def get_deadline_info(
-        country_code: Optional[str] = "US",
+        cls,
+        country_code: Optional[str] = None,
         regulatory_framework: Optional[str] = None,
         custom_deadline: Optional[datetime] = None,
+        title_ii_entity_class: Optional[str] = None,
+        *,
+        as_of: Optional[date] = None,
     ) -> DeadlineInfo:
-        """
-        Get deadline information for a department based on their region.
+        """Resolve canonical deadline metadata without guessing missing profile data."""
 
-        Args:
-            country_code: ISO 3166-1 alpha-2 country code (e.g., 'US', 'GB', 'DE')
-            regulatory_framework: Override the framework if specified
-            custom_deadline: Custom deadline if set by the organization
+        effective_date = as_of or date.today()
+        framework, config, error = cls._resolve_framework(
+            country_code=country_code,
+            regulatory_framework=regulatory_framework,
+        )
+        if error or framework is None or config is None:
+            return cls._configuration_required(
+                framework=framework,
+                config=config,
+            )
 
-        Returns:
-            DeadlineInfo object with all deadline details
-        """
-        today = date.today()
+        entity_class = (
+            str(getattr(title_ii_entity_class, "value", title_ii_entity_class) or "")
+            .strip()
+            .lower()
+            or None
+        )
+        if framework is RegulatoryFramework.US_ADA_TITLE_II:
+            if entity_class == TitleIIEntityClass.LARGE.value:
+                configured_date = US_ADA_TITLE_II_DEADLINE_LARGE
+            elif entity_class == TitleIIEntityClass.SMALL_OR_SPECIAL_DISTRICT.value:
+                configured_date = US_ADA_TITLE_II_DEADLINE_SMALL
+            else:
+                return cls._configuration_required(
+                    framework=framework,
+                    config=config,
+                )
+        else:
+            if entity_class is not None:
+                return cls._configuration_required(
+                    framework=framework,
+                    config=config,
+                )
+            configured_date = config.get("deadline")
 
-        # Handle custom deadline override
-        if custom_deadline:
-            deadline_date = (
+        if framework is RegulatoryFramework.NONE:
+            if custom_deadline is not None:
+                return cls._configuration_required(
+                    framework=framework,
+                    config=config,
+                )
+            return cls._undated(
+                applicability="not_applicable",
+                framework=framework,
+                config=config,
+                message="No regulatory deadline is configured for this department.",
+            )
+
+        if custom_deadline is not None:
+            configured_date = (
                 custom_deadline.date()
                 if isinstance(custom_deadline, datetime)
                 else custom_deadline
             )
-            days_remaining = (deadline_date - today).days
-            is_past = days_remaining < 0
+            if not isinstance(configured_date, date):
+                return cls._configuration_required(
+                    framework=framework,
+                    config=config,
+                )
 
-            return DeadlineInfo(
-                has_deadline=True,
-                deadline_date=deadline_date,
-                framework_name="Custom Deadline",
-                framework_code="CUSTOM",
-                standard="WCAG 2.1 Level AA",
-                description="Custom compliance deadline set by your organization.",
-                is_past_deadline=is_past,
-                days_remaining=max(0, days_remaining),
-                urgency=DeadlineService._get_urgency(days_remaining),
+        if configured_date is None:
+            return cls._undated(
+                applicability="ongoing_no_date",
+                framework=framework,
+                config=config,
+                message=(
+                    "This framework has an ongoing compliance obligation without "
+                    "a single deadline date."
+                ),
             )
 
-        # Normalize country code
-        country_code = (country_code or "US").upper()
+        return cls._dated(
+            framework=framework,
+            config=config,
+            deadline_date=configured_date,
+            as_of=effective_date,
+            custom=custom_deadline is not None,
+        )
 
-        # Check if country is in EU (use EU deadline)
-        if country_code in EU_COUNTRIES:
-            config = REGIONAL_DEADLINES["EU"]
-        else:
-            config = REGIONAL_DEADLINES.get(country_code, REGIONAL_DEADLINES["DEFAULT"])
-
-        # Override framework if specified
-        if regulatory_framework:
+    @classmethod
+    def _resolve_framework(
+        cls,
+        *,
+        country_code: Optional[str],
+        regulatory_framework: Optional[str],
+    ) -> tuple[Optional[RegulatoryFramework], Optional[Dict[str, Any]], Optional[str]]:
+        explicit = (
+            str(getattr(regulatory_framework, "value", regulatory_framework) or "")
+            .strip()
+            .upper()
+        )
+        if explicit:
             try:
-                framework = RegulatoryFramework(regulatory_framework)
-                # Find matching config
-                for region, region_config in REGIONAL_DEADLINES.items():
-                    if region_config.get("framework") == framework:
-                        config = region_config
-                        break
+                framework = RegulatoryFramework(explicit)
             except ValueError:
-                pass  # Use default config
+                return None, None, "invalid_framework"
+            config = cls._IMPLEMENTED_FRAMEWORKS.get(framework)
+            if config is None:
+                return framework, None, "unimplemented_framework"
+            return framework, config, None
 
-        deadline_date: Optional[date] = config.get("deadline")
-        has_deadline = deadline_date is not None
-        days_remaining = None
-        is_past = False
-        urgency = "none"
+        country = str(country_code or "").strip().upper()
+        if not country:
+            return None, None, "missing_country"
+        if country == "AU":
+            framework = RegulatoryFramework.AU_DDA
+        elif country == "US":
+            framework = RegulatoryFramework.US_ADA_TITLE_II
+        else:
+            # Dated frameworks with narrower institutional or sub-national
+            # scope must be selected explicitly. Country alone does not prove
+            # that EAA, PSBAR, or Ontario AODA applies to this department.
+            return None, None, "framework_required"
+        config = cls._IMPLEMENTED_FRAMEWORKS.get(framework)
+        if config is None:
+            return framework, None, "unimplemented_framework"
+        return framework, config, None
 
-        if has_deadline:
-            days_remaining = (deadline_date - today).days
-            is_past = days_remaining < 0
-            urgency = DeadlineService._get_urgency(days_remaining)
-
+    @classmethod
+    def _configuration_required(
+        cls,
+        *,
+        framework: Optional[RegulatoryFramework],
+        config: Optional[Dict[str, Any]],
+    ) -> DeadlineInfo:
         return DeadlineInfo(
-            has_deadline=has_deadline,
-            deadline_date=deadline_date,
-            framework_name=config["framework_name"],
+            applicability="configuration_required",
+            has_deadline=False,
+            deadline_date=None,
+            deadline_label=None,
+            framework_name=(
+                str(config["framework_name"])
+                if config
+                else (
+                    framework.value
+                    if framework is not None
+                    else "Regulatory profile incomplete"
+                )
+            ),
             framework_code=(
-                config["framework"].value
-                if hasattr(config["framework"], "value")
-                else str(config["framework"])
+                framework.value if framework is not None else "UNCONFIGURED"
             ),
-            standard=config["standard"],
-            description=config["description"],
-            is_past_deadline=is_past,
-            days_remaining=(
-                max(0, days_remaining) if days_remaining is not None else None
+            standard=str(config["standard"]) if config else "Not configured",
+            message=(
+                "Complete the regulatory profile before a compliance deadline "
+                "can be shown."
             ),
-            urgency=urgency,
+        )
+
+    @classmethod
+    def _undated(
+        cls,
+        *,
+        applicability: Literal["ongoing_no_date", "not_applicable"],
+        framework: RegulatoryFramework,
+        config: Dict[str, Any],
+        message: str,
+    ) -> DeadlineInfo:
+        return DeadlineInfo(
+            applicability=applicability,
+            has_deadline=False,
+            deadline_date=None,
+            deadline_label=None,
+            framework_name=str(config["framework_name"]),
+            framework_code=framework.value,
+            standard=str(config["standard"]),
+            message=message,
+        )
+
+    @classmethod
+    def _dated(
+        cls,
+        *,
+        framework: RegulatoryFramework,
+        config: Dict[str, Any],
+        deadline_date: date,
+        as_of: date,
+        custom: bool,
+    ) -> DeadlineInfo:
+        raw_days = (deadline_date - as_of).days
+        return DeadlineInfo(
+            applicability="dated_deadline",
+            has_deadline=True,
+            deadline_date=deadline_date,
+            deadline_label=deadline_date.strftime("%B %d, %Y").replace(" 0", " "),
+            framework_name=str(config["framework_name"]),
+            framework_code=framework.value,
+            standard=str(config["standard"]),
+            message=(
+                "An organization-specific accessibility target date is configured."
+                if custom
+                else "A dated accessibility target is configured for this department."
+            ),
+            is_past_deadline=raw_days < 0,
+            days_remaining=max(0, raw_days),
+            urgency=cls._get_urgency(raw_days),
         )
 
     @staticmethod
@@ -312,11 +466,14 @@ class DeadlineService:
 
     @staticmethod
     def get_deadline_for_report(
-        country_code: Optional[str] = "US",
+        country_code: Optional[str] = None,
         regulatory_framework: Optional[str] = None,
         custom_deadline: Optional[datetime] = None,
         issues_total: int = 0,
         hours_per_issue: float = 0.5,
+        title_ii_entity_class: Optional[str] = None,
+        *,
+        as_of: Optional[date] = None,
     ) -> Dict[str, Any]:
         """
         Get deadline information formatted for compliance reports.
@@ -332,29 +489,27 @@ class DeadlineService:
             Dict with deadline info for reports
         """
         info = DeadlineService.get_deadline_info(
-            country_code, regulatory_framework, custom_deadline
+            country_code,
+            regulatory_framework,
+            custom_deadline,
+            title_ii_entity_class,
+            as_of=as_of,
         )
         estimated_hours = round(issues_total * hours_per_issue, 1)
 
         # Calculate if on track (can complete work before deadline)
-        on_track = True
-        if info.has_deadline and info.days_remaining:
+        on_track: Optional[bool] = None
+        if (
+            info.has_deadline
+            and not info.is_past_deadline
+            and info.days_remaining is not None
+        ):
             # Assume 4 hours/day of productive work
             hours_available = info.days_remaining * 4
             on_track = hours_available >= estimated_hours
 
         return {
-            "has_deadline": info.has_deadline,
-            "deadline_date": (
-                info.deadline_date.isoformat() if info.deadline_date else None
-            ),
-            "days_remaining": info.days_remaining,
-            "framework_name": info.framework_name,
-            "framework_code": info.framework_code,
-            "standard": info.standard,
-            "description": info.description,
-            "is_past_deadline": info.is_past_deadline,
-            "urgency": info.urgency,
+            **info.to_dict(),
             "estimated_hours_remaining": estimated_hours,
             "on_track": on_track,
         }
@@ -376,5 +531,8 @@ def get_april_2026_deadline_info(
     consider migrating to ``DeadlineService.get_deadline_for_report`` directly.
     """
     return DeadlineService.get_deadline_for_report(
-        country_code="US", issues_total=issues_total, hours_per_issue=hours_per_issue
+        country_code="US",
+        title_ii_entity_class=TitleIIEntityClass.LARGE.value,
+        issues_total=issues_total,
+        hours_per_issue=hours_per_issue,
     )

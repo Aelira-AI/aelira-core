@@ -376,6 +376,12 @@ def test_comprehensive_stats_keep_unverified_scores_unknown(monkeypatch):
     assert stats.avg_compliance_score is None
     assert stats.min_compliance_score is None
     assert stats.max_compliance_score is None
+    assert stats.days_until_deadline is None
+    assert stats.on_track is None
+    assert stats.deadline["applicability"] == "ongoing_no_date"
+    report = stats.to_report_dict()
+    assert report["april_2026_deadline"]["deprecated"] is True
+    assert report["april_2026_deadline"]["framework"] == "AU_DDA"
 
 
 def test_hashless_scans_are_not_grouped_by_mutable_filename():

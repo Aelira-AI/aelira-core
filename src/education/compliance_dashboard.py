@@ -10,15 +10,14 @@ Features:
 - Progress tracking over time
 - Legal-ready compliance reports (PDF)
 - Faculty compliance leaderboards
-- Deadline tracking (DOJ ADA Title II, April 26, 2027 for large public entities;
-  extended from April 24, 2026 via DOJ Interim Final Rule RIN 1190-AA82, 2026-04-20)
+- Deadline tracking from each department's configured regulatory profile
 
 Author: Aelira Team
 Created: November 1, 2025
 """
 
 from sqlalchemy.orm import Session
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 import logging
@@ -30,7 +29,6 @@ from ..db.models import (
     ScanResult,
     ScanType,
 )
-from .deadline_config import US_ADA_TITLE_II_DEADLINE
 from .current_compliance import get_department_current_compliance
 
 logger = logging.getLogger(__name__)
@@ -88,7 +86,8 @@ class ComplianceStats:
     # Deadline tracking (region-aware)
     days_until_deadline: Optional[int]  # None if no deadline applies
     estimated_hours_remaining: float  # Based on avg remediation time
-    on_track: bool  # Whether department will meet deadline
+    on_track: Optional[bool]  # None when no dated deadline applies
+    deadline: Dict[str, Any]  # Canonical, JSON-safe deadline metadata
     has_deadline: bool = True  # Whether a regulatory deadline applies
     deadline_framework: str = "US_ADA_TITLE_II"  # Which regulatory framework
     deadline_standard: str = "WCAG 2.1 Level AA"  # Which accessibility standard
@@ -148,13 +147,15 @@ class ComplianceStats:
                 "total": self.total_faculty,
                 "participation_rate": self.faculty_participation_rate,
             },
+            "deadline": self.deadline,
+            # Deprecated compatibility alias. It intentionally mirrors the
+            # canonical object rather than preserving the obsolete date claim.
             "april_2026_deadline": {
-                "days_remaining": self.days_until_deadline or 0,
+                **self.deadline,
+                "framework": self.deadline_framework,
                 "estimated_hours_remaining": self.estimated_hours_remaining,
                 "on_track": self.on_track,
-                "has_deadline": self.has_deadline,
-                "framework": self.deadline_framework,
-                "standard": self.deadline_standard,
+                "deprecated": True,
             },
         }
 
@@ -200,13 +201,6 @@ class ComplianceDashboard:
     Provides aggregation and reporting for department administrators
     to track accessibility compliance across all faculty and files.
     """
-
-    # DOJ ADA Title II deadline, sourced from deadline_config (single source of truth).
-    # Currently April 26, 2027 for large public entities (pop >= 50,000); extended
-    # from April 24, 2026 via DOJ Interim Final Rule RIN 1190-AA82 (effective 2026-04-20).
-    DEADLINE_DATE = datetime.combine(
-        US_ADA_TITLE_II_DEADLINE, datetime.max.time()
-    ).replace(microsecond=0)
 
     # Compliance thresholds
     COMPLIANCE_THRESHOLD = 90.0  # Score >= 90 is "compliant"
@@ -326,11 +320,7 @@ class ComplianceDashboard:
         # Deadline tracking (region-aware)
         from .deadline_config import DeadlineService
 
-        deadline_info = DeadlineService.get_deadline_info(
-            country_code=getattr(dept, "country_code", "US"),
-            regulatory_framework=getattr(dept, "regulatory_framework", None),
-            custom_deadline=getattr(dept, "custom_deadline", None),
-        )
+        deadline_info = DeadlineService.for_department(dept)
 
         # Estimate remaining work
         total_issues = total_critical + total_high + total_medium + total_low
@@ -342,16 +332,20 @@ class ComplianceDashboard:
         ) / 60.0  # Convert to hours
 
         # On track calculation (only if deadline applies)
-        if deadline_info.has_deadline and deadline_info.days_remaining is not None:
+        if (
+            deadline_info.has_deadline
+            and not deadline_info.is_past_deadline
+            and deadline_info.days_remaining is not None
+        ):
             days_until_deadline = deadline_info.days_remaining
             # Assume 4 hours/day of productive work
             hours_available = deadline_info.days_remaining * 4
             on_track = hours_available >= estimated_hours or compliance_rate >= 80.0
         else:
             days_until_deadline = None
-            on_track = (
-                compliance_rate >= 80.0
-            )  # No deadline, just track compliance rate
+            on_track = None
+
+        deadline = deadline_info.to_dict()
 
         return ComplianceStats(
             department_id=department_id,
@@ -389,6 +383,7 @@ class ComplianceDashboard:
             days_until_deadline=days_until_deadline,
             estimated_hours_remaining=round(estimated_hours, 2),
             on_track=on_track,
+            deadline=deadline,
             has_deadline=deadline_info.has_deadline,
             deadline_framework=deadline_info.framework_code,
             deadline_standard=deadline_info.standard,
@@ -409,13 +404,7 @@ class ComplianceDashboard:
         from .deadline_config import DeadlineService
 
         # Get deadline info based on department region (if available)
-        deadline_info = DeadlineService.get_deadline_info(
-            country_code=getattr(dept, "country_code", "US") if dept else "US",
-            regulatory_framework=(
-                getattr(dept, "regulatory_framework", None) if dept else None
-            ),
-            custom_deadline=getattr(dept, "custom_deadline", None) if dept else None,
-        )
+        deadline_info = DeadlineService.for_department(dept)
 
         return ComplianceStats(
             department_id=dept_id,
@@ -450,9 +439,14 @@ class ComplianceDashboard:
             scans_last_7_days=0,
             scans_last_30_days=0,
             scans_this_month=0,
-            days_until_deadline=deadline_info.days_remaining,
+            days_until_deadline=(
+                deadline_info.days_remaining
+                if deadline_info.has_deadline and not deadline_info.is_past_deadline
+                else None
+            ),
             estimated_hours_remaining=0.0,
-            on_track=True,
+            on_track=None,
+            deadline=deadline_info.to_dict(),
             has_deadline=deadline_info.has_deadline,
             deadline_framework=deadline_info.framework_code,
             deadline_standard=deadline_info.standard,

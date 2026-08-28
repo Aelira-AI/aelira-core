@@ -32,7 +32,7 @@ async def get_department_compliance_stats(
     - Scan type breakdown (PDF, PowerPoint, LaTeX, etc.)
     - Compliance rate (% of files >= 90 score)
     - Faculty participation stats
-    - April 2027 deadline tracking
+    - Configured accessibility target metadata, when applicable
     - Estimated work remaining
 
     This is the main dashboard endpoint for department chairs.
@@ -97,11 +97,17 @@ async def get_department_compliance_stats(
                 "scans_last_30_days": stats.scans_last_30_days,
                 "scans_this_month": stats.scans_this_month,
             },
-            "april_2026_deadline": {
-                "days_remaining": stats.days_until_deadline,
+            "deadline": {
+                **stats.deadline,
                 "estimated_hours_remaining": stats.estimated_hours_remaining,
                 "on_track": stats.on_track,
-                "deadline_date": "2026-04-24",
+            },
+            # Deprecated compatibility alias retained for existing clients.
+            "april_2026_deadline": {
+                **stats.deadline,
+                "estimated_hours_remaining": stats.estimated_hours_remaining,
+                "on_track": stats.on_track,
+                "deprecated": True,
             },
             "faculty": {
                 "active_faculty": stats.active_faculty,
@@ -206,7 +212,7 @@ async def get_compliance_trend(
     REQUIRES API KEY IN PRODUCTION
 
     Shows daily compliance scores and scan activity over the specified period.
-    Useful for tracking progress toward April 2027 deadline.
+    Useful for tracking progress toward a configured accessibility target.
 
     Args:
         days: Number of days to look back (default: 30)

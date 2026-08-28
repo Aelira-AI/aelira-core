@@ -23,6 +23,7 @@ test('normalizes current document coverage separately from scan attempts', () =>
       avgCompliance: 85,
       issuesFound: 4,
       scansThisMonth: 3,
+      deadline: null,
     },
   );
 });
@@ -50,13 +51,34 @@ test('scan views render absent results as unverified rather than zero', () => {
 });
 
 test('analytics renders nullable trend scores as unassessed', () => {
-  const source = readFileSync(
+  const componentSource = readFileSync(
+    new URL('../../src/components/AnalyticsDashboard.tsx', import.meta.url),
+    'utf8',
+  );
+  const apiSource = readFileSync(new URL('../../src/api/scans.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /current_avg_score: number \| null/);
+  assert.match(apiSource, /previous_avg_score: number \| null/);
+  assert.match(componentSource, /Not assessed/);
+  assert.match(componentSource, /Not enough data/);
+});
+
+test('dashboard deadline rendering is server-driven and fail-closed', () => {
+  const dashboard = readFileSync(
+    new URL('../../src/pages/Dashboard.tsx', import.meta.url),
+    'utf8',
+  );
+  const courseOverview = readFileSync(
+    new URL('../../src/pages/CourseOverview.tsx', import.meta.url),
+    'utf8',
+  );
+  const analytics = readFileSync(
     new URL('../../src/components/AnalyticsDashboard.tsx', import.meta.url),
     'utf8',
   );
 
-  assert.match(source, /current_avg_score: number \| null/);
-  assert.match(source, /previous_avg_score: number \| null/);
-  assert.match(source, /Not assessed/);
-  assert.match(source, /Not enough data/);
+  for (const source of [dashboard, courseOverview, analytics]) {
+    assert.match(source, /hasDatedDeadline/);
+    assert.doesNotMatch(source, /April 2027 Deadline|US_ADA_TITLE_II_DEADLINE|daysUntilAda/);
+  }
 });

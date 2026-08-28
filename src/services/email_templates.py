@@ -11,7 +11,10 @@ All emails use a unified brand template with:
 - Consistent footer with privacy/unsubscribe links
 """
 
+import html
 from typing import List, Dict, Any, Optional
+
+from src.education.deadline_config import DeadlineService
 
 # Brand colors
 BRAND_PRIMARY = "#8B5CF6"  # Purple
@@ -37,6 +40,50 @@ COLOR_INFO_DARK = "#1e40af"
 
 COLOR_NEUTRAL = "#6b7280"
 COLOR_NEUTRAL_BG = "#f3f4f6"
+
+
+def _deadline_guidance_html(deadline: Any) -> str:
+    """Render bounded, escaped guidance from a canonical deadline object."""
+    if deadline is None:
+        return ""
+
+    applicability = str(getattr(deadline, "applicability", "") or "").lower()
+    if applicability in {"none", "not_applicable", "not-applicable"}:
+        return ""
+
+    framework = html.escape(str(getattr(deadline, "framework_name", "") or ""))
+    standard = html.escape(str(getattr(deadline, "standard", "") or ""))
+    label = html.escape(str(getattr(deadline, "deadline_label", "") or ""))
+    message = html.escape(str(getattr(deadline, "message", "") or ""))
+
+    metadata = " &bull; ".join(value for value in (framework, standard) if value)
+    if getattr(deadline, "has_deadline", False):
+        heading = "Configured accessibility target"
+        details = " &bull; ".join(value for value in (label, metadata) if value)
+    else:
+        heading = "Accessibility guidance"
+        details = metadata
+
+    paragraphs = [
+        f'<p style="margin: 0; font-size: 14px;"><strong>{heading}:</strong> {details}</p>'
+    ]
+    if message:
+        paragraphs.append(
+            f'<p style="margin: 8px 0 0 0; font-size: 13px;">{message}</p>'
+        )
+    return (
+        '<div style="background-color: #eff6ff; border-left: 4px solid #3b82f6; '
+        "border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 0 0 24px 0; "
+        'color: #1e3a8a;">' + "".join(paragraphs) + "</div>"
+    )
+
+
+def _deadline_for_email(department: Any = None, deadline: Any = None) -> Any:
+    if deadline is not None:
+        return deadline
+    if department is not None:
+        return DeadlineService.for_department(department)
+    return None
 
 
 def get_email_wrapper(
@@ -307,6 +354,8 @@ def render_weekly_summary_email(
     minor_count: int = 0,
     dashboard_url: str = "https://dashboard.example.com",
     unsubscribe_url: Optional[str] = None,
+    department: Any = None,
+    deadline: Any = None,
 ) -> str:
     """
     Render weekly summary email template.
@@ -346,6 +395,9 @@ def render_weekly_summary_email(
     # Calculate progress bar width
     progress_width = min(100, max(0, avg_compliance_score))
 
+    deadline_guidance = _deadline_guidance_html(
+        _deadline_for_email(department, deadline)
+    )
     content = f"""
             <h2 style="color: #1f2937; text-align: center; margin: 0 0 8px 0;">Weekly Accessibility Summary</h2>
             <p style="color: #666; text-align: center; margin: 0 0 24px 0; font-size: 14px;">{start_date} - {end_date}</p>
@@ -397,11 +449,16 @@ def render_weekly_summary_email(
 
             <!-- Progress Bar -->
             <div style="margin: 0 0 24px 0;">
-                <p style="margin: 0 0 8px 0; font-size: 14px; color: #666;">Compliance Progress</p>
+                <p style="margin: 0 0 8px 0; font-size: 14px; color: #666;">Automated Scan Score</p>
                 <div style="background: #e5e7eb; border-radius: 4px; height: 8px; overflow: hidden;">
                     <div style="background: {score_color}; width: {progress_width}%; height: 100%;"></div>
                 </div>
             </div>
+
+            <p style="color: #666; font-size: 13px; margin: 0 0 24px 0;">
+                Automated scan results are bounded evidence and do not determine
+                accessibility-standard conformance or legal compliance.
+            </p>
 
             <!-- CTA Button -->
             <div style="text-align: center; margin: 32px 0;">
@@ -410,12 +467,7 @@ def render_weekly_summary_email(
                 </a>
             </div>
 
-            <!-- Deadline Reminder -->
-            <div style="background-color: {COLOR_ERROR_BG}; border-left: 4px solid {COLOR_ERROR}; border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 0;">
-                <p style="margin: 0; font-size: 14px; color: {COLOR_ERROR_DARK};">
-                    <strong>Reminder:</strong> WCAG 2.1 compliance deadline is April 26, 2027.
-                </p>
-            </div>
+            {deadline_guidance}
     """
     return get_email_wrapper(content, unsubscribe_url)
 
@@ -616,6 +668,8 @@ def render_department_welcome_email(
     institution: str,
     dashboard_url: str,
     unsubscribe_url: Optional[str] = None,
+    department: Any = None,
+    deadline: Any = None,
 ) -> str:
     """
     Render department welcome email.
@@ -630,6 +684,9 @@ def render_department_welcome_email(
     Returns:
         HTML string for email body
     """
+    deadline_guidance = _deadline_guidance_html(
+        _deadline_for_email(department, deadline)
+    )
     content = f"""
             <h2 style="color: #1f2937; text-align: center; margin: 0 0 24px 0;">Welcome to Aelira!</h2>
 
@@ -654,12 +711,7 @@ def render_department_welcome_email(
                 </a>
             </div>
 
-            <!-- Deadline Reminder -->
-            <div style="background-color: {COLOR_ERROR_BG}; border-left: 4px solid {COLOR_ERROR}; border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 0 0 16px 0;">
-                <p style="margin: 0; font-size: 14px; color: {COLOR_ERROR_DARK};">
-                    <strong>Reminder:</strong> WCAG 2.1 compliance deadline is April 26, 2027.
-                </p>
-            </div>
+            {deadline_guidance}
     """
     return get_email_wrapper(content, unsubscribe_url)
 

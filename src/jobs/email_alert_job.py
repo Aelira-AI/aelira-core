@@ -17,6 +17,7 @@ from ..db.models import (
     User,
 )
 from ..mailer import get_email_service
+from ..education.deadline_config import DeadlineService
 from ..services.alert_service import (
     ALERT_SCAN_COMPLETE,
     ALERT_CRITICAL_ISSUES,
@@ -199,6 +200,12 @@ async def send_critical_issues_alert(
         return False
 
     try:
+        department = db.query(Department).filter(Department.id == department_id).first()
+        deadline = (
+            DeadlineService.for_department(department)
+            if department is not None
+            else None
+        )
         email_service = get_email_service()
         await email_service.send_critical_issues(
             to_emails=filtered_emails,
@@ -207,6 +214,7 @@ async def send_critical_issues_alert(
             action_url=scan_url,
             action_text="Review Issues",
             remediate_url=remediate_url,
+            deadline=deadline,
         )
         logger.info(
             f"Sent critical issues alert ({len(critical_issues)} issues) to {len(filtered_emails)} recipients"
@@ -339,18 +347,9 @@ async def _send_weekly_summary_for_department(
     # Calculate score change (would need historical data)
     score_change = "No previous data"  # Placeholder
 
-    # Days until the ADA Title II deadline, from the canonical config
-    # (April 26, 2027 for large public entities — never hardcode it here;
-    # a previous hardcoded 2026 date sent negative day counts for months).
-    from src.education.deadline_config import US_ADA_TITLE_II_DEADLINE
-
-    deadline = datetime(
-        US_ADA_TITLE_II_DEADLINE.year,
-        US_ADA_TITLE_II_DEADLINE.month,
-        US_ADA_TITLE_II_DEADLINE.day,
-        tzinfo=timezone.utc,
+    deadline = (
+        DeadlineService.for_department(department) if department is not None else None
     )
-    days_until_deadline = (deadline - now).days
 
     # Calculate percentages for progress bars
     sum(severity_counts.values()) or 1
@@ -372,7 +371,7 @@ async def _send_weekly_summary_for_department(
         dashboard_url=f"https://dashboard.example.com/dashboard?dept={department_id}",
         week_start=week_start.strftime("%b %d"),
         week_end=week_end.strftime("%b %d, %Y"),
-        days_until_deadline=days_until_deadline,
+        deadline=deadline,
     )
 
     logger.info(

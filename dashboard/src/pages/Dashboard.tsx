@@ -18,9 +18,8 @@ import {
   type RawCurrentComplianceStats,
 } from '../utils/currentCompliance';
 import {
-  US_ADA_TITLE_II_DEADLINE,
-  US_ADA_TITLE_II_DEADLINE_LABEL,
-} from '../utils/deadlines';
+  hasDatedDeadline,
+} from '../types/deadline';
 
 const WELCOME_BANNER_KEY = 'aelira_welcome_dismissed';
 
@@ -436,9 +435,8 @@ export function Dashboard(): React.ReactElement {
                 <div className="text-sm text-tertiary mt-1">In current verified results</div>
               </div>
 
-              {(() => {
-                const deadline = US_ADA_TITLE_II_DEADLINE;
-                const daysLeft = Math.ceil((deadline.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+              {hasDatedDeadline(stats.deadline) && (() => {
+                const daysLeft = stats.deadline.days_remaining;
                 const avg = stats.avgCompliance;
                 const isCritical = avg != null && daysLeft < 90 && avg < 90;
                 const isWarning = avg != null && daysLeft < 180 && avg < 80;
@@ -447,7 +445,7 @@ export function Dashboard(): React.ReactElement {
                   <div className="card">
                     <div className="text-sm font-medium text-secondary mb-1 flex items-center gap-1.5">
                       <Calendar className="w-3.5 h-3.5" aria-hidden="true" />
-                      Days to Deadline
+                      Days to Target Date
                     </div>
                     <div className={`text-3xl font-bold ${isCritical ? 'text-[var(--content-error)]' : isWarning ? 'text-[var(--content-warning)]' : 'text-primary'}`}>
                       {daysLeft}
@@ -456,7 +454,7 @@ export function Dashboard(): React.ReactElement {
                       {isCritical ? (
                         <span className="text-[var(--content-error)] flex items-center gap-1">
                           <AlertTriangle className="w-3 h-3" aria-hidden="true" />
-                          Behind Schedule
+                          Target at Risk
                         </span>
                       ) : isWarning ? (
                         <span className="text-[var(--content-warning)] flex items-center gap-1">
@@ -466,10 +464,10 @@ export function Dashboard(): React.ReactElement {
                       ) : isAhead ? (
                         <span className="text-[var(--content-success)] flex items-center gap-1">
                           <CheckCircle className="w-3 h-3" aria-hidden="true" />
-                          On Track
+                          Scan Score on Target
                         </span>
                       ) : (
-                        <span className="text-tertiary">{US_ADA_TITLE_II_DEADLINE_LABEL}</span>
+                        <span className="text-tertiary">{stats.deadline.deadline_label}</span>
                       )}
                     </div>
                   </div>

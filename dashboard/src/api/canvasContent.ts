@@ -1,4 +1,5 @@
 import { get, post } from './client';
+import type { DeadlineInfo } from '../types/deadline';
 
 // ============================================================================
 // Request Types
@@ -158,6 +159,7 @@ export interface CourseOverviewResponse {
   avg_compliance: number | null;
   total_issues: number;
   courses: CourseOverviewItem[];
+  deadline: DeadlineInfo | null;
 }
 
 // ============================================================================
