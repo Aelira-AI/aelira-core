@@ -257,14 +257,17 @@ async def test_registry_adapter_keeps_only_public_failure_aggregates():
             "remediated_compliance_score": 81,
         },
     )
-    assert not {
-        "success",
-        "error",
-        "internal_error",
-        "source_path",
-        "retry_safe",
-        "publication_cleanup_pending",
-    } & result.details.keys()
+    assert (
+        not {
+            "success",
+            "error",
+            "internal_error",
+            "source_path",
+            "retry_safe",
+            "publication_cleanup_pending",
+        }
+        & result.details.keys()
+    )
 
 
 def test_registry_startup_validation_covers_every_executable_type():
