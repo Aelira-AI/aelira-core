@@ -98,6 +98,90 @@ class EquationVerificationRejected(ValueError):
     """Round-trip verification could not produce bounded trustworthy evidence."""
 
 
+def _expanded_mathml_name(tag: str) -> tuple[Optional[str], str]:
+    if not tag.startswith("{"):
+        if "{" in tag or "}" in tag:
+            raise EquationVerificationRejected("invalid_mathml")
+        return None, tag.lower()
+    boundary = tag.find("}")
+    local = tag[boundary + 1 :] if boundary > 1 else ""
+    if boundary <= 1 or not local or "{" in local or "}" in local:
+        raise EquationVerificationRejected("invalid_mathml")
+    return tag[1:boundary], local.lower()
+
+
+def _canonical_mathml_element(node: ElementTree.Element) -> str:
+    _, name = _expanded_mathml_name(node.tag)
+    canonical = ElementTree.Element(name)
+    for key in sorted(node.attrib):
+        canonical.set(key, node.attrib[key])
+    canonical.text = node.text
+    for child in list(node):
+        child_xml = _canonical_mathml_element(child)
+        child_element = ElementTree.fromstring(child_xml)
+        child_element.tail = child.tail
+        canonical.append(child_element)
+    return ElementTree.tostring(
+        canonical, encoding="unicode", short_empty_elements=True
+    )
+
+
+def canonicalize_mathml(
+    mathml: Any,
+    *,
+    max_mathml_chars: int = 32_768,
+    max_mathml_nodes: int = 512,
+    max_mathml_depth: int = 32,
+) -> str:
+    """Return the exact passive MathML representation accepted by the verifier."""
+    if not isinstance(mathml, str) or not mathml or len(mathml) > max_mathml_chars:
+        raise EquationVerificationRejected("invalid_mathml")
+    lowered = mathml.lower()
+    if "<?" in lowered or "<!" in lowered:
+        raise EquationVerificationRejected("invalid_mathml")
+    try:
+        root = ElementTree.fromstring(mathml)
+    except ElementTree.ParseError:
+        raise EquationVerificationRejected("invalid_mathml") from None
+    if _expanded_mathml_name(root.tag)[1] != "math":
+        raise EquationVerificationRejected("invalid_mathml")
+    nodes = 0
+    text_chars = 0
+    stack = [(root, 1)]
+    while stack:
+        node, depth = stack.pop()
+        nodes += 1
+        if nodes > max_mathml_nodes or depth > max_mathml_depth:
+            raise EquationVerificationRejected("invalid_mathml")
+        namespace, name = _expanded_mathml_name(node.tag)
+        if namespace not in {None, MATHML_NAMESPACE}:
+            raise EquationVerificationRejected("invalid_mathml")
+        if name not in _ALLOWED_MATHML_TAGS or name == "mtext":
+            raise EquationVerificationRejected("invalid_mathml")
+        allowed_attributes = _PASSIVE_ATTRIBUTES_BY_TAG[name]
+        for key, value in node.attrib.items():
+            lowered = key.lower()
+            if (
+                "}" in key
+                or ":" in key
+                or lowered not in allowed_attributes
+                or len(value) > 128
+                or not value.isprintable()
+                or "url(" in value.lower()
+                or "http:" in value.lower()
+                or "https:" in value.lower()
+                or "data:" in value.lower()
+            ):
+                raise EquationVerificationRejected("invalid_mathml")
+        text_chars += len(node.text or "") + len(node.tail or "")
+        if text_chars > max_mathml_chars:
+            raise EquationVerificationRejected("invalid_mathml")
+        stack.extend((child, depth + 1) for child in list(node))
+    if nodes <= 1:
+        raise EquationVerificationRejected("invalid_mathml")
+    return _canonical_mathml_element(root)
+
+
 @dataclass(frozen=True)
 class ComparisonMetrics:
     ink_iou: float
@@ -310,74 +394,15 @@ class EquationVerifier:
         )
 
     def canonicalize_mathml(self, mathml: Any) -> str:
-        if (
-            not isinstance(mathml, str)
-            or not mathml
-            or len(mathml) > self.config.max_mathml_chars
-        ):
-            raise EquationVerificationRejected("invalid_mathml")
-        lowered = mathml.lower()
-        if "<?" in lowered or "<!" in lowered:
-            raise EquationVerificationRejected("invalid_mathml")
-        try:
-            root = ElementTree.fromstring(mathml)
-        except ElementTree.ParseError:
-            raise EquationVerificationRejected("invalid_mathml") from None
-        if self._local_name(root.tag) != "math":
-            raise EquationVerificationRejected("invalid_mathml")
-        nodes = 0
-        text_chars = 0
-        stack = [(root, 1)]
-        while stack:
-            node, depth = stack.pop()
-            nodes += 1
-            if (
-                nodes > self.config.max_mathml_nodes
-                or depth > self.config.max_mathml_depth
-            ):
-                raise EquationVerificationRejected("invalid_mathml")
-            namespace, name = self._expanded_name(node.tag)
-            if namespace not in {None, MATHML_NAMESPACE}:
-                raise EquationVerificationRejected("invalid_mathml")
-            if name not in _ALLOWED_MATHML_TAGS or name == "mtext":
-                raise EquationVerificationRejected("invalid_mathml")
-            allowed_attributes = _PASSIVE_ATTRIBUTES_BY_TAG[name]
-            for key, value in node.attrib.items():
-                lowered = key.lower()
-                if (
-                    "}" in key
-                    or ":" in key
-                    or lowered not in allowed_attributes
-                    or len(value) > 128
-                    or not value.isprintable()
-                    or "url(" in value.lower()
-                    or "http:" in value.lower()
-                    or "https:" in value.lower()
-                    or "data:" in value.lower()
-                ):
-                    raise EquationVerificationRejected("invalid_mathml")
-            text_chars += len(node.text or "") + len(node.tail or "")
-            if text_chars > self.config.max_mathml_chars:
-                raise EquationVerificationRejected("invalid_mathml")
-            stack.extend((child, depth + 1) for child in list(node))
-        if nodes <= 1:
-            raise EquationVerificationRejected("invalid_mathml")
-        return self._canonical_element(root)
+        return canonicalize_mathml(
+            mathml,
+            max_mathml_chars=self.config.max_mathml_chars,
+            max_mathml_nodes=self.config.max_mathml_nodes,
+            max_mathml_depth=self.config.max_mathml_depth,
+        )
 
     def _canonical_element(self, node: ElementTree.Element) -> str:
-        _, name = self._expanded_name(node.tag)
-        canonical = ElementTree.Element(name)
-        for key in sorted(node.attrib):
-            canonical.set(key, node.attrib[key])
-        canonical.text = node.text
-        for child in list(node):
-            child_xml = self._canonical_element(child)
-            child_element = ElementTree.fromstring(child_xml)
-            child_element.tail = child.tail
-            canonical.append(child_element)
-        return ElementTree.tostring(
-            canonical, encoding="unicode", short_empty_elements=True
-        )
+        return _canonical_mathml_element(node)
 
     @staticmethod
     def _local_name(tag: str) -> str:
@@ -385,15 +410,7 @@ class EquationVerifier:
 
     @staticmethod
     def _expanded_name(tag: str) -> tuple[Optional[str], str]:
-        if not tag.startswith("{"):
-            if "{" in tag or "}" in tag:
-                raise EquationVerificationRejected("invalid_mathml")
-            return None, tag.lower()
-        boundary = tag.find("}")
-        local = tag[boundary + 1 :] if boundary > 1 else ""
-        if boundary <= 1 or not local or "{" in local or "}" in local:
-            raise EquationVerificationRejected("invalid_mathml")
-        return tag[1:boundary], local.lower()
+        return _expanded_mathml_name(tag)
 
     def _compare(self, source: bytes, rendered: bytes) -> ComparisonMetrics:
         left = self._normalized_canvas(source)

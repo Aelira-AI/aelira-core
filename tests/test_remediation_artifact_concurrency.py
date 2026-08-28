@@ -282,6 +282,7 @@ def test_postgres_scan_lock_serializes_fix_writer_with_approval_gate():
         Column("review_status", String(20)),
         Column("written_back_at", String),
         Column("approval_checksum", String(64)),
+        Column("approval_review_digest", String(64)),
         Column("approved_by_id", String(36)),
         Column("approved_by_ref", String(255)),
         Column("approved_at", String),

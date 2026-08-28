@@ -18,7 +18,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 
@@ -34,15 +34,20 @@ from ..db.models import (
     User,
 )
 from ..education.equation_region_contract import PageRasterRegionLocator
+from ..education.visual_semantic_contract import VisualSemanticContract
 from ..education.reports.compliance_report import (
     AuditReportGenerator,
     bounded_audit_details,
 )
 from ..services.scan_fix_service import (
     apply_authenticated_batch_review,
+    bind_fix_review_decision,
     invalidate_current_artifact_approvals,
     lock_scan_review_graph,
+    valid_sha256,
     validate_fix_review_action,
+    validated_visual_semantic_contract,
+    visual_semantic_disposition,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,6 +100,14 @@ class FixSummary(BaseModel):
     review_notes: Optional[str] = None
     source_kind: Optional[str] = None
     source_locator: Optional[PageRasterRegionLocator] = None
+    visual_semantic_contract: Optional[VisualSemanticContract] = None
+    visual_semantic_disposition: Literal[
+        "complete", "legacy_incomplete", "invalid", "not_applicable"
+    ] = "not_applicable"
+    review_digest: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    approved_review_digest: Optional[str] = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
 
 
 class QueueItem(BaseModel):
@@ -209,6 +222,48 @@ def compute_doc_status(needs_review_count: int) -> str:
     A document is 'approved' when no fixes remain pending review.
     """
     return "approved" if needs_review_count == 0 else "pending"
+
+
+def _fix_summary(fix: ScanFix) -> FixSummary:
+    """Build a response from validated visual evidence only."""
+    disposition = visual_semantic_disposition(fix)
+    contract = (
+        validated_visual_semantic_contract(fix.visual_semantic_contract)
+        if disposition == "complete"
+        else None
+    )
+    source_locator = None
+    if fix.source_locator is not None:
+        try:
+            source_locator = PageRasterRegionLocator.model_validate(fix.source_locator)
+        except (TypeError, ValueError):
+            source_locator = None
+    return FixSummary(
+        id=fix.id,
+        category=fix.category,
+        severity=fix.severity,
+        description=fix.description,
+        confidence=fix.confidence,
+        fix_method=fix.fix_method,
+        needs_review=fix.needs_review,
+        review_status=fix.review_status,
+        page_number=fix.page_number,
+        original_content=fix.original_content,
+        fixed_content=fix.fixed_content,
+        wcag_criteria=fix.wcag_criteria,
+        location=fix.location,
+        review_notes=fix.review_notes,
+        source_kind=fix.source_kind,
+        source_locator=source_locator,
+        visual_semantic_contract=contract,
+        visual_semantic_disposition=disposition,
+        review_digest=fix.review_digest if valid_sha256(fix.review_digest) else None,
+        approved_review_digest=(
+            fix.approved_review_digest
+            if valid_sha256(fix.approved_review_digest)
+            else None
+        ),
+    )
 
 
 # -- Endpoints --
@@ -444,27 +499,7 @@ def get_document_review(
     return DocumentReview(
         scan_id=scan_id,
         file_name=scan.file_name,
-        fixes=[
-            FixSummary(
-                id=f.id,
-                category=f.category,
-                severity=f.severity,
-                description=f.description,
-                confidence=f.confidence,
-                fix_method=f.fix_method,
-                needs_review=f.needs_review,
-                review_status=f.review_status,
-                page_number=f.page_number,
-                original_content=f.original_content,
-                fixed_content=f.fixed_content,
-                wcag_criteria=f.wcag_criteria,
-                location=f.location,
-                review_notes=f.review_notes,
-                source_kind=f.source_kind,
-                source_locator=f.source_locator,
-            )
-            for f in fixes
-        ],
+        fixes=[_fix_summary(fix) for fix in fixes],
         matterhorn_total=total,
         matterhorn_passed=passed,
         matterhorn_failed=failed,
@@ -507,6 +542,11 @@ def review_fix(
                 detail="edited_content is required for edit action",
             )
         fix.fixed_content = body.edited_content
+
+    try:
+        bind_fix_review_decision(fix, body.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
     fix.review_status = "rejected" if body.action == "reject" else "approved"
     fix.reviewed_by = user_id
@@ -555,15 +595,18 @@ def batch_review(
         fixes = [fix for fix in fixes if fix.category == body.category]
     now = datetime.now(timezone.utc)
 
-    apply_authenticated_batch_review(
-        db,
-        scan_id=scan_id,
-        fixes=fixes,
-        action=body.action,
-        user_id=user_id,
-        reviewed_at=now,
-        notes=body.notes,
-    )
+    try:
+        apply_authenticated_batch_review(
+            db,
+            scan_id=scan_id,
+            fixes=fixes,
+            action=body.action,
+            user_id=user_id,
+            reviewed_at=now,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     invalidate_current_artifact_approvals(db, graph)
 
     db.add(

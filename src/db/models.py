@@ -825,6 +825,9 @@ class ScanFix(Base):
     source_kind = Column(String(32), nullable=True)
     source_locator = Column(JOB_JSON, nullable=True)
     verification_evidence = Column(JOB_JSON, nullable=True)
+    visual_semantic_contract = Column(JOB_JSON, nullable=True)
+    review_digest = Column(String(64), nullable=True)
+    approved_review_digest = Column(String(64), nullable=True)
     confidence = Column(Float, nullable=False, default=1.0, server_default="1.0")
     needs_review = Column(
         Boolean, nullable=False, default=False, server_default=text("false")
@@ -860,6 +863,20 @@ class ScanFix(Base):
         CheckConstraint(
             "source_locator IS NULL OR source_kind = 'image_equation'",
             name="ck_scan_fixes_source_locator",
+        ),
+        CheckConstraint(
+            "visual_semantic_contract IS NULL OR "
+            "(source_kind IS NOT NULL AND source_kind = 'image_equation')",
+            name="ck_scan_fixes_visual_semantic_contract",
+        ),
+        CheckConstraint(
+            f"review_digest IS NULL OR ({_lower_hex_64_constraint('review_digest')})",
+            name="ck_scan_fixes_review_digest",
+        ),
+        CheckConstraint(
+            "approved_review_digest IS NULL OR "
+            f"({_lower_hex_64_constraint('approved_review_digest')})",
+            name="ck_scan_fixes_approved_review_digest",
         ),
         UniqueConstraint(
             "scan_id", "occurrence_key", name="uq_scan_fixes_scan_occurrence"
@@ -1719,6 +1736,7 @@ class RemediationArtifact(Base):
         String(20), nullable=False, default="pending", server_default=text("'pending'")
     )
     approval_checksum = Column(String(64), nullable=True)
+    approval_review_digest = Column(String(64), nullable=True)
     approved_by_id = Column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -1784,6 +1802,11 @@ class RemediationArtifact(Base):
         CheckConstraint(
             "sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_remediation_artifacts_sha256",
+        ),
+        CheckConstraint(
+            "approval_review_digest IS NULL OR "
+            f"({_lower_hex_64_constraint('approval_review_digest')})",
+            name="ck_remediation_artifacts_approval_review_digest",
         ),
         CheckConstraint(
             "lifecycle_status IN "

@@ -98,6 +98,16 @@ from .math_fixer import MathFixer, PendingScannedRegionAssociation
 from .equation_image_source import WorkingEquationRegionOccurrence
 from src.education.math_contracts import CONCRETE_MATH_ISSUE_TYPES
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
+from src.education.visual_semantic_contract import (
+    EmbeddedImageOccurrenceLocator,
+    FrozenPageRasterRegionLocator,
+    MathMLExpressionV1,
+    PrintedEquationContract,
+    PrintedEquationRoundtripEvidenceV1,
+    ScannedRegionFormulaSavedEvidenceV1,
+    StandaloneFormulaSavedEvidenceV1,
+    canonical_sha256,
+)
 
 MATH_SPECIALIST_ISSUE_TYPES = CONCRETE_MATH_ISSUE_TYPES
 from .contrast_flagger import ContrastFlagger
@@ -108,6 +118,190 @@ logger = logging.getLogger(__name__)
 _MAX_SCANNED_REGION_ASSOCIATIONS = 32
 _MAX_SCANNED_REGION_ASSOCIATIONS_PER_PAGE = 1
 _MAX_SCANNED_REGION_PAGES = 8
+
+
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _descriptor_sha256(descriptor: int) -> str:
+    """Hash one retained file identity without reopening its pathname."""
+    duplicate = os.dup(descriptor)
+    try:
+        os.lseek(duplicate, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        while chunk := os.read(duplicate, 1024 * 1024):
+            digest.update(chunk)
+        return digest.hexdigest()
+    finally:
+        os.close(duplicate)
+
+
+def _saved_embedded_occurrence(path: str | Path, pending: Any) -> Dict[str, Any]:
+    """Resolve the exact occurrence identity from the serialized PDF bytes."""
+    with fitz.open(str(path)) as document:
+        occurrences = _displayed_image_occurrences(
+            document[int(pending.page_number) - 1], int(pending.page_number)
+        )
+        matches = [
+            occurrence
+            for occurrence in occurrences
+            if occurrence["image_index"] == int(pending.image_index)
+            and occurrence["occurrence_ordinal"] == int(pending.occurrence_ordinal)
+            and all(
+                abs(float(left) - float(right)) <= 1e-6
+                for left, right in zip(occurrence["bbox"], pending.bbox)
+            )
+        ]
+        if len(matches) != 1:
+            raise ValueError("saved occurrence identity is unavailable")
+        occurrence = matches[0]
+        image = document.extract_image(int(occurrence["image_xref"])).get("image")
+        if not isinstance(image, bytes) or hashlib.sha256(image).hexdigest() != str(
+            pending.image_stream_sha256
+        ):
+            raise ValueError("saved occurrence image digest changed")
+        return occurrence
+
+
+def _saved_scanned_occurrence(path: str | Path, pending: Any) -> Dict[str, Any]:
+    """Resolve the serialized source image used by one scanned-region locator."""
+    locator = pending.locator
+    with fitz.open(str(path)) as document:
+        infos = list(document[int(locator.page_number) - 1].get_image_info(xrefs=True))
+        matching_xrefs = []
+        for image_index, info in enumerate(infos):
+            try:
+                image_xref = int(info.get("xref") or 0)
+                image = document.extract_image(image_xref).get("image")
+            except Exception:
+                continue
+            if (
+                image_index == int(locator.image_index)
+                and isinstance(image, bytes)
+                and hashlib.sha256(image).hexdigest() == locator.source_sha256
+                and all(
+                    abs(float(left) - float(right)) <= 1e-6
+                    for left, right in zip(info.get("bbox", ()), pending.parent_bbox)
+                )
+            ):
+                matching_xrefs.append(image_xref)
+        if len(matching_xrefs) != 1:
+            raise ValueError("saved scanned-region source identity is unavailable")
+        occurrences = _displayed_image_occurrences(
+            document[int(locator.page_number) - 1], int(locator.page_number)
+        )
+        matches = [
+            occurrence
+            for occurrence in occurrences
+            if occurrence["image_xref"] == matching_xrefs[0]
+            and occurrence["image_index"] == int(locator.image_index)
+            and occurrence["occurrence_ordinal"] == int(locator.occurrence_ordinal)
+            and all(
+                abs(float(left) - float(right)) <= 1e-6
+                for left, right in zip(occurrence["bbox"], pending.parent_bbox)
+            )
+        ]
+        if len(matches) != 1:
+            raise ValueError("saved scanned-region occurrence is unavailable")
+        return matches[0]
+
+
+def _printed_equation_contract(
+    path: str | Path, pending: Any, association: Any
+) -> PrintedEquationContract:
+    """Build a complete contract from bytes that passed reverse verification."""
+    semantic = MathMLExpressionV1(
+        semantic_kind="mathml_expression_v1",
+        mathml=str(pending.mathml_string),
+        alt_text=str(pending.alt_text),
+        mathml_sha256=hashlib.sha256(
+            str(pending.mathml_string).encode("utf-8")
+        ).hexdigest(),
+    )
+    roundtrip = PrintedEquationRoundtripEvidenceV1(
+        evidence_kind="printed_equation_roundtrip_v1",
+        **asdict(pending.verification_evidence),
+    )
+    saved_file_sha256 = _file_sha256(path)
+    alt_text_sha256 = hashlib.sha256(str(pending.alt_text).encode("utf-8")).hexdigest()
+
+    if isinstance(pending, PendingScannedRegionAssociation):
+        saved_occurrence = _saved_scanned_occurrence(path, pending)
+        locator = FrozenPageRasterRegionLocator.model_validate(
+            pending.locator.model_dump(mode="json")
+        )
+        saved = ScannedRegionFormulaSavedEvidenceV1(
+            evidence_kind="scanned_region_formula_saved_v1",
+            passed=True,
+            saved_file_sha256=saved_file_sha256,
+            page_number=int(association.page_number),
+            image_xref=int(saved_occurrence["image_xref"]),
+            resource_name=str(association.resource_name),
+            struct_parent=int(association.struct_parent),
+            mcid=int(association.mcid),
+            mathml_sha256=str(association.mathml_sha256),
+            alt_text_sha256=alt_text_sha256,
+            image_stream_sha256=str(pending.locator.source_sha256),
+            formula_bbox=tuple(association.formula_bbox),
+            render_signatures=tuple(association.render_signatures),
+            ocr_resource_name=str(association.ocr_resource_name),
+            ocr_struct_parent=int(association.ocr_struct_parent),
+            ocr_group_owners=tuple(association.ocr_group_owners),
+            ocr_before_mcids=tuple(association.ocr_before_mcids),
+            ocr_after_mcids=tuple(association.ocr_after_mcids),
+            ocr_payload_sha256=str(association.ocr_payload_sha256),
+            ocr_font_sha256=str(association.ocr_font_sha256),
+            page_text_sha256=str(association.page_text_sha256),
+        )
+        normalized_source_sha256 = str(pending.normalized_crop_sha256)
+    else:
+        occurrence = _saved_embedded_occurrence(path, pending)
+        locator = EmbeddedImageOccurrenceLocator(
+            source_kind="embedded_image_occurrence",
+            page_number=int(occurrence["page_number"]),
+            image_xref=int(occurrence["image_xref"]),
+            image_index=int(occurrence["image_index"]),
+            occurrence_ordinal=int(occurrence["occurrence_ordinal"]),
+            bbox=tuple(occurrence["bbox"]),
+            image_stream_sha256=str(pending.image_stream_sha256),
+            occurrence_id=str(occurrence["occurrence_id"]),
+        )
+        saved = StandaloneFormulaSavedEvidenceV1(
+            evidence_kind="standalone_formula_saved_v1",
+            passed=True,
+            saved_file_sha256=saved_file_sha256,
+            page_number=int(occurrence["page_number"]),
+            image_xref=int(occurrence["image_xref"]),
+            occurrence_ordinal=int(occurrence["occurrence_ordinal"]),
+            struct_parent=int(association.struct_parent),
+            mcid=int(association.mcid),
+            mathml_sha256=str(association.mathml_sha256),
+            alt_text_sha256=alt_text_sha256,
+            image_stream_sha256=str(pending.image_stream_sha256),
+        )
+        normalized_source_sha256 = str(pending.verification_evidence.source_sha256)
+
+    specialist_material = {
+        "contract_kind": "printed_equation",
+        "locator": locator,
+        "semantic_output": semantic,
+        "normalized_source_sha256": normalized_source_sha256,
+    }
+    specialist_sha256 = canonical_sha256(specialist_material)
+    contract_material = {
+        **specialist_material,
+        "verification_evidence": (roundtrip, saved),
+        "specialist_sha256": specialist_sha256,
+    }
+    return PrintedEquationContract(
+        **contract_material,
+        contract_sha256=canonical_sha256(contract_material),
+    )
 
 
 _ALLOWED_PYMUPDF_HTML_TAGS = frozenset(
@@ -554,6 +748,9 @@ class PdfRemediator(BaseRemediator):
         self._content_tagger_stats: Optional[Dict[str, int]] = None
         self._pending_image_equations: List[tuple[Any, Any]] = []
         self._verified_image_equations: List[tuple[Any, Any, Any]] = []
+        # Exact identity of a final PDF published by this remediator instance.
+        # Cleanup must never infer ownership merely from the deterministic name.
+        self._published_output_binding: Optional[tuple[str, int, int, str]] = None
 
         # WCAG criteria mapping per issue category
         self._wcag_map: Dict[IssueCategory, str] = {
@@ -585,6 +782,9 @@ class PdfRemediator(BaseRemediator):
         (contrast reporting, save, verify).
         """
 
+        # Ownership is scoped to this invocation; a deterministic destination
+        # left by an earlier call is caller-owned input, not cleanup material.
+        self._published_output_binding = None
         try:
             logger.info("Starting two-phase remediation of %s", self.file_path)
 
@@ -1670,6 +1870,7 @@ class PdfRemediator(BaseRemediator):
     def _save_document(self, document: Any) -> str:
         """Prepare privately and publish through retained directory descriptors."""
         output_path = self._get_output_path()
+        self._published_output_binding = None
         logger.info(f"Saving remediated PDF to: {output_path}")
 
         output_dir = Path(output_path).parent
@@ -1800,11 +2001,18 @@ class PdfRemediator(BaseRemediator):
             self._verify_current_path_binding(
                 output_dir_fd, str(output_dir), purpose="output directory"
             )
+            published_output_path = str(output_dir.resolve(strict=True) / output_name)
             os.rename(
                 "candidate.pdf",
                 output_name,
                 src_dir_fd=candidate_dir_fd,
                 dst_dir_fd=output_dir_fd,
+            )
+            self._published_output_binding = (
+                published_output_path,
+                pdf_candidate_identity[0],
+                pdf_candidate_identity[1],
+                validated_candidate_sha256,
             )
             logger.info("Atomically published validated PDF: %s", output_path)
 
@@ -2206,7 +2414,7 @@ class PdfRemediator(BaseRemediator):
     ) -> tuple[str, tuple[int, int]]:
         """Create one private candidate child through the bound output fd."""
         for _ in range(100):
-            candidate_name = f"{prefix}{secrets.token_hex(4)}"
+            candidate_name = f"{prefix}{secrets.token_hex(16)}"
             try:
                 os.mkdir(candidate_name, 0o700, dir_fd=output_dir_fd)
             except FileExistsError:
@@ -2848,12 +3056,28 @@ class PdfRemediator(BaseRemediator):
                     raise RuntimeError(
                         "Post-save table association verification failed"
                     )
+                verified_contracts = []
+                for association_index, (issue, staged, association) in enumerate(
+                    staged_associations
+                ):
+                    working_pending = associated_pending_requests[association_index]
+                    try:
+                        contract = _printed_equation_contract(
+                            verification_output_path,
+                            working_pending,
+                            association,
+                        )
+                    except (TypeError, ValueError) as exc:
+                        raise RuntimeError(
+                            "Verified image equation provenance contract failed"
+                        ) from exc
+                    verified_contracts.append((issue, staged, association, contract))
                 if transaction_fitz is not None:
                     transaction_fitz.close()
                     transaction_fitz = None
                 os.replace(verification_output_path, output_path)
                 verification_output_path = None
-                self._verified_image_equations = staged_associations
+                self._verified_image_equations = verified_contracts
                 if working_pdf is not self._pikepdf_doc:
                     original_pdf = self._pikepdf_doc
                     self._pikepdf_doc = working_pdf
@@ -2877,7 +3101,6 @@ class PdfRemediator(BaseRemediator):
                 logger.error(f"Failed to save with pikepdf: {e}")
                 if getattr(self, "_table_expected_bound_cells", 0):
                     self._rollback_provisional_table_fixes()
-                    Path(output_path).unlink(missing_ok=True)
                     if not self._has_only_table_issues():
                         return self._write_pdf_output(document, output_path)
                     raise
@@ -2926,7 +3149,7 @@ class PdfRemediator(BaseRemediator):
             )
 
     def _discard_failed_table_output(self, output_path: str) -> None:
-        """Remove only the resolved deterministic output after refusal."""
+        """Remove only exact output bytes published by this remediation task."""
         source = Path(self.file_path)
         destination = Path(output_path)
         configured_directory = (
@@ -2954,15 +3177,87 @@ class PdfRemediator(BaseRemediator):
         if candidate == resolved_source:
             logger.warning("Refusing to remove the source PDF: %s", candidate)
             return
-        if candidate.is_dir() and not candidate.is_symlink():
-            logger.warning("Refusing to remove output directory: %s", candidate)
+        binding = self._published_output_binding
+        if binding is None or binding[0] != str(candidate):
             return
+        parent_fd: Optional[int] = None
+        output_fd: Optional[int] = None
+        quarantine_dir_fd: Optional[int] = None
+        quarantine_path: Optional[Path] = None
+        quarantined_entry = False
+        descriptor_matched_task = False
         try:
-            candidate.unlink(missing_ok=True)
-        except OSError as exc:
-            logger.warning(
-                "Could not remove failed table output %s: %s", candidate, exc
+            self._require_descriptor_publication_support()
+            parent_fd = self._open_bound_directory(
+                str(resolved_parent), purpose="failed table output directory"
             )
+            quarantine_name, quarantine_identity = self._create_candidate_directory(
+                parent_fd,
+                prefix=f".{candidate.stem}.failed-output-",
+            )
+            quarantine_path = resolved_parent / quarantine_name / "output"
+            quarantine_dir_fd = self._open_bound_directory(
+                quarantine_name,
+                purpose="failed output quarantine",
+                dir_fd=parent_fd,
+                expected_mode=0o700,
+            )
+            quarantine_metadata = os.fstat(quarantine_dir_fd)
+            if (
+                quarantine_metadata.st_dev,
+                quarantine_metadata.st_ino,
+            ) != quarantine_identity:
+                raise RuntimeError("Failed output quarantine identity changed")
+            # Atomically claim the current entry in a private directory. No
+            # quarantined pathname is later unlinked: portable POSIX APIs
+            # cannot bind pathname deletion atomically to a verified inode.
+            os.rename(
+                candidate.name,
+                "output",
+                src_dir_fd=parent_fd,
+                dst_dir_fd=quarantine_dir_fd,
+            )
+            quarantined_entry = True
+            self.result.output_file = None
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            output_fd = os.open("output", flags, dir_fd=quarantine_dir_fd)
+            metadata = os.fstat(output_fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino) != binding[1:3]
+                or _descriptor_sha256(output_fd) != binding[3]
+            ):
+                logger.warning(
+                    "Refusing to remove failed table output whose identity changed: %s",
+                    candidate,
+                )
+                return
+            descriptor_matched_task = True
+            self._published_output_binding = None
+        except FileNotFoundError:
+            return
+        except (OSError, RuntimeError) as exc:
+            logger.warning("Could not verify failed table output safely: %s", exc)
+            return
+        finally:
+            if quarantined_entry and quarantine_dir_fd is not None:
+                self._published_output_binding = None
+                warning = (
+                    "Failed table cleanup retained unverified output at "
+                    f"'{quarantine_path}' rather than deleting mutable pathname bytes"
+                )
+                if descriptor_matched_task:
+                    warning += "; retained descriptor initially matched task ownership"
+                logger.warning(warning)
+                self.result.warnings.append(warning)
+            for descriptor in (output_fd, quarantine_dir_fd, parent_fd):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
 
     # Issue types ContentTaggerV2 always resolves when it completes, and
     # those it only resolves when it actually tagged content blocks
@@ -3028,8 +3323,13 @@ class PdfRemediator(BaseRemediator):
         if not self._verified_image_equations:
             return
         remaining_manual = list(self.result.manual_issues)
-        for issue, staged, association in self._verified_image_equations:
+        for verified in self._verified_image_equations:
+            if len(verified) != 4:
+                continue
+            issue, staged, association, contract = verified
             if not getattr(association, "success", False):
+                continue
+            if not isinstance(contract, PrintedEquationContract):
                 continue
             matching = [
                 manual for manual in remaining_manual if manual.issue_id == issue.id
@@ -3056,6 +3356,7 @@ class PdfRemediator(BaseRemediator):
                 source_kind="image_equation",
                 source_locator=source_locator,
                 verification_evidence=evidence,
+                visual_semantic_contract=contract,
                 wcag_criteria="1.1.1",
                 page_number=staged.page_number,
             )

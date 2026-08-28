@@ -16,16 +16,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.db.models import CloudProvider, ScanFix
-from src.education.remediation.base import (
-    FixedIssue,
-    IssueCategory,
-    IssueSeverity,
-    RemediationResult,
-    VerificationEvidence,
-)
+from src.education.remediation.base import RemediationResult
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.services.remediation_artifact_service import ArtifactPublicationResult
 from src.services.scan_fix_service import ScanReviewGraph
+from tests.test_image_equation_review_gate import EVIDENCE, _fix as _typed_equation_fix
 
 CLAIMED_PDF = b"%PDF-1.7\nbrightspace descriptor claim\n%%EOF\n"
 
@@ -269,34 +264,13 @@ async def _run_pdf_outer(
 
 def _image_equation_result(output_path: Path) -> RemediationResult:
     output_path.write_bytes(CLAIMED_PDF)
-    evidence = VerificationEvidence(
-        passed=True,
-        source_sha256="1" * 64,
-        rendered_sha256="2" * 64,
-        mathml_sha256="3" * 64,
-        renderer_version="chromium-test",
-        comparator_version="pixel-test",
-        font_sha256="4" * 64,
-        threshold_version="printed-equation-v1",
-        ink_iou=0.95,
-        pixel_similarity=0.99,
-        required_ink_iou=0.90,
-        required_pixel_similarity=0.98,
-    )
-    fixed = FixedIssue(
+    fixed = _typed_equation_fix(
         issue_id="image-equation-1",
-        category=IssueCategory.STRUCTURE,
-        severity=IssueSeverity.HIGH,
         description="Image equation lacked an accessible formula",
         location="page 1 / image 0 / occurrence 0",
         fixed_content="Associated verified Formula, Alt, and MathML",
-        fix_method="ai_vision",
-        confidence=0.55,
-        needs_review=True,
         provider_used="ollama",
         model_used="vision-test",
-        source_kind="image_equation",
-        verification_evidence=evidence,
         page_number=1,
     )
     result = RemediationResult(
@@ -347,7 +321,7 @@ async def test_brightspace_pdf_persists_real_image_equation_review_evidence(
     assert row.needs_review is True
     assert row.review_status == "pending"
     assert row.verification_evidence["threshold_version"] == "printed-equation-v1"
-    assert row.verification_evidence["source_sha256"] == "1" * 64
+    assert row.verification_evidence["source_sha256"] == EVIDENCE["source_sha256"]
 
 
 @pytest.mark.asyncio

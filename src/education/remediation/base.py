@@ -33,6 +33,12 @@ from pydantic import (
 )
 
 from src.education.equation_region_contract import PageRasterRegionLocator
+from src.education.visual_semantic_contract import (
+    EmbeddedImageOccurrenceLocator,
+    FrozenPageRasterRegionLocator,
+    PrintedEquationRoundtripEvidenceV1,
+    VisualSemanticContract,
+)
 from src.education.math_contracts import (
     MATH_ISSUE_TYPES,
     SCANNED_EQUATION_REGION_ISSUE_TYPE,
@@ -337,6 +343,7 @@ class FixedIssue(BaseModel):
     source_kind: Optional[str] = Field(default=None, min_length=1, max_length=32)
     source_locator: Optional[PageRasterRegionLocator] = None
     verification_evidence: Optional[VerificationEvidence] = None
+    visual_semantic_contract: Optional[VisualSemanticContract] = None
     verification_passed: bool = True
     notes: Optional[str] = None
     wcag_criteria: Optional[str] = None
@@ -348,6 +355,52 @@ class FixedIssue(BaseModel):
             raise ValueError(
                 "page raster region locator requires image_equation source"
             )
+        contract = self.visual_semantic_contract
+        if contract is None:
+            return self
+        if (
+            self.source_kind != "image_equation"
+            or self.provider_used is None
+            or self.model_used is None
+            or self.verification_evidence is None
+            or self.page_number is None
+            or self.verification_passed is not True
+            or self.fixed_content != contract.semantic_output.alt_text
+            or self.page_number != contract.locator.page_number
+        ):
+            raise ValueError(
+                "visual semantic contract requires a complete image equation envelope"
+            )
+
+        roundtrip = next(
+            (
+                evidence
+                for evidence in contract.verification_evidence
+                if isinstance(evidence, PrintedEquationRoundtripEvidenceV1)
+            ),
+            None,
+        )
+        if roundtrip is None or self.verification_evidence.model_dump(mode="json") != (
+            roundtrip.model_dump(mode="json", exclude={"evidence_kind"})
+        ):
+            raise ValueError(
+                "visual semantic contract evidence does not match legacy evidence"
+            )
+
+        if isinstance(contract.locator, FrozenPageRasterRegionLocator):
+            if self.source_locator is None or self.source_locator.model_dump(
+                mode="json"
+            ) != contract.locator.model_dump(mode="json"):
+                raise ValueError(
+                    "visual semantic contract locator does not match legacy locator"
+                )
+        elif isinstance(contract.locator, EmbeddedImageOccurrenceLocator):
+            if self.source_locator is not None:
+                raise ValueError(
+                    "embedded visual semantic contracts cannot use a region locator"
+                )
+        else:
+            raise ValueError("unsupported visual semantic contract locator")
         return self
 
 
@@ -1164,6 +1217,9 @@ class BaseRemediator(ABC):
         source_kind: Optional[str] = None,
         source_locator: Optional[PageRasterRegionLocator | Dict[str, Any]] = None,
         verification_evidence: Optional[Dict[str, Any]] = None,
+        visual_semantic_contract: Optional[
+            VisualSemanticContract | Dict[str, Any]
+        ] = None,
         wcag_criteria: Optional[str] = None,
         page_number: Optional[int] = None,
     ) -> None:
@@ -1185,6 +1241,7 @@ class BaseRemediator(ABC):
                 source_kind=source_kind,
                 source_locator=source_locator,
                 verification_evidence=verification_evidence,
+                visual_semantic_contract=visual_semantic_contract,
                 notes=notes,
                 wcag_criteria=wcag_criteria,
                 page_number=page_number,

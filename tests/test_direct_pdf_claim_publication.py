@@ -24,15 +24,10 @@ from src.db.models import (
     ScanType,
     UserRole,
 )
-from src.education.remediation.base import (
-    FixedIssue,
-    IssueCategory,
-    IssueSeverity,
-    RemediationResult,
-    VerificationEvidence,
-)
+from src.education.remediation.base import RemediationResult
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.services.remediation_artifact_service import ArtifactPublicationResult
+from tests.test_image_equation_review_gate import EVIDENCE, _fix as _typed_equation_fix
 
 CLAIMED_BYTES = b"%PDF-1.7\nexact descriptor-bound remediation\n%%EOF\n"
 
@@ -120,33 +115,13 @@ class _RouteDB:
 
 class _DirectPdfResult(SimpleNamespace):
     def __init__(self, output_path: Path, *, with_claim: bool = True):
-        fixed = FixedIssue(
+        fixed = _typed_equation_fix(
             issue_id="issue-1",
-            category=IssueCategory.STRUCTURE,
-            severity=IssueSeverity.HIGH,
             description="Associated verified image equation",
             location="page 1 / image 0 / occurrence 0",
             fixed_content="Formula, Alt, and MathML",
-            fix_method="ai_vision",
             model_used="vision-test",
             provider_used="ollama",
-            confidence=0.55,
-            needs_review=True,
-            source_kind="image_equation",
-            verification_evidence=VerificationEvidence(
-                passed=True,
-                source_sha256="1" * 64,
-                rendered_sha256="2" * 64,
-                mathml_sha256="3" * 64,
-                renderer_version="chromium-test",
-                comparator_version="pixel-test",
-                font_sha256="4" * 64,
-                threshold_version="printed-equation-v1",
-                ink_iou=0.95,
-                pixel_similarity=0.99,
-                required_ink_iou=0.90,
-                required_pixel_similarity=0.98,
-            ),
             wcag_criteria="1.1.1",
             page_number=1,
         )
@@ -394,7 +369,9 @@ async def test_direct_pdf_persists_real_image_equation_remediation_result(tmp_pa
     persisted = [row for row in run.db.added if isinstance(row, ScanFix)]
     assert len(persisted) == 1
     assert persisted[0].source_kind == "image_equation"
-    assert persisted[0].verification_evidence["source_sha256"] == "1" * 64
+    assert (
+        persisted[0].verification_evidence["source_sha256"] == EVIDENCE["source_sha256"]
+    )
     assert result.has_output_claim() is False
 
 
@@ -443,7 +420,9 @@ async def test_direct_pdf_publishes_and_validates_exact_claim_after_path_tamper(
     assert persisted[0].issue_id == "issue-1"
     assert persisted[0].source_kind == "image_equation"
     assert persisted[0].review_status == "pending"
-    assert persisted[0].verification_evidence["source_sha256"] == "1" * 64
+    assert (
+        persisted[0].verification_evidence["source_sha256"] == EVIDENCE["source_sha256"]
+    )
     assert len(persisted[0].occurrence_key) == 64
 
     audit_fields = run.audit.log_remediation_complete.call_args.kwargs
@@ -561,6 +540,7 @@ async def test_direct_non_image_equation_matterhorn_exception_remains_advisory(
     result.fixed_issues[0].verification_evidence = None
     result.fixed_issues[0].provider_used = None
     result.fixed_issues[0].model_used = None
+    result.fixed_issues[0].visual_semantic_contract = None
     result.fixed_issues[0].fix_method = "rule"
 
     run = await _run_route(

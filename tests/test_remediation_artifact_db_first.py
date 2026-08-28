@@ -80,6 +80,39 @@ def _artifact(service, *, lifecycle="available", scan_type="WORD"):
 
 
 def _db(service, artifact, *, locked_scan_type="WORD"):
+    from src.services.scan_fix_service import (
+        artifact_approval_review_digest,
+        review_digest_for,
+    )
+
+    accepted_fix = SimpleNamespace(
+        issue_id="heading-1",
+        occurrence_key="c" * 64,
+        category="structure",
+        severity="high",
+        description="Heading level repaired",
+        location="page 1",
+        original_content="Heading",
+        fixed_content="Heading",
+        fix_method="automatic",
+        provider_used=None,
+        model_used=None,
+        source_kind=None,
+        source_locator=None,
+        verification_evidence=None,
+        visual_semantic_contract=None,
+        confidence=1.0,
+        needs_review=False,
+        wcag_criteria=["1.3.1"],
+        page_number=1,
+        review_status="auto_approved",
+    )
+    accepted_fix.review_digest = review_digest_for(accepted_fix)
+    accepted_fix.approved_review_digest = accepted_fix.review_digest
+    if artifact.review_status == "approved" and artifact.approval_review_digest is None:
+        artifact.approval_review_digest = artifact_approval_review_digest(
+            artifact.sha256, [accepted_fix]
+        )
     cloud = SimpleNamespace(
         id=CLOUD,
         department_id=DEPT,
@@ -104,6 +137,7 @@ def _db(service, artifact, *, locked_scan_type="WORD"):
         )
     )
     db = MagicMock()
+    db.accepted_fixes = [accepted_fix]
 
     def query(model):
         chain = MagicMock()
@@ -117,7 +151,7 @@ def _db(service, artifact, *, locked_scan_type="WORD"):
                 remediation_outcome=RemediationOutcome.COMPLETED.value,
             )
         elif model is ScanFix:
-            chain.all.return_value = [SimpleNamespace(review_status="approved")]
+            chain.all.return_value = db.accepted_fixes
         elif model is CloudFile:
             chain.one_or_none.return_value = cloud
         return chain
@@ -146,12 +180,15 @@ def test_approved_retry_rechecks_image_equation_human_review(tmp_path):
         return chain
 
     db.query.side_effect = query
-    with pytest.raises(ArtifactAuthorizationError, match="human review"):
+    with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
         service.approve(
             db,
             artifact_id=artifact.id,
             approved_by_ref="admin@example.com",
         )
+    assert artifact.review_status == "pending"
+    assert artifact.approval_checksum is None
+    assert artifact.approval_review_digest is None
 
 
 def test_open_verified_yields_descriptor_bound_stream_after_canonical_lock(tmp_path):
@@ -439,6 +476,8 @@ def test_approve_sets_writeback_deadline_and_retry_preserves_original_expiry(tmp
 
     assert artifact.approved_at == first
     assert artifact.approval_checksum == artifact.sha256
+    assert artifact.approval_review_digest is not None
+    assert artifact.approval_review_digest != artifact.approval_checksum
     assert artifact.expires_at == first + timedelta(days=30)
     assert artifact.provider_result == {"remediation_snapshot": {"issues_fixed": 3}}
 
@@ -530,6 +569,294 @@ def test_approve_retry_different_actor_or_checksum_conflicts(tmp_path):
         service.approve(
             db, artifact_id=artifact.id, approved_by_ref="admin@example.com"
         )
+
+
+def test_approved_open_invalidates_mismatched_or_missing_review_binding(tmp_path):
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, cloud = _db(service, artifact)
+    artifact.approval_review_digest = "d" * 64
+
+    with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
+        with service.open_verified(
+            db,
+            artifact,
+            department_id=DEPT,
+            scan_id=SCAN,
+            cloud_file_id=CLOUD,
+            require_approved=True,
+        ):
+            pass
+
+    assert artifact.review_status == "pending"
+    assert artifact.approval_checksum is None
+    assert artifact.approval_review_digest is None
+    assert cloud.writeback_status == "pending_review"
+
+    artifact.review_status = "approved"
+    artifact.approval_checksum = artifact.sha256
+    artifact.approved_by_ref = "admin@example.com"
+    artifact.approved_at = datetime.now(timezone.utc)
+    db.accepted_fixes[0].approved_review_digest = None
+    with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
+        with service.open_verified(
+            db,
+            artifact,
+            department_id=DEPT,
+            scan_id=SCAN,
+            cloud_file_id=CLOUD,
+            require_approved=True,
+        ):
+            pass
+    assert artifact.approval_review_digest is None
+
+
+def test_mark_written_invalidates_changed_accepted_fix_set(tmp_path):
+    from copy import copy
+    from src.services.scan_fix_service import review_digest_for
+
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, cloud = _db(service, artifact)
+    added = copy(db.accepted_fixes[0])
+    added.occurrence_key = "e" * 64
+    added.issue_id = "heading-2"
+    added.review_digest = review_digest_for(added)
+    added.approved_review_digest = added.review_digest
+    db.accepted_fixes.append(added)
+
+    with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
+        service.mark_written(db, artifact_id=artifact.id)
+
+    assert artifact.review_status == "pending"
+    assert artifact.approval_checksum is None
+    assert artifact.approval_review_digest is None
+    assert cloud.writeback_status == "pending_review"
+
+
+def test_approval_retry_requires_the_exact_current_accepted_fix_set(tmp_path):
+    from copy import copy
+    from src.services.scan_fix_service import review_digest_for
+
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, _ = _db(service, artifact)
+    added = copy(db.accepted_fixes[0])
+    added.occurrence_key = "e" * 64
+    added.issue_id = "heading-2"
+    added.review_digest = review_digest_for(added)
+    added.approved_review_digest = added.review_digest
+    db.accepted_fixes.append(added)
+
+    with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
+        service.approve(
+            db,
+            artifact_id=artifact.id,
+            approved_by_ref="admin@example.com",
+        )
+
+    assert artifact.review_status == "pending"
+    assert artifact.approval_checksum is None
+    assert artifact.approval_review_digest is None
+
+
+def test_written_artifact_reports_stale_review_without_mutating_terminal_state(
+    tmp_path,
+):
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, _ = _db(service, artifact)
+    artifact.written_back_at = datetime.now(timezone.utc)
+    artifact.approval_review_digest = "d" * 64
+    durable = (
+        artifact.review_status,
+        artifact.approval_checksum,
+        artifact.approval_review_digest,
+        artifact.approved_by_ref,
+        artifact.approved_at,
+    )
+
+    with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
+        service.mark_written(db, artifact_id=artifact.id)
+
+    assert (
+        artifact.review_status,
+        artifact.approval_checksum,
+        artifact.approval_review_digest,
+        artifact.approved_by_ref,
+        artifact.approved_at,
+    ) == durable
+
+
+def test_forced_terminal_rejection_clears_both_approval_bindings(tmp_path):
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, _ = _db(service, artifact)
+    assert artifact.approval_review_digest is not None
+
+    service._force_terminal_rejection(
+        artifact,
+        actor_ref="cleanup",
+        now=datetime.now(timezone.utc),
+    )
+
+    assert artifact.review_status == "rejected"
+    assert artifact.approval_checksum is None
+    assert artifact.approval_review_digest is None
+
+
+def test_stale_invalidation_survives_request_rollback(monkeypatch, tmp_path):
+    from sqlalchemy import JSON, Boolean, Column, DateTime, Float, String, create_engine
+    from sqlalchemy.orm import Session, declarative_base
+
+    from src.services import remediation_artifact_service as module
+    from src.services.scan_fix_service import review_digest_for
+
+    base = declarative_base()
+
+    class DurableFix(base):
+        __tablename__ = "durable_fixes"
+        id = Column(String, primary_key=True)
+        scan_id = Column(String, nullable=False)
+        issue_id = Column(String)
+        occurrence_key = Column(String)
+        category = Column(String)
+        severity = Column(String)
+        description = Column(String)
+        location = Column(String)
+        original_content = Column(String)
+        fixed_content = Column(String)
+        fix_method = Column(String)
+        provider_used = Column(String)
+        model_used = Column(String)
+        source_kind = Column(String)
+        source_locator = Column(JSON)
+        verification_evidence = Column(JSON)
+        visual_semantic_contract = Column(JSON)
+        confidence = Column(Float)
+        needs_review = Column(Boolean)
+        wcag_criteria = Column(JSON)
+        page_number = Column(String)
+        review_status = Column(String)
+        review_digest = Column(String)
+        approved_review_digest = Column(String)
+
+    class DurableArtifact(base):
+        __tablename__ = "durable_artifacts"
+        id = Column(String, primary_key=True)
+        scan_id = Column(String, nullable=False)
+        review_status = Column(String)
+        written_back_at = Column(DateTime(timezone=True))
+        sha256 = Column(String)
+        approval_checksum = Column(String)
+        approval_review_digest = Column(String)
+        approved_by_id = Column(String)
+        approved_by_ref = Column(String)
+        approved_at = Column(DateTime(timezone=True))
+
+    class DurableCloud(base):
+        __tablename__ = "durable_clouds"
+        id = Column(String, primary_key=True)
+        writeback_status = Column(String)
+        has_remediated_version = Column(Boolean)
+        remediation_origin = Column(String)
+
+    class DurableAudit(base):
+        __tablename__ = "durable_audits"
+        id = Column(String, primary_key=True, default=lambda: "audit-1")
+        scan_id = Column(String)
+        user_id = Column(String)
+        action = Column(String)
+        details = Column(JSON)
+
+    class CallerMutation(base):
+        __tablename__ = "caller_mutations"
+        id = Column(String, primary_key=True)
+        value = Column(String)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'stale.db'}")
+    base.metadata.create_all(engine)
+    fix = DurableFix(
+        id="fix-1",
+        scan_id=SCAN,
+        issue_id="heading-1",
+        occurrence_key="c" * 64,
+        category="structure",
+        severity="high",
+        description="Heading level repaired",
+        location="page 1",
+        original_content="Heading",
+        fixed_content="Heading",
+        fix_method="automatic",
+        confidence=1.0,
+        needs_review=False,
+        wcag_criteria=["1.3.1"],
+        page_number="1",
+        review_status="auto_approved",
+    )
+    fix.review_digest = review_digest_for(fix)
+    fix.approved_review_digest = fix.review_digest
+    artifact = DurableArtifact(
+        id="artifact-1",
+        scan_id=SCAN,
+        review_status="approved",
+        sha256="a" * 64,
+        approval_checksum="a" * 64,
+        approval_review_digest="d" * 64,
+        approved_by_id="user-1",
+        approved_by_ref="admin@example.com",
+        approved_at=datetime.now(timezone.utc),
+    )
+    cloud = DurableCloud(
+        id="cloud-1",
+        writeback_status="approved",
+        has_remediated_version=True,
+        remediation_origin="manual",
+    )
+    monkeypatch.setattr(module, "ScanFix", DurableFix)
+    monkeypatch.setattr(module, "ReviewAuditLog", DurableAudit)
+    service = module.RemediationArtifactService.__new__(
+        module.RemediationArtifactService
+    )
+    service._lock_existing_artifact = lambda session, _: (
+        SimpleNamespace(id=DEPT),
+        SimpleNamespace(
+            id=SCAN,
+            status=ScanStatus.COMPLETED,
+            remediation_outcome=RemediationOutcome.COMPLETED.value,
+        ),
+        session.get(DurableCloud, "cloud-1"),
+        None,
+        session.get(DurableArtifact, "artifact-1"),
+    )
+
+    with Session(engine) as session:
+        session.add_all([fix, artifact, cloud])
+        session.commit()
+        session.add(CallerMutation(id="must-rollback", value="partial writeback"))
+        with pytest.raises(module.ArtifactApprovalStaleError):
+            service._require_current_approval(
+                session,
+                artifact,
+                SimpleNamespace(
+                    status=ScanStatus.COMPLETED,
+                    remediation_outcome=RemediationOutcome.COMPLETED.value,
+                ),
+                cloud,
+            )
+        session.rollback()
+
+    with Session(engine) as session:
+        durable_artifact = session.get(DurableArtifact, "artifact-1")
+        durable_cloud = session.get(DurableCloud, "cloud-1")
+        assert durable_artifact.review_status == "pending"
+        assert durable_artifact.approval_checksum is None
+        assert durable_artifact.approval_review_digest is None
+        assert durable_artifact.approved_by_ref is None
+        assert durable_cloud.writeback_status == "pending_review"
+        assert durable_cloud.has_remediated_version is False
+        assert session.query(DurableAudit).count() == 1
+        assert session.get(CallerMutation, "must-rollback") is None
 
 
 def test_reject_retry_same_actor_preserves_timestamp_and_conflicts_other_actor(

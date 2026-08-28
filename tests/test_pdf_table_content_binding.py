@@ -1,5 +1,7 @@
 """Saved-file proofs for verified PDF table content binding."""
 
+import hashlib
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -568,7 +570,7 @@ def test_binding_exception_is_transactional_and_returns_manual_code(tmp_path):
     assert source.read_bytes() == before
 
 
-def test_v2_failure_reclassifies_provisional_table_and_publishes_nothing(
+def test_v2_failure_reclassifies_provisional_table_and_preserves_prior_output(
     monkeypatch, tmp_path
 ):
     source = Path(_make_table_pdf(tmp_path / "v2-failure.pdf"))
@@ -590,7 +592,7 @@ def test_v2_failure_reclassifies_provisional_table_and_publishes_nothing(
     assert result.fixed_count == 0
     assert result.manual_count == 1
     assert result.manual_issues[0].reason == TABLE_STRUCTURE_NOT_VERIFIED
-    assert not stale_output.exists()
+    assert stale_output.read_bytes() == b"stale output from a prior run"
 
 
 def test_v2_failure_rolls_back_table_but_preserves_mixed_title_fix(
@@ -648,10 +650,10 @@ def test_failed_saved_binding_verification_has_no_pymupdf_fallback(
     assert result.fixed_count == 0
     assert result.manual_count == 1
     assert result.manual_issues[0].reason == TABLE_STRUCTURE_NOT_VERIFIED
-    assert not stale_output.exists()
+    assert stale_output.read_bytes() == b"stale output from a prior run"
 
 
-def test_failed_bound_pdf_save_removes_stale_deterministic_output(
+def test_failed_bound_pdf_save_preserves_stale_deterministic_output(
     monkeypatch, tmp_path
 ):
     source = Path(_make_table_pdf(tmp_path / "saved-write-failure.pdf"))
@@ -671,7 +673,7 @@ def test_failed_bound_pdf_save_removes_stale_deterministic_output(
     assert result.fixed_count == 0
     assert result.manual_count == 1
     assert result.manual_issues[0].reason == TABLE_STRUCTURE_NOT_VERIFIED
-    assert not stale_output.exists()
+    assert stale_output.read_bytes() == b"stale output from a prior run"
 
 
 def test_failed_output_cleanup_refuses_files_outside_configured_directory(tmp_path):
@@ -694,3 +696,160 @@ def test_failed_output_cleanup_refuses_files_outside_configured_directory(tmp_pa
     remediator._discard_failed_table_output(str(unrelated))
 
     assert unrelated.read_bytes() == b"unrelated sentinel"
+
+
+def test_failed_output_cleanup_quarantines_preclaim_caller_replacement(
+    monkeypatch, tmp_path
+):
+    source = Path(_make_table_pdf(tmp_path / "cleanup-race.pdf"))
+    output = tmp_path / "cleanup-race_remediated.pdf"
+    task_bytes = b"task-published output"
+    caller_bytes = b"concurrent caller replacement"
+    output.write_bytes(task_bytes)
+    metadata = output.stat()
+    remediator = PdfRemediator(
+        str(source),
+        [_issue()],
+        RemediationConfig(
+            use_ai=False,
+            create_backup=False,
+            verify_fixes=False,
+            output_directory=str(tmp_path),
+        ),
+    )
+    remediator._published_output_binding = (
+        str(output.resolve()),
+        metadata.st_dev,
+        metadata.st_ino,
+        hashlib.sha256(task_bytes).hexdigest(),
+    )
+    replacement = tmp_path / "caller-replacement.pdf"
+    replacement.write_bytes(caller_bytes)
+    real_rename = os.rename
+    injected = False
+
+    def replace_immediately_before_cleanup_claim(*args, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            os.replace(replacement, output)
+        return real_rename(*args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", replace_immediately_before_cleanup_claim)
+
+    remediator._discard_failed_table_output(str(output))
+
+    assert injected is True
+    assert not output.exists()
+    retained = list(tmp_path.glob(".cleanup-race_remediated.failed-output-*/output"))
+    assert len(retained) == 1
+    assert retained[0].read_bytes() == caller_bytes
+    assert any(str(retained[0]) in warning for warning in remediator.result.warnings)
+
+
+def test_failed_output_cleanup_never_unlinks_postvalidation_replacement(
+    monkeypatch, tmp_path
+):
+    from src.education.remediation import pdf_remediator
+
+    source = Path(_make_table_pdf(tmp_path / "cleanup-postvalidate-race.pdf"))
+    output = tmp_path / "cleanup-postvalidate-race_remediated.pdf"
+    task_bytes = b"task-published output"
+    caller_bytes = b"caller bytes after validation"
+    output.write_bytes(task_bytes)
+    metadata = output.stat()
+    remediator = PdfRemediator(
+        str(source),
+        [_issue()],
+        RemediationConfig(
+            use_ai=False,
+            create_backup=False,
+            verify_fixes=False,
+            output_directory=str(tmp_path),
+        ),
+    )
+    remediator._published_output_binding = (
+        str(output.resolve()),
+        metadata.st_dev,
+        metadata.st_ino,
+        hashlib.sha256(task_bytes).hexdigest(),
+    )
+    replacement = tmp_path / "postvalidation-replacement.pdf"
+    replacement.write_bytes(caller_bytes)
+    real_descriptor_sha256 = pdf_remediator._descriptor_sha256
+
+    def replace_immediately_after_validation(descriptor):
+        digest = real_descriptor_sha256(descriptor)
+        quarantine = next(
+            tmp_path.glob(
+                ".cleanup-postvalidate-race_remediated.failed-output-*/output"
+            )
+        )
+        os.replace(replacement, quarantine)
+        return digest
+
+    monkeypatch.setattr(
+        pdf_remediator,
+        "_descriptor_sha256",
+        replace_immediately_after_validation,
+    )
+
+    remediator._discard_failed_table_output(str(output))
+
+    assert not output.exists()
+    retained = list(
+        tmp_path.glob(".cleanup-postvalidate-race_remediated.failed-output-*/output")
+    )
+    assert len(retained) == 1
+    assert retained[0].read_bytes() == caller_bytes
+    assert any(str(retained[0]) in warning for warning in remediator.result.warnings)
+
+
+def test_failed_output_cleanup_nonblocking_quarantines_fifo_replacement(
+    monkeypatch, tmp_path
+):
+    source = Path(_make_table_pdf(tmp_path / "cleanup-fifo-race.pdf"))
+    output = tmp_path / "cleanup-fifo-race_remediated.pdf"
+    task_bytes = b"task-published output"
+    output.write_bytes(task_bytes)
+    metadata = output.stat()
+    remediator = PdfRemediator(
+        str(source),
+        [_issue()],
+        RemediationConfig(
+            use_ai=False,
+            create_backup=False,
+            verify_fixes=False,
+            output_directory=str(tmp_path),
+        ),
+    )
+    remediator._published_output_binding = (
+        str(output.resolve()),
+        metadata.st_dev,
+        metadata.st_ino,
+        hashlib.sha256(task_bytes).hexdigest(),
+    )
+    fifo = tmp_path / "caller-fifo"
+    os.mkfifo(fifo)
+    real_rename = os.rename
+    injected = False
+
+    def replace_with_fifo_before_cleanup_claim(*args, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            output.unlink()
+            real_rename(fifo, output)
+        return real_rename(*args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", replace_with_fifo_before_cleanup_claim)
+
+    remediator._discard_failed_table_output(str(output))
+
+    assert injected is True
+    retained = list(
+        tmp_path.glob(".cleanup-fifo-race_remediated.failed-output-*/output")
+    )
+    assert len(retained) == 1
+    assert retained[0].is_fifo()
+    assert any("unverified output" in warning for warning in remediator.result.warnings)
