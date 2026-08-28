@@ -1,6 +1,6 @@
 """Department provisioning carries the regulatory deadline profile."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -35,12 +35,13 @@ def test_legacy_provisioning_payload_remains_valid_without_false_us_defaults():
 
 
 def test_provisioning_request_and_response_round_trip_deadline_profile():
-    custom = datetime(2027, 6, 1, tzinfo=timezone.utc)
+    custom = date(2027, 6, 1)
     request = _request(
         country_code="us",
         regulatory_framework="US_ADA_TITLE_II",
         title_ii_entity_class="small_or_special_district",
         custom_deadline=custom,
+        custom_deadline_verified=True,
     )
     department = _new_department_from_request(request)
     department.id = "department-1"
@@ -51,7 +52,7 @@ def test_provisioning_request_and_response_round_trip_deadline_profile():
     assert response.country_code == "US"
     assert response.regulatory_framework == "US_ADA_TITLE_II"
     assert response.title_ii_entity_class == "small_or_special_district"
-    assert response.custom_deadline == custom
+    assert response.custom_deadline == datetime(2027, 6, 1, tzinfo=timezone.utc)
 
 
 @pytest.mark.parametrize(

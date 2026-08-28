@@ -204,6 +204,10 @@ class Department(Base):
     custom_deadline = Column(
         DateTime(timezone=True), nullable=True
     )  # Override default deadline
+    custom_deadline_verified_at = Column(DateTime(timezone=True), nullable=True)
+    regulatory_profile_revision = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     timezone = Column(String(50), nullable=True, default="America/New_York")
 
     # BYOK (Bring Your Own Key) Configuration
@@ -2363,6 +2367,9 @@ class AuditLogAction(str, Enum):
     # LMS AI policy governance and execution
     LMS_AI_POLICY_UPDATE = "lms_ai_policy_update"
     LMS_AI_EXECUTION = "lms_ai_execution"
+
+    # Institution regulatory-profile governance
+    REGULATORY_PROFILE_UPDATE = "regulatory_profile_update"
 
 
 class AuditLogStatus(str, Enum):

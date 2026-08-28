@@ -38,6 +38,7 @@ from src.api.oauth_routes import (
 from src.api.analytics import router as analytics_router
 from src.api.lti_routes import router as lti_router  # Canvas LTI
 from src.api.llm_providers import router as llm_providers_router
+from src.api.regulatory_profile_routes import router as regulatory_profile_router
 from src.api.tts import router as tts_router
 from src.api.google_routes import (
     router as google_router,
@@ -206,6 +207,7 @@ app.include_router(education_router)
 app.include_router(analytics_router)
 app.include_router(lti_router)  # Canvas LTI
 app.include_router(llm_providers_router)  # LLM provider management API
+app.include_router(regulatory_profile_router)  # Institution regulatory profile
 app.include_router(tts_router)  # Text-to-Speech for accessibility
 app.include_router(google_router)  # Google Workspace integration
 app.include_router(microsoft_router)  # Microsoft 365 integration

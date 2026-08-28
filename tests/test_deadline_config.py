@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.education.deadline_config import DeadlineService
+from src.education.deadline_config import DeadlineService, ISO_ALPHA_2_COUNTRY_CODES
 
 
 def _department(**overrides):
@@ -14,9 +14,16 @@ def _department(**overrides):
         "regulatory_framework": None,
         "title_ii_entity_class": None,
         "custom_deadline": None,
+        "custom_deadline_verified_at": None,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_regulatory_profile_country_allowlist_is_complete_iso_alpha_2():
+    assert len(ISO_ALPHA_2_COUNTRY_CODES) == 249
+    assert {"AU", "CA", "DE", "GB", "US"} < ISO_ALPHA_2_COUNTRY_CODES
+    assert "ZZ" not in ISO_ALPHA_2_COUNTRY_CODES
 
 
 @pytest.mark.parametrize(
@@ -116,6 +123,7 @@ def test_custom_deadline_keeps_the_underlying_framework_and_standard():
             country_code="DE",
             regulatory_framework="EU_EAA",
             custom_deadline=datetime(2027, 2, 3, 12, tzinfo=timezone.utc),
+            custom_deadline_verified_at=datetime(2026, 8, 28, 12, tzinfo=timezone.utc),
         ),
         as_of=date(2027, 2, 1),
     )
@@ -127,6 +135,39 @@ def test_custom_deadline_keeps_the_underlying_framework_and_standard():
     assert info.framework_code == "EU_EAA"
     assert info.framework_name == "European Accessibility Act (EAA)"
     assert info.standard == "EN 301 549 (aligned with WCAG 2.1 AA)"
+
+
+def test_unverified_historical_custom_deadline_cannot_override_canonical_date():
+    info = DeadlineService.for_department(
+        _department(
+            country_code="DE",
+            regulatory_framework="EU_EAA",
+            custom_deadline=datetime(2030, 1, 15, tzinfo=timezone.utc),
+            custom_deadline_verified_at=None,
+        ),
+        as_of=date(2026, 8, 28),
+    )
+
+    assert info.deadline_date == date(2025, 6, 28)
+    assert (
+        info.message
+        != "An organization-specific accessibility target date is configured."
+    )
+
+
+def test_direct_trusted_deadline_resolution_preserves_custom_override_contract():
+    info = DeadlineService.get_deadline_info(
+        country_code="DE",
+        regulatory_framework="EU_EAA",
+        custom_deadline=datetime(2030, 1, 15, tzinfo=timezone.utc),
+        as_of=date(2029, 1, 1),
+    )
+
+    assert info.deadline_date == date(2030, 1, 15)
+    assert (
+        info.message
+        == "An organization-specific accessibility target date is configured."
+    )
 
 
 def test_explicit_implemented_framework_overrides_country():
