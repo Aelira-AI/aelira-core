@@ -5,7 +5,14 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .contracts import JobFailure, JobHandler, JobResult, JobSuccess, sanitize_json
+from .contracts import (
+    JobFailure,
+    JobHandler,
+    JobResult,
+    JobSuccess,
+    public_job_result,
+    sanitize_json,
+)
 
 EXECUTABLE_JOB_TYPES = frozenset(
     {
@@ -108,6 +115,10 @@ def adapt_legacy_handler(
         if result.get("success") is False:
             code = result.get("error_code") or result.get("error") or "handler_failed"
             failure_kind = result.get("failure_kind")
+            public_details = public_job_result(safe)
+            if public_details is not None:
+                public_details.pop("success", None)
+                public_details = public_details or None
             if failure_kind == "retryable":
                 return JobFailure.retryable(
                     code if isinstance(code, str) else "handler_failed"
@@ -117,7 +128,8 @@ def adapt_legacy_handler(
                     code if isinstance(code, str) else "handler_failed"
                 )
             return JobFailure.deterministic(
-                code if isinstance(code, str) else "handler_failed"
+                code if isinstance(code, str) else "handler_failed",
+                public_details,
             )
         return JobFailure.indeterminate("malformed_handler_result")
 

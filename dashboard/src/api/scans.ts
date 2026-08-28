@@ -114,6 +114,41 @@ export interface RemediationResult {
   remediated_score?: number;
 }
 
+export type RemediationJobLifecycleStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'failed';
+
+export interface RemediationJobStart {
+  job_id: string;
+  scan_id: string;
+  status: RemediationJobLifecycleStatus;
+  status_url: string;
+}
+
+export interface RemediationJobStatus extends RemediationJobStart {
+  progress: number;
+  progress_message: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error_code: string | null;
+  fixed_count: number | null;
+  manual_count: number | null;
+  failed_count: number | null;
+  skipped_count: number | null;
+  remaining_count: number | null;
+  total_issues: number | null;
+  original_score: number | null;
+  remediated_score: number | null;
+  improvement: number | null;
+  artifact_id: string | null;
+  download_available: boolean;
+  download_url: string | null;
+}
+
 export interface BatchRemediationResult {
   job_id: string;
   scan_ids: string[];
@@ -159,6 +194,16 @@ export interface ManagedArtifactMetadata {
   availability: 'available';
   approval_blockers: string[];
   can_approve: boolean;
+}
+
+function requireRemediationJobUrl(url: string, download: boolean): string {
+  const pattern = download
+    ? /^\/education\/remediation\/jobs\/[A-Za-z0-9-]+\/download$/
+    : /^\/education\/remediation\/jobs\/[A-Za-z0-9-]+$/;
+  if (!pattern.test(url)) {
+    throw new Error('Invalid remediation job URL');
+  }
+  return url;
 }
 
 export const scansApi = {
@@ -555,6 +600,69 @@ export const scansApi = {
       Object.keys(body).length > 0 ? body : {},
       { timeout: 300000 } // 5 minutes for remediation
     );
+    return response.data;
+  },
+
+  /**
+   * Start durable remediation without holding the request open for completion.
+   */
+  startRemediationJob: async (
+    scanId: string,
+    options: RemediationOptions = {},
+    signal?: AbortSignal
+  ): Promise<RemediationJobStart> => {
+    const params = new URLSearchParams();
+    if (options.use_ai !== undefined) {
+      params.append('use_ai', String(options.use_ai));
+    }
+    if (options.verify_fixes !== undefined) {
+      params.append('verify_fixes', String(options.verify_fixes));
+    }
+
+    const body: { latex_formats?: string[] } = {};
+    if (options.latex_formats && options.latex_formats.length > 0) {
+      body.latex_formats = options.latex_formats;
+    }
+
+    const response = await apiClient.post<RemediationJobStart>(
+      `/education/remediate/${encodeURIComponent(scanId)}${params.toString() ? '?' + params.toString() : ''}`,
+      Object.keys(body).length > 0 ? body : {},
+      { headers: { Prefer: 'respond-async' }, signal }
+    );
+    return response.data;
+  },
+
+  /**
+   * Read one durable remediation job from the relative URL returned by the API.
+   */
+  getRemediationJobStatus: async (
+    statusUrl: string,
+    signal?: AbortSignal
+  ): Promise<RemediationJobStatus> => {
+    const response = await apiClient.get<RemediationJobStatus>(
+      requireRemediationJobUrl(statusUrl, false),
+      { signal }
+    );
+    return response.data;
+  },
+
+  /**
+   * Resume the latest durable remediation job for a scan.
+   */
+  getLatestRemediationJob: async (scanId: string): Promise<RemediationJobStatus | null> => {
+    const response = await apiClient.get<RemediationJobStatus | null>(
+      `/education/scans/${encodeURIComponent(scanId)}/remediation/latest`
+    );
+    return response.data;
+  },
+
+  /**
+   * Download the artifact from the relative URL published by a completed job.
+   */
+  downloadRemediationJob: async (downloadUrl: string): Promise<Blob> => {
+    const response = await apiClient.get<Blob>(requireRemediationJobUrl(downloadUrl, true), {
+      responseType: 'blob',
+    });
     return response.data;
   },
 

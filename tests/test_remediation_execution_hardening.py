@@ -109,6 +109,57 @@ def test_public_router_exposes_durable_job_contracts():
     assert ("/remediate/batch", frozenset({"POST"})) in contracts
 
 
+def test_latest_remediation_job_returns_null_for_authorized_scan_without_history(
+    monkeypatch,
+):
+    scan = SimpleNamespace(id="scan-1", department_id="department-1")
+    scan_query = MagicMock()
+    scan_query.filter.return_value.one_or_none.return_value = scan
+    job_query = MagicMock()
+    job_query.filter.return_value.order_by.return_value.first.return_value = None
+    db = MagicMock()
+    db.query.side_effect = [scan_query, job_query]
+    principal = SimpleNamespace(department_id="department-1")
+    authorize = MagicMock()
+    monkeypatch.setattr(routes, "authorize_scan_access", authorize)
+
+    result = routes.get_latest_remediation_job("scan-1", db, principal)
+
+    assert result is None
+    authorize.assert_called_once_with(db, scan, principal)
+
+
+def test_public_job_shape_exposes_recorded_total_and_aggregate_remaining(monkeypatch):
+    job = SimpleNamespace(
+        id="job-1",
+        status="failed",
+        progress=100,
+        created_at=None,
+        updated_at=None,
+        started_at=None,
+        completed_at=None,
+        last_error_code="manual_required",
+        result_data={
+            "fixed_count": 2,
+            "manual_count": 1,
+            "failed_count": 2,
+            "skipped_count": 3,
+            "total_issues": 8,
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "_artifact_is_downloadable",
+        MagicMock(return_value=(False, None)),
+    )
+
+    result = routes._public_job_shape(MagicMock(), job, "scan-1")
+
+    assert result["fixed_count"] == 2
+    assert result["remaining_count"] == 6
+    assert result["total_issues"] == 8
+
+
 def test_local_enqueue_disables_retry_and_uses_scan_option_fingerprint(monkeypatch):
     scan = SimpleNamespace(id="scan-1", storage_path="/uploads/source.pdf")
     principal = SimpleNamespace(department_id="department-1", user_id="user-1")

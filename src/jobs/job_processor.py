@@ -25,6 +25,8 @@ from .contracts import (
     JobResult,
     JobSuccess,
     LostJobOwnership,
+    public_job_error_code,
+    public_job_result,
 )
 from .registry import JobRegistry, adapt_legacy_handler, build_default_registry
 
@@ -546,6 +548,11 @@ class JobProcessor:
         }
         retry_safe = result.details.get("retry_safe") is not False
         retryable = retryable_kind and retry_safe
+        persisted_error_code = result.code
+        if claim.job_type == "remediate":
+            persisted_error_code = (
+                public_job_error_code(result.code) or "remediation_failed"
+            )
         exhausted = claim.attempt_count >= claim.max_retries
         if retryable and not exhausted:
             return {
@@ -557,16 +564,21 @@ class JobProcessor:
                 "progress": 0,
                 "progress_message": "Queued for retry",
                 "result_data": result.details,
-                "error_message": result.code,
-                "last_error_code": result.code,
+                "error_message": persisted_error_code,
+                "last_error_code": persisted_error_code,
                 "last_error_retryable": True,
                 "updated_at": now,
             }
-        terminal_result = (
-            {**result.details, "retry_safe": False, "manual_required": True}
-            if retryable_kind and not retry_safe
-            else None
-        )
+        if result.kind is FailureKind.DETERMINISTIC:
+            terminal_result = public_job_result(result.details)
+        elif retryable_kind and not retry_safe:
+            terminal_result = {
+                **result.details,
+                "retry_safe": False,
+                "manual_required": True,
+            }
+        else:
+            terminal_result = None
         return {
             **clear,
             **effect_values,
@@ -574,8 +586,8 @@ class JobProcessor:
             "completed_at": now,
             "progress_message": "Failed",
             "result_data": terminal_result,
-            "error_message": result.code,
-            "last_error_code": result.code,
+            "error_message": persisted_error_code,
+            "last_error_code": persisted_error_code,
             "last_error_retryable": retryable,
             "updated_at": now,
         }

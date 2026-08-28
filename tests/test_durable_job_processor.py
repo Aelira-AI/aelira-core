@@ -218,6 +218,58 @@ async def test_registry_adapters_only_return_explicit_success():
     assert malformed_result.code == "malformed_handler_result"
 
 
+@pytest.mark.asyncio
+async def test_registry_adapter_keeps_only_public_failure_aggregates():
+    from src.jobs.contracts import JobFailure
+    from src.jobs.registry import adapt_legacy_handler
+
+    legacy = AsyncMock(
+        return_value={
+            "success": False,
+            "error": "manual_required",
+            "fixed_count": 2,
+            "manual_count": 1,
+            "failed_count": 0,
+            "skipped_count": 3,
+            "total_issues": 6,
+            "original_compliance_score": 74.5,
+            "remediated_compliance_score": 81,
+            "internal_error": "provider response contained private detail",
+            "source_path": "/private/remediation/source.pdf",
+            "retry_safe": False,
+            "publication_cleanup_pending": True,
+        }
+    )
+
+    result = await adapt_legacy_handler(legacy)(
+        SimpleNamespace(job_id="job-1"), MagicMock(), MagicMock()
+    )
+
+    assert result == JobFailure.deterministic(
+        "manual_required",
+        {
+            "fixed_count": 2,
+            "manual_count": 1,
+            "failed_count": 0,
+            "skipped_count": 3,
+            "total_issues": 6,
+            "original_compliance_score": 74.5,
+            "remediated_compliance_score": 81,
+        },
+    )
+    assert (
+        not {
+            "success",
+            "error",
+            "internal_error",
+            "source_path",
+            "retry_safe",
+            "publication_cleanup_pending",
+        }
+        & result.details.keys()
+    )
+
+
 def test_registry_startup_validation_covers_every_executable_type():
     from src.jobs.registry import EXECUTABLE_JOB_TYPES, JobRegistry
 
@@ -450,6 +502,81 @@ def test_retry_unsafe_failure_is_terminal_at_queue_boundary(kind):
     assert values["claim_token"] is None
     assert values["worker_id"] is None
     assert "scheduled_for" not in values
+
+
+def test_deterministic_failure_persists_only_public_result_details():
+    from src.jobs.contracts import JobFailure
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
+
+    class CapturingProcessor(JobProcessor):
+        def _fenced_update(self, claim, values):
+            self.finished_values = values
+            return True
+
+    worker = CapturingProcessor(registry=_complete_registry(AsyncMock()))
+    claim = ClaimedJob("job-1", "remediate", {}, "token-1", worker.worker_id, 1, 3)
+    failure = JobFailure.deterministic(
+        "manual_required",
+        {
+            "success": False,
+            "fixed_count": 2,
+            "manual_count": 1,
+            "failed_count": 0,
+            "internal_error": "provider response contained private detail",
+            "source_path": "/private/remediation/source.pdf",
+            "retry_safe": False,
+        },
+    )
+
+    assert worker._finish(claim, failure) is True
+    values = worker.finished_values
+    assert values["status"] == "failed"
+    assert values["last_error_code"] == "manual_required"
+    assert values["result_data"] == {
+        "success": False,
+        "fixed_count": 2,
+        "manual_count": 1,
+        "failed_count": 0,
+    }
+
+
+def test_deterministic_failure_without_public_details_persists_null():
+    from src.jobs.contracts import JobFailure
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
+
+    class CapturingProcessor(JobProcessor):
+        def _fenced_update(self, claim, values):
+            self.finished_values = values
+            return True
+
+    worker = CapturingProcessor(registry=_complete_registry(AsyncMock()))
+    claim = ClaimedJob("job-1", "remediate", {}, "token-1", worker.worker_id, 1, 3)
+
+    assert worker._finish(claim, JobFailure.deterministic("invalid_scope")) is True
+    assert worker.finished_values["result_data"] is None
+    assert worker.finished_values["error_message"] == "remediation_failed"
+    assert worker.finished_values["last_error_code"] == "remediation_failed"
+
+
+def test_remediation_failure_never_persists_path_bearing_error_code():
+    from src.jobs.contracts import JobFailure
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
+
+    class CapturingProcessor(JobProcessor):
+        def _fenced_update(self, claim, values):
+            self.finished_values = values
+            return True
+
+    worker = CapturingProcessor(registry=_complete_registry(AsyncMock()))
+    claim = ClaimedJob("job-1", "remediate", {}, "token-1", worker.worker_id, 1, 3)
+    private_error = "File not found: /private/remediation/source.pdf"
+
+    assert worker._finish(claim, JobFailure.deterministic(private_error)) is True
+    values = worker.finished_values
+    assert private_error not in values.values()
+    assert values["error_message"] == "remediation_failed"
+    assert values["last_error_code"] == "remediation_failed"
+    assert values["result_data"] is None
 
 
 @pytest.mark.parametrize("kind", ["retryable", "indeterminate"])

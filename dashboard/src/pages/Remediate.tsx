@@ -1,34 +1,28 @@
-import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
-  CheckCircle,
-  XCircle,
   AlertTriangle,
+  CheckCircle,
   Clock,
-  FileText,
   Download,
-  Play,
-  RotateCcw,
+  FileText,
   Loader,
-  Code,
-  LucideIcon,
+  Play,
+  RefreshCw,
+  XCircle,
+  type LucideIcon,
 } from 'lucide-react';
 import { scansApi } from '../api/scans';
-import type { RemediationResult } from '../api/scans';
+import type { RemediationJobStatus } from '../api/scans';
 import { Breadcrumbs } from '../components/layout/Breadcrumbs';
-import { trackEvent } from '../utils/analytics';
 import { useToast } from '../context/toast-context';
-
-type IssueStatusType = 'pending' | 'in_progress' | 'fixed' | 'manual' | 'failed';
-type ProgressStatus = 'idle' | 'running' | 'paused' | 'completed';
-
-interface StatusConfigItem {
-  icon: LucideIcon;
-  color: string;
-  bg: string;
-  label: string;
-  animate?: boolean;
-}
+import { trackEvent } from '../utils/analytics';
+import {
+  classifyRemediationJob,
+  createRemediationStartCoordinator,
+  pollRemediationJob,
+} from '../utils/remediationJob';
+import type { RemediationJobState } from '../utils/remediationJob';
 
 interface Issue {
   description?: string;
@@ -43,335 +37,320 @@ interface Scan {
   file_name?: string;
   issues?: Issue[];
   compliance_score?: number;
+  result?: { compliance_score?: number };
 }
 
-interface Progress {
-  current: number;
-  total: number;
-  status: ProgressStatus;
+type PageState =
+  | 'idle'
+  | RemediationJobState
+  | 'client_timeout'
+  | 'monitoring_error'
+  | 'request_failed';
+
+interface StatePresentation {
+  title: string;
+  description: string;
+  icon: LucideIcon;
+  color: string;
+  surface: string;
+  animate?: boolean;
 }
 
-interface ProgressBarProps {
-  current: number;
-  total: number;
-  label: string;
-}
-
-interface IssueRowProps {
-  issue: Issue;
-  status: IssueStatusType;
-  fixDetails: Record<string, unknown> | null;
-}
-
-interface BeforeAfterComparisonProps {
-  original: { score: number; issues: number };
-  remediated: { score: number; remaining_issues: number };
-}
-
-const STATUS_CONFIG: Record<IssueStatusType, StatusConfigItem> = {
-  pending: {
+const STATE_PRESENTATION: Record<PageState, StatePresentation> = {
+  idle: {
+    title: 'Ready to start',
+    description: 'Remediation runs as a durable background job. You can leave this page after it starts.',
     icon: Clock,
-    color: 'text-[var(--content-tertiary)]',
-    bg: 'bg-[var(--surface-tertiary)]',
-    label: 'Pending',
+    color: 'text-[var(--content-secondary)]',
+    surface: 'bg-[var(--surface-tertiary)]',
   },
-  in_progress: {
+  queued: {
+    title: 'Queued',
+    description: 'The server accepted this remediation job and will keep it available if you reload.',
+    icon: Clock,
+    color: 'text-[var(--feature-info-content)]',
+    surface: 'bg-[var(--feature-info-surface)]',
+  },
+  running: {
+    title: 'Remediation in progress',
+    description: 'The server is processing this document. Progress below comes from the durable job.',
     icon: Loader,
     color: 'text-[var(--feature-info-content)]',
-    bg: 'bg-[var(--feature-info-surface)]',
-    label: 'In Progress',
+    surface: 'bg-[var(--feature-info-surface)]',
     animate: true,
   },
-  fixed: {
+  completed: {
+    title: 'Remediation complete',
+    description: 'The server completed the job. Only recorded aggregate results are shown below.',
     icon: CheckCircle,
     color: 'text-[var(--feature-success-content)]',
-    bg: 'bg-[var(--feature-success-surface)]',
-    label: 'Fixed',
+    surface: 'bg-[var(--feature-success-surface)]',
   },
-  manual: {
+  partial: {
+    title: 'Manual review required',
+    description: 'Some work could not be completed automatically. No partial artifact was published.',
     icon: AlertTriangle,
     color: 'text-[var(--feature-warning-content)]',
-    bg: 'bg-[var(--feature-warning-surface)]',
-    label: 'Manual Review',
+    surface: 'bg-[var(--feature-warning-surface)]',
   },
-  failed: {
+  timed_out: {
+    title: 'Remediation timed out',
+    description: 'The server ended this job after its execution limit. No completion is claimed.',
     icon: XCircle,
     color: 'text-[var(--feature-danger-content)]',
-    bg: 'bg-[var(--feature-danger-surface)]',
-    label: 'Failed',
+    surface: 'bg-[var(--feature-danger-surface)]',
+  },
+  failed: {
+    title: 'Remediation failed',
+    description: 'The server reported a terminal failure. The original document remains available.',
+    icon: XCircle,
+    color: 'text-[var(--feature-danger-content)]',
+    surface: 'bg-[var(--feature-danger-surface)]',
+  },
+  client_timeout: {
+    title: 'Still running in the background',
+    description: 'This page stopped waiting after a bounded period. The server job may still be running.',
+    icon: Clock,
+    color: 'text-[var(--feature-warning-content)]',
+    surface: 'bg-[var(--feature-warning-surface)]',
+  },
+  monitoring_error: {
+    title: 'Job status temporarily unavailable',
+    description: 'The last server state is preserved. Check again without starting a duplicate job.',
+    icon: AlertTriangle,
+    color: 'text-[var(--feature-warning-content)]',
+    surface: 'bg-[var(--feature-warning-surface)]',
+  },
+  request_failed: {
+    title: 'Remediation could not be started',
+    description: 'The server did not confirm a queued job. Try again when the service is available.',
+    icon: XCircle,
+    color: 'text-[var(--feature-danger-content)]',
+    surface: 'bg-[var(--feature-danger-surface)]',
   },
 };
 
-function ProgressBar({ current, total, label }: ProgressBarProps): React.ReactElement {
-  const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
+function displayScore(score: number | null | undefined): string {
+  return typeof score === 'number' ? `${Math.round(score)}/100` : 'Not available';
+}
+
+function AggregateResults({ job }: { job: RemediationJobStatus }): React.ReactElement | null {
+  const values = [
+    { label: 'Fixed', value: job.fixed_count, color: 'text-[var(--feature-success-content)]' },
+    { label: 'Remaining', value: job.remaining_count, color: 'text-[var(--feature-warning-content)]' },
+    { label: 'Total issues', value: job.total_issues, color: 'text-primary' },
+    { label: 'Manual review', value: job.manual_count, color: 'text-[var(--feature-warning-content)]' },
+    { label: 'Failed', value: job.failed_count, color: 'text-[var(--feature-danger-content)]' },
+    { label: 'Skipped', value: job.skipped_count, color: 'text-[var(--content-secondary)]' },
+  ].filter((item): item is { label: string; value: number; color: string } =>
+    typeof item.value === 'number'
+  );
+
+  if (values.length === 0) return null;
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-secondary">{label}</span>
-        <span className="text-primary font-medium">{percentage}%</span>
-      </div>
-      <div className="h-3 bg-[var(--surface-tertiary)] rounded-full overflow-hidden">
-        <div
-          className="h-full bg-[var(--accent-solid)] transition-all duration-500 ease-out rounded-full"
-          style={{ width: `${percentage}%` }}
-        />
-      </div>
-      <p className="text-xs text-tertiary">
-        {current} of {total} issues processed
-      </p>
+    <div className={`grid gap-3 sm:grid-cols-2 ${values.length > 2 ? 'lg:grid-cols-4' : ''}`}>
+      {values.map((item) => (
+        <div key={item.label} className="rounded-lg border border-[var(--border-primary)] p-4 text-center">
+          <p className={`text-2xl font-bold ${item.color}`}>{item.value}</p>
+          <p className="mt-1 text-sm text-tertiary">{item.label}</p>
+        </div>
+      ))}
     </div>
   );
 }
 
-function IssueRow({ issue, status, fixDetails }: IssueRowProps): React.ReactElement {
-  const config = STATUS_CONFIG[status] || STATUS_CONFIG.pending;
-  const StatusIcon = config.icon;
+function ScoreComparison({ job, scan }: { job: RemediationJobStatus; scan: Scan }): React.ReactElement {
+  const originalScore = job.original_score ?? scan.compliance_score ?? scan.result?.compliance_score;
 
   return (
-    <div className="flex items-center justify-between p-3 border-b border-[var(--border-primary)] last:border-b-0">
-      <div className="flex items-center gap-3">
-        <div className={`p-1.5 rounded ${config.bg}`}>
-          <StatusIcon
-            className={`w-4 h-4 ${config.color} ${config.animate ? 'animate-spin' : ''}`}
-          />
-        </div>
-        <div>
-          <p className="text-sm font-medium text-primary">{issue.description || issue.message || issue.title || 'Accessibility issue'}</p>
-          <p className="text-xs text-tertiary">{issue.category || issue.severity || issue.rule || ''}</p>
-        </div>
+    <div className="grid gap-4 sm:grid-cols-2">
+      <div className="rounded-lg border border-[var(--border-primary)] p-4">
+        <p className="text-sm text-tertiary">Original score</p>
+        <p className="mt-2 text-xl font-semibold text-primary">{displayScore(originalScore)}</p>
       </div>
-      <div className="flex items-center gap-2">
-        <span className={`text-xs px-2 py-1 rounded ${config.bg} ${config.color}`}>
-          {config.label}
-        </span>
-        {fixDetails && (
-          <button
-            className="p-1.5 text-tertiary hover:text-accent transition-colors"
-            title="View fix details"
-          >
-            <Code className="w-4 h-4" />
-          </button>
-        )}
+      <div className="rounded-lg border border-[var(--border-primary)] p-4">
+        <p className="text-sm text-tertiary">Remediated score</p>
+        <p className="mt-2 text-xl font-semibold text-primary">{displayScore(job.remediated_score)}</p>
       </div>
     </div>
   );
 }
 
-function BeforeAfterComparison({ original, remediated }: BeforeAfterComparisonProps): React.ReactElement {
+function RecordedIssueRow({ issue }: { issue: Issue }): React.ReactElement {
   return (
-    <div className="card">
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <h4 className="text-sm font-medium text-tertiary mb-2">Original</h4>
-          <div className="p-4 rounded-lg bg-[var(--feature-danger-surface)] border border-[var(--feature-danger-content)] border-opacity-20">
-            <div className="flex items-center gap-2 mb-2">
-              <XCircle className="w-4 h-4 text-[var(--feature-danger-content)]" />
-              <span className="text-sm text-[var(--feature-danger-content)]">
-                Score: {original?.score || 0}/100
-              </span>
-            </div>
-            <p className="text-sm text-secondary">{original?.issues || 0} issues found</p>
-          </div>
+    <div className="flex flex-col items-start justify-between gap-3 border-b border-[var(--border-primary)] p-3 last:border-b-0 sm:flex-row sm:gap-4">
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="rounded bg-[var(--surface-tertiary)] p-1.5">
+          <FileText className="h-4 w-4 text-[var(--content-tertiary)]" aria-hidden="true" />
         </div>
-        <div>
-          <h4 className="text-sm font-medium text-tertiary mb-2">Remediated</h4>
-          <div className="p-4 rounded-lg bg-[var(--feature-success-surface)] border border-[var(--feature-success-content)] border-opacity-20">
-            <div className="flex items-center gap-2 mb-2">
-              <CheckCircle className="w-4 h-4 text-[var(--feature-success-content)]" />
-              <span className="text-sm text-[var(--feature-success-content)]">
-                Score: {remediated?.score || 0}/100
-              </span>
-            </div>
-            <p className="text-sm text-secondary">
-              {remediated?.remaining_issues || 0} issues remaining
-            </p>
-          </div>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-primary">
+            {issue.description || issue.message || issue.title || 'Accessibility issue'}
+          </p>
+          <p className="text-xs text-tertiary">
+            {issue.category || issue.severity || issue.rule || 'Recorded scan finding'}
+          </p>
         </div>
       </div>
+      <span className="shrink-0 rounded bg-[var(--surface-tertiary)] px-2 py-1 text-xs text-tertiary sm:self-start">
+        Outcome not reported
+      </span>
     </div>
   );
 }
 
-export function Remediate(): React.ReactElement {
-  const { scanId } = useParams<{ scanId: string }>();
+function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
   const navigate = useNavigate();
   const toast = useToast();
+  const pollController = useRef<AbortController | null>(null);
+  const startCoordinator = useRef(createRemediationStartCoordinator());
 
   const [scan, setScan] = useState<Scan | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [remediating, setRemediating] = useState<boolean>(false);
-  const [progress, setProgress] = useState<Progress>({
-    current: 0,
-    total: 0,
-    status: 'idle',
-  });
-  const [issueStatuses, setIssueStatuses] = useState<Record<number, IssueStatusType>>({});
-  const [result, setResult] = useState<RemediationResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [pageState, setPageState] = useState<PageState>('idle');
+  const [job, setJob] = useState<RemediationJobStatus | null>(null);
+  const [starting, setStarting] = useState(false);
+
+  const monitorJob = useCallback(async (statusUrl: string): Promise<void> => {
+    pollController.current?.abort();
+    const controller = new AbortController();
+    pollController.current = controller;
+
+    try {
+      const outcome = await pollRemediationJob(
+        (signal) => scansApi.getRemediationJobStatus(statusUrl, signal),
+        {
+          signal: controller.signal,
+          onUpdate: (updatedJob, state) => {
+            setJob(updatedJob);
+            setPageState(state);
+          },
+        }
+      );
+      if (outcome.outcome === 'client_timeout') {
+        if (outcome.job) setJob(outcome.job);
+        setPageState('client_timeout');
+        return;
+      }
+      setJob(outcome.job);
+      setPageState(outcome.state);
+      if (outcome.state === 'completed') {
+        toast.success('Remediation completed', 'Complete');
+      } else if (outcome.state === 'partial') {
+        toast.warning('Manual review is required', 'Remediation stopped');
+      } else if (outcome.state === 'failed' || outcome.state === 'timed_out') {
+        toast.error('Remediation did not complete', 'Remediation stopped');
+      }
+    } catch (error) {
+      if ((error as Error)?.name !== 'AbortError') {
+        setPageState('monitoring_error');
+      }
+    }
+  }, [toast]);
 
   useEffect(() => {
-    const fetchScan = async (): Promise<void> => {
-      try {
-        setLoading(true);
-        const data = await scansApi.getScan(scanId!);
-        // Issues may be at data.issues or nested in data.result.issues
-        const scanData = data as unknown as Record<string, unknown>;
-        const issues = (scanData.issues as Issue[])
-          || ((scanData.result as Record<string, unknown>)?.issues as Issue[])
-          || [];
-        const scanWithIssues = { ...data, issues } as Scan;
-        setScan(scanWithIssues);
-        setProgress((p) => ({ ...p, total: issues.length }));
+    let active = true;
+    const coordinator = startCoordinator.current;
+    coordinator.activate(scanId);
 
-        // Initialize issue statuses
-        const statuses: Record<number, IssueStatusType> = {};
-        issues.forEach((_issue, idx) => {
-          statuses[idx] = 'pending';
-        });
-        setIssueStatuses(statuses);
-      } catch (err) {
-        console.error('Failed to fetch scan:', err);
-        toast.error('Failed to load scan details', 'Error');
+    const load = async (): Promise<void> => {
+      if (!scanId) return;
+      try {
+        const data = await scansApi.getScan(scanId);
+        if (!active) return;
+        const scanData = data as unknown as Record<string, unknown>;
+        const result = scanData.result as Record<string, unknown> | undefined;
+        const issues = (scanData.issues as Issue[]) || (result?.issues as Issue[]) || [];
+        setStarting(false);
+        setScan({ ...(data as unknown as Scan), issues });
+
+        try {
+          const latest = await scansApi.getLatestRemediationJob(scanId);
+          if (!active) return;
+          if (latest === null) return;
+          const latestState = classifyRemediationJob(latest);
+          setJob(latest);
+          setPageState(latestState);
+          if (latestState === 'queued' || latestState === 'running') {
+            void monitorJob(latest.status_url);
+          }
+        } catch {
+          if (active) setPageState('monitoring_error');
+        }
+      } catch {
+        if (active) {
+          setScan(null);
+          toast.error('Failed to load scan details', 'Error');
+        }
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
-    if (scanId) {
-      fetchScan();
-    }
-  }, [scanId, toast]);
-
-  // TODO: Replace with real progress polling when remediation is made async
+    void load();
+    return () => {
+      active = false;
+      coordinator.invalidate();
+      pollController.current?.abort();
+    };
+  }, [monitorJob, scanId, toast]);
 
   const startRemediation = async (): Promise<void> => {
-    if (!scan) return;
-
-    trackEvent('dash-remediate-started', { scan_type: scan?.file_name?.split('.').pop() || 'unknown' });
-
-    setRemediating(true);
-    setProgress((p) => ({ ...p, status: 'running', current: 0 }));
+    if (!scanId || !scan || starting) return;
+    pollController.current?.abort();
+    const attempt = startCoordinator.current.begin(scanId);
+    setStarting(true);
+    setJob(null);
+    setPageState('queued');
+    trackEvent('dash-remediate-started', {
+      scan_type: scan.file_name?.split('.').pop() || 'unknown',
+    });
 
     try {
-      // TODO: Make remediation async with a progress endpoint so we can
-      // show real progress instead of waiting for the full response.
-      // Currently the API is synchronous — runs entire remediation and
-      // returns the result in one response.
-
-      // Mark all issues as in_progress while we wait
-      const issues = scan.issues || [];
-      const inProgressStatuses: Record<number, IssueStatusType> = {};
-      issues.forEach((_issue, idx) => {
-        inProgressStatuses[idx] = 'in_progress';
-      });
-      setIssueStatuses(inProgressStatuses);
-      setProgress((p) => ({ ...p, current: 0, status: 'running' }));
-
-      // Run the actual remediation (synchronous API call)
-      const response = await scansApi.remediateScan(scanId!, {
+      const started = await scansApi.startRemediationJob(scanId, {
         use_ai: true,
         verify_fixes: true,
-      });
-      setResult(response);
-
-      // Update statuses based on actual result
-      const fixedCount = response.fixed_count || response.fixed_issues?.length || 0;
-      const manualCount = response.manual_issues?.length || 0;
-      const newStatuses: Record<number, IssueStatusType> = {};
-
-      // Try to match by description/message first
-      const fixedDescs = new Set((response.fixed_issues || []).map((f: { description: string }) => f.description));
-      const manualDescs = new Set((response.manual_issues || []).map((m: { description: string }) => m.description));
-
-      let matchedFixed = 0;
-      let matchedManual = 0;
-
-      issues.forEach((issue: Issue, idx: number) => {
-        const desc = issue.description || issue.message || issue.title || '';
-        if (fixedDescs.has(desc)) {
-          newStatuses[idx] = 'fixed';
-          matchedFixed++;
-        } else if (manualDescs.has(desc)) {
-          newStatuses[idx] = 'manual';
-          matchedManual++;
-        }
-      });
-
-      // If description matching didn't work, assign by count
-      if (matchedFixed === 0 && fixedCount > 0) {
-        let assigned = 0;
-        issues.forEach((_issue: Issue, idx: number) => {
-          if (newStatuses[idx]) return; // already matched
-          if (assigned < fixedCount) {
-            newStatuses[idx] = 'fixed';
-            assigned++;
-          }
-        });
-      }
-      if (matchedManual === 0 && manualCount > 0) {
-        let assigned = 0;
-        issues.forEach((_issue: Issue, idx: number) => {
-          if (newStatuses[idx]) return;
-          if (assigned < manualCount) {
-            newStatuses[idx] = 'manual';
-            assigned++;
-          }
-        });
-      }
-
-      // Remaining are failed
-      issues.forEach((_issue: Issue, idx: number) => {
-        if (!newStatuses[idx]) {
-          newStatuses[idx] = 'failed';
-        }
-      });
-
-      setIssueStatuses(newStatuses);
-
-      setProgress((p) => ({ ...p, current: issues.length, status: 'completed' }));
-      toast.success(
-        `Remediation complete! ${response.fixed_count || 0} issues fixed.`,
-        'Success'
-      );
-    } catch (err: unknown) {
-      console.error('Remediation failed:', err);
-      const remediateError = err as Error;
-      toast.error(remediateError.message || 'Remediation failed', 'Error');
-      setProgress((p) => ({ ...p, status: 'idle' }));
+      }, attempt.signal);
+      if (!startCoordinator.current.isCurrent(attempt)) return;
+      setPageState(started.status === 'processing' ? 'running' : 'queued');
+      void monitorJob(started.status_url);
+    } catch {
+      if (!startCoordinator.current.isCurrent(attempt)) return;
+      setPageState('request_failed');
+      toast.error('Remediation could not be queued', 'Error');
     } finally {
-      setRemediating(false);
+      if (startCoordinator.current.isCurrent(attempt)) {
+        setStarting(false);
+      }
     }
   };
 
-  // Pause and Resume used to sit here. They only flipped a local label:
-  // remediation is a single synchronous request with no cancellation, so
-  // the work carried on regardless and the completion handler overwrote
-  // whatever the user had clicked. A control that does nothing is worse
-  // than no control, so they are gone until the server can be told to
-  // stop.
-
-  const downloadRemediated = async (): Promise<void> => {
-    trackEvent('dash-download-fixed', { scan_type: scan?.file_name?.split('.').pop() || 'unknown' });
+  const downloadArtifact = async (): Promise<void> => {
+    if (!job?.download_available || !job.download_url) return;
+    trackEvent('dash-download-fixed', {
+      scan_type: scan?.file_name?.split('.').pop() || 'unknown',
+    });
     try {
-      const blob = await scansApi.downloadRemediated(scanId!);
+      const blob = await scansApi.downloadRemediationJob(job.download_url);
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
       link.download = `remediated-${scan?.file_name || 'document'}`;
       document.body.appendChild(link);
       link.click();
-      document.body.removeChild(link);
+      link.remove();
       window.URL.revokeObjectURL(url);
       toast.success('Download started', 'Success');
     } catch {
-      toast.error('Failed to download remediated file', 'Error');
+      toast.error('The remediated artifact is not available', 'Download failed');
     }
   };
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64" role="status" aria-label="Loading remediation">
-        <Loader className="w-8 h-8 animate-spin text-accent" aria-hidden="true" />
+      <div className="flex h-64 items-center justify-center" role="status" aria-label="Loading remediation">
+        <Loader className="h-8 w-8 animate-spin text-accent" aria-hidden="true" />
         <span className="sr-only">Loading remediation data...</span>
       </div>
     );
@@ -379,11 +358,11 @@ export function Remediate(): React.ReactElement {
 
   if (!scan) {
     return (
-      <div className="p-8">
-        <div className="max-w-4xl mx-auto">
-          <div className="card text-center py-12">
-            <XCircle className="w-12 h-12 mx-auto text-[var(--feature-danger-content)] mb-4" aria-hidden="true" />
-            <p className="text-lg font-medium text-primary mb-2">Scan not found</p>
+      <div className="p-4 sm:p-8">
+        <div className="mx-auto max-w-4xl">
+          <div className="card py-12 text-center">
+            <XCircle className="mx-auto mb-4 h-12 w-12 text-[var(--feature-danger-content)]" aria-hidden="true" />
+            <p className="mb-2 text-lg font-medium text-primary">Scan not found</p>
             <button onClick={() => navigate('/history')} className="btn-primary mt-4">
               Back to History
             </button>
@@ -393,147 +372,139 @@ export function Remediate(): React.ReactElement {
     );
   }
 
-  const fixedCount = Object.values(issueStatuses).filter((s) => s === 'fixed').length;
-  const manualCount = Object.values(issueStatuses).filter((s) => s === 'manual').length;
-  const failedCount = Object.values(issueStatuses).filter((s) => s === 'failed').length;
+  const presentation = STATE_PRESENTATION[pageState];
+  const StatusIcon = presentation.icon;
+  const canStart =
+    ['idle', 'completed', 'partial', 'timed_out', 'failed', 'request_failed'].includes(pageState)
+    || (pageState === 'monitoring_error' && job === null);
+  const canResume = Boolean(job?.status_url) && ['client_timeout', 'monitoring_error'].includes(pageState);
+  const canDownload = job?.download_available === true && typeof job.download_url === 'string';
+  const displayedProgress = job?.progress ?? (pageState === 'completed' ? 100 : 0);
 
   return (
-    <div className="p-8">
-      <div className="max-w-4xl mx-auto">
-        {/* Breadcrumbs & Header */}
+    <div className="p-4 sm:p-8">
+      <div className="mx-auto max-w-4xl">
         <Breadcrumbs items={[
           { label: 'History', href: '/history' },
           { label: scan.file_name || 'Document', href: `/scan/${scanId}` },
           { label: 'Remediate' },
         ]} />
 
-        <div className="flex items-center gap-4 mb-6">
-          <div className="flex-1">
+        <div className="mb-6 flex flex-col items-start gap-4 sm:flex-row">
+          <div className="min-w-0 flex-1">
             <h1 className="text-2xl font-bold text-primary">Auto-Remediation</h1>
-            <div className="flex items-center gap-2 mt-1">
-              <FileText className="w-4 h-4 text-tertiary" aria-hidden="true" />
-              <span className="text-sm text-secondary">{scan.file_name || 'Document'}</span>
+            <div className="mt-1 flex items-center gap-2">
+              <FileText className="h-4 w-4 text-tertiary" aria-hidden="true" />
+              <span className="truncate text-sm text-secondary">{scan.file_name || 'Document'}</span>
             </div>
           </div>
-          {progress.status === 'completed' && result?.output_file && (
-            <button onClick={downloadRemediated} className="btn-primary flex items-center gap-2">
-              <Download className="w-4 h-4" />
-              Download Fixed
+          {canDownload && (
+            <button onClick={downloadArtifact} className="btn-primary flex w-full items-center justify-center gap-2 sm:w-auto">
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Download Remediated File
             </button>
           )}
         </div>
 
-        {/* Progress Card */}
-        <div className="card mb-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-primary">Remediation Progress</h2>
-            <div className="flex items-center gap-2">
-              {progress.status === 'idle' && (
-                <button
-                  onClick={startRemediation}
-                  className="btn-primary flex items-center gap-2"
-                  disabled={remediating}
-                >
-                  <Play className="w-4 h-4" />
-                  Start Remediation
-                </button>
-              )}
-              {progress.status === 'completed' && (
-                <button
-                  onClick={() => {
-                    setProgress({ current: 0, total: scan.issues?.length || 0, status: 'idle' });
-                    setIssueStatuses({});
-                    setResult(null);
-                  }}
-                  className="btn-secondary flex items-center gap-2"
-                >
-                  <RotateCcw className="w-4 h-4" />
-                  Reset
-                </button>
-              )}
+        <section className="card mb-6" aria-labelledby="remediation-status-heading">
+          <div className="flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-start">
+            <div className="flex min-w-0 flex-1 items-start gap-3">
+              <div className={`rounded-lg p-2 ${presentation.surface}`}>
+                <StatusIcon
+                  className={`h-5 w-5 ${presentation.color} ${presentation.animate ? 'animate-spin' : ''}`}
+                  aria-hidden="true"
+                />
+              </div>
+              <div>
+                <h2 id="remediation-status-heading" className="text-lg font-semibold text-primary">
+                  {presentation.title}
+                </h2>
+                <p className="mt-1 text-sm text-secondary">{presentation.description}</p>
+                {job?.progress_message && (pageState === 'queued' || pageState === 'running') && (
+                  <p className="mt-2 text-sm font-medium text-primary">{job.progress_message}</p>
+                )}
+              </div>
             </div>
+
+            {canStart && (
+              <button
+                onClick={startRemediation}
+                className="btn-primary flex items-center justify-center gap-2 sm:shrink-0"
+                disabled={starting}
+              >
+                {starting ? <Loader className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                {pageState === 'idle' ? 'Start Remediation' : 'Run Again'}
+              </button>
+            )}
+            {canResume && job && (
+              <button
+                onClick={() => void monitorJob(job.status_url)}
+                className="btn-secondary flex items-center justify-center gap-2 sm:shrink-0"
+              >
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                Check Status
+              </button>
+            )}
           </div>
 
-          <ProgressBar
-            current={progress.current}
-            total={progress.total}
-            label={
-              progress.status === 'completed'
-                ? 'Remediation Complete'
-                : progress.status === 'running'
-                ? 'Processing issues...'
-                : progress.status === 'paused'
-                ? 'Paused'
-                : 'Ready to start'
-            }
-          />
-
-          {/* Stats */}
-          {progress.current > 0 && (
-            <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-[var(--border-primary)]">
-              <div className="text-center">
-                <p className="text-2xl font-bold text-[var(--feature-success-content)]">
-                  {fixedCount}
-                </p>
-                <p className="text-sm text-tertiary">Fixed</p>
+          {pageState !== 'idle' && (
+            <div className="mt-5 border-t border-[var(--border-primary)] pt-4">
+              <div className="mb-2 flex items-center justify-between text-sm">
+                <span className="text-secondary">Server progress</span>
+                <span className="font-medium text-primary">{displayedProgress}%</span>
               </div>
-              <div className="text-center">
-                <p className="text-2xl font-bold text-[var(--feature-warning-content)]">
-                  {manualCount}
-                </p>
-                <p className="text-sm text-tertiary">Manual Review</p>
-              </div>
-              <div className="text-center">
-                <p className="text-2xl font-bold text-[var(--feature-danger-content)]">
-                  {failedCount}
-                </p>
-                <p className="text-sm text-tertiary">Failed</p>
+              <div className="h-2 overflow-hidden rounded-full bg-[var(--surface-tertiary)]">
+                <div
+                  className="h-full rounded-full bg-[var(--accent-solid)] transition-all duration-500"
+                  style={{ width: `${Math.min(100, Math.max(0, displayedProgress))}%` }}
+                />
               </div>
             </div>
           )}
-        </div>
+        </section>
 
-        {/* Before/After Comparison */}
-        {progress.status === 'completed' && result && (
-          <div className="mb-6">
-            <h2 className="text-lg font-semibold text-primary mb-4">Before & After</h2>
-            <BeforeAfterComparison
-              original={{
-                score: result.original_score || result.original_compliance_score || ((scan as unknown as Record<string, Record<string, number>>)?.result?.compliance_score) || 0,
-                issues: result.total_issues || scan?.issues?.length || 0,
-              }}
-              remediated={{
-                score: result.remediated_score || result.remediated_compliance_score || 100,
-                remaining_issues: manualCount + failedCount,
-              }}
-            />
-          </div>
+        {job && !['queued', 'running'].includes(pageState) && (
+          <section className="card mb-6 space-y-4" aria-labelledby="recorded-results-heading">
+            <div>
+              <h2 id="recorded-results-heading" className="text-lg font-semibold text-primary">
+                Recorded Results
+              </h2>
+              <p className="mt-1 text-sm text-tertiary">
+                These are document-level values returned by the remediation job.
+              </p>
+            </div>
+            <AggregateResults job={job} />
+            <ScoreComparison job={job} scan={scan} />
+          </section>
         )}
 
-        {/* Issues List */}
-        <div className="card">
-          <h2 className="text-lg font-semibold text-primary mb-4">
-            Issues ({scan.issues?.length || 0})
-          </h2>
+        <section className="card" aria-labelledby="recorded-issues-heading">
+          <div className="mb-4">
+            <h2 id="recorded-issues-heading" className="text-lg font-semibold text-primary">
+              Recorded Issues ({scan.issues?.length || 0})
+            </h2>
+            <p className="mt-1 text-sm text-tertiary">
+              Per-issue remediation outcomes are not available for this job.
+            </p>
+          </div>
           <div className="max-h-96 overflow-y-auto">
-            {(scan.issues || []).map((issue: Issue, idx: number) => (
-              <IssueRow
-                key={idx}
-                issue={issue}
-                status={issueStatuses[idx] || 'pending'}
-                fixDetails={null}
-              />
+            {(scan.issues || []).map((issue, index) => (
+              <RecordedIssueRow key={`${issue.description || issue.message || 'issue'}-${index}`} issue={issue} />
             ))}
             {(!scan.issues || scan.issues.length === 0) && (
-              <div className="text-center py-8">
-                <CheckCircle className="w-12 h-12 mx-auto text-[var(--feature-success-content)] mb-4" />
-                <p className="text-primary font-medium">No issues to remediate!</p>
-                <p className="text-sm text-tertiary">This document is already accessible.</p>
+              <div className="py-8 text-center">
+                <FileText className="mx-auto mb-4 h-12 w-12 text-tertiary" aria-hidden="true" />
+                <p className="font-medium text-primary">No recorded issues are available for this scan.</p>
               </div>
             )}
           </div>
-        </div>
+        </section>
       </div>
     </div>
   );
+}
+
+export function Remediate(): React.ReactElement {
+  const { scanId } = useParams<{ scanId: string }>();
+  return <RemediateScan key={scanId || 'missing'} scanId={scanId} />;
 }
