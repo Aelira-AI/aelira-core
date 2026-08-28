@@ -8,6 +8,7 @@ import type {
   DashboardStats,
   ComplianceTrendPoint,
 } from '../types';
+import type { DeadlineInfo } from '../types/deadline';
 
 // ============================================================================
 // Request/Response Types
@@ -63,29 +64,38 @@ export interface UploadResponse {
 }
 
 export interface TrendAnalysis {
-  current_period: {
-    avg_score: number;
-    scan_count: number;
-    issues_found: number;
-  };
-  previous_period: {
-    avg_score: number;
-    scan_count: number;
-    issues_found: number;
-  };
-  change: {
-    score_change: number;
-    scan_change: number;
-    issues_change: number;
-  };
+  trend_direction: 'improving' | 'declining' | 'stable' | 'insufficient_data';
+  current_avg_score: number | null;
+  previous_avg_score: number | null;
+  score_change: number | null;
+  score_change_pct: number | null;
+  issues_change: number;
+  on_track_for_deadline: boolean | null;
 }
 
 export interface DeadlineProjection {
-  current_score: number;
-  target_score: number;
-  projected_date: string | null;
-  on_track: boolean;
-  recommendations: string[];
+  projection_available: boolean;
+  days_until_deadline?: number;
+  current_avg_score?: number;
+  projected_score_at_deadline?: number;
+  will_meet_deadline?: boolean | null;
+  required_improvement_per_day?: number;
+  message?: string;
+  unavailable_reason?: string;
+  deadline: DeadlineInfo;
+}
+
+export interface TrendAnalysisResponse {
+  department_id: string;
+  current_period_days: number;
+  comparison_period_days: number;
+  analysis: TrendAnalysis;
+  deadline: DeadlineInfo;
+}
+
+export interface DeadlineProjectionResponse {
+  department_id: string;
+  projection: DeadlineProjection;
 }
 
 export interface IssueStats {
@@ -447,8 +457,8 @@ export const scansApi = {
     departmentId: string,
     currentPeriod: number = 7,
     comparisonPeriod: number = 7
-  ): Promise<TrendAnalysis> => {
-    const response = await apiClient.get<TrendAnalysis>(
+  ): Promise<TrendAnalysisResponse> => {
+    const response = await apiClient.get<TrendAnalysisResponse>(
       `/analytics/trend/${departmentId}/analysis`,
       {
         params: { current_period: currentPeriod, comparison_period: comparisonPeriod },
@@ -460,8 +470,8 @@ export const scansApi = {
   /**
    * Get deadline projection
    */
-  getDeadlineProjection: async (departmentId: string): Promise<DeadlineProjection> => {
-    const response = await apiClient.get<DeadlineProjection>(
+  getDeadlineProjection: async (departmentId: string): Promise<DeadlineProjectionResponse> => {
+    const response = await apiClient.get<DeadlineProjectionResponse>(
       `/analytics/projection/${departmentId}`
     );
     return response.data;

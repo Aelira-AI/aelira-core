@@ -1,13 +1,8 @@
 """
 ML-based Compliance Prediction Service
 
-Predicts whether a department will meet the DOJ ADA Title II WCAG compliance
-deadline using historical data and multiple predictive features.
-
-The deadline is sourced from ``deadline_config`` (single source of truth).
-Currently April 26, 2027 for large public entities (jurisdiction population
->= 50,000); extended from April 24, 2026 by DOJ Interim Final Rule RIN 1190-AA82
-(effective April 20, 2026).
+Projects a department's automated scan-score trajectory at its configured
+accessibility target date using historical data and multiple predictive features.
 
 Author: Aelira Team
 Created: January 2026
@@ -20,29 +15,27 @@ from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 import numpy as np
 
-from .deadline_config import US_ADA_TITLE_II_DEADLINE
+from .deadline_config import DeadlineService
 
 logger = logging.getLogger(__name__)
-
-# DOJ ADA Title II deadline, sourced from deadline_config (single source of truth).
-DEADLINE_DATE = datetime.combine(US_ADA_TITLE_II_DEADLINE, datetime.min.time())
 
 
 @dataclass
 class PredictionResult:
     """Result of compliance deadline prediction."""
 
-    will_meet_deadline: bool
+    will_meet_deadline: Optional[bool]
     confidence: float  # 0-1 confidence in prediction
-    probability_of_compliance: float  # 0-1 probability of meeting deadline
+    probability_of_compliance: Optional[float]
     projected_score_at_deadline: Optional[float]
     current_score: Optional[float]
-    days_remaining: int
+    days_remaining: Optional[int]
     risk_level: str  # "low", "medium", "high", "critical"
     risk_factors: List[Dict[str, Any]]
     recommendations: List[Dict[str, Any]]
     prediction_model: str
     features_used: Dict[str, float]
+    deadline: Dict[str, Any]
 
 
 class CompliancePredictor:
@@ -62,11 +55,7 @@ class CompliancePredictor:
 
     def predict(self, department_id: str) -> PredictionResult:
         """
-        Predict whether department will meet the DOJ ADA Title II deadline.
-
-        The deadline is sourced from ``deadline_config`` (currently April 26,
-        2027 for large public entities; extended from April 24, 2026 via the
-        April 2026 DOJ IFR).
+        Project the department's automated scan score at its configured target date.
 
         Args:
             department_id: The department to analyze
@@ -75,6 +64,17 @@ class CompliancePredictor:
             PredictionResult with prediction, confidence, and recommendations
         """
         from .snapshot_service import SnapshotService
+        from ..db.models import Department
+
+        department = (
+            self.db.query(Department).filter(Department.id == department_id).first()
+        )
+        if department is None:
+            raise ValueError("Department not found")
+        deadline_info = DeadlineService.for_department(department)
+        deadline = deadline_info.to_dict()
+        if not deadline_info.has_deadline or deadline_info.is_past_deadline:
+            return self._deadline_unavailable_result(deadline)
 
         # Get historical data
         trend_90 = SnapshotService.get_historical_trend(self.db, department_id, days=90)
@@ -87,11 +87,13 @@ class CompliancePredictor:
             point for point in trend_30 if point.avg_compliance_score is not None
         ]
 
-        days_remaining = (DEADLINE_DATE - datetime.utcnow()).days
+        days_remaining = deadline_info.days_remaining
+        if days_remaining is None:
+            raise ValueError("Dated deadline is missing remaining-day metadata")
 
         # Check if we have enough data
         if len(verified_trend_30) < 7:
-            return self._insufficient_data_result(days_remaining)
+            return self._insufficient_data_result(days_remaining, deadline)
 
         # Extract features
         features = self._extract_features(
@@ -112,7 +114,7 @@ class CompliancePredictor:
 
         # Generate recommendations
         recommendations = self._generate_recommendations(
-            features, risk_factors, final_prediction
+            features, risk_factors, final_prediction, days_remaining
         )
 
         # Determine risk level
@@ -130,6 +132,7 @@ class CompliancePredictor:
             recommendations=recommendations,
             prediction_model="ensemble_v1",
             features_used=features,
+            deadline=deadline,
         )
 
     def _extract_features(
@@ -457,6 +460,7 @@ class CompliancePredictor:
         features: Dict[str, float],
         risk_factors: List[Dict],
         prediction: Dict,
+        days_remaining: int,
     ) -> List[Dict[str, Any]]:
         """Generate actionable recommendations based on analysis."""
         recommendations = []
@@ -510,15 +514,13 @@ class CompliancePredictor:
             )
 
         if features["score_gap"] > 20:
-            daily_points = features["score_gap"] / max(
-                1, (DEADLINE_DATE - datetime.utcnow()).days
-            )
+            daily_points = features["score_gap"] / max(1, days_remaining)
             recommendations.append(
                 {
                     "priority": 1,
                     "action": f"Improve {daily_points:.2f} points daily",
                     "description": "Track daily progress against this target",
-                    "expected_impact": "On-track for deadline compliance",
+                    "expected_impact": "On track for the configured score target",
                     "effort": "ongoing",
                 }
             )
@@ -566,10 +568,12 @@ class CompliancePredictor:
         else:
             return "critical"
 
-    def _insufficient_data_result(self, days_remaining: int) -> PredictionResult:
+    def _insufficient_data_result(
+        self, days_remaining: int, deadline: Dict[str, Any]
+    ) -> PredictionResult:
         """Return result when insufficient data is available."""
         return PredictionResult(
-            will_meet_deadline=False,
+            will_meet_deadline=None,
             confidence=0.1,
             probability_of_compliance=0.5,
             projected_score_at_deadline=None,
@@ -595,6 +599,27 @@ class CompliancePredictor:
             ],
             prediction_model="insufficient_data",
             features_used={},
+            deadline=deadline,
+        )
+
+    def _deadline_unavailable_result(
+        self, deadline: Dict[str, Any]
+    ) -> PredictionResult:
+        """Return a neutral result when the profile has no dated target."""
+
+        return PredictionResult(
+            will_meet_deadline=None,
+            confidence=0.0,
+            probability_of_compliance=None,
+            projected_score_at_deadline=None,
+            current_score=None,
+            days_remaining=None,
+            risk_level="unknown",
+            risk_factors=[],
+            recommendations=[],
+            prediction_model="deadline_unavailable",
+            features_used={},
+            deadline=deadline,
         )
 
 
@@ -627,4 +652,5 @@ def predict_compliance(db: Session, department_id: str) -> Dict[str, Any]:
             "model": result.prediction_model,
             "features_count": len(result.features_used),
         },
+        "deadline": result.deadline,
     }

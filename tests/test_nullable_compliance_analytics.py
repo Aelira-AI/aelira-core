@@ -1,7 +1,7 @@
 """Analytics preserve an unknown score when no document is verified."""
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -13,6 +13,7 @@ from src.auth.dependencies import AuthenticatedPrincipal
 from src.db.models import Scan, ScanResult, ScanStatus, ScanType, UserRole
 from src.education.compliance_dashboard import ComplianceDashboard
 from src.education.compliance_predictor import predict_compliance
+from src.education.deadline_config import DeadlineService
 from src.education.snapshot_service import SnapshotService, TrendPoint
 
 DEPARTMENT_ID = "department-without-verified-documents"
@@ -46,8 +47,9 @@ def _stats_without_verified_documents():
         files_critical=0,
         active_faculty=0,
         total_faculty=0,
+        days_until_deadline=None,
         estimated_hours_remaining=0,
-        on_track=False,
+        on_track=None,
     )
 
 
@@ -148,7 +150,7 @@ def test_trend_analysis_and_projection_require_verified_scores(monkeypatch):
     assert analysis.score_change is None
     assert analysis.score_change_pct is None
     assert analysis.trend_direction == "insufficient_data"
-    assert analysis.on_track_for_deadline is False
+    assert analysis.on_track_for_deadline is None
 
     unverified_trend = [_unverified_trend_point(day) for day in range(7)]
     monkeypatch.setattr(
@@ -156,12 +158,65 @@ def test_trend_analysis_and_projection_require_verified_scores(monkeypatch):
         "get_historical_trend",
         lambda _db, _department_id, days: unverified_trend,
     )
+    deadline = DeadlineService.get_deadline_info(
+        country_code="US",
+        regulatory_framework="US_ADA_TITLE_II",
+        title_ii_entity_class="large",
+    )
+    monkeypatch.setattr(
+        "src.education.snapshot_service.DeadlineService.for_department",
+        lambda _department: deadline,
+    )
     projection = SnapshotService.get_deadline_projection(MagicMock(), DEPARTMENT_ID)
 
     assert projection == {
         "projection_available": False,
         "message": "Need at least 7 days of verified compliance data for projection",
+        "deadline": deadline.to_dict(),
     }
+
+
+def test_future_dated_profile_stays_unknown_without_verified_scores(monkeypatch):
+    department = SimpleNamespace(
+        country_code="US",
+        regulatory_framework="US_ADA_TITLE_II",
+        title_ii_entity_class="large",
+        custom_deadline=None,
+    )
+    deadline = DeadlineService.for_department(department, as_of=date(2026, 8, 28))
+    monkeypatch.setattr(DeadlineService, "for_department", lambda _department: deadline)
+
+    stats = ComplianceDashboard._empty_stats(
+        DEPARTMENT_ID, "Accessibility", "Example University", department
+    )
+
+    snapshots = [
+        SimpleNamespace(avg_compliance_score=None, total_issues=0) for _ in range(14)
+    ]
+    db = MagicMock()
+    db.query.return_value.filter.return_value.all.side_effect = [
+        snapshots[:7],
+        snapshots[7:],
+    ]
+    db.query.return_value.filter.return_value.first.return_value = department
+    analysis = SnapshotService.analyze_trend(db, DEPARTMENT_ID)
+
+    monkeypatch.setattr(
+        SnapshotService,
+        "get_historical_trend",
+        lambda _db, _department_id, days: [
+            _unverified_trend_point(day) for day in range(7)
+        ],
+    )
+    projection = SnapshotService.get_deadline_projection(db, DEPARTMENT_ID)
+
+    assert deadline.has_deadline is True
+    assert deadline.is_past_deadline is False
+    assert stats.on_track is None
+    assert analysis.on_track_for_deadline is None
+    assert projection["projection_available"] is False
+    assert "will_meet_deadline" not in projection
+    assert "projected_score_at_deadline" not in projection
 
 
 def test_predictor_returns_insufficient_data_without_inventing_zero(monkeypatch):
@@ -171,6 +226,15 @@ def test_predictor_returns_insufficient_data_without_inventing_zero(monkeypatch)
         "get_historical_trend",
         lambda _db, _department_id, days: unverified_trend,
     )
+    deadline = DeadlineService.get_deadline_info(
+        country_code="US",
+        regulatory_framework="US_ADA_TITLE_II",
+        title_ii_entity_class="large",
+    )
+    monkeypatch.setattr(
+        "src.education.compliance_predictor.DeadlineService.for_department",
+        lambda _department: deadline,
+    )
 
     result = predict_compliance(MagicMock(), DEPARTMENT_ID)
 
@@ -178,3 +242,25 @@ def test_predictor_returns_insufficient_data_without_inventing_zero(monkeypatch)
     assert result["prediction"]["projected_score"] is None
     assert result["risk_assessment"]["level"] == "unknown"
     assert result["model_info"]["model"] == "insufficient_data"
+
+
+def test_past_deadline_disables_projection_and_prediction():
+    department = SimpleNamespace(
+        country_code="DE",
+        regulatory_framework="EU_EAA",
+        title_ii_entity_class=None,
+        custom_deadline=None,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = department
+
+    projection = SnapshotService.get_deadline_projection(db, DEPARTMENT_ID)
+    prediction = predict_compliance(db, DEPARTMENT_ID)
+
+    assert projection["projection_available"] is False
+    assert projection["unavailable_reason"] == "deadline_passed"
+    assert projection["deadline"]["is_past_deadline"] is True
+    assert prediction["prediction"]["will_meet_deadline"] is None
+    assert prediction["prediction"]["days_remaining"] is None
+    assert prediction["model_info"]["model"] == "deadline_unavailable"
+    assert prediction["deadline"]["is_past_deadline"] is True

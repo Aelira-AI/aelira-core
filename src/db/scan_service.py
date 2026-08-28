@@ -11,7 +11,7 @@ from datetime import datetime
 import hashlib
 import logging
 
-from .models import Scan, ScanResult, ScanType, ScanStatus
+from .models import Department, Scan, ScanResult, ScanType, ScanStatus
 from ..education.pdf_processor import PDFProcessingResult
 from ..education.pptx_processor import PowerPointProcessingResult
 from ..education.latex_processor import DocumentConversionResult
@@ -486,8 +486,11 @@ class ScanService:
         """
 
         from ..education.current_compliance import get_department_current_compliance
+        from ..education.deadline_config import DeadlineService
 
         projection = get_department_current_compliance(db, department_id)
+        department = db.query(Department).filter(Department.id == department_id).first()
+        deadline = DeadlineService.for_department(department).to_dict()
         now = datetime.now().astimezone()
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         scans_this_month = sum(
@@ -525,6 +528,7 @@ class ScanService:
                 "excel": projection.scan_type_count(ScanType.EXCEL),
                 "latex": projection.scan_type_count(ScanType.LATEX),
             },
+            "deadline": deadline,
         }
 
     @staticmethod

@@ -401,6 +401,7 @@ async def send_test_email(
                 action_url="https://dashboard.example.com/scans/test",
                 action_text="Review Issues",
                 remediate_url="https://dashboard.example.com/remediate/test",
+                department=department,
             )
         elif request.email_type == "weekly_summary":
             await email_service.send_weekly_summary(
@@ -417,6 +418,7 @@ async def send_test_email(
                 moderate_count=89,
                 minor_count=178,
                 dashboard_url="https://dashboard.example.com/dashboard",
+                department=department,
             )
         else:
             raise HTTPException(
@@ -661,6 +663,9 @@ async def trigger_critical_issues(
         )
 
     email_service = get_email_service()
+    department = (
+        db.query(Department).filter(Department.id == api_key.department_id).first()
+    )
 
     try:
         # Format critical issues for email
@@ -684,6 +689,7 @@ async def trigger_critical_issues(
             action_url=f"https://dashboard.example.com/scans/{request.scan_id}",
             action_text="Review Issues",
             remediate_url=f"https://dashboard.example.com/remediate/{request.scan_id}",
+            department=department,
         )
 
         return TriggerResponse(
@@ -753,6 +759,7 @@ async def trigger_weekly_summary(
             moderate_count=0,
             minor_count=request.total_issues,
             dashboard_url="https://dashboard.example.com/dashboard",
+            department=department,
         )
 
         return TriggerResponse(

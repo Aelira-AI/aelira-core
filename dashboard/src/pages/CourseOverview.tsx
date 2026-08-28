@@ -3,7 +3,7 @@ import { getCourseOverview, CourseOverviewResponse, CourseOverviewItem } from '.
 import { Link } from 'react-router-dom';
 import { useLTISession } from '../hooks/useLTISession';
 import { LTILayout } from '../components/LTILayout';
-import { daysUntilAdaTitleIIDeadline } from '../utils/deadlines';
+import { hasDatedDeadline } from '../types/deadline';
 import { Badge, BadgeProps } from '../components/ui/Badge';
 import { ScoreChip } from '../components/ui/ScoreChip';
 import { ProgressBar } from '../components/ui/ProgressBar';
@@ -68,7 +68,10 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
   }
 
   async function loadBrightspaceOverview(): Promise<CourseOverviewResponse> {
-    const response = await apiClient.get('/brightspace/courses');
+    const [response, statsResponse] = await Promise.all([
+      apiClient.get('/brightspace/courses'),
+      apiClient.get('/education/stats'),
+    ]);
     const rawCourses = Array.isArray(response.data)
       ? response.data
       : Array.isArray(response.data?.courses)
@@ -132,6 +135,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
         : null,
       total_issues: courses.reduce((sum, course) => sum + course.total_issues, 0),
       courses,
+      deadline: statsResponse.data?.stats?.deadline ?? null,
     };
   }
 
@@ -201,8 +205,8 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
   function renderContent() {
     if (!data) return null;
     const filtered = getFilteredCourses();
-    const daysLeft = daysUntilAdaTitleIIDeadline();
     const avgCompliance = data.avg_compliance ?? 0;
+    const deadline = hasDatedDeadline(data.deadline) ? data.deadline : null;
 
     return (
       <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -227,7 +231,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
         </div>
 
         {/* Summary stats */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className={`grid grid-cols-2 ${deadline ? 'md:grid-cols-5' : 'md:grid-cols-4'} gap-4`}>
           <div className="bg-[var(--surface-secondary)] p-4 rounded-lg border border-[var(--border-primary)]">
             <div className="text-sm text-[var(--content-secondary)]">Overall Compliance</div>
             <div className="text-2xl font-bold text-[var(--content-primary)]">
@@ -246,15 +250,20 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
             <div className="text-sm text-[var(--content-secondary)]">Issues Found</div>
             <div className="text-2xl font-bold text-[var(--content-primary)]">{data.total_issues}</div>
           </div>
-          <div className="bg-[var(--surface-secondary)] p-4 rounded-lg border border-[var(--border-primary)]">
-            <div className="text-sm text-[var(--content-secondary)]">Days to Deadline</div>
-            <div
-              className="text-2xl font-bold"
-              style={{ color: daysLeft < 30 ? 'var(--feature-danger-content)' : 'var(--content-primary)' }}
-            >
-              {daysLeft}
+          {deadline && (
+            <div className="bg-[var(--surface-secondary)] p-4 rounded-lg border border-[var(--border-primary)]">
+              <div className="text-sm text-[var(--content-secondary)]">Days to Target Date</div>
+              <div
+                className="text-2xl font-bold"
+                style={{ color: deadline.days_remaining < 30 ? 'var(--feature-danger-content)' : 'var(--content-primary)' }}
+              >
+                {deadline.days_remaining}
+              </div>
+              <div className="text-xs text-[var(--content-tertiary)] mt-1">
+                {deadline.deadline_label}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Overall progress bar */}

@@ -313,6 +313,29 @@ def test_account_admin_and_non_lti_keep_stats_access(client, principal):
     assert response.status_code == 200
 
 
+def test_brightspace_account_admin_can_read_provider_neutral_stats(client):
+    principal = AuthenticatedPrincipal(
+        api_key=None,
+        user_id="brightspace-admin",
+        department_id=DEPT,
+        user_role=UserRole.ADMIN,
+        auth_method="lti",
+        lti_staff_role="Administrator",
+        lti_account_wide=True,
+        lti_platform="brightspace",
+    )
+    db = _db()
+    _authenticate(client, principal, db)
+
+    with patch(
+        "src.api.education.scan_history_routes.ScanService.get_department_stats",
+        return_value={"total_scans": 0, "deadline": None},
+    ):
+        response = client.get("/education/stats")
+
+    assert response.status_code == 200
+
+
 def test_course_staff_batch_is_atomic_for_mixed_launch_scope(client):
     result = SimpleNamespace(issues=[])
     scans = {

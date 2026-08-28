@@ -9,7 +9,9 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { scansApi } from '../api/scans';
+import type { DeadlineProjection, TrendAnalysis } from '../api/scans';
 import { unwrapResponse } from '../utils/apiUnwrap';
+import { hasDatedDeadline } from '../types/deadline';
 
 // ============================================================================
 // Types
@@ -20,25 +22,6 @@ interface AnalyticsDashboardProps {
 }
 
 type TrendDirection = 'improving' | 'declining' | 'stable' | 'insufficient_data';
-
-interface DeadlineProjection {
-  projection_available: boolean;
-  days_until_deadline?: number;
-  current_avg_score?: number;
-  projected_score_at_deadline?: number;
-  will_meet_deadline?: boolean;
-  required_improvement_per_day?: number;
-  message?: string;
-}
-
-interface TrendAnalysis {
-  trend_direction: TrendDirection;
-  current_avg_score: number | null;
-  previous_avg_score: number | null;
-  score_change: number | null;
-  score_change_pct: number | null;
-  issues_change: number;
-}
 
 interface IssueStats {
   total_issues: number;
@@ -63,7 +46,7 @@ interface TrendIconProps {
  * Analytics Dashboard Component
  *
  * Displays advanced analytics including:
- * - Deadline projection (will we meet the ADA Title II deadline?)
+ * - Automated scan-score projection at the configured target date
  * - Week-over-week trend analysis
  * - Issue resolution rate
  */
@@ -88,8 +71,8 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
         ]);
 
         // Backend may wrap responses — handle both wrapped and unwrapped
-        if (projectionData) setProjection(unwrapResponse<DeadlineProjection>(projectionData, 'projection'));
-        if (analysisData) setAnalysis(unwrapResponse<TrendAnalysis>(analysisData, 'analysis'));
+        if (projectionData) setProjection(projectionData.projection);
+        if (analysisData) setAnalysis(analysisData.analysis);
         if (statsData) setIssueStats(unwrapResponse<IssueStats>(statsData, 'stats'));
       } catch (err) {
         console.error('Failed to fetch analytics:', err);
@@ -141,11 +124,11 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* Deadline Projection Card */}
-        {projection && projection.projection_available ? (
+        {projection && projection.projection_available && hasDatedDeadline(projection.deadline) ? (
           <div className="p-4 rounded-lg glass-subtle">
             <div className="flex items-center space-x-2 mb-3">
               <Calendar className="w-5 h-5 text-accent" />
-              <h3 className="font-semibold text-primary">April 2027 Deadline</h3>
+              <h3 className="font-semibold text-primary">{projection.deadline.deadline_label} Target</h3>
             </div>
 
             <div className="space-y-3">
@@ -170,7 +153,7 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
               </div>
 
               <div className="flex justify-between items-center">
-                <span className="text-sm text-secondary">Projected Score</span>
+                <span className="text-sm text-secondary">Projected Scan Score</span>
                 <span
                   className={`font-bold ${
                     (projection.projected_score_at_deadline ?? 0) >= 90
@@ -205,7 +188,7 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
                     }`}
                   >
                     {projection.will_meet_deadline
-                      ? 'On Track!'
+                      ? 'Scan Score on Target'
                       : `Need ${projection.required_improvement_per_day?.toFixed(2)} pts/day`}
                   </span>
                 </div>
@@ -216,10 +199,14 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
           <div className="p-4 rounded-lg glass-subtle">
             <div className="flex items-center space-x-2 mb-3">
               <Calendar className="w-5 h-5 text-accent" />
-              <h3 className="font-semibold text-primary">April 2027 Deadline</h3>
+              <h3 className="font-semibold text-primary">
+                {hasDatedDeadline(projection?.deadline)
+                  ? `${projection.deadline.deadline_label} Target`
+                  : 'Accessibility Target'}
+              </h3>
             </div>
             <p className="text-sm text-secondary">
-              {projection?.message || 'Need more scan data to project deadline compliance.'}
+              {projection?.message || 'Need more verified scan data to project the target score.'}
             </p>
           </div>
         )}

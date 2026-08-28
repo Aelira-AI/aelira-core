@@ -57,6 +57,7 @@ from ..db.models import (
     CloudOAuthCredentials,
     CloudProvider,
     ContentWritebackLog,
+    Department,
     ScanResult,
 )
 from ..education.canvas_content_scanner import CanvasContentScanner
@@ -204,6 +205,7 @@ class CourseOverviewResponse(BaseModel):
     avg_compliance: Optional[float] = None
     total_issues: int
     courses: List[CourseOverviewItem]
+    deadline: Dict[str, Any]
 
 
 class ContentIssueDetail(BaseModel):
@@ -719,6 +721,11 @@ async def get_course_overview(
 
     await require_feature(db, dept_id, "lms_integration", "Canvas LMS Integration")
 
+    from ..education.deadline_config import DeadlineService
+
+    department = db.query(Department).filter(Department.id == dept_id).first()
+    deadline = DeadlineService.for_department(department).to_dict()
+
     # Query all Canvas content CloudFiles for this department
     cloud_files = (
         db.query(CloudFile)
@@ -874,6 +881,7 @@ async def get_course_overview(
         avg_compliance=overall_avg,
         total_issues=total_issues,
         courses=course_items,
+        deadline=deadline,
     )
 
 

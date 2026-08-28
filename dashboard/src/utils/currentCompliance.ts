@@ -1,3 +1,5 @@
+import type { DeadlineInfo } from '../types/deadline';
+
 export interface RawCurrentComplianceStats {
   total_scans?: number;
   historical_scan_count?: number;
@@ -7,6 +9,7 @@ export interface RawCurrentComplianceStats {
   avg_compliance_score?: number | null;
   total_issues?: number;
   scans_this_month?: number;
+  deadline?: DeadlineInfo;
 }
 
 export interface CurrentDashboardStats {
@@ -17,6 +20,7 @@ export interface CurrentDashboardStats {
   avgCompliance: number | null;
   issuesFound: number;
   scansThisMonth: number;
+  deadline: DeadlineInfo | null;
 }
 
 /** Preserve current-stock coverage and never turn an absent score into zero. */
@@ -31,5 +35,6 @@ export function normalizeCurrentComplianceStats(
     avgCompliance: raw.avg_compliance_score ?? null,
     issuesFound: raw.total_issues ?? 0,
     scansThisMonth: raw.scans_this_month ?? 0,
+    deadline: raw.deadline ?? null,
   };
 }

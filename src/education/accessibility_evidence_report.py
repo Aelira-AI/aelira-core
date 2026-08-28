@@ -208,12 +208,7 @@ class AccessibilityEvidenceReport:
             verification_status = "automated_evidence_only"
             verification_statement = "Automated scan evidence is present. Human review has not been recorded."
 
-        deadline = DeadlineService.get_deadline_for_report(
-            country_code=getattr(department, "country_code", "US"),
-            regulatory_framework=getattr(department, "regulatory_framework", None),
-            custom_deadline=getattr(department, "custom_deadline", None),
-            issues_total=raw_total,
-        )
+        deadline = DeadlineService.for_department(department)
 
         limitations = [
             "Coverage includes only scans recorded in this deployment and is not a measure of the institution's full content corpus.",
@@ -306,11 +301,18 @@ class AccessibilityEvidenceReport:
                 "statement": verification_statement,
             },
             "standard": {
-                "framework_code": deadline["framework_code"],
-                "framework_name": deadline["framework_name"],
-                "target_standard": deadline["standard"],
-                "deadline_date": deadline["deadline_date"],
-                "has_deadline": deadline["has_deadline"],
+                "applicability": deadline.applicability,
+                "framework_code": deadline.framework_code,
+                "framework_name": deadline.framework_name,
+                "target_standard": deadline.standard,
+                "deadline_date": (
+                    deadline.deadline_date.isoformat()
+                    if deadline.deadline_date is not None
+                    else None
+                ),
+                "deadline_label": deadline.deadline_label,
+                "has_deadline": deadline.has_deadline,
+                "message": deadline.message,
                 "applicability_source": "department_configuration",
             },
             "limitations": limitations,
@@ -495,16 +497,28 @@ class AccessibilityEvidenceReport:
 
         story.append(PageBreak())
         standard = report["standard"]
+        standard_rows = [
+            ("Applicability", standard.get("applicability")),
+            ("Framework code", standard["framework_code"]),
+            ("Framework name", standard["framework_name"]),
+            ("Target standard", standard["target_standard"]),
+        ]
+        if standard.get("has_deadline") and standard.get("deadline_date"):
+            standard_rows.extend(
+                [
+                    ("Deadline label", standard.get("deadline_label")),
+                    ("Deadline date", standard["deadline_date"]),
+                ]
+            )
+        standard_rows.extend(
+            [
+                ("Guidance", standard.get("message")),
+                ("Applicability source", standard["applicability_source"]),
+            ]
+        )
         add_table(
             "Applicable Standard Metadata",
-            [
-                ("Framework code", standard["framework_code"]),
-                ("Framework name", standard["framework_name"]),
-                ("Target standard", standard["target_standard"]),
-                ("Deadline date", standard["deadline_date"]),
-                ("Deadline configured", standard["has_deadline"]),
-                ("Applicability source", standard["applicability_source"]),
-            ],
+            standard_rows,
         )
 
         story.append(Paragraph("Limitations", heading))

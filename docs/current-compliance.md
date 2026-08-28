@@ -61,3 +61,35 @@ Current responses distinguish:
 Scores, pages, issue totals, severity totals, scan-type counts, and compliance
 bands use verified current documents only. Scan history, activity windows,
 trend volume, and evidence-report attempt counts remain historical.
+
+## Regulatory deadline metadata
+
+Deadline output is resolved from the department's persisted regulatory profile:
+`country_code`, `regulatory_framework`, optional `custom_deadline`, and, for US
+Title II, the explicit `title_ii_entity_class`. Aelira does not infer the Title
+II class from account tier, user count, enrolment, or scan volume. Existing
+pre-profile US departments are migrated to `large` to preserve their prior
+displayed date; a newly created incomplete profile stays unclassified and does
+not receive a countdown or projection.
+Dated non-US laws with narrower institutional or sub-national scope must be
+selected explicitly through `regulatory_framework`; country alone does not
+assert that EAA, PSBAR, or Ontario AODA applies.
+
+API consumers use the canonical `deadline` object. It reports one of:
+
+- `dated_deadline`: a configured date can be displayed and used for projections;
+- `ongoing_no_date`: the framework has an ongoing obligation but no single date;
+- `not_applicable`: no regulatory deadline is configured; or
+- `configuration_required`: the profile is missing, invalid, or unsupported.
+
+Only `dated_deadline` has non-null `deadline_date`, `deadline_label`, and
+`days_remaining`. A past date remains in that metadata with
+`is_past_deadline: true`, but it does not produce countdown, projection, or
+on-track claims. The legacy `april_2026_deadline` response field remains as a
+deprecated compatibility alias and mirrors the canonical object; it does not
+carry an independent date. Reports and emails omit date claims when the
+canonical object has no dated deadline.
+
+For US public entities, the configured class selects the compliance date in the
+[DOJ Title II web rule](https://www.ada.gov/title-ii-web-rule/): `large` uses
+April 26, 2027, while `small_or_special_district` uses April 26, 2028.

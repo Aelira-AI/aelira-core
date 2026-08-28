@@ -452,7 +452,7 @@ async def get_department_stats(
     REQUIRES API KEY IN PRODUCTION
     """
     _, user_id, department_id = principal.as_legacy_tuple()
-    require_lti_account_access(principal)
+    require_lti_account_access(principal, principal.lti_platform or "canvas")
 
     stats = ScanService.get_department_stats(db=db, department_id=department_id)
 
