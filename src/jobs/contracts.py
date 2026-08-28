@@ -82,6 +82,8 @@ _PUBLIC_SCORE_FIELDS = frozenset(
 
 _PUBLIC_JOB_ERROR_CODES = frozenset(
     {
+        "alt_text_manual_required",
+        "download_failed",
         "invalid_job_payload",
         "invalid_job_scope",
         "job_execution_timeout",
@@ -92,11 +94,14 @@ _PUBLIC_JOB_ERROR_CODES = frozenset(
         "manual_required",
         "policy_not_permitted",
         "remediation_artifact_unavailable",
+        "remediation_artifact_retryable",
+        "remediation_completion_retryable",
         "remediation_failed",
         "remediation_unsupported",
         "scan_not_found",
         "scan_results_unavailable",
         "source_file_unavailable",
+        "unsupported_lms_remediation",
         "unregistered_job_type",
     }
 )

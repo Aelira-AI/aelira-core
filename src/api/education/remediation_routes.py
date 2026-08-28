@@ -1339,6 +1339,16 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
     result = public_job_result(job.result_data) or {}
     downloadable, artifact = _artifact_is_downloadable(db, job, scan_id)
     progress = job.progress if type(job.progress) is int else 0
+    unresolved_counts = (
+        result.get("manual_count"),
+        result.get("failed_count"),
+        result.get("skipped_count"),
+    )
+    remaining_count = (
+        sum(unresolved_counts)
+        if all(type(value) is int for value in unresolved_counts)
+        else None
+    )
     return {
         "job_id": str(job.id),
         "scan_id": scan_id,
@@ -1355,6 +1365,8 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         "manual_count": result.get("manual_count"),
         "failed_count": result.get("failed_count"),
         "skipped_count": result.get("skipped_count"),
+        "remaining_count": remaining_count,
+        "total_issues": result.get("total_issues"),
         "original_score": result.get("original_compliance_score"),
         "remediated_score": result.get("remediated_compliance_score"),
         "improvement": result.get("compliance_improvement"),
@@ -2710,7 +2722,7 @@ def get_latest_remediation_job(
         .first()
     )
     if job is None:
-        raise HTTPException(status_code=404, detail="Remediation job not found")
+        return None
     return _public_job_shape(db, job, scan_id)
 
 
