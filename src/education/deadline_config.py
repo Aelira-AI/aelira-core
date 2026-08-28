@@ -18,7 +18,7 @@ Created: November 30, 2025
 Updated: April 18, 2026 - Applied DOJ April 2026 IFR extension (+1yr on US deadlines)
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Literal, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -52,6 +52,40 @@ class TitleIIEntityClass(str, Enum):
 
     LARGE = "large"
     SMALL_OR_SPECIAL_DISTRICT = "small_or_special_district"
+
+
+@dataclass(frozen=True)
+class ValidatedRegulatoryProfile:
+    """Normalized values safe to persist as one regulatory-profile revision."""
+
+    country_code: Optional[str]
+    regulatory_framework: Optional[str]
+    title_ii_entity_class: Optional[str]
+    custom_deadline: Optional[datetime]
+
+
+class RegulatoryProfileValidationError(ValueError):
+    """Actionable semantic validation failure for one profile field."""
+
+    def __init__(self, *, field: str, reason: str, message: str):
+        super().__init__(message)
+        self.field = field
+        self.reason = reason
+        self.message = message
+
+
+ISO_ALPHA_2_COUNTRY_CODES = frozenset("""
+    AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ
+    BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU
+    CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB
+    GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL
+    IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI
+    LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV
+    MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN
+    PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR
+    SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US
+    UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW
+    """.split())
 
 
 DeadlineApplicability = Literal[
@@ -187,15 +221,160 @@ class DeadlineService:
     }
 
     @classmethod
+    def validate_regulatory_profile(
+        cls,
+        *,
+        country_code: Optional[str],
+        regulatory_framework: Optional[str],
+        title_ii_entity_class: Optional[str],
+        custom_deadline: Optional[date],
+        custom_deadline_verified: bool,
+    ) -> ValidatedRegulatoryProfile:
+        """Validate and normalize a complete profile without inferring narrow law."""
+
+        country = str(country_code or "").strip().upper() or None
+        framework_value = (
+            str(getattr(regulatory_framework, "value", regulatory_framework) or "")
+            .strip()
+            .upper()
+            or None
+        )
+        entity_class = (
+            str(getattr(title_ii_entity_class, "value", title_ii_entity_class) or "")
+            .strip()
+            .lower()
+            or None
+        )
+
+        if country is not None and country not in ISO_ALPHA_2_COUNTRY_CODES:
+            raise RegulatoryProfileValidationError(
+                field="country_code",
+                reason="invalid_country_code",
+                message="Enter a two-letter ISO country code.",
+            )
+
+        if framework_value is None:
+            framework = None
+        else:
+            try:
+                framework = RegulatoryFramework(framework_value)
+            except ValueError as exc:
+                raise RegulatoryProfileValidationError(
+                    field="regulatory_framework",
+                    reason="unsupported_framework",
+                    message="Select one of the supported regulatory frameworks.",
+                ) from exc
+            if framework not in cls._IMPLEMENTED_FRAMEWORKS:
+                raise RegulatoryProfileValidationError(
+                    field="regulatory_framework",
+                    reason="unsupported_framework",
+                    message="This regulatory framework is not available yet.",
+                )
+
+        is_reset = (
+            country is None
+            and framework is None
+            and entity_class is None
+            and custom_deadline is None
+        )
+        if is_reset:
+            if custom_deadline_verified:
+                raise RegulatoryProfileValidationError(
+                    field="custom_deadline_verified",
+                    reason="date_required_for_attestation",
+                    message="Choose a custom deadline before confirming it.",
+                )
+            return ValidatedRegulatoryProfile(None, None, None, None)
+
+        if country is None:
+            raise RegulatoryProfileValidationError(
+                field="country_code",
+                reason="country_required",
+                message="Select the institution's country.",
+            )
+
+        if framework is None:
+            raise RegulatoryProfileValidationError(
+                field="regulatory_framework",
+                reason="explicit_framework_required",
+                message=(
+                    "Select the applicable framework; country alone does not "
+                    "establish that a law applies."
+                ),
+            )
+        effective_framework = framework
+
+        if effective_framework is RegulatoryFramework.US_ADA_TITLE_II:
+            if entity_class not in {
+                TitleIIEntityClass.LARGE.value,
+                TitleIIEntityClass.SMALL_OR_SPECIAL_DISTRICT.value,
+            }:
+                raise RegulatoryProfileValidationError(
+                    field="title_ii_entity_class",
+                    reason="required_for_us_title_ii",
+                    message="Select the institution's U.S. Title II entity class.",
+                )
+        elif entity_class is not None:
+            raise RegulatoryProfileValidationError(
+                field="title_ii_entity_class",
+                reason="only_for_us_title_ii",
+                message="Remove the Title II entity class for this framework.",
+            )
+
+        if effective_framework is RegulatoryFramework.NONE and custom_deadline:
+            raise RegulatoryProfileValidationError(
+                field="custom_deadline",
+                reason="not_allowed_for_no_framework",
+                message="Remove the custom deadline when no framework applies.",
+            )
+        if custom_deadline is not None and not custom_deadline_verified:
+            raise RegulatoryProfileValidationError(
+                field="custom_deadline_verified",
+                reason="attestation_required",
+                message="Confirm that the custom deadline was verified.",
+            )
+        if custom_deadline is None and custom_deadline_verified:
+            raise RegulatoryProfileValidationError(
+                field="custom_deadline_verified",
+                reason="date_required_for_attestation",
+                message="Choose a custom deadline before confirming it.",
+            )
+
+        normalized_deadline = (
+            datetime(
+                custom_deadline.year,
+                custom_deadline.month,
+                custom_deadline.day,
+                tzinfo=timezone.utc,
+            )
+            if custom_deadline is not None
+            else None
+        )
+        return ValidatedRegulatoryProfile(
+            country_code=country,
+            regulatory_framework=framework.value if framework else None,
+            title_ii_entity_class=entity_class,
+            custom_deadline=normalized_deadline,
+        )
+
+    @classmethod
     def for_department(
         cls, department: Any, *, as_of: Optional[date] = None
     ) -> DeadlineInfo:
         """Resolve one department's persisted regulatory profile."""
 
+        custom_deadline = getattr(department, "custom_deadline", None)
+        if not isinstance(
+            getattr(department, "custom_deadline_verified_at", None), datetime
+        ):
+            # Historical dates remain available to the settings surface for
+            # explicit re-verification, but cannot override canonical outputs.
+            custom_deadline = None
+
         return cls.get_deadline_info(
             country_code=getattr(department, "country_code", None),
             regulatory_framework=getattr(department, "regulatory_framework", None),
-            custom_deadline=getattr(department, "custom_deadline", None),
+            custom_deadline=custom_deadline,
             title_ii_entity_class=getattr(department, "title_ii_entity_class", None),
             as_of=as_of,
         )
@@ -462,6 +641,32 @@ class DeadlineService:
                 ).get("framework_name", f.value),
             }
             for f in RegulatoryFramework
+        ]
+
+    @classmethod
+    def get_manageable_frameworks(cls) -> list[Dict[str, Any]]:
+        """Return only implemented frameworks and their safe UI requirements."""
+
+        defaults = {
+            RegulatoryFramework.US_ADA_TITLE_II: "US",
+            RegulatoryFramework.EU_EAA: None,
+            RegulatoryFramework.UK_PSBAR: "GB",
+            RegulatoryFramework.CA_AODA: "CA",
+            RegulatoryFramework.AU_DDA: "AU",
+            RegulatoryFramework.NONE: None,
+        }
+        return [
+            {
+                "code": framework.value,
+                "name": str(config["framework_name"]),
+                "default_country_code": defaults[framework],
+                "requires_explicit_selection": True,
+                "requires_title_ii_entity_class": (
+                    framework is RegulatoryFramework.US_ADA_TITLE_II
+                ),
+                "allows_custom_deadline": framework is not RegulatoryFramework.NONE,
+            }
+            for framework, config in cls._IMPLEMENTED_FRAMEWORKS.items()
         ]
 
     @staticmethod

@@ -12,9 +12,17 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 from typing import List, Literal, Optional, Tuple
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import asyncio
 from dataclasses import dataclass
 import hashlib
@@ -57,6 +65,10 @@ from ..security.disposable_domains import is_disposable_domain
 from ..security.audit_service import AuditPersistenceError, get_audit_service
 from ..security.client_ip import get_client_ip
 from ..services.account_deletion_service import AccountDeletionService
+from ..education.deadline_config import (
+    DeadlineService,
+    RegulatoryProfileValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +138,36 @@ class CreateDepartmentRequest(BaseModel):
     title_ii_entity_class: Optional[Literal["large", "small_or_special_district"]] = (
         None
     )
-    custom_deadline: Optional[datetime] = None
+    custom_deadline: Optional[date] = None
+    custom_deadline_verified: StrictBool = False
 
     @field_validator("country_code")
     @classmethod
     def normalize_country_code(cls, value: Optional[str]) -> Optional[str]:
         return value.upper() if value else None
+
+    @field_validator("custom_deadline", mode="before")
+    @classmethod
+    def require_date_only(cls, value):
+        if isinstance(value, datetime) or (
+            isinstance(value, str) and ("T" in value or " " in value)
+        ):
+            raise ValueError("custom_deadline must be a date in YYYY-MM-DD format")
+        return value
+
+    @model_validator(mode="after")
+    def validate_regulatory_profile(self):
+        try:
+            DeadlineService.validate_regulatory_profile(
+                country_code=self.country_code,
+                regulatory_framework=self.regulatory_framework,
+                title_ii_entity_class=self.title_ii_entity_class,
+                custom_deadline=self.custom_deadline,
+                custom_deadline_verified=self.custom_deadline_verified,
+            )
+        except RegulatoryProfileValidationError as exc:
+            raise ValueError(f"{exc.field}: {exc.message}") from exc
+        return self
 
 
 class DepartmentResponse(BaseModel):
@@ -771,6 +807,14 @@ def _department_response(department: Department) -> DepartmentResponse:
 def _new_department_from_request(request: CreateDepartmentRequest) -> Department:
     """Build a department while preserving an omitted regulatory profile as NULL."""
 
+    profile = DeadlineService.validate_regulatory_profile(
+        country_code=request.country_code,
+        regulatory_framework=request.regulatory_framework,
+        title_ii_entity_class=request.title_ii_entity_class,
+        custom_deadline=request.custom_deadline,
+        custom_deadline_verified=request.custom_deadline_verified,
+    )
+
     return Department(
         name=request.name,
         institution=request.institution,
@@ -779,10 +823,15 @@ def _new_department_from_request(request: CreateDepartmentRequest) -> Department
         tier=request.tier,
         max_users=5 if request.tier == "trial" else 50,
         trial_ends_at=datetime.utcnow() + timedelta(days=30),
-        country_code=request.country_code,
-        regulatory_framework=request.regulatory_framework,
-        title_ii_entity_class=request.title_ii_entity_class,
-        custom_deadline=request.custom_deadline,
+        country_code=profile.country_code,
+        regulatory_framework=profile.regulatory_framework,
+        title_ii_entity_class=profile.title_ii_entity_class,
+        custom_deadline=profile.custom_deadline,
+        custom_deadline_verified_at=(
+            datetime.now(timezone.utc)
+            if profile.custom_deadline is not None and request.custom_deadline_verified
+            else None
+        ),
     )
 
 
@@ -1058,8 +1107,14 @@ async def create_department(
                 == request.regulatory_framework
                 and getattr(existing, "title_ii_entity_class", None)
                 == request.title_ii_entity_class
-                and getattr(existing, "custom_deadline", None)
+                and (
+                    getattr(existing, "custom_deadline", None).date()
+                    if isinstance(getattr(existing, "custom_deadline", None), datetime)
+                    else getattr(existing, "custom_deadline", None)
+                )
                 == request.custom_deadline
+                and (getattr(existing, "custom_deadline_verified_at", None) is not None)
+                == bool(request.custom_deadline and request.custom_deadline_verified)
                 and handoff is not None
                 and _normalized_email(handoff.email) == first_admin_email
                 and _provisioner is not None

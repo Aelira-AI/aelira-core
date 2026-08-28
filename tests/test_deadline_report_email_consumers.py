@@ -1,6 +1,6 @@
 """Regression coverage for canonical deadline output in reports and email."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -28,6 +28,7 @@ def _department(**overrides):
         "country_code": "AU",
         "regulatory_framework": "AU_DDA",
         "custom_deadline": None,
+        "custom_deadline_verified_at": None,
         "title_ii_entity_class": None,
     }
     values.update(overrides)
@@ -122,6 +123,7 @@ def _report_with_standard(standard):
                 regulatory_framework="US_ADA_TITLE_II",
                 title_ii_entity_class="large",
                 custom_deadline=datetime(2030, 1, 15),
+                custom_deadline_verified_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
             ),
             ("January 15, 2030", "DOJ Title II ADA", "WCAG 2.1 Level AA"),
         ),

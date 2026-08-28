@@ -59,7 +59,7 @@ export function Dashboard(): React.ReactElement {
   const [showWelcomeBanner, setShowWelcomeBanner] = useState<boolean>(false);
   const [downloadingReport, setDownloadingReport] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { department, user } = useAuth();
+  const { authMethod, department, user } = useAuth();
   const toast = useToast();
   const { hasFeature } = useFeatureAccess();
 
@@ -268,10 +268,32 @@ export function Dashboard(): React.ReactElement {
     }
   };
 
+  const configurationRequired = stats?.deadline?.applicability === 'configuration_required';
+  const canConfigureRegulatoryProfile = configurationRequired
+    && authMethod !== 'lti'
+    && (user?.role === 'admin' || user?.role === 'super_admin');
+
   return (
     <div className="p-8">
       <div className="max-w-7xl mx-auto">
         <h1 className="text-3xl font-bold text-primary mb-6">Dashboard</h1>
+
+        {configurationRequired && (
+          <section className="card mb-8 border border-[var(--feature-warning-border)]" aria-labelledby="regulatory-configuration-title">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 mt-0.5 text-[var(--feature-warning-content)]" aria-hidden="true" />
+              <div>
+                <h2 id="regulatory-configuration-title" className="font-semibold text-primary">Regulatory deadline setup required</h2>
+                <p className="text-sm text-secondary mt-1">Aelira needs your institution’s verified country and regulatory framework before it can show a legal deadline.</p>
+                {canConfigureRegulatoryProfile ? (
+                  <button type="button" className="btn-primary mt-4" onClick={() => navigate('/settings#regulatory-profile')}>Configure regulatory profile</button>
+                ) : (
+                  <p className="text-sm text-tertiary mt-3">Contact an institution administrator to complete this setup.</p>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* First-Time User Welcome Banner */}
         {showWelcomeBanner && (
@@ -287,7 +309,7 @@ export function Dashboard(): React.ReactElement {
                       Welcome to Aelira{user?.name ? `, ${user.name.split(' ')[0]}` : ''}!
                     </h2>
                     <p className="text-secondary mb-4">
-                      You're all set to start making your documents accessible. Here's how to get started:
+                      {configurationRequired ? 'Finish your institution setup, then start making your documents accessible:' : "You're all set to start making your documents accessible. Here's how to get started:"}
                     </p>
                   </div>
                 </div>
@@ -321,7 +343,7 @@ export function Dashboard(): React.ReactElement {
                 <button
                   onClick={() => {
                     trackEvent('dash-onboarding-step', { step: 'integrations' });
-                    navigate(hasFeature('showIntegrations') ? '/integrations' : '/settings');
+                    navigate(configurationRequired && canConfigureRegulatoryProfile ? '/settings#regulatory-profile' : hasFeature('showIntegrations') ? '/integrations' : '/settings');
                   }}
                   className="flex items-center space-x-3 p-4 rounded-lg bg-[var(--surface-primary)] hover:bg-[var(--surface-secondary)] border border-[var(--border-primary)] transition-all hover:border-[var(--feature-info-border)] group"
                 >
@@ -329,7 +351,12 @@ export function Dashboard(): React.ReactElement {
                     <Settings className="w-5 h-5 text-[var(--feature-info-content)]" />
                   </div>
                   <div className="text-left">
-                    {hasFeature('showIntegrations') ? (
+                    {configurationRequired && canConfigureRegulatoryProfile ? (
+                      <>
+                        <div className="font-semibold text-primary">2. Configure Deadline</div>
+                        <div className="text-sm text-tertiary">Verify your institution’s regulatory profile</div>
+                      </>
+                    ) : hasFeature('showIntegrations') ? (
                       <>
                         <div className="font-semibold text-primary">2. Connect Your LMS</div>
                         <div className="text-sm text-tertiary">Canvas, Blackboard, Google, Microsoft</div>

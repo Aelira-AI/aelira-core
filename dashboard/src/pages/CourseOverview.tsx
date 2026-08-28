@@ -207,6 +207,7 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
     const filtered = getFilteredCourses();
     const avgCompliance = data.avg_compliance ?? 0;
     const deadline = hasDatedDeadline(data.deadline) ? data.deadline : null;
+    const configurationRequired = data.deadline?.applicability === 'configuration_required';
 
     return (
       <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -229,6 +230,13 @@ export default function CourseOverview({ isLTI = false }: CourseOverviewProps) {
             Refresh
           </button>
         </div>
+
+        {configurationRequired && (
+          <section className="rounded-lg border p-4" style={{ borderColor: 'var(--feature-warning-border)', backgroundColor: 'var(--feature-warning-surface)' }} aria-labelledby="course-regulatory-configuration-title">
+            <h2 id="course-regulatory-configuration-title" className="font-semibold text-[var(--content-primary)]">Regulatory deadline setup required</h2>
+            <p className="text-sm text-[var(--content-secondary)] mt-1">Contact an institution administrator to verify the regulatory profile before relying on a legal deadline.</p>
+          </section>
+        )}
 
         {/* Summary stats */}
         <div className={`grid grid-cols-2 ${deadline ? 'md:grid-cols-5' : 'md:grid-cols-4'} gap-4`}>

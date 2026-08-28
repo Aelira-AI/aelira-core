@@ -28,6 +28,7 @@ import EmailPreferencesCard from '../components/EmailPreferencesCard';
 import { ActiveSessionsCard } from '../components/settings/ActiveSessionsCard';
 import { AIProvidersCard } from '../components/settings/AIProvidersCard';
 import { APIKeyManagementCard } from '../components/settings/APIKeyManagementCard';
+import { RegulatoryProfileCard } from '../components/settings/RegulatoryProfileCard';
 import { trackEvent } from '../utils/analytics';
 
 // Type definitions
@@ -531,6 +532,8 @@ export default function Settings(): React.ReactElement {
             )}
           </div>
         </div>
+
+        <RegulatoryProfileCard />
 
         {/* Workspace Features */}
         <div className="card mb-6">
