@@ -126,7 +126,7 @@ services:
     command: >
       sh -c "alembic upgrade head && uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload --no-proxy-headers"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ready || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -160,7 +160,7 @@ services:
         condition: service_healthy
     command: python -m src.jobs.worker
     healthcheck:
-      test: ["CMD", "python", "-m", "src.jobs.healthcheck"]
+      test: ["CMD", "python", "-m", "src.jobs.healthcheck", "--mode", "readiness"]
       interval: 30s
       timeout: 10s
       retries: 3

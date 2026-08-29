@@ -1247,12 +1247,12 @@ def test_fixed_worker_id_restart_resets_lifetime_progress_counters() -> None:
 
 
 def test_worker_health_state_requires_recent_progress_for_active_work() -> None:
-    from src.api.job_worker_routes import _worker_health_state
+    from src.jobs.operational_health import classify_worker_health
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=2)
     assert (
-        _worker_health_state(
+        classify_worker_health(
             live_workers=0,
             runnable_pending=1,
             processing_count=0,
@@ -1264,7 +1264,7 @@ def test_worker_health_state_requires_recent_progress_for_active_work() -> None:
         == "worker_unavailable"
     )
     assert (
-        _worker_health_state(
+        classify_worker_health(
             live_workers=1,
             runnable_pending=0,
             processing_count=0,
@@ -1276,7 +1276,7 @@ def test_worker_health_state_requires_recent_progress_for_active_work() -> None:
         == "healthy_idle"
     )
     assert (
-        _worker_health_state(
+        classify_worker_health(
             live_workers=1,
             runnable_pending=0,
             processing_count=1,
@@ -1288,7 +1288,7 @@ def test_worker_health_state_requires_recent_progress_for_active_work() -> None:
         == "healthy_processing"
     )
     assert (
-        _worker_health_state(
+        classify_worker_health(
             live_workers=1,
             runnable_pending=1,
             processing_count=0,
@@ -1300,7 +1300,7 @@ def test_worker_health_state_requires_recent_progress_for_active_work() -> None:
         == "stuck_runnable_backlog"
     )
     assert (
-        _worker_health_state(
+        classify_worker_health(
             live_workers=1,
             runnable_pending=1,
             processing_count=0,
@@ -1312,7 +1312,7 @@ def test_worker_health_state_requires_recent_progress_for_active_work() -> None:
         == "healthy_advancing"
     )
     assert (
-        _worker_health_state(
+        classify_worker_health(
             live_workers=1,
             runnable_pending=0,
             processing_count=1,
@@ -1324,7 +1324,7 @@ def test_worker_health_state_requires_recent_progress_for_active_work() -> None:
         == "healthy_processing"
     )
     assert (
-        _worker_health_state(
+        classify_worker_health(
             live_workers=1,
             runnable_pending=0,
             processing_count=1,
@@ -1336,7 +1336,7 @@ def test_worker_health_state_requires_recent_progress_for_active_work() -> None:
         == "stuck_processing"
     )
     assert (
-        _worker_health_state(
+        classify_worker_health(
             live_workers=1,
             runnable_pending=0,
             processing_count=1,

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Separate API and worker liveness/readiness probes, privacy-bounded worker
+  health metrics, and sustained Prometheus alert rules now cover unavailable
+  APIs, missing worker heartbeats, expired leases, and stalled jobs with
+  recovery notifications.
+
 ### Changed
 
 - CPU- and browser-intensive scans and remediations now run only in the
