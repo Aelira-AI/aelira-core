@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-_PROBE_DATABASE_URL = "sqlite:////tmp/aelira-worker-isolation.db"
+_PROBE_DATABASE_URL = "postgresql://probe:probe@127.0.0.1:9/probe_test"
 
 
 def _run(

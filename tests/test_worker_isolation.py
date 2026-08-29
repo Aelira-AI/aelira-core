@@ -1184,8 +1184,10 @@ def test_ci_executes_postgres_concurrency_suite_on_explicit_test_database() -> N
 
 def test_ci_runs_kernel_enforced_worker_saturation_gate() -> None:
     from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
 
     from scripts.verify_worker_cpu_isolation import _PROBE_DATABASE_URL
+    from src.config.settings import Settings
 
     workflow = Path(".github/workflows/ci.yml").read_text()
     gate = Path("scripts/verify_worker_cpu_isolation.py").read_text()
@@ -1195,8 +1197,18 @@ def test_ci_runs_kernel_enforced_worker_saturation_gate() -> None:
     assert '"--cpuset-cpus"' in gate
     assert '("/auth/health", 200)' in gate
     assert "ClaimedJob" in gate
-    assert _PROBE_DATABASE_URL == "sqlite:////tmp/aelira-worker-isolation.db"
-    assert "sqlite:///:memory:" not in gate
+    assert _PROBE_DATABASE_URL == "postgresql://probe:probe@127.0.0.1:9/probe_test"
+    assert "sqlite:" not in gate
+    settings = Settings(
+        database_url=_PROBE_DATABASE_URL,
+        env="test",
+        jwt_secret="kernel-quota-test-secret-at-least-32-bytes",
+    )
+    assert settings.database_url == _PROBE_DATABASE_URL
+    probe_url = make_url(_PROBE_DATABASE_URL)
+    assert probe_url.host == "127.0.0.1"
+    assert probe_url.port == 9
+    assert probe_url.database == "probe_test"
     engine = create_engine(_PROBE_DATABASE_URL, pool_size=10, max_overflow=20)
     engine.dispose()
 
