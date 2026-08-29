@@ -72,9 +72,7 @@ class ProviderConfig:
             ProviderType.GEMINI: cls(
                 provider_type=ProviderType.GEMINI,
                 api_base="https://generativelanguage.googleapis.com/v1beta",
-                # Default: gemini-2.5-flash (Tier 1: 1,000 RPM, $0.30/1M input)
-                # Users can upgrade to gemini-2.5-pro or gemini-3-flash-preview
-                # via PUT /llm/providers/gemini/models
+                # Model default used only when a workspace selects Gemini.
                 text_model="gemini-2.5-flash",
                 code_model="gemini-2.5-flash",
                 vision_model="gemini-2.5-flash",
@@ -121,7 +119,7 @@ PROVIDER_MODELS: Dict[ProviderType, Dict[str, ModelConfig]] = {
             max_tokens=8192,
             supports_vision=True,
             context_window=1048576,
-            description="100% accuracy, 5.4s avg - BEST (paid tier default)",
+            description="100% accuracy, 5.4s avg - high-accuracy Gemini option",
         ),
         # Recommended default — fast, good quality, affordable
         "gemini-2.5-flash": ModelConfig(

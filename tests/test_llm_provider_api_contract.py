@@ -1,58 +1,93 @@
-"""Wire-contract coverage for the provider settings API."""
+"""Wire-contract coverage for durable workspace provider settings."""
 
-import pytest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-from src.ai.providers.types import ProviderType
 from src.api import llm_providers
+from src.auth.dependencies import AuthenticatedPrincipal
+from src.db.models import Department, DepartmentAIProviderConfig, UserRole
 
 
-class _Provider:
-    def __init__(self, provider_type: ProviderType) -> None:
-        self.display_name = provider_type.value.title()
-        self.is_available = provider_type == ProviderType.OLLAMA
-        self.is_local = provider_type == ProviderType.OLLAMA
-        self._provider_type = provider_type
+class _Query:
+    def __init__(self, model, department, rows):
+        self.model = model
+        self.department = department
+        self.rows = rows
 
-    def health_check(self):
-        return {
-            "status": "healthy" if self.is_available else "not_configured",
-            "text_model": f"{self._provider_type.value}-text",
-            "code_model": f"{self._provider_type.value}-code",
-            "vision_model": f"{self._provider_type.value}-vision",
-        }
+    def filter(self, *_criteria):
+        return self
 
+    def first(self):
+        return self.department if self.model is Department else self.rows[0]
 
-class _ProviderManager:
-    _initialized = True
-    primary_type = ProviderType.ANTHROPIC
-    fallback_type = ProviderType.OLLAMA
-
-    def __init__(self) -> None:
-        self.providers = {
-            provider_type: _Provider(provider_type) for provider_type in ProviderType
-        }
-
-    def health_check(self):
-        return {}
-
-    def get_provider(self, provider_type: ProviderType):
-        return self.providers[provider_type]
+    def all(self):
+        return (
+            self.rows if self.model is DepartmentAIProviderConfig else [self.department]
+        )
 
 
-@pytest.mark.asyncio
-async def test_provider_list_preserves_keyed_wire_contract(monkeypatch):
+class _DB:
+    def __init__(self, department, rows):
+        self.department = department
+        self.rows = rows
+
+    def query(self, model):
+        return _Query(model, self.department, self.rows)
+
+
+def test_provider_list_preserves_keyed_wire_contract(monkeypatch):
     monkeypatch.setattr(
         llm_providers,
         "get_provider_manager",
-        lambda: _ProviderManager(),
+        lambda: (_ for _ in ()).throw(
+            AssertionError("workspace GET must not use the global manager")
+        ),
+    )
+    department = SimpleNamespace(
+        id="department",
+        ai_provider_config_revision=7,
+        ai_primary_provider="anthropic",
+        ai_fallback_provider="ollama",
+    )
+    rows = [
+        SimpleNamespace(
+            department_id="department",
+            provider="anthropic",
+            api_key_encrypted="opaque",
+            text_model="claude-text",
+            code_model="claude-code",
+            vision_model="claude-vision",
+        ),
+        SimpleNamespace(
+            department_id="department",
+            provider="ollama",
+            api_key_encrypted=None,
+            text_model="ollama-text",
+            code_model="ollama-code",
+            vision_model="ollama-vision",
+        ),
+    ]
+    principal = AuthenticatedPrincipal(
+        api_key=MagicMock(),
+        user_id="contract-test",
+        department_id="department",
+        user_role=UserRole.ADMIN,
+        auth_method="api_key",
     )
 
-    response = await llm_providers.list_providers(
-        api_key_info=(None, "contract-test", "department"),
-    )
-    payload = response.model_dump()
+    payload = llm_providers.list_providers(
+        principal, _DB(department, rows)
+    ).model_dump()
 
-    assert set(payload) == {"primary", "fallback", "providers"}
+    assert set(payload) == {
+        "schema_version",
+        "config_revision",
+        "primary",
+        "fallback",
+        "providers",
+    }
+    assert payload["schema_version"] == 1
+    assert payload["config_revision"] == 7
     assert payload["primary"] == "anthropic"
     assert payload["fallback"] == "ollama"
     assert set(payload["providers"]) == {
@@ -65,9 +100,10 @@ async def test_provider_list_preserves_keyed_wire_contract(monkeypatch):
     assert payload["providers"]["ollama"] == {
         "name": "ollama",
         "display_name": "Ollama",
+        "configured": True,
         "is_available": True,
         "is_local": True,
-        "status": "healthy",
+        "status": "configured",
         "text_model": "ollama-text",
         "code_model": "ollama-code",
         "vision_model": "ollama-vision",

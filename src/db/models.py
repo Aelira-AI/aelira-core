@@ -242,6 +242,21 @@ class Department(Base):
         Integer, nullable=False, default=0, server_default=text("0")
     )
 
+    # Workspace-owned provider selection. Credentials and model overrides live
+    # in DepartmentAIProviderConfig so multiple supported providers can remain
+    # configured without sharing state through the process-global manager.
+    ai_primary_provider = Column(String(50), nullable=True)
+    ai_fallback_provider = Column(String(50), nullable=True)
+    ai_provider_config_revision = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    ai_provider_configs = relationship(
+        "DepartmentAIProviderConfig",
+        back_populates="department",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     __table_args__ = (
         CheckConstraint(
             "(artifact_cleanup_token IS NULL AND artifact_cleanup_claimed_at IS NULL) OR "
@@ -252,6 +267,25 @@ class Department(Base):
             "lms_ai_provider IS NULL OR lms_ai_provider IN "
             "('ollama', 'gemini', 'openai', 'anthropic', 'xai')",
             name="ck_departments_lms_ai_provider",
+        ),
+        CheckConstraint(
+            "ai_primary_provider IS NULL OR ai_primary_provider IN "
+            "('ollama', 'gemini', 'openai', 'anthropic', 'xai')",
+            name="ck_departments_ai_primary_provider",
+        ),
+        CheckConstraint(
+            "ai_fallback_provider IS NULL OR ai_fallback_provider IN "
+            "('ollama', 'gemini', 'openai', 'anthropic', 'xai')",
+            name="ck_departments_ai_fallback_provider",
+        ),
+        CheckConstraint(
+            "ai_provider_config_revision >= 0",
+            name="ck_departments_ai_provider_config_revision",
+        ),
+        CheckConstraint(
+            "ai_primary_provider IS NULL OR ai_fallback_provider IS NULL OR "
+            "ai_primary_provider <> ai_fallback_provider",
+            name="ck_departments_ai_provider_selection_distinct",
         ),
         CheckConstraint(
             "title_ii_entity_class IS NULL OR title_ii_entity_class IN "
@@ -283,6 +317,56 @@ class Department(Base):
     scans = relationship("Scan", back_populates="department")
     remediation_artifacts = relationship(
         "RemediationArtifact", back_populates="department"
+    )
+
+
+class DepartmentAIProviderConfig(Base):
+    """Encrypted provider configuration owned by exactly one workspace."""
+
+    __tablename__ = "department_ai_provider_configs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    department_id = Column(
+        String(36),
+        ForeignKey("departments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider = Column(String(50), nullable=False)
+    api_key_encrypted = Column(Text, nullable=True)
+    text_model = Column(String(128), nullable=True)
+    code_model = Column(String(128), nullable=True)
+    vision_model = Column(String(128), nullable=True)
+    configured_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    department = relationship("Department", back_populates="ai_provider_configs")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "department_id",
+            "provider",
+            name="uq_department_ai_provider_configs_department_provider",
+        ),
+        CheckConstraint(
+            "provider IN ('ollama', 'gemini', 'openai', 'anthropic', 'xai')",
+            name="ck_department_ai_provider_configs_provider",
+        ),
+        CheckConstraint(
+            "(provider = 'ollama' AND api_key_encrypted IS NULL) OR "
+            "(provider <> 'ollama' AND api_key_encrypted IS NOT NULL)",
+            name="ck_department_ai_provider_configs_credential",
+        ),
+        Index(
+            "ix_department_ai_provider_configs_department_id",
+            "department_id",
+        ),
     )
 
 
@@ -2367,6 +2451,9 @@ class AuditLogAction(str, Enum):
     # LMS AI policy governance and execution
     LMS_AI_POLICY_UPDATE = "lms_ai_policy_update"
     LMS_AI_EXECUTION = "lms_ai_execution"
+
+    # Workspace AI provider configuration
+    AI_PROVIDER_CONFIG_UPDATE = "ai_provider_config_update"
 
     # Institution regulatory-profile governance
     REGULATORY_PROFILE_UPDATE = "regulatory_profile_update"
