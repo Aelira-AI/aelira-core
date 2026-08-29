@@ -70,12 +70,19 @@ def _assert_v096_notice(notes: str) -> None:
         assert phrase in notes
 
 
-def test_changelog_has_worker_isolation_unreleased_and_v0_9_6_operator_notice():
+def test_changelog_preserves_unreleased_notices_and_v0_9_6_operator_notice():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     unreleased = changelog.index("## [Unreleased]")
     release = changelog.index(RELEASE_HEADING)
     historical = changelog.index("## [0.9.5] - 2026-08-22")
-    expected_unreleased = """### Changed
+    unreleased_notes = changelog[unreleased + len("## [Unreleased]") : release].strip()
+    expected_health_alerting = """### Added
+
+- Separate API and worker liveness/readiness probes, privacy-bounded worker
+  health metrics, and sustained Prometheus alert rules now cover unavailable
+  APIs, missing worker heartbeats, expired leases, and stalled jobs with
+  recovery notifications."""
+    expected_worker_isolation = """### Changed
 
 - CPU- and browser-intensive scans and remediations now run only in the
   dedicated `python -m src.jobs.worker` service. API processes enqueue bounded
@@ -95,10 +102,8 @@ def test_changelog_has_worker_isolation_unreleased_and_v0_9_6_operator_notice():
   cannot launch Chromium. The independent CLI `focus` command and the
   worker/scanner FocusOrder capability remain available."""
 
-    assert (
-        changelog[unreleased + len("## [Unreleased]") : release].strip()
-        == expected_unreleased
-    )
+    assert expected_health_alerting in unreleased_notes
+    assert expected_worker_isolation in unreleased_notes
     assert unreleased < release < historical
     _assert_v096_notice(_release_notes(changelog, "## [0.9.5] - 2026-08-22"))
 
