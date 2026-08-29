@@ -26,6 +26,7 @@ interface ProviderInfo {
 }
 
 interface Provider {
+  configured?: boolean;
   is_available?: boolean;
   text_model?: string | null;
   code_model?: string | null;
@@ -38,9 +39,16 @@ interface AIProvidersCardProps {
   primaryProvider: ProviderKey | null;
   fallbackProvider: ProviderKey | null;
   loadingProviders: boolean;
+  providerStateReady: boolean;
+  providerLoadError: boolean;
   testingProvider: ProviderKey | null;
-  onTestProvider: (key: ProviderKey) => void;
-  onSetPrimary: (key: ProviderKey) => void;
+  configuringProvider: ProviderKey | null;
+  providerMutationPending: boolean;
+  onTestProvider: (key: ProviderKey) => Promise<void>;
+  onSetPrimary: (key: ProviderKey) => Promise<void>;
+  onSetFallback: (key: ProviderKey | null) => Promise<void>;
+  onConfigureProvider: (key: ProviderKey, apiKey?: string) => Promise<void>;
+  onRetry: () => Promise<void>;
 }
 
 // ============================================================================
@@ -118,60 +126,41 @@ const PROVIDER_INFO: Record<ProviderKey, ProviderInfo> = {
 };
 
 // ============================================================================
-// Shared AI Provider Info Card (shown to departments without BYOK configuration access)
+// Provider information shown when the current principal cannot administer it.
 // ============================================================================
 
 function CloudAIInfoCard(): React.ReactElement {
   return (
-    <div className="card mb-6">
+    <div id="ai-provider-settings" className="card mb-6">
       <div className="px-6 py-4 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
         <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
           <Zap className="w-5 h-5" />
-          AI Processing
+          AI Provider Settings
         </h2>
       </div>
       <div className="px-6 py-4">
         <div
           className="flex items-start gap-3 p-4 rounded-lg"
           style={{
-            backgroundColor: 'var(--surface-success-subtle)',
-            border: '1px solid var(--content-success)',
+            backgroundColor: 'var(--surface-tertiary)',
+            border: '1px solid var(--border-primary)',
           }}
         >
-          <CheckCircle className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--content-success)' }} />
+          <Zap className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--content-tertiary)' }} />
           <div>
-            <p className="text-sm font-medium" style={{ color: 'var(--content-success)' }}>
-              Shared AI Provider Active
+            <p className="text-sm font-medium text-primary">
+              Workspace-managed AI
             </p>
             <p className="text-sm text-secondary mt-1">
-              This account uses the AI provider configured for this deployment (Google Gemini 3
-              by default). No setup required — just upload your documents.
+              A workspace administrator can configure local Ollama or institution-supplied keys
+              for Gemini, OpenAI, Anthropic, and xAI. Contact them to confirm whether AI is
+              available in this workspace.
             </p>
-          </div>
-        </div>
-
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <div className="flex items-center gap-2">
-            <CheckCircle className="w-4 h-4" style={{ color: 'var(--content-success)' }} />
-            <span className="text-sm text-secondary">Alt text generation</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <CheckCircle className="w-4 h-4" style={{ color: 'var(--content-success)' }} />
-            <span className="text-sm text-secondary">WCAG analysis</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <CheckCircle className="w-4 h-4" style={{ color: 'var(--content-success)' }} />
-            <span className="text-sm text-secondary">Code fix suggestions</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <CheckCircle className="w-4 h-4" style={{ color: 'var(--content-success)' }} />
-            <span className="text-sm text-secondary">Document remediation</span>
           </div>
         </div>
 
         <p className="text-xs text-tertiary mt-4">
-          Configuring your own AI provider, including local Ollama models, requires a higher
-          department tier. Ask your administrator to raise this department's tier.
+          Provider controls are available to workspace administrators outside LTI launch sessions.
         </p>
       </div>
     </div>
@@ -187,10 +176,25 @@ function ProviderSettingsCard({
   primaryProvider,
   fallbackProvider,
   loadingProviders,
+  providerStateReady,
+  providerLoadError,
   testingProvider,
+  configuringProvider,
+  providerMutationPending,
   onTestProvider,
   onSetPrimary,
+  onSetFallback,
+  onConfigureProvider,
+  onRetry,
 }: Omit<AIProvidersCardProps, 'showAIProviderSettings'>): React.ReactElement {
+  const [apiKeys, setApiKeys] = React.useState<Partial<Record<ProviderKey, string>>>({});
+
+  const configureProvider = async (key: ProviderKey): Promise<void> => {
+    const apiKey = apiKeys[key]?.trim();
+    await onConfigureProvider(key, apiKey || undefined);
+    setApiKeys(current => ({ ...current, [key]: '' }));
+  };
+
   return (
     <div className="card mb-6">
       <div className="px-6 py-4 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -199,7 +203,7 @@ function ProviderSettingsCard({
           AI Provider Settings
         </h2>
         <p className="text-sm text-tertiary mt-1">
-          Choose which AI provider to use for accessibility analysis
+          Configure workspace provider credentials and a durable primary and fallback choice
         </p>
       </div>
       <div className="px-6 py-4 space-y-4">
@@ -207,6 +211,27 @@ function ProviderSettingsCard({
           <div className="flex items-center justify-center py-8">
             <Loader2 className="w-6 h-6 animate-spin text-tertiary" />
             <span className="ml-2 text-tertiary">Loading providers...</span>
+          </div>
+        ) : providerLoadError || !providerStateReady ? (
+          <div
+            role="alert"
+            className="p-4 rounded-lg border"
+            style={{
+              backgroundColor: 'var(--surface-danger-subtle)',
+              borderColor: 'var(--content-danger)',
+            }}
+          >
+            <p className="text-sm text-primary">
+              Provider settings could not be loaded. No changes can be made until current
+              workspace state is available.
+            </p>
+            <button
+              type="button"
+              onClick={() => void onRetry()}
+              className="btn-secondary px-3 py-1.5 text-sm mt-3"
+            >
+              Retry
+            </button>
           </div>
         ) : (
           <>
@@ -237,7 +262,7 @@ function ProviderSettingsCard({
             <div className="space-y-3">
               {(Object.entries(PROVIDER_INFO) as [ProviderKey, ProviderInfo][]).map(([key, info]) => {
                 const provider = providers[key];
-                const isAvailable = provider?.is_available;
+                const isAvailable = provider?.configured ?? provider?.is_available;
                 const isPrimary = primaryProvider === key;
                 const isFallback = fallbackProvider === key;
                 const ProviderIcon = info.icon;
@@ -245,6 +270,8 @@ function ProviderSettingsCard({
                 return (
                   <div
                     key={key}
+                    id={`provider-${key}-row`}
+                    tabIndex={-1}
                     className="p-4 rounded-lg border transition-colors"
                     style={{
                       backgroundColor: isPrimary
@@ -311,16 +338,20 @@ function ProviderSettingsCard({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
                         {isAvailable && (
                           <>
                             <button
                               onClick={() => onTestProvider(key)}
-                              disabled={testingProvider === key}
+                              disabled={testingProvider === key || providerMutationPending}
+                              aria-label={testingProvider === key
+                                ? `Testing ${info.name} provider`
+                                : `Test ${info.name} provider`}
+                              aria-busy={testingProvider === key}
                               className="btn-secondary px-3 py-1.5 text-sm"
                             >
                               {testingProvider === key ? (
-                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                               ) : (
                                 'Test'
                               )}
@@ -328,14 +359,70 @@ function ProviderSettingsCard({
                             {!isPrimary && (
                               <button
                                 onClick={() => onSetPrimary(key)}
+                                id={`provider-${key}-primary`}
+                                aria-label={`Set ${info.name} as primary provider`}
+                                disabled={providerMutationPending}
                                 className="btn-primary px-3 py-1.5 text-sm"
                               >
                                 Set Primary
                               </button>
                             )}
+                            {!isPrimary && (
+                              <button
+                                onClick={() => onSetFallback(isFallback ? null : key)}
+                                aria-label={isFallback
+                                  ? `Clear ${info.name} as fallback provider`
+                                  : `Set ${info.name} as fallback provider`}
+                                disabled={providerMutationPending}
+                                className="btn-secondary px-3 py-1.5 text-sm"
+                              >
+                                {isFallback ? 'Clear Fallback' : 'Set Fallback'}
+                              </button>
+                            )}
                           </>
                         )}
                       </div>
+                    </div>
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                      {info.requiresKey && (
+                        <input
+                          type="password"
+                          value={apiKeys[key] || ''}
+                          onChange={(event) => setApiKeys(current => ({
+                            ...current,
+                            [key]: event.target.value,
+                          }))}
+                          className="input w-full sm:max-w-xs"
+                          aria-label={`${info.name} API key`}
+                          id={`provider-${key}-api-key`}
+                          placeholder={isAvailable ? 'Enter a replacement API key' : 'Enter API key'}
+                          autoComplete="new-password"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                        />
+                      )}
+                      <button
+                        onClick={() => void configureProvider(key)}
+                        id={`provider-${key}-configure`}
+                        disabled={
+                          configuringProvider === key
+                          || providerMutationPending
+                          || (info.requiresKey && !(apiKeys[key] || '').trim())
+                        }
+                        aria-label={configuringProvider === key
+                          ? `Saving ${info.name} provider configuration`
+                          : `${isAvailable ? 'Update' : 'Configure'} ${info.name} provider`}
+                        aria-busy={configuringProvider === key}
+                        className="btn-secondary px-3 py-1.5 text-sm whitespace-nowrap"
+                      >
+                        {configuringProvider === key ? (
+                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                        ) : isAvailable ? (
+                          info.requiresKey ? 'Replace Key' : 'Save Ollama'
+                        ) : (
+                          info.requiresKey ? 'Configure' : 'Enable Ollama'
+                        )}
+                      </button>
                     </div>
                   </div>
                 );

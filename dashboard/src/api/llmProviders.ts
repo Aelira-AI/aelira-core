@@ -31,31 +31,6 @@ export interface SetPrimaryProviderRequest {
   as_fallback: boolean;
 }
 
-export interface AddProviderOptions {
-  textModel?: string;
-  codeModel?: string;
-  visionModel?: string;
-}
-
-export interface AddProviderResponse {
-  message: string;
-  provider: LLMProviderName;
-  status: string;
-}
-
-export interface LLMModel {
-  id: string;
-  name: string;
-  description?: string;
-  context_length?: number;
-  capabilities?: string[];
-}
-
-export interface ModelsListResponse {
-  provider: LLMProviderName;
-  models: LLMModel[];
-}
-
 export interface UpdateModelsOptions {
   textModel?: string | null;
   codeModel?: string | null;
@@ -68,6 +43,10 @@ export interface UpdateModelsResponse {
   text_model: string | null;
   code_model: string | null;
   vision_model: string | null;
+}
+
+export interface ConfigureProviderOptions extends UpdateModelsOptions {
+  apiKey?: string;
 }
 
 export interface LLMHealthStatus {
@@ -103,6 +82,36 @@ export const llmProvidersApi = {
     return normalizeProviderListResponse(response.data);
   },
 
+  /** Configure one workspace-owned provider without exposing its stored key. */
+  configureProvider: async (
+    provider: LLMProviderName,
+    expectedRevision: number,
+    options: ConfigureProviderOptions = {},
+  ): Promise<LLMProvidersListResponse> => {
+    const response = await apiClient.put<LLMProviderListWireResponse>(`/llm/providers/${provider}`, {
+      expected_revision: expectedRevision,
+      api_key: options.apiKey,
+      text_model: options.textModel,
+      code_model: options.codeModel,
+      vision_model: options.visionModel,
+    });
+    return normalizeProviderListResponse(response.data);
+  },
+
+  /** Atomically replace the workspace's durable primary/fallback selection. */
+  updateSelection: async (
+    expectedRevision: number,
+    primary: LLMProviderName | null,
+    fallback: LLMProviderName | null,
+  ): Promise<LLMProvidersListResponse> => {
+    const response = await apiClient.put<LLMProviderListWireResponse>('/llm/providers/selection', {
+      expected_revision: expectedRevision,
+      primary,
+      fallback,
+    });
+    return normalizeProviderListResponse(response.data);
+  },
+
   /**
    * Set the primary LLM provider.
    * The provider must already be configured and available.
@@ -122,28 +131,6 @@ export const llmProvidersApi = {
   },
 
   /**
-   * Add or configure a provider with an API key.
-   *
-   * @param provider - Provider name (gemini, openai, anthropic, xai)
-   * @param apiKey - API key for the provider
-   * @param options - Optional model overrides
-   */
-  addProvider: async (
-    provider: LLMProviderName,
-    apiKey: string,
-    options: AddProviderOptions = {}
-  ): Promise<AddProviderResponse> => {
-    const response = await apiClient.post<AddProviderResponse>('/llm/providers/add', {
-      provider,
-      api_key: apiKey,
-      text_model: options.textModel,
-      code_model: options.codeModel,
-      vision_model: options.visionModel,
-    });
-    return response.data;
-  },
-
-  /**
    * Test a provider with a simple prompt.
    * If no provider specified, tests the primary provider.
    *
@@ -153,16 +140,6 @@ export const llmProvidersApi = {
     const params = provider ? `?provider=${provider}` : '';
     const response = await apiClient.post<ProviderTestWireResponse>(`/llm/providers/test${params}`);
     return normalizeProviderTestResponse(response.data);
-  },
-
-  /**
-   * List available models for a specific provider.
-   *
-   * @param provider - Provider name
-   */
-  listModels: async (provider: LLMProviderName): Promise<ModelsListResponse> => {
-    const response = await apiClient.get<ModelsListResponse>(`/llm/providers/${provider}/models`);
-    return response.data;
   },
 
   /**

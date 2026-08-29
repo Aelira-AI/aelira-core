@@ -6,6 +6,7 @@ import {
   LLM_PROVIDER_CONTRACT_ERROR,
   SUPPORTED_LLM_PROVIDERS,
   normalizeProviderListResponse,
+  normalizeProviderRevisionConflict,
   normalizeProviderSelectionResponse,
   normalizeProviderTestResponse,
 } from '../../src/utils/llmProviderContract.ts';
@@ -13,6 +14,7 @@ import {
 const provider = (name, overrides = {}) => ({
   name,
   display_name: name === 'xai' ? 'xAI' : name[0].toUpperCase() + name.slice(1),
+  configured: false,
   is_available: false,
   is_local: name === 'ollama',
   status: 'not_configured',
@@ -23,6 +25,8 @@ const provider = (name, overrides = {}) => ({
 });
 
 const wireList = (overrides = {}) => ({
+  schema_version: 1,
+  config_revision: 4,
   primary: 'anthropic',
   fallback: 'ollama',
   providers: Object.fromEntries(
@@ -37,6 +41,7 @@ test('normalizes the keyed provider response in stable supported-provider order'
       ...wireList().providers,
       ollama: provider('ollama', {
         display_name: 'Ollama',
+        configured: true,
         is_available: true,
         status: 'healthy',
         text_model: 'qwen2.5:7b',
@@ -54,9 +59,11 @@ test('normalizes the keyed provider response in stable supported-provider order'
   ]);
   assert.equal(response.primary_provider, 'anthropic');
   assert.equal(response.fallback_provider, 'ollama');
+  assert.equal(response.config_revision, 4);
   assert.deepEqual(response.providers[0], {
     name: 'ollama',
     display_name: 'Ollama',
+    configured: true,
     is_available: true,
     is_local: true,
     status: 'healthy',
@@ -98,12 +105,14 @@ test('normalizes primary-selection and provider-test responses from server field
       message: 'Set openai as primary provider',
       primary: 'openai',
       fallback: 'ollama',
+      config_revision: 5,
     }),
     {
       success: true,
       message: 'Set openai as primary provider',
       primary_provider: 'openai',
       fallback_provider: 'ollama',
+      config_revision: 5,
     },
   );
 
@@ -113,7 +122,6 @@ test('normalizes primary-selection and provider-test responses from server field
       provider: 'gemini',
       model: 'gemini-3-flash',
       inference_time: 1.234,
-      response_preview: 'WCAG is an accessibility standard.',
       error: null,
     }),
     {
@@ -121,7 +129,6 @@ test('normalizes primary-selection and provider-test responses from server field
       provider: 'gemini',
       model: 'gemini-3-flash',
       response_time_ms: 1234,
-      response_preview: 'WCAG is an accessibility standard.',
       error: null,
     },
   );
@@ -134,7 +141,6 @@ test('preserves bounded provider-test failures when no provider was attempted', 
       provider: 'none',
       model: '',
       inference_time: 0,
-      response_preview: null,
       error: 'No providers available',
     }),
     {
@@ -142,18 +148,59 @@ test('preserves bounded provider-test failures when no provider was attempted', 
       provider: 'none',
       model: '',
       response_time_ms: 0,
-      response_preview: null,
       error: 'No providers available',
     },
   );
 });
 
-test('Settings consumes normalized arrays and server-returned provider selections', () => {
+test('recovers only a validated server-authored provider revision conflict', () => {
+  const current = wireList({ config_revision: 9, primary: 'openai', fallback: null });
+  const recovered = normalizeProviderRevisionConflict({
+    response: {
+      data: {
+        detail: {
+          code: 'provider_config_revision_conflict',
+          reason: 'stale_revision',
+          current,
+        },
+      },
+    },
+  });
+
+  assert.equal(recovered?.config_revision, 9);
+  assert.equal(recovered?.primary_provider, 'openai');
+  assert.equal(normalizeProviderRevisionConflict({ response: { data: { detail: 'no' } } }), null);
+  assert.equal(normalizeProviderRevisionConflict({
+    response: { data: { detail: { code: 'provider_config_revision_conflict', current: {} } } },
+  }), null);
+});
+
+test('Settings consumes durable workspace state and gates provider controls by role', () => {
   const source = readFileSync(new URL('../../src/pages/Settings.tsx', import.meta.url), 'utf8');
+  const card = readFileSync(new URL('../../src/components/settings/AIProvidersCard.tsx', import.meta.url), 'utf8');
 
   assert.match(source, /for \(const p of data\.providers\)/);
-  assert.match(source, /const result = await llmProvidersApi\.setPrimaryProvider/);
+  assert.match(source, /const result = await llmProvidersApi\.updateSelection/);
+  assert.match(source, /user\?\.role === 'admin'/);
+  assert.match(source, /authMethod !== 'lti'/);
+  assert.match(source, /useState<number \| null>\(null\)/);
+  assert.match(source, /setProviderLoadError\(true\)/);
+  assert.match(card, /No changes can be made until current/);
+  assert.match(card, /providerLoadError \|\| !providerStateReady/);
+  assert.match(source, /normalizeProviderRevisionConflict\(error\)/);
+  assert.match(source, /provider-\$\{providerKey\}-row/);
+  assert.match(source, /setProviderMutationPending\(true\)/);
+  assert.match(card, /disabled=\{providerMutationPending\}/);
+  assert.doesNotMatch(source, /Failed to configure provider:', error/);
   assert.match(source, /setPrimaryProvider\(result\.primary_provider\)/);
   assert.match(source, /setFallbackProvider\(result\.fallback_provider\)/);
   assert.doesNotMatch(source, /setPrimaryProvider\(providerKey\)/);
+  assert.doesNotMatch(card, /Gemini 3\s+by default/);
+  assert.doesNotMatch(card, /higher\s+department tier/);
+  assert.match(card, /Contact them to confirm whether AI is/);
+  assert.doesNotMatch(card, /Alt text generation/);
+  assert.match(card, /aria-busy=\{testingProvider === key\}/);
+  assert.match(card, /aria-busy=\{configuringProvider === key\}/);
+  assert.match(card, /Set Fallback/);
+  assert.match(card, /Clear Fallback/);
 });
