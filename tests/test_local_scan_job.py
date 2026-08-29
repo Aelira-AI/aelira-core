@@ -185,6 +185,8 @@ def test_enqueue_local_scan_job_uses_scan_tenant_and_deterministic_dedupe() -> N
     )
 
     assert job.id == "job-a"
+    locked_query = db.scalar.call_args.args[0]
+    assert locked_query.get_execution_options()["populate_existing"] is True
     enqueue.assert_called_once_with(
         db,
         department_id="dept-a",

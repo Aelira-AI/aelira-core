@@ -119,12 +119,20 @@ jobs:
       - name: Run tests
         env:
           DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
-          TEST_MIGRATION_DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
-          ALLOW_DESTRUCTIVE_MIGRATION_TESTS: "1"
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-for-ci
           ENV: test
         run: pytest tests/ -v --tb=short
+      - name: Run PostgreSQL worker-isolation tests
+        env:
+          DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
+          TEST_MIGRATION_DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
+          ALLOW_DESTRUCTIVE_MIGRATION_TESTS: "1"
+          REQUIRE_WORKER_POSTGRES_TESTS: "1"
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: test-secret-for-ci
+          ENV: test
+        run: pytest tests/test_durable_job_processor_postgres.py -v --tb=short
 
   dashboard:
     runs-on: ubuntu-latest

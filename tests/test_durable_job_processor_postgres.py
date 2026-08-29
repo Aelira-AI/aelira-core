@@ -15,7 +15,7 @@ from threading import Event
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine, delete, event, text, update
+from sqlalchemy import create_engine, delete, event, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from conftest import require_disposable_postgres_url
@@ -834,6 +834,7 @@ async def test_cancellation_terminalizes_only_after_child_group_is_reaped(
                 id=scan_id,
                 department_id=department_id,
                 file_name="large.pdf",
+                scan_type=ScanType.PDF,
                 status=ScanStatus.PROCESSING,
             )
         )
@@ -905,6 +906,7 @@ def test_duplicate_cancellation_keeps_scan_until_last_claim_acknowledges(pg_sess
                 id=scan_id,
                 department_id=department_id,
                 file_name="large.pdf",
+                scan_type=ScanType.PDF,
                 status=ScanStatus.PROCESSING,
             )
         )
@@ -961,6 +963,7 @@ def test_expired_cancellation_waits_for_live_child_then_recovers_dead_child(
                 id=scan_id,
                 department_id=department_id,
                 file_name="large.pdf",
+                scan_type=ScanType.PDF,
                 status=ScanStatus.PROCESSING,
             )
         )
@@ -1256,9 +1259,14 @@ def test_reaper_first_authority_blocks_late_child_start_and_fences_execution(
 @pytest.fixture
 def pg_sessions():
     url = os.getenv("TEST_MIGRATION_DATABASE_URL")
+    required = os.getenv("REQUIRE_WORKER_POSTGRES_TESTS", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     if not url:
-        if os.getenv("CI", "").lower() in {"1", "true", "yes"}:
-            pytest.fail("CI must provide TEST_MIGRATION_DATABASE_URL")
+        if required:
+            pytest.fail("required worker PostgreSQL URL is missing")
         pytest.skip("requires TEST_MIGRATION_DATABASE_URL")
     require_disposable_postgres_url(url, destructive=True)
     engine = create_engine(url)
@@ -1266,9 +1274,9 @@ def pg_sessions():
         with engine.connect() as connection:
             connection.exec_driver_sql("SELECT 1")
     except Exception as exc:
-        if os.getenv("CI", "").lower() in {"1", "true", "yes"}:
+        if required:
             pytest.fail(
-                f"CI disposable PostgreSQL is unavailable: {type(exc).__name__}"
+                f"required worker PostgreSQL is unavailable: {type(exc).__name__}"
             )
         pytest.skip("PostgreSQL unavailable")
     factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -1292,6 +1300,14 @@ def pg_sessions():
                     WorkerHeartbeat.worker_id.in_(factory._test_worker_ids)
                 )
             )
+        scan_ids = select(Scan.id).where(Scan.department_id == department_id)
+        db.execute(
+            delete(RemediationArtifact).where(
+                RemediationArtifact.department_id == department_id
+            )
+        )
+        db.execute(delete(ScanResult).where(ScanResult.scan_id.in_(scan_ids)))
+        db.execute(delete(Scan).where(Scan.department_id == department_id))
         db.execute(delete(Department).where(Department.id == department_id))
         db.commit()
     engine.dispose()
@@ -1363,6 +1379,7 @@ def seed_foreign_scan_contract(factory) -> dict[str, str]:
                 mime_type="application/pdf",
                 size_bytes=8,
                 sha256="a" * 64,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=1),
             )
         )
         db.commit()

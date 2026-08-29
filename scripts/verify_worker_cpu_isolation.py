@@ -39,7 +39,8 @@ def _response_code(port: int, path: str, *, timeout: float = 1.5) -> int:
 
 
 def _wait_for_api(container: str, port: int) -> None:
-    for _ in range(240):
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
         if (
             _run(
                 "docker", "inspect", "-f", "{{.State.Running}}", container, capture=True
@@ -52,8 +53,10 @@ def _wait_for_api(container: str, port: int) -> None:
                 return
         except (OSError, TimeoutError):
             pass
-        time.sleep(0.05)
-    raise RuntimeError("API container did not become ready")
+        time.sleep(0.25)
+    logs = _run("docker", "logs", container, capture=True)
+    detail = (logs.stdout + logs.stderr)[-4000:]
+    raise RuntimeError(f"API container did not become ready:\n{detail}")
 
 
 def verify(image: str) -> None:
@@ -93,6 +96,7 @@ class Probe(JobProcessor):
     def _owns_claim(self, _claim): return True
     def _cancellation_requested(self, _claim): return False
     def _fenced_update(self, _claim, _values): return True
+    def _finish(self, _claim, _result): return True
     def _record_outcome(self, *, completed): pass
 
 registry=JobRegistry()
@@ -182,7 +186,11 @@ raise SystemExit(0 if asyncio.run(worker.process_claim(claim)) else 1)
                     break
                 time.sleep(0.025)
             else:
-                raise RuntimeError("representative queued worker did not start")
+                logs = _run("docker", "logs", worker_name, capture=True)
+                detail = (logs.stdout + logs.stderr)[-4000:]
+                raise RuntimeError(
+                    f"representative queued worker did not start:\n{detail}"
+                )
 
             maximum_latency = 0.0
             for _ in range(12):
@@ -214,7 +222,11 @@ raise SystemExit(0 if asyncio.run(worker.process_claim(claim)) else 1)
                 ).stdout.strip()
             )
             if exit_code != 0:
-                raise RuntimeError(f"representative queued worker exited {exit_code}")
+                logs = _run("docker", "logs", worker_name, capture=True)
+                detail = (logs.stdout + logs.stderr)[-4000:]
+                raise RuntimeError(
+                    f"representative queued worker exited {exit_code}:\n{detail}"
+                )
             print(
                 "kernel worker isolation verified: "
                 f"cpu={cpu}, quota=0.75, max_api_latency={maximum_latency:.3f}s"

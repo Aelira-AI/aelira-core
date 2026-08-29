@@ -2150,6 +2150,7 @@ class Probe(JobProcessor):
     def _owns_claim(self, _claim): return True
     def _cancellation_requested(self, _claim): return False
     def _fenced_update(self, _claim, _values): return True
+    def _finish(self, _claim, _result): return True
     def _record_outcome(self, *, completed): pass
 registry=JobRegistry(); registry.register('scan', heavy)
 worker=Probe(registry=registry, session_factory=MagicMock(), heartbeat_interval=60)
@@ -2182,15 +2183,20 @@ raise SystemExit(0 if asyncio.run(worker.process_claim(claim)) else 1)
             pytest.fail("separate API process did not become ready")
         worker = subprocess.Popen(
             (sys.executable, "-c", worker_code),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
             preexec_fn=lambda: (os.sched_setaffinity(0, {cpu}), os.nice(10)),
         )
         for _ in range(200):
             if started.exists():
                 break
             if worker.poll() is not None:
-                pytest.fail("representative queued worker exited before saturation")
+                stdout, stderr = worker.communicate(timeout=1)
+                pytest.fail(
+                    "representative queued worker exited before saturation: "
+                    f"{(stdout + stderr)[-2000:]}"
+                )
             time.sleep(0.01)
         assert started.exists()
         for path, expected in (
