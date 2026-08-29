@@ -41,9 +41,9 @@ interface FeatureItemProps {
 
 interface Provider {
   is_available?: boolean;
-  text_model?: string;
-  code_model?: string;
-  vision_model?: string;
+  text_model?: string | null;
+  code_model?: string | null;
+  vision_model?: string | null;
 }
 
 interface Profile {
@@ -228,7 +228,7 @@ export default function Settings(): React.ReactElement {
       setLoadingProviders(true);
       const data = await llmProvidersApi.listProviders();
       const providerRecord: Record<string, Provider> = {};
-      for (const p of data.providers || []) {
+      for (const p of data.providers) {
         providerRecord[p.name] = {
           is_available: p.is_available,
           text_model: p.text_model,
@@ -257,9 +257,10 @@ export default function Settings(): React.ReactElement {
 
   const handleSetPrimary = async (providerKey: ProviderKey): Promise<void> => {
     try {
-      await llmProvidersApi.setPrimaryProvider(providerKey, false);
-      setPrimaryProvider(providerKey);
-      showToast(`Set ${providerKey} as primary provider`, 'success');
+      const result = await llmProvidersApi.setPrimaryProvider(providerKey, false);
+      setPrimaryProvider(result.primary_provider);
+      setFallbackProvider(result.fallback_provider);
+      showToast(result.message, 'success');
     } catch (error) {
       console.error('Failed to set primary provider:', error);
       showToast('Failed to set primary provider', 'error');

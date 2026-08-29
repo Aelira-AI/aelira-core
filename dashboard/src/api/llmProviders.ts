@@ -1,39 +1,34 @@
 import { apiClient } from './client';
+import {
+  normalizeProviderListResponse,
+  normalizeProviderSelectionResponse,
+  normalizeProviderTestResponse,
+} from '../utils/llmProviderContract';
+import type {
+  LLMProviderListWireResponse,
+  LLMProviderName,
+  LLMProvidersListResponse,
+  ProviderSelectionWireResponse,
+  ProviderTestWireResponse,
+  SetPrimaryProviderResponse,
+  TestProviderResponse,
+} from '../utils/llmProviderContract';
+
+export type {
+  LLMProvider,
+  LLMProviderName,
+  LLMProvidersListResponse,
+  SetPrimaryProviderResponse,
+  TestProviderResponse,
+} from '../utils/llmProviderContract';
 
 // ============================================================================
 // Types
 // ============================================================================
 
-export type LLMProviderName = 'ollama' | 'gemini' | 'openai' | 'anthropic' | 'xai';
-
-export interface LLMProvider {
-  name: LLMProviderName;
-  display_name: string;
-  is_available: boolean;
-  is_primary: boolean;
-  is_fallback: boolean;
-  requires_api_key: boolean;
-  has_api_key: boolean;
-  text_model?: string;
-  code_model?: string;
-  vision_model?: string;
-}
-
-export interface LLMProvidersListResponse {
-  providers: LLMProvider[];
-  primary_provider: LLMProviderName | null;
-  fallback_provider: LLMProviderName | null;
-}
-
 export interface SetPrimaryProviderRequest {
   provider: LLMProviderName;
   as_fallback: boolean;
-}
-
-export interface SetPrimaryProviderResponse {
-  message: string;
-  primary_provider: LLMProviderName;
-  fallback_provider: LLMProviderName | null;
 }
 
 export interface AddProviderOptions {
@@ -46,14 +41,6 @@ export interface AddProviderResponse {
   message: string;
   provider: LLMProviderName;
   status: string;
-}
-
-export interface TestProviderResponse {
-  success: boolean;
-  provider: LLMProviderName;
-  response_time_ms: number;
-  message?: string;
-  error?: string;
 }
 
 export interface LLMModel {
@@ -112,8 +99,8 @@ export const llmProvidersApi = {
    * Returns information about each provider's availability and configured models.
    */
   listProviders: async (): Promise<LLMProvidersListResponse> => {
-    const response = await apiClient.get<LLMProvidersListResponse>('/llm/providers');
-    return response.data;
+    const response = await apiClient.get<LLMProviderListWireResponse>('/llm/providers');
+    return normalizeProviderListResponse(response.data);
   },
 
   /**
@@ -127,11 +114,11 @@ export const llmProvidersApi = {
     provider: LLMProviderName,
     asFallback: boolean = false
   ): Promise<SetPrimaryProviderResponse> => {
-    const response = await apiClient.post<SetPrimaryProviderResponse>('/llm/providers/primary', {
+    const response = await apiClient.post<ProviderSelectionWireResponse>('/llm/providers/primary', {
       provider,
       as_fallback: asFallback,
     });
-    return response.data;
+    return normalizeProviderSelectionResponse(response.data);
   },
 
   /**
@@ -164,8 +151,8 @@ export const llmProvidersApi = {
    */
   testProvider: async (provider: LLMProviderName | null = null): Promise<TestProviderResponse> => {
     const params = provider ? `?provider=${provider}` : '';
-    const response = await apiClient.post<TestProviderResponse>(`/llm/providers/test${params}`);
-    return response.data;
+    const response = await apiClient.post<ProviderTestWireResponse>(`/llm/providers/test${params}`);
+    return normalizeProviderTestResponse(response.data);
   },
 
   /**
