@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- CPU- and browser-intensive scans and remediations now run only in the
+  dedicated `python -m src.jobs.worker` service. API processes enqueue bounded
+  jobs and remain independently responsive; Compose ships the worker with a
+  single-job concurrency default, a 0.75-CPU quota, killable child-process
+  execution, durable leases, and worker-specific health reporting.
+- Breaking API change: `POST /education/multimedia/transcribe` now returns an
+  HTTP `200` asynchronous scan handle instead of a terminal transcript/captions
+  payload. Poll its authenticated `/education/scans/{scan_id}/progress` URL,
+  then retrieve the result from `/education/scans/{scan_id}`.
+- Breaking API change: Brightspace single-content and batch remediation now
+  return HTTP `202` job descriptors. Clients must poll each authenticated
+  `status_url` for the bounded terminal outcome and artifact reference.
+- Breaking security and reliability change: the unauthenticated server endpoints
+  `POST /education/focus-order/analyze` and
+  `POST /education/focus-order/analyze-html` have been removed so API requests
+  cannot launch Chromium. The independent CLI `focus` command and the
+  worker/scanner FocusOrder capability remain available.
+
 ## [0.9.6] - 2026-08-26
 
 ### Security

@@ -70,13 +70,35 @@ def _assert_v096_notice(notes: str) -> None:
         assert phrase in notes
 
 
-def test_changelog_has_empty_unreleased_and_v0_9_6_operator_notice():
+def test_changelog_has_worker_isolation_unreleased_and_v0_9_6_operator_notice():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     unreleased = changelog.index("## [Unreleased]")
     release = changelog.index(RELEASE_HEADING)
     historical = changelog.index("## [0.9.5] - 2026-08-22")
+    expected_unreleased = """### Changed
 
-    assert changelog[unreleased + len("## [Unreleased]") : release].strip() == ""
+- CPU- and browser-intensive scans and remediations now run only in the
+  dedicated `python -m src.jobs.worker` service. API processes enqueue bounded
+  jobs and remain independently responsive; Compose ships the worker with a
+  single-job concurrency default, a 0.75-CPU quota, killable child-process
+  execution, durable leases, and worker-specific health reporting.
+- Breaking API change: `POST /education/multimedia/transcribe` now returns an
+  HTTP `200` asynchronous scan handle instead of a terminal transcript/captions
+  payload. Poll its authenticated `/education/scans/{scan_id}/progress` URL,
+  then retrieve the result from `/education/scans/{scan_id}`.
+- Breaking API change: Brightspace single-content and batch remediation now
+  return HTTP `202` job descriptors. Clients must poll each authenticated
+  `status_url` for the bounded terminal outcome and artifact reference.
+- Breaking security and reliability change: the unauthenticated server endpoints
+  `POST /education/focus-order/analyze` and
+  `POST /education/focus-order/analyze-html` have been removed so API requests
+  cannot launch Chromium. The independent CLI `focus` command and the
+  worker/scanner FocusOrder capability remain available."""
+
+    assert (
+        changelog[unreleased + len("## [Unreleased]") : release].strip()
+        == expected_unreleased
+    )
     assert unreleased < release < historical
     _assert_v096_notice(_release_notes(changelog, "## [0.9.5] - 2026-08-22"))
 

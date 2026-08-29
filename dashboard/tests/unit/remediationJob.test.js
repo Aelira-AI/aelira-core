@@ -188,6 +188,68 @@ describe('pollRemediationJob', () => {
     });
   });
 
+  it('ignores an abort-ignoring terminal response that resolves after the deadline', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let resolveRequest;
+    let requestSignal;
+    const updates = [];
+    const polling = pollRemediationJob(
+      (signal) => {
+        requestSignal = signal;
+        return new Promise((resolve) => {
+          resolveRequest = resolve;
+        });
+      },
+      {
+        timeoutMs: 25,
+        onUpdate: (_job, stateValue) => updates.push(stateValue),
+      }
+    );
+
+    t.mock.timers.tick(25);
+    assert.deepEqual(await polling, {
+      outcome: 'client_timeout',
+      state: 'client_timeout',
+      job: null,
+    });
+    assert.equal(requestSignal.aborted, true);
+
+    resolveRequest(status('completed'));
+    await Promise.resolve();
+    assert.deepEqual(updates, []);
+  });
+
+  it('returns at the hard deadline when the status request never settles', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let requestSignal;
+    const polling = pollRemediationJob(
+      (signal) => {
+        requestSignal = signal;
+        return new Promise(() => {});
+      },
+      { timeoutMs: 50 }
+    );
+
+    t.mock.timers.tick(50);
+    assert.deepEqual(await polling, {
+      outcome: 'client_timeout',
+      state: 'client_timeout',
+      job: null,
+    });
+    assert.equal(requestSignal.aborted, true);
+  });
+
+  it('keeps caller abort distinct when the status request ignores cancellation', async () => {
+    const controller = new AbortController();
+    const polling = pollRemediationJob(
+      () => new Promise(() => {}),
+      { signal: controller.signal, timeoutMs: 1_000 }
+    );
+
+    controller.abort();
+    await assert.rejects(polling, { name: 'AbortError' });
+  });
+
   it('normalizes an Axios-shaped caller cancellation to AbortError', async () => {
     const controller = new AbortController();
     const polling = pollRemediationJob(

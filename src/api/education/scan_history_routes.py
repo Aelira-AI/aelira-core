@@ -3,6 +3,7 @@
 import json as _json
 import logging
 import traceback
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -12,7 +13,15 @@ from sqlalchemy.orm import Session
 from ...db.database import get_db_dependency
 from ...auth.canvas_permissions import require_lti_account_access
 from ...auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
-from ...db.models import CloudFile, CloudProvider, Scan, ScanStatus, ScanType
+from ...db.models import (
+    CloudFile,
+    CloudJobQueue,
+    CloudJobStatus,
+    CloudProvider,
+    Scan,
+    ScanStatus,
+    ScanType,
+)
 from ...db.scan_service import ScanService
 from ...services.remediation_artifact_service import (
     ArtifactAuthorizationError,
@@ -238,7 +247,11 @@ async def get_scan_progress(
     """
     _, user_id, department_id = principal.as_legacy_tuple()
 
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    scan = (
+        db.query(Scan)
+        .filter(Scan.id == scan_id, Scan.department_id == department_id)
+        .first()
+    )
 
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -268,12 +281,16 @@ async def cancel_scan(
      Cancel running scans
     REQUIRES API KEY IN PRODUCTION
 
-    Note: Background processing will continue until next progress check,
-    but the scan will be marked as CANCELLED and results will be deleted.
+    Processing cancellation is durable. The worker stops and reaps its child
+    before acknowledging the queue row or deleting scan results.
     """
     _, user_id, department_id = principal.as_legacy_tuple()
 
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    scan = (
+        db.query(Scan)
+        .filter(Scan.id == scan_id, Scan.department_id == department_id)
+        .first()
+    )
 
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -281,23 +298,58 @@ async def cancel_scan(
     authorize_scan_access(db, scan, principal)
 
     try:
-        RemediationArtifactService.from_settings().delete_for_scan(
-            db, department_id=department_id, scan_id=scan_id
+        now = datetime.now(timezone.utc)
+        queue_jobs = (
+            db.query(CloudJobQueue)
+            .filter(
+                CloudJobQueue.department_id == department_id,
+                CloudJobQueue.payload["scan_id"].as_string() == scan_id,
+                CloudJobQueue.status.in_(
+                    (
+                        CloudJobStatus.PENDING.value,
+                        CloudJobStatus.PROCESSING.value,
+                    )
+                ),
+            )
+            .with_for_update()
+            .all()
         )
-    except ArtifactAuthorizationError:
-        db.rollback()
-        raise HTTPException(
-            status_code=409, detail="artifact_cleanup_required"
-        ) from None
-
-    try:
-        # The artifact row deletes are already staged; commit them with the parent.
-        scan.status = ScanStatus.FAILED
-        scan.error_message = "Cancelled by user"
-        scan.progress_message = "Scan cancelled"
-        if scan.result:
-            db.delete(scan.result)
-        db.delete(scan)
+        for job in queue_jobs:
+            if job.status == CloudJobStatus.PROCESSING.value:
+                job.progress_message = "Cancellation requested"
+                job.error_message = "scan_cancel_requested"
+                job.last_error_code = "scan_cancel_requested"
+                job.last_error_retryable = False
+            else:
+                job.status = CloudJobStatus.FAILED.value
+                job.completed_at = now
+                job.progress = 0
+                job.progress_message = "Cancelled"
+                job.result_data = {"cancelled": True}
+                job.error_message = "scan_cancelled"
+                job.last_error_code = "scan_cancelled"
+                job.last_error_retryable = False
+        processing_requested = any(
+            job.status == CloudJobStatus.PROCESSING.value
+            and job.last_error_code == "scan_cancel_requested"
+            for job in queue_jobs
+        )
+        if not processing_requested:
+            try:
+                RemediationArtifactService.from_settings().delete_for_scan(
+                    db, department_id=department_id, scan_id=scan_id
+                )
+            except ArtifactAuthorizationError:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409, detail="artifact_cleanup_required"
+                ) from None
+            scan.status = ScanStatus.FAILED
+            scan.error_message = "Cancelled by user"
+            scan.progress_message = "Scan cancelled"
+            if scan.result:
+                db.delete(scan.result)
+            db.delete(scan)
         db.commit()
     except Exception:
         db.rollback()
@@ -305,7 +357,7 @@ async def cancel_scan(
 
     logger.info(f"[CANCEL] Scan {scan_id} cancelled by user")
 
-    return {"success": True, "message": "Scan cancelled successfully"}
+    return {"success": True, "message": "Scan cancellation requested"}
 
 
 @router.get("/scans/{scan_id}/report")

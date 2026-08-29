@@ -33,6 +33,7 @@ def _principal(
 
 def _db():
     db = MagicMock()
+    db.scalar.return_value = 0
     db.query.return_value.group_by.return_value = []
     db.query.return_value.filter.return_value.scalar.return_value = 0
     db.query.return_value.scalar.return_value = None
@@ -51,7 +52,21 @@ def test_worker_status_allows_only_super_admin():
         UserRole.SUPER_ADMIN
     )
     app.dependency_overrides[get_db_dependency] = _db
-    assert TestClient(app).get("/api/jobs/worker-status").status_code == 200
+    response = TestClient(app).get("/api/jobs/worker-status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["progress"] == {
+        "jobs_claimed": 0,
+        "jobs_completed": 0,
+        "jobs_failed": 0,
+        "oldest_pending_created_at": 0,
+        "oldest_processing_heartbeat_at": 0,
+        "runnable_pending": 0,
+        "expired_processing": 0,
+        "stalled_processing": 0,
+        "latest_progress_at": None,
+    }
+    assert not {"department_id", "scan_id", "cloud_file_id"} & body.keys()
 
 
 @pytest.mark.parametrize(

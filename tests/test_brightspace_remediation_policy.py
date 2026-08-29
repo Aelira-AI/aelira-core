@@ -416,10 +416,9 @@ async def test_brightspace_scan_rollback_failure_cannot_replace_stable_error():
 
 
 @pytest.mark.asyncio
-async def test_single_authorizes_inventory_before_policy_and_returns_real_outcome():
+async def test_single_authorizes_inventory_before_enqueuing_worker_outcome():
     from src.api.brightspace_routes import (
         BrightspaceContentRemediateRequest,
-        RemediationOutcome,
         remediate_content,
     )
 
@@ -455,29 +454,19 @@ async def test_single_authorizes_inventory_before_policy_and_returns_real_outcom
     inventory_client.get_course_content_recursive.side_effect = lambda course: (
         events.append("inventory") or [SimpleNamespace(topic_id=7, org_unit_id=42)]
     )
-    outcome = RemediationOutcome(
-        cloud_file_id="cloud-1", status="manual_required", manual_count=2
-    )
-
-    def bind(**kwargs):
-        events.append(f"policy:{kwargs['purpose']}")
-        return SimpleNamespace(provider="gemini")
-
     with (
         patch("src.api.brightspace_routes.require_lti_course_access"),
         patch(
             "src.api.brightspace_routes._client_for_fresh_credential",
-            new=AsyncMock(
-                side_effect=[(credential, inventory_client), (credential, AsyncMock())]
-            ),
+            new=AsyncMock(return_value=(credential, inventory_client)),
         ),
         patch(
             "src.api.brightspace_routes.LMSRemediationClient.bind_if_allowed",
-            side_effect=bind,
-        ),
+        ) as bind,
+        patch("src.api.brightspace_routes._remediate_file") as execute,
         patch(
-            "src.api.brightspace_routes._remediate_file",
-            new=AsyncMock(return_value=outcome),
+            "src.api.brightspace_routes.enqueue_brightspace_content_remediation",
+            return_value=SimpleNamespace(id="job-1", status="pending", progress=0),
         ),
     ):
         result = await remediate_content(
@@ -487,10 +476,11 @@ async def test_single_authorizes_inventory_before_policy_and_returns_real_outcom
             db=db,
         )
 
-    assert events == ["inventory", "policy:remediation"]
-    assert result.fixed_count == 0
-    assert result.manual_count == 2
-    assert result.status == "manual_required"
+    assert events == ["inventory"]
+    assert result.job_id == "job-1"
+    assert result.status == "pending"
+    bind.assert_not_called()
+    execute.assert_not_called()
 
 
 class _StreamingResponse:
@@ -1040,7 +1030,6 @@ async def test_sync_remediator_runs_in_thread_without_db_session(tmp_path):
 async def test_batch_waits_for_each_started_item_without_false_deadline():
     from src.api.brightspace_routes import (
         BrightspaceBatchRemediateRequest,
-        RemediationOutcome,
         batch_remediate_content,
     )
 
@@ -1055,30 +1044,18 @@ async def test_batch_waits_for_each_started_item_without_false_deadline():
         )
         for index in range(3)
     ]
-    completed = RemediationOutcome(
-        cloud_file_id="cf-0", status="completed", fixed_count=2
-    )
-
-    async def remediate(cloud_file, *_args, **_kwargs):
-        if cloud_file.id == "cf-0":
-            return completed
-        await __import__("asyncio").sleep(0.05)
-        return RemediationOutcome(cloud_file_id=cloud_file.id, status="completed")
-
     with (
         patch(
             "src.api.brightspace_routes._authorize_brightspace_files",
             new=AsyncMock(return_value=cloud_files),
         ),
         patch(
-            "src.api.brightspace_routes._bind_brightspace_clients",
-            return_value=(None, None, {}),
+            "src.api.brightspace_routes.enqueue_brightspace_content_remediation",
+            side_effect=[
+                SimpleNamespace(id=f"job-{index}", status="pending", progress=0)
+                for index in range(3)
+            ],
         ),
-        patch(
-            "src.api.brightspace_routes._client_for_fresh_credential",
-            new=AsyncMock(return_value=(SimpleNamespace(), AsyncMock())),
-        ),
-        patch("src.api.brightspace_routes._remediate_file", side_effect=remediate),
     ):
         result = await batch_remediate_content(
             BrightspaceBatchRemediateRequest(
@@ -1089,22 +1066,14 @@ async def test_batch_waits_for_each_started_item_without_false_deadline():
         )
 
     assert result.requested_count == 3
-    assert result.completed_count == 3
-    assert result.fixed_count == 2
-    assert result.failed_count == 0
-    assert [item.status for item in result.results] == [
-        "completed",
-        "completed",
-        "completed",
-    ]
-    assert [item.error_code for item in result.results] == [None, None, None]
+    assert result.status == "queued"
+    assert [item.status for item in result.jobs] == ["pending", "pending", "pending"]
 
 
 @pytest.mark.asyncio
 async def test_slow_item_completes_before_later_batch_item_starts():
     from src.api.brightspace_routes import (
         BrightspaceBatchRemediateRequest,
-        RemediationOutcome,
         batch_remediate_content,
     )
 
@@ -1120,27 +1089,18 @@ async def test_slow_item_completes_before_later_batch_item_starts():
         for index in range(2)
     ]
 
-    async def remediate(cloud_file, *_args, **_kwargs):
-        if cloud_file.id == "item-0":
-            await __import__("asyncio").sleep(0.05)
-        return RemediationOutcome(
-            cloud_file_id=cloud_file.id, status="completed", fixed_count=1
-        )
-
     with (
         patch(
             "src.api.brightspace_routes._authorize_brightspace_files",
             new=AsyncMock(return_value=cloud_files),
         ),
         patch(
-            "src.api.brightspace_routes._bind_brightspace_clients",
-            return_value=(None, None, {}),
+            "src.api.brightspace_routes.enqueue_brightspace_content_remediation",
+            side_effect=[
+                SimpleNamespace(id=f"job-{index}", status="pending", progress=0)
+                for index in range(2)
+            ],
         ),
-        patch(
-            "src.api.brightspace_routes._client_for_fresh_credential",
-            new=AsyncMock(return_value=(SimpleNamespace(), AsyncMock())),
-        ),
-        patch("src.api.brightspace_routes._remediate_file", side_effect=remediate),
     ):
         result = await batch_remediate_content(
             BrightspaceBatchRemediateRequest(
@@ -1151,10 +1111,8 @@ async def test_slow_item_completes_before_later_batch_item_starts():
         )
 
     assert result.requested_count == 2
-    assert result.completed_count == 2
-    assert result.failed_count == 0
-    assert result.fixed_count == 2
-    assert [item.error_code for item in result.results] == [None, None]
+    assert result.status == "queued"
+    assert [item.status for item in result.jobs] == ["pending", "pending"]
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,6 @@
 import hashlib
 import logging
 import os
-import tempfile
 import time
 from typing import Optional, Tuple
 
@@ -12,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from ...db.database import get_db_dependency
 from ...db.models import APIKey, ScanType
-from ...education.multimedia_processor import MultimediaProcessor
 from ...middleware.quota import require_feature
 from ._shared import (
     get_api_key_or_mock,
@@ -48,111 +46,17 @@ async def transcribe_multimedia(
         generate_captions: Whether to generate captions (default: true)
         whisper_model: Whisper model size (base, small, medium, large)
     """
-    _, user_id, department_id = api_key_info
-
-    # Check feature access (tier-gated via TIER_QUOTAS)
-    await require_feature(db, department_id, "video", "Video/Audio Transcription")
-
-    # Validate file type
-    valid_extensions = [
-        ".mp4",
-        ".mov",
-        ".avi",
-        ".mkv",
-        ".webm",
-        ".mp3",
-        ".wav",
-        ".m4a",
-        ".ogg",
-    ]
-    if not any(file.filename.lower().endswith(ext) for ext in valid_extensions):
-        raise HTTPException(
-            status_code=400,
-            detail=f"File must be a video or audio file. Supported: {', '.join(valid_extensions)}",
-        )
-
-    # Security validation - verify file type for multimedia files
-    content = await validate_uploaded_file(file, db, department_id)
-
-    # Check file size limit
-    from ...config.settings import get_settings
-
-    settings = get_settings()
-    if len(content) > settings.max_file_size_video:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large. Maximum size: {settings.max_file_size_video / (1024*1024):.0f}MB",
-        )
-
-    # Save temporarily
-    ext = os.path.splitext(file.filename)[1]
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-
-    try:
-        start_time = time.time()
-        logger.info(
-            f"Processing multimedia: {file.filename} (generate_captions={generate_captions}, model={whisper_model})"
-        )
-
-        # Process multimedia
-        processor = MultimediaProcessor(whisper_model=f"whisper:{whisper_model}")
-        result = processor.process_media(tmp_path, generate_captions=generate_captions)
-
-        processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"Multimedia processed in {processing_time}ms: {file.filename}")
-
-        # Build response
-        response = {
-            "success": True,
-            "file_name": result.file_name,
-            "media_type": result.media_type,
-            "duration": result.duration,
-            "duration_formatted": f"{int(result.duration // 60)}:{int(result.duration % 60):02d}",
-            "has_captions": result.has_captions,
-            "compliance_score": result.compliance_score,
-            "issues_count": len(result.issues),
-            "issues": result.issues,
-            "processing_time_ms": processing_time,
-        }
-
-        # Add transcription if generated
-        if result.transcription:
-            response["transcription"] = {
-                "segments_count": len(result.transcription),
-                "segments": [
-                    seg.dict() for seg in result.transcription[:10]
-                ],  # First 10 segments
-                "full_text": " ".join([seg.text for seg in result.transcription]),
-            }
-
-        # Add caption files if generated
-        if result.caption_formats:
-            response["captions"] = {
-                "webvtt": result.caption_formats.get("webvtt", ""),
-                "srt": result.caption_formats.get("srt", ""),
-                "webvtt_preview": (
-                    result.caption_formats.get("webvtt", "")[:500] + "..."
-                    if len(result.caption_formats.get("webvtt", "")) > 500
-                    else result.caption_formats.get("webvtt", "")
-                ),
-            }
-
-        return response
-
-    except Exception as e:
-        logger.error(
-            f"Error processing multimedia {file.filename}: {str(e)}", exc_info=True
-        )
-        raise HTTPException(
-            status_code=500, detail="Failed to process multimedia. Please try again."
-        )
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+    return await scan_multimedia(
+        file=file,
+        generate_captions=generate_captions,
+        generate_audio_descriptions=False,
+        generate_spoken_descriptions=False,
+        detect_flashing=False,
+        generate_transcript=True,
+        whisper_model=whisper_model,
+        db=db,
+        api_key_info=api_key_info,
+    )
 
 
 def process_multimedia_background(
@@ -170,6 +74,7 @@ def process_multimedia_background(
     department_id: str,
 ):
     """Background task to process multimedia file asynchronously - TRUE REAL-TIME PROGRESS!"""
+    from ...education.multimedia_processor import MultimediaProcessor
     from ...db.database import SessionLocal
     from ...db.models import Scan, ScanStatus, ScanResult
     from sqlalchemy.sql import func
@@ -251,6 +156,39 @@ def process_multimedia_background(
             "audio_descriptions_count": (
                 len(result.audio_descriptions) if result.audio_descriptions else 0
             ),
+            # Preserve the terminal response consumed by the shipped CLI now
+            # that the request path returns a durable scan handle.
+            "transcription_output": {
+                "file_name": result.file_name,
+                "media_type": result.media_type,
+                "duration": result.duration,
+                "has_captions": result.has_captions,
+                "compliance_score": result.compliance_score,
+                "issues_count": len(result.issues),
+                "issues": result.issues,
+                "transcription": (
+                    {
+                        "segments_count": len(result.transcription),
+                        "segments": [
+                            segment.model_dump()
+                            for segment in result.transcription[:10]
+                        ],
+                        "full_text": " ".join(
+                            segment.text for segment in result.transcription
+                        ),
+                    }
+                    if result.transcription
+                    else None
+                ),
+                "captions": (
+                    {
+                        "webvtt": result.caption_formats.get("webvtt", ""),
+                        "srt": result.caption_formats.get("srt", ""),
+                    }
+                    if result.caption_formats
+                    else None
+                ),
+            },
         }
 
         if result.flashing_analysis:
@@ -432,11 +370,15 @@ async def scan_multimedia(
     )
 
     # Return immediately with scan_id
+    progress_url = f"/education/scans/{scan.id}/progress"
+    result_url = f"/education/scans/{scan.id}"
     return {
         "success": True,
         "scan_id": scan.id,
         "status": "PROCESSING",
-        "message": "Multimedia processing started. Poll /api/education/scans/{scan_id}/progress for updates.",
+        "message": f"Multimedia processing started. Poll {progress_url} for updates.",
+        "progress_url": progress_url,
+        "result_url": result_url,
         "progress": 0,
         "progress_message": "Starting multimedia processing...",
     }

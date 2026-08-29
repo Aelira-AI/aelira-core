@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from pathlib import Path
 
 from src.config.settings import get_settings
 from src.db.database import SessionLocal
@@ -68,6 +69,7 @@ async def run_maintenance_loop() -> None:
 
 async def run_worker() -> None:
     processor = JobProcessor(registry=build_default_registry())
+    Path("/tmp/aelira-worker-id").write_text(processor.worker_id, encoding="utf-8")
     maintenance_task = asyncio.create_task(run_maintenance_loop())
     loop = asyncio.get_running_loop()
 
