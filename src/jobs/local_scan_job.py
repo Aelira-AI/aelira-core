@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import shutil
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterator
+from typing import Any, Callable, Iterator
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.db.models import CloudJobQueue, Scan, ScanResult, ScanStatus
@@ -186,6 +186,14 @@ def enqueue_local_scan_job(
         raise LocalScanJobError("local_scan_scope_invalid")
     if not isinstance(scan.department_id, str) or not scan.department_id:
         raise LocalScanJobError("local_scan_scope_invalid")
+    locked_scan = db.scalar(select(Scan).where(Scan.id == scan.id).with_for_update())
+    if (
+        locked_scan is None
+        or locked_scan.department_id != scan.department_id
+        or locked_scan.status not in {ScanStatus.PENDING, ScanStatus.PROCESSING}
+    ):
+        raise LocalScanJobError("local_scan_scope_invalid")
+    scan = locked_scan
     normalized = normalize_local_scan_options(scan_kind, options)
     payload: dict[str, Any] = {
         "scan_kind": scan_kind,
@@ -422,22 +430,6 @@ def _run_local_processor(
     )
 
 
-async def _commit_scan_failure(
-    db: Session,
-    scan: Scan,
-    assert_owned: Callable[[], Awaitable[None]] | None,
-) -> None:
-    """Keep the public polling record terminal without persisting internals."""
-    if assert_owned is not None:
-        await assert_owned()
-    message = "Processing encountered an error. Please try again."
-    scan.status = ScanStatus.FAILED
-    scan.progress = 0
-    scan.error_message = message
-    scan.progress_message = message
-    db.commit()
-
-
 async def handle_local_scan_job(job: CloudJobQueue, db: Session) -> JobResult:
     """Execute one durable local scan with replay and tenant fences."""
     payload = job.payload if type(getattr(job, "payload", None)) is dict else {}
@@ -478,36 +470,59 @@ async def handle_local_scan_job(job: CloudJobQueue, db: Session) -> JobResult:
     if assert_owned is not None:
         await assert_owned()
     try:
+        from src.config.settings import get_settings
+        from src.jobs.local_scan_subprocess import run_local_scan_subprocess
+
+        termination_grace_seconds = get_settings().remediation_termination_grace_seconds
         if scan_kind in _FILE_SCAN_KINDS:
             with materialize_verified_scan_input(
                 scan, payload["input_sha256"]
             ) as materialized:
-                work_path, content = materialized
-                await asyncio.to_thread(
-                    _run_local_processor,
-                    scan_kind,
-                    scan,
-                    options,
-                    work_path,
-                    content,
+                work_path, _content = materialized
+                await run_local_scan_subprocess(
+                    job_id=str(job.id),
+                    claim_token=str(job.claim_token),
+                    worker_id=str(job.worker_id),
+                    scan_id=str(scan.id),
+                    department_id=str(scan.department_id),
+                    scan_kind=scan_kind,
+                    options=options,
+                    work_path=work_path,
+                    input_sha256=payload["input_sha256"],
+                    termination_grace_seconds=termination_grace_seconds,
                 )
         else:
             _validate_web_targets(scan_kind, options)
-            await asyncio.to_thread(
-                _run_local_processor, scan_kind, scan, options, None, None
+            await run_local_scan_subprocess(
+                job_id=str(job.id),
+                claim_token=str(job.claim_token),
+                worker_id=str(job.worker_id),
+                scan_id=str(scan.id),
+                department_id=str(scan.department_id),
+                scan_kind=scan_kind,
+                options=options,
+                work_path=None,
+                input_sha256=None,
+                termination_grace_seconds=termination_grace_seconds,
             )
     except LocalScanJobError as exc:
-        await _commit_scan_failure(db, scan, assert_owned)
         return JobFailure.deterministic(exc.code)
     except Exception:
-        attempt_count = getattr(job, "attempt_count", 0)
-        max_retries = getattr(job, "max_retries", 3)
-        if (
-            type(attempt_count) is int
-            and type(max_retries) is int
-            and attempt_count >= max_retries
-        ):
-            await _commit_scan_failure(db, scan, assert_owned)
+        # The child may have committed Scan + ScanResult and then lost its
+        # response transport. Discard the parent's stale identity map before
+        # deciding retry/failure so a valid terminal outcome always wins.
+        db.rollback()
+        db.expire_all()
+        refreshed = db.get(Scan, scan_id)
+        refreshed_result = (
+            db.query(ScanResult).filter(ScanResult.scan_id == scan_id).first()
+        )
+        if refreshed is not None and refreshed.status == ScanStatus.COMPLETED:
+            if refreshed_result is None:
+                return JobFailure.indeterminate("local_scan_result_unavailable")
+            return JobSuccess({"success": True, "scan_id": str(scan_id)})
+        if refreshed is not None and refreshed.status == ScanStatus.FAILED:
+            return JobFailure.deterministic("local_scan_failed")
         return JobFailure.retryable("local_scan_execution_failed")
 
     if assert_owned is not None:

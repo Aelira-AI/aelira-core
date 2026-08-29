@@ -14,6 +14,48 @@ ProgressReporter = Callable[[int, str | None], Awaitable[bool]]
 OwnershipChecker = Callable[[], Awaitable[None]]
 ExternalEffectBeginner = Callable[[], Awaitable[str]]
 
+_CREDENTIAL_MATERIAL_KEYS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "client_secret",
+        "credentials",
+        "password",
+        "private_key",
+        "refresh_token",
+        "secret",
+        "token",
+    }
+)
+
+
+def reject_credential_material(value: Any) -> None:
+    """Reject credential-shaped keys recursively at durable JSON boundaries."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            normalized = str(key).strip().lower().replace("-", "_")
+            if normalized in _CREDENTIAL_MATERIAL_KEYS:
+                raise ValueError("credential_material_forbidden")
+            reject_credential_material(item)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            reject_credential_material(item)
+
+
+def remove_credential_material(value: Any) -> Any:
+    """Remove credential-shaped entries from failure evidence before persistence."""
+    if isinstance(value, Mapping):
+        cleaned = {}
+        for key, item in value.items():
+            normalized = str(key).strip().lower().replace("-", "_")
+            if normalized in _CREDENTIAL_MATERIAL_KEYS:
+                continue
+            cleaned[key] = remove_credential_material(item)
+        return cleaned
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [remove_credential_material(item) for item in value]
+    return value
+
 
 async def _assume_owned() -> None:
     """Compatibility default for direct/legacy handler invocation."""
@@ -55,8 +97,10 @@ def sanitize_json(value: Any, *, _depth: int = 0) -> Any:
 _PUBLIC_JOB_RESULT_FIELDS = frozenset(
     {
         "artifact_id",
+        "ai_used",
         "compliance_improvement",
         "download_available",
+        "external_ai_used",
         "failed_count",
         "fixed_count",
         "manual_count",
@@ -64,8 +108,11 @@ _PUBLIC_JOB_RESULT_FIELDS = frozenset(
         "remediated_compliance_score",
         "scan_id",
         "skipped_count",
+        "status",
         "success",
         "total_issues",
+        "providers",
+        "purpose_decisions",
     }
 )
 _PUBLIC_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -119,6 +166,9 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
         if key in {"success", "download_available"}:
             if type(item) is bool:
                 result[key] = item
+        elif key in {"ai_used", "external_ai_used"}:
+            if item is None or type(item) is bool:
+                result[key] = item
         elif key in {"artifact_id", "scan_id"}:
             if isinstance(item, str) and _PUBLIC_IDENTIFIER_RE.fullmatch(item):
                 result[key] = item
@@ -132,6 +182,37 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
                 and -100.0 <= float(item) <= 100.0
             ):
                 result[key] = item
+        elif key == "status":
+            if item in {"completed", "manual_required", "no_op", "failed"}:
+                result[key] = item
+        elif key == "providers":
+            if item is None:
+                result[key] = None
+            elif isinstance(item, list):
+                result[key] = [
+                    provider
+                    for provider in item[:2]
+                    if provider
+                    in {"anthropic", "gemini", "local", "ollama", "openai", "xai"}
+                ]
+        elif key == "purpose_decisions":
+            if item is None:
+                result[key] = None
+            elif isinstance(item, Mapping):
+                result[key] = {
+                    purpose: decision
+                    for purpose, decision in item.items()
+                    if purpose in {"remediation", "alt_text"}
+                    and decision
+                    in {
+                        "not_requested",
+                        "allowed_not_used",
+                        "manual_required",
+                        "denied_at_dispatch",
+                        "attempted_failed",
+                        "used",
+                    }
+                }
     return result or None
 
 
@@ -159,6 +240,7 @@ class JobSuccess:
     handler_committed: bool = False
 
     def __post_init__(self) -> None:
+        reject_credential_material(self.result)
         object.__setattr__(self, "result", validate_json_object(self.result))
 
 
@@ -173,7 +255,11 @@ class JobFailure:
             self.code.strip()[:128] if isinstance(self.code, str) else "job_failed"
         )
         object.__setattr__(self, "code", safe_code or "job_failed")
-        object.__setattr__(self, "details", validate_json_object(self.details))
+        object.__setattr__(
+            self,
+            "details",
+            validate_json_object(remove_credential_material(self.details)),
+        )
 
     @classmethod
     def retryable(

@@ -1,5 +1,10 @@
 import type { RemediationJobStatus } from '../api/scans';
 
+export interface RemediationJobLike {
+  status: RemediationJobStatus['status'];
+  error_code?: string | null;
+}
+
 export type RemediationJobState =
   | 'queued'
   | 'running'
@@ -10,19 +15,21 @@ export type RemediationJobState =
 
 export type RemediationJobTerminalState = Exclude<RemediationJobState, 'queued' | 'running'>;
 
-export type RemediationPollResult =
+export type RemediationPollResult<T extends RemediationJobLike = RemediationJobStatus> =
   | {
       outcome: 'terminal';
       state: RemediationJobTerminalState;
-      job: RemediationJobStatus;
+      job: T;
     }
   | {
       outcome: 'client_timeout';
       state: 'client_timeout';
-      job: RemediationJobStatus | null;
+      job: T | null;
     };
 
-export interface RemediationPollingOptions {
+export interface RemediationPollingOptions<
+  T extends RemediationJobLike = RemediationJobStatus
+> {
   signal?: AbortSignal;
   timeoutMs?: number;
   initialDelayMs?: number;
@@ -30,7 +37,7 @@ export interface RemediationPollingOptions {
   backoffMultiplier?: number;
   now?: () => number;
   wait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
-  onUpdate?: (job: RemediationJobStatus, state: RemediationJobState) => void;
+  onUpdate?: (job: T, state: RemediationJobState) => void;
 }
 
 export interface RemediationStartAttempt {
@@ -51,9 +58,7 @@ const DEFAULT_INITIAL_DELAY_MS = 1000;
 const DEFAULT_MAX_DELAY_MS = 10_000;
 const DEFAULT_BACKOFF_MULTIPLIER = 1.5;
 
-export function classifyRemediationJob(
-  job: Pick<RemediationJobStatus, 'status' | 'error_code'>
-): RemediationJobState {
+export function classifyRemediationJob(job: RemediationJobLike): RemediationJobState {
   if (job.status === 'pending') {
     return 'queued';
   }
@@ -142,10 +147,10 @@ export function createRemediationStartCoordinator(): RemediationStartCoordinator
   };
 }
 
-export async function pollRemediationJob(
-  getStatus: (signal?: AbortSignal) => Promise<RemediationJobStatus>,
-  options: RemediationPollingOptions = {}
-): Promise<RemediationPollResult> {
+export async function pollRemediationJob<T extends RemediationJobLike = RemediationJobStatus>(
+  getStatus: (signal?: AbortSignal) => Promise<T>,
+  options: RemediationPollingOptions<T> = {}
+): Promise<RemediationPollResult<T>> {
   const now = options.now ?? Date.now;
   const wait = options.wait ?? defaultWait;
   const timeoutMs = nonNegativeFinite(options.timeoutMs, DEFAULT_TIMEOUT_MS);
@@ -159,21 +164,49 @@ export async function pollRemediationJob(
     positiveFinite(options.backoffMultiplier, DEFAULT_BACKOFF_MULTIPLIER)
   );
   const deadline = now() + timeoutMs;
-  let latestJob: RemediationJobStatus | null = null;
+  let latestJob: T | null = null;
   const deadlineController = new AbortController();
-  let deadlineElapsed = timeoutMs === 0;
-  const handleCallerAbort = () => deadlineController.abort();
+  let stopPolling: ((reason: 'caller_abort' | 'client_timeout') => void) | undefined;
+  const stopPromise = new Promise<'caller_abort' | 'client_timeout'>((resolve) => {
+    stopPolling = resolve;
+  });
+  let stopReason: 'caller_abort' | 'client_timeout' | null = null;
+  const stop = (reason: 'caller_abort' | 'client_timeout') => {
+    if (stopReason !== null) return;
+    stopReason = reason;
+    deadlineController.abort();
+    stopPolling?.(reason);
+  };
+  const handleCallerAbort = () => stop('caller_abort');
   throwIfAborted(options.signal);
   options.signal?.addEventListener('abort', handleCallerAbort, { once: true });
-  const deadlineTimer = globalThis.setTimeout(() => {
-    deadlineElapsed = true;
-    deadlineController.abort();
-  }, timeoutMs);
+  const deadlineTimer = globalThis.setTimeout(() => stop('client_timeout'), timeoutMs);
 
   try {
     while (now() < deadline) {
       throwIfAborted(options.signal);
-      latestJob = await getStatus(deadlineController.signal);
+      const requestPromise = getStatus(deadlineController.signal).then(
+        (job) => ({ kind: 'job' as const, job }),
+        (error: unknown) => ({ kind: 'error' as const, error })
+      );
+      const requestOutcome = await Promise.race([
+        requestPromise,
+        stopPromise.then((reason) => reason === 'caller_abort'
+          ? { kind: 'caller_abort' as const }
+          : { kind: 'client_timeout' as const }),
+      ]);
+
+      if (requestOutcome.kind === 'caller_abort') {
+        throw abortError();
+      }
+      if (requestOutcome.kind === 'client_timeout') {
+        break;
+      }
+      if (requestOutcome.kind === 'error') {
+        throw requestOutcome.error;
+      }
+
+      latestJob = requestOutcome.job;
       throwIfAborted(options.signal);
 
       const state = classifyRemediationJob(latestJob);
@@ -193,7 +226,7 @@ export async function pollRemediationJob(
     if (options.signal?.aborted) {
       throw abortError();
     }
-    if (!deadlineElapsed) {
+    if (stopReason !== 'client_timeout') {
       throw error;
     }
   } finally {

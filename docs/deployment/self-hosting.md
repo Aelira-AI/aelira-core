@@ -62,6 +62,66 @@ registry tooling instead of a mutable tag, for example
 `ghcr.io/aelira-ai/aelira-core-api@sha256:<digest>`. Keep the API and dashboard
 digests from the same release version when updating a deployment.
 
+## API and worker topology
+
+The API validates tenant scope and writes durable queue rows. It never consumes
+those rows. CPU-bound scans, Playwright sessions, multimedia transcription, and
+document/content remediation run only in the separate `worker` service through
+the explicit `python -m src.jobs.worker` entrypoint. API and worker replicas
+must use the same release image, PostgreSQL, Redis, provider configuration, and
+`/app/uploads` volume; decrypted provider credentials never belong in queue
+payloads.
+
+The container probe runs `python -m src.jobs.healthcheck` and verifies the
+worker's database heartbeat. A super administrator can inspect bounded global
+queue counts, worker counters, the oldest pending timestamp, and the oldest
+processing heartbeat at `/api/jobs/worker-status`. The response contains no
+tenant, document, or provider credential data.
+
+### Resource limits
+
+`JOB_WORKER_MAX_CONCURRENCY` bounds simultaneous jobs in each worker process
+(Compose default `1`, valid range `1`–`64`). The shipped worker quota is `0.75`
+CPU so a one- or two-core host retains scheduler headroom for API health and
+authentication. Increase `JOB_WORKER_CPUS` or concurrency only after measuring
+peak memory, CPU, and API latency. The worker service intentionally has no fixed
+container name or fixed worker ID: Compose replicas receive independently
+generated claim identities. Scale with `docker compose -f
+docker-compose.prod.yml up -d --scale worker=N`, keeping the sum of worker CPU
+quotas below host capacity.
+
+`JOB_WORKER_MAX_EXECUTION_SECONDS` defaults to 3,600 seconds. The shipped
+`JOB_WORKER_STOP_GRACE_PERIOD` is 65 minutes, deliberately longer than that
+execution ceiling so a normal stop can drain or kill and reap child process
+groups before Docker sends SIGKILL. If you raise the execution ceiling, raise
+the stop grace period above it as well.
+
+### Worker recovery
+
+First stop new intake, then inspect `/api/jobs/worker-status` and the worker
+logs. Restart only the worker with
+`docker compose -f docker-compose.prod.yml restart worker`. Active claims keep
+their lease while work runs; after an unclean stop, expired claims are fenced
+and recovered by a healthy worker according to their bounded retry policy.
+PostgreSQL advisory authority distinguishes a live or frozen child from a dead
+one: cancellation remains a nonterminal request while the child connection is
+alive, and is acknowledged only after the child has stopped or its dead
+connection has released that authority. Do not force terminal queue state for
+a frozen worker; stop the owning container so recovery can prove child death.
+Confirm a fresh heartbeat and movement in the aggregate claimed/completed/failed
+counters before resuming intake. Never edit claim tokens or queue rows by hand.
+
+### Worker rollback
+
+Drain work before changing images. `docker compose -f docker-compose.prod.yml stop worker`
+sends the worker its drain signal; allow enough stop time for the
+largest admitted job. Pin `AELIRA_VERSION` to the previous verified release for
+both API and worker, restore the matching database backup if that release is not
+schema-compatible, then start the full matched stack. Do not run an older
+worker against a newer API/schema or roll back only one process. Recheck API
+health, `src.jobs.healthcheck`, and `/api/jobs/worker-status` before reopening
+intake.
+
 ## Required environment
 
 These come from `src/config/settings.py` (the load-bearing ones — full list

@@ -98,6 +98,62 @@ def test_enqueue_rejects_credential_authority_mismatch(credential, provider, err
         )
 
 
+@pytest.mark.parametrize(
+    "secret_key",
+    [
+        "api_key",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "password",
+        "private_key",
+        "credentials",
+    ],
+)
+def test_enqueue_rejects_decrypted_credentials_at_every_json_boundary(secret_key):
+    from src.services.job_enqueue_service import JobEnqueueError, enqueue_cloud_job
+
+    db = _db()
+    for field, value in (
+        ("payload", {"nested": {secret_key: "decrypted-secret"}}),
+        ("execution_context", {secret_key: "decrypted-secret"}),
+    ):
+        kwargs = {
+            "department_id": "dept-1",
+            "job_type": "scan",
+            "payload": {},
+            "dedupe_key": f"secret:{field}:{secret_key}",
+            field: value,
+        }
+        with pytest.raises(JobEnqueueError, match="credential_material_forbidden"):
+            enqueue_cloud_job(db, **kwargs)
+
+
+def test_enqueue_allows_opaque_credential_and_workspace_references():
+    from src.services.job_enqueue_service import enqueue_cloud_job
+
+    credential = SimpleNamespace(
+        id="cred-1", department_id="dept-1", provider="canvas", is_active=True
+    )
+    db = _db(credential=credential)
+
+    job = enqueue_cloud_job(
+        db,
+        department_id="dept-1",
+        job_type="scan",
+        payload={
+            "credential_id": "cred-1",
+            "workspace_id": "dept-1",
+            "provider_configuration_id": "provider-config-1",
+        },
+        dedupe_key="safe-references",
+        credential_id="cred-1",
+        provider="canvas",
+    )
+
+    assert job.payload["credential_id"] == "cred-1"
+
+
 def test_enqueue_copies_payload_and_returns_existing_active_dedupe():
     from src.services.job_enqueue_service import enqueue_cloud_job
 

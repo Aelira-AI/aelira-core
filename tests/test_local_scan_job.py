@@ -170,7 +170,8 @@ def test_materialized_input_rejects_invalid_scope_or_missing_file(
 
 def test_enqueue_local_scan_job_uses_scan_tenant_and_deterministic_dedupe() -> None:
     db = MagicMock()
-    scan = SimpleNamespace(id="scan-a", department_id="dept-a")
+    scan = SimpleNamespace(id="scan-a", department_id="dept-a", status="PENDING")
+    db.scalar.return_value = scan
     enqueue = MagicMock(return_value=SimpleNamespace(id="job-a"))
     options = {"generate_alt_text": False, "enhance_descriptions": True}
 
@@ -200,8 +201,13 @@ def test_enqueue_local_scan_job_uses_scan_tenant_and_deterministic_dedupe() -> N
 
 def _job(payload: dict[str, object], *, department_id: str = "dept-a"):
     return SimpleNamespace(
+        id="job-a",
         payload=payload,
         department_id=department_id,
+        claim_token="claim-a",
+        worker_id="worker-a",
+        attempt_count=1,
+        max_retries=1,
         provider=None,
         credential_id=None,
         cloud_file_id=None,
@@ -292,14 +298,15 @@ async def test_file_scan_executes_disposable_copy_and_finishes_queue_normally(
     job._assert_owned = assert_owned
     observed: dict[str, object] = {}
 
-    def complete(_kind, processor_scan, _options, work_path, loaded):
-        observed["work_path"] = work_path
-        observed["loaded"] = loaded
-        assert Path(work_path).read_bytes() == content
-        processor_scan.status = "COMPLETED"
+    async def complete(**kwargs):
+        observed["work_path"] = kwargs["work_path"]
+        observed["loaded"] = Path(kwargs["work_path"]).read_bytes()
+        scan.status = "COMPLETED"
 
     monkeypatch.setattr("src.jobs.local_scan_job.UPLOAD_BASE_DIR", storage_root)
-    monkeypatch.setattr("src.jobs.local_scan_job._run_local_processor", complete)
+    monkeypatch.setattr(
+        "src.jobs.local_scan_subprocess.run_local_scan_subprocess", complete
+    )
 
     result = await handle_local_scan_job(job, db)
 
@@ -309,6 +316,60 @@ async def test_file_scan_executes_disposable_copy_and_finishes_queue_normally(
     assert not Path(observed["work_path"]).exists()
     assert source.read_bytes() == content
     assert assert_owned.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_child_response_loss_reloads_and_preserves_committed_scan_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processing = SimpleNamespace(
+        id="scan-a", department_id="dept-a", status="PROCESSING"
+    )
+    completed = SimpleNamespace(id="scan-a", department_id="dept-a", status="COMPLETED")
+    committed_result = SimpleNamespace(scan_id="scan-a")
+    db = MagicMock()
+    db.get.side_effect = [processing, completed]
+    db.query.return_value.filter.return_value.first.side_effect = [
+        None,
+        committed_result,
+    ]
+    payload = {
+        "scan_kind": "local_web",
+        "scan_id": "scan-a",
+        "options": {
+            "url": "https://example.edu",
+            "mode": "quick",
+            "scan_images": False,
+            "scan_multimedia": False,
+            "scan_math": False,
+            "validate_alt_text": False,
+            "max_depth": 1,
+            "max_pages": 10,
+            "generate_code_fixes": True,
+            "capture_screenshots": True,
+        },
+    }
+    job = _job(payload)
+    job.id = "job-a"
+    job.claim_token = "claim-a"
+    job.worker_id = "worker-a"
+    job.attempt_count = 1
+    job.max_retries = 1
+    monkeypatch.setattr(
+        "src.jobs.local_scan_subprocess.run_local_scan_subprocess",
+        AsyncMock(side_effect=RuntimeError("response transport lost")),
+    )
+    monkeypatch.setattr(
+        "src.utils.security.validate_url_not_private",
+        MagicMock(return_value="https://example.edu"),
+    )
+
+    result = await handle_local_scan_job(job, db)
+
+    assert result == JobSuccess({"success": True, "scan_id": "scan-a"})
+    db.rollback.assert_called_once_with()
+    db.expire_all.assert_called_once_with()
+    db.commit.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -334,18 +395,19 @@ async def test_worker_revalidates_web_target_before_execution(
         },
     }
     validate = MagicMock(side_effect=ValueError("private address"))
-    execute = MagicMock()
+    execute = AsyncMock()
     monkeypatch.setattr("src.utils.security.validate_url_not_private", validate)
-    monkeypatch.setattr("src.jobs.local_scan_job._run_local_processor", execute)
+    monkeypatch.setattr(
+        "src.jobs.local_scan_subprocess.run_local_scan_subprocess", execute
+    )
 
     result = await handle_local_scan_job(_job(payload), db)
 
     assert result == JobFailure.deterministic("local_scan_url_invalid")
     validate.assert_called_once_with("https://example.edu")
-    execute.assert_not_called()
-    assert scan.status == "FAILED"
-    assert scan.error_message == "Processing encountered an error. Please try again."
-    db.commit.assert_called_once_with()
+    execute.assert_not_awaited()
+    assert scan.status == "PROCESSING"
+    db.commit.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -387,6 +449,29 @@ def test_long_running_route_launchers_are_fully_removed() -> None:
     assert "multiprocessing.get_context(" not in sources
     assert "BackgroundTasks" not in sources
     assert "enqueue_local_scan_job(" in sources
+
+
+def test_transcription_route_delegates_to_durable_multimedia_scan() -> None:
+    import ast
+
+    source = (
+        Path(__file__).parents[1] / "src" / "api" / "education" / "multimedia_routes.py"
+    ).read_text()
+    tree = ast.parse(source)
+    route = next(
+        node
+        for node in tree.body
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and node.name == "transcribe_multimedia"
+    )
+    calls = {
+        node.func.id
+        for node in ast.walk(route)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "scan_multimedia" in calls
+    assert "MultimediaProcessor" not in calls
 
 
 def test_single_worker_durability_guard_is_removed_from_runtime_and_docs() -> None:

@@ -173,12 +173,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    container_name: aelira-worker-dev
     environment:
       <<: *api-environment
-      JOB_WORKER_ID: aelira-worker-dev
-      JOB_WORKER_MAX_CONCURRENCY: ${JOB_WORKER_MAX_CONCURRENCY:-4}
+      JOB_WORKER_MAX_CONCURRENCY: ${JOB_WORKER_MAX_CONCURRENCY:-1}
+      JOB_WORKER_MAX_EXECUTION_SECONDS: ${JOB_WORKER_MAX_EXECUTION_SECONDS:-3600}
       SKIP_MIGRATIONS: "true"
+    cpus: ${JOB_WORKER_CPUS:-0.75}
+    mem_limit: ${JOB_WORKER_MEMORY_LIMIT:-4g}
+    pids_limit: ${JOB_WORKER_PIDS_LIMIT:-512}
+    stop_grace_period: ${JOB_WORKER_STOP_GRACE_PERIOD:-65m}
     volumes:
       - ./src:/app/src
       - ./tests:/app/tests

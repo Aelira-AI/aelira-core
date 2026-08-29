@@ -119,6 +119,8 @@ jobs:
       - name: Run tests
         env:
           DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
+          TEST_MIGRATION_DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
+          ALLOW_DESTRUCTIVE_MIGRATION_TESTS: "1"
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-for-ci
           ENV: test
@@ -213,5 +215,11 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build and verify reproducible API image
         run: scripts/verify_reproducible_image.sh . Dockerfile ${{ matrix.platform }}
+      - name: Load API image for kernel worker-isolation gate
+        if: matrix.platform == 'linux/amd64'
+        run: docker buildx build --load --tag aelira-worker-isolation:test --file Dockerfile .
+      - name: Enforce 0.75-CPU worker isolation under representative saturation
+        if: matrix.platform == 'linux/amd64'
+        run: python3 scripts/verify_worker_cpu_isolation.py --image aelira-worker-isolation:test
       - name: Build and verify reproducible dashboard image
         run: scripts/verify_reproducible_image.sh dashboard dashboard/Dockerfile ${{ matrix.platform }}

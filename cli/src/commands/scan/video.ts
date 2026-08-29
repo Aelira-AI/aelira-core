@@ -5,6 +5,51 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 
 import { ApiClient } from '../../utils/api-client.js'
+import { pollForCompletion } from '../../utils/poll-progress.js'
+
+interface QueuedTranscription {
+  [key: string]: unknown
+  scan_id?: string
+}
+
+interface TranscriptionDetails {
+  full_text?: string
+  segments?: unknown[]
+  segments_count?: number
+}
+
+type CompletionPoller = typeof pollForCompletion
+
+export function normalizeQueuedTranscription(completed: any, scanId: string): any {
+  const scan = completed.scan ?? completed
+  const output = scan.result?.structure?.transcription_output ?? {}
+  const transcriptionDetails = output.transcription
+  const transcription = typeof transcriptionDetails === 'string'
+    ? transcriptionDetails
+    : (transcriptionDetails as null | TranscriptionDetails)?.full_text ?? ''
+
+  return {
+    ...output,
+    filename: output.file_name ?? scan.file_name,
+    transcription,
+    transcription_details:
+      typeof transcriptionDetails === 'object' ? transcriptionDetails : null,
+    scan_id: scanId,
+    report_url: `/education/scans/${scanId}`,
+    caption_formats: output.captions ?? null,
+  }
+}
+
+export async function resolveQueuedTranscription(
+  api: ApiClient,
+  queued: QueuedTranscription,
+  progress: Parameters<CompletionPoller>[2],
+  poller: CompletionPoller = pollForCompletion,
+): Promise<any> {
+  if (!queued.scan_id) return queued
+  const completed = await poller(api, queued.scan_id, progress, { timeout: 300_000 })
+  return normalizeQueuedTranscription(completed, queued.scan_id)
+}
 
 export default class ScanVideo extends Command {
   static args = {
@@ -129,7 +174,7 @@ static flags = {
 
     if (result.caption_formats) {
       this.log(`  Generated Captions:`)
-      if (result.caption_formats.vtt) {
+      if (result.caption_formats.webvtt) {
         this.log(`  ✓ WebVTT format`)
       }
 
@@ -208,7 +253,7 @@ static flags = {
       s.start(`Transcribing ${path.basename(file)} (${i + 1}/${files.length})...`)
 
       try {
-        const result = await this.transcribeMedia(file, flags['api-url'])
+        const result = await this.transcribeMedia(file, flags['api-url'], s)
         results.push({ file: path.basename(file), ...result })
         s.stop(`✓ ${path.basename(file)}`)
       } catch (error: any) {
@@ -252,7 +297,7 @@ static flags = {
     s.start('Transcribing media file...')
 
     try {
-      const result = await this.transcribeMedia(filePath, flags['api-url'])
+      const result = await this.transcribeMedia(filePath, flags['api-url'], s)
       const processDuration = Date.now() - startTime
 
       s.stop('Transcription complete')
@@ -285,7 +330,7 @@ static flags = {
     }
   }
 
-  private async transcribeMedia(filePath: string, apiUrl: string): Promise<any> {
+  private async transcribeMedia(filePath: string, apiUrl: string, progress: any): Promise<any> {
     const api = new ApiClient({ apiUrl })
     const formData = new FormData()
     formData.append('file', await fs.readFile(filePath), path.basename(filePath))
@@ -294,6 +339,7 @@ static flags = {
       timeout: 300_000, // 5 minute timeout for video transcription
     })
 
-    return response.json()
+    const queued = await response.json() as QueuedTranscription
+    return resolveQueuedTranscription(api, queued, progress)
   }
 }

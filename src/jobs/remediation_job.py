@@ -16,7 +16,7 @@ import uuid
 from typing import Any, BinaryIO, Callable, Dict, List, NoReturn, Optional, TypeVar
 from pathlib import Path
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..db.models import (
@@ -380,6 +380,10 @@ def _fence_claim_for_handler_commit(job: Any, db: Session) -> None:
             CloudJobQueue.status == CloudJobStatus.PROCESSING.value,
             CloudJobQueue.claim_token == token,
             CloudJobQueue.worker_id == worker_id,
+            or_(
+                CloudJobQueue.last_error_code.is_(None),
+                CloudJobQueue.last_error_code != "scan_cancel_requested",
+            ),
         )
         .with_for_update()
     ).scalar_one_or_none()
@@ -1918,6 +1922,17 @@ async def handle_remediation_job(
     Returns:
         Remediation results
     """
+    explicit_scan_id = None
+    payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
+    if (
+        job.provider == CloudProvider.BRIGHTSPACE.value
+        and payload.get("execution") == "brightspace_content"
+    ):
+        from .brightspace_content_job import (
+            handle_brightspace_content_remediation_job,
+        )
+
+        return await handle_brightspace_content_remediation_job(job, db, token_manager)
     cloud_file = db.get(CloudFile, job.cloud_file_id) if job.cloud_file_id else None
     credential = (
         db.get(
@@ -1928,8 +1943,6 @@ async def handle_remediation_job(
         if job.credential_id
         else None
     )
-    explicit_scan_id = None
-    payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
     candidate = payload.get("scan_id")
     if isinstance(candidate, str) and candidate.strip():
         explicit_scan_id = candidate
