@@ -14,12 +14,21 @@ Blackboard-specific considerations:
 - REST API available for extended functionality
 """
 
-from typing import Dict, List, Optional, Any
-from pydantic import BaseModel
-from datetime import datetime
+import base64
+import hashlib
 import logging
 import json
 import os
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from pydantic import BaseModel
 
 # PyLTI1p3 imports (same library as Canvas)
 from pylti1p3.tool_config import ToolConfDict
@@ -30,6 +39,226 @@ from pylti1p3.grade import Grade
 from pylti1p3.lineitem import LineItem
 
 logger = logging.getLogger(__name__)
+
+_MAX_SIGNING_KEY_BYTES = 64 * 1024
+_MAX_OVERLAP_SIGNING_KEYS = 10
+_PUBLIC_PEM_ENVELOPE = re.compile(
+    r"\s*-----BEGIN (PUBLIC KEY|RSA PUBLIC KEY)-----\r?\n"
+    r"(?:[A-Za-z0-9+/=]+\r?\n)+"
+    r"-----END \1-----\s*",
+    re.ASCII,
+)
+_PRIVATE_PEM_ENVELOPE = re.compile(
+    r"\s*-----BEGIN (PRIVATE KEY|RSA PRIVATE KEY)-----\r?\n"
+    r"(?:[A-Za-z0-9+/=]+\r?\n)+"
+    r"-----END \1-----\s*",
+    re.ASCII,
+)
+
+
+class BlackboardSigningKeyConfigurationError(RuntimeError):
+    """Bounded signal that the deployment signing-key contract is invalid."""
+
+
+class BlackboardPlatformConfigurationError(RuntimeError):
+    """Bounded signal that Blackboard platform registrations are unusable."""
+
+
+@dataclass(frozen=True)
+class BlackboardSigningKeySnapshot:
+    """Immutable per-process signer and public verification set."""
+
+    private_pem: str
+    public_pem: str
+    jwks_json: str
+
+
+def _read_signing_key(path_value: str | None) -> bytes:
+    if not isinstance(path_value, str) or not path_value.strip():
+        raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+    try:
+        path = Path(path_value.strip())
+        if not path.is_file() or path.stat().st_size > _MAX_SIGNING_KEY_BYTES:
+            raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+        with path.open("rb") as key_file:
+            value = key_file.read(_MAX_SIGNING_KEY_BYTES + 1)
+    except BlackboardSigningKeyConfigurationError:
+        raise
+    except OSError:
+        raise BlackboardSigningKeyConfigurationError(
+            "signing_key_unavailable"
+        ) from None
+    if not value or len(value) > _MAX_SIGNING_KEY_BYTES:
+        raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+    return value
+
+
+def _strict_pem_envelope(value: bytes, pattern: re.Pattern[str]) -> bytes:
+    try:
+        decoded = value.decode("ascii")
+    except UnicodeDecodeError:
+        raise BlackboardSigningKeyConfigurationError(
+            "signing_key_unavailable"
+        ) from None
+    if pattern.fullmatch(decoded) is None:
+        raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+    return value
+
+
+def _base64url_uint(value: int) -> str:
+    encoded = value.to_bytes(max(1, (value.bit_length() + 7) // 8), "big")
+    return base64.urlsafe_b64encode(encoded).rstrip(b"=").decode("ascii")
+
+
+def _public_jwk(public_key: rsa.RSAPublicKey) -> Dict[str, str]:
+    numbers = public_key.public_numbers()
+    modulus = _base64url_uint(numbers.n)
+    exponent = _base64url_uint(numbers.e)
+    thumbprint_input = json.dumps(
+        {"e": exponent, "kty": "RSA", "n": modulus},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    kid = base64.urlsafe_b64encode(hashlib.sha256(thumbprint_input).digest())
+    return {
+        "kty": "RSA",
+        "n": modulus,
+        "e": exponent,
+        "kid": kid.rstrip(b"=").decode("ascii"),
+        "alg": "RS256",
+        "use": "sig",
+    }
+
+
+def _active_signing_material():
+    private_pem = _strict_pem_envelope(
+        _read_signing_key(os.getenv("BLACKBOARD_LTI_PRIVATE_KEY_PATH")),
+        _PRIVATE_PEM_ENVELOPE,
+    )
+    public_pem = _strict_pem_envelope(
+        _read_signing_key(os.getenv("BLACKBOARD_LTI_PUBLIC_KEY_PATH")),
+        _PUBLIC_PEM_ENVELOPE,
+    )
+    try:
+        private_key = serialization.load_pem_private_key(private_pem, password=None)
+        public_key = serialization.load_pem_public_key(public_pem)
+    except (TypeError, UnicodeDecodeError, ValueError, UnsupportedAlgorithm):
+        raise BlackboardSigningKeyConfigurationError(
+            "signing_key_unavailable"
+        ) from None
+    if not isinstance(private_key, rsa.RSAPrivateKey) or not isinstance(
+        public_key, rsa.RSAPublicKey
+    ):
+        raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+    if private_key.key_size < 2048 or public_key.key_size < 2048:
+        raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+    if private_key.public_key().public_numbers() != public_key.public_numbers():
+        raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+    canonical_private_pem = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    canonical_public_pem = public_key.public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return private_key, public_key, canonical_private_pem, canonical_public_pem
+
+
+def _load_signing_snapshot() -> BlackboardSigningKeySnapshot:
+    _, active_public_key, private_pem, public_pem = _active_signing_material()
+    keys = [_public_jwk(active_public_key)]
+    seen = {keys[0]["kid"]}
+    overlap_value = os.getenv("BLACKBOARD_LTI_OVERLAP_PUBLIC_KEY_PATHS", "")
+    if overlap_value:
+        raw_paths = overlap_value.split(",")
+        if len(raw_paths) > _MAX_OVERLAP_SIGNING_KEYS or any(
+            not path.strip() for path in raw_paths
+        ):
+            raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+        for path in raw_paths:
+            try:
+                overlap_key = serialization.load_pem_public_key(
+                    _strict_pem_envelope(_read_signing_key(path), _PUBLIC_PEM_ENVELOPE)
+                )
+            except BlackboardSigningKeyConfigurationError:
+                raise
+            except (TypeError, ValueError, UnsupportedAlgorithm):
+                raise BlackboardSigningKeyConfigurationError(
+                    "signing_key_unavailable"
+                ) from None
+            if not isinstance(overlap_key, rsa.RSAPublicKey):
+                raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+            if overlap_key.key_size < 2048:
+                raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+            jwk = _public_jwk(overlap_key)
+            if jwk["kid"] not in seen:
+                keys.append(jwk)
+                seen.add(jwk["kid"])
+    return BlackboardSigningKeySnapshot(
+        private_pem=private_pem.decode("ascii"),
+        public_pem=public_pem.decode("ascii"),
+        jwks_json=json.dumps({"keys": keys}, separators=(",", ":")),
+    )
+
+
+def _bounded_platform_string(value: Any, *, maximum: int = 2048) -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value.strip()) <= maximum
+        and value.isprintable()
+        and "\x00" not in value
+    )
+
+
+def _validate_platform_config(config: Any) -> Dict[str, Any]:
+    if not isinstance(config, dict) or not config or len(config) > 100:
+        raise BlackboardPlatformConfigurationError("platform_config_invalid")
+    registration_count = 0
+    for issuer, issuer_config in config.items():
+        if not _bounded_platform_string(issuer):
+            raise BlackboardPlatformConfigurationError("platform_config_invalid")
+        registrations = (
+            issuer_config if isinstance(issuer_config, list) else [issuer_config]
+        )
+        if not registrations or len(registrations) > 100:
+            raise BlackboardPlatformConfigurationError("platform_config_invalid")
+        for registration in registrations:
+            if not isinstance(registration, dict):
+                raise BlackboardPlatformConfigurationError("platform_config_invalid")
+            if not all(
+                _bounded_platform_string(registration.get(field))
+                for field in ("client_id", "auth_login_url", "auth_token_url")
+            ):
+                raise BlackboardPlatformConfigurationError("platform_config_invalid")
+            deployments = registration.get("deployment_ids")
+            if (
+                not isinstance(deployments, list)
+                or not deployments
+                or len(deployments) > 100
+                or not all(
+                    _bounded_platform_string(value, maximum=512)
+                    for value in deployments
+                )
+            ):
+                raise BlackboardPlatformConfigurationError("platform_config_invalid")
+            key_set_url = registration.get("key_set_url")
+            key_set = registration.get("key_set")
+            if not _bounded_platform_string(key_set_url) and not (
+                isinstance(key_set, dict) and bool(key_set)
+            ):
+                raise BlackboardPlatformConfigurationError("platform_config_invalid")
+            if "default" in registration and not isinstance(
+                registration["default"], bool
+            ):
+                raise BlackboardPlatformConfigurationError("platform_config_invalid")
+            registration_count += 1
+            if registration_count > 500:
+                raise BlackboardPlatformConfigurationError("platform_config_invalid")
+    if not registration_count:
+        raise BlackboardPlatformConfigurationError("platform_config_invalid")
+    return config
 
 
 # =============================================================================
@@ -125,11 +354,34 @@ class BlackboardLTIService:
         self.config_file = config_file or os.getenv(
             "BLACKBOARD_LTI_CONFIG_FILE", "blackboard_lti_config.json"
         )
+        try:
+            self._signing_snapshot = _load_signing_snapshot()
+        except BlackboardSigningKeyConfigurationError:
+            self._signing_snapshot = None
         self._tool_config = None
+        self._platform_config_error_source = None
         self._load_config()
 
     def _load_config(self):
         """Load LTI tool configuration from file or environment"""
+        # An existing selected file is authoritative and supports deployments
+        # with multiple Blackboard issuers/clients without duplicate env state.
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, "r") as config_handle:
+                    file_config = json.load(config_handle)
+                self._tool_config = ToolConfDict(_validate_platform_config(file_config))
+                self._attach_signing_keys(file_config)
+                logger.info("Loaded Blackboard LTI config file")
+            except Exception as exc:
+                self._platform_config_error_source = "file"
+                self._tool_config = None
+                logger.warning(
+                    "Blackboard LTI config file is invalid: %s",
+                    type(exc).__name__,
+                )
+            return
+
         # Get Blackboard instance URL from environment
         blackboard_url = os.getenv("BLACKBOARD_URL", "").rstrip("/")
         client_id = os.getenv("BLACKBOARD_CLIENT_ID", "")
@@ -156,23 +408,38 @@ class BlackboardLTIService:
             ]
         }
 
-        # Try to load from config file
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, "r") as f:
-                    file_config = json.load(f)
-                    self._tool_config = ToolConfDict(file_config)
-                    logger.info("Loaded Blackboard LTI config file")
-                    return
-            except Exception as e:
-                logger.warning(
-                    "Failed to load Blackboard LTI config file: %s",
-                    type(e).__name__,
-                )
-
         # Use environment-based config
-        self._tool_config = ToolConfDict(default_config)
-        logger.info("Using environment-based Blackboard LTI config")
+        try:
+            self._tool_config = ToolConfDict(_validate_platform_config(default_config))
+            self._attach_signing_keys(default_config)
+            logger.info("Using environment-based Blackboard LTI config")
+        except Exception as exc:
+            self._platform_config_error_source = "environment"
+            self._tool_config = None
+            logger.warning(
+                "Blackboard LTI environment configuration is invalid: %s",
+                type(exc).__name__,
+            )
+
+    def _attach_signing_keys(self, config: Dict[str, Any]) -> None:
+        """Bind the deployment-global active pair to every Blackboard client."""
+        snapshot = self._signing_snapshot
+        if snapshot is None:
+            return
+        if self._tool_config is None:
+            return
+        for issuer, issuer_config in config.items():
+            clients = (
+                issuer_config if isinstance(issuer_config, list) else [issuer_config]
+            )
+            for client in clients:
+                client_id = (
+                    client.get("client_id") if isinstance(client, dict) else None
+                )
+                self._tool_config.set_private_key(
+                    issuer, snapshot.private_pem, client_id
+                )
+                self._tool_config.set_public_key(issuer, snapshot.public_pem, client_id)
 
     def get_tool_config(self) -> Optional[ToolConfDict]:
         """Get the tool configuration for PyLTI1p3"""
@@ -180,7 +447,33 @@ class BlackboardLTIService:
 
     def is_configured(self) -> bool:
         """Check if LTI is properly configured"""
-        return self._tool_config is not None
+        return self._tool_config is not None and self._signing_snapshot is not None
+
+    def configuration_message(self) -> str:
+        """Return a bounded operator-facing readiness explanation."""
+        if self._platform_config_error_source == "file":
+            return (
+                "BLACKBOARD_LTI_CONFIG_FILE must contain a valid Blackboard LTI "
+                "platform configuration."
+            )
+        if self._tool_config is None:
+            return (
+                "Set BLACKBOARD_URL, BLACKBOARD_CLIENT_ID, and "
+                "BLACKBOARD_DEPLOYMENT_ID to enable Blackboard LTI."
+            )
+        if self._signing_snapshot is None:
+            return (
+                "Set BLACKBOARD_LTI_PRIVATE_KEY_PATH and "
+                "BLACKBOARD_LTI_PUBLIC_KEY_PATH to a matching RSA 2048+ pair; "
+                "overlap paths must contain public PEMs."
+            )
+        return "Blackboard LTI integration ready"
+
+    def get_signing_jwks(self) -> Dict[str, List[Dict[str, str]]]:
+        """Return the signer-coherent immutable public verification snapshot."""
+        if self._signing_snapshot is None:
+            raise BlackboardSigningKeyConfigurationError("signing_key_unavailable")
+        return json.loads(self._signing_snapshot.jwks_json)
 
     # =========================================================================
     # OIDC Login Flow
@@ -519,14 +812,14 @@ class BlackboardLTIService:
                 comment=comment,
             )
 
-        except Exception as e:
-            logger.error(f"Failed to submit grade to Blackboard: {e}")
+        except Exception as exc:
+            logger.error("Blackboard grade passback failed: %s", type(exc).__name__)
             return GradePassbackResult(
                 success=False,
                 user_id=user_id,
                 score=compliance_score,
                 max_score=max_score,
-                error=str(e),
+                error="Blackboard grade passback failed",
             )
 
     # =========================================================================
@@ -613,7 +906,6 @@ class BlackboardLTIService:
                 "content_id": "$Content.id",
             },
             "public_jwk_url": f"{base_url}/lti/blackboard/jwks",
-            "public_jwk": {},  # Would be populated with actual key
         }
 
 
