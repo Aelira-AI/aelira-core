@@ -27,9 +27,9 @@ interface ProviderInfo {
 
 interface Provider {
   is_available?: boolean;
-  text_model?: string;
-  code_model?: string;
-  vision_model?: string;
+  text_model?: string | null;
+  code_model?: string | null;
+  vision_model?: string | null;
 }
 
 interface AIProvidersCardProps {
