@@ -1820,7 +1820,9 @@ async def test_generic_lms_route_requires_explicit_ai_intent(
             "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
             return_value=client,
         ) as bind,
-        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch(
+            "src.api.education.remediation_routes.workspace_provider_runtime"
+        ) as manager,
     ):
         result = await remediate_scan(
             "scan-1",
@@ -1838,7 +1840,7 @@ async def test_generic_lms_route_requires_explicit_ai_intent(
     manager.assert_not_called()
 
 
-def test_generic_non_lms_omitted_ai_intent_preserves_legacy_true():
+def test_generic_non_lms_omitted_ai_intent_preserves_default_true():
     from src.api.education.remediation_routes import _effective_remediation_use_ai
 
     assert _effective_remediation_use_ai(None, None, lms_backed=False) is True
@@ -1852,7 +1854,7 @@ def test_generic_non_lms_omitted_ai_intent_preserves_legacy_true():
 @pytest.mark.parametrize(
     ("options", "expected_alt"),
     [
-        pytest.param(None, True, id="omitted-preserves-legacy-generation"),
+        pytest.param(None, True, id="omitted-preserves-default-generation"),
         pytest.param(
             RemediationOptions(generate_alt_text=False),
             False,
@@ -1887,7 +1889,7 @@ async def test_generic_non_lms_alt_intent_controls_remediator_config(
             "src.education.remediation.DocxRemediator", return_value=remediator
         ) as ctor,
         patch(
-            "src.api.education.remediation_routes.get_provider_manager",
+            "src.api.education.remediation_routes.workspace_provider_runtime",
             return_value=manager,
         ),
         patch("src.security.audit_service.AuditService"),
@@ -1950,7 +1952,7 @@ async def test_generic_false_remediator_result_emits_one_atomic_terminal_failure
         ),
         patch("src.education.remediation.DocxRemediator", return_value=remediator),
         patch(
-            "src.api.education.remediation_routes.get_provider_manager",
+            "src.api.education.remediation_routes.workspace_provider_runtime",
             return_value=object(),
         ),
         patch(
@@ -1999,7 +2001,9 @@ async def test_generic_lms_request_true_denied_is_stable_403_before_provider(tmp
             "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
             return_value=None,
         ) as bind,
-        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch(
+            "src.api.education.remediation_routes.workspace_provider_runtime"
+        ) as manager,
     ):
         with pytest.raises(HTTPException) as caught:
             await remediate_scan(
@@ -2058,7 +2062,9 @@ async def test_generic_lms_image_injects_alt_text_client_without_legacy(tmp_path
             "src.api.education.remediation_routes.ImageAltTextGenerator",
             return_value=generator,
         ) as generator_class,
-        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch(
+            "src.api.education.remediation_routes.workspace_provider_runtime"
+        ) as manager,
     ):
         result = await remediate_scan(
             "scan-1",
@@ -2075,13 +2081,15 @@ async def test_generic_lms_image_injects_alt_text_client_without_legacy(tmp_path
     assert not hasattr(scan, "remediation_status")
     assert bind.call_args.kwargs["purpose"] == "alt_text"
     assert generator_class.call_args.kwargs["lms_client"].client is client
-    assert generator_class.call_args.kwargs["allow_legacy_transport"] is False
+    assert (
+        generator_class.call_args.kwargs.get("allow_legacy_transport", False) is False
+    )
     manager.assert_not_called()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("auth_method", ["session", "api_key", "lti"])
-async def test_generic_lms_omitted_intent_uses_no_ai_or_global_manager(
+async def test_generic_lms_omitted_intent_uses_no_ai_or_workspace_runtime(
     tmp_path, auth_method
 ):
     from src.api.education.remediation_routes import remediate_scan
@@ -2102,7 +2110,7 @@ async def test_generic_lms_omitted_intent_uses_no_ai_or_global_manager(
             "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed"
         ) as bind,
         patch(
-            "src.api.education.remediation_routes.get_provider_manager"
+            "src.api.education.remediation_routes.workspace_provider_runtime"
         ) as global_manager,
         patch(
             "src.education.remediation.DocxRemediator", return_value=remediator
@@ -2153,7 +2161,7 @@ async def test_generic_lms_explicit_true_is_policy_gated_with_exact_client(tmp_p
             return_value=client,
         ) as bind,
         patch(
-            "src.api.education.remediation_routes.get_provider_manager"
+            "src.api.education.remediation_routes.workspace_provider_runtime"
         ) as global_manager,
         patch(
             "src.education.remediation.DocxRemediator", return_value=remediator
@@ -2408,7 +2416,7 @@ class LegacyProviderManager:
         ),
     ],
 )
-async def test_generic_legacy_manager_call_through_audits_actual_remediation_use(
+async def test_generic_workspace_runtime_call_through_audits_actual_remediation_use(
     tmp_path,
     provider,
     success,
@@ -2438,7 +2446,7 @@ async def test_generic_legacy_manager_call_through_audits_actual_remediation_use
             return_value=scan,
         ),
         patch(
-            "src.api.education.remediation_routes.get_provider_manager",
+            "src.api.education.remediation_routes.workspace_provider_runtime",
             return_value=manager,
         ),
         patch(
@@ -2465,7 +2473,7 @@ async def test_generic_legacy_manager_call_through_audits_actual_remediation_use
 
 
 @pytest.mark.asyncio
-async def test_generic_legacy_manager_alt_only_call_through_audits_alt_purpose(
+async def test_generic_workspace_runtime_alt_only_call_through_audits_alt_purpose(
     tmp_path,
 ):
     from src.api.education.remediation_routes import remediate_scan
@@ -2490,7 +2498,7 @@ async def test_generic_legacy_manager_alt_only_call_through_audits_alt_purpose(
             return_value=scan,
         ),
         patch(
-            "src.api.education.remediation_routes.get_provider_manager",
+            "src.api.education.remediation_routes.workspace_provider_runtime",
             return_value=manager,
         ),
         patch(
@@ -2950,7 +2958,7 @@ def test_usage_tracker_no_call_outcome_requires_explicit_authority(
 
 
 @pytest.mark.asyncio
-async def test_generic_standalone_scan_retains_legacy_global_manager(tmp_path):
+async def test_generic_tenant_scan_uses_workspace_runtime(tmp_path):
     from src.api.education.remediation_routes import remediate_scan
 
     path = tmp_path / "file.docx"
@@ -2967,7 +2975,7 @@ async def test_generic_standalone_scan_retains_legacy_global_manager(tmp_path):
             return_value=scan,
         ),
         patch(
-            "src.api.education.remediation_routes.get_provider_manager",
+            "src.api.education.remediation_routes.workspace_provider_runtime",
             return_value=manager,
         ) as global_manager,
         patch(
@@ -2977,7 +2985,7 @@ async def test_generic_standalone_scan_retains_legacy_global_manager(tmp_path):
     ):
         await remediate_scan("scan-1", MagicMock(), db=db, principal=_principal())
 
-    global_manager.assert_called_once_with()
+    global_manager.assert_called_once_with("dept-1")
     assert cls.call_args.kwargs["config"].use_ai is True
     assert cls.call_args.kwargs["ai_client"].client is manager
 
@@ -3283,6 +3291,7 @@ async def test_authoritative_mechanical_noop_without_remaining_issues_is_honest_
     path.write_bytes(b"document")
     scan = SimpleNamespace(
         id="scan-1",
+        department_id="dept-1",
         scan_type=ScanType.WORD,
         storage_path=str(path),
         metadata={},
@@ -3368,6 +3377,7 @@ async def test_authoritative_document_fixes_fail_when_artifact_cannot_persist(tm
     path.write_bytes(b"document")
     scan = SimpleNamespace(
         id="scan-1",
+        department_id="dept-1",
         scan_type=ScanType.WORD,
         storage_path=str(path),
         metadata={},
@@ -3681,6 +3691,7 @@ async def test_authoritative_manual_outcome_suppresses_success_side_effects(tmp_
     path.write_bytes(b"document")
     scan = SimpleNamespace(
         id="scan-manual",
+        department_id="dept-1",
         scan_type=ScanType.WORD,
         storage_path=str(path),
         metadata={},

@@ -187,6 +187,11 @@ def process_multimedia_background(
         if not scan:
             logger.error(f"[BACKGROUND] Scan {scan_id} not found!")
             return
+        if scan.department_id != department_id:
+            raise ValueError("workspace_scope_invalid")
+        from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+        provider_runtime = workspace_provider_runtime(department_id)
 
         # Define progress callback
         def update_progress(current: int, total: int, message: str):
@@ -219,6 +224,7 @@ def process_multimedia_background(
         processor = MultimediaProcessor(
             whisper_model=f"whisper:{whisper_model}",
             progress_callback=update_progress,
+            llm_client=provider_runtime,
         )
         result = processor.process_media(
             file_path,

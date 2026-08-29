@@ -283,6 +283,7 @@ class PowerPointProcessor:
         simulate_color_blindness: bool = True,
         detect_images_of_text: bool = False,
         progress_callback: callable = None,
+        llm_client=None,
     ):
         self.wcag_aa_ratio = 4.5  # WCAG 2.1 AA for normal text
         self.wcag_aaa_ratio = 7.0  # WCAG 2.1 AAA for normal text
@@ -305,7 +306,8 @@ class PowerPointProcessor:
                 from .image_alt_text import ImageAltTextGenerator
 
                 self.image_generator = ImageAltTextGenerator(
-                    allow_legacy_transport=True
+                    lms_client=llm_client,
+                    allow_legacy_transport=llm_client is None,
                 )
             except Exception as e:
                 print(
