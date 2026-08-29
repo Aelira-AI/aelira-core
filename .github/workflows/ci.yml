@@ -123,16 +123,20 @@ jobs:
           JWT_SECRET: test-secret-for-ci
           ENV: test
         run: pytest tests/ -v --tb=short
+      - name: Create isolated worker test database
+        env:
+          PGPASSWORD: aelira
+        run: createdb --host=localhost --username=aelira worker_isolation_test
       - name: Run PostgreSQL worker-isolation tests
         env:
-          DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
-          TEST_MIGRATION_DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
+          DATABASE_URL: postgresql://aelira:aelira@localhost:5432/worker_isolation_test
+          TEST_MIGRATION_DATABASE_URL: postgresql://aelira:aelira@localhost:5432/worker_isolation_test
           ALLOW_DESTRUCTIVE_MIGRATION_TESTS: "1"
           REQUIRE_WORKER_POSTGRES_TESTS: "1"
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-for-ci
           ENV: test
-        run: pytest tests/test_durable_job_processor_postgres.py -v --tb=short
+        run: pytest tests/test_durable_job_processor_postgres.py -v --tb=short --no-cov
 
   dashboard:
     runs-on: ubuntu-latest

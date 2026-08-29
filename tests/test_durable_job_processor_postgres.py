@@ -1373,12 +1373,13 @@ def seed_foreign_scan_contract(factory) -> dict[str, str]:
                 department_id=department_id,
                 scan_id=scan_id,
                 provider="local",
-                scan_type="pdf",
+                scan_type="PDF",
                 storage_key=f"tenant-isolation/{artifact_id}",
                 filename="foreign-remediated.pdf",
                 mime_type="application/pdf",
                 size_bytes=8,
                 sha256="a" * 64,
+                lifecycle_status="available",
                 expires_at=datetime.now(timezone.utc) + timedelta(days=1),
             )
         )

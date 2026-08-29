@@ -1153,10 +1153,24 @@ def test_ci_executes_postgres_concurrency_suite_on_explicit_test_database() -> N
     from conftest import require_disposable_postgres_url
 
     workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
-    environment = workflow["jobs"]["test"]["steps"][-1]["env"]
+    steps = workflow["jobs"]["test"]["steps"]
+    database_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Create isolated worker test database"
+    )
+    postgres_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Run PostgreSQL worker-isolation tests"
+    )
+    environment = postgres_step["env"]
     durable_url = environment["TEST_MIGRATION_DATABASE_URL"]
 
+    assert "worker_isolation_test" in database_step["run"]
+    assert "--no-cov" in postgres_step["run"]
     assert durable_url == environment["DATABASE_URL"]
+    assert durable_url.endswith("/worker_isolation_test")
     assert environment["ALLOW_DESTRUCTIVE_MIGRATION_TESTS"] == "1"
     assert (
         require_disposable_postgres_url(
