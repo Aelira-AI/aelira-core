@@ -160,6 +160,46 @@ clients still need a valid double-submit CSRF token and receive the same
 tenant-bound administrator handoff; the anonymous source is recorded explicitly
 in the audit trail. Keep the default `false` for institutional deployments.
 
+## Blackboard LTI signing keys
+
+Blackboard LTI uses one deployment-global RSA signing identity. Generate a
+matching RSA key pair of at least 2048 bits, store the private PEM in your
+secret manager, and mount both files read-only into every API replica. Set
+`BLACKBOARD_LTI_PRIVATE_KEY_PATH` and `BLACKBOARD_LTI_PUBLIC_KEY_PATH` to those
+mounted files. Register the canonical Tool JWKS URL with Anthology Blackboard:
+`https://<your-public-api>/lti/blackboard/jwks`.
+
+For example, generate a 3072-bit pair outside the application container:
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out blackboard-lti-private.pem
+openssl pkey -in blackboard-lti-private.pem -pubout -out blackboard-lti-public.pem
+chmod 600 blackboard-lti-private.pem
+```
+
+The JWKS endpoint publishes only RFC 7517 public parameters. Its `kid` is the
+stable RFC 7638 thumbprint of that public key. A missing, malformed, undersized,
+or mismatched active pair makes the endpoint return `503` until the operator
+repairs the configuration.
+
+Rotate in three cache-safe phases using the public-only, comma-separated
+`BLACKBOARD_LTI_OVERLAP_PUBLIC_KEY_PATHS` list:
+
+1. Prepublish the future public key in the overlap list on every replica,
+   restart or roll all replicas, and wait at least the JWKS cache TTL of 300
+   seconds. The old key remains active during this phase.
+2. Switch the active pair to the new matching private/public files, retain the
+   old public key in the overlap list, and restart or roll every replica. Both
+   public keys remain continuously available while new tokens use the new key.
+3. Remove the old public key only after the maximum old-token lifetime, allowed
+   clock skew, rolling-rollout duration, and an additional 300-second JWKS cache
+   TTL have all elapsed; then restart or roll every replica again.
+
+The active key appears first in JWKS; duplicate public keys are collapsed by
+their immutable thumbprint. A running process never rereads signing files:
+signing and JWKS publication use one construction-time snapshot, so rotations
+take effect only after that replica restarts.
+
 ## Postgres, Redis, and the Ollama profile
 
 Both existing compose files use the same two service images for storage:
