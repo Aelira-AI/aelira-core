@@ -106,6 +106,8 @@ class MultimediaProcessor:
         whisper_model: str = "whisper:base",
         use_gemini: bool = True,
         progress_callback: callable = None,
+        llm_client=None,
+        alt_text_client=None,
     ):
         """
         Initialize multimedia processor
@@ -114,11 +116,16 @@ class MultimediaProcessor:
             whisper_model: Whisper model to use (base, small, medium, large)
             use_gemini: Whether to use Gemini for AI vision tasks (audio descriptions)
             progress_callback: Optional callback function(current, total, message) for progress updates
+            llm_client: Purpose-bound client for audio-description generation
+            alt_text_client: Purpose-bound client for visual descriptions
         """
         self.whisper_model = whisper_model
         self.use_gemini = use_gemini
         self.progress_callback = progress_callback
-        self._llm_client = None
+        self._llm_client = llm_client
+        self._alt_text_client = (
+            alt_text_client if alt_text_client is not None else llm_client
+        )
         self._image_generator = None  # For smart image analysis (charts/infographics)
         self._tts_processor = None  # For generating spoken audio descriptions
 
@@ -143,7 +150,8 @@ class MultimediaProcessor:
                 from .image_alt_text import ImageAltTextGenerator
 
                 self._image_generator = ImageAltTextGenerator(
-                    allow_legacy_transport=True
+                    lms_client=self._alt_text_client,
+                    allow_legacy_transport=self._alt_text_client is None,
                 )
                 logger.info(
                     "[MultimediaProcessor] ImageAltTextGenerator loaded for smart image analysis"

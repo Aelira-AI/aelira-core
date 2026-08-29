@@ -25,6 +25,7 @@ import logging
 from pathlib import Path
 
 from src.ai.gemini_client import get_accessibility_ai_client
+from src.ai.workspace_provider_runtime import workspace_provider_runtime
 from src.ai.providers import (
     get_provider_manager,
     initialize_provider_manager,
@@ -440,7 +441,10 @@ class BatchAnalysisRequest(BaseModel):
 
 # Helper function for image-alt violations
 async def generate_image_alt_text(
-    html_snippet: str, base_url: Optional[str] = None
+    html_snippet: str,
+    base_url: Optional[str] = None,
+    *,
+    provider_runtime=None,
 ) -> Optional[dict]:
     """
     Extract image from HTML and generate AI alt text using vision model.
@@ -507,7 +511,7 @@ async def generate_image_alt_text(
         try:
             from ..education.image_alt_text import ImageAltTextGenerator
 
-            generator = ImageAltTextGenerator(allow_legacy_transport=True)
+            generator = ImageAltTextGenerator(lms_client=provider_runtime)
             result = await generator.generate_alt_text(
                 image_path=tmp_path,
                 context=f"Image from website ({image_url})",
@@ -871,15 +875,16 @@ async def analyze_violation(
 
      For image-alt violations, uses vision AI to generate proper alt text!
     """
+    _, _, workspace_id = api_key_info
+    provider_runtime = workspace_provider_runtime(workspace_id)
+    ai_client = accessibility_ai_client.bind_provider_manager(provider_runtime)
     try:
-        classification_result = (
-            await accessibility_ai_client.classify_severity_with_rag(
-                rule_id=request.rule_id,
-                impact=request.impact,
-                html_snippet=request.html_snippet,
-                selector=request.selector,
-                violation_description=None,
-            )
+        classification_result = await ai_client.classify_severity_with_rag(
+            rule_id=request.rule_id,
+            impact=request.impact,
+            html_snippet=request.html_snippet,
+            selector=request.selector,
+            violation_description=None,
         )
 
         classification = {
@@ -903,7 +908,9 @@ async def analyze_violation(
         ]:
             # For image-alt violations, use vision AI to generate alt text
             if request.rule_id == "image-alt":
-                image_result = await generate_image_alt_text(request.html_snippet)
+                image_result = await generate_image_alt_text(
+                    request.html_snippet, provider_runtime=provider_runtime
+                )
                 if image_result:
                     ai_alt_text = image_result["alt_text"]
                     src_match = re.search(r'src=["\'](.*?)["\']', request.html_snippet)
@@ -930,7 +937,7 @@ async def analyze_violation(
                 else:
                     # Vision failed closed; a configured text/code provider may
                     # still produce a code-only remediation for human review.
-                    fix_result = await accessibility_ai_client.generate_code_fix(
+                    fix_result = await ai_client.generate_code_fix(
                         html_snippet=request.html_snippet,
                         rule_id=request.rule_id,
                         issue_description=classification.get("explanation", ""),
@@ -945,7 +952,7 @@ async def analyze_violation(
                         "vision_ai_failed": True,
                     }
             else:
-                fix_result = await accessibility_ai_client.generate_code_fix(
+                fix_result = await ai_client.generate_code_fix(
                     html_snippet=request.html_snippet,
                     rule_id=request.rule_id,
                     issue_description=classification.get("explanation", ""),
@@ -984,18 +991,19 @@ async def batch_analyze_violations(
     Returns AI classification for all issues, plus code fixes for
     Critical/High severity violations if requested.
     """
+    _, _, workspace_id = api_key_info
+    provider_runtime = workspace_provider_runtime(workspace_id)
+    ai_client = accessibility_ai_client.bind_provider_manager(provider_runtime)
     results = []
 
     for violation in request.violations:
         try:
-            classification_result = (
-                await accessibility_ai_client.classify_severity_with_rag(
-                    rule_id=violation.rule_id,
-                    impact=violation.impact,
-                    html_snippet=violation.html_snippet,
-                    selector=violation.selector,
-                    violation_description=violation.description,
-                )
+            classification_result = await ai_client.classify_severity_with_rag(
+                rule_id=violation.rule_id,
+                impact=violation.impact,
+                html_snippet=violation.html_snippet,
+                selector=violation.selector,
+                violation_description=violation.description,
             )
 
             classification = {
@@ -1024,7 +1032,9 @@ async def batch_analyze_violations(
                 "High",
             ]:
                 if violation.rule_id == "image-alt":
-                    image_result = await generate_image_alt_text(violation.html_snippet)
+                    image_result = await generate_image_alt_text(
+                        violation.html_snippet, provider_runtime=provider_runtime
+                    )
                     if image_result:
                         ai_alt_text = image_result["alt_text"]
                         src_match = re.search(
@@ -1051,7 +1061,7 @@ async def batch_analyze_violations(
                             "provider": image_result.get("provider"),
                         }
                     else:
-                        fix_result = await accessibility_ai_client.generate_code_fix(
+                        fix_result = await ai_client.generate_code_fix(
                             html_snippet=violation.html_snippet,
                             rule_id=violation.rule_id,
                             issue_description=classification.get("explanation", ""),
@@ -1066,7 +1076,7 @@ async def batch_analyze_violations(
                             "vision_ai_failed": True,
                         }
                 else:
-                    fix_result = await accessibility_ai_client.generate_code_fix(
+                    fix_result = await ai_client.generate_code_fix(
                         html_snippet=violation.html_snippet,
                         rule_id=violation.rule_id,
                         issue_description=classification.get("explanation", ""),
@@ -1110,8 +1120,11 @@ async def test_ai(
         "selector": "img:nth-child(1)",
     }
 
+    _, _, workspace_id = api_key_info
+    provider_runtime = workspace_provider_runtime(workspace_id)
+    ai_client = accessibility_ai_client.bind_provider_manager(provider_runtime)
     try:
-        result = await accessibility_ai_client.classify_severity(**sample_violation)
+        result = await ai_client.classify_severity(**sample_violation)
 
         return {
             "message": "AI test successful",

@@ -546,6 +546,7 @@ class DocxProcessor:
         enhance_descriptions: bool = False,
         simulate_color_blindness: bool = False,
         progress_callback: callable = None,
+        llm_client=None,
     ):
         self.generate_alt_text = generate_alt_text
         self.validate_alt_text = validate_alt_text
@@ -564,7 +565,8 @@ class DocxProcessor:
                 from .image_alt_text import ImageAltTextGenerator
 
                 self.image_generator = ImageAltTextGenerator(
-                    allow_legacy_transport=True
+                    lms_client=llm_client,
+                    allow_legacy_transport=llm_client is None,
                 )
             except Exception as e:
                 logger.warning(

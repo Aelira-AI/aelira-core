@@ -662,6 +662,9 @@ async def test_local_job_uses_scan_authority_without_cloud_credentials(monkeypat
             "skipped_count": 0,
         }
     )
+    runtime = object()
+    runtime_factory = MagicMock(return_value=runtime)
+    monkeypatch.setattr(remediation_job, "workspace_provider_runtime", runtime_factory)
     monkeypatch.setattr(remediation_job, "process_remediation_job", process)
     result = await remediation_job.handle_remediation_job(job, db, object())
     assert result["success"] is True
@@ -669,6 +672,10 @@ async def test_local_job_uses_scan_authority_without_cloud_credentials(monkeypat
     assert call.args[0]["provider"] == "local"
     assert call.args[0]["file_path"] == "/uploads/source.pdf"
     assert call.args[0]["options"] == {"use_ai": False}
+    runtime_factory.assert_called_once_with("department-1")
+    assert call.kwargs["lms_policy_authoritative"] is False
+    assert call.kwargs["ai_client"] is runtime
+    assert call.kwargs["alt_text_client"] is runtime
 
 
 @pytest.mark.asyncio
@@ -908,11 +915,8 @@ async def test_worker_fails_closed_when_code_approval_is_revoked(monkeypatch):
     child.assert_not_awaited()
 
 
-@pytest.mark.parametrize("configured", (True, False))
 @pytest.mark.asyncio
-async def test_local_queue_uses_only_purpose_bound_alt_text_client(
-    monkeypatch, configured
-):
+async def test_local_queue_defers_ai_to_workspace_runtime(monkeypatch):
     from src.jobs import remediation_job
 
     scan = SimpleNamespace(
@@ -946,8 +950,7 @@ async def test_local_queue_uses_only_purpose_bound_alt_text_client(
     db.get.side_effect = lambda model, identity, **_kwargs: (
         scan if model is Scan and identity == "scan-1" else None
     )
-    purpose_client = SimpleNamespace(purpose="alt_text", provider="ollama")
-    bind = MagicMock(return_value=purpose_client if configured else None)
+    bind = MagicMock()
     process = AsyncMock(
         return_value={
             "success": True,
@@ -958,22 +961,20 @@ async def test_local_queue_uses_only_purpose_bound_alt_text_client(
             "skipped_count": 0,
         }
     )
+    runtime = object()
+    runtime_factory = MagicMock(return_value=runtime)
     monkeypatch.setattr(remediation_job.LMSRemediationClient, "bind_if_allowed", bind)
+    monkeypatch.setattr(remediation_job, "workspace_provider_runtime", runtime_factory)
     monkeypatch.setattr(remediation_job, "process_remediation_job", process)
 
     await remediation_job.handle_remediation_job(job, db, object())
 
-    bind.assert_called_once_with(
-        purpose="alt_text",
-        department_id="department-1",
-        job_id="job-1",
-        scan_id="scan-1",
-        cloud_file_id=None,
-    )
+    bind.assert_not_called()
+    runtime_factory.assert_called_once_with("department-1")
     call = process.await_args
-    assert call.kwargs["lms_policy_authoritative"] is True
-    assert call.kwargs["alt_text_client"] is (purpose_client if configured else None)
-    assert call.kwargs["ai_client"] is None
+    assert call.kwargs["lms_policy_authoritative"] is False
+    assert call.kwargs["alt_text_client"] is runtime
+    assert call.kwargs["ai_client"] is runtime
 
 
 @pytest.mark.parametrize("configured", (True, False))

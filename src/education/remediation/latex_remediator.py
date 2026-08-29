@@ -92,9 +92,17 @@ class LatexRemediator(BaseRemediator):
         issues: List[Dict[str, Any]],
         config: Optional[RemediationConfig] = None,
         ai_client: Optional[Any] = None,
+        *,
+        alt_text_client: Optional[Any] = None,
     ):
         """Initialize LaTeX remediator."""
-        super().__init__(file_path, issues, config, ai_client)
+        super().__init__(
+            file_path,
+            issues,
+            config,
+            ai_client,
+            alt_text_client=alt_text_client,
+        )
 
         # Store original content for modifications
         self._original_content: Optional[str] = None

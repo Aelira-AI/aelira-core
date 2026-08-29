@@ -68,9 +68,17 @@ class MultimediaRemediator(BaseRemediator):
         issues: List[Dict[str, Any]],
         config: Optional[RemediationConfig] = None,
         ai_client: Optional[Any] = None,
+        *,
+        alt_text_client: Optional[Any] = None,
     ):
         """Initialize Multimedia remediator."""
-        super().__init__(file_path, issues, config, ai_client)
+        super().__init__(
+            file_path,
+            issues,
+            config,
+            ai_client,
+            alt_text_client=alt_text_client,
+        )
 
         # Determine file type
         self.file_ext = Path(file_path).suffix.lower()
@@ -95,7 +103,11 @@ class MultimediaRemediator(BaseRemediator):
             try:
                 from ..multimedia_processor import MultimediaProcessor
 
-                self._processor = MultimediaProcessor(use_gemini=self.config.use_ai)
+                self._processor = MultimediaProcessor(
+                    use_gemini=self.config.use_ai,
+                    llm_client=self.ai_client,
+                    alt_text_client=self.alt_text_client,
+                )
             except Exception as e:
                 logger.error(f"Failed to load MultimediaProcessor: {e}")
         return self._processor

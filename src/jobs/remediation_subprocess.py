@@ -199,12 +199,16 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
     authoritative = isinstance(lms_binding, dict)
     use_ai = bool(options.get("use_ai", True))
     if not authoritative and use_ai:
-        from src.ai.providers import get_provider_manager
+        workspace_id = request.get("workspace_id")
+        if not isinstance(workspace_id, str) or not workspace_id:
+            raise RemediationSubprocessError("workspace_identity_required")
+        from src.ai.workspace_provider_runtime import workspace_provider_runtime
 
-        ai_client = get_provider_manager()
+        ai_client = workspace_provider_runtime(workspace_id)
+        alt_text_client = ai_client
     config = RemediationConfig(
         use_ai=use_ai if not authoritative else ai_client is not None,
-        allow_legacy_nested_ai=not authoritative,
+        allow_legacy_nested_ai=False,
         fix_alt_text=(not authoritative or alt_text_client is not None),
         verify_fixes=True,
         create_backup=False,
@@ -603,6 +607,7 @@ async def run_remediation_subprocess(
     issues: Any,
     options: dict[str, Any],
     work_root: str | Path,
+    workspace_id: str | None = None,
     lms_binding: dict[str, Any] | None = None,
     timeout_seconds: float,
     termination_grace_seconds: float,
@@ -653,6 +658,7 @@ async def run_remediation_subprocess(
             "issues": _safe_issues(issues),
             "options": options,
             "work_dir": str(work_dir),
+            "workspace_id": workspace_id,
             "lms_binding": lms_binding,
         }
         try:

@@ -73,6 +73,7 @@ class PDFProcessor:
         progress_callback: Optional[callable] = None,
         simulate_color_blindness: bool = False,
         latex_aware: bool = False,
+        llm_client=None,
     ):
         self.tesseract_config = (
             "--oem 3 --psm 6"  # OCR Engine Mode 3, Page Segmentation Mode 6
@@ -83,7 +84,11 @@ class PDFProcessor:
         self.db_session = db_session
         self.progress_callback = progress_callback
         self.image_generator = None
-        self.llm_client = get_provider_manager() if self.enhance_descriptions else None
+        self.llm_client = (
+            llm_client
+            if llm_client is not None
+            else get_provider_manager() if self.enhance_descriptions else None
+        )
         # Color vision deficiency simulation
         self.simulate_color_blindness = simulate_color_blindness
         self.cvd_simulator = (
@@ -98,7 +103,8 @@ class PDFProcessor:
                 from .image_alt_text import ImageAltTextGenerator
 
                 self.image_generator = ImageAltTextGenerator(
-                    allow_legacy_transport=True
+                    lms_client=llm_client,
+                    allow_legacy_transport=llm_client is None,
                 )
             except Exception as e:
                 print(

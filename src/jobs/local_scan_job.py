@@ -283,6 +283,7 @@ def _run_local_processor(
                 scan.id,
                 options["generate_alt_text"],
                 options["enhance_descriptions"],
+                workspace_id=scan.department_id,
             )
         elif scan_kind == "local_powerpoint":
             scan_routes.process_pptx_background(
@@ -338,6 +339,7 @@ def _run_local_processor(
                 options["use_ollama"],
                 scan.user_id,
                 scan.department_id,
+                workspace_id=scan.department_id,
             )
         return
 
@@ -355,6 +357,7 @@ def _run_local_processor(
                 options["validate_alt_text"],
                 scan.user_id,
                 scan.department_id,
+                workspace_id=scan.department_id,
             )
         elif scan_kind == "local_web":
             web_scan_routes.process_web_scan_background(
@@ -369,6 +372,7 @@ def _run_local_processor(
                 options["max_pages"],
                 options["generate_code_fixes"],
                 options["capture_screenshots"],
+                workspace_id=scan.department_id,
             )
         elif scan_kind == "local_web_batch":
             web_scan_routes.process_batch_web_scan_background(
@@ -382,6 +386,7 @@ def _run_local_processor(
                 options["max_pages"],
                 options["generate_code_fixes"],
                 options["capture_screenshots"],
+                workspace_id=scan.department_id,
             )
         else:
             web_scan_routes.process_sitemap_scan_background(
@@ -395,6 +400,7 @@ def _run_local_processor(
                 options["generate_code_fixes"],
                 options["capture_screenshots"],
                 options["priority_patterns"],
+                workspace_id=scan.department_id,
             )
         return
 

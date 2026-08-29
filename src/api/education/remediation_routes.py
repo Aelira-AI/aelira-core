@@ -21,8 +21,8 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 from urllib.parse import quote
 
-from ...ai.providers import get_provider_manager
 from ...ai.lms_remediation_client import LMSRemediationClient
+from ...ai.workspace_provider_runtime import workspace_provider_runtime
 from ...auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ...db.database import get_db_dependency
 from ...db.models import (
@@ -1979,8 +1979,15 @@ async def remediate_scan(
     # Special case: IMAGE scan — generate alt text via AI
     if scan_type == ScanType.IMAGE:
         generator = ImageAltTextGenerator(
-            lms_client=(alt_text_tracker if alt_text_client is not None else None),
-            allow_legacy_transport=lms_cloud_file is None,
+            lms_client=(
+                alt_text_tracker
+                if lms_cloud_file and alt_text_client is not None
+                else (
+                    workspace_provider_runtime(department_id)
+                    if not lms_cloud_file
+                    else None
+                )
+            ),
         )
         if lms_cloud_file and alt_text_client is None:
             _best_effort_terminal_dispatch_failure(
@@ -2178,7 +2185,7 @@ async def remediate_scan(
             use_ai=(
                 remediation_client is not None if lms_cloud_file else effective_use_ai
             ),
-            allow_legacy_nested_ai=lms_cloud_file is None,
+            allow_legacy_nested_ai=False,
             fix_alt_text=(
                 alt_text_client is not None if lms_cloud_file else effective_alt_text
             ),
@@ -2212,19 +2219,19 @@ async def remediate_scan(
         )
 
         # LMS-backed scans receive only their purpose-bound current-policy
-        # client. Ordinary uploads retain the historical provider manager.
+        # client. Ordinary uploads receive a fresh tenant-bound runtime.
         if lms_cloud_file:
             ai_client = remediation_tracker if remediation_client is not None else None
             tracked_alt_text_client = (
                 alt_text_tracker if alt_text_client is not None else None
             )
         else:
-            manager = get_provider_manager()
-            remediation_tracker.bind_client(manager)
-            alt_text_tracker.bind_client(manager)
+            provider_runtime = workspace_provider_runtime(department_id)
+            remediation_tracker.bind_client(provider_runtime)
+            alt_text_tracker.bind_client(provider_runtime)
             ai_client = remediation_tracker
-            # The same legacy manager remains underneath both wrappers, while
-            # document remediators report the purpose that actually invoked it.
+            # The same workspace runtime remains underneath both wrappers,
+            # while document remediators report the purpose that invoked it.
             tracked_alt_text_client = alt_text_tracker if alt_text_requested else None
 
         # Create remediator and run remediation
@@ -2239,6 +2246,7 @@ async def remediate_scan(
             PptxRemediator,
             PdfRemediator,
             XlsxRemediator,
+            MultimediaRemediator,
         }:
             remediator_kwargs["alt_text_client"] = tracked_alt_text_client
         remediator = RemediatorClass(**remediator_kwargs)
