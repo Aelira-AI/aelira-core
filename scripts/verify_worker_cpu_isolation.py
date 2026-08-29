@@ -15,6 +15,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+_PROBE_DATABASE_URL = "sqlite:////tmp/aelira-worker-isolation.db"
+
 
 def _run(
     *arguments: str, capture: bool = False, timeout: float = 30
@@ -134,7 +136,7 @@ raise SystemExit(0 if asyncio.run(worker.process_claim(claim)) else 1)
                 "-e",
                 "ENV=test",
                 "-e",
-                "DATABASE_URL=sqlite:///:memory:",
+                f"DATABASE_URL={_PROBE_DATABASE_URL}",
                 "-e",
                 "JWT_SECRET=kernel-quota-test-secret-at-least-32-bytes",
                 image,
@@ -157,7 +159,7 @@ raise SystemExit(0 if asyncio.run(worker.process_claim(claim)) else 1)
                 "-e",
                 "SKIP_MIGRATIONS=true",
                 "-e",
-                "DATABASE_URL=sqlite:///:memory:",
+                f"DATABASE_URL={_PROBE_DATABASE_URL}",
                 "-e",
                 "JWT_SECRET=kernel-quota-test-secret-at-least-32-bytes",
                 image,
