@@ -89,7 +89,11 @@ value=0
 while time.monotonic()<end:
     value=(value+1)%1000003
 '''
-    await _run_process(("python", "-c", code), timeout_seconds=8)
+    await _run_process(
+        ("python", "-c", code),
+        timeout_seconds=8,
+        termination_grace_seconds=0.1,
+    )
     return JobSuccess({"success": True})
 
 class Probe(JobProcessor):

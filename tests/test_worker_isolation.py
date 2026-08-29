@@ -2144,7 +2144,11 @@ while time.monotonic()<end:
     while time.monotonic()-tick<0.075:
         pass
     time.sleep(max(0,0.1-(time.monotonic()-tick)))'''
-    await _run_process(({sys.executable!r}, '-c', code), timeout_seconds=5)
+    await _run_process(
+        ({sys.executable!r}, '-c', code),
+        timeout_seconds=5,
+        termination_grace_seconds=0.1,
+    )
     return JobSuccess()
 class Probe(JobProcessor):
     def _owns_claim(self, _claim): return True
