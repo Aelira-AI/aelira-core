@@ -139,6 +139,7 @@ class ProviderConfigUpdate(BaseModel):
             raise ValueError("invalid model identifier")
         return value
 
+
 class AddProviderRequest(BaseModel):
     """Request to add a new provider with API key."""
 
@@ -937,7 +938,9 @@ async def test_provider(
 
     _require_provider_admin(principal)
     department = _get_own_department(db, principal.department_id)
-    provider_name = _provider_type(provider).value if provider else department.ai_primary_provider
+    provider_name = (
+        _provider_type(provider).value if provider else department.ai_primary_provider
+    )
     if provider_name is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

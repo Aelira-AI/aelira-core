@@ -32,7 +32,6 @@ from src.db.models import (
     UserRole,
 )
 
-
 PROVIDERS = {"ollama", "gemini", "openai", "anthropic", "xai"}
 CANARY_CREDENTIAL = "CANARY_CREDENTIAL_MATERIAL"
 OPAQUE_CIPHERTEXT = "opaque-encrypted-canary"
@@ -132,7 +131,10 @@ class _Query:
         return None
 
     def _is_department(self) -> bool:
-        return self.model is Department or getattr(self.model, "__tablename__", None) == "departments"
+        return (
+            self.model is Department
+            or getattr(self.model, "__tablename__", None) == "departments"
+        )
 
     def _rows(self):
         if self._is_department():
@@ -345,9 +347,7 @@ def test_anonymous_is_rejected_before_db_or_provider_work(monkeypatch):
         (UserRole.SUPER_ADMIN, "api_key"),
     ],
 )
-def test_admin_auth_methods_get_neutral_workspace_state(
-    monkeypatch, role, auth_method
-):
+def test_admin_auth_methods_get_neutral_workspace_state(monkeypatch, role, auth_method):
     department = _department()
     _authorize(_principal(role, auth_method=auth_method), _Session(department))
     _forbid_singleton(monkeypatch)
@@ -377,7 +377,9 @@ def test_workspace_provider_schema_is_unique_constrained_and_neutral():
         if constraint.name
     }
 
-    assert "uq_department_ai_provider_configs_department_provider" in provider_constraints
+    assert (
+        "uq_department_ai_provider_configs_department_provider" in provider_constraints
+    )
     assert "ck_department_ai_provider_configs_provider" in provider_constraints
     credential_check = provider_constraints[
         "ck_department_ai_provider_configs_credential"
@@ -471,9 +473,7 @@ def test_two_departments_read_independent_persisted_rows(monkeypatch):
                 revision=5,
                 primary="ollama",
                 rows=[
-                    _provider_row(
-                        "ollama", department_id="dept-b", encrypted_key=None
-                    )
+                    _provider_row("ollama", department_id="dept-b", encrypted_key=None)
                 ],
             ),
             "ollama",
@@ -524,7 +524,9 @@ def test_all_supported_provider_identities_can_be_configured(
     _authorize(_principal(auth_method=auth_method), session)
     _forbid_singleton(monkeypatch)
     monkeypatch.setattr(llm_providers, "is_encryption_configured", lambda: True)
-    monkeypatch.setattr(llm_providers, "encrypt_api_key", lambda _value: OPAQUE_CIPHERTEXT)
+    monkeypatch.setattr(
+        llm_providers, "encrypt_api_key", lambda _value: OPAQUE_CIPHERTEXT
+    )
     body = {"expected_revision": 0, "text_model": "chosen-model"}
     if provider != "ollama":
         body["api_key"] = CANARY_CREDENTIAL
@@ -545,7 +547,9 @@ def test_provider_update_is_atomic_and_audit_is_secret_free(monkeypatch):
     _authorize(_principal(), session)
     _forbid_singleton(monkeypatch)
     monkeypatch.setattr(llm_providers, "is_encryption_configured", lambda: True)
-    monkeypatch.setattr(llm_providers, "encrypt_api_key", lambda _value: OPAQUE_CIPHERTEXT)
+    monkeypatch.setattr(
+        llm_providers, "encrypt_api_key", lambda _value: OPAQUE_CIPHERTEXT
+    )
 
     response = TestClient(app).put(
         "/llm/providers/openai",
@@ -765,7 +769,9 @@ def test_cloud_provider_fails_closed_when_encryption_is_unavailable(monkeypatch)
     assert session.audits == []
 
 
-@pytest.mark.parametrize("injected", [{"department_id": "dept-2"}, {"tenant_id": "dept-2"}])
+@pytest.mark.parametrize(
+    "injected", [{"department_id": "dept-2"}, {"tenant_id": "dept-2"}]
+)
 def test_provider_update_forbids_cross_tenant_field_injection(monkeypatch, injected):
     session = _Session(_department())
     _authorize(_principal(), session)
@@ -810,7 +816,9 @@ def test_legacy_mutations_are_tenant_safe_wrappers_without_singleton_mutation(
     _authorize(_principal(), session)
     _forbid_singleton(monkeypatch)
     monkeypatch.setattr(llm_providers, "is_encryption_configured", lambda: True)
-    monkeypatch.setattr(llm_providers, "encrypt_api_key", lambda _value: OPAQUE_CIPHERTEXT)
+    monkeypatch.setattr(
+        llm_providers, "encrypt_api_key", lambda _value: OPAQUE_CIPHERTEXT
+    )
 
     response = TestClient(app, raise_server_exceptions=False).request(
         method.upper(), path, json=body
@@ -869,7 +877,8 @@ async def test_provider_test_uses_one_fresh_instance_and_always_closes():
             events.append(("decrypt", encrypted)) or CANARY_CREDENTIAL
         ),
         provider_factory=lambda provider_type, config: (
-            events.append(("factory", provider_type.value, config.api_key)) or Provider()
+            events.append(("factory", provider_type.value, config.api_key))
+            or Provider()
         ),
     )
 

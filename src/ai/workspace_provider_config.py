@@ -15,7 +15,6 @@ from typing import Any, Callable
 from src.ai.providers.types import ProviderConfig, ProviderType
 from src.db.models import DepartmentAIProviderConfig
 
-
 SUPPORTED_WORKSPACE_PROVIDERS = tuple(provider.value for provider in ProviderType)
 
 PROVIDER_DISPLAY_NAMES = {

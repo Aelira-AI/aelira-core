@@ -21,7 +21,9 @@ class _Query:
         return self.department if self.model is Department else self.rows[0]
 
     def all(self):
-        return self.rows if self.model is DepartmentAIProviderConfig else [self.department]
+        return (
+            self.rows if self.model is DepartmentAIProviderConfig else [self.department]
+        )
 
 
 class _DB:

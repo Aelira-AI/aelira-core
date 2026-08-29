@@ -369,6 +369,7 @@ class DepartmentAIProviderConfig(Base):
         ),
     )
 
+
 class User(Base):
     """Faculty/staff user accounts"""
 
