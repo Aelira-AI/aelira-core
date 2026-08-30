@@ -26,6 +26,7 @@ import CanvasCourses from './pages/CanvasCourses';
 import CanvasContentPage from './pages/CanvasContentPage';
 import CanvasContentDiffPage from './pages/CanvasContentDiffPage';
 import CourseOverview from './pages/CourseOverview';
+import BrightspaceCourses from './pages/BrightspaceCourses';
 import BrightspaceContentPage from './pages/BrightspaceContentPage';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { ReviewQueuePage } from './pages/ReviewQueuePage';
@@ -210,6 +211,7 @@ function App(): React.ReactElement {
               }
             />
             <Route path="/integrations/canvas" element={<ProtectedRoute><AppLayout><CanvasCourses /></AppLayout></ProtectedRoute>} />
+            <Route path="/integrations/brightspace" element={<ProtectedRoute><AppLayout><BrightspaceCourses /></AppLayout></ProtectedRoute>} />
             <Route path="/canvas/courses/:courseId/content" element={<ProtectedRoute><AppLayout><CanvasContentPage /></AppLayout></ProtectedRoute>} />
             <Route path="/canvas/courses/:courseId/content/:cloudFileId/review" element={<ProtectedRoute><AppLayout><CanvasContentDiffPage /></AppLayout></ProtectedRoute>} />
             <Route path="/brightspace/courses/:orgUnitId/content" element={<ProtectedRoute><AppLayout><BrightspaceContentRoute /></AppLayout></ProtectedRoute>} />
