@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import { chromium } from 'playwright'
 
 import { ApiClient } from '../utils/api-client.js'
+import { buildReportEvidence, generateVerifiedPdfReport, ReportArtifactError } from '../utils/report-artifact.js'
 
 interface PdfReportOptions {
   aiResults: any
@@ -30,6 +31,7 @@ static examples = [
     '$ aelira analyze https://example.com',
     '$ aelira analyze ./index.html --api-url http://localhost:8000',
     '$ aelira analyze . --format json --output report.json',
+    '$ aelira analyze ./index.html --pdf accessibility-report.pdf',
   ]
 static flags = {
     'ai-timeout': Flags.integer({
@@ -55,7 +57,7 @@ static flags = {
       description: 'Output file path (for JSON format)',
     }),
     pdf: Flags.string({
-      description: 'Generate PDF report and save to specified path (temporarily unavailable)',
+      description: 'Generate a verified server PDF report and save it atomically',
     }),
     timeout: Flags.integer({
       char: 't',
@@ -71,17 +73,6 @@ static flags = {
   async run(): Promise<void> {
     const { args, flags } = await this.parse(Analyze)
     const startTime = Date.now()
-
-    // The backend has no /education/scans/generate-pdf route (verified: zero
-    // hits across backend/src), so --pdf can only 404. Say so up front rather
-    // than running a full scan and then failing on the last step. A replacement
-    // (submit the scan, then fetch the report by id) is tracked separately.
-    if (flags.pdf) {
-      this.error(
-        'PDF report generation is temporarily unavailable. Re-run without --pdf and use --format json or the console output instead.',
-        { exit: 1 },
-      )
-    }
 
     intro('Aelira CLI - AI-Powered Accessibility Scanner')
 
@@ -120,6 +111,16 @@ static flags = {
       const {violations} = axeResults
 
       if (violations.length === 0) {
+        if (flags.pdf) {
+          await this.generatePdfReport({
+            aiResults: undefined,
+            apiUrl: flags['api-url'],
+            axeResults,
+            pdfPath: flags.pdf,
+            url: args.target,
+          })
+        }
+
         outro('✅ No accessibility issues found!')
         if (flags.timer) {
           this.log(`\n⏱️  Total execution time: ${Date.now() - startTime}ms`)
@@ -247,12 +248,23 @@ static flags = {
           })
         }
       } catch (aiError: any) {
+        if (aiError instanceof ReportArtifactError) throw aiError
         s.stop('AI analysis failed')
         this.warn(`Could not connect to AI API: ${aiError.message}`)
         this.log('\nℹ️  Falling back to standard axe-core results...\n')
 
         // Fallback to standard scan output
         this.displayStandardResults(axeResults, scanDuration)
+        if (flags.pdf) {
+          await this.generatePdfReport({
+            aiResults: undefined,
+            apiUrl: flags['api-url'],
+            axeResults,
+            pdfPath: flags.pdf,
+            url: args.target,
+          })
+        }
+
         outro('⚠️  Scan complete (without AI enhancement)')
       }
     } catch (error: any) {
@@ -348,9 +360,6 @@ static flags = {
     this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
   }
 
-  // Unreachable while the --pdf guard in run() stands: /education/scans/generate-pdf
-  // is not a registered backend route. Kept as the shell for the tracked
-  // replacement (submit the scan, then fetch the report by id).
   private async generatePdfReport(options: PdfReportOptions): Promise<void> {
     const { aiResults, apiUrl, axeResults, pdfPath, url } = options
     const s = spinner()
@@ -359,24 +368,21 @@ static flags = {
     try {
       const api = new ApiClient({ apiUrl })
 
-      // Send combined results to backend for PDF generation
-      const response = await api.post('/education/scans/generate-pdf', {
-        ai_analysis: aiResults,
-        scan_results: axeResults,
-        scan_type: 'website_ai_enhanced',
-        url,
+      await generateVerifiedPdfReport({
+        api,
+        destination: pdfPath,
+        evidence: buildReportEvidence({
+          aiResults,
+          axeResults,
+          reportKind: 'analyze',
+          target: url,
+        }),
       })
-
-      // Save PDF to file
-      const pdfBuffer = Buffer.from(await response.arrayBuffer())
-      await fs.writeFile(pdfPath, pdfBuffer)
 
       s.stop(`✅ PDF report saved to ${pdfPath}`)
     } catch (error: any) {
       s.stop('PDF generation failed')
-      this.warn(`Could not generate PDF: ${error.message}`)
-      this.log('\nℹ️  Make sure the backend API is running and accessible')
-      this.log(`   Backend URL: ${apiUrl}`)
+      throw error
     }
   }
 }

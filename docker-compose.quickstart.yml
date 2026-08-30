@@ -113,6 +113,8 @@ services:
       XAI_CODE_MODEL: ${XAI_CODE_MODEL:-grok-2}
       XAI_VISION_MODEL: ${XAI_VISION_MODEL:-grok-2-vision}
       REMEDIATION_ARTIFACT_DIR: /app/uploads/remediation-artifacts
+      REPORT_ARTIFACT_DIR: ${REPORT_ARTIFACT_DIR:-/app/uploads/report-artifacts}
+      REPORT_ARTIFACT_MAX_BYTES: ${REPORT_ARTIFACT_MAX_BYTES:-20971520}
       REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS: ${REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS:-30}
     volumes:
       - ./src:/app/src

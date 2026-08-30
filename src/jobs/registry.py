@@ -23,6 +23,7 @@ EXECUTABLE_JOB_TYPES = frozenset(
         "webhook_refresh",
         "canvas_reconcile",
         "canvas_content",
+        "report",
     }
 )
 
@@ -146,9 +147,11 @@ def build_default_registry() -> JobRegistry:
     from .upload_job import handle_upload_job
     from .webhook_refresh_job import handle_webhook_refresh_job
     from .reconciliation_job import handle_reconciliation_job
+    from .report_job import handle_report_job
 
     registry = JobRegistry()
     registry.register("canvas_content", handle_canvas_content_job)
+    registry.register("report", handle_report_job)
     registry.register("sync", adapt_legacy_handler(handle_sync_job))
     registry.register("scan", adapt_legacy_handler(handle_scan_job))
     registry.register("remediate", adapt_legacy_handler(handle_remediation_job))
