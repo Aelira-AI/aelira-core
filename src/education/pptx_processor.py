@@ -159,6 +159,7 @@ class PowerPointProcessingResult(BaseModel):
     ]  # {"contrast_issues": X, "alt_text_issues": Y, "total_issues": Z}
     compliance_score: float  # 0-100
     remediation_suggestions: List[str]
+    cvd_analysis: Optional[List[Dict[str, Any]]] = None
 
     @computed_field
     @property
@@ -456,6 +457,14 @@ class PowerPointProcessor:
             summary, total_shapes, total_images
         )
         remediation_suggestions = self._generate_remediation_suggestions(summary)
+        cvd_analysis = None
+        if self.simulate_color_blindness:
+            cvd_analysis = [
+                {"issues": contrast_issue.color_blindness_issues}
+                for slide in slides_issues
+                for contrast_issue in slide.contrast_issues
+                if contrast_issue.color_blindness_issues
+            ]
 
         return PowerPointProcessingResult(
             file_path=file_path,
@@ -467,6 +476,7 @@ class PowerPointProcessor:
             summary=summary,
             compliance_score=compliance_score,
             remediation_suggestions=remediation_suggestions,
+            cvd_analysis=cvd_analysis,
         )
 
     def _get_slide_title(self, slide) -> Optional[str]:

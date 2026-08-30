@@ -692,6 +692,9 @@ class ScanResult(Base):
     merged_results = Column(
         JSON, nullable=True
     )  # Deduplicated results with detected_by attribution
+    cvd_analysis = Column(
+        JSON, nullable=True
+    )  # Raw CVD analysis evidence; NULL means the scan did not complete CVD analysis
     engines_used = Column(JSON, nullable=True)  # ["axe-core", "pa11y"]
 
     # Engine-specific issue counts

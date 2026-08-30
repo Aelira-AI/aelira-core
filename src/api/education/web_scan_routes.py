@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ...db.database import get_db_dependency
 from ...db.models import APIKey, Scan, ScanType
 from ...education.code_scanner import CodeScanner, CodeScanResult
+from ...education.cvd_metrics import serialize_cvd_analysis
 from ...education.web_scanner import WebScanner
 from ...middleware.quota import require_feature
 from ...scanners.scan_mode import ScanMode
@@ -725,6 +726,7 @@ def process_web_scan_background(
             medium_issues=medium,
             low_issues=low,
             issues={"details": all_issues},  # Legacy field
+            cvd_analysis=serialize_cvd_analysis(result),
             structure={
                 "pages_scanned": result.pages_scanned,
                 "root_url": result.root_url,
@@ -961,6 +963,7 @@ def process_batch_web_scan_background(
             scan_id=batch_scan_id,
             result_data=batch_result,
             compliance_score=overall_compliance_score,
+            cvd_analysis=serialize_cvd_analysis({"pages": all_pages}),
         )
         db.add(scan_result)
 
@@ -1195,6 +1198,7 @@ def process_sitemap_scan_background(
             scan_id=sitemap_scan_id,
             result_data=sitemap_result,
             compliance_score=overall_compliance_score,
+            cvd_analysis=serialize_cvd_analysis({"pages": all_pages}),
         )
         db.add(scan_result)
 
@@ -1347,6 +1351,7 @@ def process_code_background(
             medium_issues=medium,
             low_issues=low,
             issues=[issue.dict() for issue in result.issues[:MAX_SCANFIX_ISSUES]],
+            cvd_analysis=serialize_cvd_analysis(result),
             structure={
                 "project_name": result.project_name,
                 "files_analyzed": result.files_analyzed,

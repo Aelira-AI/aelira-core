@@ -14,6 +14,7 @@ from ...education.pdf_processor import PDFProcessor
 from ...education.pptx_processor import PowerPointProcessor
 from ...education.docx_processor import DocxProcessor
 from ...education.xlsx_processor import XlsxProcessor
+from ...education.cvd_metrics import serialize_cvd_analysis
 from ...education.latex_processor import LaTeXProcessor
 from ...middleware.quota import increment_usage, require_feature
 from ._shared import (
@@ -133,6 +134,7 @@ def process_pdf_background(
             ),
             low_issues=len([i for i in result.issues if i.get("severity") == "low"]),
             issues=result.issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=result.structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,
@@ -453,6 +455,7 @@ def process_pptx_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
@@ -833,6 +836,7 @@ def process_docx_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
@@ -1242,6 +1246,7 @@ def process_xlsx_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
@@ -1760,6 +1765,7 @@ def process_latex_pdf_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,

@@ -30,6 +30,7 @@ from ..db.models import (
     ScanType,
 )
 from .current_compliance import get_department_current_compliance
+from .cvd_metrics import aggregate_cvd_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,8 @@ class ComplianceStats:
     # Color Vision Deficiency (CVD) accessibility metrics
     cvd_issues_total: int = 0  # Total CVD accessibility issues
     cvd_affected_files: int = 0  # Files with CVD issues
-    cvd_accessibility_rate: float = 100.0  # % of files with no CVD issues
+    cvd_files_analyzed: int = 0  # Files with complete CVD analysis evidence
+    cvd_accessibility_rate: Optional[float] = None  # % of analyzed files without issues
 
     def to_report_dict(self) -> dict:
         """Convert flat dataclass to nested dict expected by ComplianceReportGenerator."""
@@ -146,6 +148,12 @@ class ComplianceStats:
                 "active": self.active_faculty,
                 "total": self.total_faculty,
                 "participation_rate": self.faculty_participation_rate,
+            },
+            "cvd": {
+                "files_analyzed": self.cvd_files_analyzed,
+                "affected_files": self.cvd_affected_files,
+                "issues_total": self.cvd_issues_total,
+                "accessibility_rate": self.cvd_accessibility_rate,
             },
             "deadline": self.deadline,
             # Deprecated compatibility alias. It intentionally mirrors the
@@ -304,6 +312,7 @@ class ComplianceDashboard:
             if projection.verified_document_count
             else 0
         )
+        cvd_metrics = aggregate_cvd_metrics(projection.verified_documents)
 
         # Faculty stats
         total_faculty = (
@@ -390,10 +399,10 @@ class ComplianceDashboard:
             active_faculty=active_faculty,
             total_faculty=total_faculty,
             faculty_participation_rate=round(participation_rate, 2),
-            # CVD metrics (TODO: populate from scan results when cvd_analysis is stored)
-            cvd_issues_total=0,
-            cvd_affected_files=0,
-            cvd_accessibility_rate=100.0,
+            cvd_issues_total=cvd_metrics.issues_total,
+            cvd_affected_files=cvd_metrics.affected_files,
+            cvd_files_analyzed=cvd_metrics.files_analyzed,
+            cvd_accessibility_rate=cvd_metrics.accessibility_rate,
         )
 
     @staticmethod
@@ -456,7 +465,8 @@ class ComplianceDashboard:
             # CVD metrics
             cvd_issues_total=0,
             cvd_affected_files=0,
-            cvd_accessibility_rate=100.0,
+            cvd_files_analyzed=0,
+            cvd_accessibility_rate=None,
         )
 
     @staticmethod
