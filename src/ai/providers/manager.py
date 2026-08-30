@@ -9,7 +9,7 @@ import logging
 from typing import Dict, Any, Optional, List
 
 from .base import LLMProvider, LLMResponse
-from .types import ProviderType, ProviderConfig
+from .types import OLLAMA_EVALUATED_MODELS, ProviderType, ProviderConfig
 from .gemini_provider import GeminiProvider
 from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
@@ -269,15 +269,24 @@ class ProviderManager:
                 provider_type=ProviderType.OLLAMA,
                 host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
                 text_model=self._model_from_environment(
-                    "OLLAMA_TEXT_MODEL", "OLLAMA_FALLBACK_TEXT", "gemma3:4b"
+                    "OLLAMA_TEXT_MODEL",
+                    "OLLAMA_FALLBACK_TEXT",
+                    OLLAMA_EVALUATED_MODELS["text"],
                 ),
                 code_model=self._model_from_environment(
-                    "OLLAMA_CODE_MODEL", "OLLAMA_FALLBACK_CODE", "qwen2.5-coder:7b"
+                    "OLLAMA_CODE_MODEL",
+                    "OLLAMA_FALLBACK_CODE",
+                    OLLAMA_EVALUATED_MODELS["code"],
                 ),
                 vision_model=self._model_from_environment(
-                    "OLLAMA_VISION_MODEL", "OLLAMA_FALLBACK_VISION", "qwen2.5vl:3b"
+                    "OLLAMA_VISION_MODEL",
+                    "OLLAMA_FALLBACK_VISION",
+                    OLLAMA_EVALUATED_MODELS["vision"],
                 ),
-                embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
+                embedding_model=os.getenv(
+                    "OLLAMA_EMBEDDING_MODEL",
+                    OLLAMA_EVALUATED_MODELS["embeddings"],
+                ),
             )
 
         # OpenAI config

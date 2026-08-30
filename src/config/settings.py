@@ -13,6 +13,8 @@ from pathlib import Path
 from ipaddress import ip_network
 import re
 
+from src.ai.providers.types import OLLAMA_EVALUATED_MODELS
+
 logger = logging.getLogger(__name__)
 
 # Known-insecure JWT_SECRET values that ship in example/quickstart configs.
@@ -334,12 +336,18 @@ class Settings(BaseSettings):
         "ANTHROPIC_VISION_MODEL", "claude-3-5-sonnet-20241022"
     )
 
-    # Ollama model configuration (Jan 2026 benchmarks)
-    ollama_text_model: str = os.getenv("OLLAMA_TEXT_MODEL", "qwen2.5-coder:1.5b")
-    ollama_code_model: str = os.getenv("OLLAMA_CODE_MODEL", "qwen2.5-coder:3b")
-    ollama_vision_model: str = os.getenv("OLLAMA_VISION_MODEL", "minicpm-v:latest")
+    # Ollama model configuration (fixture-evaluated release matrix)
+    ollama_text_model: str = os.getenv(
+        "OLLAMA_TEXT_MODEL", OLLAMA_EVALUATED_MODELS["text"]
+    )
+    ollama_code_model: str = os.getenv(
+        "OLLAMA_CODE_MODEL", OLLAMA_EVALUATED_MODELS["code"]
+    )
+    ollama_vision_model: str = os.getenv(
+        "OLLAMA_VISION_MODEL", OLLAMA_EVALUATED_MODELS["vision"]
+    )
     ollama_embedding_model: str = os.getenv(
-        "OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"
+        "OLLAMA_EMBEDDING_MODEL", OLLAMA_EVALUATED_MODELS["embeddings"]
     )
 
     # Security

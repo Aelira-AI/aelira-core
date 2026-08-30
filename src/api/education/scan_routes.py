@@ -194,7 +194,7 @@ async def scan_pdf(
 
      OPTIONAL: AI-powered alt text generation for images
     - Set generate_alt_text=true to automatically generate alt text for embedded images
-    - Uses llava:7b vision model for educational context descriptions
+    - Uses the explicitly configured vision lane for educational descriptions
     - Extracts images from PDF using PyMuPDF
     - Significantly increases processing time (~10s per image)
     """
@@ -507,7 +507,7 @@ async def scan_powerpoint(
 
      NEW: Optional AI-powered alt text generation
     - Set generate_alt_text=true to automatically generate alt text for images
-    - Uses llava:7b vision model for educational context descriptions
+    - Uses the explicitly configured vision lane for educational descriptions
     - Significantly increases processing time (~10s per image)
 
      NEW: Optional alt text validation
