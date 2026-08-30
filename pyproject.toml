@@ -38,6 +38,9 @@ Repository = "https://github.com/Aelira-AI/aelira-core"
 Issues = "https://github.com/Aelira-AI/aelira-core/issues"
 Changelog = "https://github.com/Aelira-AI/aelira-core/blob/main/CHANGELOG.md"
 
+[tool.black]
+target-version = ["py312"]
+
 [tool.setuptools]
 packages = { find = { include = ["src*"] } }
 
