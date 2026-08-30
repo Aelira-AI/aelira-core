@@ -19,6 +19,7 @@ from .form_checker import FormFieldChecker
 from .reading_order import ReadingOrderVerifier
 from .pdfua_detector import PDFUADetector
 from .math_checker import MathEquationChecker
+from .multi_equation_region_detector import MultiEquationRegionDetector
 from .image_checker import ImageAccessibilityChecker
 
 __all__ = [
@@ -39,5 +40,6 @@ __all__ = [
     "ReadingOrderVerifier",
     "PDFUADetector",
     "MathEquationChecker",
+    "MultiEquationRegionDetector",
     "ImageAccessibilityChecker",
 ]
