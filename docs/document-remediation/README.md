@@ -6,7 +6,7 @@ Aelira Core scans and can remediate PDF, DOCX, PPTX, XLSX, and LaTeX content. Th
 
 > **Release boundary (24 August 2026):** The PDF hardening described below is present on `main`, after the immutable v0.9.5 release. It is not part of v0.9.5. It can become part of a future release only after that release's gates pass; merging it created no release or deployment.
 
-Choose a format guide: [PDF](pdf.md), [Office: DOCX, PPTX, XLSX](office.md), or [LaTeX](latex.md). Provider-neutral semantic guides cover [commutative diagrams](commutative-diagrams.md), [chemical formulas](chemical-formulas.md), and [molecular graphs](molecular-graphs.md); none adds image recognition or document mutation. The [handwritten-math suitability corpus](handwritten-math.md) guide documents the frozen corpus, purpose-bound HMER path, exact-agreement verifier, saved-file association, and mandatory human approval boundary.
+Choose a format guide: [PDF](pdf.md), [Office: DOCX, PPTX, XLSX](office.md), or [LaTeX](latex.md). Provider-neutral semantic guides cover [commutative diagrams](commutative-diagrams.md), [chemical formulas](chemical-formulas.md), and [molecular graphs](molecular-graphs.md). The molecular-graph guide also documents the purpose-bound chemical-structure PDF specialist, its exact abbreviation vocabulary, saved-file verification, and mandatory human approval boundary. The [handwritten-math suitability corpus](handwritten-math.md) guide documents the corresponding frozen HMER path.
 
 ## Format support and maturity
 

@@ -1745,11 +1745,17 @@ class RemediationArtifactService:
         blockers = artifact_review_blockers(fixes)
         if blockers:
             if any(
-                blocker.startswith(("image_equation_", "commutative_diagram_"))
+                blocker.startswith(
+                    (
+                        "image_equation_",
+                        "chemical_structure_",
+                        "commutative_diagram_",
+                    )
+                )
                 for blocker in blockers
             ):
                 raise ArtifactAuthorizationError(
-                    "image equation human review is incomplete or invalid"
+                    "visual semantic human review is incomplete or invalid"
                 )
             if "fixes_pending_review" in blockers:
                 raise ArtifactAuthorizationError("scan fixes are not all terminal")
