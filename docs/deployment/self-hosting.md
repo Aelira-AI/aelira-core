@@ -225,8 +225,13 @@ notification channel.
 
 ## Required environment
 
-These come from `src/config/settings.py` (the load-bearing ones — full list
-is `.env.example`):
+These come from [`src/config/settings.py`](../../src/config/settings.py) (the
+load-bearing ones — the full list is [`.env.example`](../../.env.example)):
+
+After adding, removing, or renaming runtime configuration, run
+`python scripts/verify_environment_example.py`. CI runs the same deterministic
+parity contract and requires every runtime name to be documented there or
+explicitly classified as internal, derived, legacy, or Compose-only.
 
 | Variable | Purpose | Notes |
 |---|---|---|
