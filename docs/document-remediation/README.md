@@ -6,7 +6,7 @@ Aelira Core scans and can remediate PDF, DOCX, PPTX, XLSX, and LaTeX content. Th
 
 > **Release boundary (24 August 2026):** The PDF hardening described below is present on `main`, after the immutable v0.9.5 release. It is not part of v0.9.5. It can become part of a future release only after that release's gates pass; merging it created no release or deployment.
 
-Choose a format guide: [PDF](pdf.md), [Office: DOCX, PPTX, XLSX](office.md), or [LaTeX](latex.md).
+Choose a format guide: [PDF](pdf.md), [Office: DOCX, PPTX, XLSX](office.md), or [LaTeX](latex.md). The provider-neutral [commutative-diagram contract](commutative-diagrams.md) documents a bounded semantic graph boundary; it does not add image recognition or document mutation.
 
 ## Format support and maturity
 
