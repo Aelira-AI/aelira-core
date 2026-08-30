@@ -28,6 +28,14 @@ from src.education.commutative_diagram import (
 )
 from src.education.canonical_json import canonical_json_bytes, canonical_sha256
 from src.education.equation_region_contract import PageRasterRegionLocator
+from src.education.handwritten_math_suitability import (
+    POLICY_SHA256 as HANDWRITTEN_SUITABILITY_POLICY_SHA256,
+    HandwrittenMathSuitabilityEvidence,
+)
+from src.education.handwritten_equation_policy import (
+    HANDWRITTEN_VERIFIER_POLICY_SHA256,
+    HANDWRITTEN_VERIFIER_POLICY_VERSION,
+)
 
 _MAX_CANONICAL_STRING = 131_072
 _MAX_DOCUMENT_INDEX = 25_000_000
@@ -222,6 +230,69 @@ class PrintedEquationRoundtripEvidenceV1(BaseModel):
     @classmethod
     def _printable_versions(cls, value: str) -> str:
         return _validate_printable(value, label="evidence version")
+
+
+class HandwrittenEquationConsensusEvidenceV1(BaseModel):
+    """Exact two-reading semantic agreement evidence for handwritten math."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["handwritten_equation_consensus_v1"]
+    passed: Literal[True]
+    source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    suitability_evidence: HandwrittenMathSuitabilityEvidence
+    suitability_evidence_sha256: str = Field(pattern=_SHA256_PATTERN)
+    suitability_policy_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_policy_version: Literal["handwritten-equation-consensus-v1"]
+    verifier_policy_sha256: str = Field(pattern=_SHA256_PATTERN)
+    agreement_count: Literal[2]
+    required_agreement_count: Literal[2]
+    primary_mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    primary_response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    primary_latex_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_latex_sha256: str = Field(pattern=_SHA256_PATTERN)
+    primary_provider: str = Field(min_length=1, max_length=200)
+    primary_model: str = Field(min_length=1, max_length=200)
+    verifier_provider: str = Field(min_length=1, max_length=200)
+    verifier_model: str = Field(min_length=1, max_length=200)
+
+    @field_validator(
+        "primary_provider", "primary_model", "verifier_provider", "verifier_model"
+    )
+    @classmethod
+    def _printable_identities(cls, value: str) -> str:
+        return _validate_printable(value, label="provider identity")
+
+    @model_validator(mode="after")
+    def _validate_consensus(self) -> "HandwrittenEquationConsensusEvidenceV1":
+        if (
+            self.suitability_policy_sha256 != HANDWRITTEN_SUITABILITY_POLICY_SHA256
+            or self.suitability_evidence.policy_sha256
+            != HANDWRITTEN_SUITABILITY_POLICY_SHA256
+            or self.suitability_evidence.disposition != "eligible"
+        ):
+            raise ValueError("handwritten suitability evidence must be eligible")
+        if (
+            self.verifier_policy_version != HANDWRITTEN_VERIFIER_POLICY_VERSION
+            or self.verifier_policy_sha256 != HANDWRITTEN_VERIFIER_POLICY_SHA256
+        ):
+            raise ValueError("handwritten verifier policy identity is invalid")
+        if self.source_sha256 != self.suitability_evidence.source_sha256:
+            raise ValueError("consensus source does not match suitability evidence")
+        if (
+            self.suitability_evidence_sha256
+            != self.suitability_evidence.evidence_sha256
+        ):
+            raise ValueError("consensus does not match suitability evidence identity")
+        if (
+            self.mathml_sha256 != self.primary_mathml_sha256
+            or self.mathml_sha256 != self.verifier_mathml_sha256
+        ):
+            raise ValueError("independent handwritten readings do not agree")
+        return self
 
 
 class StandaloneFormulaSavedEvidenceV1(BaseModel):
@@ -548,6 +619,7 @@ def _validate_saved_render_signatures(value: Any) -> Any:
 
 VerificationEvidence: TypeAlias = Annotated[
     PrintedEquationRoundtripEvidenceV1
+    | HandwrittenEquationConsensusEvidenceV1
     | StandaloneFormulaSavedEvidenceV1
     | ScannedRegionFormulaSavedEvidenceV1
     | CommutativeDiagramRecognitionEvidenceV1
@@ -782,8 +854,112 @@ class CommutativeDiagramPdfContract(BaseModel):
         return self
 
 
+class HandwrittenEquationContract(BaseModel):
+    """Complete HMER specialist output and reverse-verification contract."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_kind: Literal["handwritten_equation"]
+    locator: VisualLocator
+    semantic_output: SemanticOutput
+    normalized_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verification_evidence: tuple[VerificationEvidence, ...] = Field(
+        min_length=2, max_length=2
+    )
+    specialist_sha256: str = Field(pattern=_SHA256_PATTERN)
+    contract_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_variant_pairing_and_digests(
+        self,
+    ) -> "HandwrittenEquationContract":
+        consensus = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, HandwrittenEquationConsensusEvidenceV1)
+        ]
+        standalone = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, StandaloneFormulaSavedEvidenceV1)
+        ]
+        scanned = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, ScannedRegionFormulaSavedEvidenceV1)
+        ]
+        if len(consensus) != 1 or len(standalone) + len(scanned) != 1:
+            raise ValueError(
+                "handwritten equations require exact consensus and saved evidence"
+            )
+        consensus_evidence = consensus[0]
+        saved = standalone[0] if standalone else scanned[0]
+        if self.normalized_source_sha256 != consensus_evidence.source_sha256:
+            raise ValueError("normalized source digest does not match HMER evidence")
+        if any(
+            item.mathml_sha256 != self.semantic_output.mathml_sha256
+            for item in self.verification_evidence
+        ):
+            raise ValueError("evidence does not match the semantic output digest")
+        expected_alt_text_sha256 = hashlib.sha256(
+            self.semantic_output.alt_text.encode("utf-8")
+        ).hexdigest()
+        if saved.alt_text_sha256 != expected_alt_text_sha256:
+            raise ValueError("saved evidence does not match the semantic alt text")
+
+        if isinstance(self.locator, EmbeddedImageOccurrenceLocator):
+            if (
+                not standalone
+                or saved.page_number != self.locator.page_number
+                or saved.image_xref != self.locator.image_xref
+                or saved.occurrence_ordinal != self.locator.occurrence_ordinal
+                or saved.image_stream_sha256 != self.locator.image_stream_sha256
+            ):
+                raise ValueError(
+                    "embedded image locators require matching standalone saved evidence"
+                )
+        else:
+            px0, py0, px1, py1 = self.locator.pixel_bbox
+            scale_x, _, _, scale_y, offset_x, offset_y = self.locator.transform
+            expected_formula_bbox = (
+                offset_x + scale_x * px0 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py1 / self.locator.source_height),
+                offset_x + scale_x * px1 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py0 / self.locator.source_height),
+            )
+            if (
+                not scanned
+                or saved.page_number != self.locator.page_number
+                or saved.image_stream_sha256 != self.locator.source_sha256
+                or any(
+                    abs(actual - expected) > 1e-6
+                    for actual, expected in zip(
+                        saved.formula_bbox, expected_formula_bbox
+                    )
+                )
+            ):
+                raise ValueError(
+                    "page raster regions require matching scanned-region saved evidence"
+                )
+
+        specialist_material = {
+            "contract_kind": self.contract_kind,
+            "locator": self.locator,
+            "semantic_output": self.semantic_output,
+            "normalized_source_sha256": self.normalized_source_sha256,
+        }
+        if self.specialist_sha256 != canonical_sha256(specialist_material):
+            raise ValueError("specialist_sha256 does not match the specialist output")
+        contract_material = self.model_dump(mode="json", exclude={"contract_sha256"})
+        if self.contract_sha256 != canonical_sha256(contract_material):
+            raise ValueError("contract_sha256 does not match the complete contract")
+        return self
+
+
 VisualSemanticContract: TypeAlias = Annotated[
-    PrintedEquationContract | CommutativeDiagramPdfContract,
+    PrintedEquationContract
+    | CommutativeDiagramPdfContract
+    | HandwrittenEquationContract,
     Field(discriminator="contract_kind"),
 ]
 VisualSemanticContractAdapter = TypeAdapter(VisualSemanticContract)
@@ -795,6 +971,8 @@ __all__ = [
     "CommutativeDiagramSemanticV1",
     "EmbeddedImageOccurrenceLocator",
     "FrozenPageRasterRegionLocator",
+    "HandwrittenEquationConsensusEvidenceV1",
+    "HandwrittenEquationContract",
     "MathMLExpressionV1",
     "PrintedEquationContract",
     "PrintedEquationRoundtripEvidenceV1",

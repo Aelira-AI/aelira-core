@@ -220,6 +220,7 @@ class TestFixSummary:
         assert contract_union["discriminator"]["propertyName"] == "contract_kind"
         assert contract_union["discriminator"]["mapping"] == {
             "commutative_diagram": "#/$defs/CommutativeDiagramPdfContract",
+            "handwritten_equation": "#/$defs/HandwrittenEquationContract",
             "printed_equation": "#/$defs/PrintedEquationContract",
         }
 
@@ -239,6 +240,7 @@ class TestFixSummary:
         assert evidence_items["discriminator"]["propertyName"] == "evidence_kind"
         assert set(evidence_items["discriminator"]["mapping"]) == {
             "commutative_diagram_recognition_v1",
+            "handwritten_equation_consensus_v1",
             "printed_equation_roundtrip_v1",
             "scanned_region_diagram_saved_v1",
             "scanned_region_formula_saved_v1",

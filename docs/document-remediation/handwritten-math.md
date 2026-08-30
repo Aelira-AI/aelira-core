@@ -1,7 +1,7 @@
 # Handwritten math suitability corpus
 
 Issue #223 freezes the input boundary used by the handwritten mathematical
-expression recognition work in issue #233. The corpus is intentionally small:
+expression recognition path added in issue #233. The corpus is intentionally small:
 it establishes deterministic policy and regression evidence, not broad claims
 about handwriting recognition quality.
 
@@ -26,6 +26,41 @@ human review in this corpus. Diagram-only content, dense unsupported marks,
 ordinary non-math handwriting, and visually similar non-math content are
 unsupported. Every HMER result in issue #233 will also always require human review
 before artifact availability, including crops that were eligible here.
+
+## Recognition and verification
+
+The active path keeps six trust boundaries separate:
+
+1. **Printed-equation decline** — the existing printed recognizer gets priority.
+   HMER is considered only when that specialist explicitly returns
+   `not_equation`; a printed success never invokes HMER.
+2. **Exact suitability admission** — the normalized crop is classified again and
+   `ensure_hmer_eligible` verifies the complete source-bound #223 evidence before
+   either HMER call.
+3. **Primary HMER reading** — an `alt_text` purpose-bound client returns one exact
+   JSON classification and, only for a complete handwritten expression, bounded
+   LaTeX.
+4. **Independent verifier reading** — a fresh call sees only the pixels and a
+   verifier prompt. It is not shown the primary LaTeX or MathML. The two readings
+   pass only under exact canonical MathML agreement.
+5. **Saved-file association** — the agreed semantics are attached to the exact
+   embedded image occurrence or scanned crop, then checked again in the reopened
+   saved PDF before the candidate replaces the output.
+6. **Human approval** — every accepted HMER result is persisted as pending and the
+   artifact remains unavailable until a person approves that exact current
+   evidence contract.
+
+The primary and verifier calls can use the same configured provider and model.
+“Independent” here means context-isolated readings with separate response
+identities, not vendor diversity. Exact agreement is a narrow rejection policy,
+not a proof that both readings are correct.
+
+The immutable handwriting verifier policy requires two successful readings,
+exact canonical MathML equality, and the exact frozen #223 suitability-policy
+digest. The corpus calibration admits all three eligible project-authored variants
+and makes zero HMER calls for the other thirteen fixtures. In particular, low
+contrast, strike-through, annotations, multiple lines, unsupported notation, and
+non-math handwriting remain human work rather than threshold exceptions.
 
 ## Provenance and limits
 
@@ -79,3 +114,9 @@ classified as eligible. Prediction-backed reports retain the bounded provider,
 model, and canonical prediction-set digest, but no raw provider prose. The frozen
 v1 gates are 1,000,000 ppm expected-disposition accuracy and exactly zero eligible
 false positives.
+
+Run the HMER admission and exact-agreement regression probe with:
+
+```bash
+pytest -q tests/test_handwritten_math_recognition.py tests/test_handwritten_math_fixer.py
+```

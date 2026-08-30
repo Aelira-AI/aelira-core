@@ -26,12 +26,19 @@ from ..education.equation_region_contract import (
     canonical_region_locator,
     valid_region_locator,
 )
-from ..education.remediation.base import FixedIssue, VerificationEvidence
+from ..education.remediation.base import (
+    FixedIssue,
+    HandwrittenVerificationEvidence,
+    VerificationEvidence,
+)
 from ..education.visual_semantic_contract import (
     CommutativeDiagramPdfContract,
     CommutativeDiagramRecognitionEvidenceV1,
     EmbeddedImageOccurrenceLocator,
     FrozenPageRasterRegionLocator,
+    HandwrittenEquationConsensusEvidenceV1,
+    HandwrittenEquationContract,
+    PrintedEquationContract,
     PrintedEquationRoundtripEvidenceV1,
     VisualSemanticContract,
     VisualSemanticContractAdapter,
@@ -223,22 +230,37 @@ def lock_scan_review_graph(
 
 def _evidence_dict(value: Any) -> dict[str, Any]:
     """Return only the typed durable evidence allowlist."""
+    evidence = _validated_evidence(value)
+    return evidence.model_dump(mode="json")
+
+
+def _validated_evidence(
+    value: Any,
+) -> (
+    VerificationEvidence
+    | HandwrittenVerificationEvidence
+    | CommutativeDiagramRecognitionEvidenceV1
+):
+    """Validate one active compatibility projection without coercing variants."""
     raw = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
     if isinstance(raw, dict) and raw.get("evidence_kind") == (
         "commutative_diagram_recognition_v1"
     ):
-        evidence = CommutativeDiagramRecognitionEvidenceV1.model_validate(raw)
-    else:
-        evidence = VerificationEvidence.model_validate(raw)
-    return evidence.model_dump(mode="json")
+        return CommutativeDiagramRecognitionEvidenceV1.model_validate(raw)
+    try:
+        return VerificationEvidence.model_validate(raw)
+    except (TypeError, ValueError, ValidationError):
+        return HandwrittenVerificationEvidence.model_validate(raw)
 
 
 def valid_image_equation_evidence(value: Any) -> bool:
     """Validate shape, pass state, and calibrated metric thresholds."""
     try:
-        evidence = VerificationEvidence.model_validate(value)
+        evidence = _validated_evidence(value)
     except (TypeError, ValueError, ValidationError):
         return False
+    if isinstance(evidence, HandwrittenVerificationEvidence):
+        return evidence.passed is True
     return bool(
         evidence.passed
         and evidence.threshold_version == IMAGE_EQUATION_THRESHOLD_VERSION
@@ -309,12 +331,8 @@ def _valid_image_contract_binding(
         or getattr(fix, "page_number", None) != contract.locator.page_number
     ):
         return False
-    try:
-        legacy_evidence = _evidence_dict(getattr(fix, "verification_evidence", None))
-    except (TypeError, ValueError, ValidationError):
-        return False
     if is_diagram:
-        recognition = next(
+        contract_evidence = next(
             (
                 evidence
                 for evidence in contract.verification_evidence
@@ -322,12 +340,10 @@ def _valid_image_contract_binding(
             ),
             None,
         )
-        if recognition is None or legacy_evidence != recognition.model_dump(
-            mode="json"
-        ):
-            return False
-    else:
-        roundtrip = next(
+        expected_type = CommutativeDiagramRecognitionEvidenceV1
+        exclude_evidence_kind = False
+    elif isinstance(contract, PrintedEquationContract):
+        contract_evidence = next(
             (
                 evidence
                 for evidence in contract.verification_evidence
@@ -335,10 +351,37 @@ def _valid_image_contract_binding(
             ),
             None,
         )
-        if roundtrip is None or legacy_evidence != roundtrip.model_dump(
-            mode="json", exclude={"evidence_kind"}
-        ):
-            return False
+        expected_type = VerificationEvidence
+        exclude_evidence_kind = True
+    elif isinstance(contract, HandwrittenEquationContract):
+        contract_evidence = next(
+            (
+                evidence
+                for evidence in contract.verification_evidence
+                if isinstance(evidence, HandwrittenEquationConsensusEvidenceV1)
+            ),
+            None,
+        )
+        expected_type = HandwrittenVerificationEvidence
+        exclude_evidence_kind = True
+    else:
+        return False
+    try:
+        raw_evidence = getattr(fix, "verification_evidence", None)
+        typed_evidence = _validated_evidence(raw_evidence)
+        legacy_evidence = typed_evidence.model_dump(mode="json")
+    except (TypeError, ValueError, ValidationError):
+        return False
+    if (
+        contract_evidence is None
+        or not isinstance(typed_evidence, expected_type)
+        or legacy_evidence
+        != contract_evidence.model_dump(
+            mode="json",
+            exclude={"evidence_kind"} if exclude_evidence_kind else None,
+        )
+    ):
+        return False
     raw_locator = getattr(fix, "source_locator", None)
     if isinstance(contract.locator, FrozenPageRasterRegionLocator):
         if raw_locator is None:

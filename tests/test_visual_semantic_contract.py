@@ -256,6 +256,7 @@ def test_semantic_and_contract_adapters_expose_exact_discriminators():
     assert VisualSemanticContractAdapter.json_schema()["discriminator"] == {
         "mapping": {
             "commutative_diagram": "#/$defs/CommutativeDiagramPdfContract",
+            "handwritten_equation": "#/$defs/HandwrittenEquationContract",
             "printed_equation": "#/$defs/PrintedEquationContract",
         },
         "propertyName": "contract_kind",
