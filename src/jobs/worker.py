@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.config.settings import get_settings
@@ -20,8 +21,30 @@ from src.services.remediation_artifact_service import (
 
 from .job_processor import JobProcessor
 from .registry import build_default_registry
+from .weekly_summary_job import WeeklySummaryScheduler
 
 logger = logging.getLogger(__name__)
+
+
+def run_weekly_summary_scheduler_once(
+    scheduler: WeeklySummaryScheduler, *, now: datetime | None = None
+) -> bool:
+    """Run one scheduler transaction and persist a bounded failure state."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        with SessionLocal() as db:
+            scheduler.run_once(db, now=now)
+            db.commit()
+        return True
+    except Exception:
+        logger.exception("Weekly summary scheduler iteration failed")
+        try:
+            with SessionLocal() as db:
+                scheduler.record_failure(db, now=now)
+                db.commit()
+        except Exception:
+            logger.exception("Weekly summary scheduler health update failed")
+        return False
 
 
 async def run_maintenance_loop() -> None:
@@ -54,6 +77,7 @@ async def run_maintenance_loop() -> None:
             batch_size=settings.remediation_artifact_orphan_batch_size
         ),
     )
+    weekly_summary_scheduler = WeeklySummaryScheduler()
     while True:
         try:
             with SessionLocal() as db:
@@ -64,6 +88,11 @@ async def run_maintenance_loop() -> None:
             raise
         except Exception:
             logger.exception("Durable maintenance iteration failed")
+        await asyncio.to_thread(
+            run_weekly_summary_scheduler_once,
+            weekly_summary_scheduler,
+            now=datetime.now(timezone.utc),
+        )
         await asyncio.sleep(settings.durable_maintenance_interval_seconds)
 
 

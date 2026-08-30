@@ -120,6 +120,14 @@ def worker_status(
             "latest_progress_age_seconds": snapshot.latest_progress_age_seconds,
         },
         "maintenance": {"artifact_cleanup_due": cleanup_due},
+        "weekly_summary_scheduler": {
+            "state": snapshot.weekly_summary_scheduler_state,
+            "last_success_at": snapshot.weekly_summary_last_success_at,
+            "last_success_age_seconds": (
+                snapshot.weekly_summary_last_success_age_seconds
+            ),
+            "last_error_code": snapshot.weekly_summary_last_error_code,
+        },
         "reconciliation": {
             "required": reconciliation_required,
             "manual_required": reconciliation_manual,
