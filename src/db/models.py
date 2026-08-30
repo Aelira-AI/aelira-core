@@ -1700,9 +1700,10 @@ class CloudJobQueue(Base):
             name="ck_cloud_job_queue_external_effect_pair",
         ),
         CheckConstraint(
-            "job_type = 'upload' OR (external_effect_state IS NULL AND "
+            "job_type IN ('upload', 'weekly_summary') OR "
+            "(external_effect_state IS NULL AND "
             "external_effect_token IS NULL AND external_effect_started_at IS NULL)",
-            name="ck_cloud_job_queue_external_effect_upload_only",
+            name="ck_cloud_job_queue_external_effect_owned",
         ),
         Index(
             "ix_cloud_job_queue_claim",
@@ -1722,6 +1723,17 @@ class CloudJobQueue(Base):
             postgresql_where=text(
                 "dedupe_key IS NOT NULL AND status IN ('pending', 'processing')"
             ),
+        ),
+        Index(
+            "uq_cloud_job_queue_weekly_summary_window",
+            "department_id",
+            "job_type",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text(
+                "job_type = 'weekly_summary' AND dedupe_key IS NOT NULL"
+            ),
+            sqlite_where=text("job_type = 'weekly_summary' AND dedupe_key IS NOT NULL"),
         ),
     )
 

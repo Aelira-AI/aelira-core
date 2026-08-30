@@ -44,11 +44,17 @@ class WorkerHealthCollector:
             "aelira_worker_latest_progress_age_seconds",
             "aelira_worker_oldest_running_job_age_seconds",
             "aelira_worker_oldest_pending_job_age_seconds",
+            "aelira_weekly_summary_scheduler_last_success_age_seconds",
         ):
             yield GaugeMetricFamily(name, name.replace("_", " "))
         yield GaugeMetricFamily(
             "aelira_worker_health_state",
             "Current bounded durable-worker health state",
+            labels=["state"],
+        )
+        yield GaugeMetricFamily(
+            "aelira_weekly_summary_scheduler_state",
+            "Current privacy-bounded weekly summary scheduler state",
             labels=["state"],
         )
 
@@ -148,6 +154,20 @@ class WorkerHealthCollector:
         )
         state.add_metric([snapshot.health_state], 1.0)
         yield state
+        scheduler_age = snapshot.weekly_summary_last_success_age_seconds
+        if scheduler_age is not None:
+            yield self._gauge(
+                "aelira_weekly_summary_scheduler_last_success_age_seconds",
+                "Age of the latest successful weekly summary scheduler iteration",
+                scheduler_age,
+            )
+        scheduler_state = GaugeMetricFamily(
+            "aelira_weekly_summary_scheduler_state",
+            "Current privacy-bounded weekly summary scheduler state",
+            labels=["state"],
+        )
+        scheduler_state.add_metric([snapshot.weekly_summary_scheduler_state], 1.0)
+        yield scheduler_state
 
 
 _registered = False

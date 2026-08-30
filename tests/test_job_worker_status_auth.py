@@ -69,6 +69,12 @@ def test_worker_status_allows_only_super_admin():
         "latest_progress_at": None,
         "latest_progress_age_seconds": None,
     }
+    assert body["weekly_summary_scheduler"] == {
+        "state": "not_started",
+        "last_success_at": None,
+        "last_success_age_seconds": None,
+        "last_error_code": None,
+    }
 
     def keys(value):
         if isinstance(value, dict):

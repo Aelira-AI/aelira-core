@@ -171,6 +171,8 @@ def test_prometheus_collector_exports_only_bounded_operational_series() -> None:
                 runnable_pending=2,
                 expired_processing=1,
                 stalled_processing=1,
+                weekly_summary_scheduler_state="stale",
+                weekly_summary_last_success_age_seconds=901.0,
             )
         )
     )
@@ -184,6 +186,8 @@ def test_prometheus_collector_exports_only_bounded_operational_series() -> None:
         "aelira_worker_expired_leases 1.0",
         "aelira_worker_stalled_jobs 1.0",
         'aelira_worker_health_state{state="stuck_processing"} 1.0',
+        'aelira_weekly_summary_scheduler_state{state="stale"} 1.0',
+        "aelira_weekly_summary_scheduler_last_success_age_seconds 901.0",
     ):
         assert series in exposition
     for forbidden in (

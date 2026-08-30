@@ -10,7 +10,7 @@ from typing import Mapping, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from src.db.models import CloudJobQueue, WorkerHeartbeat
+from src.db.models import CloudJobQueue, MaintenanceCursor, WorkerHeartbeat
 from src.jobs.job_processor import build_runnable_pending_query
 from src.jobs.registry import EXECUTABLE_JOB_TYPES
 
@@ -91,6 +91,10 @@ class WorkerHealthSnapshot:
     jobs_claimed: int
     jobs_completed: int
     jobs_failed: int
+    weekly_summary_scheduler_state: str = "not_started"
+    weekly_summary_last_success_at: datetime | None = None
+    weekly_summary_last_success_age_seconds: float | None = None
+    weekly_summary_last_error_code: str | None = None
 
     @property
     def status(self) -> str:
@@ -113,6 +117,9 @@ def build_worker_health_snapshot(
     runnable_pending: int,
     processing_jobs: Sequence[object],
     oldest_pending: datetime | None,
+    weekly_summary_scheduler_state: str = "not_started",
+    weekly_summary_last_success: datetime | None = None,
+    weekly_summary_last_error_code: str | None = None,
 ) -> WorkerHealthSnapshot:
     """Build alert state from already-bounded database facts."""
     now = _aware(now) or now
@@ -173,7 +180,41 @@ def build_worker_health_snapshot(
         jobs_claimed=int(jobs_claimed),
         jobs_completed=int(jobs_completed),
         jobs_failed=int(jobs_failed),
+        weekly_summary_scheduler_state=weekly_summary_scheduler_state,
+        weekly_summary_last_success_at=_aware(weekly_summary_last_success),
+        weekly_summary_last_success_age_seconds=_age_seconds(
+            now, weekly_summary_last_success
+        ),
+        weekly_summary_last_error_code=weekly_summary_last_error_code,
     )
+
+
+def _weekly_summary_scheduler_health(
+    cursor: MaintenanceCursor | None, *, now: datetime
+) -> tuple[str, datetime | None, str | None]:
+    payload = cursor.cursor_json if cursor is not None else None
+    if not isinstance(payload, dict):
+        return "not_started", None, None
+    last_success = _progress_timestamp(payload.get("last_success_at"))
+    error_code = payload.get("last_error_code")
+    safe_error = error_code if error_code == "weekly_summary_scheduler_failed" else None
+    if safe_error is not None:
+        return "failed", last_success, safe_error
+    age = _age_seconds(now, last_success)
+    if age is None:
+        return "not_started", None, None
+    if age > 900:
+        return "stale", last_success, None
+    return "healthy", last_success, None
+
+
+def _progress_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return _aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError:
+        return None
 
 
 def collect_worker_health_snapshot(
@@ -235,6 +276,12 @@ def collect_worker_health_snapshot(
     processing_jobs = (
         db.query(CloudJobQueue).filter(CloudJobQueue.status == "processing").all()
     )
+    scheduler_state, scheduler_success, scheduler_error = (
+        _weekly_summary_scheduler_health(
+            db.get(MaintenanceCursor, "weekly_summary_schedule"),
+            now=now,
+        )
+    )
     try:
         execution_seconds = float(
             os.environ.get("JOB_WORKER_MAX_EXECUTION_SECONDS", "3600")
@@ -256,4 +303,7 @@ def collect_worker_health_snapshot(
         runnable_pending=runnable_pending,
         processing_jobs=processing_jobs,
         oldest_pending=oldest_pending,
+        weekly_summary_scheduler_state=scheduler_state,
+        weekly_summary_last_success=scheduler_success,
+        weekly_summary_last_error_code=scheduler_error,
     )
