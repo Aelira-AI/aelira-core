@@ -24,10 +24,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, List, Optional
 
 from src.education.equation_region_contract import PageRasterRegionLocator
+from src.education.handwritten_math_suitability import (
+    classify_handwritten_math_suitability,
+)
 from src.education.math_contracts import (
     IMAGE_EQUATION_ISSUE_TYPE,
     MATH_ISSUE_TYPES,
     SCANNED_EQUATION_REGION_ISSUE_TYPE,
+)
+from src.education.remediation.handwritten_equation_verifier import (
+    HandwrittenEquationVerificationEvidence,
 )
 
 if TYPE_CHECKING:
@@ -87,7 +93,9 @@ class PendingEquationAssociation:
     mathml_string: str
     provider_used: Optional[str]
     model_used: Optional[str]
-    verification_evidence: MathVerificationEvidence
+    verification_evidence: (
+        MathVerificationEvidence | HandwrittenEquationVerificationEvidence
+    )
 
 
 @dataclass(frozen=True)
@@ -101,7 +109,9 @@ class PendingScannedRegionAssociation:
     mathml_string: str
     provider_used: Optional[str]
     model_used: Optional[str]
-    verification_evidence: MathVerificationEvidence
+    verification_evidence: (
+        MathVerificationEvidence | HandwrittenEquationVerificationEvidence
+    )
 
     @property
     def page_number(self) -> int:
@@ -264,7 +274,9 @@ class MathFixResult:
     needs_review: bool = False
     provider_used: Optional[str] = None
     model_used: Optional[str] = None
-    verification_evidence: Optional[MathVerificationEvidence] = None
+    verification_evidence: Optional[
+        MathVerificationEvidence | HandwrittenEquationVerificationEvidence
+    ] = None
     pending_association: Optional[
         PendingEquationAssociation | PendingScannedRegionAssociation
     ] = None
@@ -311,6 +323,8 @@ class MathFixer:
         region_source: Optional[Any] = None,
         equation_recognizer: Optional[Any] = None,
         equation_verifier: Optional[Any] = None,
+        handwritten_recognizer: Optional[Any] = None,
+        handwritten_verifier: Optional[Any] = None,
     ) -> None:
         self.pdf = pdf
         self.fitz_doc = fitz_doc
@@ -332,10 +346,20 @@ class MathFixer:
             from .equation_verifier import EquationVerifier
 
             equation_verifier = EquationVerifier()
+        if handwritten_recognizer is None and alt_text_client is not None:
+            from .handwritten_equation_recognizer import HandwrittenEquationRecognizer
+
+            handwritten_recognizer = HandwrittenEquationRecognizer(alt_text_client)
+        if handwritten_verifier is None and alt_text_client is not None:
+            from .handwritten_equation_verifier import HandwrittenEquationVerifier
+
+            handwritten_verifier = HandwrittenEquationVerifier(alt_text_client)
         self.image_source = image_source
         self.region_source = region_source
         self.equation_recognizer = equation_recognizer
         self.equation_verifier = equation_verifier
+        self.handwritten_recognizer = handwritten_recognizer
+        self.handwritten_verifier = handwritten_verifier
 
         if struct_tree is not None:
             self.struct_tree = struct_tree
@@ -534,7 +558,7 @@ class MathFixer:
     def _prepare_validated_equation(
         self, validated: Any, *, page_number: int, scanned_region: bool
     ) -> MathFixResult:
-        """Recognize and verify one already source-bound equation raster."""
+        """Route one source-bound raster without disturbing printed success."""
         if self.equation_recognizer is None:
             return MathFixResult(
                 success=False,
@@ -555,12 +579,34 @@ class MathFixer:
                 error="equation_recognition_rejected",
                 page_number=page_number,
             )
-        if recognition.classification != "printed_equation" or not recognition.latex:
+        if recognition.classification == "printed_equation" and recognition.latex:
+            return self._prepare_printed_equation(
+                validated,
+                recognition,
+                page_number=page_number,
+                scanned_region=scanned_region,
+            )
+        if recognition.classification != "not_equation":
             return MathFixResult(
                 success=False,
                 error="not_printed_equation",
                 page_number=page_number,
             )
+        return self._prepare_handwritten_equation(
+            validated,
+            page_number=page_number,
+            scanned_region=scanned_region,
+        )
+
+    def _prepare_printed_equation(
+        self,
+        validated: Any,
+        recognition: Any,
+        *,
+        page_number: int,
+        scanned_region: bool,
+    ) -> MathFixResult:
+        """Preserve the existing printed-equation verification path."""
         try:
             verification = self.equation_verifier.verify(validated, recognition.latex)
         except Exception:
@@ -667,6 +713,191 @@ class MathFixer:
             model_used=getattr(recognition, "model", None),
             verification_evidence=evidence,
             pending_association=pending,
+        )
+
+    def _prepare_handwritten_equation(
+        self, validated: Any, *, page_number: int, scanned_region: bool
+    ) -> MathFixResult:
+        """Recognize eligible handwriting and require exact semantic agreement."""
+        if self.handwritten_recognizer is None or self.handwritten_verifier is None:
+            return MathFixResult(
+                success=False,
+                error="hmer_unavailable",
+                page_number=page_number,
+            )
+        try:
+            suitability = classify_handwritten_math_suitability(validated.jpeg_bytes)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="handwritten_math_suitability_rejected",
+                page_number=page_number,
+            )
+        if suitability.disposition != "eligible":
+            return MathFixResult(
+                success=False,
+                error="handwritten_math_not_eligible",
+                page_number=page_number,
+            )
+        try:
+            recognition = self.handwritten_recognizer.recognize(validated, suitability)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="handwritten_equation_recognition_rejected",
+                page_number=page_number,
+            )
+        if recognition.classification == "unsupported_notation":
+            return MathFixResult(
+                success=False,
+                error="handwritten_notation_unsupported",
+                page_number=page_number,
+            )
+        if (
+            recognition.classification != "handwritten_equation"
+            or not recognition.latex
+        ):
+            return MathFixResult(
+                success=False,
+                error="not_handwritten_equation",
+                page_number=page_number,
+            )
+        try:
+            verification = self.handwritten_verifier.verify(
+                validated, suitability, recognition
+            )
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="handwritten_equation_verification_failed",
+                page_number=page_number,
+            )
+        if (
+            not isinstance(verification, HandwrittenEquationVerificationEvidence)
+            or verification.passed is not True
+            or verification.source_sha256 != validated.normalized_sha256
+            or verification.suitability_evidence != suitability
+        ):
+            return MathFixResult(
+                success=False,
+                error="handwritten_equation_verification_mismatch",
+                page_number=page_number,
+            )
+        mathml_string = self._convert_to_mathml(recognition.latex)
+        if not mathml_string:
+            return MathFixResult(
+                success=False,
+                error="image_equation_conversion_failed",
+                page_number=page_number,
+            )
+        canonicalize = getattr(self.equation_verifier, "canonicalize_mathml", None)
+        if not callable(canonicalize):
+            return MathFixResult(
+                success=False,
+                error="image_equation_conversion_failed",
+                page_number=page_number,
+            )
+        try:
+            mathml_string = canonicalize(mathml_string)
+        except Exception:
+            return MathFixResult(
+                success=False,
+                error="image_equation_conversion_failed",
+                page_number=page_number,
+            )
+        if (
+            hashlib.sha256(mathml_string.encode("utf-8")).hexdigest()
+            != verification.mathml_sha256
+        ):
+            return MathFixResult(
+                success=False,
+                error="handwritten_equation_verification_mismatch",
+                page_number=page_number,
+            )
+        aria_label = self._generate_aria_label(recognition.latex)
+        pending = self._pending_visual_equation_association(
+            validated,
+            scanned_region=scanned_region,
+            aria_label=aria_label,
+            mathml_string=mathml_string,
+            provider_used=recognition.provider,
+            model_used=recognition.model,
+            verification_evidence=verification,
+            page_number=page_number,
+        )
+        if pending is None:
+            return MathFixResult(
+                success=False,
+                error=(
+                    "equation_region_source_rejected"
+                    if scanned_region
+                    else "equation_image_source_rejected"
+                ),
+                page_number=page_number,
+            )
+        pending_error = (
+            "scanned_equation_region_association_pending"
+            if scanned_region
+            else "image_equation_association_pending"
+        )
+        return MathFixResult(
+            success=False,
+            error=pending_error,
+            equation_text=recognition.latex,
+            aria_label=aria_label,
+            page_number=page_number,
+            has_mathml=True,
+            source_kind="image_equation",
+            fix_method="ai_vision",
+            confidence=0.55,
+            needs_review=True,
+            provider_used=recognition.provider,
+            model_used=recognition.model,
+            verification_evidence=verification,
+            pending_association=pending,
+        )
+
+    @staticmethod
+    def _pending_visual_equation_association(
+        validated: Any,
+        *,
+        scanned_region: bool,
+        aria_label: str,
+        mathml_string: str,
+        provider_used: str | None,
+        model_used: str | None,
+        verification_evidence: (
+            MathVerificationEvidence | HandwrittenEquationVerificationEvidence
+        ),
+        page_number: int,
+    ) -> PendingEquationAssociation | PendingScannedRegionAssociation | None:
+        identity = validated.identity
+        if scanned_region:
+            if not isinstance(identity, PageRasterRegionLocator):
+                return None
+            return PendingScannedRegionAssociation(
+                locator=identity,
+                working_occurrence=validated.working_occurrence,
+                normalized_crop_sha256=validated.normalized_sha256,
+                alt_text=aria_label,
+                mathml_string=mathml_string,
+                provider_used=provider_used,
+                model_used=model_used,
+                verification_evidence=verification_evidence,
+            )
+        return PendingEquationAssociation(
+            page_number=identity.page_number,
+            image_xref=identity.image_xref,
+            image_index=identity.image_index,
+            occurrence_ordinal=identity.occurrence_ordinal,
+            bbox=identity.bbox,
+            occurrence_id=identity.occurrence_id,
+            image_stream_sha256=validated.source_sha256,
+            alt_text=aria_label,
+            mathml_string=mathml_string,
+            provider_used=provider_used,
+            model_used=model_used,
+            verification_evidence=verification_evidence,
         )
 
     @staticmethod

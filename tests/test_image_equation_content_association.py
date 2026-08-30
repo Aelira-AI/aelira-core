@@ -1302,3 +1302,138 @@ def test_hybrid_parent_tree_kids_and_nums_rejects_without_mutation(tmp_path):
         pdf.save(after)
         assert after.getvalue() == before.getvalue()
     fitz_doc.close()
+
+
+def test_pdf_writer_emits_handwritten_contract_from_hmer_evidence(tmp_path):
+    """The shared save transaction selects HMER from its staged evidence type."""
+    from src.education.handwritten_math_suitability import (
+        POLICY_SHA256,
+        classify_handwritten_math_suitability,
+    )
+    from src.education.remediation.base import (
+        IssueCategory,
+        IssueSeverity,
+        RemediationConfig,
+        RemediationIssue,
+    )
+    from src.education.remediation.handwritten_equation_verifier import (
+        HANDWRITTEN_VERIFIER_POLICY_SHA256,
+        HANDWRITTEN_VERIFIER_POLICY_VERSION,
+        HandwrittenEquationVerificationEvidence,
+    )
+    from src.education.remediation.pdf_remediator import PdfRemediator
+    from src.education.remediation.pdf_structure import PDFStructureTree
+
+    source = tmp_path / "source.pdf"
+    output = tmp_path / "serialized-hmer.pdf"
+    _make_reused_image_pdf(source)
+    fitz_doc = fitz.open(source)
+    printed_pending = _pending(fitz_doc, 1, 1)
+    fixture = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "handwritten_math"
+        / "images"
+        / "legible-linear.png"
+    ).read_bytes()
+    suitability = classify_handwritten_math_suitability(fixture)
+    mathml_sha256 = hashlib.sha256(MATHML.encode()).hexdigest()
+    consensus = HandwrittenEquationVerificationEvidence(
+        passed=True,
+        source_sha256=suitability.source_sha256,
+        suitability_evidence=suitability,
+        suitability_evidence_sha256=suitability.evidence_sha256,
+        suitability_policy_sha256=POLICY_SHA256,
+        verifier_policy_version=HANDWRITTEN_VERIFIER_POLICY_VERSION,
+        verifier_policy_sha256=HANDWRITTEN_VERIFIER_POLICY_SHA256,
+        agreement_count=2,
+        required_agreement_count=2,
+        mathml_sha256=mathml_sha256,
+        primary_mathml_sha256=mathml_sha256,
+        verifier_mathml_sha256=mathml_sha256,
+        primary_response_sha256="1" * 64,
+        verifier_response_sha256="2" * 64,
+        primary_latex_sha256="3" * 64,
+        verifier_latex_sha256="4" * 64,
+        primary_provider="fixture-primary",
+        primary_model="hmer-primary-v1",
+        verifier_provider="fixture-verifier",
+        verifier_model="hmer-verifier-v1",
+    )
+    pending = dataclasses.replace(
+        printed_pending,
+        provider_used=consensus.primary_provider,
+        model_used=consensus.primary_model,
+        verification_evidence=consensus,
+    )
+    issue = RemediationIssue(
+        id="handwritten-equation-1",
+        category=IssueCategory.STRUCTURE,
+        severity=IssueSeverity.HIGH,
+        description="Handwritten equation image is inaccessible",
+        metadata={"page_number": 1},
+    )
+    staged = MathFixResult(
+        success=False,
+        error="image_equation_association_pending",
+        aria_label=pending.alt_text,
+        page_number=1,
+        has_mathml=True,
+        source_kind="image_equation",
+        fix_method="ai_vision",
+        confidence=0.55,
+        needs_review=True,
+        provider_used=pending.provider_used,
+        model_used=pending.model_used,
+        verification_evidence=consensus,
+        pending_association=pending,
+    )
+    remediator = PdfRemediator(
+        str(source),
+        [issue],
+        RemediationConfig(create_backup=False, verify_fixes=False),
+    )
+    remediator._pdf = fitz_doc
+    remediator._pikepdf_doc = pikepdf.open(source)
+    remediator._struct_tree = PDFStructureTree(remediator._pikepdf_doc)
+    remediator._structure_modified = True
+    remediator._pending_image_equations = [(issue, staged)]
+
+    remediator._write_pdf_output(fitz_doc, str(output))
+
+    assert len(remediator._verified_image_equations) == 1
+    _, _, association, contract = remediator._verified_image_equations[0]
+    assert association.success is True
+    assert contract.contract_kind == "handwritten_equation"
+    assert contract.normalized_source_sha256 == suitability.source_sha256
+    assert {evidence.evidence_kind for evidence in contract.verification_evidence} == {
+        "handwritten_equation_consensus_v1",
+        "standalone_formula_saved_v1",
+    }
+    from src.education.remediation.base import FixedIssue
+    from src.services.scan_fix_service import (
+        build_scan_fix,
+        image_equation_review_blockers,
+    )
+
+    durable_fix = FixedIssue(
+        issue_id=issue.id,
+        category=issue.category,
+        severity=issue.severity,
+        description=issue.description,
+        fixed_content=pending.alt_text,
+        fix_method="ai_vision",
+        confidence=0.55,
+        needs_review=True,
+        provider_used=pending.provider_used,
+        model_used=pending.model_used,
+        source_kind="image_equation",
+        verification_evidence=dataclasses.asdict(consensus),
+        visual_semantic_contract=contract,
+        page_number=1,
+    )
+    row = build_scan_fix("scan-hmer", durable_fix)
+    assert row.review_status == "pending"
+    assert row.needs_review is True
+    assert "image_equation_not_human_approved" in image_equation_review_blockers([row])
+    fitz_doc.close()
