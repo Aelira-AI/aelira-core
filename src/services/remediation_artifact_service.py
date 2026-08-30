@@ -1749,6 +1749,7 @@ class RemediationArtifactService:
                     (
                         "image_equation_",
                         "chemical_structure_",
+                        "chemical_formula_",
                         "commutative_diagram_",
                     )
                 )

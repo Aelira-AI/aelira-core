@@ -141,6 +141,35 @@ class ScannedRegionAssociationResult:
 
 
 @dataclass(frozen=True)
+class ChemicalFormulaAssociationResult:
+    """Identity and saved-file evidence for one verified chemical Formula."""
+
+    success: bool
+    error: Optional[str] = None
+    page_number: int = 0
+    image_xref: int = 0
+    occurrence_ordinal: int = 0
+    struct_parent: int = -1
+    mcid: int = -1
+    source_sha256: str = ""
+    semantic_sha256: str = ""
+    speech_sha256: str = ""
+    mathml_sha256: str = ""
+    metadata_sha256: str = ""
+    render_signatures: tuple[tuple[int, int, int, int, int, str], ...] = ()
+    resource_name: str = ""
+    formula_bbox: tuple[float, float, float, float] = ()
+    ocr_resource_name: str = ""
+    ocr_struct_parent: int = -1
+    ocr_group_owners: tuple[tuple[str, int], ...] = ()
+    ocr_before_mcids: tuple[int, ...] = ()
+    ocr_after_mcids: tuple[int, ...] = ()
+    ocr_payload_sha256: str = ""
+    ocr_font_sha256: str = ""
+    page_text_sha256: str = ""
+
+
+@dataclass(frozen=True)
 class DiagramAssociationResult:
     """Identity and visual evidence for one verified diagram Figure association."""
 
@@ -1737,6 +1766,124 @@ def associate_image_commutative_diagram(
         return DiagramAssociationResult(success=False, error="association_failed")
 
 
+def _chemical_formula_metadata(pending: Any) -> Dictionary:
+    notation = pending.semantic_output.verified_notation
+    return Dictionary(
+        {
+            "/NotationKind": String(notation.notation.notation_kind),
+            "/SourceSHA256": String(notation.source_sha256),
+            "/SemanticSHA256": String(notation.semantic_sha256),
+            "/SpeechSHA256": String(notation.speech_sha256),
+            "/MathMLSHA256": String(notation.mathml_sha256),
+            "/MetadataSHA256": String(pending.metadata_sha256),
+        }
+    )
+
+
+def _annotate_chemical_formula(
+    pdf: Any, *, page_number: int, mcid: int, pending: Any
+) -> Any:
+    formulas: List[Any] = []
+    root_kids = pdf.Root[Name.StructTreeRoot].get(Name.K)
+    roots = (
+        list(root_kids)
+        if isinstance(root_kids, Array)
+        else ([root_kids] if root_kids else [])
+    )
+    for root in roots:
+        _collect_formula_elements(root, formulas)
+    matches = [
+        formula
+        for formula in formulas
+        if hasattr(formula.get(Name.K), "keys")
+        and int(formula[Name.K].get(Name.MCID, -1)) == mcid
+        and tuple(formula.get(Name.Pg).objgen)
+        == tuple(pdf.pages[page_number - 1].obj.objgen)
+    ]
+    if len(matches) != 1:
+        raise ValueError("chemical_formula_element_ambiguous")
+    formula = matches[0]
+    formula[Name("/AeliraChemicalFormula")] = _chemical_formula_metadata(pending)
+    return formula
+
+
+def associate_image_chemical_formula(
+    pdf: Any, fitz_doc: Any, pending: Any
+) -> ChemicalFormulaAssociationResult:
+    """Associate one exact displayed chemical formula as a PDF Formula."""
+
+    from types import SimpleNamespace
+
+    from src.education.chemical_formula_pdf import (
+        ChemicalFormulaPendingAssociationV1,
+    )
+
+    try:
+        pending = ChemicalFormulaPendingAssociationV1.model_validate(pending)
+        locator = pending.locator
+        if getattr(locator, "source_kind", None) != "embedded_image_occurrence":
+            raise ValueError("chemical_formula_locator_kind_mismatch")
+        notation = pending.semantic_output.verified_notation
+        before_render = tuple(
+            _page_render_signature(fitz_doc, locator.page_number, dpi)
+            for dpi in _REGION_RENDER_DPI
+        )
+        formula_pending = SimpleNamespace(
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            bbox=locator.bbox,
+            occurrence_id=locator.occurrence_id,
+            image_stream_sha256=locator.image_stream_sha256,
+            alt_text=pending.alt_text,
+            mathml_string=pending.mathml_string,
+            verification_evidence=SimpleNamespace(mathml_sha256=notation.mathml_sha256),
+        )
+        association = associate_image_formula(pdf, fitz_doc, formula_pending)
+        if not association.success:
+            return ChemicalFormulaAssociationResult(
+                success=False,
+                error=association.error,
+                page_number=locator.page_number,
+                image_xref=locator.image_xref,
+                occurrence_ordinal=locator.occurrence_ordinal,
+            )
+        _annotate_chemical_formula(
+            pdf,
+            page_number=locator.page_number,
+            mcid=association.mcid,
+            pending=pending,
+        )
+        return ChemicalFormulaAssociationResult(
+            success=True,
+            page_number=association.page_number,
+            image_xref=association.image_xref,
+            occurrence_ordinal=association.occurrence_ordinal,
+            struct_parent=association.struct_parent,
+            mcid=association.mcid,
+            source_sha256=notation.source_sha256,
+            semantic_sha256=notation.semantic_sha256,
+            speech_sha256=notation.speech_sha256,
+            mathml_sha256=notation.mathml_sha256,
+            metadata_sha256=pending.metadata_sha256,
+            render_signatures=before_render,
+        )
+    except Exception as exc:
+        logger.warning("Exact chemical-formula association failed closed: %s", exc)
+        return ChemicalFormulaAssociationResult(
+            success=False, error="association_failed"
+        )
+
+
+_REGION_RENDER_DPI = (144, 288)
+_REGION_FLOAT_TOLERANCE = 1e-6
+_REGION_MAX_RENDER_DIMENSION = 16_384
+_REGION_MAX_RENDER_PIXELS = 25_000_000
+_REGION_MAX_RENDER_BYTES = 75_000_000
+_REGION_MAX_TRANSACTION_RENDER_BYTES = 256 * 1024 * 1024
+
+
 def associate_image_chemical_structure(
     pdf: Any, fitz_doc: Any, pending: Any
 ) -> ChemicalStructureAssociationResult:
@@ -3167,6 +3314,93 @@ def associate_scanned_region_commutative_diagram(
         return DiagramAssociationResult(success=False, error="association_failed")
 
 
+def associate_scanned_region_chemical_formula(
+    pdf: Any, fitz_doc: Any, pending: Any
+) -> ChemicalFormulaAssociationResult:
+    """Associate one verified page-raster chemical region as a PDF Formula."""
+
+    from types import SimpleNamespace
+
+    from src.education.chemical_formula_pdf import (
+        ChemicalFormulaPendingAssociationV1,
+    )
+
+    try:
+        pending = ChemicalFormulaPendingAssociationV1.model_validate(pending)
+        locator = pending.locator
+        if getattr(locator, "source_kind", None) != "page_raster_region":
+            raise ValueError("chemical_formula_locator_kind_mismatch")
+        notation = pending.semantic_output.verified_notation
+        working_occurrence = SimpleNamespace(
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            bbox=tuple(locator.parent_bbox),
+            occurrence_id=locator.parent_occurrence_id,
+            transform=tuple(locator.transform),
+        )
+        formula_pending = SimpleNamespace(
+            locator=locator,
+            working_occurrence=working_occurrence,
+            normalized_crop_sha256=pending.recognition.normalized_source_sha256,
+            alt_text=pending.alt_text,
+            mathml_string=pending.mathml_string,
+            verification_evidence=SimpleNamespace(
+                mathml_sha256=notation.mathml_sha256,
+                passed=True,
+                source_sha256=pending.recognition.normalized_source_sha256,
+            ),
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            occurrence_id=locator.parent_occurrence_id,
+            bbox=tuple(locator.pdf_bbox),
+            region_bbox=tuple(locator.pdf_bbox),
+            parent_bbox=tuple(locator.parent_bbox),
+            working_parent_bbox=tuple(locator.parent_bbox),
+        )
+        association = associate_scanned_region_formula(pdf, fitz_doc, formula_pending)
+        _annotate_chemical_formula(
+            pdf,
+            page_number=locator.page_number,
+            mcid=association.mcid,
+            pending=pending,
+        )
+        return ChemicalFormulaAssociationResult(
+            success=True,
+            page_number=association.page_number,
+            image_xref=association.image_xref,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            struct_parent=association.struct_parent,
+            mcid=association.mcid,
+            source_sha256=notation.source_sha256,
+            semantic_sha256=notation.semantic_sha256,
+            speech_sha256=notation.speech_sha256,
+            mathml_sha256=notation.mathml_sha256,
+            metadata_sha256=pending.metadata_sha256,
+            render_signatures=association.render_signatures,
+            resource_name=association.resource_name,
+            formula_bbox=association.formula_bbox,
+            ocr_resource_name=association.ocr_resource_name,
+            ocr_struct_parent=association.ocr_struct_parent,
+            ocr_group_owners=association.ocr_group_owners,
+            ocr_before_mcids=association.ocr_before_mcids,
+            ocr_after_mcids=association.ocr_after_mcids,
+            ocr_payload_sha256=association.ocr_payload_sha256,
+            ocr_font_sha256=association.ocr_font_sha256,
+            page_text_sha256=association.page_text_sha256,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Scanned-region chemical-formula association failed closed: %s", exc
+        )
+        return ChemicalFormulaAssociationResult(
+            success=False, error="association_failed"
+        )
+
+
 def _promote_formula_to_chemical_structure(
     pdf: Any, *, page_number: int, mcid: int, pending: Any
 ) -> Any:
@@ -4152,6 +4386,137 @@ def verify_image_formula_association(
         return False
 
 
+def _verify_chemical_formula_element(
+    pdf: Any,
+    *,
+    page_number: int,
+    mcid: int,
+    pending: Any,
+    expected: ChemicalFormulaAssociationResult,
+) -> None:
+    formulas: List[Any] = []
+    root_kids = pdf.Root[Name.StructTreeRoot].get(Name.K)
+    roots = (
+        list(root_kids)
+        if isinstance(root_kids, Array)
+        else ([root_kids] if root_kids else [])
+    )
+    for root in roots:
+        _collect_formula_elements(root, formulas)
+    matches = [
+        formula
+        for formula in formulas
+        if hasattr(formula.get(Name.K), "keys")
+        and int(formula[Name.K].get(Name.MCID, -1)) == mcid
+        and tuple(formula.get(Name.Pg).objgen)
+        == tuple(pdf.pages[page_number - 1].obj.objgen)
+    ]
+    if len(matches) != 1:
+        raise ValueError("saved_chemical_formula_not_unique")
+    formula = matches[0]
+    if (
+        str(formula.get(Name.Alt, "")) != pending.alt_text
+        or Name("/ActualText") in formula
+    ):
+        raise ValueError("saved_chemical_formula_speech_changed")
+    notation = pending.semantic_output.verified_notation
+    wanted_metadata = {
+        "/NotationKind": notation.notation.notation_kind,
+        "/SourceSHA256": expected.source_sha256,
+        "/SemanticSHA256": expected.semantic_sha256,
+        "/SpeechSHA256": expected.speech_sha256,
+        "/MathMLSHA256": expected.mathml_sha256,
+        "/MetadataSHA256": expected.metadata_sha256,
+    }
+    metadata = formula.get(Name("/AeliraChemicalFormula"))
+    if (
+        not hasattr(metadata, "keys")
+        or {str(key): str(value) for key, value in metadata.items()} != wanted_metadata
+    ):
+        raise ValueError("saved_chemical_formula_metadata_changed")
+    af = formula.get(Name("/AF"))
+    if not isinstance(af, Array) or len(af) != 1:
+        raise ValueError("saved_chemical_formula_attachment_ambiguous")
+    embedded = af[0][Name("/EF")][Name.F]
+    if embedded.read_bytes() != pending.mathml_string.encode("utf-8"):
+        raise ValueError("saved_chemical_formula_mathml_changed")
+
+
+def verify_image_chemical_formula_association(
+    path: str | Path,
+    pending: Any,
+    expected: ChemicalFormulaAssociationResult,
+) -> bool:
+    """Reopen and verify chemical semantics, Formula ownership, and rendering."""
+
+    from types import SimpleNamespace
+
+    from src.education.chemical_formula_pdf import (
+        ChemicalFormulaPendingAssociationV1,
+    )
+
+    if not expected.success:
+        return False
+    try:
+        pending = ChemicalFormulaPendingAssociationV1.model_validate(pending)
+        locator = pending.locator
+        if getattr(locator, "source_kind", None) != "embedded_image_occurrence":
+            raise ValueError("saved_chemical_formula_locator_kind_mismatch")
+        notation = pending.semantic_output.verified_notation
+        if (
+            expected.source_sha256 != notation.source_sha256
+            or expected.semantic_sha256 != notation.semantic_sha256
+            or expected.speech_sha256 != notation.speech_sha256
+            or expected.mathml_sha256 != notation.mathml_sha256
+            or expected.metadata_sha256 != pending.metadata_sha256
+        ):
+            raise ValueError("saved_chemical_formula_pending_changed")
+        formula_pending = SimpleNamespace(
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            bbox=locator.bbox,
+            occurrence_id=locator.occurrence_id,
+            image_stream_sha256=locator.image_stream_sha256,
+            alt_text=pending.alt_text,
+            mathml_string=pending.mathml_string,
+        )
+        formula_expected = FormulaAssociationResult(
+            success=True,
+            page_number=expected.page_number,
+            image_xref=expected.image_xref,
+            occurrence_ordinal=expected.occurrence_ordinal,
+            struct_parent=expected.struct_parent,
+            mcid=expected.mcid,
+            mathml_sha256=expected.mathml_sha256,
+        )
+        if not verify_image_formula_association(
+            path, formula_pending, formula_expected
+        ):
+            raise ValueError("saved_chemical_formula_base_verification_failed")
+        with fitz.open(str(path)) as fitz_doc, pikepdf.open(str(path)) as pdf:
+            _verify_chemical_formula_element(
+                pdf,
+                page_number=locator.page_number,
+                mcid=expected.mcid,
+                pending=pending,
+                expected=expected,
+            )
+            after_render = tuple(
+                _page_render_signature(fitz_doc, locator.page_number, dpi)
+                for dpi in _REGION_RENDER_DPI
+            )
+            if after_render != expected.render_signatures:
+                raise ValueError("saved_chemical_formula_render_changed")
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Post-save chemical-formula association verification failed: %s", exc
+        )
+        return False
+
+
 def verify_scanned_region_formula_association(
     path: str | Path,
     pending: Any,
@@ -4400,6 +4765,102 @@ def verify_scanned_region_formula_association(
             return True
     except Exception as exc:
         logger.warning("Post-save scanned-region Formula verification failed: %s", exc)
+        return False
+
+
+def verify_scanned_region_chemical_formula_association(
+    path: str | Path,
+    pending: Any,
+    expected: ChemicalFormulaAssociationResult,
+) -> bool:
+    """Reverse-verify a clipped chemical Formula and its exact semantics."""
+
+    from types import SimpleNamespace
+
+    from src.education.chemical_formula_pdf import (
+        ChemicalFormulaPendingAssociationV1,
+    )
+
+    if not expected.success:
+        return False
+    try:
+        pending = ChemicalFormulaPendingAssociationV1.model_validate(pending)
+        locator = pending.locator
+        if getattr(locator, "source_kind", None) != "page_raster_region":
+            raise ValueError("saved_region_chemical_formula_locator_kind_mismatch")
+        notation = pending.semantic_output.verified_notation
+        if (
+            expected.source_sha256 != notation.source_sha256
+            or expected.semantic_sha256 != notation.semantic_sha256
+            or expected.speech_sha256 != notation.speech_sha256
+            or expected.mathml_sha256 != notation.mathml_sha256
+            or expected.metadata_sha256 != pending.metadata_sha256
+        ):
+            raise ValueError("saved_region_chemical_formula_pending_changed")
+        working_occurrence = SimpleNamespace(
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            bbox=tuple(locator.parent_bbox),
+            occurrence_id=locator.parent_occurrence_id,
+            transform=tuple(locator.transform),
+        )
+        formula_pending = SimpleNamespace(
+            locator=locator,
+            working_occurrence=working_occurrence,
+            normalized_crop_sha256=pending.recognition.normalized_source_sha256,
+            alt_text=pending.alt_text,
+            mathml_string=pending.mathml_string,
+            verification_evidence=SimpleNamespace(
+                mathml_sha256=expected.mathml_sha256,
+                passed=True,
+                source_sha256=pending.recognition.normalized_source_sha256,
+            ),
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            occurrence_id=locator.parent_occurrence_id,
+            bbox=tuple(locator.pdf_bbox),
+            region_bbox=tuple(locator.pdf_bbox),
+            parent_bbox=tuple(locator.parent_bbox),
+            working_parent_bbox=tuple(locator.parent_bbox),
+        )
+        formula_expected = ScannedRegionAssociationResult(
+            page_number=expected.page_number,
+            image_xref=expected.image_xref,
+            resource_name=expected.resource_name,
+            struct_parent=expected.struct_parent,
+            mcid=expected.mcid,
+            mathml_sha256=expected.mathml_sha256,
+            formula_bbox=expected.formula_bbox,
+            render_signatures=expected.render_signatures,
+            ocr_resource_name=expected.ocr_resource_name,
+            ocr_struct_parent=expected.ocr_struct_parent,
+            ocr_group_owners=expected.ocr_group_owners,
+            ocr_before_mcids=expected.ocr_before_mcids,
+            ocr_after_mcids=expected.ocr_after_mcids,
+            ocr_payload_sha256=expected.ocr_payload_sha256,
+            ocr_font_sha256=expected.ocr_font_sha256,
+            page_text_sha256=expected.page_text_sha256,
+        )
+        with pikepdf.open(str(path)) as pdf:
+            _verify_chemical_formula_element(
+                pdf,
+                page_number=locator.page_number,
+                mcid=expected.mcid,
+                pending=pending,
+                expected=expected,
+            )
+        return verify_scanned_region_formula_association(
+            path, formula_pending, formula_expected
+        )
+    except Exception as exc:
+        logger.warning(
+            "Post-save scanned-region chemical-formula verification failed: %s",
+            exc,
+        )
         return False
 
 
@@ -4664,6 +5125,7 @@ def verify_scanned_region_chemical_structure_association(
 
 
 __all__ = [
+    "ChemicalFormulaAssociationResult",
     "ContentTaggerV2",
     "ChemicalStructureAssociationResult",
     "DiagramAssociationResult",
@@ -4672,17 +5134,21 @@ __all__ = [
     "ScannedRegionAssociationError",
     "ScannedRegionAssociationResult",
     "TABLE_TAGS",
+    "associate_image_chemical_formula",
     "associate_image_formula",
     "associate_image_chemical_structure",
     "associate_image_commutative_diagram",
     "associate_scanned_region_commutative_diagram",
+    "associate_scanned_region_chemical_formula",
     "associate_scanned_region_chemical_structure",
     "associate_scanned_region_formula",
     "preflight_scanned_region_render_budget",
     "verify_image_formula_association",
+    "verify_image_chemical_formula_association",
     "verify_image_chemical_structure_association",
     "verify_image_commutative_diagram_association",
     "verify_scanned_region_commutative_diagram_association",
+    "verify_scanned_region_chemical_formula_association",
     "verify_scanned_region_chemical_structure_association",
     "verify_scanned_region_formula_association",
 ]

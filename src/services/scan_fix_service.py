@@ -34,6 +34,8 @@ from ..education.remediation.base import (
 from ..education.visual_semantic_contract import (
     ChemicalStructurePdfContract,
     ChemicalStructureRecognitionEvidenceV1,
+    ChemicalFormulaPdfContract,
+    ChemicalFormulaRecognitionEvidenceV1,
     CommutativeDiagramPdfContract,
     CommutativeDiagramRecognitionEvidenceV1,
     EmbeddedImageOccurrenceLocator,
@@ -50,11 +52,13 @@ from ..utils.sanitization import sanitize_for_postgres
 
 IMAGE_EQUATION_SOURCE_KIND = "image_equation"
 CHEMICAL_STRUCTURE_SOURCE_KIND = "chemical_structure"
+CHEMICAL_FORMULA_SOURCE_KIND = "chemical_formula"
 COMMUTATIVE_DIAGRAM_SOURCE_KIND = "commutative_diagram"
 REVIEW_GATED_VISUAL_SOURCE_KINDS = frozenset(
     {
         IMAGE_EQUATION_SOURCE_KIND,
         CHEMICAL_STRUCTURE_SOURCE_KIND,
+        CHEMICAL_FORMULA_SOURCE_KIND,
         COMMUTATIVE_DIAGRAM_SOURCE_KIND,
     }
 )
@@ -247,14 +251,21 @@ def _validated_evidence(
     VerificationEvidence
     | HandwrittenVerificationEvidence
     | ChemicalStructureRecognitionEvidenceV1
+    | ChemicalFormulaRecognitionEvidenceV1
     | CommutativeDiagramRecognitionEvidenceV1
 ):
     """Validate one active compatibility projection without coercing variants."""
     raw = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
-    if isinstance(raw, dict) and raw.get("evidence_kind") == (
-        "chemical_structure_recognition_v1"
+    if (
+        isinstance(raw, dict)
+        and raw.get("evidence_kind") == "chemical_structure_recognition_v1"
     ):
         return ChemicalStructureRecognitionEvidenceV1.model_validate(raw)
+    if (
+        isinstance(raw, dict)
+        and raw.get("evidence_kind") == "chemical_formula_recognition_v1"
+    ):
+        return ChemicalFormulaRecognitionEvidenceV1.model_validate(raw)
     if isinstance(raw, dict) and raw.get("evidence_kind") == (
         "commutative_diagram_recognition_v1"
     ):
@@ -329,25 +340,38 @@ def _valid_image_contract_binding(
     if contract is None:
         return False
     is_diagram = isinstance(contract, CommutativeDiagramPdfContract)
-    is_chemical = isinstance(contract, ChemicalStructurePdfContract)
-    if is_chemical:
+    is_chemical_structure = isinstance(contract, ChemicalStructurePdfContract)
+    is_chemical_formula = isinstance(contract, ChemicalFormulaPdfContract)
+    if is_chemical_formula:
+        expected_source_kind = CHEMICAL_FORMULA_SOURCE_KIND
+        expected_fixed_content = contract.semantic_output.verified_notation.speech
+    elif is_chemical_structure:
         expected_source_kind = CHEMICAL_STRUCTURE_SOURCE_KIND
+        expected_fixed_content = contract.semantic_output.description.summary
     elif is_diagram:
         expected_source_kind = COMMUTATIVE_DIAGRAM_SOURCE_KIND
+        expected_fixed_content = contract.semantic_output.description.summary
     else:
         expected_source_kind = IMAGE_EQUATION_SOURCE_KIND
-    expected_fixed_content = (
-        contract.semantic_output.description.summary
-        if is_diagram or is_chemical
-        else contract.semantic_output.alt_text
-    )
+        expected_fixed_content = contract.semantic_output.alt_text
     if (
         getattr(fix, "source_kind", None) != expected_source_kind
         or getattr(fix, "fixed_content", None) != expected_fixed_content
         or getattr(fix, "page_number", None) != contract.locator.page_number
     ):
         return False
-    if is_chemical:
+    if is_chemical_formula:
+        contract_evidence = next(
+            (
+                evidence
+                for evidence in contract.verification_evidence
+                if isinstance(evidence, ChemicalFormulaRecognitionEvidenceV1)
+            ),
+            None,
+        )
+        expected_type = ChemicalFormulaRecognitionEvidenceV1
+        exclude_evidence_kind = False
+    elif is_chemical_structure:
         contract_evidence = next(
             (
                 evidence
@@ -551,7 +575,9 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
             evidence_valid = valid_image_equation_evidence(evidence)
             kind_valid = not isinstance(
                 contract_model,
-                CommutativeDiagramPdfContract | ChemicalStructurePdfContract,
+                CommutativeDiagramPdfContract
+                | ChemicalFormulaPdfContract
+                | ChemicalStructurePdfContract,
             )
         elif source_kind == CHEMICAL_STRUCTURE_SOURCE_KIND:
             try:
@@ -562,6 +588,15 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
                 recognition = None
             evidence_valid = recognition is not None
             kind_valid = isinstance(contract_model, ChemicalStructurePdfContract)
+        elif source_kind == CHEMICAL_FORMULA_SOURCE_KIND:
+            try:
+                recognition = ChemicalFormulaRecognitionEvidenceV1.model_validate(
+                    evidence
+                )
+            except (TypeError, ValueError, ValidationError):
+                recognition = None
+            evidence_valid = recognition is not None
+            kind_valid = isinstance(contract_model, ChemicalFormulaPdfContract)
         else:
             try:
                 recognition = CommutativeDiagramRecognitionEvidenceV1.model_validate(
@@ -825,6 +860,16 @@ def chemical_structure_review_blockers(fixes: Iterable[Any]) -> list[str]:
     )
 
 
+def chemical_formula_review_blockers(fixes: Iterable[Any]) -> list[str]:
+    """Require durable, explicit human acceptance for chemical notation."""
+
+    return _review_gated_visual_blockers(
+        fixes,
+        source_kind=CHEMICAL_FORMULA_SOURCE_KIND,
+        blocker_prefix="chemical_formula",
+    )
+
+
 def artifact_review_blockers(fixes: Iterable[Any]) -> list[str]:
     """Return shared blockers used by metadata and approval boundaries."""
     rows = list(fixes)
@@ -859,6 +904,7 @@ def artifact_review_blockers(fixes: Iterable[Any]) -> list[str]:
     blockers.extend(image_equation_review_blockers(rows))
     blockers.extend(commutative_diagram_review_blockers(rows))
     blockers.extend(chemical_structure_review_blockers(rows))
+    blockers.extend(chemical_formula_review_blockers(rows))
     return blockers
 
 

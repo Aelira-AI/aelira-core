@@ -203,7 +203,12 @@ def _artifact_requires_approval(
         .filter(
             ScanFix.scan_id == scan_id,
             ScanFix.source_kind.in_(
-                ("image_equation", "chemical_structure", "commutative_diagram")
+                (
+                    "image_equation",
+                    "chemical_formula",
+                    "chemical_structure",
+                    "commutative_diagram",
+                )
             ),
         )
         .first()
