@@ -6,6 +6,10 @@ from collections.abc import Iterable
 from typing import Any
 
 IMAGE_EQUATION_SOURCE_KIND = "image_equation"
+COMMUTATIVE_DIAGRAM_SOURCE_KIND = "commutative_diagram"
+REVIEW_GATED_VISUAL_SOURCE_KINDS = frozenset(
+    {IMAGE_EQUATION_SOURCE_KIND, COMMUTATIVE_DIAGRAM_SOURCE_KIND}
+)
 
 
 class ImageEquationMatterhornError(RuntimeError):
@@ -13,10 +17,14 @@ class ImageEquationMatterhornError(RuntimeError):
 
 
 def contains_image_equation_fixes(fixes: Iterable[Any]) -> bool:
-    """Return whether an artifact carries any image-equation remediation."""
+    """Return whether an artifact carries review-gated visual semantics."""
     return any(
-        getattr(fix, "source_kind", None) == IMAGE_EQUATION_SOURCE_KIND for fix in fixes
+        getattr(fix, "source_kind", None) in REVIEW_GATED_VISUAL_SOURCE_KINDS
+        for fix in fixes
     )
+
+
+contains_review_gated_visual_fixes = contains_image_equation_fixes
 
 
 def require_image_equation_matterhorn_result(result: Any) -> None:

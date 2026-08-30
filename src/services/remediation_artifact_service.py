@@ -1744,7 +1744,10 @@ class RemediationArtifactService:
         )
         blockers = artifact_review_blockers(fixes)
         if blockers:
-            if any(blocker.startswith("image_equation_") for blocker in blockers):
+            if any(
+                blocker.startswith(("image_equation_", "commutative_diagram_"))
+                for blocker in blockers
+            ):
                 raise ArtifactAuthorizationError(
                     "image equation human review is incomplete or invalid"
                 )
