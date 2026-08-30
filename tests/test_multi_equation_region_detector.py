@@ -196,6 +196,42 @@ def test_contract_rejects_reordered_overlapping_or_cross_parent_children(tmp_pat
     document.close()
 
 
+def test_contract_rejects_a_valid_child_locator_with_another_parent_transform(
+    tmp_path,
+):
+    from src.education.multi_equation_region import (
+        MultiEquationRegionRejected,
+        build_multi_equation_group,
+    )
+    from src.education.pdf_checks.equation_region_detector import _canonical_digest
+    from src.education.visual_semantic_contract import FrozenPageRasterRegionLocator
+
+    path = tmp_path / "transform.pdf"
+    _write_pdf(path, SPLIT_LINES)
+    _, _, document, group = _find(path, SPLIT_LINES)
+    assert group is not None
+    changed = group.children[1].model_dump(mode="json")
+    changed["parent_bbox"][0] += 1.0
+    changed["parent_bbox"][2] += 1.0
+    changed["pdf_bbox"][0] += 1.0
+    changed["pdf_bbox"][2] += 1.0
+    changed["transform"][4] += 1.0
+    changed["region_id"] = (
+        "eqregion-v1-"
+        + _canonical_digest(
+            {key: value for key, value in changed.items() if key != "region_id"}
+        )[:24]
+    )
+    changed_child = FrozenPageRasterRegionLocator.model_validate(changed)
+
+    with pytest.raises(MultiEquationRegionRejected):
+        build_multi_equation_group(
+            disposition="split_children",
+            children=(group.children[0], changed_child),
+        )
+    document.close()
+
+
 @pytest.mark.parametrize(
     "lines",
     [

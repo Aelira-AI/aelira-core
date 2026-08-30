@@ -55,6 +55,8 @@ class MultiEquationRegionGroupV1(BaseModel):
             self.source_sha256,
             self.source_width,
             self.source_height,
+            tuple(self.children[0].parent_bbox),
+            tuple(self.children[0].transform),
         )
         region_ids: set[str] = set()
         total_pixels = 0
@@ -70,6 +72,8 @@ class MultiEquationRegionGroupV1(BaseModel):
                 child.source_sha256,
                 child.source_width,
                 child.source_height,
+                tuple(child.parent_bbox),
+                tuple(child.transform),
             )
             if child_parent != expected_parent:
                 raise ValueError("multi-equation child parent identity differs")

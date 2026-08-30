@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from io import BytesIO
 
 import fitz
+import pikepdf
 import pytest
 from PIL import Image, ImageDraw
+from pikepdf import Array, Name, Operator, String
 from pydantic import ValidationError
 
 from src.education.multi_equation_semantics import (
@@ -32,7 +35,10 @@ from src.education.remediation.equation_verifier import EquationVerificationEvid
 from src.education.remediation.multi_equation_semantics import (
     MultiEquationSemanticPlanner,
     MultiEquationSemanticRejected,
+    associate_multi_equation_pdf,
     commit_multi_equation_transaction,
+    remediate_multi_equation_pdf,
+    verify_multi_equation_formulas,
 )
 from src.education.visual_semantic_contract import (
     MathMLExpressionV1,
@@ -179,13 +185,30 @@ def _system_owner(group):
     )
 
 
-def _saved_owner(owner, ordinal):
+def _formula_bbox(group, owner):
+    matrix = group.children[0].transform
+    px0, py0, px1, py1 = owner.pixel_bbox
+    clip = (
+        px0 / group.source_width,
+        1.0 - (py1 / group.source_height),
+        (px1 - px0) / group.source_width,
+        (py1 - py0) / group.source_height,
+    )
+    return (
+        matrix[4] + matrix[0] * clip[0],
+        matrix[5] + matrix[3] * clip[1],
+        matrix[4] + matrix[0] * (clip[0] + clip[2]),
+        matrix[5] + matrix[3] * (clip[1] + clip[3]),
+    )
+
+
+def _saved_owner(group, owner, ordinal):
     return MultiEquationSavedOwnerV1(
         ordinal=ordinal,
         region_ids=owner.region_ids,
         struct_parent=4,
         mcid=20 + ordinal,
-        formula_bbox=owner.pdf_bbox,
+        formula_bbox=_formula_bbox(group, owner),
         mathml_sha256=owner.semantic_output.mathml_sha256,
         alt_text_sha256=hashlib.sha256(
             owner.semantic_output.alt_text.encode("utf-8")
@@ -203,11 +226,18 @@ def _saved_evidence(group, owners, *, saved_file_sha256="d" * 64):
         saved_file_sha256=saved_file_sha256,
         page_number=group.page_number,
         parent_occurrence_id=group.parent_occurrence_id,
+        saved_parent_occurrence_id=group.parent_occurrence_id,
         image_xref=group.image_xref,
+        image_index=group.image_index,
+        occurrence_ordinal=group.occurrence_ordinal,
         source_sha256=group.source_sha256,
+        parent_bbox=group.children[0].parent_bbox,
+        transform=group.children[0].transform,
         disposition=group.disposition,
         original_artifact_count=1,
-        owners=tuple(_saved_owner(owner, index) for index, owner in enumerate(owners)),
+        owners=tuple(
+            _saved_owner(group, owner, index) for index, owner in enumerate(owners)
+        ),
         render_signatures=((72, 400, 300, 400, 300, "e" * 64),),
     )
 
@@ -312,6 +342,7 @@ def test_detector_contract_calls_are_bounded_and_pinned() -> None:
 class _Recognizer:
     def __init__(self, *, fail_at=None):
         self.calls = []
+        self.system_calls = []
         self.fail_at = fail_at
 
     def recognize(self, source):
@@ -324,6 +355,10 @@ class _Recognizer:
             provider="provider",
             model="model",
         )
+
+    def recognize_system(self, source):
+        self.system_calls.append(source)
+        return self.recognize(source)
 
 
 class _Verifier:
@@ -351,6 +386,18 @@ class _Verifier:
         )
 
 
+def _planned_owners(path, group):
+    class _AcceptedDetector:
+        @staticmethod
+        def revalidate_group(_document, value):
+            return value
+
+    with fitz.open(path) as document:
+        return MultiEquationSemanticPlanner(
+            _Recognizer(), _Verifier(), detector=_AcceptedDetector()
+        ).plan(document, group)
+
+
 def test_split_recognition_verifies_every_child_in_order(tmp_path) -> None:
     group = _group(tmp_path)
     document = fitz.open(tmp_path / "split.pdf")
@@ -373,6 +420,7 @@ def test_whole_system_recognizes_and_verifies_one_exact_union(tmp_path) -> None:
     document.close()
 
     assert len(recognizer.calls) == len(owners) == 1
+    assert recognizer.system_calls == recognizer.calls
     owner = owners[0]
     assert owner.owner_kind == "multi_equation_system_v1"
     assert owner.region_ids == tuple(child.region_id for child in group.children)
@@ -490,3 +538,274 @@ def test_transaction_failure_preserves_source_and_prior_output(
     assert source.read_bytes() == b"%PDF-1.4\noriginal"
     assert output.read_bytes() == b"prior output"
     assert list(tmp_path.glob(".output.pdf.multi-equation-*.pdf")) == []
+
+
+@pytest.mark.parametrize("whole_system", [False, True])
+def test_saved_pdf_has_one_artifact_and_ordered_exact_formula_owners(
+    tmp_path, whole_system
+) -> None:
+    group = _group(tmp_path, whole_system=whole_system)
+    source = tmp_path / ("system.pdf" if whole_system else "split.pdf")
+    owners = _planned_owners(source, group)
+    output = tmp_path / ("system-output.pdf" if whole_system else "split-output.pdf")
+    original = source.read_bytes()
+
+    contract = remediate_multi_equation_pdf(source, output, group, owners)
+
+    assert source.read_bytes() == original
+    assert contract.saved_evidence.original_artifact_count == 1
+    assert [owner.ordinal for owner in contract.saved_evidence.owners] == list(
+        range(len(owners))
+    )
+    assert [owner.formula_bbox for owner in contract.saved_evidence.owners] == [
+        pytest.approx(_formula_bbox(group, owner)) for owner in owners
+    ]
+    with pikepdf.open(output) as pdf:
+        ops = list(pikepdf.parse_content_stream(pdf.pages[0]))
+        names = [str(op.operator) for op in ops]
+        assert names.count("BMC") == 1
+        assert names.count("BDC") == len(owners)
+        assert names.count("Do") == len(owners) + 1
+
+
+def _saved_formulas(pdf):
+    from src.education.remediation.content_tagger_v2 import (
+        _collect_structure_elements_by_tag,
+    )
+
+    found = []
+    roots = pdf.Root[Name.StructTreeRoot].get(Name.K)
+    for root in list(roots) if isinstance(roots, Array) else [roots]:
+        _collect_structure_elements_by_tag(root, found, "/Formula")
+    return found
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "source",
+        "clip",
+        "formula_bbox",
+        "structure_order",
+        "parent_tree",
+        "mathml",
+        "alt",
+        "pixels",
+    ],
+)
+def test_saved_group_tampering_rejects_the_complete_proof(tmp_path, mutation) -> None:
+    from src.education.remediation.content_tagger_v2 import _number_tree_entries
+
+    group = _group(tmp_path)
+    source = tmp_path / "split.pdf"
+    owners = _planned_owners(source, group)
+    associated = tmp_path / f"associated-{mutation}.pdf"
+    associated.write_bytes(source.read_bytes())
+    association = associate_multi_equation_pdf(associated, group, owners)
+    assert verify_multi_equation_formulas(associated, group, owners, association).passed
+
+    if mutation == "source":
+        changed = tmp_path / "source-changed.pdf"
+        with fitz.open(associated) as document:
+            xref = int(document[0].get_image_info(xrefs=True)[0]["xref"])
+            payload = document.extract_image(xref)["image"]
+            with Image.open(BytesIO(payload)) as image:
+                image.load()
+                replacement_image = image.convert("RGB")
+                replacement_image.putpixel((0, 0), (254, 254, 254))
+                replacement = BytesIO()
+                replacement_image.save(replacement, format="PNG")
+                replacement_image.close()
+            document[0].replace_image(xref, stream=replacement.getvalue())
+            document.save(changed)
+        associated.write_bytes(changed.read_bytes())
+
+    else:
+        with pikepdf.open(associated, allow_overwriting_input=True) as pdf:
+            page = pdf.pages[0]
+            formulas = _saved_formulas(pdf)
+            if mutation == "clip":
+                ops = list(pikepdf.parse_content_stream(page))
+                bdc_index = next(
+                    index
+                    for index, op in enumerate(ops)
+                    if str(op.operator) == "BDC" and str(op.operands[0]) == "/Formula"
+                )
+                values = [float(value) for value in ops[bdc_index + 3].operands]
+                values[0] += 0.01
+                ops[bdc_index + 3] = pikepdf.ContentStreamInstruction(
+                    values, Operator("re")
+                )
+                page.obj[Name.Contents] = pdf.make_stream(
+                    pikepdf.unparse_content_stream(ops)
+                )
+            elif mutation == "formula_bbox":
+                formulas[0][Name.A][Name("/BBox")][0] += 1.0
+            elif mutation == "structure_order":
+                parent = formulas[0][Name.P]
+                children = list(parent[Name.K])
+                first = next(
+                    index
+                    for index, child in enumerate(children)
+                    if tuple(child.objgen) == tuple(formulas[0].objgen)
+                )
+                second = next(
+                    index
+                    for index, child in enumerate(children)
+                    if tuple(child.objgen) == tuple(formulas[1].objgen)
+                )
+                children[first], children[second] = children[second], children[first]
+                parent[Name.K] = Array(children)
+            elif mutation == "parent_tree":
+                _, entries = _number_tree_entries(pdf.Root[Name.StructTreeRoot])
+                page_array = next(
+                    value for key, value in entries if key == association.struct_parent
+                )
+                page_array[association.owners[0].mcid] = None
+            elif mutation == "mathml":
+                embedded = formulas[0][Name("/AF")][0][Name("/EF")][Name.F]
+                embedded.write(b"<math><mn>999</mn></math>")
+            elif mutation == "alt":
+                formulas[0][Name.Alt] = String("changed meaning")
+            elif mutation == "pixels":
+                ops = list(pikepdf.parse_content_stream(page))
+                ops.extend(
+                    [
+                        pikepdf.ContentStreamInstruction([], Operator("q")),
+                        pikepdf.ContentStreamInstruction([1, 0, 0], Operator("rg")),
+                        pikepdf.ContentStreamInstruction(
+                            [350, 250, 20, 20], Operator("re")
+                        ),
+                        pikepdf.ContentStreamInstruction([], Operator("f")),
+                        pikepdf.ContentStreamInstruction([], Operator("Q")),
+                    ]
+                )
+                page.obj[Name.Contents] = pdf.make_stream(
+                    pikepdf.unparse_content_stream(ops)
+                )
+            pdf.save(associated)
+
+    with pytest.raises(MultiEquationSemanticRejected):
+        verify_multi_equation_formulas(associated, group, owners, association)
+
+
+def test_retry_cannot_append_a_second_group_and_preserves_prior_output(
+    tmp_path,
+) -> None:
+    group = _group(tmp_path)
+    source = tmp_path / "split.pdf"
+    owners = _planned_owners(source, group)
+    first = tmp_path / "first.pdf"
+    retry = tmp_path / "retry.pdf"
+    remediate_multi_equation_pdf(source, first, group, owners)
+    first_bytes = first.read_bytes()
+    retry.write_bytes(b"prior output")
+
+    with pytest.raises(MultiEquationSemanticRejected):
+        remediate_multi_equation_pdf(first, retry, group, owners)
+
+    assert first.read_bytes() == first_bytes
+    assert retry.read_bytes() == b"prior output"
+
+
+@pytest.mark.parametrize("budget", ["semantic", "render"])
+def test_aggregate_budget_refusal_preserves_prior_output(
+    tmp_path, monkeypatch, budget
+) -> None:
+    from src.education.remediation import content_tagger_v2, multi_equation_semantics
+
+    group = _group(tmp_path)
+    source = tmp_path / "split.pdf"
+    owners = _planned_owners(source, group)
+    output = tmp_path / f"budget-{budget}.pdf"
+    output.write_bytes(b"prior output")
+    if budget == "semantic":
+        monkeypatch.setattr(
+            multi_equation_semantics, "_MAX_SEMANTIC_BYTES_PER_GROUP", 1
+        )
+    else:
+        monkeypatch.setattr(
+            content_tagger_v2, "_REGION_MAX_TRANSACTION_RENDER_BYTES", 1
+        )
+
+    with pytest.raises(MultiEquationSemanticRejected):
+        remediate_multi_equation_pdf(source, output, group, owners)
+
+    assert output.read_bytes() == b"prior output"
+
+
+def test_semantic_evidence_for_another_crop_cannot_reach_association(tmp_path) -> None:
+    group = _group(tmp_path)
+    forged = tuple(_owner(child, index) for index, child in enumerate(group.children))
+    source = tmp_path / "split.pdf"
+    output = tmp_path / "forged-source.pdf"
+    output.write_bytes(b"prior output")
+
+    with pytest.raises(MultiEquationSemanticRejected, match="semantic_source_changed"):
+        remediate_multi_equation_pdf(source, output, group, forged)
+
+    assert output.read_bytes() == b"prior output"
+
+
+def test_real_ocr_form_keeps_group_formula_order_and_search_layer(tmp_path) -> None:
+    ocrmypdf = pytest.importorskip("ocrmypdf")
+    if shutil.which("tesseract") is None:
+        pytest.skip("Tesseract is unavailable")
+    source = tmp_path / "split.pdf"
+    ocr_source = tmp_path / "split-ocr.pdf"
+    output = tmp_path / "split-ocr-associated.pdf"
+    lines = [("x=1", (30, 30, 90, 42)), ("y=2", (30, 100, 90, 112))]
+    image = Image.new("RGB", (400, 300), "white")
+    draw = ImageDraw.Draw(image)
+    for text, (x0, y0, _x1, _y1) in lines:
+        draw.text((x0, y0), text, fill="black")
+    payload = BytesIO()
+    image.save(payload, format="PNG")
+    image.close()
+    document = fitz.open()
+    page = document.new_page(width=400, height=300)
+    page.insert_image(page.rect, stream=payload.getvalue())
+    document.save(source)
+    document.close()
+    from src.education.pdf_checks.image_checker import _displayed_image_occurrences
+    from src.education.pdf_checks.multi_equation_region_detector import (
+        MultiEquationRegionDetector,
+    )
+
+    with fitz.open(source) as document:
+        detector = MultiEquationRegionDetector(
+            ocr_data=lambda _image, **_kwargs: _ocr_data(lines),
+            ocr_version=lambda: "5.5.1",
+            ocr_tessdata_sha256=lambda: next(iter(SUPPORTED_ENG_TESSDATA_SHA256)),
+        )
+        occurrence = _displayed_image_occurrences(document[0], 1)[0]
+        group = detector.find_group(document, document[0], occurrence)
+        assert group is not None
+    owners = _planned_owners(source, group)
+    try:
+        ocrmypdf.ocr(
+            input_file=source,
+            output_file=ocr_source,
+            force_ocr=False,
+            skip_text=True,
+            redo_ocr=False,
+            optimize=1,
+            language=["eng"],
+            output_type="pdf",
+            progress_bar=False,
+            use_threads=True,
+            tesseract_oem=3,
+            tesseract_pagesegmode=6,
+            tesseract_timeout=15.0,
+        )
+    except ocrmypdf.exceptions.MissingDependencyError as exc:
+        pytest.skip(f"OCRmyPDF dependency unavailable: {type(exc).__name__}")
+
+    contract = remediate_multi_equation_pdf(ocr_source, output, group, owners)
+
+    evidence = contract.saved_evidence
+    assert [owner.mcid for owner in evidence.owners] == sorted(
+        owner.mcid for owner in evidence.owners
+    )
+    with fitz.open(output) as delivered:
+        assert delivered[0].get_text("text").strip()

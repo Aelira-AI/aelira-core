@@ -87,6 +87,30 @@ def _validate_group_owners(
         raise ValueError("whole-system owner differs from group union")
 
 
+def _formula_bbox_for_owner(
+    group: MultiEquationRegionGroupV1,
+    owner: "MultiEquationSemanticOwnerV1",
+) -> tuple[float, float, float, float]:
+    """Map a detector crop into PDF default user space for /BBox."""
+
+    matrix = tuple(float(value) for value in group.children[0].transform)
+    px0, py0, px1, py1 = owner.pixel_bbox
+    width = float(group.source_width)
+    height = float(group.source_height)
+    clip = (
+        px0 / width,
+        1.0 - (py1 / height),
+        (px1 - px0) / width,
+        (py1 - py0) / height,
+    )
+    return (
+        matrix[4] + matrix[0] * clip[0],
+        matrix[5] + matrix[3] * clip[1],
+        matrix[4] + matrix[0] * (clip[0] + clip[2]),
+        matrix[5] + matrix[3] * (clip[1] + clip[3]),
+    )
+
+
 class MultiEquationSemanticOwnerV1(BaseModel):
     """One verified semantic owner within an exact screenshot group."""
 
@@ -190,14 +214,39 @@ class MultiEquationSavedEvidenceV1(BaseModel):
     saved_file_sha256: str = Field(pattern=_SHA256)
     page_number: int = Field(ge=1, le=_MAX_INDEX, strict=True)
     parent_occurrence_id: str = Field(pattern=r"^imgocc-v1-[0-9a-f]{24}$")
+    saved_parent_occurrence_id: str = Field(pattern=r"^imgocc-v1-[0-9a-f]{24}$")
     image_xref: int = Field(ge=1, le=_MAX_INDEX, strict=True)
+    image_index: int = Field(ge=0, le=_MAX_INDEX, strict=True)
+    occurrence_ordinal: int = Field(ge=0, le=_MAX_INDEX, strict=True)
     source_sha256: str = Field(pattern=_SHA256)
+    parent_bbox: tuple[float, float, float, float]
+    transform: tuple[float, float, float, float, float, float]
     disposition: Literal["split_children", "whole_system"]
     original_artifact_count: Literal[1]
     owners: tuple[MultiEquationSavedOwnerV1, ...] = Field(min_length=1, max_length=8)
     render_signatures: tuple[tuple[int, int, int, int, int, str], ...] = Field(
         min_length=1, max_length=_MAX_RENDER_SIGNATURES
     )
+
+    @field_validator("parent_bbox", mode="before")
+    @classmethod
+    def _parent_bbox(cls, value: Any) -> Any:
+        return _positive_finite_bbox(value, label="parent_bbox")
+
+    @field_validator("transform", mode="before")
+    @classmethod
+    def _transform(cls, value: Any) -> Any:
+        if not isinstance(value, (list, tuple)) or len(value) != 6:
+            raise ValueError("saved transform must contain six values")
+        if any(
+            not isinstance(item, (int, float))
+            or isinstance(item, bool)
+            or not math.isfinite(float(item))
+            or abs(float(item)) > _MAX_INDEX
+            for item in value
+        ):
+            raise ValueError("saved transform must contain bounded finite values")
+        return value
 
     @field_validator("render_signatures")
     @classmethod
@@ -218,6 +267,18 @@ class MultiEquationSavedEvidenceV1(BaseModel):
             ):
                 raise ValueError("saved render digest is invalid")
         return value
+
+    @model_validator(mode="after")
+    def _saved_occurrence_identity(self) -> "MultiEquationSavedEvidenceV1":
+        identity = (
+            f"{self.page_number}|{self.image_xref}|{self.image_index}|"
+            f"{self.occurrence_ordinal}|"
+            + ",".join(f"{value:.6f}" for value in self.parent_bbox)
+        )
+        expected = "imgocc-v1-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
+        if self.saved_parent_occurrence_id != expected:
+            raise ValueError("saved parent occurrence identity differs")
+        return self
 
 
 class MultiEquationSemanticContractV1(BaseModel):
@@ -242,10 +303,23 @@ class MultiEquationSemanticContractV1(BaseModel):
         if (
             saved.page_number != self.group.page_number
             or saved.parent_occurrence_id != self.group.parent_occurrence_id
-            or saved.image_xref != self.group.image_xref
+            or saved.image_index != self.group.image_index
+            or saved.occurrence_ordinal != self.group.occurrence_ordinal
             or saved.source_sha256 != self.group.source_sha256
             or saved.disposition != self.group.disposition
             or len(saved.owners) != len(self.owners)
+            or any(
+                abs(actual - wanted) > 1e-6
+                for actual, wanted in zip(
+                    saved.parent_bbox, self.group.children[0].parent_bbox
+                )
+            )
+            or any(
+                abs(actual - wanted) > 1e-6
+                for actual, wanted in zip(
+                    saved.transform, self.group.children[0].transform
+                )
+            )
         ):
             raise ValueError("saved evidence differs from semantic group")
         for owner, saved_owner in zip(self.owners, saved.owners):
@@ -259,7 +333,10 @@ class MultiEquationSemanticContractV1(BaseModel):
                 or saved_owner.alt_text_sha256 != alt_sha256
                 or any(
                     abs(actual - wanted) > 1e-6
-                    for actual, wanted in zip(saved_owner.formula_bbox, owner.pdf_bbox)
+                    for actual, wanted in zip(
+                        saved_owner.formula_bbox,
+                        _formula_bbox_for_owner(self.group, owner),
+                    )
                 )
             ):
                 raise ValueError("saved owner differs from verified semantics")
