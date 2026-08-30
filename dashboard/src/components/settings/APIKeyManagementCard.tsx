@@ -138,7 +138,7 @@ export function APIKeyManagementCard(): React.ReactElement {
         ) : keys.length === 0 ? (
           <p className="text-sm text-tertiary">No API keys. Create one when you need programmatic access.</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" style={{ contain: 'layout paint' }}>
             <table className="w-full text-sm">
               <caption className="sr-only">Your API keys and their status</caption>
               <thead><tr className="text-left text-tertiary"><th scope="col" className="py-2">Name</th><th scope="col">Prefix</th><th scope="col">Created</th><th scope="col">Last used</th><th scope="col">Expires</th><th scope="col">Status</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
