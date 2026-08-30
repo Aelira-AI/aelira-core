@@ -140,6 +140,35 @@ class ScannedRegionAssociationResult:
     success: bool = True
 
 
+@dataclass(frozen=True)
+class DiagramAssociationResult:
+    """Identity and visual evidence for one verified diagram Figure association."""
+
+    success: bool
+    error: Optional[str] = None
+    page_number: int = 0
+    image_xref: int = 0
+    occurrence_ordinal: int = 0
+    struct_parent: int = -1
+    mcid: int = -1
+    graph_sha256: str = ""
+    description_sha256: str = ""
+    rendered_html_sha256: str = ""
+    attachment_sha256: str = ""
+    metadata_sha256: str = ""
+    render_signatures: tuple[tuple[int, int, int, int, int, str], ...] = ()
+    resource_name: str = ""
+    diagram_bbox: tuple[float, float, float, float] = ()
+    ocr_resource_name: str = ""
+    ocr_struct_parent: int = -1
+    ocr_group_owners: tuple[tuple[str, int], ...] = ()
+    ocr_before_mcids: tuple[int, ...] = ()
+    ocr_after_mcids: tuple[int, ...] = ()
+    ocr_payload_sha256: str = ""
+    ocr_font_sha256: str = ""
+    page_text_sha256: str = ""
+
+
 class ScannedRegionAssociationError(RuntimeError):
     """A scanned-region association failed its fail-closed contract."""
 
@@ -1548,6 +1577,137 @@ def associate_image_formula(
         return _association_failure(pending, "association_failed")
 
 
+def associate_image_commutative_diagram(
+    pdf: Any, fitz_doc: Any, pending: Any
+) -> DiagramAssociationResult:
+    """Associate one exact displayed diagram occurrence as a PDF ``Figure``.
+
+    The graph is attached as canonical JSON. The caller owns the disposable
+    transaction clone, matching the surrounding PDF writer's commit boundary.
+    """
+    from types import SimpleNamespace
+
+    from src.education.commutative_diagram_pdf import (
+        CommutativeDiagramPendingAssociationV1,
+    )
+
+    try:
+        pending = CommutativeDiagramPendingAssociationV1.model_validate(pending)
+        locator = pending.locator
+        if getattr(locator, "source_kind", None) != "embedded_image_occurrence":
+            raise ValueError("diagram_locator_kind_mismatch")
+        payload = pending.graph_attachment_bytes
+        attachment_sha256 = hashlib.sha256(payload).hexdigest()
+        before_render = tuple(
+            _page_render_signature(fitz_doc, locator.page_number, dpi)
+            for dpi in _REGION_RENDER_DPI
+        )
+        formula_pending = SimpleNamespace(
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            bbox=locator.bbox,
+            occurrence_id=locator.occurrence_id,
+            image_stream_sha256=locator.image_stream_sha256,
+            alt_text=pending.alt_text,
+            mathml_string=payload.decode("ascii"),
+            verification_evidence=SimpleNamespace(mathml_sha256=attachment_sha256),
+        )
+        association = associate_image_formula(pdf, fitz_doc, formula_pending)
+        if not association.success:
+            return DiagramAssociationResult(
+                success=False,
+                error=association.error,
+                page_number=locator.page_number,
+                image_xref=locator.image_xref,
+                occurrence_ordinal=locator.occurrence_ordinal,
+            )
+
+        formulas: List[Any] = []
+        root_kids = pdf.Root[Name.StructTreeRoot].get(Name.K)
+        roots = (
+            list(root_kids)
+            if isinstance(root_kids, Array)
+            else ([root_kids] if root_kids else [])
+        )
+        for root in roots:
+            _collect_formula_elements(root, formulas)
+        matches = [
+            formula
+            for formula in formulas
+            if hasattr(formula.get(Name.K), "keys")
+            and int(formula[Name.K].get(Name.MCID, -1)) == association.mcid
+            and tuple(formula.get(Name.Pg).objgen)
+            == tuple(pdf.pages[locator.page_number - 1].obj.objgen)
+        ]
+        if len(matches) != 1:
+            raise ValueError("diagram_structure_element_ambiguous")
+        figure = matches[0]
+        figure[Name.S] = Name("/Figure")
+        figure[Name("/ActualText")] = String(pending.accessible_text)
+        figure[Name("/AeliraDiagram")] = Dictionary(
+            {
+                "/GraphSHA256": String(pending.semantic_output.graph_sha256),
+                "/DescriptionSHA256": String(
+                    pending.semantic_output.description_sha256
+                ),
+                "/RenderedHTMLSHA256": String(
+                    pending.semantic_output.rendered_html_sha256
+                ),
+                "/MetadataSHA256": String(pending.metadata_sha256),
+            }
+        )
+        af = figure.get(Name("/AF"))
+        if not isinstance(af, Array) or len(af) != 1:
+            raise ValueError("diagram_attachment_ambiguous")
+        filespec = af[0]
+        filespec[Name.F] = String("commutative-diagram.json")
+        embedded = filespec[Name("/EF")][Name.F]
+        embedded[Name.Subtype] = Name("/application#2Fjson")
+
+        page = pdf.pages[locator.page_number - 1]
+        rewritten = []
+        changed = 0
+        for op in pikepdf.parse_content_stream(page):
+            if (
+                str(op.operator) == "BDC"
+                and len(op.operands) == 2
+                and str(op.operands[0]) == "/Formula"
+                and int(op.operands[1].get(Name.MCID, -1)) == association.mcid
+            ):
+                rewritten.append(
+                    pikepdf.ContentStreamInstruction(
+                        [Name("/Figure"), op.operands[1]], Operator("BDC")
+                    )
+                )
+                changed += 1
+            else:
+                rewritten.append(op)
+        if changed != 1:
+            raise ValueError("diagram_marked_content_ambiguous")
+        page.obj[Name.Contents] = pdf.make_stream(
+            pikepdf.unparse_content_stream(rewritten)
+        )
+        return DiagramAssociationResult(
+            success=True,
+            page_number=association.page_number,
+            image_xref=association.image_xref,
+            occurrence_ordinal=association.occurrence_ordinal,
+            struct_parent=association.struct_parent,
+            mcid=association.mcid,
+            graph_sha256=pending.semantic_output.graph_sha256,
+            description_sha256=pending.semantic_output.description_sha256,
+            rendered_html_sha256=pending.semantic_output.rendered_html_sha256,
+            attachment_sha256=attachment_sha256,
+            metadata_sha256=pending.metadata_sha256,
+            render_signatures=before_render,
+        )
+    except Exception as exc:
+        logger.warning("Exact commutative-diagram association failed closed: %s", exc)
+        return DiagramAssociationResult(success=False, error="association_failed")
+
+
 _REGION_RENDER_DPI = (144, 288)
 _REGION_FLOAT_TOLERANCE = 1e-6
 _REGION_MAX_RENDER_DIMENSION = 16_384
@@ -1815,6 +1975,7 @@ def _region_draw_ownership(
     *,
     artifact_required: bool = True,
     allowed_unmarked_do_names: frozenset[str] = frozenset(),
+    semantic_tag: str = "/Formula",
 ) -> tuple[int, list[int]]:
     """Require one Artifact original and Formula-only ownership for every replay."""
     target_indices = set(_resolved_image_do_indices(page, ops, image_xref))
@@ -1838,7 +1999,7 @@ def _region_draw_ownership(
             raise ScannedRegionAssociationError("region_graphics_state_unsupported")
         elif operator == "W":
             if not artifact_required or not (
-                len(marked) == 1 and marked[0][0] == "/Formula"
+                len(marked) == 1 and marked[0][0] == semantic_tag
             ):
                 raise ScannedRegionAssociationError("region_existing_clip_unsupported")
         elif index in target_indices:
@@ -1850,7 +2011,7 @@ def _region_draw_ownership(
                 continue
             if any(tag == "/Artifact" for tag, _ in marked):
                 raise ScannedRegionAssociationError("region_formula_inside_artifact")
-            if len(marked) != 1 or marked[0][0] != "/Formula" or marked[0][1] < 0:
+            if len(marked) != 1 or marked[0][0] != semantic_tag or marked[0][1] < 0:
                 raise ScannedRegionAssociationError(
                     "region_draw_has_ambiguous_semantic_owner"
                 )
@@ -2688,6 +2849,156 @@ def associate_scanned_region_formula(
     )
 
 
+def _promote_formula_to_commutative_diagram(
+    pdf: Any, *, page_number: int, mcid: int, pending: Any
+) -> Any:
+    formulas: List[Any] = []
+    root_kids = pdf.Root[Name.StructTreeRoot].get(Name.K)
+    roots = (
+        list(root_kids)
+        if isinstance(root_kids, Array)
+        else ([root_kids] if root_kids else [])
+    )
+    for root in roots:
+        _collect_formula_elements(root, formulas)
+    matches = [
+        formula
+        for formula in formulas
+        if hasattr(formula.get(Name.K), "keys")
+        and int(formula[Name.K].get(Name.MCID, -1)) == mcid
+        and tuple(formula.get(Name.Pg).objgen)
+        == tuple(pdf.pages[page_number - 1].obj.objgen)
+    ]
+    if len(matches) != 1:
+        raise ValueError("diagram_structure_element_ambiguous")
+    figure = matches[0]
+    figure[Name.S] = Name("/Figure")
+    figure[Name("/ActualText")] = String(pending.accessible_text)
+    figure[Name("/AeliraDiagram")] = Dictionary(
+        {
+            "/GraphSHA256": String(pending.semantic_output.graph_sha256),
+            "/DescriptionSHA256": String(pending.semantic_output.description_sha256),
+            "/RenderedHTMLSHA256": String(pending.semantic_output.rendered_html_sha256),
+            "/MetadataSHA256": String(pending.metadata_sha256),
+        }
+    )
+    af = figure.get(Name("/AF"))
+    if not isinstance(af, Array) or len(af) != 1:
+        raise ValueError("diagram_attachment_ambiguous")
+    filespec = af[0]
+    filespec[Name.F] = String("commutative-diagram.json")
+    embedded = filespec[Name("/EF")][Name.F]
+    if embedded.read_bytes() != pending.graph_attachment_bytes:
+        raise ValueError("diagram_attachment_payload_changed")
+    embedded[Name.Subtype] = Name("/application#2Fjson")
+
+    page = pdf.pages[page_number - 1]
+    rewritten = []
+    changed = 0
+    for op in pikepdf.parse_content_stream(page):
+        if (
+            str(op.operator) == "BDC"
+            and len(op.operands) == 2
+            and str(op.operands[0]) == "/Formula"
+            and int(op.operands[1].get(Name.MCID, -1)) == mcid
+        ):
+            rewritten.append(
+                pikepdf.ContentStreamInstruction(
+                    [Name("/Figure"), op.operands[1]], Operator("BDC")
+                )
+            )
+            changed += 1
+        else:
+            rewritten.append(op)
+    if changed != 1:
+        raise ValueError("diagram_marked_content_ambiguous")
+    page.obj[Name.Contents] = pdf.make_stream(pikepdf.unparse_content_stream(rewritten))
+    return figure
+
+
+def associate_scanned_region_commutative_diagram(
+    pdf: Any, fitz_doc: Any, pending: Any
+) -> DiagramAssociationResult:
+    """Associate one verified page-raster region as an exact clipped Figure."""
+    from types import SimpleNamespace
+
+    from src.education.commutative_diagram_pdf import (
+        CommutativeDiagramPendingAssociationV1,
+    )
+
+    try:
+        pending = CommutativeDiagramPendingAssociationV1.model_validate(pending)
+        locator = pending.locator
+        if getattr(locator, "source_kind", None) != "page_raster_region":
+            raise ValueError("diagram_locator_kind_mismatch")
+        payload = pending.graph_attachment_bytes
+        attachment_sha256 = hashlib.sha256(payload).hexdigest()
+        working_occurrence = SimpleNamespace(
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            bbox=tuple(locator.parent_bbox),
+            occurrence_id=locator.parent_occurrence_id,
+            transform=tuple(locator.transform),
+        )
+        formula_pending = SimpleNamespace(
+            locator=locator,
+            working_occurrence=working_occurrence,
+            normalized_crop_sha256=pending.recognition.normalized_source_sha256,
+            alt_text=pending.alt_text,
+            mathml_string=payload.decode("ascii"),
+            verification_evidence=SimpleNamespace(
+                mathml_sha256=attachment_sha256,
+                passed=True,
+                source_sha256=pending.recognition.normalized_source_sha256,
+            ),
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            occurrence_id=locator.parent_occurrence_id,
+            bbox=tuple(locator.pdf_bbox),
+            region_bbox=tuple(locator.pdf_bbox),
+            parent_bbox=tuple(locator.parent_bbox),
+            working_parent_bbox=tuple(locator.parent_bbox),
+        )
+        association = associate_scanned_region_formula(pdf, fitz_doc, formula_pending)
+        _promote_formula_to_commutative_diagram(
+            pdf,
+            page_number=locator.page_number,
+            mcid=association.mcid,
+            pending=pending,
+        )
+        return DiagramAssociationResult(
+            success=True,
+            page_number=association.page_number,
+            image_xref=association.image_xref,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            struct_parent=association.struct_parent,
+            mcid=association.mcid,
+            graph_sha256=pending.semantic_output.graph_sha256,
+            description_sha256=pending.semantic_output.description_sha256,
+            rendered_html_sha256=pending.semantic_output.rendered_html_sha256,
+            attachment_sha256=attachment_sha256,
+            metadata_sha256=pending.metadata_sha256,
+            render_signatures=association.render_signatures,
+            resource_name=association.resource_name,
+            diagram_bbox=association.formula_bbox,
+            ocr_resource_name=association.ocr_resource_name,
+            ocr_struct_parent=association.ocr_struct_parent,
+            ocr_group_owners=association.ocr_group_owners,
+            ocr_before_mcids=association.ocr_before_mcids,
+            ocr_after_mcids=association.ocr_after_mcids,
+            ocr_payload_sha256=association.ocr_payload_sha256,
+            ocr_font_sha256=association.ocr_font_sha256,
+            page_text_sha256=association.page_text_sha256,
+        )
+    except Exception as exc:
+        logger.warning("Scanned-region diagram association failed closed: %s", exc)
+        return DiagramAssociationResult(success=False, error="association_failed")
+
+
 def _collect_formula_elements(element: Any, found: List[Any]) -> None:
     if not hasattr(element, "keys"):
         return
@@ -2698,6 +3009,251 @@ def _collect_formula_elements(element: Any, found: List[Any]) -> None:
     for child in children:
         if hasattr(child, "keys") and str(child.get(Name.Type, "")) != "/MCR":
             _collect_formula_elements(child, found)
+
+
+def _collect_figure_elements(element: Any, found: List[Any]) -> None:
+    if not hasattr(element, "keys"):
+        return
+    if str(element.get(Name.S, "")) == "/Figure":
+        found.append(element)
+    kids = element.get(Name.K)
+    children = list(kids) if isinstance(kids, Array) else ([kids] if kids else [])
+    for child in children:
+        if hasattr(child, "keys") and str(child.get(Name.Type, "")) != "/MCR":
+            _collect_figure_elements(child, found)
+
+
+def _collect_structure_elements_by_tag(
+    element: Any, found: List[Any], semantic_tag: str
+) -> None:
+    if not hasattr(element, "keys"):
+        return
+    if str(element.get(Name.S, "")) == semantic_tag:
+        found.append(element)
+    kids = element.get(Name.K)
+    children = list(kids) if isinstance(kids, Array) else ([kids] if kids else [])
+    for child in children:
+        if hasattr(child, "keys") and str(child.get(Name.Type, "")) != "/MCR":
+            _collect_structure_elements_by_tag(child, found, semantic_tag)
+
+
+def verify_image_commutative_diagram_association(
+    path: str | Path, pending: Any, expected: DiagramAssociationResult
+) -> bool:
+    """Reopen and verify source, Figure ownership, attachment, and rendering."""
+    from src.education.commutative_diagram_pdf import (
+        CommutativeDiagramPendingAssociationV1,
+    )
+    from src.education.pdf_checks.image_checker import _displayed_image_occurrences
+
+    if not expected.success:
+        return False
+    try:
+        pending = CommutativeDiagramPendingAssociationV1.model_validate(pending)
+        locator = pending.locator
+        if getattr(locator, "source_kind", None) != "embedded_image_occurrence":
+            raise ValueError("saved_diagram_locator_kind_mismatch")
+        payload = pending.graph_attachment_bytes
+        if (
+            hashlib.sha256(payload).hexdigest() != expected.attachment_sha256
+            or pending.metadata_sha256 != expected.metadata_sha256
+        ):
+            raise ValueError("saved_diagram_pending_identity_changed")
+
+        with fitz.open(str(path)) as fitz_doc, pikepdf.open(str(path)) as pdf:
+            occurrences = _displayed_image_occurrences(
+                fitz_doc[locator.page_number - 1], locator.page_number
+            )
+            exact = [
+                item
+                for item in occurrences
+                if item["page_number"] == locator.page_number
+                and item["image_index"] == locator.image_index
+                and item["occurrence_ordinal"] == locator.occurrence_ordinal
+                and all(
+                    abs(left - right) <= 1e-6
+                    for left, right in zip(item["bbox"], locator.bbox)
+                )
+            ]
+            if len(exact) != 1:
+                raise ValueError("saved_diagram_occurrence_identity_mismatch")
+            saved_image_xref = exact[0]["image_xref"]
+            image_bytes = fitz_doc.extract_image(saved_image_xref).get("image")
+            if (
+                not isinstance(image_bytes, bytes)
+                or hashlib.sha256(image_bytes).hexdigest()
+                != locator.image_stream_sha256
+            ):
+                raise ValueError("saved_diagram_image_stream_changed")
+
+            figures: List[Any] = []
+            root_kids = pdf.Root[Name.StructTreeRoot].get(Name.K)
+            roots = (
+                list(root_kids)
+                if isinstance(root_kids, Array)
+                else ([root_kids] if root_kids else [])
+            )
+            for root in roots:
+                _collect_figure_elements(root, figures)
+            matches = []
+            for figure in figures:
+                mcr = figure.get(Name.K)
+                if (
+                    hasattr(mcr, "keys")
+                    and str(mcr.get(Name.Type, "")) == "/MCR"
+                    and int(mcr.get(Name.MCID, -1)) == expected.mcid
+                    and str(figure.get(Name.Alt, "")) == pending.alt_text
+                    and str(figure.get(Name("/ActualText"), ""))
+                    == pending.accessible_text
+                    and tuple(figure.get(Name.Pg).objgen)
+                    == tuple(pdf.pages[locator.page_number - 1].obj.objgen)
+                ):
+                    matches.append(figure)
+            if len(matches) != 1:
+                raise ValueError("saved_diagram_figure_not_unique")
+            figure = matches[0]
+            parent = figure.get(Name.P)
+            siblings_value = parent.get(Name.K) if hasattr(parent, "keys") else None
+            siblings = (
+                list(siblings_value)
+                if isinstance(siblings_value, Array)
+                else ([siblings_value] if siblings_value is not None else [])
+            )
+            if (
+                sum(
+                    1
+                    for sibling in siblings
+                    if hasattr(sibling, "objgen")
+                    and tuple(sibling.objgen) == tuple(figure.objgen)
+                )
+                != 1
+            ):
+                raise ValueError("saved_diagram_reading_order_ambiguous")
+            attributes = figure.get(Name.A)
+            saved_bbox = (
+                attributes.get(Name("/BBox")) if hasattr(attributes, "keys") else None
+            )
+            if (
+                not isinstance(saved_bbox, Array)
+                or len(saved_bbox) != 4
+                or any(
+                    abs(float(actual) - float(wanted)) > 1e-6
+                    for actual, wanted in zip(saved_bbox, locator.bbox)
+                )
+            ):
+                raise ValueError("saved_diagram_bbox_changed")
+
+            af = figure.get(Name("/AF"))
+            if not isinstance(af, Array) or len(af) != 1:
+                raise ValueError("saved_diagram_attachment_ambiguous")
+            filespec = af[0]
+            ef = filespec.get(Name("/EF"))
+            embedded = ef.get(Name.F) if hasattr(ef, "keys") else None
+            if (
+                str(filespec.get(Name.Type, "")) != "/Filespec"
+                or str(filespec.get(Name("/AFRelationship"), "")) != "/Supplement"
+                or str(filespec.get(Name.F, "")) != "commutative-diagram.json"
+                or embedded is None
+                or str(embedded.get(Name.Type, "")) != "/EmbeddedFile"
+                or str(embedded.get(Name.Subtype, "")) != "/application#2Fjson"
+            ):
+                raise ValueError("saved_diagram_attachment_contract_changed")
+            embedded_bytes = embedded.read_bytes()
+            params = embedded.get(Name("/Params"))
+            checksum = (
+                params.get(Name("/CheckSum")) if hasattr(params, "keys") else None
+            )
+            if (
+                embedded_bytes != payload
+                or hashlib.sha256(embedded_bytes).hexdigest()
+                != expected.attachment_sha256
+                or not hasattr(params, "keys")
+                or int(params.get(Name("/Size"), -1)) != len(payload)
+                or checksum is None
+                or bytes(checksum)
+                != hashlib.md5(payload, usedforsecurity=False).digest()
+            ):
+                raise ValueError("saved_diagram_attachment_changed")
+            metadata = figure.get(Name("/AeliraDiagram"))
+            expected_metadata = {
+                "/GraphSHA256": expected.graph_sha256,
+                "/DescriptionSHA256": expected.description_sha256,
+                "/RenderedHTMLSHA256": expected.rendered_html_sha256,
+                "/MetadataSHA256": expected.metadata_sha256,
+            }
+            if (
+                not hasattr(metadata, "keys")
+                or {str(key): str(value) for key, value in metadata.items()}
+                != expected_metadata
+            ):
+                raise ValueError("saved_diagram_metadata_changed")
+
+            parent_tree, entries = _number_tree_entries(pdf.Root[Name.StructTreeRoot])
+            del parent_tree
+            page_array = next(
+                (value for key, value in entries if key == expected.struct_parent),
+                None,
+            )
+            page = pdf.pages[locator.page_number - 1]
+            if (
+                not isinstance(page_array, Array)
+                or expected.mcid >= len(page_array)
+                or tuple(page_array[expected.mcid].objgen) != tuple(figure.objgen)
+                or int(page.obj.get(Name.StructParents, -1)) != expected.struct_parent
+            ):
+                raise ValueError("saved_diagram_parent_tree_changed")
+
+            ops = list(pikepdf.parse_content_stream(page))
+            target_indices = _resolved_image_do_indices(page, ops, saved_image_xref)
+            draw_ordinal = 0
+            stack: List[tuple[str, int]] = []
+            matched_target = 0
+            figure_marked_draws = 0
+            for index, op in enumerate(ops):
+                operator = str(op.operator)
+                if operator in {"BMC", "BDC"}:
+                    try:
+                        tag = str(op.operands[0])
+                        mcid_value = (
+                            int(op.operands[1][Name.MCID]) if operator == "BDC" else -1
+                        )
+                        stack.append((tag, mcid_value))
+                    except Exception:
+                        stack.append(("", -1))
+                elif operator == "EMC":
+                    if not stack:
+                        raise ValueError("saved_diagram_marked_content_unbalanced")
+                    stack.pop()
+                elif operator == "Do":
+                    owner = ("/Figure", expected.mcid)
+                    has_figure = stack.count(owner) == 1
+                    semantic_owners = [
+                        value for value in stack if value[0] != "/Artifact"
+                    ]
+                    if has_figure and semantic_owners != [owner]:
+                        raise ValueError("saved_diagram_has_additional_owner")
+                    figure_marked_draws += int(has_figure)
+                    if index in target_indices:
+                        if draw_ordinal == locator.occurrence_ordinal:
+                            matched_target += int(has_figure)
+                        elif has_figure:
+                            raise ValueError("saved_diagram_marks_wrong_draw")
+                        draw_ordinal += 1
+            if (
+                matched_target != 1
+                or figure_marked_draws != 1
+                or stack
+                or tuple(
+                    _page_render_signature(fitz_doc, locator.page_number, dpi)
+                    for dpi in _REGION_RENDER_DPI
+                )
+                != expected.render_signatures
+            ):
+                raise ValueError("saved_diagram_visual_or_ownership_changed")
+            return True
+    except Exception as exc:
+        logger.warning("Post-save diagram association verification failed: %s", exc)
+        return False
 
 
 def _verify_region_ocr_form(
@@ -3044,6 +3600,9 @@ def verify_scanned_region_formula_association(
     expected: ScannedRegionAssociationResult,
     *,
     allowed_region_mcids: Optional[set[int]] = None,
+    semantic_tag: str = "/Formula",
+    attachment_subtype: str = "/application#2Fmathml+xml",
+    attachment_sha256: Optional[str] = None,
 ) -> bool:
     """Reopen and reverse-verify provenance, structure, clip, and pixel parity."""
     try:
@@ -3099,7 +3658,7 @@ def verify_scanned_region_formula_association(
                 else ([root_kids] if root_kids else [])
             )
             for root in roots:
-                _collect_formula_elements(root, formulas)
+                _collect_structure_elements_by_tag(root, formulas, semantic_tag)
             semantic_formulas = []
             for formula in formulas:
                 mcr = formula.get(Name.K)
@@ -3168,7 +3727,7 @@ def verify_scanned_region_formula_association(
                 or str(filespec.get(Name("/AFRelationship"), "")) != "/Supplement"
                 or embedded is None
                 or str(embedded.get(Name.Type, "")) != "/EmbeddedFile"
-                or str(embedded.get(Name.Subtype, "")) != "/application#2Fmathml+xml"
+                or str(embedded.get(Name.Subtype, "")) != attachment_subtype
             ):
                 raise ValueError("saved_region_embedded_file_mismatch")
             embedded_bytes = embedded.read_bytes()
@@ -3183,7 +3742,8 @@ def verify_scanned_region_formula_association(
                 or checksum is None
                 or bytes(checksum)
                 != hashlib.md5(embedded_bytes, usedforsecurity=False).digest()
-                or hashlib.sha256(embedded_bytes).hexdigest() != expected.mathml_sha256
+                or hashlib.sha256(embedded_bytes).hexdigest()
+                != (attachment_sha256 or expected.mathml_sha256)
             ):
                 raise ValueError("saved_region_mathml_mismatch")
 
@@ -3222,6 +3782,7 @@ def verify_scanned_region_formula_association(
                 ops,
                 saved_xref,
                 allowed_unmarked_do_names=allowed_unmarked,
+                semantic_tag=semantic_tag,
             )
             allowed_mcids = allowed_region_mcids or {expected.mcid}
             if set(formula_mcids) != allowed_mcids:
@@ -3250,7 +3811,7 @@ def verify_scanned_region_formula_association(
                     continue
                 try:
                     if (
-                        str(sequence[0].operands[0]) != "/Formula"
+                        str(sequence[0].operands[0]) != semantic_tag
                         or int(sequence[0].operands[1][Name.MCID]) != expected.mcid
                         or str(sequence[6].operands[0]) != resource_name
                         or any(
@@ -3284,16 +3845,146 @@ def verify_scanned_region_formula_association(
         return False
 
 
+def verify_scanned_region_commutative_diagram_association(
+    path: str | Path, pending: Any, expected: DiagramAssociationResult
+) -> bool:
+    """Reverse-verify a clipped diagram Figure and its graph metadata."""
+    from types import SimpleNamespace
+
+    from src.education.commutative_diagram_pdf import (
+        CommutativeDiagramPendingAssociationV1,
+    )
+
+    if not expected.success:
+        return False
+    try:
+        pending = CommutativeDiagramPendingAssociationV1.model_validate(pending)
+        locator = pending.locator
+        if getattr(locator, "source_kind", None) != "page_raster_region":
+            raise ValueError("saved_region_diagram_locator_kind_mismatch")
+        payload = pending.graph_attachment_bytes
+        if (
+            hashlib.sha256(payload).hexdigest() != expected.attachment_sha256
+            or pending.metadata_sha256 != expected.metadata_sha256
+        ):
+            raise ValueError("saved_region_diagram_pending_changed")
+        working_occurrence = SimpleNamespace(
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            bbox=tuple(locator.parent_bbox),
+            occurrence_id=locator.parent_occurrence_id,
+            transform=tuple(locator.transform),
+        )
+        formula_pending = SimpleNamespace(
+            locator=locator,
+            working_occurrence=working_occurrence,
+            normalized_crop_sha256=pending.recognition.normalized_source_sha256,
+            alt_text=pending.alt_text,
+            mathml_string=payload.decode("ascii"),
+            verification_evidence=SimpleNamespace(
+                mathml_sha256=expected.attachment_sha256,
+                passed=True,
+                source_sha256=pending.recognition.normalized_source_sha256,
+            ),
+            page_number=locator.page_number,
+            image_xref=locator.image_xref,
+            image_index=locator.image_index,
+            occurrence_ordinal=locator.occurrence_ordinal,
+            occurrence_id=locator.parent_occurrence_id,
+            bbox=tuple(locator.pdf_bbox),
+            region_bbox=tuple(locator.pdf_bbox),
+            parent_bbox=tuple(locator.parent_bbox),
+            working_parent_bbox=tuple(locator.parent_bbox),
+        )
+        formula_expected = ScannedRegionAssociationResult(
+            page_number=expected.page_number,
+            image_xref=expected.image_xref,
+            resource_name=expected.resource_name,
+            struct_parent=expected.struct_parent,
+            mcid=expected.mcid,
+            mathml_sha256=expected.attachment_sha256,
+            formula_bbox=expected.diagram_bbox,
+            render_signatures=expected.render_signatures,
+            ocr_resource_name=expected.ocr_resource_name,
+            ocr_struct_parent=expected.ocr_struct_parent,
+            ocr_group_owners=expected.ocr_group_owners,
+            ocr_before_mcids=expected.ocr_before_mcids,
+            ocr_after_mcids=expected.ocr_after_mcids,
+            ocr_payload_sha256=expected.ocr_payload_sha256,
+            ocr_font_sha256=expected.ocr_font_sha256,
+            page_text_sha256=expected.page_text_sha256,
+        )
+
+        with pikepdf.open(str(path)) as pdf:
+            figures: List[Any] = []
+            _collect_structure_elements_by_tag(
+                pdf.Root[Name.StructTreeRoot], figures, "/Figure"
+            )
+            matches = [
+                figure
+                for figure in figures
+                if hasattr(figure.get(Name.K), "keys")
+                and int(figure[Name.K].get(Name.MCID, -1)) == expected.mcid
+                and str(figure.get(Name.Alt, "")) == pending.alt_text
+                and str(figure.get(Name("/ActualText"), "")) == pending.accessible_text
+            ]
+            if len(matches) != 1:
+                raise ValueError("saved_region_diagram_figure_not_unique")
+            figure = matches[0]
+            metadata = figure.get(Name("/AeliraDiagram"))
+            wanted_metadata = {
+                "/GraphSHA256": expected.graph_sha256,
+                "/DescriptionSHA256": expected.description_sha256,
+                "/RenderedHTMLSHA256": expected.rendered_html_sha256,
+                "/MetadataSHA256": expected.metadata_sha256,
+            }
+            if (
+                not hasattr(metadata, "keys")
+                or {str(key): str(value) for key, value in metadata.items()}
+                != wanted_metadata
+            ):
+                raise ValueError("saved_region_diagram_metadata_changed")
+            af = figure.get(Name("/AF"))
+            if not isinstance(af, Array) or len(af) != 1:
+                raise ValueError("saved_region_diagram_attachment_ambiguous")
+            filespec = af[0]
+            embedded = filespec[Name("/EF")][Name.F]
+            if (
+                str(filespec.get(Name.F, "")) != "commutative-diagram.json"
+                or embedded.read_bytes() != payload
+            ):
+                raise ValueError("saved_region_diagram_attachment_changed")
+
+        return verify_scanned_region_formula_association(
+            path,
+            formula_pending,
+            formula_expected,
+            semantic_tag="/Figure",
+            attachment_subtype="/application#2Fjson",
+            attachment_sha256=expected.attachment_sha256,
+        )
+    except Exception as exc:
+        logger.warning("Post-save scanned-region diagram verification failed: %s", exc)
+        return False
+
+
 __all__ = [
     "ContentTaggerV2",
+    "DiagramAssociationResult",
     "FormulaAssociationResult",
     "MatchedBlock",
     "ScannedRegionAssociationError",
     "ScannedRegionAssociationResult",
     "TABLE_TAGS",
     "associate_image_formula",
+    "associate_image_commutative_diagram",
+    "associate_scanned_region_commutative_diagram",
     "associate_scanned_region_formula",
     "preflight_scanned_region_render_budget",
     "verify_image_formula_association",
+    "verify_image_commutative_diagram_association",
+    "verify_scanned_region_commutative_diagram_association",
     "verify_scanned_region_formula_association",
 ]

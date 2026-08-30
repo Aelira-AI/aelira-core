@@ -19,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from src.education.visual_semantic_contract import canonical_json_bytes
+from src.education.canonical_json import canonical_json_bytes
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"

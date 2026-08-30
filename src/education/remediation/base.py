@@ -34,6 +34,8 @@ from pydantic import (
 
 from src.education.equation_region_contract import PageRasterRegionLocator
 from src.education.visual_semantic_contract import (
+    CommutativeDiagramPdfContract,
+    CommutativeDiagramRecognitionEvidenceV1,
     EmbeddedImageOccurrenceLocator,
     FrozenPageRasterRegionLocator,
     PrintedEquationRoundtripEvidenceV1,
@@ -342,7 +344,9 @@ class FixedIssue(BaseModel):
     model_used: Optional[str] = Field(default=None, min_length=1, max_length=50)
     source_kind: Optional[str] = Field(default=None, min_length=1, max_length=32)
     source_locator: Optional[PageRasterRegionLocator] = None
-    verification_evidence: Optional[VerificationEvidence] = None
+    verification_evidence: Optional[
+        VerificationEvidence | CommutativeDiagramRecognitionEvidenceV1
+    ] = None
     visual_semantic_contract: Optional[VisualSemanticContract] = None
     verification_passed: bool = True
     notes: Optional[str] = None
@@ -351,41 +355,69 @@ class FixedIssue(BaseModel):
 
     @model_validator(mode="after")
     def _region_locator_requires_image_equation_source(self) -> "FixedIssue":
-        if self.source_locator is not None and self.source_kind != "image_equation":
+        if self.source_locator is not None and self.source_kind not in {
+            "image_equation",
+            "commutative_diagram",
+        }:
             raise ValueError(
-                "page raster region locator requires image_equation source"
+                "page raster region locator requires image_equation or "
+                "commutative_diagram source"
             )
         contract = self.visual_semantic_contract
         if contract is None:
             return self
+        expected_fixed_content = (
+            contract.semantic_output.description.summary
+            if isinstance(contract, CommutativeDiagramPdfContract)
+            else contract.semantic_output.alt_text
+        )
+        expected_source_kind = (
+            "commutative_diagram"
+            if isinstance(contract, CommutativeDiagramPdfContract)
+            else "image_equation"
+        )
         if (
-            self.source_kind != "image_equation"
+            self.source_kind != expected_source_kind
             or self.provider_used is None
             or self.model_used is None
             or self.verification_evidence is None
             or self.page_number is None
             or self.verification_passed is not True
-            or self.fixed_content != contract.semantic_output.alt_text
+            or self.fixed_content != expected_fixed_content
             or self.page_number != contract.locator.page_number
         ):
             raise ValueError(
-                "visual semantic contract requires a complete image equation envelope"
+                "visual semantic contract requires a complete visual-fix envelope"
             )
 
-        roundtrip = next(
-            (
-                evidence
-                for evidence in contract.verification_evidence
-                if isinstance(evidence, PrintedEquationRoundtripEvidenceV1)
-            ),
-            None,
-        )
-        if roundtrip is None or self.verification_evidence.model_dump(mode="json") != (
-            roundtrip.model_dump(mode="json", exclude={"evidence_kind"})
-        ):
-            raise ValueError(
-                "visual semantic contract evidence does not match legacy evidence"
+        if isinstance(contract, CommutativeDiagramPdfContract):
+            recognition = next(
+                (
+                    evidence
+                    for evidence in contract.verification_evidence
+                    if isinstance(evidence, CommutativeDiagramRecognitionEvidenceV1)
+                ),
+                None,
             )
+            if recognition is None or self.verification_evidence != recognition:
+                raise ValueError(
+                    "visual semantic contract evidence does not match recognition"
+                )
+        else:
+            roundtrip = next(
+                (
+                    evidence
+                    for evidence in contract.verification_evidence
+                    if isinstance(evidence, PrintedEquationRoundtripEvidenceV1)
+                ),
+                None,
+            )
+            if roundtrip is None or self.verification_evidence.model_dump(
+                mode="json"
+            ) != (roundtrip.model_dump(mode="json", exclude={"evidence_kind"})):
+                raise ValueError(
+                    "visual semantic contract evidence does not match legacy evidence"
+                )
 
         if isinstance(contract.locator, FrozenPageRasterRegionLocator):
             if self.source_locator is None or self.source_locator.model_dump(
