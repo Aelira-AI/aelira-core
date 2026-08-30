@@ -6,9 +6,14 @@ from collections.abc import Iterable
 from typing import Any
 
 IMAGE_EQUATION_SOURCE_KIND = "image_equation"
+CHEMICAL_STRUCTURE_SOURCE_KIND = "chemical_structure"
 COMMUTATIVE_DIAGRAM_SOURCE_KIND = "commutative_diagram"
 REVIEW_GATED_VISUAL_SOURCE_KINDS = frozenset(
-    {IMAGE_EQUATION_SOURCE_KIND, COMMUTATIVE_DIAGRAM_SOURCE_KIND}
+    {
+        IMAGE_EQUATION_SOURCE_KIND,
+        CHEMICAL_STRUCTURE_SOURCE_KIND,
+        COMMUTATIVE_DIAGRAM_SOURCE_KIND,
+    }
 )
 
 

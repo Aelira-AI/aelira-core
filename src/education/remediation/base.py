@@ -34,6 +34,8 @@ from pydantic import (
 
 from src.education.equation_region_contract import PageRasterRegionLocator
 from src.education.visual_semantic_contract import (
+    ChemicalStructurePdfContract,
+    ChemicalStructureRecognitionEvidenceV1,
     CommutativeDiagramPdfContract,
     CommutativeDiagramRecognitionEvidenceV1,
     EmbeddedImageOccurrenceLocator,
@@ -417,6 +419,7 @@ class FixedIssue(BaseModel):
     source_locator: Optional[PageRasterRegionLocator] = None
     verification_evidence: Optional[
         VerificationEvidence
+        | ChemicalStructureRecognitionEvidenceV1
         | CommutativeDiagramRecognitionEvidenceV1
         | HandwrittenVerificationEvidence
     ] = None
@@ -430,25 +433,29 @@ class FixedIssue(BaseModel):
     def _region_locator_requires_image_equation_source(self) -> "FixedIssue":
         if self.source_locator is not None and self.source_kind not in {
             "image_equation",
+            "chemical_structure",
             "commutative_diagram",
         }:
             raise ValueError(
-                "page raster region locator requires image_equation or "
-                "commutative_diagram source"
+                "page raster region locator requires image_equation, "
+                "commutative_diagram, or chemical_structure source"
             )
         contract = self.visual_semantic_contract
         if contract is None:
             return self
         expected_fixed_content = (
             contract.semantic_output.description.summary
-            if isinstance(contract, CommutativeDiagramPdfContract)
+            if isinstance(
+                contract, CommutativeDiagramPdfContract | ChemicalStructurePdfContract
+            )
             else contract.semantic_output.alt_text
         )
-        expected_source_kind = (
-            "commutative_diagram"
-            if isinstance(contract, CommutativeDiagramPdfContract)
-            else "image_equation"
-        )
+        if isinstance(contract, CommutativeDiagramPdfContract):
+            expected_source_kind = "commutative_diagram"
+        elif isinstance(contract, ChemicalStructurePdfContract):
+            expected_source_kind = "chemical_structure"
+        else:
+            expected_source_kind = "image_equation"
         if (
             self.source_kind != expected_source_kind
             or self.provider_used is None
@@ -463,21 +470,25 @@ class FixedIssue(BaseModel):
                 "visual semantic contract requires a complete visual-fix envelope"
             )
 
-        if isinstance(contract, CommutativeDiagramPdfContract):
+        if isinstance(
+            contract, CommutativeDiagramPdfContract | ChemicalStructurePdfContract
+        ):
+            evidence_type = (
+                ChemicalStructureRecognitionEvidenceV1
+                if isinstance(contract, ChemicalStructurePdfContract)
+                else CommutativeDiagramRecognitionEvidenceV1
+            )
             contract_evidence = next(
                 (
                     evidence
                     for evidence in contract.verification_evidence
-                    if isinstance(evidence, CommutativeDiagramRecognitionEvidenceV1)
+                    if isinstance(evidence, evidence_type)
                 ),
                 None,
             )
             if (
                 contract_evidence is None
-                or not isinstance(
-                    self.verification_evidence,
-                    CommutativeDiagramRecognitionEvidenceV1,
-                )
+                or not isinstance(self.verification_evidence, evidence_type)
                 or self.verification_evidence != contract_evidence
             ):
                 raise ValueError(
@@ -505,7 +516,9 @@ class FixedIssue(BaseModel):
             expected_type = HandwrittenVerificationEvidence
         else:
             raise ValueError("unsupported visual semantic contract")
-        if not isinstance(contract, CommutativeDiagramPdfContract) and (
+        if not isinstance(
+            contract, CommutativeDiagramPdfContract | ChemicalStructurePdfContract
+        ) and (
             contract_evidence is None
             or not isinstance(self.verification_evidence, expected_type)
             or self.verification_evidence.model_dump(mode="json")

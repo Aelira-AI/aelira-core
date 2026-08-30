@@ -32,6 +32,8 @@ from ..education.remediation.base import (
     VerificationEvidence,
 )
 from ..education.visual_semantic_contract import (
+    ChemicalStructurePdfContract,
+    ChemicalStructureRecognitionEvidenceV1,
     CommutativeDiagramPdfContract,
     CommutativeDiagramRecognitionEvidenceV1,
     EmbeddedImageOccurrenceLocator,
@@ -47,9 +49,14 @@ from ..education.visual_semantic_contract import (
 from ..utils.sanitization import sanitize_for_postgres
 
 IMAGE_EQUATION_SOURCE_KIND = "image_equation"
+CHEMICAL_STRUCTURE_SOURCE_KIND = "chemical_structure"
 COMMUTATIVE_DIAGRAM_SOURCE_KIND = "commutative_diagram"
 REVIEW_GATED_VISUAL_SOURCE_KINDS = frozenset(
-    {IMAGE_EQUATION_SOURCE_KIND, COMMUTATIVE_DIAGRAM_SOURCE_KIND}
+    {
+        IMAGE_EQUATION_SOURCE_KIND,
+        CHEMICAL_STRUCTURE_SOURCE_KIND,
+        COMMUTATIVE_DIAGRAM_SOURCE_KIND,
+    }
 )
 IMAGE_EQUATION_THRESHOLD_VERSION = "printed-equation-v1"
 IMAGE_EQUATION_REQUIRED_INK_IOU = 0.90
@@ -239,10 +246,15 @@ def _validated_evidence(
 ) -> (
     VerificationEvidence
     | HandwrittenVerificationEvidence
+    | ChemicalStructureRecognitionEvidenceV1
     | CommutativeDiagramRecognitionEvidenceV1
 ):
     """Validate one active compatibility projection without coercing variants."""
     raw = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+    if isinstance(raw, dict) and raw.get("evidence_kind") == (
+        "chemical_structure_recognition_v1"
+    ):
+        return ChemicalStructureRecognitionEvidenceV1.model_validate(raw)
     if isinstance(raw, dict) and raw.get("evidence_kind") == (
         "commutative_diagram_recognition_v1"
     ):
@@ -317,12 +329,16 @@ def _valid_image_contract_binding(
     if contract is None:
         return False
     is_diagram = isinstance(contract, CommutativeDiagramPdfContract)
-    expected_source_kind = (
-        COMMUTATIVE_DIAGRAM_SOURCE_KIND if is_diagram else IMAGE_EQUATION_SOURCE_KIND
-    )
+    is_chemical = isinstance(contract, ChemicalStructurePdfContract)
+    if is_chemical:
+        expected_source_kind = CHEMICAL_STRUCTURE_SOURCE_KIND
+    elif is_diagram:
+        expected_source_kind = COMMUTATIVE_DIAGRAM_SOURCE_KIND
+    else:
+        expected_source_kind = IMAGE_EQUATION_SOURCE_KIND
     expected_fixed_content = (
         contract.semantic_output.description.summary
-        if is_diagram
+        if is_diagram or is_chemical
         else contract.semantic_output.alt_text
     )
     if (
@@ -331,7 +347,18 @@ def _valid_image_contract_binding(
         or getattr(fix, "page_number", None) != contract.locator.page_number
     ):
         return False
-    if is_diagram:
+    if is_chemical:
+        contract_evidence = next(
+            (
+                evidence
+                for evidence in contract.verification_evidence
+                if isinstance(evidence, ChemicalStructureRecognitionEvidenceV1)
+            ),
+            None,
+        )
+        expected_type = ChemicalStructureRecognitionEvidenceV1
+        exclude_evidence_kind = False
+    elif is_diagram:
         contract_evidence = next(
             (
                 evidence
@@ -522,7 +549,19 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
         contract_model = VisualSemanticContractAdapter.validate_python(visual_contract)
         if source_kind == IMAGE_EQUATION_SOURCE_KIND:
             evidence_valid = valid_image_equation_evidence(evidence)
-            kind_valid = not isinstance(contract_model, CommutativeDiagramPdfContract)
+            kind_valid = not isinstance(
+                contract_model,
+                CommutativeDiagramPdfContract | ChemicalStructurePdfContract,
+            )
+        elif source_kind == CHEMICAL_STRUCTURE_SOURCE_KIND:
+            try:
+                recognition = ChemicalStructureRecognitionEvidenceV1.model_validate(
+                    evidence
+                )
+            except (TypeError, ValueError, ValidationError):
+                recognition = None
+            evidence_valid = recognition is not None
+            kind_valid = isinstance(contract_model, ChemicalStructurePdfContract)
         else:
             try:
                 recognition = CommutativeDiagramRecognitionEvidenceV1.model_validate(
@@ -776,6 +815,16 @@ def commutative_diagram_review_blockers(fixes: Iterable[Any]) -> list[str]:
     )
 
 
+def chemical_structure_review_blockers(fixes: Iterable[Any]) -> list[str]:
+    """Require durable, explicit human acceptance for chemical structures."""
+
+    return _review_gated_visual_blockers(
+        fixes,
+        source_kind=CHEMICAL_STRUCTURE_SOURCE_KIND,
+        blocker_prefix="chemical_structure",
+    )
+
+
 def artifact_review_blockers(fixes: Iterable[Any]) -> list[str]:
     """Return shared blockers used by metadata and approval boundaries."""
     rows = list(fixes)
@@ -809,6 +858,7 @@ def artifact_review_blockers(fixes: Iterable[Any]) -> list[str]:
         blockers.append("fix_approval_digest_invalid")
     blockers.extend(image_equation_review_blockers(rows))
     blockers.extend(commutative_diagram_review_blockers(rows))
+    blockers.extend(chemical_structure_review_blockers(rows))
     return blockers
 
 

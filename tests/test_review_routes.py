@@ -219,6 +219,7 @@ class TestFixSummary:
         contract_union = schema["properties"]["visual_semantic_contract"]["anyOf"][0]
         assert contract_union["discriminator"]["propertyName"] == "contract_kind"
         assert contract_union["discriminator"]["mapping"] == {
+            "chemical_structure": "#/$defs/ChemicalStructurePdfContract",
             "commutative_diagram": "#/$defs/CommutativeDiagramPdfContract",
             "handwritten_equation": "#/$defs/HandwrittenEquationContract",
             "printed_equation": "#/$defs/PrintedEquationContract",
@@ -227,6 +228,7 @@ class TestFixSummary:
         semantic = contract["semantic_output"]
         assert semantic["discriminator"]["propertyName"] == "semantic_kind"
         assert semantic["discriminator"]["mapping"] == {
+            "chemical_structure_semantic_v1": "#/$defs/ChemicalStructureSemanticV1",
             "commutative_diagram_semantic_v1": ("#/$defs/CommutativeDiagramSemanticV1"),
             "mathml_expression_v1": "#/$defs/MathMLExpressionV1",
         }
@@ -239,11 +241,14 @@ class TestFixSummary:
         evidence_items = contract["verification_evidence"]["items"]
         assert evidence_items["discriminator"]["propertyName"] == "evidence_kind"
         assert set(evidence_items["discriminator"]["mapping"]) == {
+            "chemical_structure_recognition_v1",
             "commutative_diagram_recognition_v1",
             "handwritten_equation_consensus_v1",
             "printed_equation_roundtrip_v1",
+            "scanned_region_chemical_structure_saved_v1",
             "scanned_region_diagram_saved_v1",
             "scanned_region_formula_saved_v1",
+            "standalone_chemical_structure_saved_v1",
             "standalone_diagram_saved_v1",
             "standalone_formula_saved_v1",
         }
