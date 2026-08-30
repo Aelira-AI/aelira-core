@@ -42,6 +42,12 @@ REQUIRED_DOCS = {
         "## Output and review",
         "## Tests",
     ],
+    "molecular-graphs.md": [
+        "## Supported graph",
+        "## Stereo and aromaticity boundary",
+        "## Accessible description",
+        "## Deliberate refusals",
+    ],
 }
 
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")

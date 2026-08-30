@@ -1,0 +1,290 @@
+{
+  "schema_version": "molecular-graph-corpus-v1",
+  "license": "CC0-1.0",
+  "provenance": "Repository-authored abstract graph data; no third-party drawing or notation was copied.",
+  "cases": [
+    {
+      "case_id": "methane-implicit-hydrogen",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "accept",
+      "covers": ["elements", "implicit_hydrogens", "acyclic"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "c", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 4, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": []
+      }
+    },
+    {
+      "case_id": "bounded-isotope-and-charge",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "accept",
+      "covers": ["isotope", "formal_charge"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "label", "element": "C", "formal_charge": 1, "isotope": 13, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": []
+      }
+    },
+    {
+      "case_id": "aromatic-six-cycle",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "accept",
+      "covers": ["aromaticity", "single_ring"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "c0", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": true, "stereochemistry": null},
+          {"atom_id": "c1", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": true, "stereochemistry": null},
+          {"atom_id": "c2", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": true, "stereochemistry": null},
+          {"atom_id": "c3", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": true, "stereochemistry": null},
+          {"atom_id": "c4", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": true, "stereochemistry": null},
+          {"atom_id": "c5", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": true, "stereochemistry": null}
+        ],
+        "bonds": [
+          {"bond_id": "b0", "atom_ids": ["c0", "c1"], "order": "aromatic", "stereochemistry": null},
+          {"bond_id": "b1", "atom_ids": ["c1", "c2"], "order": "aromatic", "stereochemistry": null},
+          {"bond_id": "b2", "atom_ids": ["c2", "c3"], "order": "aromatic", "stereochemistry": null},
+          {"bond_id": "b3", "atom_ids": ["c3", "c4"], "order": "aromatic", "stereochemistry": null},
+          {"bond_id": "b4", "atom_ids": ["c4", "c5"], "order": "aromatic", "stereochemistry": null},
+          {"bond_id": "b5", "atom_ids": ["c5", "c0"], "order": "aromatic", "stereochemistry": null}
+        ]
+      }
+    },
+    {
+      "case_id": "two-cycles-shared-edge",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "accept",
+      "covers": ["fused_cycles"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "a0", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "a1", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "a2", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "a3", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": [
+          {"bond_id": "b01", "atom_ids": ["a0", "a1"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b12", "atom_ids": ["a1", "a2"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b20", "atom_ids": ["a2", "a0"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b13", "atom_ids": ["a1", "a3"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b32", "atom_ids": ["a3", "a2"], "order": "single", "stereochemistry": null}
+        ]
+      }
+    },
+    {
+      "case_id": "absolute-r",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "accept",
+      "covers": ["r_stereo"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "c", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": "R"},
+          {"atom_id": "f", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "cl", "element": "Cl", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "br", "element": "Br", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "i", "element": "I", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": [
+          {"bond_id": "cf", "atom_ids": ["c", "f"], "order": "single", "stereochemistry": null},
+          {"bond_id": "ccl", "atom_ids": ["c", "cl"], "order": "single", "stereochemistry": null},
+          {"bond_id": "cbr", "atom_ids": ["c", "br"], "order": "single", "stereochemistry": null},
+          {"bond_id": "ci", "atom_ids": ["c", "i"], "order": "single", "stereochemistry": null}
+        ]
+      }
+    },
+    {
+      "case_id": "absolute-s",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "accept",
+      "covers": ["s_stereo"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "c", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": "S"},
+          {"atom_id": "f", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "cl", "element": "Cl", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "br", "element": "Br", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "i", "element": "I", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": [
+          {"bond_id": "cf", "atom_ids": ["c", "f"], "order": "single", "stereochemistry": null},
+          {"bond_id": "ccl", "atom_ids": ["c", "cl"], "order": "single", "stereochemistry": null},
+          {"bond_id": "cbr", "atom_ids": ["c", "br"], "order": "single", "stereochemistry": null},
+          {"bond_id": "ci", "atom_ids": ["c", "i"], "order": "single", "stereochemistry": null}
+        ]
+      }
+    },
+    {
+      "case_id": "absolute-e",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "accept",
+      "covers": ["e_stereo"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "l", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "r", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "cl", "element": "Cl", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "br", "element": "Br", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": [
+          {"bond_id": "lr", "atom_ids": ["l", "r"], "order": "double", "stereochemistry": "E"},
+          {"bond_id": "lcl", "atom_ids": ["l", "cl"], "order": "single", "stereochemistry": null},
+          {"bond_id": "rbr", "atom_ids": ["r", "br"], "order": "single", "stereochemistry": null}
+        ]
+      }
+    },
+    {
+      "case_id": "absolute-z",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "accept",
+      "covers": ["z_stereo"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "l", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "r", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 1, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "cl", "element": "Cl", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "br", "element": "Br", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": [
+          {"bond_id": "lr", "atom_ids": ["l", "r"], "order": "double", "stereochemistry": "Z"},
+          {"bond_id": "lcl", "atom_ids": ["l", "cl"], "order": "single", "stereochemistry": null},
+          {"bond_id": "rbr", "atom_ids": ["r", "br"], "order": "single", "stereochemistry": null}
+        ]
+      }
+    },
+    {
+      "case_id": "disconnected-label",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "reject",
+      "covers": ["disconnected"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "a", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "isolated", "element": "O", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": []
+      }
+    },
+    {
+      "case_id": "missing-completeness-field",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "reject",
+      "covers": ["incomplete"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "a", "element": "C", "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": []
+      }
+    },
+    {
+      "case_id": "unsupported-polymer",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "reject",
+      "covers": ["polymer"],
+      "graph": {"contract_kind": "molecular_graph_v1", "atoms": [], "bonds": [], "polymer_repeat": "n"}
+    },
+    {
+      "case_id": "unsupported-wildcard",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "reject",
+      "covers": ["wildcard"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "a", "element": "*", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": []
+      }
+    },
+    {
+      "case_id": "ambiguous-tetrahedral-stereo",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "reject",
+      "covers": ["ambiguous_stereo"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "c", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": "R"},
+          {"atom_id": "f1", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "f2", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "br", "element": "Br", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "i", "element": "I", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": [
+          {"bond_id": "f1", "atom_ids": ["c", "f1"], "order": "single", "stereochemistry": null},
+          {"bond_id": "f2", "atom_ids": ["c", "f2"], "order": "single", "stereochemistry": null},
+          {"bond_id": "br", "atom_ids": ["c", "br"], "order": "single", "stereochemistry": null},
+          {"bond_id": "i", "atom_ids": ["c", "i"], "order": "single", "stereochemistry": null}
+        ]
+      }
+    },
+    {
+      "case_id": "forged-derived-field",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "reject",
+      "covers": ["tamper", "adversarial"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "a", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 4, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": [],
+        "canonical_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "case_id": "symmetry-work-overflow",
+      "provenance": "repository-authored",
+      "license": "CC0-1.0",
+      "expect": "reject",
+      "covers": ["symmetry_bound"],
+      "graph": {
+        "contract_kind": "molecular_graph_v1",
+        "atoms": [
+          {"atom_id": "c", "element": "C", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "f0", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "f1", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "f2", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "f3", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "f4", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "f5", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null},
+          {"atom_id": "f6", "element": "F", "formal_charge": 0, "isotope": null, "implicit_hydrogens": 0, "aromatic": false, "stereochemistry": null}
+        ],
+        "bonds": [
+          {"bond_id": "b0", "atom_ids": ["c", "f0"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b1", "atom_ids": ["c", "f1"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b2", "atom_ids": ["c", "f2"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b3", "atom_ids": ["c", "f3"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b4", "atom_ids": ["c", "f4"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b5", "atom_ids": ["c", "f5"], "order": "single", "stereochemistry": null},
+          {"bond_id": "b6", "atom_ids": ["c", "f6"], "order": "single", "stereochemistry": null}
+        ]
+      }
+    }
+  ]
+}
