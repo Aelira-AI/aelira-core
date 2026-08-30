@@ -21,6 +21,7 @@ from .pdfua_detector import PDFUADetector
 from .math_checker import MathEquationChecker
 from .multi_equation_region_detector import MultiEquationRegionDetector
 from .image_checker import ImageAccessibilityChecker
+from .vector_equation_cluster_detector import VectorEquationClusterDetector
 
 __all__ = [
     "PDFUAVersion",
@@ -42,4 +43,5 @@ __all__ = [
     "MathEquationChecker",
     "MultiEquationRegionDetector",
     "ImageAccessibilityChecker",
+    "VectorEquationClusterDetector",
 ]
