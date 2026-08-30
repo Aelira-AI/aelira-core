@@ -132,6 +132,7 @@ def test_visual_contract_adapter_activates_both_exact_specialists():
     assert VisualSemanticContractAdapter.json_schema()["discriminator"] == {
         "mapping": {
             "chemical_structure": "#/$defs/ChemicalStructurePdfContract",
+            "chemical_formula": "#/$defs/ChemicalFormulaPdfContract",
             "commutative_diagram": "#/$defs/CommutativeDiagramPdfContract",
             "handwritten_equation": "#/$defs/HandwrittenEquationContract",
             "printed_equation": "#/$defs/PrintedEquationContract",

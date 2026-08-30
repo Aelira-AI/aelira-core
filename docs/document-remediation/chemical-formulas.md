@@ -1,6 +1,6 @@
 # Chemical formula semantics
 
-Aelira Core provides a small, deterministic chemistry contract for formulas and reactions. It is a library boundary for later document-recognition work; it does not discover chemistry in files or change a document.
+Aelira Core provides a deterministic chemistry contract for formulas and reactions, plus a purpose-bound PDF specialist that can transcribe one explicitly bounded visual candidate. The specialist accepts only an `alt_text` provider, records provider and model identity, and passes the returned source notation through the same deterministic verifier before any PDF mutation.
 
 Use [`verify_chemical_notation`](../../src/education/chemical_formula.py) with source notation. A successful result contains the immutable typed notation, exact source notation, canonical notation, deterministic speech, passive MathML, and SHA-256 identities for each projection. Rejected input raises `ChemicalFormulaRejected` and returns no partial chemistry.
 
@@ -33,8 +33,18 @@ Speech expands element symbols and explicitly announces subscripts, isotopes, gr
 
 MathML is generated only from an exact validated contract. The generator emits a fixed passive element and attribute set; it does not accept raw strings or preserve caller-supplied markup.
 
+## PDF recognition and saved-file proof
+
+`ChemicalFormulaRecognizer` accepts one exact embedded-image occurrence or page-raster region as a bounded JPEG. The provider may return only a positive source transcription or a negative classification. It cannot author speech, MathML, typed chemistry, confidence, or extra prose. Invalid notation is refused without a retry; only provider or transport failure receives one retry.
+
+An accepted result is associated with the exact source as a PDF `/Formula`. The verified speech is stored in `/Alt`, and the verifier-generated MathML is stored as the sole `/AF` supplementary attachment. `/AeliraChemicalFormula` binds the notation kind and the source, semantic, speech, MathML, and aggregate metadata digests. The saved file is reopened to verify source identity, marked-content ownership, ParentTree linkage, attachment bytes, metadata, and render parity.
+
+Embedded images and clipped scanned regions use different saved-evidence variants. Scanned-region verification additionally proves clip geometry and OCR reading-order ownership. Both variants produce a durable `ChemicalFormulaPdfContract`; incomplete or inconsistent evidence cannot be persisted as a successful visual fix.
+
+Every chemical-formula fix is forced into human review. This gate is shared by direct, queued, Canvas, and Brightspace artifact publication, and approval is invalidated if the reviewed content or its provenance changes.
+
 ## Deliberate refusals
 
-The contract rejects unknown or mis-cased elements, bare charge signs, incomplete or multiple arrows, empty sides or groups, unsafe or over-limit input, and unsupported notations including `mhchem`, ChemFig, SMILES, InChI, hydrate dots, and Unicode arrows. Molecular structure, bonds, stereochemistry, names, balancing, mass calculation, visual recognition, PDF association, and document mutation remain outside this boundary.
+The contract rejects unknown or mis-cased elements, bare charge signs, incomplete or multiple arrows, empty sides or groups, unsafe or over-limit input, and unsupported notations including `mhchem`, ChemFig, SMILES, InChI, hydrate dots, and Unicode arrows. Molecular structure, bonds, stereochemistry, names, balancing, and mass calculation remain outside this boundary. Recognition is limited to a caller-supplied bounded PDF visual; this feature does not search arbitrary document content for chemistry.
 
 The reviewed [fixture manifest](../../tests/fixtures/chemical_formula/manifest.json) records exact canonical and speech results for supported cases and named refusal classes for unsupported cases.

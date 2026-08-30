@@ -36,6 +36,8 @@ from src.education.equation_region_contract import PageRasterRegionLocator
 from src.education.visual_semantic_contract import (
     ChemicalStructurePdfContract,
     ChemicalStructureRecognitionEvidenceV1,
+    ChemicalFormulaPdfContract,
+    ChemicalFormulaRecognitionEvidenceV1,
     CommutativeDiagramPdfContract,
     CommutativeDiagramRecognitionEvidenceV1,
     EmbeddedImageOccurrenceLocator,
@@ -420,6 +422,7 @@ class FixedIssue(BaseModel):
     verification_evidence: Optional[
         VerificationEvidence
         | ChemicalStructureRecognitionEvidenceV1
+        | ChemicalFormulaRecognitionEvidenceV1
         | CommutativeDiagramRecognitionEvidenceV1
         | HandwrittenVerificationEvidence
     ] = None
@@ -434,27 +437,27 @@ class FixedIssue(BaseModel):
         if self.source_locator is not None and self.source_kind not in {
             "image_equation",
             "chemical_structure",
+            "chemical_formula",
             "commutative_diagram",
         }:
             raise ValueError(
                 "page raster region locator requires image_equation, "
-                "commutative_diagram, or chemical_structure source"
+                "chemical_formula, chemical_structure, or commutative_diagram source"
             )
         contract = self.visual_semantic_contract
         if contract is None:
             return self
-        expected_fixed_content = (
-            contract.semantic_output.description.summary
-            if isinstance(
-                contract, CommutativeDiagramPdfContract | ChemicalStructurePdfContract
-            )
-            else contract.semantic_output.alt_text
-        )
-        if isinstance(contract, CommutativeDiagramPdfContract):
+        if isinstance(contract, ChemicalFormulaPdfContract):
+            expected_fixed_content = contract.semantic_output.verified_notation.speech
+            expected_source_kind = "chemical_formula"
+        elif isinstance(contract, CommutativeDiagramPdfContract):
+            expected_fixed_content = contract.semantic_output.description.summary
             expected_source_kind = "commutative_diagram"
         elif isinstance(contract, ChemicalStructurePdfContract):
+            expected_fixed_content = contract.semantic_output.description.summary
             expected_source_kind = "chemical_structure"
         else:
+            expected_fixed_content = contract.semantic_output.alt_text
             expected_source_kind = "image_equation"
         if (
             self.source_kind != expected_source_kind
@@ -471,13 +474,17 @@ class FixedIssue(BaseModel):
             )
 
         if isinstance(
-            contract, CommutativeDiagramPdfContract | ChemicalStructurePdfContract
+            contract,
+            CommutativeDiagramPdfContract
+            | ChemicalFormulaPdfContract
+            | ChemicalStructurePdfContract,
         ):
-            evidence_type = (
-                ChemicalStructureRecognitionEvidenceV1
-                if isinstance(contract, ChemicalStructurePdfContract)
-                else CommutativeDiagramRecognitionEvidenceV1
-            )
+            if isinstance(contract, ChemicalFormulaPdfContract):
+                evidence_type = ChemicalFormulaRecognitionEvidenceV1
+            elif isinstance(contract, ChemicalStructurePdfContract):
+                evidence_type = ChemicalStructureRecognitionEvidenceV1
+            else:
+                evidence_type = CommutativeDiagramRecognitionEvidenceV1
             contract_evidence = next(
                 (
                     evidence
@@ -517,7 +524,10 @@ class FixedIssue(BaseModel):
         else:
             raise ValueError("unsupported visual semantic contract")
         if not isinstance(
-            contract, CommutativeDiagramPdfContract | ChemicalStructurePdfContract
+            contract,
+            CommutativeDiagramPdfContract
+            | ChemicalFormulaPdfContract
+            | ChemicalStructurePdfContract,
         ) and (
             contract_evidence is None
             or not isinstance(self.verification_evidence, expected_type)
