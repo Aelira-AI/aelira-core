@@ -11,6 +11,7 @@ from .remediation_routes import router as remediation_router
 from .compliance_routes import router as compliance_router
 from .gamification_routes import router as gamification_router
 from .accessibility_routes import router as accessibility_router
+from .report_routes import router as report_router
 
 router = APIRouter(prefix="/education", tags=["education"])
 router.include_router(scan_router)
@@ -22,3 +23,4 @@ router.include_router(remediation_router)
 router.include_router(compliance_router)
 router.include_router(gamification_router)
 router.include_router(accessibility_router)
+router.include_router(report_router)

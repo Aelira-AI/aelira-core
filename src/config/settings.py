@@ -484,6 +484,16 @@ class Settings(BaseSettings):
     remediation_artifact_dir: str = os.getenv(
         "REMEDIATION_ARTIFACT_DIR", "/app/uploads/remediation-artifacts"
     )
+    report_artifact_dir: str = os.getenv(
+        "REPORT_ARTIFACT_DIR", "/app/uploads/report-artifacts"
+    )
+    report_artifact_max_bytes: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REPORT_ARTIFACT_MAX_BYTES", str(20 * 1024 * 1024))
+        ),
+        ge=1024,
+        le=100 * 1024 * 1024,
+    )
     remediation_artifact_retention_days: int = Field(
         default_factory=lambda: int(
             os.getenv("REMEDIATION_ARTIFACT_RETENTION_DAYS", "30")
@@ -583,18 +593,18 @@ class Settings(BaseSettings):
         le=86400,
     )
 
-    @field_validator("remediation_artifact_dir")
+    @field_validator("remediation_artifact_dir", "report_artifact_dir")
     @classmethod
     def validate_remediation_artifact_dir(cls, value: str) -> str:
         """Require a bounded, normalized absolute artifact root."""
         if not value or len(value) > 4096 or "\x00" in value:
-            raise ValueError("REMEDIATION_ARTIFACT_DIR is invalid")
+            raise ValueError("artifact directory is invalid")
         path = Path(value)
         if not path.is_absolute() or ".." in path.parts:
-            raise ValueError("REMEDIATION_ARTIFACT_DIR must be an absolute path")
+            raise ValueError("artifact directory must be an absolute path")
         normalized = os.path.normpath(value)
         if normalized != value or normalized == os.path.sep:
-            raise ValueError("REMEDIATION_ARTIFACT_DIR must be canonical")
+            raise ValueError("artifact directory must be canonical")
         return normalized
 
     # =====================================================

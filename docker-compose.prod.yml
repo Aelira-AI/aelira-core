@@ -82,6 +82,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       XAI_API_KEY: ${XAI_API_KEY:-}
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      REPORT_ARTIFACT_DIR: ${REPORT_ARTIFACT_DIR:-/app/uploads/report-artifacts}
+      REPORT_ARTIFACT_MAX_BYTES: ${REPORT_ARTIFACT_MAX_BYTES:-20971520}
     ports:
       - "${API_BIND:-127.0.0.1:8000}:8000"
     volumes:

@@ -1111,6 +1111,7 @@ class CloudJobType(str, Enum):
     WEBHOOK_REFRESH = "webhook_refresh"  # Renew webhook subscription
     RECONCILE = "canvas_reconcile"  # Observe an uncertain Canvas writeback
     CANVAS_CONTENT = "canvas_content"  # Remediate immutable Canvas stored HTML
+    REPORT = "report"  # Generate an immutable accessibility evidence report
 
 
 class CloudJobStatus(str, Enum):

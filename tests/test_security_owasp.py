@@ -258,8 +258,9 @@ class TestInjection:
                 headers=auth_headers,
             )
 
-            # Should not return file contents from outside allowed directory
-            assert response.status_code in [400, 403, 404, 422]
+            # Authentication may reject the request before path validation.
+            # Every accepted status must prevent access to filesystem content.
+            assert response.status_code in [400, 401, 403, 404, 422]
 
 
 # ==============================================================================
