@@ -83,29 +83,27 @@ static flags = {
       // Step 1: Scan with axe-core (same as `aelira scan`)
       const s = spinner()
       s.start('Launching browser...')
+      let axeResults: any
+      let scanDuration = 0
+      let scanSucceeded = false
+      try {
+        browser = await chromium.launch({ headless: true })
+        const context = await browser.newContext()
+        page = await context.newPage()
 
-      browser = await chromium.launch({ headless: true })
-      const context = await browser.newContext()
-      page = await context.newPage()
+        s.message('Navigating to ' + args.target + '...')
 
-      s.message('Navigating to ' + args.target + '...')
+        const targetUrl = await this.resolveTargetUrl(args.target)
+        await page.goto(targetUrl, { timeout: flags.timeout })
 
-      // Handle file:// URLs for local HTML files
-      let targetUrl = args.target
-      if (!args.target.startsWith('http')) {
-        const absolutePath = path.resolve(args.target)
-        await fs.access(absolutePath) // Check file exists
-        targetUrl = `file://${absolutePath}`
+        s.message('Running axe-core accessibility scan...')
+        const scanStart = Date.now()
+        axeResults = await new AxeBuilder({ page }).analyze()
+        scanDuration = Date.now() - scanStart
+        scanSucceeded = true
+      } finally {
+        s.stop(scanSucceeded ? 'Scan complete' : 'Scan failed')
       }
-
-      await page.goto(targetUrl, { timeout: flags.timeout })
-
-      s.message('Running axe-core accessibility scan...')
-      const scanStart = Date.now()
-      const axeResults = await new AxeBuilder({ page }).analyze()
-      const scanDuration = Date.now() - scanStart
-
-      s.stop('Scan complete')
 
       // Step 2: Send violations to Aelira API for AI analysis
       const {violations} = axeResults
@@ -274,6 +272,14 @@ static flags = {
       if (page) await page.close()
       if (browser) await browser.close()
     }
+  }
+
+  private async resolveTargetUrl(target: string): Promise<string> {
+    if (target.startsWith('http')) return target
+
+    const absolutePath = path.resolve(target)
+    await fs.access(absolutePath)
+    return `file://${absolutePath}`
   }
 
   private displayAIEnhancedResults(
