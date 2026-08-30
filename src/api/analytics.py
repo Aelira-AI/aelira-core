@@ -22,6 +22,10 @@ from ..db.database import get_db_dependency
 from ..db.models import Department, UserRole
 from ..education.deadline_config import DeadlineService
 from ..education.snapshot_service import SnapshotService
+from ..education.institution_compliance import (
+    InstitutionNotFoundError,
+    get_institution_current_compliance,
+)
 from ..education.issue_tracking_service import (
     IssueTrackingService,
 )
@@ -81,6 +85,17 @@ def _require_global_snapshot_authority(principal: AuthenticatedPrincipal) -> Non
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
+def _require_institution_analytics_authority(
+    principal: AuthenticatedPrincipal,
+) -> None:
+    """Allow institution scope only to account-wide administrators."""
+
+    if principal.user_role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    if principal.auth_method == "lti" and not principal.lti_account_wide:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+
 def _internal_error(action: str, public_detail: str, error: Exception) -> HTTPException:
     """Log a bounded failure class and return a stable public error."""
 
@@ -92,6 +107,26 @@ def _internal_error(action: str, public_detail: str, error: Exception) -> HTTPEx
 
 
 # ==================== Snapshot Endpoints ====================
+
+
+@router.get("/institution")
+async def get_institution_compliance(
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Return current institution rollups without mixing historical snapshots."""
+
+    _require_institution_analytics_authority(principal)
+    try:
+        return get_institution_current_compliance(db, principal.department_id).to_dict()
+    except InstitutionNotFoundError:
+        raise HTTPException(status_code=404, detail="Department not found")
+    except Exception as error:
+        raise _internal_error(
+            "Institution compliance lookup",
+            "Unable to retrieve institution compliance",
+            error,
+        )
 
 
 @router.post("/snapshots/capture/{department_id}")

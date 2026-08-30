@@ -16,7 +16,8 @@ from conftest import require_disposable_postgres_url
 ROOT = Path(__file__).parents[1]
 PREVIOUS_HEAD = "20260822_task21_provenance"
 V095_HEAD = "20260822_v095_job_quarantine"
-HEAD = "20260830_cvd_metrics"
+HEAD = "20260831_institution_scope"
+INSTITUTION_SCOPE_HEAD = "20260831_institution_scope"
 CVD_METRICS_HEAD = "20260830_cvd_metrics"
 WEEKLY_SUMMARY_HEAD = "20260830_weekly_summary"
 PROVIDER_CONFIGURATION_HEAD = "20260829_ai_provider_cfg"
@@ -37,6 +38,9 @@ def test_v095_quarantine_is_single_head_after_v094_invariants():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
 
     assert scripts.get_heads() == [HEAD]
+    assert (
+        scripts.get_revision(INSTITUTION_SCOPE_HEAD).down_revision == CVD_METRICS_HEAD
+    )
     assert scripts.get_revision(CVD_METRICS_HEAD).down_revision == WEEKLY_SUMMARY_HEAD
     assert (
         scripts.get_revision(WEEKLY_SUMMARY_HEAD).down_revision
