@@ -14,6 +14,7 @@ from ...education.pdf_processor import PDFProcessor
 from ...education.pptx_processor import PowerPointProcessor
 from ...education.docx_processor import DocxProcessor
 from ...education.xlsx_processor import XlsxProcessor
+from ...education.cvd_metrics import serialize_cvd_analysis
 from ...education.latex_processor import LaTeXProcessor
 from ...middleware.quota import increment_usage, require_feature
 from ._shared import (
@@ -133,6 +134,7 @@ def process_pdf_background(
             ),
             low_issues=len([i for i in result.issues if i.get("severity") == "low"]),
             issues=result.issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=result.structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,
@@ -194,7 +196,7 @@ async def scan_pdf(
 
      OPTIONAL: AI-powered alt text generation for images
     - Set generate_alt_text=true to automatically generate alt text for embedded images
-    - Uses llava:7b vision model for educational context descriptions
+    - Uses the explicitly configured vision lane for educational descriptions
     - Extracts images from PDF using PyMuPDF
     - Significantly increases processing time (~10s per image)
     """
@@ -453,6 +455,7 @@ def process_pptx_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
@@ -507,7 +510,7 @@ async def scan_powerpoint(
 
      NEW: Optional AI-powered alt text generation
     - Set generate_alt_text=true to automatically generate alt text for images
-    - Uses llava:7b vision model for educational context descriptions
+    - Uses the explicitly configured vision lane for educational descriptions
     - Significantly increases processing time (~10s per image)
 
      NEW: Optional alt text validation
@@ -833,6 +836,7 @@ def process_docx_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
@@ -1242,6 +1246,7 @@ def process_xlsx_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
@@ -1760,6 +1765,7 @@ def process_latex_pdf_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,

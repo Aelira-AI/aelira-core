@@ -72,11 +72,12 @@ must use the same release image, PostgreSQL, Redis, provider configuration, and
 `/app/uploads` volume; decrypted provider credentials never belong in queue
 payloads.
 
-The container probe runs `python -m src.jobs.healthcheck` and verifies the
-worker's database heartbeat. A super administrator can inspect bounded global
-queue counts, worker counters, the oldest pending timestamp, and the oldest
-processing heartbeat at `/api/jobs/worker-status`. The response contains no
-tenant, document, or provider credential data.
+The container probe runs
+`python -m src.jobs.healthcheck --mode readiness` and verifies the worker's
+database heartbeat, queue progress, leases, and running-job age. A super
+administrator can inspect the same bounded global state at
+`/api/jobs/worker-status`. The response contains no tenant, document, worker,
+job, or provider credential data.
 
 ### Resource limits
 
@@ -122,10 +123,115 @@ worker against a newer API/schema or roll back only one process. Recheck API
 health, `src.jobs.healthcheck`, and `/api/jobs/worker-status` before reopening
 intake.
 
+## Monitoring and sustained alerts
+
+The API separates process liveness from dependency readiness. `GET /live`
+returns `200` when the API process can answer without touching PostgreSQL or
+Redis. `GET /ready` checks both dependencies and returns `503` with only the
+bounded check names when the service should stop receiving traffic. The legacy
+`/health` and `/api/health` liveness routes remain available for existing
+integrations.
+
+The worker exposes the same distinction through its container command:
+
+```bash
+docker compose -f docker-compose.prod.yml exec worker \
+  python -m src.jobs.healthcheck --mode liveness --json
+docker compose -f docker-compose.prod.yml exec worker \
+  python -m src.jobs.healthcheck --mode readiness --json
+```
+
+Neither response includes a worker, tenant, job, scan, file, document,
+credential, or provider identifier. Inspect the default Docker health states
+with:
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+docker inspect --format '{{json .State.Health}}' \
+  "$(docker compose -f docker-compose.prod.yml ps -q worker)"
+```
+
+### Prometheus and Alertmanager
+
+Prometheus can scrape the API's existing `/metrics` endpoint from the private
+deployment network. The worker collector reads aggregate queue state from
+PostgreSQL and exports only fixed, low-cardinality gauges. A minimal scrape job
+is:
+
+```yaml
+scrape_configs:
+  - job_name: aelira-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: [api:8000]
+
+rule_files:
+  - /etc/prometheus/rules/aelira-alerts.yml
+```
+
+Mount the repository's `ops/prometheus/aelira-alerts.yml` at that rule path.
+The rules wait two to five minutes before firing for an unavailable API,
+missing worker heartbeat, expired lease, or stalled job. A single failed probe
+does not page an operator.
+
+Alertmanager sends recovery notifications when the receiver enables resolved
+delivery. For example:
+
+```yaml
+route:
+  receiver: operations
+receivers:
+  - name: operations
+    webhook_configs:
+      - url: https://monitoring.example.edu/aelira-alerts
+        send_resolved: true
+```
+
+Keep the receiver URL and credentials in your monitoring secret store, not in
+the Aelira repository or Compose environment. Prometheus automatically marks
+the matching alert resolved after its expression becomes false; the receiver
+then delivers the recovery event.
+
+### Gatus
+
+Gatus can distinguish a dead API from a dependency-blocked API with two
+endpoints. Use consecutive-failure conditions in the Gatus alert configuration
+so a single transient does not notify:
+
+```yaml
+endpoints:
+  - name: aelira-api-liveness
+    url: http://api:8000/live
+    interval: 30s
+    conditions: ["[STATUS] == 200", "[BODY].status == alive"]
+    alerts:
+      - type: email
+        failure-threshold: 4
+        success-threshold: 2
+  - name: aelira-api-readiness
+    url: http://api:8000/ready
+    interval: 30s
+    conditions: ["[STATUS] == 200", "[BODY].status == ready"]
+    alerts:
+      - type: email
+        failure-threshold: 4
+        success-threshold: 2
+```
+
+The four-failure threshold is two sustained minutes; the two-success recovery
+threshold prevents a single recovered probe from prematurely clearing an
+incident. Configure the referenced Gatus provider separately for your chosen
+notification channel.
+
 ## Required environment
 
-These come from `src/config/settings.py` (the load-bearing ones — full list
-is `.env.example`):
+These come from [`src/config/settings.py`](../../src/config/settings.py) (the
+load-bearing ones — the full list is [`.env.example`](../../.env.example)):
+
+After adding, removing, or renaming runtime configuration, run
+`python scripts/verify_environment_example.py`. CI runs the same deterministic
+parity contract and requires every runtime name to be documented there or
+explicitly classified as internal, derived, legacy, or Compose-only.
 
 | Variable | Purpose | Notes |
 |---|---|---|
@@ -374,9 +480,8 @@ hosts. It is not a Windows filesystem portability promise. Path-oriented
 compatibility remains for non-PDF formats and direct library callers, but the
 managed PDF output claim is authoritative.
 
-This PDF publication hardening is present on `main` after v0.9.5 and is not part
-of v0.9.5. It may ship in a future release after release verification; merging
-it created no release or deployment.
+The immutable-source OCR and exact-byte PDF publication controls in this section
+are included in v0.9.7. They were not part of v0.9.5.
 
 Approval is a bounded writeback authorization, not indefinite retention. An
 approved but unwritten artifact is held only until its
@@ -410,9 +515,33 @@ manually delete artifact rows to force progress.
    ```
    The normal API entrypoint also runs this command and fails closed rather
    than serving against an incompatible schema.
-5. `docker compose -f docker-compose.prod.yml up -d`, then confirm `GET /health`
-   on the API and check `docker compose -f docker-compose.prod.yml logs -f api`
+5. `docker compose -f docker-compose.prod.yml up -d`, then confirm `GET /live`
+   and `GET /ready` on the API, run the worker readiness command documented
+   above, and check `docker compose -f docker-compose.prod.yml logs -f api`
    for migration or startup errors.
+
+### v0.9.7 upgrade
+
+Before replacing v0.9.6, drain active work and pause intake. Back up PostgreSQL,
+uploads, and managed artifacts, and verify the restore path. Run `alembic upgrade
+head` explicitly and confirm that the single Alembic head is
+`20260831_institution_scope` before resuming traffic.
+
+Set and retain `BYOK_ENCRYPTION_KEY` before storing workspace AI credentials.
+Choose `LLM_PROVIDER`, `LLM_FALLBACK_PROVIDER`, and `EMBEDDING_PROVIDER`
+deliberately; do not rely on an implicit vendor. Review `TRUSTED_PROXY_CIDRS`,
+cookie domains, Brightspace OAuth origins, Blackboard RSA signing keys, and the
+shared upload and artifact mounts on every API and worker replica.
+
+Deploy the API and dedicated `python -m src.jobs.worker` service from the same
+v0.9.7 image set. Confirm API readiness, a fresh worker readiness result, queue
+age, failed or quarantined rows, and alert recovery before reopening intake.
+
+Client integrations must account for three breaking changes: multimedia
+transcription now returns an asynchronous scan handle, Brightspace remediation
+returns HTTP `202` job descriptors, and the unauthenticated focus-order HTTP
+endpoints have been removed. Preserve every v0.9.6 operator action, including
+remediation timeout settings and deliberate handling of quarantined work.
 
 ### v0.9.4 upgrade
 

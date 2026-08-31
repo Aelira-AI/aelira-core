@@ -430,7 +430,7 @@ export function Dashboard(): React.ReactElement {
                 </button>
               </div>
             ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6 mb-8">
               <div className="card">
                 <div className="text-sm font-medium text-secondary mb-1">Current Documents</div>
                 <div className="text-3xl font-bold text-primary">{stats.enrolledDocuments}</div>
@@ -460,6 +460,21 @@ export function Dashboard(): React.ReactElement {
                 <div className="text-sm font-medium text-secondary mb-1">Issues Found</div>
                 <div className="text-3xl font-bold text-primary">{stats.issuesFound}</div>
                 <div className="text-sm text-tertiary mt-1">In current verified results</div>
+              </div>
+
+              <div className="card">
+                <div className="text-sm font-medium text-secondary mb-1">CVD Accessibility</div>
+                <div
+                  className={`text-3xl font-bold ${stats.cvdAccessibilityRate == null ? 'text-primary' : getScoreColor(stats.cvdAccessibilityRate)}`}
+                  aria-label={stats.cvdAccessibilityRate == null ? 'CVD accessibility not assessed' : `CVD accessibility rate ${Math.round(stats.cvdAccessibilityRate)} percent`}
+                >
+                  {stats.cvdAccessibilityRate == null ? '--' : `${Math.round(stats.cvdAccessibilityRate)}%`}
+                </div>
+                <div className="text-sm text-tertiary mt-1">
+                  {stats.cvdFilesAnalyzed === 0
+                    ? 'No CVD-analyzed documents'
+                    : `${stats.cvdFilesAnalyzed} analyzed · ${stats.cvdAffectedFiles} affected · ${stats.cvdIssuesTotal} findings`}
+                </div>
               </div>
 
               {hasDatedDeadline(stats.deadline) && (() => {

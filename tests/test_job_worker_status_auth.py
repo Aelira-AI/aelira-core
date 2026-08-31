@@ -59,14 +59,41 @@ def test_worker_status_allows_only_super_admin():
         "jobs_claimed": 0,
         "jobs_completed": 0,
         "jobs_failed": 0,
-        "oldest_pending_created_at": 0,
-        "oldest_processing_heartbeat_at": 0,
+        "oldest_pending_created_at": None,
+        "oldest_pending_age_seconds": None,
+        "oldest_processing_heartbeat_at": None,
+        "oldest_running_job_age_seconds": None,
         "runnable_pending": 0,
         "expired_processing": 0,
         "stalled_processing": 0,
         "latest_progress_at": None,
+        "latest_progress_age_seconds": None,
     }
-    assert not {"department_id", "scan_id", "cloud_file_id"} & body.keys()
+    assert body["weekly_summary_scheduler"] == {
+        "state": "not_started",
+        "last_success_at": None,
+        "last_success_age_seconds": None,
+        "last_error_code": None,
+    }
+
+    def keys(value):
+        if isinstance(value, dict):
+            return set(value).union(*(keys(item) for item in value.values()))
+        if isinstance(value, list):
+            return set().union(*(keys(item) for item in value))
+        return set()
+
+    assert not {
+        "department_id",
+        "tenant_id",
+        "scan_id",
+        "cloud_file_id",
+        "worker_id",
+        "job_id",
+        "provider",
+        "credential_id",
+        "file_name",
+    } & keys(body)
 
 
 @pytest.mark.parametrize(

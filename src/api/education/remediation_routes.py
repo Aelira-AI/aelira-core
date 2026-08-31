@@ -202,7 +202,14 @@ def _artifact_requires_approval(
         or db.query(ScanFix.id)
         .filter(
             ScanFix.scan_id == scan_id,
-            ScanFix.source_kind == "image_equation",
+            ScanFix.source_kind.in_(
+                (
+                    "image_equation",
+                    "chemical_formula",
+                    "chemical_structure",
+                    "commutative_diagram",
+                )
+            ),
         )
         .first()
         is not None

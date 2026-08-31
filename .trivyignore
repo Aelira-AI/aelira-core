@@ -1,8 +1,8 @@
 # owner: security-team
-# justification: Issue #160 documents final filesystem fixed-version evidence: msgpack==1.2.1, with the stale finding attributed only to a lower layer.
+# justification: Issue #160 records that Trivy 0.74.0 still reports msgpack==1.1.2 while Syft 1.51.1 and the final-image gate find only msgpack==1.2.1.
 # expires: 2026-09-30
 GHSA-6v7p-g79w-8964
 # owner: security-team
-# justification: Issue #160 documents final filesystem fixed-version evidence: venv setuptools==84.0.0 and no global setuptools, with the stale finding attributed only to a lower layer.
+# justification: Issue #160 records that Trivy 0.74.0 still reports setuptools==70.3.0 while Syft 1.51.1 and the final-image gate find only venv setuptools==84.0.0.
 # expires: 2026-09-30
 CVE-2025-47273

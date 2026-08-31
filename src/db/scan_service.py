@@ -17,6 +17,7 @@ from ..education.pptx_processor import PowerPointProcessingResult
 from ..education.latex_processor import DocumentConversionResult
 from ..education.docx_processor import DocxProcessingResult
 from ..education.xlsx_processor import XlsxProcessingResult
+from ..education.cvd_metrics import serialize_cvd_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,7 @@ class ScanService:
                 1 for issue in result.issues if issue.get("severity") == "low"
             ),
             issues=normalized_issues,  # Use normalized issues instead of raw issues
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=result.structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,
@@ -278,6 +280,7 @@ class ScanService:
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,  # PowerPoint doesn't use OCR
@@ -486,6 +489,7 @@ class ScanService:
         """
 
         from ..education.current_compliance import get_department_current_compliance
+        from ..education.cvd_metrics import aggregate_cvd_metrics
         from ..education.deadline_config import DeadlineService
 
         projection = get_department_current_compliance(db, department_id)
@@ -504,6 +508,7 @@ class ScanService:
             )
             >= month_start
         )
+        cvd_metrics = aggregate_cvd_metrics(projection.verified_documents)
 
         return {
             # Compatibility aliases retain their original names while the
@@ -520,6 +525,10 @@ class ScanService:
             ),
             "total_pages": projection.total_pages,
             "total_issues": projection.total_issues,
+            "cvd_files_analyzed": cvd_metrics.files_analyzed,
+            "cvd_affected_files": cvd_metrics.affected_files,
+            "cvd_issues_total": cvd_metrics.issues_total,
+            "cvd_accessibility_rate": cvd_metrics.accessibility_rate,
             "scans_this_month": scans_this_month,
             "scans_by_type": {
                 "pdf": projection.scan_type_count(ScanType.PDF),
@@ -594,6 +603,7 @@ class ScanService:
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure={
                 "total_paragraphs": result.total_paragraphs,
                 "total_images": result.total_images,
@@ -677,6 +687,7 @@ class ScanService:
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure={
                 "total_sheets": result.total_sheets,
                 "total_rows": result.total_rows,

@@ -1,4 +1,4 @@
-"""Release-candidate metadata and operator notices must agree for v0.9.6."""
+"""Release-candidate metadata and operator notices must agree for v0.9.7."""
 
 import json
 import re
@@ -6,12 +6,12 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.9.6"
-RELEASE_HEADING = "## [0.9.6] - 2026-08-26"
-RELEASE_BODY = ROOT / "docs/releases/v0.9.6.md"
+VERSION = "0.9.7"
+RELEASE_HEADING = "## [0.9.7] - 2026-08-31"
+RELEASE_BODY = ROOT / "docs/releases/v0.9.7.md"
 
 
-def test_authoritative_release_versions_are_0_9_6():
+def test_authoritative_release_versions_are_0_9_7():
     readme = (ROOT / "README.md").read_text()
     settings = (ROOT / "src/config/settings.py").read_text()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -21,6 +21,7 @@ def test_authoritative_release_versions_are_0_9_6():
     compose = (ROOT / "docker-compose.prod.yml").read_text()
 
     assert f"**Status: {VERSION} beta.**" in readme
+    assert "A future release may include them" not in readme
     assert f'api_version: str = "{VERSION}"' in settings
     assert project["project"]["version"] == VERSION
     assert cli_package["version"] == VERSION
@@ -30,11 +31,25 @@ def test_authoritative_release_versions_are_0_9_6():
     assert compose.count(f"${{AELIRA_VERSION:-{VERSION}}}") == 3
 
 
+def test_long_form_cli_docs_match_the_release_version():
+    for relative in (
+        "cli/docs/COMMANDS.md",
+        "cli/docs/EXAMPLES.md",
+        "cli/docs/TROUBLESHOOTING.md",
+    ):
+        text = (ROOT / relative).read_text()
+        assert "**Version:** v0.9.7" in text
+        assert "**CLI Version:** v0.9.7" in text
+        assert "v0.4.0" not in text
+        assert "March 17, 2026" not in text
+        assert "All features complete - Production ready" not in text
+
+
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
-    assert re.search(r"\|\s*0\.9\.6\s*\|\s*:white_check_mark:\s*\|", security)
-    assert re.search(r"\|\s*<=\s*0\.9\.5\s*\|\s*:x:\s*\|", security)
+    assert re.search(r"\|\s*0\.9\.7\s*\|\s*:white_check_mark:\s*\|", security)
+    assert re.search(r"\|\s*<=\s*0\.9\.6\s*\|\s*:x:\s*\|", security)
     assert "current 0.9.x line" not in security
 
 
@@ -45,7 +60,7 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def _assert_v096_notice(notes: str) -> None:
+def _assert_v097_notice(notes: str) -> None:
     for heading in (
         "Security",
         "Added",
@@ -57,57 +72,37 @@ def _assert_v096_notice(notes: str) -> None:
     for phrase in (
         "Back up PostgreSQL",
         "alembic upgrade head",
-        "20260825_canvas_queue",
-        "REMEDIATION_EXECUTION_TIMEOUT_SECONDS",
-        "REMEDIATION_TERMINATION_GRACE_SECONDS",
-        "worker heartbeat",
-        "ai_vision",
-        "confidence `0.55`",
-        "needs_review=true",
+        "20260831_institution_scope",
+        "BYOK_ENCRYPTION_KEY",
+        "LLM_PROVIDER",
+        "EMBEDDING_PROVIDER",
+        "TRUSTED_PROXY_CIDRS",
+        "worker readiness",
+        "asynchronous multimedia",
+        "Unsupported or ambiguous STEM content",
+        "fully resolved typed region graph",
         "human acceptance",
-        "pre-v0.9.5 quarantined work",
+        "v0.9.6 operator action",
     ):
         assert phrase in notes
 
 
-def test_changelog_has_worker_isolation_unreleased_and_v0_9_6_operator_notice():
+def test_changelog_promotes_v0_9_7_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     unreleased = changelog.index("## [Unreleased]")
     release = changelog.index(RELEASE_HEADING)
-    historical = changelog.index("## [0.9.5] - 2026-08-22")
-    expected_unreleased = """### Changed
-
-- CPU- and browser-intensive scans and remediations now run only in the
-  dedicated `python -m src.jobs.worker` service. API processes enqueue bounded
-  jobs and remain independently responsive; Compose ships the worker with a
-  single-job concurrency default, a 0.75-CPU quota, killable child-process
-  execution, durable leases, and worker-specific health reporting.
-- Breaking API change: `POST /education/multimedia/transcribe` now returns an
-  HTTP `200` asynchronous scan handle instead of a terminal transcript/captions
-  payload. Poll its authenticated `/education/scans/{scan_id}/progress` URL,
-  then retrieve the result from `/education/scans/{scan_id}`.
-- Breaking API change: Brightspace single-content and batch remediation now
-  return HTTP `202` job descriptors. Clients must poll each authenticated
-  `status_url` for the bounded terminal outcome and artifact reference.
-- Breaking security and reliability change: the unauthenticated server endpoints
-  `POST /education/focus-order/analyze` and
-  `POST /education/focus-order/analyze-html` have been removed so API requests
-  cannot launch Chromium. The independent CLI `focus` command and the
-  worker/scanner FocusOrder capability remain available."""
-
-    assert (
-        changelog[unreleased + len("## [Unreleased]") : release].strip()
-        == expected_unreleased
-    )
+    historical = changelog.index("## [0.9.6] - 2026-08-26")
+    unreleased_notes = changelog[unreleased + len("## [Unreleased]") : release].strip()
+    assert not unreleased_notes
     assert unreleased < release < historical
-    _assert_v096_notice(_release_notes(changelog, "## [0.9.5] - 2026-08-22"))
+    _assert_v097_notice(_release_notes(changelog, "## [0.9.6] - 2026-08-26"))
 
 
 def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     body = RELEASE_BODY.read_text()
 
-    assert body.startswith("# Aelira v0.9.6\n")
-    _assert_v096_notice(body)
+    assert body.startswith("# Aelira v0.9.7\n")
+    _assert_v097_notice(body)
     assert "linux/amd64 Docker" in body
     assert "linux/arm64 Docker" in body
     assert "signed tag" in body
@@ -139,6 +134,7 @@ def test_historical_and_dependency_references_remain_intact():
     dashboard_lock = (ROOT / "dashboard/package-lock.json").read_text()
     changelog = (ROOT / "CHANGELOG.md").read_text()
 
+    assert "## [0.9.6] - 2026-08-26" in changelog
     assert "## [0.9.5] - 2026-08-22" in changelog
     assert "## [0.9.4] - 2026-08-19" in changelog
     assert '"optionator": "^0.9.3"' in cli_lock

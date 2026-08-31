@@ -7,13 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-08-31
+
+### Security
+
+- Authentication bootstrap, magic-link consumption, and open-signup provisioning are serialized; CSRF and session-cookie scope are separated; routine authentication logs exclude sensitive identifiers; and provisioning audit attribution trusts only configured proxy networks.
+- Analytics, evidence reports, current-compliance projections, provider configuration, report artifacts, and institution rollups are tenant-scoped. Workspace AI credentials are encrypted and resolved only for the authenticated workspace and requested purpose.
+- General STEM remediation is source-bound and fail closed. Typed provenance, specialist verification, saved-file reverse verification, approval invalidation, and exact mixed-region composition prevent unsupported or ambiguous semantics from being published.
+
+### Added
+
+- General STEM semantics now covers scanned equations, ordered multi-equation screenshots, vector equations, handwritten mathematics, chemical formulas, molecular structures, commutative diagrams, and mixed visuals through bounded specialist contracts and independent verifiers.
+- Mixed STEM composition accepts only a fully resolved typed region graph, preserves source rendering and metadata, orders specialist outputs deterministically, reopens and verifies the serialized candidate, and binds human approval to that exact candidate.
+- Institution administrators can manage canonical regulatory profiles and workspace AI providers. Compliance evidence reports, current-state projections, institution coverage rollups, CVD metrics, durable weekly summaries, Brightspace course discovery, Blackboard signing keys, and verified CLI report retrieval extend operator and integration coverage.
+- Separate API and worker liveness/readiness probes, privacy-bounded health metrics, and sustained Prometheus alerts cover unavailable APIs, missing worker heartbeats, expired leases, and stalled jobs with recovery notifications.
+
+### Fixed
+
+- PDF image XObject traversal rolls back safely, API keys remain usable at narrow widths, AI-provider controls stay inside their cards on phones, Microsoft OAuth tests exercise the real HTTP seam, and release image security checks inspect final installed Python packages rather than stale lower-layer attribution.
+- Compliance deadlines come from canonical institution profiles, dashboard remediation outcomes come from durable jobs, and each document contributes only its latest verified state.
+
 ### Changed
 
-- CPU- and browser-intensive scans and remediations now run only in the
-  dedicated `python -m src.jobs.worker` service. API processes enqueue bounded
-  jobs and remain independently responsive; Compose ships the worker with a
-  single-job concurrency default, a 0.75-CPU quota, killable child-process
-  execution, durable leases, and worker-specific health reporting.
+- Open-core makes no implicit AI-vendor choice. Text generation, fallback, and semantic embedding are independently opt-in; executable tenant inference resolves the workspace's durable provider selection.
+- CPU- and browser-intensive scans and remediations run only in the dedicated `python -m src.jobs.worker` service. API processes enqueue bounded jobs and remain independently responsive; Compose ships a single-job worker default, a 0.75-CPU quota, killable child-process execution, durable leases, and worker-specific health reporting.
 - Breaking API change: `POST /education/multimedia/transcribe` now returns an
   HTTP `200` asynchronous scan handle instead of a terminal transcript/captions
   payload. Poll its authenticated `/education/scans/{scan_id}/progress` URL,
@@ -26,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `POST /education/focus-order/analyze-html` have been removed so API requests
   cannot launch Chromium. The independent CLI `focus` command and the
   worker/scanner FocusOrder capability remain available.
+
+### Operator action required
+
+- Drain active work and pause intake. Back up PostgreSQL and verify the restore path, then run `alembic upgrade head` explicitly and confirm the single head is `20260831_institution_scope`.
+- Set and retain `BYOK_ENCRYPTION_KEY` before storing workspace provider credentials. Select `LLM_PROVIDER`, `LLM_FALLBACK_PROVIDER`, and `EMBEDDING_PROVIDER` deliberately; all three default to `none` where applicable.
+- If Blackboard LTI is enabled, configure a matching RSA 2048+ signing-key pair. Review `TRUSTED_PROXY_CIDRS`, cookie domains, Brightspace OAuth origins, shared report storage, and the new worker resource and health limits before restarting services.
+- Deploy API and worker from the same 0.9.7 release. Confirm API readiness, a fresh worker readiness result, queue age, failed or quarantined rows, and alert recovery before resuming intake.
+- Update clients for the asynchronous multimedia and Brightspace responses and the removed unauthenticated focus-order HTTP endpoints. Unsupported or ambiguous STEM content remains open for human review; recognition alone never approves an artifact, and human acceptance stays bound to the exact verified candidate.
+- Preserve every v0.9.6 operator action below, including the remediation timeout settings and deliberate handling of pre-v0.9.5 quarantined work.
 
 ## [0.9.6] - 2026-08-26
 

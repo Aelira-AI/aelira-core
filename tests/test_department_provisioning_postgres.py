@@ -399,7 +399,7 @@ def test_blocked_email_rejects_existing_department_retry(monkeypatch):
 
 @pytest.mark.integration
 def test_concurrent_handoff_acceptance_creates_one_admin_and_one_audit():
-    raw_token = "handoff-token-with-sufficient-entropy-123456789"
+    raw_token = "example-handoff-token-with-sufficient-entropy-123456789"
     payload = user_management.AcceptInvitationRequest(
         token=raw_token,
         email="admin@example.edu",

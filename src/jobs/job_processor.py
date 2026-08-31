@@ -34,6 +34,15 @@ logger = logging.getLogger(__name__)
 
 _CANCEL_REQUESTED_CODE = "scan_cancel_requested"
 _CANCELLED_CODE = "scan_cancelled"
+_EXTERNAL_EFFECT_JOB_TYPES = frozenset({"upload", "weekly_summary"})
+
+
+def _external_effect_error_code(job_type: str) -> str:
+    return (
+        "weekly_summary_delivery_indeterminate"
+        if job_type == "weekly_summary"
+        else "upload_outcome_indeterminate"
+    )
 
 
 def utcnow() -> datetime:
@@ -605,7 +614,7 @@ class JobProcessor:
             job = db.scalar(
                 select(CloudJobQueue).where(self._active_fence(claim)).with_for_update()
             )
-            if job is None or job.job_type != "upload":
+            if job is None or job.job_type not in _EXTERNAL_EFFECT_JOB_TYPES:
                 db.rollback()
                 raise LostJobOwnership("external effect fence unavailable")
             if job.external_effect_state == "requesting":
@@ -672,7 +681,7 @@ class JobProcessor:
         return timedelta(seconds=base * random.SystemRandom().uniform(0.8, 1.2))
 
     def _external_effect_state(self, claim: ClaimedJob) -> str | None:
-        if claim.job_type != "upload":
+        if claim.job_type not in _EXTERNAL_EFFECT_JOB_TYPES:
             return None
         with self.session_factory() as db:
             return db.scalar(
@@ -708,14 +717,15 @@ class JobProcessor:
                     "external_effect_started_at": None,
                 }
             else:
+                error_code = _external_effect_error_code(claim.job_type)
                 return {
                     **clear,
                     "status": CloudJobStatus.FAILED.value,
                     "completed_at": now,
                     "progress_message": "Failed",
                     "result_data": {"retry_safe": False, "manual_required": True},
-                    "error_message": "upload_outcome_indeterminate",
-                    "last_error_code": "upload_outcome_indeterminate",
+                    "error_message": error_code,
+                    "last_error_code": error_code,
                     "last_error_retryable": False,
                     "external_effect_state": (
                         "confirmed"
@@ -1055,8 +1065,9 @@ class JobProcessor:
                 }:
                     job.status = CloudJobStatus.FAILED.value
                     job.completed_at = now
-                    job.error_message = "upload_outcome_indeterminate"
-                    job.last_error_code = "upload_outcome_indeterminate"
+                    error_code = _external_effect_error_code(str(job.job_type))
+                    job.error_message = error_code
+                    job.last_error_code = error_code
                     job.last_error_retryable = False
                     job.result_data = {
                         "retry_safe": False,

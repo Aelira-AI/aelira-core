@@ -37,29 +37,6 @@ def auth_headers():
 
 
 @pytest.fixture
-def mock_msal_app():
-    """Mock MSAL ConfidentialClientApplication."""
-    with patch("msal.ConfidentialClientApplication") as mock:
-        app = MagicMock()
-        app.get_authorization_request_url.return_value = (
-            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"
-            "client_id=test-client-id&scope=offline_access%20Files.ReadWrite.All"
-        )
-        app.acquire_token_by_authorization_code.return_value = {
-            "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.test",
-            "refresh_token": "OAQABAAAAAADCoMpjJ...",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-        }
-        app.acquire_token_by_refresh_token.return_value = {
-            "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.refreshed",
-            "expires_in": 3600,
-        }
-        mock.return_value = app
-        yield app
-
-
-@pytest.fixture
 def mock_graph_client():
     """Mock Microsoft Graph API client."""
     with patch("src.integrations.microsoft_365.microsoft_graph.GraphClient") as mock:
@@ -156,7 +133,6 @@ class TestMicrosoft365E2EFlow:
         self,
         client,
         auth_headers,
-        mock_msal_app,
         mock_db_session,
     ):
         """Test complete OAuth connection flow."""
@@ -178,7 +154,6 @@ class TestMicrosoft365E2EFlow:
     def test_e2e_callback_token_exchange(
         self,
         client,
-        mock_msal_app,
         mock_db_session,
         mock_oauth_token_manager,
     ):
@@ -386,7 +361,6 @@ class TestMicrosoft365TokenRefresh:
         self,
         client,
         auth_headers,
-        mock_msal_app,
         mock_graph_client,
         mock_oauth_token_manager,
     ):
@@ -405,16 +379,10 @@ class TestMicrosoft365TokenRefresh:
         self,
         client,
         auth_headers,
-        mock_msal_app,
         mock_oauth_token_manager,
     ):
         """Test handling of revoked refresh token."""
         mock_oauth_token_manager.is_token_expired.return_value = True
-        mock_msal_app.acquire_token_by_refresh_token.return_value = {
-            "error": "invalid_grant",
-            "error_description": "AADSTS50173: The provided grant has expired",
-        }
-
         response = client.get(
             "/api/microsoft/onedrive/files",
             headers=auth_headers,

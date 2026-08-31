@@ -151,6 +151,9 @@ class Department(Base):
     __tablename__ = "departments"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    institution_scope_id = Column(
+        String(36), nullable=False, default=lambda: str(uuid.uuid4()), index=True
+    )
     name = Column(String(255), nullable=False)  # "Computer Science Department"
     institution = Column(String(255), nullable=False)  # "Harvard University"
 
@@ -692,6 +695,9 @@ class ScanResult(Base):
     merged_results = Column(
         JSON, nullable=True
     )  # Deduplicated results with detected_by attribution
+    cvd_analysis = Column(
+        JSON, nullable=True
+    )  # Raw CVD analysis evidence; NULL means the scan did not complete CVD analysis
     engines_used = Column(JSON, nullable=True)  # ["axe-core", "pa11y"]
 
     # Engine-specific issue counts
@@ -1111,6 +1117,7 @@ class CloudJobType(str, Enum):
     WEBHOOK_REFRESH = "webhook_refresh"  # Renew webhook subscription
     RECONCILE = "canvas_reconcile"  # Observe an uncertain Canvas writeback
     CANVAS_CONTENT = "canvas_content"  # Remediate immutable Canvas stored HTML
+    REPORT = "report"  # Generate an immutable accessibility evidence report
 
 
 class CloudJobStatus(str, Enum):
@@ -1699,9 +1706,10 @@ class CloudJobQueue(Base):
             name="ck_cloud_job_queue_external_effect_pair",
         ),
         CheckConstraint(
-            "job_type = 'upload' OR (external_effect_state IS NULL AND "
+            "job_type IN ('upload', 'weekly_summary') OR "
+            "(external_effect_state IS NULL AND "
             "external_effect_token IS NULL AND external_effect_started_at IS NULL)",
-            name="ck_cloud_job_queue_external_effect_upload_only",
+            name="ck_cloud_job_queue_external_effect_owned",
         ),
         Index(
             "ix_cloud_job_queue_claim",
@@ -1721,6 +1729,17 @@ class CloudJobQueue(Base):
             postgresql_where=text(
                 "dedupe_key IS NOT NULL AND status IN ('pending', 'processing')"
             ),
+        ),
+        Index(
+            "uq_cloud_job_queue_weekly_summary_window",
+            "department_id",
+            "job_type",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text(
+                "job_type = 'weekly_summary' AND dedupe_key IS NOT NULL"
+            ),
+            sqlite_where=text("job_type = 'weekly_summary' AND dedupe_key IS NOT NULL"),
         ),
     )
 

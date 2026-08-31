@@ -819,6 +819,8 @@ export function Integrations(): React.ReactElement {
             onConnect={() => handleConnect('brightspace')}
             onDisconnect={() => handleDisconnect('brightspace')}
             connecting={connecting === 'brightspace'}
+            actionUrl="/integrations/brightspace"
+            actionLabel="Browse Courses"
           />
         </div>
       </div>

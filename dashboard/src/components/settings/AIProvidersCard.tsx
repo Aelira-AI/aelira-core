@@ -284,8 +284,8 @@ function ProviderSettingsCard({
                         : 'var(--border-subtle)',
                     }}
                   >
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-start gap-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="flex min-w-0 items-start gap-3">
                         <div
                           className="p-2 rounded-lg"
                           style={{
@@ -338,7 +338,7 @@ function ProviderSettingsCard({
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center justify-end gap-2">
+                      <div className="flex flex-wrap items-center justify-start gap-2 sm:justify-end">
                         {isAvailable && (
                           <>
                             <button

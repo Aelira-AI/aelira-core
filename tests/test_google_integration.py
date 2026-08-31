@@ -9,14 +9,20 @@ Tests cover:
 - File remediation and upload back
 """
 
-import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlparse
+from unittest.mock import MagicMock, patch
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
 
 # Import app for testing
 from src.api.main import app
+from src.integrations import oauth_token_manager
+from src.integrations.google_workspace.google_oauth import GoogleOAuthService
+from src.integrations.oauth_token_manager import OAuthTokenManager
 
 # Mark all tests in this module as integration (skipped in CI)
 pytestmark = pytest.mark.integration
@@ -29,16 +35,23 @@ def client():
 
 
 @pytest.fixture
-def mock_google_credentials():
-    """Mock Google OAuth credentials."""
-    with patch("src.integrations.google_workspace.google_oauth.Credentials") as mock:
-        mock_creds = MagicMock()
-        mock_creds.valid = True
-        mock_creds.expired = False
-        mock_creds.token = "test-access-token"
-        mock_creds.refresh_token = "test-refresh-token"
-        mock.return_value = mock_creds
-        yield mock_creds
+def google_token_manager():
+    """Create the production token manager with deterministic credentials."""
+    manager = OAuthTokenManager(OAuthTokenManager.generate_encryption_key())
+    manager._google_client_id = "google-client-id"
+    manager._google_client_secret = "google-client-secret"
+    return manager
+
+
+def install_httpx_transport(monkeypatch, handler):
+    """Route the production AsyncClient through a fail-closed mock transport."""
+    async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        oauth_token_manager.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: async_client(*args, transport=transport, **kwargs),
+    )
 
 
 @pytest.fixture
@@ -71,56 +84,107 @@ def mock_oauth_token_manager():
 class TestGoogleOAuthFlow:
     """Tests for Google OAuth 2.0 connection flow."""
 
-    def test_google_connect_returns_auth_url(self, client):
-        """Test that /google/connect returns an OAuth authorization URL."""
-        with patch(
-            "src.integrations.google_workspace.google_oauth.GoogleOAuthService"
-        ) as mock_oauth:
-            mock_service = MagicMock()
-            mock_service.get_authorization_url.return_value = (
-                "https://accounts.google.com/o/oauth2/auth?...",
-                "test-state-123",
-            )
-            mock_oauth.return_value = mock_service
+    def test_google_connect_returns_auth_url(self, google_token_manager):
+        """Build the authorization request through the production service."""
+        service = GoogleOAuthService(google_token_manager)
 
-            response = client.post(
-                "/google/connect",
-                json={"redirect_uri": "http://localhost:3000/callback"},
-            )
+        auth_url = service.get_authorization_url(
+            redirect_uri="https://dashboard.example/callback",
+            scopes=["drive.readonly", "userinfo.email"],
+            state="csrf-state",
+        )
 
-            # Should return auth URL, require auth, or 404 if feature not configured
-            assert response.status_code in [200, 401, 404, 422]
-            if response.status_code == 200:
-                data = response.json()
-                assert "auth_url" in data or "url" in data
+        parsed = urlparse(auth_url)
+        query = parse_qs(parsed.query)
+        assert parsed.scheme == "https"
+        assert parsed.netloc == "accounts.google.com"
+        assert parsed.path == "/o/oauth2/v2/auth"
+        assert query == {
+            "client_id": ["google-client-id"],
+            "redirect_uri": ["https://dashboard.example/callback"],
+            "response_type": ["code"],
+            "scope": ["drive.readonly userinfo.email"],
+            "access_type": ["offline"],
+            "prompt": ["consent"],
+            "state": ["csrf-state"],
+        }
 
-    def test_google_callback_exchanges_code(self, client, mock_google_credentials):
-        """Test that OAuth callback exchanges code for tokens."""
-        with patch(
-            "src.integrations.google_workspace.google_oauth.GoogleOAuthService"
-        ) as mock_oauth:
-            mock_service = MagicMock()
-            mock_service.exchange_code.return_value = {
-                "access_token": "test-access-token",
-                "refresh_token": "test-refresh-token",
-                "expires_in": 3600,
-            }
-            mock_oauth.return_value = mock_service
+    async def test_google_callback_exchanges_code(
+        self, google_token_manager, monkeypatch
+    ):
+        """Exchange code and load identity through the production HTTP seam."""
+        requests = []
 
-            response = client.get(
-                "/google/callback",
-                params={"code": "test-auth-code", "state": "test-state-123"},
-            )
+        def handler(request):
+            requests.append(request)
+            if request.url == httpx.URL(google_token_manager.GOOGLE_TOKEN_URL):
+                return httpx.Response(
+                    200,
+                    json={
+                        "access_token": "access-token",
+                        "refresh_token": "refresh-token",
+                        "expires_in": 3600,
+                        "scope": "drive.readonly userinfo.email",
+                    },
+                )
+            if request.url == httpx.URL(
+                "https://www.googleapis.com/oauth2/v2/userinfo"
+            ):
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "google-user-id",
+                        "email": "faculty@example.edu",
+                        "name": "Test Faculty",
+                    },
+                )
+            raise AssertionError(f"Unexpected Google OAuth request: {request.url}")
 
-            # Should redirect, return success, or fail gracefully
-            assert response.status_code in [200, 302, 400, 401, 404, 500]
+        install_httpx_transport(monkeypatch, handler)
+        service = GoogleOAuthService(google_token_manager)
 
-    def test_google_disconnect_revokes_access(self, client):
-        """Test that disconnect revokes OAuth access."""
-        response = client.delete("/google/disconnect")
+        token_data = await service.exchange_code(
+            code="authorization-code",
+            redirect_uri="https://dashboard.example/callback",
+        )
 
-        # Should succeed or require auth
-        assert response.status_code in [200, 204, 401, 404]
+        assert token_data["access_token"] == "access-token"
+        assert token_data["refresh_token"] == "refresh-token"
+        assert token_data["scopes"] == ["drive.readonly", "userinfo.email"]
+        assert token_data["user_id"] == "google-user-id"
+        assert token_data["email"] == "faculty@example.edu"
+        assert token_data["name"] == "Test Faculty"
+        assert [request.method for request in requests] == ["POST", "GET"]
+        assert parse_qs(requests[0].content.decode()) == {
+            "client_id": ["google-client-id"],
+            "client_secret": ["google-client-secret"],
+            "code": ["authorization-code"],
+            "grant_type": ["authorization_code"],
+            "redirect_uri": ["https://dashboard.example/callback"],
+        }
+        assert requests[1].headers["Authorization"] == "Bearer access-token"
+
+    async def test_google_disconnect_revokes_access(
+        self, google_token_manager, monkeypatch
+    ):
+        """Revoke access through the production HTTP seam."""
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            if request.url != httpx.URL(
+                f"{google_token_manager.GOOGLE_REVOKE_URL}?token=refresh-token"
+            ):
+                raise AssertionError(f"Unexpected Google revoke request: {request.url}")
+            return httpx.Response(200)
+
+        install_httpx_transport(monkeypatch, handler)
+
+        revoked = await google_token_manager.revoke_google_token("refresh-token")
+
+        assert revoked is True
+        assert len(requests) == 1
+        assert requests[0].method == "POST"
 
 
 class TestGoogleDriveOperations:

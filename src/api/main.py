@@ -91,6 +91,7 @@ from src.auth.dependencies import get_required_api_key
 from src.auth.redis_rate_limiter import get_redis_client
 from src.db.database import get_db_dependency
 from src.db.models import APIKey
+from src.monitoring.worker_health import register_worker_health_collector
 
 # Prometheus metrics
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -103,6 +104,7 @@ logger = logging.getLogger(__name__)
 
 # Get settings
 settings = get_settings()
+register_worker_health_collector()
 
 # =============================================================================
 # Sentry Error Tracking (Production)
@@ -754,6 +756,12 @@ async def robots_txt():
 
 
 # Health check endpoints
+@app.get("/live", response_model=HealthResponse)
+async def liveness():
+    """Process liveness probe with no database or Redis dependency."""
+    return {"status": "alive", "message": "API process is alive"}
+
+
 @app.get("/", response_model=HealthResponse)
 async def root():
     """Root endpoint - API health check."""
