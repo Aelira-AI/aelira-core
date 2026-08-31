@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- PDF image XObject traversal rolls back safely, API keys remain usable at narrow widths, Microsoft OAuth tests exercise the real HTTP seam, and release image security checks inspect final installed Python packages rather than stale lower-layer attribution.
+- PDF image XObject traversal rolls back safely, API keys remain usable at narrow widths, AI-provider controls stay inside their cards on phones, Microsoft OAuth tests exercise the real HTTP seam, and release image security checks inspect final installed Python packages rather than stale lower-layer attribution.
 - Compliance deadlines come from canonical institution profiles, dashboard remediation outcomes come from durable jobs, and each document contributes only its latest verified state.
 
 ### Changed
