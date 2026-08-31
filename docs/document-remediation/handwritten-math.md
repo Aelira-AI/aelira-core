@@ -24,7 +24,7 @@ The public dispositions are:
 Low contrast, strike-throughs, annotations, and multiple lines always require
 human review in this corpus. Diagram-only content, dense unsupported marks,
 ordinary non-math handwriting, and visually similar non-math content are
-unsupported. Every accepted HMER result requires human review
+unsupported. Every accepted HMER result will always require human review
 before artifact availability, including crops that were eligible here.
 
 ## Recognition and verification
