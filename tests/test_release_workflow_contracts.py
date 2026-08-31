@@ -254,6 +254,7 @@ def test_npm_is_pinned_validated_and_runs_full_publish_checklist() -> None:
     assert "npm@latest" not in text
     for command in (
         "npm ci",
+        "./node_modules/.bin/playwright install --with-deps chromium",
         "npm run build",
         "npm run lint",
         "npm test",
@@ -261,6 +262,10 @@ def test_npm_is_pinned_validated_and_runs_full_publish_checklist() -> None:
         "npm publish --access public",
     ):
         assert command in text
+    assert text.index("npm ci") < text.index("playwright install --with-deps chromium")
+    assert text.index("playwright install --with-deps chromium") < text.index(
+        "npm test"
+    )
     assert "workflow_dispatch" not in text
     assert publish["permissions"] == {"contents": "read", "id-token": "write"}
     assert publish["environment"] == "release"
