@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -100,7 +100,7 @@ jobs:
           output-file: ${{ matrix.image }}-${{ matrix.arch }}.spdx.json
 
       - name: Inventory all high and critical vulnerabilities
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: ghcr.io/aelira-ai/${{ matrix.image }}@${{ steps.build.outputs.digest }}
           format: json
@@ -111,7 +111,7 @@ jobs:
           trivyignores: .trivyignore.inventory
 
       - name: Upload Trivy vulnerability inventory
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trivy-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_attempt }}
           path: ${{ matrix.image }}-${{ matrix.arch }}.trivy.json
@@ -120,7 +120,7 @@ jobs:
           overwrite: false
 
       - name: Scan immutable image for fixed high and critical vulnerabilities
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: ghcr.io/aelira-ai/${{ matrix.image }}@${{ steps.build.outputs.digest }}
           format: table
@@ -166,7 +166,7 @@ jobs:
             "$IMAGE@$DIGEST"
 
       - name: Upload SPDX JSON SBOM
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_attempt }}
           path: ${{ matrix.image }}-${{ matrix.arch }}.spdx.json
@@ -192,7 +192,7 @@ jobs:
             > "$RECEIPT"
 
       - name: Upload digest receipt
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: receipt-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_attempt }}
           path: ${{ matrix.image }}-${{ matrix.arch }}.json
@@ -209,7 +209,7 @@ jobs:
       packages: read
     steps:
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -219,7 +219,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Download all receipts
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: receipt-*-${{ github.run_attempt }}
           path: receipts
@@ -252,7 +252,7 @@ jobs:
           done
 
       - name: Upload verified receipts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verified-digest-receipts-${{ github.run_attempt }}
           path: receipts/*.json
@@ -271,7 +271,7 @@ jobs:
       id-token: write
     steps:
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -281,7 +281,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Download verified receipts
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: verified-digest-receipts-${{ github.run_attempt }}
           path: receipts
