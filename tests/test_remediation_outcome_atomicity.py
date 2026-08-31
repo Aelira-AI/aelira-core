@@ -337,7 +337,7 @@ async def _run_document_route(
         ),
         patch("src.education.remediation.DocxRemediator", return_value=remediator),
         patch(
-            "src.api.education.remediation_routes.get_provider_manager",
+            "src.api.education.remediation_routes.workspace_provider_runtime",
             return_value=object(),
         ),
         patch(
@@ -527,7 +527,9 @@ async def test_malformed_persisted_issues_fail_once_without_provider_or_raw_leak
             "src.api.education.remediation_routes.ScanService.get_scan_with_result",
             return_value=scan,
         ),
-        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch(
+            "src.api.education.remediation_routes.workspace_provider_runtime"
+        ) as manager,
         patch("src.education.remediation.DocxRemediator") as remediator,
         patch("src.security.audit_service.AuditService", return_value=audit),
         pytest.raises(HTTPException) as caught,
@@ -588,7 +590,7 @@ async def test_response_construction_failure_precedes_success_audit_and_commit(
         ),
         patch("src.education.remediation.DocxRemediator", return_value=remediator),
         patch(
-            "src.api.education.remediation_routes.get_provider_manager",
+            "src.api.education.remediation_routes.workspace_provider_runtime",
             return_value=object(),
         ),
         patch("src.security.audit_service.AuditService", return_value=audit),
@@ -835,7 +837,9 @@ async def test_generic_zero_issue_scan_audits_honest_atomic_noop(
         patch(
             "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
         ) as bind,
-        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch(
+            "src.api.education.remediation_routes.workspace_provider_runtime"
+        ) as manager,
         patch("src.security.audit_service.AuditService", return_value=audit),
     ):
         result = await remediate_scan(
@@ -1183,7 +1187,7 @@ async def test_image_analysis_missing_optional_alt_text_is_manual_required(tmp_p
         ),
     ],
 )
-async def test_global_image_terminal_audit_uses_manager_transport_metadata(
+async def test_workspace_image_terminal_audit_uses_runtime_transport_metadata(
     tmp_path,
     caplog,
     use_gemini,
@@ -1232,20 +1236,16 @@ async def test_global_image_terminal_audit_uses_manager_transport_metadata(
         manager_success = False
         manager_error = "SENSITIVE provider failure"
 
-    manager = MagicMock()
-    manager.primary_type = SimpleNamespace(value="gemini" if use_gemini else "ollama")
-    manager.fallback_type = SimpleNamespace(value="ollama")
-    manager.analyze_image = AsyncMock(
-        return_value=SimpleNamespace(
-            success=manager_success,
-            content=manager_content,
-            provider=manager_provider,
-            model=manager_model,
-            inference_time=manager_elapsed,
-            error=manager_error,
-            metadata={"attempted_providers": list(expected_attempts)},
-        )
-    )
+    manager = MagicMock(provider=expected_attempts[0])
+    manager.analyze_image_sync.return_value = {
+        "success": manager_success,
+        "content": manager_content,
+        "provider": manager_provider,
+        "model": manager_model,
+        "inference_time": manager_elapsed,
+        "error": manager_error,
+        "metadata": {"attempted_providers": list(expected_attempts)},
+    }
 
     patches = [
         patch(
@@ -1254,7 +1254,10 @@ async def test_global_image_terminal_audit_uses_manager_transport_metadata(
         ),
         patch("src.education.image_alt_text.get_settings", return_value=settings),
         patch("src.security.audit_service.AuditService", return_value=audit),
-        patch("src.ai.providers.get_provider_manager", return_value=manager),
+        patch(
+            "src.api.education.remediation_routes.workspace_provider_runtime",
+            return_value=manager,
+        ),
     ]
 
     with ExitStack() as stack:
@@ -1421,7 +1424,9 @@ async def test_generic_post_intent_validation_exit_persists_one_bounded_failure_
             "src.api.education.remediation_routes.ScanService.get_scan_with_result",
             return_value=scan,
         ),
-        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch(
+            "src.api.education.remediation_routes.workspace_provider_runtime"
+        ) as manager,
         pytest.raises(HTTPException) as caught,
     ):
         await remediate_scan(
@@ -1503,7 +1508,9 @@ async def test_generic_policy_bind_denial_persists_exactly_one_dispatch_failure_
             "src.api.education.remediation_routes.LMSRemediationClient.bind_if_allowed",
             side_effect=bind,
         ),
-        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch(
+            "src.api.education.remediation_routes.workspace_provider_runtime"
+        ) as manager,
         pytest.raises(HTTPException) as caught,
     ):
         await remediate_scan(
@@ -1619,7 +1626,9 @@ async def test_generic_remaining_pre_provider_dispatch_exits_audit_exactly_once(
         patch(
             "src.api.education.remediation_routes.ImageAltTextGenerator"
         ) as generator,
-        patch("src.api.education.remediation_routes.get_provider_manager") as manager,
+        patch(
+            "src.api.education.remediation_routes.workspace_provider_runtime"
+        ) as manager,
         pytest.raises(HTTPException) as caught,
     ):
         await remediate_scan(

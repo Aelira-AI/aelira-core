@@ -80,6 +80,18 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
 
+      - name: Verify final API image Python package state
+        if: matrix.image == 'aelira-core-api'
+        env:
+          IMAGE: ghcr.io/aelira-ai/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker run --rm --entrypoint /usr/local/bin/python "$IMAGE" \
+            /app/scripts/verify_final_python_packages.py global
+          docker run --rm --entrypoint /opt/venv/bin/python "$IMAGE" \
+            /app/scripts/verify_final_python_packages.py venv
+
       - name: Generate SPDX JSON SBOM for immutable image
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:

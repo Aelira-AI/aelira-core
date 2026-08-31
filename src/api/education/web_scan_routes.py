@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ...db.database import get_db_dependency
 from ...db.models import APIKey, Scan, ScanType
 from ...education.code_scanner import CodeScanner, CodeScanResult
+from ...education.cvd_metrics import serialize_cvd_analysis
 from ...education.web_scanner import WebScanner
 from ...middleware.quota import require_feature
 from ...scanners.scan_mode import ScanMode
@@ -440,6 +441,8 @@ def process_web_scan_background(
     max_pages: int,
     generate_code_fixes: bool,
     capture_screenshots: bool,
+    *,
+    workspace_id: str | None = None,
 ):
     """
     Durable-worker function for a web scan, using the sync Playwright API.
@@ -472,6 +475,12 @@ def process_web_scan_background(
         if not scan:
             logger.error(f"[BACKGROUND] Scan {scan_id} not found in database")
             return
+        resolved_workspace_id = workspace_id or scan.department_id
+        if resolved_workspace_id != scan.department_id:
+            raise ValueError("workspace_scope_invalid")
+        from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+        provider_runtime = workspace_provider_runtime(resolved_workspace_id)
 
         # Update progress
         scan.progress = 5
@@ -510,6 +519,7 @@ def process_web_scan_background(
             use_ai_analysis=generate_code_fixes,
             capture_screenshots=capture_screenshots,
             progress_callback=progress_callback,
+            llm_client=provider_runtime,
         )
 
         # Perform axe-core scan (always runs)
@@ -716,6 +726,7 @@ def process_web_scan_background(
             medium_issues=medium,
             low_issues=low,
             issues={"details": all_issues},  # Legacy field
+            cvd_analysis=serialize_cvd_analysis(result),
             structure={
                 "pages_scanned": result.pages_scanned,
                 "root_url": result.root_url,
@@ -837,12 +848,22 @@ def process_batch_web_scan_background(
     max_pages: int,
     generate_code_fixes: bool,
     capture_screenshots: bool,
+    *,
+    workspace_id: str | None = None,
 ):
     """Background task to process batch web scan"""
     from ...db.database import SessionLocal
     from ...db.models import Scan, ScanStatus, ScanResult
 
     db = SessionLocal()
+    scope_scan = db.query(Scan).filter(Scan.id == batch_scan_id).first()
+    resolved_workspace_id = workspace_id or getattr(scope_scan, "department_id", None)
+    if scope_scan is None or resolved_workspace_id != scope_scan.department_id:
+        db.close()
+        raise ValueError("workspace_scope_invalid")
+    from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+    provider_runtime = workspace_provider_runtime(resolved_workspace_id)
 
     def progress_callback(current, total, message):
         """Update progress in database"""
@@ -892,6 +913,7 @@ def process_batch_web_scan_background(
                     max_pages=max_pages,
                     use_ai_analysis=generate_code_fixes,
                     capture_screenshots=capture_screenshots,
+                    llm_client=provider_runtime,
                 )
 
                 # Scan the URL
@@ -919,7 +941,9 @@ def process_batch_web_scan_background(
 
         # Group issues across ALL pages
 
-        scanner_temp = WebScanner()  # Temp scanner for helper methods
+        scanner_temp = WebScanner(
+            use_ai_analysis=False, llm_client=provider_runtime
+        )  # Temp scanner for helper methods
         grouped_issues = scanner_temp._group_issues_across_pages(all_pages)
 
         # Create aggregated result
@@ -939,6 +963,7 @@ def process_batch_web_scan_background(
             scan_id=batch_scan_id,
             result_data=batch_result,
             compliance_score=overall_compliance_score,
+            cvd_analysis=serialize_cvd_analysis({"pages": all_pages}),
         )
         db.add(scan_result)
 
@@ -988,6 +1013,8 @@ def process_sitemap_scan_background(
     generate_code_fixes: bool,
     capture_screenshots: bool,
     priority_patterns: List[str],
+    *,
+    workspace_id: str | None = None,
 ):
     """Background task to process sitemap-based web scan"""
     from ...db.database import SessionLocal
@@ -995,6 +1022,14 @@ def process_sitemap_scan_background(
     import defusedxml.ElementTree as ET  # XXE-safe: no entity expansion/external DTDs
 
     db = SessionLocal()
+    scope_scan = db.query(Scan).filter(Scan.id == sitemap_scan_id).first()
+    resolved_workspace_id = workspace_id or getattr(scope_scan, "department_id", None)
+    if scope_scan is None or resolved_workspace_id != scope_scan.department_id:
+        db.close()
+        raise ValueError("workspace_scope_invalid")
+    from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+    provider_runtime = workspace_provider_runtime(resolved_workspace_id)
 
     def progress_callback(current, total, message):
         """Update progress in database"""
@@ -1112,6 +1147,7 @@ def process_sitemap_scan_background(
                     max_pages=1,  # One page per URL
                     use_ai_analysis=generate_code_fixes,
                     capture_screenshots=capture_screenshots,
+                    llm_client=provider_runtime,
                 )
 
                 # Scan the URL
@@ -1139,7 +1175,9 @@ def process_sitemap_scan_background(
 
         # Group issues across ALL pages
 
-        scanner_temp = WebScanner()  # Temp scanner for helper methods
+        scanner_temp = WebScanner(
+            use_ai_analysis=False, llm_client=provider_runtime
+        )  # Temp scanner for helper methods
         grouped_issues = scanner_temp._group_issues_across_pages(all_pages)
 
         # Create aggregated result
@@ -1160,6 +1198,7 @@ def process_sitemap_scan_background(
             scan_id=sitemap_scan_id,
             result_data=sitemap_result,
             compliance_score=overall_compliance_score,
+            cvd_analysis=serialize_cvd_analysis({"pages": all_pages}),
         )
         db.add(scan_result)
 
@@ -1213,6 +1252,8 @@ def process_code_background(
     validate_alt_text: bool,
     user_id: str,
     department_id: str,
+    *,
+    workspace_id: str | None = None,
 ):
     """Background task to process code file asynchronously - TRUE REAL-TIME PROGRESS!"""
     from ...db.database import SessionLocal
@@ -1231,6 +1272,15 @@ def process_code_background(
         if not scan:
             logger.error(f"[BACKGROUND] Scan {scan_id} not found!")
             return
+        resolved_workspace_id = workspace_id or department_id
+        if (
+            resolved_workspace_id != department_id
+            or scan.department_id != department_id
+        ):
+            raise ValueError("workspace_scope_invalid")
+        from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+        provider_runtime = workspace_provider_runtime(resolved_workspace_id)
 
         # Define progress callback
         def update_progress(current: int, total: int, message: str):
@@ -1265,6 +1315,7 @@ def process_code_background(
             generate_fixes=generate_fixes,
             validate_alt_text=validate_alt_text,
             progress_callback=update_progress,
+            llm_client=provider_runtime,
         )
 
         # Perform scan
@@ -1300,6 +1351,7 @@ def process_code_background(
             medium_issues=medium,
             low_issues=low,
             issues=[issue.dict() for issue in result.issues[:MAX_SCANFIX_ISSUES]],
+            cvd_analysis=serialize_cvd_analysis(result),
             structure={
                 "project_name": result.project_name,
                 "files_analyzed": result.files_analyzed,

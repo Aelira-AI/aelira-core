@@ -280,6 +280,28 @@ async def _send_weekly_summary_for_department(
     settings: EmailAlertSettings,
 ) -> bool:
     """Send weekly summary for a single department."""
+    now = datetime.now(timezone.utc)
+    delivery = build_weekly_summary_payload(
+        db,
+        settings,
+        window_start=now - timedelta(days=7),
+        window_end=now,
+    )
+    if delivery is None:
+        return True
+
+    result = await get_email_service().send_weekly_summary(**delivery)
+    return isinstance(result, dict) and result.get("success") is True
+
+
+def build_weekly_summary_payload(
+    db: Session,
+    settings: EmailAlertSettings,
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> Dict[str, Any] | None:
+    """Build one truthful delivery payload before crossing the email boundary."""
     department_id = settings.department_id
 
     # Filter by individual user preferences
@@ -290,24 +312,19 @@ async def _send_weekly_summary_for_department(
         logger.info(
             f"No recipients with weekly_summary enabled for department {department_id}"
         )
-        return True  # Successfully sent to 0 recipients (not an error)
+        return None
 
     # Get department info
     department = db.query(Department).filter(Department.id == department_id).first()
     department_name = department.name if department else "Your Department"
-
-    # Calculate date range (last 7 days)
-    now = datetime.now(timezone.utc)
-    week_start = now - timedelta(days=7)
-    week_end = now
 
     # Get scan statistics for the week
     scans = (
         db.query(Scan)
         .filter(
             Scan.department_id == department_id,
-            Scan.created_at >= week_start,
-            Scan.created_at <= week_end,
+            Scan.created_at >= window_start,
+            Scan.created_at <= window_end,
         )
         .all()
     )
@@ -340,44 +357,28 @@ async def _send_weekly_summary_for_department(
                 else:
                     severity_counts["minor"] += 1
 
-    # Calculate issues fixed (would need a tracking system for accurate count)
-    # For now, estimate based on completed remediations
-    issues_fixed = 0  # Placeholder
-
-    # Calculate score change (would need historical data)
-    score_change = "No previous data"  # Placeholder
-
     deadline = (
         DeadlineService.for_department(department) if department is not None else None
     )
 
-    # Calculate percentages for progress bars
-    sum(severity_counts.values()) or 1
-
-    email_service = get_email_service()
-    await email_service.send_weekly_summary(
-        to_emails=filtered_emails,
-        department_name=department_name,
-        total_files=total_files,
-        total_issues=total_issues,
-        scans_this_week=scans_this_week,
-        issues_fixed=issues_fixed,
-        average_score=round(average_score, 1),
-        score_change=score_change,
-        critical_count=severity_counts["critical"],
-        serious_count=severity_counts["serious"],
-        moderate_count=severity_counts["moderate"],
-        minor_count=severity_counts["minor"],
-        dashboard_url=f"https://dashboard.example.com/dashboard?dept={department_id}",
-        week_start=week_start.strftime("%b %d"),
-        week_end=week_end.strftime("%b %d, %Y"),
-        deadline=deadline,
-    )
-
-    logger.info(
-        f"Sent weekly summary to {department_name} ({len(filtered_emails)} recipients)"
-    )
-    return True
+    return {
+        "average_score": round(average_score, 1),
+        "critical_count": severity_counts["critical"],
+        "dashboard_url": f"https://dashboard.example.com/dashboard?dept={department_id}",
+        "deadline": deadline,
+        "department_name": department_name,
+        "issues_fixed": None,
+        "minor_count": severity_counts["minor"],
+        "moderate_count": severity_counts["moderate"],
+        "scans_this_week": scans_this_week,
+        "score_change": "Not available",
+        "serious_count": severity_counts["serious"],
+        "to_emails": filtered_emails,
+        "total_files": total_files,
+        "total_issues": total_issues,
+        "week_end": window_end.strftime("%b %d, %Y"),
+        "week_start": window_start.strftime("%b %d"),
+    }
 
 
 async def trigger_scan_alerts(

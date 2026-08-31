@@ -23,6 +23,8 @@ class EquationRecognition:
 
 _PROMPT = """Classify this single bounded image. Return exactly one JSON object and no markdown or prose. The only accepted forms are {\"classification\":\"printed_equation\",\"latex\":\"...\"} or {\"classification\":\"not_equation\",\"latex\":null}. Use printed_equation only for one standalone printed mathematical equation. Preserve mathematical meaning in LaTeX."""
 
+_SYSTEM_PROMPT = """Classify this single bounded image. Return exactly one JSON object and no markdown or prose. The only accepted forms are {\"classification\":\"printed_equation\",\"latex\":\"...\"} or {\"classification\":\"not_equation\",\"latex\":null}. Use printed_equation only when the complete image is one printed mathematical system whose lines belong together. Return one LaTeX representation preserving the full system, line order, alignment, braces, and mathematical meaning."""
+
 
 class EquationRecognizer:
     """Recover bounded LaTeX through one explicitly alt-text-purpose client."""
@@ -39,6 +41,16 @@ class EquationRecognizer:
         self.max_response_chars = max_response_chars
 
     def recognize(self, image: ValidatedEquationRaster) -> EquationRecognition:
+        return self._recognize(image, _PROMPT)
+
+    def recognize_system(self, image: ValidatedEquationRaster) -> EquationRecognition:
+        """Recover one semantic owner for a complete multi-line equation system."""
+
+        return self._recognize(image, _SYSTEM_PROMPT)
+
+    def _recognize(
+        self, image: ValidatedEquationRaster, prompt: str
+    ) -> EquationRecognition:
         client = self.alt_text_client
         if client is None:
             raise EquationRecognitionRejected("alt_text_client_unavailable")
@@ -51,7 +63,7 @@ class EquationRecognizer:
         try:
             response = client.analyze_image_sync(
                 image_data=image.jpeg_bytes,
-                prompt=_PROMPT,
+                prompt=prompt,
                 max_tokens=500,
             )
         except Exception:

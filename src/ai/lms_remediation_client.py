@@ -41,6 +41,15 @@ Decryptor = Callable[[str], str]
 
 
 @dataclass(frozen=True)
+class _ProviderConfigSnapshot:
+    provider: str
+    api_key_encrypted: str | None
+    text_model: str | None
+    code_model: str | None
+    vision_model: str | None
+
+
+@dataclass(frozen=True)
 class _DepartmentSnapshot:
     """Values copied while the ORM entity is attached to its session."""
 
@@ -48,6 +57,7 @@ class _DepartmentSnapshot:
     byok_provider: str | None
     byok_api_key_encrypted: str | None
     pilot_gemini_approved: bool
+    ai_provider_configs: tuple[_ProviderConfigSnapshot, ...] | None
 
     @classmethod
     def from_department(cls, department: Any) -> "_DepartmentSnapshot":
@@ -56,6 +66,20 @@ class _DepartmentSnapshot:
             byok_provider=department.byok_provider,
             byok_api_key_encrypted=department.byok_api_key_encrypted,
             pilot_gemini_approved=department.pilot_gemini_approved is True,
+            ai_provider_configs=(
+                tuple(
+                    _ProviderConfigSnapshot(
+                        provider=row.provider,
+                        api_key_encrypted=row.api_key_encrypted,
+                        text_model=row.text_model,
+                        code_model=row.code_model,
+                        vision_model=row.vision_model,
+                    )
+                    for row in department.ai_provider_configs
+                )
+                if hasattr(department, "ai_provider_configs")
+                else None
+            ),
         )
 
 

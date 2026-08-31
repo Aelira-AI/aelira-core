@@ -41,7 +41,9 @@ export function LTICourseRoute(): React.ReactElement {
             Back to Overview
           </button>
         )}
-        {courseId && <BrightspaceContentPage orgUnitIdOverride={courseId} isLTI />}
+        {courseId && (
+          <BrightspaceContentPage key={courseId} orgUnitIdOverride={courseId} isLTI />
+        )}
       </div>
     </LTILayout>
   );

@@ -49,7 +49,7 @@ services:
       retries: 5
 
   api:
-    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.6}
+    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.7}
     build:
       context: .
       dockerfile: Dockerfile
@@ -76,29 +76,30 @@ services:
       OLLAMA_TEXT_MODEL: ${OLLAMA_TEXT_MODEL:-gemma3:4b}
       OLLAMA_CODE_MODEL: ${OLLAMA_CODE_MODEL:-qwen2.5-coder:7b}
       OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-qwen2.5vl:3b}
-      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text:latest}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       XAI_API_KEY: ${XAI_API_KEY:-}
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      REPORT_ARTIFACT_DIR: ${REPORT_ARTIFACT_DIR:-/app/uploads/report-artifacts}
+      REPORT_ARTIFACT_MAX_BYTES: ${REPORT_ARTIFACT_MAX_BYTES:-20971520}
     ports:
       - "${API_BIND:-127.0.0.1:8000}:8000"
     volumes:
       - upload_data:/app/uploads
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ready || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 40s
 
   worker:
-    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.6}
+    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.7}
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: aelira-worker
     restart: unless-stopped
     depends_on:
       api:
@@ -112,21 +113,25 @@ services:
         required: true
     environment:
       <<: *api-environment
-      JOB_WORKER_ID: aelira-worker
-      JOB_WORKER_MAX_CONCURRENCY: ${JOB_WORKER_MAX_CONCURRENCY:-4}
+      JOB_WORKER_MAX_CONCURRENCY: ${JOB_WORKER_MAX_CONCURRENCY:-1}
+      JOB_WORKER_MAX_EXECUTION_SECONDS: ${JOB_WORKER_MAX_EXECUTION_SECONDS:-3600}
       SKIP_MIGRATIONS: "true"
+    cpus: ${JOB_WORKER_CPUS:-0.75}
+    mem_limit: ${JOB_WORKER_MEMORY_LIMIT:-4g}
+    pids_limit: ${JOB_WORKER_PIDS_LIMIT:-512}
+    stop_grace_period: ${JOB_WORKER_STOP_GRACE_PERIOD:-65m}
     volumes:
       - upload_data:/app/uploads
     command: ["python", "-m", "src.jobs.worker"]
     healthcheck:
-      test: ["CMD", "python", "-m", "src.jobs.healthcheck"]
+      test: ["CMD", "python", "-m", "src.jobs.healthcheck", "--mode", "readiness"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 
   dashboard:
-    image: ghcr.io/aelira-ai/aelira-core-dashboard:${AELIRA_VERSION:-0.9.6}
+    image: ghcr.io/aelira-ai/aelira-core-dashboard:${AELIRA_VERSION:-0.9.7}
     build:
       context: ./dashboard
       dockerfile: Dockerfile
