@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Dashboard images upgrade Alpine OpenSSL runtime packages to the fixed versions before application artifacts are copied into the final image.
 - Authentication bootstrap, magic-link consumption, and open-signup provisioning are serialized; CSRF and session-cookie scope are separated; routine authentication logs exclude sensitive identifiers; and provisioning audit attribution trusts only configured proxy networks.
 - Analytics, evidence reports, current-compliance projections, provider configuration, report artifacts, and institution rollups are tenant-scoped. Workspace AI credentials are encrypted and resolved only for the authenticated workspace and requested purpose.
 - General STEM remediation is source-bound and fail closed. Typed provenance, specialist verification, saved-file reverse verification, approval invalidation, and exact mixed-region composition prevent unsupported or ambiguous semantics from being published.
