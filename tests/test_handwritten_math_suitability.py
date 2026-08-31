@@ -261,6 +261,7 @@ def test_decoded_pixel_budget_is_enforced_before_classification():
         b"GIF89a" + b"\0" * 64,
         b"\x89PNG\r\n\x1a\n" + b"\0" * 4_194_305,
     ],
+    ids=("empty", "text", "unsupported-gif", "oversized-png"),
 )
 def test_malformed_unsupported_and_oversized_inputs_fail_closed(payload):
     with pytest.raises(SuitabilityInputRejected):
