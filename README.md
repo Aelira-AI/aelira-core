@@ -10,9 +10,7 @@
 [![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-336791.svg)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Deploy-Docker_Compose-2496ED.svg)](docker-compose.quickstart.yml)
 
-> **Status: 0.9.6 beta.** The engine — scanning, deterministic scoring, remediation — is complete and tested (1,500+ backend tests). LMS integration maturity varies by platform: Canvas is production-verified, the others range from beta to untested (see the [integration status table](#lms-integration-status) below). Pre-1.0 means we're still hardening operational edges. Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. Known work is tracked openly in the issues.
-
-> **Main-branch release boundary (24 August 2026):** PDF OCR-output preservation, accessible-HTML sanitization, and descriptor-bound PDF publication are present on `main` after v0.9.5. They are not part of v0.9.5. A future release may include them after its own release gates; this merge created no release or deployment. The immutable v0.9.5 tag and release remain unchanged.
+> **Status: 0.9.7 beta.** The engine — scanning, deterministic scoring, remediation — is complete and tested (5,000+ backend tests). LMS integration maturity varies by platform: Canvas is production-verified, the others range from beta to untested (see the [integration status table](#lms-integration-status) below). Pre-1.0 means we're still hardening operational edges. Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. Known work is tracked openly in the issues.
 
 Most accessibility tools tell you a PDF has no tags, an image has no alt text, and a table has no headers. Someone still has to open the file and fix it. Aelira does the fixing: you give it a document, it gives you back a remediated one, with a report of what changed and why.
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aelira-core"
-version = "0.9.6"
+version = "0.9.7"
 description = "Self-hostable accessibility compliance platform for higher education: scan, score, and remediate PDF, Office, LaTeX, web, and multimedia content against WCAG 2.1 AA."
 readme = "README.md"
 requires-python = ">=3.12"
