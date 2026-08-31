@@ -7,9 +7,7 @@ are deliberately rejected until a complete, reviewed variant is added here.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
-from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import (
@@ -21,73 +19,42 @@ from pydantic import (
     model_validator,
 )
 
+from src.education.commutative_diagram import (
+    AccessibleDiagramDescriptionV1,
+    VerifiedCommutativeDiagramV1,
+    describe_commutative_diagram,
+    render_commutative_diagram_html,
+    verify_commutative_diagram,
+)
+from src.education.canonical_json import canonical_json_bytes, canonical_sha256
+from src.education.chemical_abbreviation import (
+    ChemicalAbbreviationEvidenceV1,
+    verify_chemical_abbreviations,
+)
+from src.education.chemical_formula import (
+    VerifiedChemicalNotationV1,
+    verify_chemical_notation,
+)
 from src.education.equation_region_contract import PageRasterRegionLocator
+from src.education.handwritten_math_suitability import (
+    POLICY_SHA256 as HANDWRITTEN_SUITABILITY_POLICY_SHA256,
+    HandwrittenMathSuitabilityEvidence,
+)
+from src.education.handwritten_equation_policy import (
+    HANDWRITTEN_VERIFIER_POLICY_SHA256,
+    HANDWRITTEN_VERIFIER_POLICY_VERSION,
+)
+from src.education.molecular_graph import (
+    AccessibleMolecularDescriptionV1,
+    VerifiedMolecularGraphV1,
+    describe_molecular_graph,
+    verify_molecular_graph,
+)
 
-_MAX_COLLECTION_ITEMS = 4_096
-_MAX_CANONICAL_DEPTH = 32
-_MAX_CANONICAL_INTEGER = 9_007_199_254_740_991
 _MAX_CANONICAL_STRING = 131_072
 _MAX_DOCUMENT_INDEX = 25_000_000
 _MAX_MATHML_BYTES = 32_768
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
-
-
-def _passive_json_value(value: Any, *, depth: int = 0) -> Any:
-    """Return a bounded JSON value without invoking arbitrary object hooks."""
-    if depth > _MAX_CANONICAL_DEPTH:
-        raise ValueError("canonical value exceeds the nesting limit")
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode="json")
-    if value is None or isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        if abs(value) > _MAX_CANONICAL_INTEGER:
-            raise ValueError("canonical integer exceeds the exact JSON range")
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value) or abs(value) > _MAX_CANONICAL_INTEGER:
-            raise ValueError("canonical float must be bounded and finite")
-        return value
-    if isinstance(value, str):
-        if len(value) > _MAX_CANONICAL_STRING or not value.isprintable():
-            raise ValueError("canonical text must be bounded and printable")
-        return value
-    if isinstance(value, Mapping):
-        if len(value) > _MAX_COLLECTION_ITEMS:
-            raise ValueError("canonical mapping exceeds the item limit")
-        result: dict[str, Any] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("canonical mapping keys must be strings")
-            if not key or len(key) > 256 or key != key.strip() or not key.isprintable():
-                raise ValueError(
-                    "canonical mapping keys must be bounded printable text"
-                )
-            result[key] = _passive_json_value(item, depth=depth + 1)
-        return result
-    if isinstance(value, Sequence) and not isinstance(
-        value, (str, bytes, bytearray, memoryview)
-    ):
-        if len(value) > _MAX_COLLECTION_ITEMS:
-            raise ValueError("canonical sequence exceeds the item limit")
-        return [_passive_json_value(item, depth=depth + 1) for item in value]
-    raise TypeError("canonical values must contain only passive JSON data")
-
-
-def canonical_json_bytes(value: Any) -> bytes:
-    """Encode bounded passive data with stable mapping and sequence semantics."""
-    return json.dumps(
-        _passive_json_value(value),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    ).encode("utf-8")
-
-
-def canonical_sha256(value: Any) -> str:
-    """Return the SHA-256 digest of :func:`canonical_json_bytes`."""
-    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def _validate_printable(value: str, *, label: str) -> str:
@@ -207,8 +174,93 @@ class MathMLExpressionV1(BaseModel):
         return self
 
 
+class ChemicalFormulaSemanticV1(BaseModel):
+    """One #225-verified notation and its deterministic projections."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    semantic_kind: Literal["chemical_formula_semantic_v1"]
+    verified_notation: VerifiedChemicalNotationV1
+
+    @model_validator(mode="after")
+    def _validate_notation_authority(self) -> "ChemicalFormulaSemanticV1":
+        expected = verify_chemical_notation(self.verified_notation.source_notation)
+        if expected != self.verified_notation:
+            raise ValueError("chemical formula semantics disagree with #225")
+        return self
+
+
+class CommutativeDiagramSemanticV1(BaseModel):
+    """One verified diagram graph and its deterministic accessible outputs."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    semantic_kind: Literal["commutative_diagram_semantic_v1"]
+    graph: VerifiedCommutativeDiagramV1
+    graph_sha256: str = Field(pattern=_SHA256_PATTERN)
+    description: AccessibleDiagramDescriptionV1
+    description_sha256: str = Field(pattern=_SHA256_PATTERN)
+    rendered_html: str = Field(min_length=1, max_length=_MAX_CANONICAL_STRING)
+    rendered_html_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_one_graph_source(self) -> "CommutativeDiagramSemanticV1":
+        graph = verify_commutative_diagram(self.graph)
+        description = describe_commutative_diagram(graph)
+        rendered_html = render_commutative_diagram_html(graph)
+        if self.graph_sha256 != graph.canonical_sha256:
+            raise ValueError("graph_sha256 does not match the verified graph")
+        if self.description != description:
+            raise ValueError("description does not match the verified graph")
+        if self.description.graph_sha256 != self.graph_sha256:
+            raise ValueError("description does not identify the verified graph")
+        if self.description_sha256 != canonical_sha256(
+            description.model_dump(mode="json")
+        ):
+            raise ValueError("description_sha256 does not match the description")
+        if self.rendered_html != rendered_html:
+            raise ValueError("rendered_html does not match the verified graph")
+        if (
+            self.rendered_html_sha256
+            != hashlib.sha256(rendered_html.encode("utf-8")).hexdigest()
+        ):
+            raise ValueError("rendered_html_sha256 does not match rendered_html")
+        return self
+
+
+class ChemicalStructureSemanticV1(BaseModel):
+    """One verified molecular graph and its deterministic description."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    semantic_kind: Literal["chemical_structure_semantic_v1"]
+    graph: VerifiedMolecularGraphV1
+    graph_sha256: str = Field(pattern=_SHA256_PATTERN)
+    description: AccessibleMolecularDescriptionV1
+    description_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_one_graph_source(self) -> "ChemicalStructureSemanticV1":
+        graph = verify_molecular_graph(self.graph)
+        description = describe_molecular_graph(graph)
+        if self.graph_sha256 != graph.canonical_sha256:
+            raise ValueError("graph_sha256 does not match the verified graph")
+        if self.description != description:
+            raise ValueError("description does not match the verified graph")
+        if self.description.graph_sha256 != self.graph_sha256:
+            raise ValueError("description does not identify the verified graph")
+        if self.description_sha256 != canonical_sha256(
+            description.model_dump(mode="json")
+        ):
+            raise ValueError("description_sha256 does not match the description")
+        return self
+
+
 SemanticOutput: TypeAlias = Annotated[
-    MathMLExpressionV1,
+    MathMLExpressionV1
+    | ChemicalFormulaSemanticV1
+    | ChemicalStructureSemanticV1
+    | CommutativeDiagramSemanticV1,
     Field(discriminator="semantic_kind"),
 ]
 SemanticOutputAdapter = TypeAdapter(SemanticOutput)
@@ -239,6 +291,69 @@ class PrintedEquationRoundtripEvidenceV1(BaseModel):
     @classmethod
     def _printable_versions(cls, value: str) -> str:
         return _validate_printable(value, label="evidence version")
+
+
+class HandwrittenEquationConsensusEvidenceV1(BaseModel):
+    """Exact two-reading semantic agreement evidence for handwritten math."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["handwritten_equation_consensus_v1"]
+    passed: Literal[True]
+    source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    suitability_evidence: HandwrittenMathSuitabilityEvidence
+    suitability_evidence_sha256: str = Field(pattern=_SHA256_PATTERN)
+    suitability_policy_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_policy_version: Literal["handwritten-equation-consensus-v1"]
+    verifier_policy_sha256: str = Field(pattern=_SHA256_PATTERN)
+    agreement_count: Literal[2]
+    required_agreement_count: Literal[2]
+    primary_mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    primary_response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    primary_latex_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_latex_sha256: str = Field(pattern=_SHA256_PATTERN)
+    primary_provider: str = Field(min_length=1, max_length=200)
+    primary_model: str = Field(min_length=1, max_length=200)
+    verifier_provider: str = Field(min_length=1, max_length=200)
+    verifier_model: str = Field(min_length=1, max_length=200)
+
+    @field_validator(
+        "primary_provider", "primary_model", "verifier_provider", "verifier_model"
+    )
+    @classmethod
+    def _printable_identities(cls, value: str) -> str:
+        return _validate_printable(value, label="provider identity")
+
+    @model_validator(mode="after")
+    def _validate_consensus(self) -> "HandwrittenEquationConsensusEvidenceV1":
+        if (
+            self.suitability_policy_sha256 != HANDWRITTEN_SUITABILITY_POLICY_SHA256
+            or self.suitability_evidence.policy_sha256
+            != HANDWRITTEN_SUITABILITY_POLICY_SHA256
+            or self.suitability_evidence.disposition != "eligible"
+        ):
+            raise ValueError("handwritten suitability evidence must be eligible")
+        if (
+            self.verifier_policy_version != HANDWRITTEN_VERIFIER_POLICY_VERSION
+            or self.verifier_policy_sha256 != HANDWRITTEN_VERIFIER_POLICY_SHA256
+        ):
+            raise ValueError("handwritten verifier policy identity is invalid")
+        if self.source_sha256 != self.suitability_evidence.source_sha256:
+            raise ValueError("consensus source does not match suitability evidence")
+        if (
+            self.suitability_evidence_sha256
+            != self.suitability_evidence.evidence_sha256
+        ):
+            raise ValueError("consensus does not match suitability evidence identity")
+        if (
+            self.mathml_sha256 != self.primary_mathml_sha256
+            or self.mathml_sha256 != self.verifier_mathml_sha256
+        ):
+            raise ValueError("independent handwritten readings do not agree")
+        return self
 
 
 class StandaloneFormulaSavedEvidenceV1(BaseModel):
@@ -381,10 +496,439 @@ class ScannedRegionFormulaSavedEvidenceV1(BaseModel):
         return self
 
 
+class ChemicalFormulaRecognitionEvidenceV1(BaseModel):
+    """Provider provenance accepted only after #225 verification."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["chemical_formula_recognition_v1"]
+    passed: Literal[True]
+    normalized_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    semantic_sha256: str = Field(pattern=_SHA256_PATTERN)
+    speech_sha256: str = Field(pattern=_SHA256_PATTERN)
+    mathml_sha256: str = Field(pattern=_SHA256_PATTERN)
+    provider: str = Field(min_length=1, max_length=200)
+    model: str = Field(min_length=1, max_length=200)
+    response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_version: Literal["chemical-formula-pdf-v1"]
+    attempts: int = Field(ge=1, le=2, strict=True)
+
+    @field_validator("provider", "model")
+    @classmethod
+    def _printable_identity(cls, value: str) -> str:
+        return _validate_printable(value, label="provider identity")
+
+
+class StandaloneChemicalFormulaSavedEvidenceV1(StandaloneFormulaSavedEvidenceV1):
+    """Reverse-verification identity for one saved chemical Formula."""
+
+    evidence_kind: Literal["standalone_chemical_formula_saved_v1"]
+    source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    semantic_sha256: str = Field(pattern=_SHA256_PATTERN)
+    speech_sha256: str = Field(pattern=_SHA256_PATTERN)
+    metadata_sha256: str = Field(pattern=_SHA256_PATTERN)
+    render_signatures: tuple[
+        tuple[int, int, int, int, int, Annotated[str, Field(pattern=_SHA256_PATTERN)]],
+        ...,
+    ] = Field(min_length=1, max_length=16)
+
+    @field_validator("render_signatures", mode="before")
+    @classmethod
+    def _bounded_render_signatures(cls, value: Any) -> Any:
+        return _validate_saved_render_signatures(value)
+
+
+class ScannedRegionChemicalFormulaSavedEvidenceV1(ScannedRegionFormulaSavedEvidenceV1):
+    """Reverse-verification identity for one clipped chemical Formula."""
+
+    evidence_kind: Literal["scanned_region_chemical_formula_saved_v1"]
+    source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    semantic_sha256: str = Field(pattern=_SHA256_PATTERN)
+    speech_sha256: str = Field(pattern=_SHA256_PATTERN)
+    metadata_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+
+class CommutativeDiagramRecognitionEvidenceV1(BaseModel):
+    """Provider provenance independently accepted by the graph verifier."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["commutative_diagram_recognition_v1"]
+    passed: Literal[True]
+    normalized_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    graph_sha256: str = Field(pattern=_SHA256_PATTERN)
+    provider: str = Field(min_length=1, max_length=200)
+    model: str = Field(min_length=1, max_length=200)
+    response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_version: Literal["commutative-diagram-v1"]
+    attempts: int = Field(ge=1, le=2, strict=True)
+
+    @field_validator("provider", "model")
+    @classmethod
+    def _printable_identity(cls, value: str) -> str:
+        return _validate_printable(value, label="provider identity")
+
+
+class StandaloneDiagramSavedEvidenceV1(BaseModel):
+    """Reverse-verification identity for an embedded-image diagram Figure."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["standalone_diagram_saved_v1"]
+    passed: Literal[True]
+    saved_file_sha256: str = Field(pattern=_SHA256_PATTERN)
+    page_number: int = Field(ge=1, le=_MAX_DOCUMENT_INDEX, strict=True)
+    image_xref: int = Field(ge=1, le=_MAX_DOCUMENT_INDEX, strict=True)
+    occurrence_ordinal: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    struct_parent: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    mcid: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    graph_sha256: str = Field(pattern=_SHA256_PATTERN)
+    description_sha256: str = Field(pattern=_SHA256_PATTERN)
+    rendered_html_sha256: str = Field(pattern=_SHA256_PATTERN)
+    alt_text_sha256: str = Field(pattern=_SHA256_PATTERN)
+    image_stream_sha256: str = Field(pattern=_SHA256_PATTERN)
+    attachment_sha256: str = Field(pattern=_SHA256_PATTERN)
+    metadata_sha256: str = Field(pattern=_SHA256_PATTERN)
+    render_signatures: tuple[
+        tuple[int, int, int, int, int, Annotated[str, Field(pattern=_SHA256_PATTERN)]],
+        ...,
+    ] = Field(min_length=1, max_length=16)
+
+    @field_validator("render_signatures", mode="before")
+    @classmethod
+    def _bounded_render_signatures(cls, value: Any) -> Any:
+        return _validate_saved_render_signatures(value)
+
+
+class ScannedRegionDiagramSavedEvidenceV1(BaseModel):
+    """Reverse-verification identity for a clipped raster-region diagram Figure."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["scanned_region_diagram_saved_v1"]
+    passed: Literal[True]
+    saved_file_sha256: str = Field(pattern=_SHA256_PATTERN)
+    page_number: int = Field(ge=1, le=_MAX_DOCUMENT_INDEX, strict=True)
+    image_xref: int = Field(ge=1, le=_MAX_DOCUMENT_INDEX, strict=True)
+    resource_name: str = Field(min_length=1, max_length=128)
+    struct_parent: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    mcid: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    graph_sha256: str = Field(pattern=_SHA256_PATTERN)
+    description_sha256: str = Field(pattern=_SHA256_PATTERN)
+    rendered_html_sha256: str = Field(pattern=_SHA256_PATTERN)
+    alt_text_sha256: str = Field(pattern=_SHA256_PATTERN)
+    image_stream_sha256: str = Field(pattern=_SHA256_PATTERN)
+    attachment_sha256: str = Field(pattern=_SHA256_PATTERN)
+    metadata_sha256: str = Field(pattern=_SHA256_PATTERN)
+    diagram_bbox: tuple[float, float, float, float]
+    render_signatures: tuple[
+        tuple[int, int, int, int, int, Annotated[str, Field(pattern=_SHA256_PATTERN)]],
+        ...,
+    ] = Field(min_length=1, max_length=16)
+    ocr_resource_name: str = Field(default="", max_length=128)
+    ocr_struct_parent: int = Field(
+        default=-1, ge=-1, le=_MAX_DOCUMENT_INDEX, strict=True
+    )
+    ocr_group_owners: tuple[tuple[str, int], ...] = Field(default=(), max_length=4_096)
+    ocr_before_mcids: tuple[int, ...] = Field(default=(), max_length=4_096)
+    ocr_after_mcids: tuple[int, ...] = Field(default=(), max_length=4_096)
+    ocr_payload_sha256: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
+    ocr_font_sha256: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
+    page_text_sha256: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
+
+    @field_validator("resource_name", "ocr_resource_name")
+    @classmethod
+    def _printable_resource_name(cls, value: str) -> str:
+        return _validate_printable(value, label="resource_name")
+
+    @field_validator("diagram_bbox", mode="before")
+    @classmethod
+    def _finite_diagram_bbox(cls, value: Any) -> Any:
+        return _validate_finite_geometry(value, size=4, label="diagram_bbox")
+
+    @field_validator("render_signatures", mode="before")
+    @classmethod
+    def _bounded_render_signatures(cls, value: Any) -> Any:
+        return _validate_saved_render_signatures(value)
+
+    @field_validator("ocr_group_owners", mode="before")
+    @classmethod
+    def _bounded_ocr_owners(cls, value: Any) -> Any:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("ocr_group_owners must be a sequence")
+        for owner in value:
+            if (
+                not isinstance(owner, (list, tuple))
+                or len(owner) != 2
+                or not isinstance(owner[0], str)
+                or not owner[0]
+                or len(owner[0]) > 128
+                or owner[0] != owner[0].strip()
+                or not owner[0].isprintable()
+                or not isinstance(owner[1], int)
+                or isinstance(owner[1], bool)
+                or not -1 <= owner[1] <= _MAX_DOCUMENT_INDEX
+            ):
+                raise ValueError("ocr_group_owners contains invalid passive data")
+        return value
+
+    @field_validator("ocr_before_mcids", "ocr_after_mcids", mode="before")
+    @classmethod
+    def _bounded_ocr_mcids(cls, value: Any) -> Any:
+        if not isinstance(value, (list, tuple)) or any(
+            not isinstance(item, int)
+            or isinstance(item, bool)
+            or not 0 <= item <= _MAX_DOCUMENT_INDEX
+            for item in value
+        ):
+            raise ValueError("OCR diagram MCIDs must be bounded integers")
+        return value
+
+    @model_validator(mode="after")
+    def _positive_diagram_bbox(self) -> "ScannedRegionDiagramSavedEvidenceV1":
+        x0, y0, x1, y1 = self.diagram_bbox
+        if x0 >= x1 or y0 >= y1:
+            raise ValueError("diagram_bbox must have positive area")
+        has_ocr = bool(self.ocr_resource_name)
+        complete_ocr = (
+            self.ocr_struct_parent >= 0
+            and bool(self.ocr_group_owners)
+            and bool(self.ocr_payload_sha256)
+            and bool(self.ocr_font_sha256)
+            and bool(self.page_text_sha256)
+        )
+        if has_ocr != complete_ocr:
+            raise ValueError(
+                "OCR diagram reverse-verification fields must be complete or absent"
+            )
+        if not has_ocr and (
+            self.ocr_struct_parent != -1
+            or self.ocr_group_owners
+            or self.ocr_before_mcids
+            or self.ocr_after_mcids
+            or self.ocr_payload_sha256
+            or self.ocr_font_sha256
+            or self.page_text_sha256
+        ):
+            raise ValueError("absent diagram OCR evidence must use exact sentinels")
+        return self
+
+
+class ChemicalStructureRecognitionEvidenceV1(BaseModel):
+    """Provider provenance accepted by graph and abbreviation verifiers."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["chemical_structure_recognition_v1"]
+    passed: Literal[True]
+    normalized_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    graph_sha256: str = Field(pattern=_SHA256_PATTERN)
+    abbreviations: tuple[ChemicalAbbreviationEvidenceV1, ...] = Field(max_length=32)
+    abbreviation_evidence_sha256: str = Field(pattern=_SHA256_PATTERN)
+    abbreviation_policy_version: Literal["chemical-abbreviation-v1"]
+    abbreviation_count: int = Field(ge=0, le=32, strict=True)
+    provider: str = Field(min_length=1, max_length=200)
+    model: str = Field(min_length=1, max_length=200)
+    response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verifier_version: Literal["chemical-structure-v1"]
+    attempts: int = Field(ge=1, le=2, strict=True)
+
+    @field_validator("provider", "model")
+    @classmethod
+    def _printable_identity(cls, value: str) -> str:
+        return _validate_printable(value, label="provider identity")
+
+    @model_validator(mode="after")
+    def _validate_abbreviation_evidence(
+        self,
+    ) -> "ChemicalStructureRecognitionEvidenceV1":
+        if self.abbreviation_count != len(self.abbreviations):
+            raise ValueError("abbreviation_count does not match evidence")
+        if self.abbreviation_evidence_sha256 != canonical_sha256(
+            [item.model_dump(mode="json") for item in self.abbreviations]
+        ):
+            raise ValueError("abbreviation evidence digest does not match")
+        return self
+
+
+class StandaloneChemicalStructureSavedEvidenceV1(BaseModel):
+    """Reverse-verification identity for an embedded chemical Figure."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["standalone_chemical_structure_saved_v1"]
+    passed: Literal[True]
+    saved_file_sha256: str = Field(pattern=_SHA256_PATTERN)
+    page_number: int = Field(ge=1, le=_MAX_DOCUMENT_INDEX, strict=True)
+    image_xref: int = Field(ge=1, le=_MAX_DOCUMENT_INDEX, strict=True)
+    occurrence_ordinal: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    struct_parent: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    mcid: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    graph_sha256: str = Field(pattern=_SHA256_PATTERN)
+    description_sha256: str = Field(pattern=_SHA256_PATTERN)
+    abbreviation_evidence_sha256: str = Field(pattern=_SHA256_PATTERN)
+    alt_text_sha256: str = Field(pattern=_SHA256_PATTERN)
+    image_stream_sha256: str = Field(pattern=_SHA256_PATTERN)
+    attachment_sha256: str = Field(pattern=_SHA256_PATTERN)
+    metadata_sha256: str = Field(pattern=_SHA256_PATTERN)
+    render_signatures: tuple[
+        tuple[int, int, int, int, int, Annotated[str, Field(pattern=_SHA256_PATTERN)]],
+        ...,
+    ] = Field(min_length=1, max_length=16)
+
+    @field_validator("render_signatures", mode="before")
+    @classmethod
+    def _bounded_render_signatures(cls, value: Any) -> Any:
+        return _validate_saved_render_signatures(value)
+
+
+class ScannedRegionChemicalStructureSavedEvidenceV1(BaseModel):
+    """Reverse-verification identity for a clipped chemical Figure."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_kind: Literal["scanned_region_chemical_structure_saved_v1"]
+    passed: Literal[True]
+    saved_file_sha256: str = Field(pattern=_SHA256_PATTERN)
+    page_number: int = Field(ge=1, le=_MAX_DOCUMENT_INDEX, strict=True)
+    image_xref: int = Field(ge=1, le=_MAX_DOCUMENT_INDEX, strict=True)
+    resource_name: str = Field(min_length=1, max_length=128)
+    struct_parent: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    mcid: int = Field(ge=0, le=_MAX_DOCUMENT_INDEX, strict=True)
+    graph_sha256: str = Field(pattern=_SHA256_PATTERN)
+    description_sha256: str = Field(pattern=_SHA256_PATTERN)
+    abbreviation_evidence_sha256: str = Field(pattern=_SHA256_PATTERN)
+    alt_text_sha256: str = Field(pattern=_SHA256_PATTERN)
+    image_stream_sha256: str = Field(pattern=_SHA256_PATTERN)
+    attachment_sha256: str = Field(pattern=_SHA256_PATTERN)
+    metadata_sha256: str = Field(pattern=_SHA256_PATTERN)
+    structure_bbox: tuple[float, float, float, float]
+    render_signatures: tuple[
+        tuple[int, int, int, int, int, Annotated[str, Field(pattern=_SHA256_PATTERN)]],
+        ...,
+    ] = Field(min_length=1, max_length=16)
+    ocr_resource_name: str = Field(default="", max_length=128)
+    ocr_struct_parent: int = Field(
+        default=-1, ge=-1, le=_MAX_DOCUMENT_INDEX, strict=True
+    )
+    ocr_group_owners: tuple[tuple[str, int], ...] = Field(default=(), max_length=4_096)
+    ocr_before_mcids: tuple[int, ...] = Field(default=(), max_length=4_096)
+    ocr_after_mcids: tuple[int, ...] = Field(default=(), max_length=4_096)
+    ocr_payload_sha256: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
+    ocr_font_sha256: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
+    page_text_sha256: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
+
+    @field_validator("resource_name", "ocr_resource_name")
+    @classmethod
+    def _printable_resource_name(cls, value: str) -> str:
+        return _validate_printable(value, label="resource_name")
+
+    @field_validator("structure_bbox", mode="before")
+    @classmethod
+    def _finite_structure_bbox(cls, value: Any) -> Any:
+        return _validate_finite_geometry(value, size=4, label="structure_bbox")
+
+    @field_validator("render_signatures", mode="before")
+    @classmethod
+    def _bounded_render_signatures(cls, value: Any) -> Any:
+        return _validate_saved_render_signatures(value)
+
+    @field_validator("ocr_group_owners", mode="before")
+    @classmethod
+    def _bounded_ocr_owners(cls, value: Any) -> Any:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("ocr_group_owners must be a sequence")
+        for owner in value:
+            if (
+                not isinstance(owner, (list, tuple))
+                or len(owner) != 2
+                or not isinstance(owner[0], str)
+                or not owner[0]
+                or len(owner[0]) > 128
+                or owner[0] != owner[0].strip()
+                or not owner[0].isprintable()
+                or not isinstance(owner[1], int)
+                or isinstance(owner[1], bool)
+                or not -1 <= owner[1] <= _MAX_DOCUMENT_INDEX
+            ):
+                raise ValueError("ocr_group_owners contains invalid passive data")
+        return value
+
+    @field_validator("ocr_before_mcids", "ocr_after_mcids", mode="before")
+    @classmethod
+    def _bounded_ocr_mcids(cls, value: Any) -> Any:
+        if not isinstance(value, (list, tuple)) or any(
+            not isinstance(item, int)
+            or isinstance(item, bool)
+            or not 0 <= item <= _MAX_DOCUMENT_INDEX
+            for item in value
+        ):
+            raise ValueError("OCR structure MCIDs must be bounded integers")
+        return value
+
+    @model_validator(mode="after")
+    def _positive_structure_bbox(
+        self,
+    ) -> "ScannedRegionChemicalStructureSavedEvidenceV1":
+        x0, y0, x1, y1 = self.structure_bbox
+        if x0 >= x1 or y0 >= y1:
+            raise ValueError("structure_bbox must have positive area")
+        has_ocr = bool(self.ocr_resource_name)
+        complete_ocr = (
+            self.ocr_struct_parent >= 0
+            and bool(self.ocr_group_owners)
+            and bool(self.ocr_payload_sha256)
+            and bool(self.ocr_font_sha256)
+            and bool(self.page_text_sha256)
+        )
+        if has_ocr != complete_ocr:
+            raise ValueError(
+                "OCR structure reverse-verification fields must be complete or absent"
+            )
+        if not has_ocr and (
+            self.ocr_struct_parent != -1
+            or self.ocr_group_owners
+            or self.ocr_before_mcids
+            or self.ocr_after_mcids
+            or self.ocr_payload_sha256
+            or self.ocr_font_sha256
+            or self.page_text_sha256
+        ):
+            raise ValueError("absent structure OCR evidence must use exact sentinels")
+        return self
+
+
+def _validate_saved_render_signatures(value: Any) -> Any:
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError("render_signatures must be a non-empty sequence")
+    for signature in value:
+        if not isinstance(signature, (list, tuple)) or len(signature) != 6:
+            raise ValueError("render signatures must have exactly six values")
+        if any(
+            not isinstance(item, int) or isinstance(item, bool)
+            for item in signature[:5]
+        ):
+            raise ValueError("render signature geometry must contain integers")
+        if any(not 1 <= item <= _MAX_DOCUMENT_INDEX for item in signature[:5]):
+            raise ValueError("render signature geometry must be bounded")
+    return value
+
+
 VerificationEvidence: TypeAlias = Annotated[
     PrintedEquationRoundtripEvidenceV1
+    | HandwrittenEquationConsensusEvidenceV1
     | StandaloneFormulaSavedEvidenceV1
-    | ScannedRegionFormulaSavedEvidenceV1,
+    | ScannedRegionFormulaSavedEvidenceV1
+    | ChemicalFormulaRecognitionEvidenceV1
+    | StandaloneChemicalFormulaSavedEvidenceV1
+    | ScannedRegionChemicalFormulaSavedEvidenceV1
+    | CommutativeDiagramRecognitionEvidenceV1
+    | StandaloneDiagramSavedEvidenceV1
+    | ScannedRegionDiagramSavedEvidenceV1
+    | ChemicalStructureRecognitionEvidenceV1
+    | StandaloneChemicalStructureSavedEvidenceV1
+    | ScannedRegionChemicalStructureSavedEvidenceV1,
     Field(discriminator="evidence_kind"),
 ]
 VerificationEvidenceAdapter = TypeAdapter(VerificationEvidence)
@@ -499,23 +1043,503 @@ class PrintedEquationContract(BaseModel):
         return self
 
 
+class ChemicalFormulaPdfContract(BaseModel):
+    """Complete #225 recognition, PDF association, and saved-file proof."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_kind: Literal["chemical_formula"]
+    locator: VisualLocator
+    semantic_output: ChemicalFormulaSemanticV1
+    normalized_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verification_evidence: tuple[VerificationEvidence, ...] = Field(
+        min_length=2, max_length=2
+    )
+    specialist_sha256: str = Field(pattern=_SHA256_PATTERN)
+    contract_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_variant_pairing_and_digests(self) -> "ChemicalFormulaPdfContract":
+        recognition = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, ChemicalFormulaRecognitionEvidenceV1)
+        ]
+        standalone = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, StandaloneChemicalFormulaSavedEvidenceV1)
+        ]
+        scanned = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, ScannedRegionChemicalFormulaSavedEvidenceV1)
+        ]
+        if len(recognition) != 1 or len(standalone) + len(scanned) != 1:
+            raise ValueError(
+                "chemical formulas require exact recognition and saved evidence"
+            )
+        recognition_evidence = recognition[0]
+        saved = standalone[0] if standalone else scanned[0]
+        notation = self.semantic_output.verified_notation
+        expected_metadata_sha256 = canonical_sha256(
+            {
+                "notation_kind": notation.notation.notation_kind,
+                "source_sha256": notation.source_sha256,
+                "semantic_sha256": notation.semantic_sha256,
+                "speech_sha256": notation.speech_sha256,
+                "mathml_sha256": notation.mathml_sha256,
+            }
+        )
+        if (
+            recognition_evidence.normalized_source_sha256
+            != self.normalized_source_sha256
+            or recognition_evidence.source_sha256 != notation.source_sha256
+            or recognition_evidence.semantic_sha256 != notation.semantic_sha256
+            or recognition_evidence.speech_sha256 != notation.speech_sha256
+            or recognition_evidence.mathml_sha256 != notation.mathml_sha256
+            or saved.source_sha256 != notation.source_sha256
+            or saved.semantic_sha256 != notation.semantic_sha256
+            or saved.speech_sha256 != notation.speech_sha256
+            or saved.mathml_sha256 != notation.mathml_sha256
+            or saved.metadata_sha256 != expected_metadata_sha256
+        ):
+            raise ValueError("chemical formula evidence disagrees with #225 semantics")
+        expected_alt_text_sha256 = hashlib.sha256(
+            notation.speech.encode("utf-8")
+        ).hexdigest()
+        if saved.alt_text_sha256 != expected_alt_text_sha256:
+            raise ValueError("saved evidence does not match chemistry-aware speech")
+
+        if isinstance(self.locator, EmbeddedImageOccurrenceLocator):
+            if (
+                not standalone
+                or saved.page_number != self.locator.page_number
+                or saved.image_xref != self.locator.image_xref
+                or saved.occurrence_ordinal != self.locator.occurrence_ordinal
+                or saved.image_stream_sha256 != self.locator.image_stream_sha256
+            ):
+                raise ValueError(
+                    "embedded image locators require matching chemical saved evidence"
+                )
+        else:
+            px0, py0, px1, py1 = self.locator.pixel_bbox
+            scale_x, _, _, scale_y, offset_x, offset_y = self.locator.transform
+            expected_bbox = (
+                offset_x + scale_x * px0 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py1 / self.locator.source_height),
+                offset_x + scale_x * px1 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py0 / self.locator.source_height),
+            )
+            if (
+                not scanned
+                or saved.page_number != self.locator.page_number
+                or saved.image_stream_sha256 != self.locator.source_sha256
+                or any(
+                    abs(actual - expected) > 1e-6
+                    for actual, expected in zip(saved.formula_bbox, expected_bbox)
+                )
+            ):
+                raise ValueError(
+                    "page raster locators require matching chemical saved evidence"
+                )
+
+        specialist_material = {
+            "contract_kind": self.contract_kind,
+            "locator": self.locator,
+            "semantic_output": self.semantic_output,
+            "normalized_source_sha256": self.normalized_source_sha256,
+            "recognition_evidence": recognition_evidence,
+        }
+        if self.specialist_sha256 != canonical_sha256(specialist_material):
+            raise ValueError("specialist_sha256 does not match the specialist output")
+        contract_material = self.model_dump(mode="json", exclude={"contract_sha256"})
+        if self.contract_sha256 != canonical_sha256(contract_material):
+            raise ValueError("contract_sha256 does not match the complete contract")
+        return self
+
+
+class CommutativeDiagramPdfContract(BaseModel):
+    """Complete graph recognition, PDF association, and reverse-verification proof."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_kind: Literal["commutative_diagram"]
+    locator: VisualLocator
+    semantic_output: CommutativeDiagramSemanticV1
+    normalized_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verification_evidence: tuple[VerificationEvidence, ...] = Field(
+        min_length=2, max_length=2
+    )
+    specialist_sha256: str = Field(pattern=_SHA256_PATTERN)
+    contract_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_variant_pairing_and_digests(self) -> "CommutativeDiagramPdfContract":
+        recognition = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, CommutativeDiagramRecognitionEvidenceV1)
+        ]
+        standalone = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, StandaloneDiagramSavedEvidenceV1)
+        ]
+        scanned = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, ScannedRegionDiagramSavedEvidenceV1)
+        ]
+        if len(recognition) != 1 or len(standalone) + len(scanned) != 1:
+            raise ValueError(
+                "commutative diagrams require exact recognition and saved evidence"
+            )
+        recognition_evidence = recognition[0]
+        saved = standalone[0] if standalone else scanned[0]
+        semantic = self.semantic_output
+        if (
+            recognition_evidence.normalized_source_sha256
+            != self.normalized_source_sha256
+            or recognition_evidence.graph_sha256 != semantic.graph_sha256
+            or saved.graph_sha256 != semantic.graph_sha256
+            or saved.description_sha256 != semantic.description_sha256
+            or saved.rendered_html_sha256 != semantic.rendered_html_sha256
+        ):
+            raise ValueError("diagram evidence disagrees with the specialist output")
+        expected_alt_text_sha256 = hashlib.sha256(
+            semantic.description.summary.encode("utf-8")
+        ).hexdigest()
+        if saved.alt_text_sha256 != expected_alt_text_sha256:
+            raise ValueError("saved evidence does not match the diagram alt text")
+        if saved.attachment_sha256 != canonical_sha256(
+            semantic.graph.model_dump(mode="json")
+        ):
+            raise ValueError("saved graph attachment does not match the verified graph")
+        expected_metadata_sha256 = canonical_sha256(
+            {
+                "graph_sha256": semantic.graph_sha256,
+                "description_sha256": semantic.description_sha256,
+                "rendered_html_sha256": semantic.rendered_html_sha256,
+            }
+        )
+        if saved.metadata_sha256 != expected_metadata_sha256:
+            raise ValueError("saved metadata does not match accessible diagram output")
+
+        if isinstance(self.locator, EmbeddedImageOccurrenceLocator):
+            if (
+                not standalone
+                or saved.page_number != self.locator.page_number
+                or saved.image_xref != self.locator.image_xref
+                or saved.occurrence_ordinal != self.locator.occurrence_ordinal
+                or saved.image_stream_sha256 != self.locator.image_stream_sha256
+            ):
+                raise ValueError(
+                    "embedded image locators require matching diagram saved evidence"
+                )
+        else:
+            px0, py0, px1, py1 = self.locator.pixel_bbox
+            scale_x, _, _, scale_y, offset_x, offset_y = self.locator.transform
+            expected_bbox = (
+                offset_x + scale_x * px0 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py1 / self.locator.source_height),
+                offset_x + scale_x * px1 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py0 / self.locator.source_height),
+            )
+            if (
+                not scanned
+                or saved.page_number != self.locator.page_number
+                or saved.image_stream_sha256 != self.locator.source_sha256
+                or any(
+                    abs(actual - expected) > 1e-6
+                    for actual, expected in zip(saved.diagram_bbox, expected_bbox)
+                )
+            ):
+                raise ValueError(
+                    "page raster locators require matching diagram saved evidence"
+                )
+
+        specialist_material = {
+            "contract_kind": self.contract_kind,
+            "locator": self.locator,
+            "semantic_output": self.semantic_output,
+            "normalized_source_sha256": self.normalized_source_sha256,
+            "recognition_evidence": recognition_evidence,
+        }
+        if self.specialist_sha256 != canonical_sha256(specialist_material):
+            raise ValueError("specialist_sha256 does not match the specialist output")
+        contract_material = self.model_dump(mode="json", exclude={"contract_sha256"})
+        if self.contract_sha256 != canonical_sha256(contract_material):
+            raise ValueError("contract_sha256 does not match the complete contract")
+        return self
+
+
+class ChemicalStructurePdfContract(BaseModel):
+    """Complete graph recognition, PDF association, and saved proof."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_kind: Literal["chemical_structure"]
+    locator: VisualLocator
+    semantic_output: ChemicalStructureSemanticV1
+    normalized_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verification_evidence: tuple[VerificationEvidence, ...] = Field(
+        min_length=2, max_length=2
+    )
+    specialist_sha256: str = Field(pattern=_SHA256_PATTERN)
+    contract_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_variant_pairing_and_digests(self) -> "ChemicalStructurePdfContract":
+        recognition = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, ChemicalStructureRecognitionEvidenceV1)
+        ]
+        standalone = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, StandaloneChemicalStructureSavedEvidenceV1)
+        ]
+        scanned = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, ScannedRegionChemicalStructureSavedEvidenceV1)
+        ]
+        if len(recognition) != 1 or len(standalone) + len(scanned) != 1:
+            raise ValueError(
+                "chemical structures require exact recognition and saved evidence"
+            )
+        recognition_evidence = recognition[0]
+        saved = standalone[0] if standalone else scanned[0]
+        semantic = self.semantic_output
+        verified_graph, verified_abbreviations = verify_chemical_abbreviations(
+            semantic.graph, recognition_evidence.abbreviations
+        )
+        if (
+            verified_graph.canonical_sha256 != semantic.graph_sha256
+            or verified_abbreviations != recognition_evidence.abbreviations
+            or recognition_evidence.normalized_source_sha256
+            != self.normalized_source_sha256
+            or recognition_evidence.graph_sha256 != semantic.graph_sha256
+            or saved.graph_sha256 != semantic.graph_sha256
+            or saved.description_sha256 != semantic.description_sha256
+            or saved.abbreviation_evidence_sha256
+            != recognition_evidence.abbreviation_evidence_sha256
+        ):
+            raise ValueError("chemical evidence disagrees with the specialist output")
+        expected_alt_text_sha256 = hashlib.sha256(
+            semantic.description.summary.encode("utf-8")
+        ).hexdigest()
+        if saved.alt_text_sha256 != expected_alt_text_sha256:
+            raise ValueError("saved evidence does not match chemical alt text")
+        if saved.attachment_sha256 != semantic.graph_sha256:
+            raise ValueError("saved attachment does not match the verified graph")
+        expected_metadata_sha256 = canonical_sha256(
+            {
+                "graph_sha256": semantic.graph_sha256,
+                "graph_identifier": semantic.graph.graph_identifier,
+                "description_sha256": semantic.description_sha256,
+                "attachment_sha256": saved.attachment_sha256,
+                "abbreviation_evidence_sha256": (
+                    recognition_evidence.abbreviation_evidence_sha256
+                ),
+                "abbreviation_policy_version": (
+                    recognition_evidence.abbreviation_policy_version
+                ),
+            }
+        )
+        if saved.metadata_sha256 != expected_metadata_sha256:
+            raise ValueError("saved metadata does not match chemical output")
+
+        if isinstance(self.locator, EmbeddedImageOccurrenceLocator):
+            if (
+                not standalone
+                or saved.page_number != self.locator.page_number
+                or saved.image_xref != self.locator.image_xref
+                or saved.occurrence_ordinal != self.locator.occurrence_ordinal
+                or saved.image_stream_sha256 != self.locator.image_stream_sha256
+            ):
+                raise ValueError(
+                    "embedded image locators require matching chemical saved evidence"
+                )
+        else:
+            px0, py0, px1, py1 = self.locator.pixel_bbox
+            scale_x, _, _, scale_y, offset_x, offset_y = self.locator.transform
+            expected_bbox = (
+                offset_x + scale_x * px0 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py1 / self.locator.source_height),
+                offset_x + scale_x * px1 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py0 / self.locator.source_height),
+            )
+            if (
+                not scanned
+                or saved.page_number != self.locator.page_number
+                or saved.image_stream_sha256 != self.locator.source_sha256
+                or any(
+                    abs(actual - expected) > 1e-6
+                    for actual, expected in zip(saved.structure_bbox, expected_bbox)
+                )
+            ):
+                raise ValueError(
+                    "page raster locators require matching chemical saved evidence"
+                )
+
+        specialist_material = {
+            "contract_kind": self.contract_kind,
+            "locator": self.locator,
+            "semantic_output": self.semantic_output,
+            "normalized_source_sha256": self.normalized_source_sha256,
+            "recognition_evidence": recognition_evidence,
+        }
+        if self.specialist_sha256 != canonical_sha256(specialist_material):
+            raise ValueError("specialist_sha256 does not match the specialist output")
+        contract_material = self.model_dump(mode="json", exclude={"contract_sha256"})
+        if self.contract_sha256 != canonical_sha256(contract_material):
+            raise ValueError("contract_sha256 does not match the complete contract")
+        return self
+
+
+class HandwrittenEquationContract(BaseModel):
+    """Complete HMER specialist output and reverse-verification contract."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_kind: Literal["handwritten_equation"]
+    locator: VisualLocator
+    semantic_output: SemanticOutput
+    normalized_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verification_evidence: tuple[VerificationEvidence, ...] = Field(
+        min_length=2, max_length=2
+    )
+    specialist_sha256: str = Field(pattern=_SHA256_PATTERN)
+    contract_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_variant_pairing_and_digests(
+        self,
+    ) -> "HandwrittenEquationContract":
+        consensus = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, HandwrittenEquationConsensusEvidenceV1)
+        ]
+        standalone = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, StandaloneFormulaSavedEvidenceV1)
+        ]
+        scanned = [
+            item
+            for item in self.verification_evidence
+            if isinstance(item, ScannedRegionFormulaSavedEvidenceV1)
+        ]
+        if len(consensus) != 1 or len(standalone) + len(scanned) != 1:
+            raise ValueError(
+                "handwritten equations require exact consensus and saved evidence"
+            )
+        consensus_evidence = consensus[0]
+        saved = standalone[0] if standalone else scanned[0]
+        if self.normalized_source_sha256 != consensus_evidence.source_sha256:
+            raise ValueError("normalized source digest does not match HMER evidence")
+        if any(
+            item.mathml_sha256 != self.semantic_output.mathml_sha256
+            for item in self.verification_evidence
+        ):
+            raise ValueError("evidence does not match the semantic output digest")
+        expected_alt_text_sha256 = hashlib.sha256(
+            self.semantic_output.alt_text.encode("utf-8")
+        ).hexdigest()
+        if saved.alt_text_sha256 != expected_alt_text_sha256:
+            raise ValueError("saved evidence does not match the semantic alt text")
+
+        if isinstance(self.locator, EmbeddedImageOccurrenceLocator):
+            if (
+                not standalone
+                or saved.page_number != self.locator.page_number
+                or saved.image_xref != self.locator.image_xref
+                or saved.occurrence_ordinal != self.locator.occurrence_ordinal
+                or saved.image_stream_sha256 != self.locator.image_stream_sha256
+            ):
+                raise ValueError(
+                    "embedded image locators require matching standalone saved evidence"
+                )
+        else:
+            px0, py0, px1, py1 = self.locator.pixel_bbox
+            scale_x, _, _, scale_y, offset_x, offset_y = self.locator.transform
+            expected_formula_bbox = (
+                offset_x + scale_x * px0 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py1 / self.locator.source_height),
+                offset_x + scale_x * px1 / self.locator.source_width,
+                offset_y + scale_y * (1.0 - py0 / self.locator.source_height),
+            )
+            if (
+                not scanned
+                or saved.page_number != self.locator.page_number
+                or saved.image_stream_sha256 != self.locator.source_sha256
+                or any(
+                    abs(actual - expected) > 1e-6
+                    for actual, expected in zip(
+                        saved.formula_bbox, expected_formula_bbox
+                    )
+                )
+            ):
+                raise ValueError(
+                    "page raster regions require matching scanned-region saved evidence"
+                )
+
+        specialist_material = {
+            "contract_kind": self.contract_kind,
+            "locator": self.locator,
+            "semantic_output": self.semantic_output,
+            "normalized_source_sha256": self.normalized_source_sha256,
+        }
+        if self.specialist_sha256 != canonical_sha256(specialist_material):
+            raise ValueError("specialist_sha256 does not match the specialist output")
+        contract_material = self.model_dump(mode="json", exclude={"contract_sha256"})
+        if self.contract_sha256 != canonical_sha256(contract_material):
+            raise ValueError("contract_sha256 does not match the complete contract")
+        return self
+
+
 VisualSemanticContract: TypeAlias = Annotated[
-    PrintedEquationContract,
+    PrintedEquationContract
+    | ChemicalFormulaPdfContract
+    | CommutativeDiagramPdfContract
+    | ChemicalStructurePdfContract
+    | HandwrittenEquationContract,
     Field(discriminator="contract_kind"),
 ]
 VisualSemanticContractAdapter = TypeAdapter(VisualSemanticContract)
 
 
 __all__ = [
+    "ChemicalStructurePdfContract",
+    "ChemicalStructureRecognitionEvidenceV1",
+    "ChemicalStructureSemanticV1",
+    "ChemicalFormulaPdfContract",
+    "ChemicalFormulaRecognitionEvidenceV1",
+    "ChemicalFormulaSemanticV1",
+    "CommutativeDiagramPdfContract",
+    "CommutativeDiagramRecognitionEvidenceV1",
+    "CommutativeDiagramSemanticV1",
     "EmbeddedImageOccurrenceLocator",
     "FrozenPageRasterRegionLocator",
+    "HandwrittenEquationConsensusEvidenceV1",
+    "HandwrittenEquationContract",
     "MathMLExpressionV1",
     "PrintedEquationContract",
     "PrintedEquationRoundtripEvidenceV1",
     "ScannedRegionFormulaSavedEvidenceV1",
+    "ScannedRegionChemicalStructureSavedEvidenceV1",
+    "ScannedRegionChemicalFormulaSavedEvidenceV1",
+    "ScannedRegionDiagramSavedEvidenceV1",
     "SemanticOutput",
     "SemanticOutputAdapter",
     "StandaloneFormulaSavedEvidenceV1",
+    "StandaloneChemicalStructureSavedEvidenceV1",
+    "StandaloneChemicalFormulaSavedEvidenceV1",
+    "StandaloneDiagramSavedEvidenceV1",
     "VerificationEvidence",
     "VerificationEvidenceAdapter",
     "VisualLocator",

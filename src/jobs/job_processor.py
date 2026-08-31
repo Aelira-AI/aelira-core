@@ -16,7 +16,7 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
 from ..db.database import SessionLocal
-from ..db.models import CloudJobQueue, CloudJobStatus, WorkerHeartbeat
+from ..db.models import CloudJobQueue, CloudJobStatus, Scan, ScanStatus, WorkerHeartbeat
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from .contracts import (
     FailureKind,
@@ -32,26 +32,68 @@ from .registry import JobRegistry, adapt_legacy_handler, build_default_registry
 
 logger = logging.getLogger(__name__)
 
+_CANCEL_REQUESTED_CODE = "scan_cancel_requested"
+_CANCELLED_CODE = "scan_cancelled"
+_EXTERNAL_EFFECT_JOB_TYPES = frozenset({"upload", "weekly_summary"})
+
+
+def _external_effect_error_code(job_type: str) -> str:
+    return (
+        "weekly_summary_delivery_indeterminate"
+        if job_type == "weekly_summary"
+        else "upload_outcome_indeterminate"
+    )
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def build_claim_query(registered_types: set[str] | frozenset[str], *, limit: int):
-    """Build the dependency-gated PostgreSQL claim selection."""
+def _load_tenant_scan(
+    db: Session,
+    *,
+    scan_id: Any,
+    department_id: Any,
+    lock_row: bool,
+) -> Scan | None:
+    """Load a payload-referenced Scan only inside queue-owned tenant scope."""
+    if not isinstance(scan_id, str) or not isinstance(department_id, str):
+        return None
+    statement = select(Scan).where(
+        Scan.id == scan_id,
+        Scan.department_id == department_id,
+    )
+    if lock_row:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
+
+
+def build_runnable_pending_query(
+    registered_types: set[str] | frozenset[str], *, now: datetime | None = None
+):
+    """Build the exact dependency-gated predicate for work a worker can claim."""
     dependency = aliased(CloudJobQueue)
     return (
-        select(CloudJobQueue)
+        select(CloudJobQueue.id)
         .outerjoin(dependency, CloudJobQueue.depends_on_job_id == dependency.id)
         .where(
             CloudJobQueue.status == CloudJobStatus.PENDING.value,
-            CloudJobQueue.scheduled_for <= utcnow(),
+            CloudJobQueue.scheduled_for <= (now or utcnow()),
             CloudJobQueue.job_type.in_(sorted(registered_types)),
             or_(
                 CloudJobQueue.depends_on_job_id.is_(None),
                 dependency.status == CloudJobStatus.COMPLETED.value,
             ),
         )
+    )
+
+
+def build_claim_query(registered_types: set[str] | frozenset[str], *, limit: int):
+    """Build the dependency-gated PostgreSQL claim selection."""
+    runnable_ids = build_runnable_pending_query(registered_types).subquery()
+    return (
+        select(CloudJobQueue)
+        .join(runnable_ids, runnable_ids.c.id == CloudJobQueue.id)
         .order_by(CloudJobQueue.priority.asc(), CloudJobQueue.created_at.asc())
         .limit(limit)
         .with_for_update(of=CloudJobQueue, skip_locked=True)
@@ -106,6 +148,7 @@ class JobProcessor:
             or os.environ.get("JOB_WORKER_ID")
             or (f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4()}")
         )
+        self.instance_id = str(uuid.uuid4())
         self.lease_seconds = lease_seconds
         self.heartbeat_interval = min(heartbeat_interval, max(1.0, lease_seconds / 3))
         self.reaper_interval = reaper_interval
@@ -217,14 +260,45 @@ class JobProcessor:
                     status=state,
                     started_at=now,
                     heartbeat_at=now,
-                    metadata_json={"pid": os.getpid(), "host": socket.gethostname()},
+                    metadata_json={
+                        "pid": os.getpid(),
+                        "host": socket.gethostname(),
+                        "instance_id": self.instance_id,
+                        "progress_watermark_at": now.isoformat(),
+                    },
                 )
                 db.add(heartbeat)
             else:
+                metadata = (
+                    dict(heartbeat.metadata_json)
+                    if isinstance(heartbeat.metadata_json, dict)
+                    else {}
+                )
+                if metadata.get("instance_id") != self.instance_id:
+                    heartbeat.started_at = now
+                    heartbeat.jobs_claimed = 0
+                    heartbeat.jobs_completed = 0
+                    heartbeat.jobs_failed = 0
+                    heartbeat.metadata_json = {
+                        "pid": os.getpid(),
+                        "host": socket.gethostname(),
+                        "instance_id": self.instance_id,
+                        "progress_watermark_at": now.isoformat(),
+                    }
                 heartbeat.status = state
                 heartbeat.heartbeat_at = now
                 heartbeat.stopped_at = now if state == "stopped" else None
             db.commit()
+
+    @staticmethod
+    def _touch_progress_watermark(heartbeat: WorkerHeartbeat, now: datetime) -> None:
+        metadata = (
+            dict(heartbeat.metadata_json)
+            if isinstance(heartbeat.metadata_json, dict)
+            else {}
+        )
+        metadata["progress_watermark_at"] = now.isoformat()
+        heartbeat.metadata_json = metadata
 
     def _fail_blocked_dependencies(self, db: Session, *, limit: int) -> int:
         """Fail a bounded set of children whose dependency cannot succeed."""
@@ -364,11 +438,13 @@ class JobProcessor:
                 if heartbeat is not None:
                     heartbeat.jobs_claimed = (heartbeat.jobs_claimed or 0) + len(claims)
                     heartbeat.heartbeat_at = now
+                    self._touch_progress_watermark(heartbeat, now)
             db.commit()
         return claims
 
     @staticmethod
     def _fence(claim: ClaimedJob):
+        """Identify the exact claim, including one carrying cancellation."""
         return and_(
             CloudJobQueue.id == claim.job_id,
             CloudJobQueue.status == CloudJobStatus.PROCESSING.value,
@@ -376,14 +452,56 @@ class JobProcessor:
             CloudJobQueue.worker_id == claim.worker_id,
         )
 
+    @classmethod
+    def _active_fence(cls, claim: ClaimedJob):
+        """Identify an exact claim still authorized to publish effects."""
+        return and_(
+            cls._fence(claim),
+            or_(
+                CloudJobQueue.last_error_code.is_(None),
+                CloudJobQueue.last_error_code != _CANCEL_REQUESTED_CODE,
+            ),
+        )
+
     def _fenced_update(self, claim: ClaimedJob, values: dict[str, Any]) -> bool:
         with self.session_factory() as db:
-            result = db.execute(
-                update(CloudJobQueue).where(self._fence(claim)).values(**values)
+            fence = (
+                self._active_fence(claim) if "status" in values else self._fence(claim)
             )
+            result = db.execute(update(CloudJobQueue).where(fence).values(**values))
             if result.rowcount != 1:
                 db.rollback()
                 return False
+            if (
+                claim.job_type == "scan"
+                and values.get("status") == CloudJobStatus.FAILED.value
+            ):
+                scan_id = claim.payload.get("scan_id")
+                department_id = db.scalar(
+                    select(CloudJobQueue.department_id).where(
+                        CloudJobQueue.id == claim.job_id
+                    )
+                )
+                scan = _load_tenant_scan(
+                    db,
+                    scan_id=scan_id,
+                    department_id=department_id,
+                    lock_row=True,
+                )
+                if scan is not None and scan.status in {
+                    ScanStatus.PENDING,
+                    ScanStatus.PROCESSING,
+                }:
+                    scan.status = ScanStatus.FAILED
+                    scan.completed_at = values.get("completed_at") or utcnow()
+                    scan.error_message = str(
+                        values.get("last_error_code") or "scan_worker_failed"
+                    )
+                    scan.progress_message = "Scan failed"
+            if "progress" in values or "status" in values:
+                heartbeat = db.get(WorkerHeartbeat, claim.worker_id)
+                if heartbeat is not None:
+                    self._touch_progress_watermark(heartbeat, utcnow())
             db.commit()
             return True
 
@@ -393,6 +511,86 @@ class JobProcessor:
                 db.scalar(select(CloudJobQueue.id).where(self._fence(claim)))
                 is not None
             )
+
+    def _cancellation_requested(self, claim: ClaimedJob) -> bool:
+        with self.session_factory() as db:
+            value = db.scalar(
+                select(CloudJobQueue.id).where(
+                    self._fence(claim),
+                    CloudJobQueue.last_error_code == _CANCEL_REQUESTED_CODE,
+                )
+            )
+            return isinstance(value, str) and value == claim.job_id
+
+    def _acknowledge_cancellation(self, claim: ClaimedJob) -> bool:
+        """Acknowledge only after the handler cancellation has fully returned."""
+        now = utcnow()
+        with self.session_factory() as db:
+            job = db.scalar(
+                select(CloudJobQueue)
+                .where(
+                    self._fence(claim),
+                    CloudJobQueue.last_error_code == _CANCEL_REQUESTED_CODE,
+                )
+                .with_for_update()
+            )
+            if job is None:
+                db.rollback()
+                return False
+            self._mark_cancellation_acknowledged(
+                db, job, payload=dict(claim.payload), now=now
+            )
+            db.commit()
+            return True
+
+    def _mark_cancellation_acknowledged(
+        self,
+        db: Session,
+        job: CloudJobQueue,
+        *,
+        payload: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        job.status = CloudJobStatus.FAILED.value
+        job.completed_at = now
+        job.progress = 0
+        job.progress_message = "Cancelled"
+        job.result_data = {"cancelled": True}
+        job.error_message = _CANCELLED_CODE
+        job.last_error_code = _CANCELLED_CODE
+        job.last_error_retryable = False
+        for key, value in self._clear_claim_values().items():
+            setattr(job, key, value)
+        scan_id = payload.get("scan_id")
+        scan = _load_tenant_scan(
+            db,
+            scan_id=scan_id,
+            department_id=job.department_id,
+            lock_row=True,
+        )
+        other_processing = None
+        if scan is not None and isinstance(scan_id, str):
+            other_processing = db.scalar(
+                select(CloudJobQueue.id).where(
+                    CloudJobQueue.id != job.id,
+                    CloudJobQueue.department_id == job.department_id,
+                    CloudJobQueue.status == CloudJobStatus.PROCESSING.value,
+                    CloudJobQueue.payload["scan_id"].as_string() == scan_id,
+                )
+            )
+        if scan is not None and other_processing is None:
+            from ..services.remediation_artifact_service import (
+                RemediationArtifactService,
+            )
+
+            RemediationArtifactService.from_settings().delete_for_scan(
+                db,
+                department_id=str(job.department_id),
+                scan_id=scan_id,
+            )
+            if scan.result is not None:
+                db.delete(scan.result)
+            db.delete(scan)
 
     async def report_progress(
         self, claim: ClaimedJob, progress: int, message: str | None = None
@@ -405,6 +603,8 @@ class JobProcessor:
         )
 
     async def _assert_owned(self, claim: ClaimedJob) -> None:
+        if await asyncio.to_thread(self._cancellation_requested, claim):
+            raise LostJobOwnership("job cancellation requested")
         if not await asyncio.to_thread(self._owns_claim, claim):
             raise LostJobOwnership("job ownership lost")
 
@@ -412,9 +612,9 @@ class JobProcessor:
         """Commit a stable request token before provider bytes can leave."""
         with self.session_factory() as db:
             job = db.scalar(
-                select(CloudJobQueue).where(self._fence(claim)).with_for_update()
+                select(CloudJobQueue).where(self._active_fence(claim)).with_for_update()
             )
-            if job is None or job.job_type != "upload":
+            if job is None or job.job_type not in _EXTERNAL_EFFECT_JOB_TYPES:
                 db.rollback()
                 raise LostJobOwnership("external effect fence unavailable")
             if job.external_effect_state == "requesting":
@@ -442,6 +642,9 @@ class JobProcessor:
         try:
             while True:
                 await asyncio.sleep(self.heartbeat_interval)
+                if await asyncio.to_thread(self._cancellation_requested, claim):
+                    ownership_lost.set()
+                    return
                 now = utcnow()
                 if not await asyncio.to_thread(
                     self._fenced_update,
@@ -478,11 +681,13 @@ class JobProcessor:
         return timedelta(seconds=base * random.SystemRandom().uniform(0.8, 1.2))
 
     def _external_effect_state(self, claim: ClaimedJob) -> str | None:
-        if claim.job_type != "upload":
+        if claim.job_type not in _EXTERNAL_EFFECT_JOB_TYPES:
             return None
         with self.session_factory() as db:
             return db.scalar(
-                select(CloudJobQueue.external_effect_state).where(self._fence(claim))
+                select(CloudJobQueue.external_effect_state).where(
+                    self._active_fence(claim)
+                )
             )
 
     def _finish_values(
@@ -512,14 +717,15 @@ class JobProcessor:
                     "external_effect_started_at": None,
                 }
             else:
+                error_code = _external_effect_error_code(claim.job_type)
                 return {
                     **clear,
                     "status": CloudJobStatus.FAILED.value,
                     "completed_at": now,
                     "progress_message": "Failed",
                     "result_data": {"retry_safe": False, "manual_required": True},
-                    "error_message": "upload_outcome_indeterminate",
-                    "last_error_code": "upload_outcome_indeterminate",
+                    "error_message": error_code,
+                    "last_error_code": error_code,
                     "last_error_retryable": False,
                     "external_effect_state": (
                         "confirmed"
@@ -569,7 +775,32 @@ class JobProcessor:
                 "last_error_retryable": True,
                 "updated_at": now,
             }
-        if result.kind is FailureKind.DETERMINISTIC:
+        is_brightspace_content = (
+            claim.job_type == "remediate"
+            and claim.payload.get("execution") == "brightspace_content"
+        )
+        if is_brightspace_content:
+            from .brightspace_content_job import _failure_outcome
+
+            terminal_result = public_job_result(result.details)
+            if terminal_result is None or not {
+                "status",
+                "fixed_count",
+                "manual_count",
+                "failed_count",
+                "download_available",
+                "ai_used",
+                "external_ai_used",
+                "providers",
+                "purpose_decisions",
+            }.issubset(terminal_result):
+                terminal_result = public_job_result(
+                    _failure_outcome(
+                        persisted_error_code,
+                        payload=dict(claim.payload),
+                    )
+                )
+        elif result.kind is FailureKind.DETERMINISTIC:
             terminal_result = public_job_result(result.details)
         elif retryable_kind and not retry_safe:
             terminal_result = {
@@ -594,10 +825,26 @@ class JobProcessor:
 
     def _finish(self, claim: ClaimedJob, result: JobResult) -> bool:
         state = self._external_effect_state(claim)
-        return self._fenced_update(
+        finished = self._fenced_update(
             claim,
             self._finish_values(claim, result, external_effect_state=state),
         )
+        if not finished and self._cancellation_requested(claim):
+            # Handler return means any killable child has already stopped and
+            # been reaped. Cancellation owns the terminal transition now.
+            return self._acknowledge_cancellation(claim)
+        return finished
+
+    @staticmethod
+    def _uses_child_execution_authority(job: CloudJobQueue) -> bool:
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        if job.job_type == "remediate":
+            return payload.get("execution") == "brightspace_content"
+        if job.job_type != "scan":
+            return False
+        from .local_scan_job import LOCAL_SCAN_KINDS
+
+        return payload.get("scan_kind") in LOCAL_SCAN_KINDS
 
     def _handler_terminal_committed(self, job_id: str) -> bool:
         with self.session_factory() as db:
@@ -620,7 +867,9 @@ class JobProcessor:
                 return
             field = "jobs_completed" if completed else "jobs_failed"
             setattr(heartbeat, field, (getattr(heartbeat, field) or 0) + 1)
-            heartbeat.heartbeat_at = utcnow()
+            now = utcnow()
+            heartbeat.heartbeat_at = now
+            self._touch_progress_watermark(heartbeat, now)
             db.commit()
 
     async def process_claim(self, claim: ClaimedJob) -> bool:
@@ -671,17 +920,41 @@ class JobProcessor:
                                     handler_task, return_exceptions=True
                                 )
                                 db.rollback()
+                                if await asyncio.to_thread(
+                                    self._handler_terminal_committed, claim.job_id
+                                ):
+                                    return True
+                                if await asyncio.to_thread(
+                                    self._cancellation_requested, claim
+                                ):
+                                    return await asyncio.to_thread(
+                                        self._acknowledge_cancellation, claim
+                                    )
                                 return False
                             result = await handler_task
-                            try:
-                                await context.assert_owned()
-                            except LostJobOwnership:
-                                db.rollback()
-                                return False
+                            if not (
+                                isinstance(result, JobSuccess)
+                                and result.handler_committed
+                            ):
+                                try:
+                                    await context.assert_owned()
+                                except LostJobOwnership:
+                                    db.rollback()
+                                    if await asyncio.to_thread(
+                                        self._cancellation_requested, claim
+                                    ):
+                                        return await asyncio.to_thread(
+                                            self._acknowledge_cancellation, claim
+                                        )
+                                    return False
                         finally:
                             lost_task.cancel()
                             await asyncio.gather(lost_task, return_exceptions=True)
                 except LostJobOwnership:
+                    if await asyncio.to_thread(self._cancellation_requested, claim):
+                        return await asyncio.to_thread(
+                            self._acknowledge_cancellation, claim
+                        )
                     return False
                 except Exception as exc:
                     if getattr(exc, "terminal_state_committed", False) is True:
@@ -689,7 +962,7 @@ class JobProcessor:
                         if committed:
                             self._record_outcome(completed=False)
                         return committed
-                    logger.exception(
+                    logger.error(
                         "Job handler raised",
                         extra={
                             "job_id": claim.job_id,
@@ -730,7 +1003,7 @@ class JobProcessor:
         now = utcnow()
         recovered = 0
         with self.session_factory() as db:
-            jobs = list(
+            candidates = list(
                 db.scalars(
                     select(CloudJobQueue)
                     .where(
@@ -739,10 +1012,52 @@ class JobProcessor:
                     )
                     .order_by(CloudJobQueue.lease_expires_at.asc())
                     .limit(limit)
-                    .with_for_update(skip_locked=True)
                 ).all()
             )
-            for job in jobs:
+            for candidate in candidates:
+                uses_child_authority = self._uses_child_execution_authority(candidate)
+                token = candidate.claim_token
+                if uses_child_authority:
+                    # Acquire the immutable old claim's execution authority
+                    # before the row lock. If a child already holds it, that
+                    # child is still live. If recovery wins first, a child
+                    # starting concurrently blocks until this transaction
+                    # publishes recovery, then fails its claim-row check.
+                    from .execution_authority import try_acquire_recovery_lock
+
+                    if not isinstance(token, str) or not token:
+                        continue
+                    if not try_acquire_recovery_lock(
+                        db, job_id=str(candidate.id), claim_token=token
+                    ):
+                        continue
+                job = db.scalar(
+                    select(CloudJobQueue)
+                    .where(
+                        CloudJobQueue.id == candidate.id,
+                        CloudJobQueue.status == CloudJobStatus.PROCESSING.value,
+                        CloudJobQueue.lease_expires_at < now,
+                        CloudJobQueue.claim_token == token,
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+                if job is None:
+                    continue
+                if job.last_error_code == _CANCEL_REQUESTED_CODE:
+                    if not uses_child_authority:
+                        # Non-child handlers have no cross-replica death proof;
+                        # their live owner must acknowledge after teardown.
+                        continue
+                    self._mark_cancellation_acknowledged(
+                        db,
+                        job,
+                        payload=(
+                            dict(job.payload) if isinstance(job.payload, dict) else {}
+                        ),
+                        now=now,
+                    )
+                    recovered += 1
+                    continue
                 if job.external_effect_state in {
                     "requesting",
                     "indeterminate",
@@ -750,8 +1065,9 @@ class JobProcessor:
                 }:
                     job.status = CloudJobStatus.FAILED.value
                     job.completed_at = now
-                    job.error_message = "upload_outcome_indeterminate"
-                    job.last_error_code = "upload_outcome_indeterminate"
+                    error_code = _external_effect_error_code(str(job.job_type))
+                    job.error_message = error_code
+                    job.last_error_code = error_code
                     job.last_error_retryable = False
                     job.result_data = {
                         "retry_safe": False,
@@ -781,6 +1097,26 @@ class JobProcessor:
                 job.progress = 0
                 for key, value in self._clear_claim_values().items():
                     setattr(job, key, value)
+                if exhausted and job.job_type == "scan":
+                    scan_id = (
+                        job.payload.get("scan_id")
+                        if isinstance(job.payload, dict)
+                        else None
+                    )
+                    scan = _load_tenant_scan(
+                        db,
+                        scan_id=scan_id,
+                        department_id=job.department_id,
+                        lock_row=True,
+                    )
+                    if scan is not None and scan.status in {
+                        ScanStatus.PENDING,
+                        ScanStatus.PROCESSING,
+                    }:
+                        scan.status = ScanStatus.FAILED
+                        scan.completed_at = now
+                        scan.error_message = "job_lease_expired"
+                        scan.progress_message = "Scan failed"
                 recovered += 1
             db.commit()
         return recovered

@@ -8,6 +8,13 @@ from enum import Enum
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 
+OLLAMA_EVALUATED_MODELS: Dict[str, str] = {
+    "text": "gemma3:4b",
+    "code": "qwen2.5-coder:7b",
+    "vision": "qwen2.5vl:3b",
+    "embeddings": "nomic-embed-text:latest",
+}
+
 
 class ProviderType(str, Enum):
     """Available LLM provider types."""
@@ -72,9 +79,7 @@ class ProviderConfig:
             ProviderType.GEMINI: cls(
                 provider_type=ProviderType.GEMINI,
                 api_base="https://generativelanguage.googleapis.com/v1beta",
-                # Default: gemini-2.5-flash (Tier 1: 1,000 RPM, $0.30/1M input)
-                # Users can upgrade to gemini-2.5-pro or gemini-3-flash-preview
-                # via PUT /llm/providers/gemini/models
+                # Model default used only when a workspace selects Gemini.
                 text_model="gemini-2.5-flash",
                 code_model="gemini-2.5-flash",
                 vision_model="gemini-2.5-flash",
@@ -82,10 +87,10 @@ class ProviderConfig:
             ProviderType.OLLAMA: cls(
                 provider_type=ProviderType.OLLAMA,
                 host="http://localhost:11434",
-                text_model="gemma3:4b",  # Warm humanized explanations (3.3GB)
-                code_model="qwen2.5-coder:7b",  # Best HTML/ARIA code fixes (4.7GB)
-                vision_model="qwen2.5vl:3b",  # OCR, charts, 125K context (3.2GB)
-                embedding_model="nomic-embed-text",
+                text_model=OLLAMA_EVALUATED_MODELS["text"],
+                code_model=OLLAMA_EVALUATED_MODELS["code"],
+                vision_model=OLLAMA_EVALUATED_MODELS["vision"],
+                embedding_model=OLLAMA_EVALUATED_MODELS["embeddings"],
             ),
             ProviderType.OPENAI: cls(
                 provider_type=ProviderType.OPENAI,
@@ -121,7 +126,7 @@ PROVIDER_MODELS: Dict[ProviderType, Dict[str, ModelConfig]] = {
             max_tokens=8192,
             supports_vision=True,
             context_window=1048576,
-            description="100% accuracy, 5.4s avg - BEST (paid tier default)",
+            description="100% accuracy, 5.4s avg - high-accuracy Gemini option",
         ),
         # Recommended default — fast, good quality, affordable
         "gemini-2.5-flash": ModelConfig(
@@ -140,39 +145,29 @@ PROVIDER_MODELS: Dict[ProviderType, Dict[str, ModelConfig]] = {
         ),
     },
     ProviderType.OLLAMA: {
-        "llama3.2:3b": ModelConfig(
-            name="llama3.2:3b",
+        "gemma3:4b": ModelConfig(
+            name="gemma3:4b",
             max_tokens=4096,
-            context_window=128000,
-            description="Fast general-purpose model",
+            description="Fixture-evaluated for issue explanations",
         ),
-        "qwen2.5-coder:3b": ModelConfig(
-            name="qwen2.5-coder:3b",
+        "qwen2.5-coder:7b": ModelConfig(
+            name="qwen2.5-coder:7b",
             max_tokens=4096,
             supports_code=True,
             context_window=32768,
-            description="Best for code generation (100% accuracy)",
+            description="Fixture-evaluated for bounded HTML label repair",
         ),
-        "qwen2.5-coder:1.5b": ModelConfig(
-            name="qwen2.5-coder:1.5b",
-            max_tokens=4096,
-            supports_code=True,
-            context_window=32768,
-            description="Lighter coder model for limited RAM",
-        ),
-        "llava:7b": ModelConfig(
-            name="llava:7b",
+        "qwen2.5vl:3b": ModelConfig(
+            name="qwen2.5vl:3b",
             max_tokens=4096,
             supports_vision=True,
-            context_window=4096,
-            description="Vision model for image analysis",
+            description="Fixture-evaluated for one chart and rasterized syllabus page",
         ),
-        "minicpm-v:latest": ModelConfig(
-            name="minicpm-v:latest",
+        "nomic-embed-text:latest": ModelConfig(
+            name="nomic-embed-text:latest",
             max_tokens=4096,
-            supports_vision=True,
-            context_window=4096,
-            description="Best accuracy vision model (54% vs moondream 10%)",
+            supports_code=False,
+            description="Fixture-evaluated for bounded WCAG retrieval ranking",
         ),
     },
     ProviderType.OPENAI: {

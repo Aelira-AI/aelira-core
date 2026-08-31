@@ -13,6 +13,8 @@ from pathlib import Path
 from ipaddress import ip_network
 import re
 
+from src.ai.providers.types import OLLAMA_EVALUATED_MODELS
+
 logger = logging.getLogger(__name__)
 
 # Known-insecure JWT_SECRET values that ship in example/quickstart configs.
@@ -100,7 +102,7 @@ class Settings(BaseSettings):
 
     # API Configuration
     api_title: str = "Aelira ADA Compliance API"
-    api_version: str = "0.9.6"
+    api_version: str = "0.9.7"
     api_host: str = os.getenv("API_HOST", "0.0.0.0")
 
     # Where this deployment is reachable. Everything user-facing derives from
@@ -334,12 +336,18 @@ class Settings(BaseSettings):
         "ANTHROPIC_VISION_MODEL", "claude-3-5-sonnet-20241022"
     )
 
-    # Ollama model configuration (Jan 2026 benchmarks)
-    ollama_text_model: str = os.getenv("OLLAMA_TEXT_MODEL", "qwen2.5-coder:1.5b")
-    ollama_code_model: str = os.getenv("OLLAMA_CODE_MODEL", "qwen2.5-coder:3b")
-    ollama_vision_model: str = os.getenv("OLLAMA_VISION_MODEL", "minicpm-v:latest")
+    # Ollama model configuration (fixture-evaluated release matrix)
+    ollama_text_model: str = os.getenv(
+        "OLLAMA_TEXT_MODEL", OLLAMA_EVALUATED_MODELS["text"]
+    )
+    ollama_code_model: str = os.getenv(
+        "OLLAMA_CODE_MODEL", OLLAMA_EVALUATED_MODELS["code"]
+    )
+    ollama_vision_model: str = os.getenv(
+        "OLLAMA_VISION_MODEL", OLLAMA_EVALUATED_MODELS["vision"]
+    )
     ollama_embedding_model: str = os.getenv(
-        "OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"
+        "OLLAMA_EMBEDDING_MODEL", OLLAMA_EVALUATED_MODELS["embeddings"]
     )
 
     # Security
@@ -484,6 +492,16 @@ class Settings(BaseSettings):
     remediation_artifact_dir: str = os.getenv(
         "REMEDIATION_ARTIFACT_DIR", "/app/uploads/remediation-artifacts"
     )
+    report_artifact_dir: str = os.getenv(
+        "REPORT_ARTIFACT_DIR", "/app/uploads/report-artifacts"
+    )
+    report_artifact_max_bytes: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REPORT_ARTIFACT_MAX_BYTES", str(20 * 1024 * 1024))
+        ),
+        ge=1024,
+        le=100 * 1024 * 1024,
+    )
     remediation_artifact_retention_days: int = Field(
         default_factory=lambda: int(
             os.getenv("REMEDIATION_ARTIFACT_RETENTION_DAYS", "30")
@@ -583,18 +601,18 @@ class Settings(BaseSettings):
         le=86400,
     )
 
-    @field_validator("remediation_artifact_dir")
+    @field_validator("remediation_artifact_dir", "report_artifact_dir")
     @classmethod
     def validate_remediation_artifact_dir(cls, value: str) -> str:
         """Require a bounded, normalized absolute artifact root."""
         if not value or len(value) > 4096 or "\x00" in value:
-            raise ValueError("REMEDIATION_ARTIFACT_DIR is invalid")
+            raise ValueError("artifact directory is invalid")
         path = Path(value)
         if not path.is_absolute() or ".." in path.parts:
-            raise ValueError("REMEDIATION_ARTIFACT_DIR must be an absolute path")
+            raise ValueError("artifact directory must be an absolute path")
         normalized = os.path.normpath(value)
         if normalized != value or normalized == os.path.sep:
-            raise ValueError("REMEDIATION_ARTIFACT_DIR must be canonical")
+            raise ValueError("artifact directory must be canonical")
         return normalized
 
     # =====================================================

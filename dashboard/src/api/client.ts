@@ -3,6 +3,7 @@
 import axios, {
   AxiosInstance,
   AxiosError,
+  AxiosRequestConfig,
   InternalAxiosRequestConfig,
   AxiosResponse,
 } from 'axios';
@@ -204,7 +205,7 @@ apiClient.interceptors.response.use(
 /**
  * Make a typed GET request
  */
-export async function get<T>(url: string, config?: InternalAxiosRequestConfig): Promise<T> {
+export async function get<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
   const response = await apiClient.get<T>(url, config);
   return response.data;
 }
@@ -215,7 +216,7 @@ export async function get<T>(url: string, config?: InternalAxiosRequestConfig): 
 export async function post<T, D = unknown>(
   url: string,
   data?: D,
-  config?: InternalAxiosRequestConfig
+  config?: AxiosRequestConfig
 ): Promise<T> {
   const response = await apiClient.post<T>(url, data, config);
   return response.data;
@@ -227,7 +228,7 @@ export async function post<T, D = unknown>(
 export async function put<T, D = unknown>(
   url: string,
   data?: D,
-  config?: InternalAxiosRequestConfig
+  config?: AxiosRequestConfig
 ): Promise<T> {
   const response = await apiClient.put<T>(url, data, config);
   return response.data;
@@ -236,7 +237,7 @@ export async function put<T, D = unknown>(
 /**
  * Make a typed DELETE request
  */
-export async function del<T>(url: string, config?: InternalAxiosRequestConfig): Promise<T> {
+export async function del<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
   const response = await apiClient.delete<T>(url, config);
   return response.data;
 }

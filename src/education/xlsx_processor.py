@@ -505,6 +505,7 @@ class XlsxProcessor:
         validate_alt_text: bool = False,
         simulate_color_blindness: bool = False,
         progress_callback: callable = None,
+        llm_client=None,
     ):
         self.generate_chart_descriptions = generate_chart_descriptions
         self.generate_alt_text = generate_alt_text
@@ -527,7 +528,8 @@ class XlsxProcessor:
                 from .image_alt_text import ImageAltTextGenerator
 
                 self.image_generator = ImageAltTextGenerator(
-                    allow_legacy_transport=True
+                    lms_client=llm_client,
+                    allow_legacy_transport=llm_client is None,
                 )
             except Exception as e:
                 logger.warning(

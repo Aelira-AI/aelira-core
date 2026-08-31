@@ -94,6 +94,7 @@ class CodeScanner:
         validate_alt_text: bool = False,
         scan_cvd: bool = False,
         progress_callback: callable = None,
+        llm_client=None,
     ):
         """
         Initialize code scanner
@@ -110,7 +111,9 @@ class CodeScanner:
         self.validate_alt_text = validate_alt_text
         self.scan_cvd = scan_cvd
         self.progress_callback = progress_callback
-        self.llm_client = get_provider_manager()
+        self.llm_client = (
+            llm_client if llm_client is not None else get_provider_manager()
+        )
         # Initialize CVD simulator if enabled
         self.cvd_simulator = ColorBlindnessSimulator() if scan_cvd else None
 

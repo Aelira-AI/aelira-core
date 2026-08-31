@@ -1,0 +1,113 @@
+{
+  "schema_version": "chemical-formula-corpus-v1",
+  "supported": [
+    {
+      "id": "water-formula",
+      "source": "H2O",
+      "canonical": "H2O",
+      "speech": "hydrogen subscript 2, oxygen",
+      "covers": ["element", "count", "formula"]
+    },
+    {
+      "id": "carbon-isotope",
+      "source": "^14C",
+      "canonical": "^14C",
+      "speech": "carbon isotope 14",
+      "covers": ["isotope"]
+    },
+    {
+      "id": "iron-ion",
+      "source": "Fe^3+",
+      "canonical": "Fe^3+",
+      "speech": "iron, charge 3 positive",
+      "covers": ["positive_charge"]
+    },
+    {
+      "id": "sulfate-ion",
+      "source": "SO4^2-",
+      "canonical": "SO4^2-",
+      "speech": "sulfur, oxygen subscript 4, charge 2 negative",
+      "covers": ["negative_charge"]
+    },
+    {
+      "id": "aqueous-state",
+      "source": "NaCl(aq)",
+      "canonical": "NaCl(aq)",
+      "speech": "sodium, chlorine, state aqueous",
+      "covers": ["state"]
+    },
+    {
+      "id": "grouped-term",
+      "source": "Ca(OH)2",
+      "canonical": "Ca(OH)2",
+      "speech": "calcium, open group, oxygen, hydrogen, close group subscript 2",
+      "covers": ["group", "group_multiplier"]
+    },
+    {
+      "id": "combined-grouped-formula",
+      "source": "Al2(SO4)3",
+      "canonical": "Al2(SO4)3",
+      "speech": "aluminum subscript 2, open group, sulfur, oxygen subscript 4, close group subscript 3",
+      "covers": ["combined_construct"]
+    },
+    {
+      "id": "species-coefficient",
+      "source": "2H2O",
+      "canonical": "2H2O",
+      "speech": "coefficient 2, hydrogen subscript 2, oxygen",
+      "covers": ["coefficient"]
+    },
+    {
+      "id": "forward-reaction",
+      "source": "2H2 + O2 -> 2H2O",
+      "canonical": "2H2 + O2 -> 2H2O",
+      "speech": "coefficient 2, hydrogen subscript 2 plus oxygen subscript 2 yields coefficient 2, hydrogen subscript 2, oxygen",
+      "covers": ["reaction", "forward_arrow", "plus_separator"]
+    },
+    {
+      "id": "conditioned-equilibrium",
+      "source": "N2 + 3H2 <=>[heat;Fe] 2NH3",
+      "canonical": "N2 + 3H2 <=>[heat;Fe] 2NH3",
+      "speech": "nitrogen subscript 2 plus coefficient 3, hydrogen subscript 2 is in equilibrium with coefficient 2, nitrogen, hydrogen subscript 3 under conditions heat; Fe",
+      "covers": ["equilibrium_arrow", "conditions"]
+    },
+    {
+      "id": "reversible-state-change",
+      "source": "H2O(l) <-> H2O(g)",
+      "canonical": "H2O(l) <-> H2O(g)",
+      "speech": "hydrogen subscript 2, oxygen, state liquid is reversible with hydrogen subscript 2, oxygen, state gas",
+      "covers": ["reversible_arrow", "combined_construct"]
+    },
+    {
+      "id": "nested-groups",
+      "source": "K4(ON(SO3)2)2",
+      "canonical": "K4(ON(SO3)2)2",
+      "speech": "potassium subscript 4, open group, oxygen, nitrogen, open group, sulfur, oxygen subscript 3, close group subscript 2, close group subscript 2",
+      "covers": ["nested_group"]
+    }
+  ],
+  "rejected": [
+    {"id": "empty", "source": "", "class": "empty"},
+    {"id": "unknown-element", "source": "Xx2", "class": "unknown_element"},
+    {"id": "wrong-case", "source": "h2O", "class": "case_invalid"},
+    {"id": "bare-charge", "source": "Na+", "class": "ambiguous_charge"},
+    {"id": "zero-coefficient", "source": "0H2", "class": "coefficient_bound"},
+    {"id": "zero-count", "source": "H0", "class": "count_bound"},
+    {"id": "oversized-count", "source": "H1000", "class": "count_bound"},
+    {"id": "empty-group", "source": "Ca()2", "class": "empty_group"},
+    {"id": "zero-group-multiplier", "source": "Ca(OH)0", "class": "group_bound"},
+    {"id": "hydrate-dot", "source": "CuSO4.5H2O", "class": "unsupported_hydrate"},
+    {"id": "unicode-arrow", "source": "H2 + O2 → H2O", "class": "unicode"},
+    {"id": "smiles", "source": "C=C", "class": "unsupported_smiles"},
+    {"id": "mhchem", "source": "\\ce{H2O}", "class": "unsupported_mhchem"},
+    {"id": "multiple-arrows", "source": "H2 -> O2 -> H2O", "class": "multiple_arrows"},
+    {"id": "empty-left-side", "source": " -> H2O", "class": "empty_side"},
+    {"id": "empty-right-side", "source": "H2O -> ", "class": "empty_side"},
+    {"id": "control-in-condition", "source": "H2 ->[heat\nnow] H2", "class": "unsafe_condition"},
+    {"id": "too-many-conditions", "source": "H2 ->[a;b;c;d;e] H2", "class": "condition_bound"},
+    {"id": "unsupported-state", "source": "H2O(plasma)", "class": "unsupported_state"},
+    {"id": "unclosed-group", "source": "Ca(OH2", "class": "malformed_group"},
+    {"id": "isotope-without-element", "source": "^14", "class": "malformed_isotope"},
+    {"id": "unsupported-free-condition", "source": "H2 -> heat H2", "class": "free_condition"}
+  ]
+}

@@ -361,7 +361,9 @@ LATEX_ACCESSIBILITY_RULES = {
 class LaTeXProcessor:
     """Process LaTeX equations and convert to accessible MathML"""
 
-    def __init__(self, use_ai: bool = True, progress_callback: callable = None):
+    def __init__(
+        self, use_ai: bool = True, progress_callback: callable = None, llm_client=None
+    ):
         """
         Initialize LaTeX processor
 
@@ -371,7 +373,11 @@ class LaTeXProcessor:
         """
         self.use_ai = use_ai
         self.progress_callback = progress_callback
-        self.llm_client = get_provider_manager() if use_ai else None
+        self.llm_client = (
+            (llm_client if llm_client is not None else get_provider_manager())
+            if use_ai
+            else None
+        )
 
         if self.use_ai:
             health = self.llm_client.health_check()

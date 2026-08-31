@@ -28,6 +28,7 @@ from src.integrations.blackboard_lti import (
     BlackboardLaunchData,
 )
 from src.integrations.blackboard_lti.blackboard_lti import (
+    BlackboardSigningKeyConfigurationError,
     BlackboardSessionService,
     BlackboardCookieService,
 )
@@ -138,6 +139,11 @@ def get_lti_service() -> BlackboardLTIService:
     return get_blackboard_lti_service()
 
 
+def _require_lti_ready(lti_service: BlackboardLTIService) -> None:
+    if not lti_service.is_configured():
+        raise HTTPException(status_code=503, detail=lti_service.configuration_message())
+
+
 # =============================================================================
 # OIDC Login Flow
 # =============================================================================
@@ -155,11 +161,7 @@ async def blackboard_lti_login(
     Blackboard redirects here first. We validate the login request
     and redirect to Blackboard for authentication.
     """
-    if not lti_service.is_configured():
-        raise HTTPException(
-            status_code=503,
-            detail="Blackboard LTI integration not configured. Set BLACKBOARD_URL and BLACKBOARD_CLIENT_ID.",
-        )
+    _require_lti_ready(lti_service)
 
     # Get parameters from query string or form
     if request.method == "POST":
@@ -189,9 +191,9 @@ async def blackboard_lti_login(
 
         return RedirectResponse(url=redirect_url, status_code=302)
 
-    except Exception as e:
-        logger.error("Blackboard LTI login failed: %s", type(e).__name__)
-        raise HTTPException(status_code=400, detail=f"LTI login failed: {str(e)}")
+    except Exception as exc:
+        logger.error("Blackboard LTI login failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=400, detail="Blackboard LTI login failed")
 
 
 # =============================================================================
@@ -213,8 +215,7 @@ async def blackboard_lti_launch(
 
     Feature Gating: Requires the 'lms_integration' feature (enabled on all core tiers).
     """
-    if not lti_service.is_configured():
-        raise HTTPException(status_code=503, detail="Blackboard LTI not configured")
+    _require_lti_ready(lti_service)
 
     # Get parameters from form
     params = dict(await request.form())
@@ -304,9 +305,9 @@ async def blackboard_lti_launch(
 
         return RedirectResponse(url=redirect_url, status_code=302)
 
-    except Exception as e:
-        logger.error("Blackboard LTI launch failed: %s", type(e).__name__)
-        raise HTTPException(status_code=400, detail=f"LTI launch failed: {str(e)}")
+    except Exception as exc:
+        logger.error("Blackboard LTI launch failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=400, detail="Blackboard LTI launch failed")
 
 
 # =============================================================================
@@ -324,8 +325,7 @@ async def blackboard_lti_deep_link(
 
     Used when instructors add content to their course.
     """
-    if not lti_service.is_configured():
-        raise HTTPException(status_code=503, detail="Blackboard LTI not configured")
+    _require_lti_ready(lti_service)
 
     params = dict(await request.form())
 
@@ -344,9 +344,9 @@ async def blackboard_lti_deep_link(
             request, lti_service, message_launch, launch_data
         )
 
-    except Exception as e:
-        logger.error("Blackboard deep link launch failed: %s", type(e).__name__)
-        raise HTTPException(status_code=400, detail=f"Deep link failed: {str(e)}")
+    except Exception as exc:
+        logger.error("Blackboard deep link launch failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=400, detail="Blackboard deep link failed")
 
 
 async def handle_blackboard_deep_link_launch(
@@ -574,8 +574,22 @@ async def get_blackboard_jwks(
 
     Blackboard uses this to verify our signed responses.
     """
-    # In production, load from actual key files
-    return JSONResponse({"keys": []})
+    try:
+        jwks = lti_service.get_signing_jwks()
+    except BlackboardSigningKeyConfigurationError:
+        logger.error("Blackboard LTI signing key configuration is invalid")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "blackboard_signing_key_unavailable",
+                "message": (
+                    "Set BLACKBOARD_LTI_PRIVATE_KEY_PATH and "
+                    "BLACKBOARD_LTI_PUBLIC_KEY_PATH to a matching RSA 2048+ pair; "
+                    "overlap paths must contain public PEMs."
+                ),
+            },
+        ) from None
+    return JSONResponse(jwks, headers={"Cache-Control": "public, max-age=300"})
 
 
 # =============================================================================
@@ -655,14 +669,11 @@ async def blackboard_lti_health(
     """
     Check Blackboard LTI integration health.
     """
+    configured = lti_service.is_configured()
     return {
-        "status": "healthy" if lti_service.is_configured() else "not_configured",
-        "configured": lti_service.is_configured(),
-        "message": (
-            "Blackboard LTI integration ready"
-            if lti_service.is_configured()
-            else "Set BLACKBOARD_URL, BLACKBOARD_CLIENT_ID, and BLACKBOARD_DEPLOYMENT_ID to enable"
-        ),
+        "status": "healthy" if configured else "not_configured",
+        "configured": configured,
+        "message": lti_service.configuration_message(),
     }
 
 

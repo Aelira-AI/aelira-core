@@ -9,6 +9,10 @@ export interface RawCurrentComplianceStats {
   avg_compliance_score?: number | null;
   total_issues?: number;
   scans_this_month?: number;
+  cvd_files_analyzed?: number;
+  cvd_affected_files?: number;
+  cvd_issues_total?: number;
+  cvd_accessibility_rate?: number | null;
   deadline?: DeadlineInfo;
 }
 
@@ -20,6 +24,10 @@ export interface CurrentDashboardStats {
   avgCompliance: number | null;
   issuesFound: number;
   scansThisMonth: number;
+  cvdFilesAnalyzed: number;
+  cvdAffectedFiles: number;
+  cvdIssuesTotal: number;
+  cvdAccessibilityRate: number | null;
   deadline: DeadlineInfo | null;
 }
 
@@ -35,6 +43,10 @@ export function normalizeCurrentComplianceStats(
     avgCompliance: raw.avg_compliance_score ?? null,
     issuesFound: raw.total_issues ?? 0,
     scansThisMonth: raw.scans_this_month ?? 0,
+    cvdFilesAnalyzed: raw.cvd_files_analyzed ?? 0,
+    cvdAffectedFiles: raw.cvd_affected_files ?? 0,
+    cvdIssuesTotal: raw.cvd_issues_total ?? 0,
+    cvdAccessibilityRate: raw.cvd_accessibility_rate ?? null,
     deadline: raw.deadline ?? null,
   };
 }
