@@ -438,7 +438,18 @@ def specialist_contract_matches_region(
         "chemical_structure",
         "commutative_diagram",
     }:
-        return getattr(contract, "locator", None) == region.source
+        locator = getattr(contract, "locator", None)
+        if isinstance(region.source, EmbeddedImageOccurrenceLocator) and isinstance(
+            locator, EmbeddedImageOccurrenceLocator
+        ):
+            return (
+                locator.page_number == region.source.page_number
+                and locator.image_index == region.source.image_index
+                and locator.occurrence_ordinal == region.source.occurrence_ordinal
+                and locator.bbox == region.source.bbox
+                and locator.image_stream_sha256 == region.source.image_stream_sha256
+            )
+        return locator == region.source
     return False
 
 
