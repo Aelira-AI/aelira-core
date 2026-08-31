@@ -24,8 +24,12 @@ class JobEnqueueError(ValueError):
 
 def _snapshot(value: dict[str, Any]) -> dict[str, Any]:
     """Detach queue input from caller-owned mutable objects."""
-    from src.jobs.contracts import validate_json_object
+    from src.jobs.contracts import reject_credential_material, validate_json_object
 
+    try:
+        reject_credential_material(value)
+    except ValueError as exc:
+        raise JobEnqueueError("credential_material_forbidden") from exc
     validated = validate_json_object(value)
     return json.loads(json.dumps(validated, separators=(",", ":")))
 

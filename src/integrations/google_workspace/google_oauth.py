@@ -7,8 +7,6 @@ This is a facade over the main OAuthTokenManager for Google-specific operations.
 
 import logging
 from typing import List, Optional, Dict, Any
-from google.oauth2.credentials import Credentials
-
 from ..oauth_token_manager import OAuthTokenManager, get_token_manager
 
 logger = logging.getLogger(__name__)
@@ -161,5 +159,4 @@ class GoogleOAuthService:
         }
 
 
-# Export Credentials for compatibility with tests
-__all__ = ["GoogleOAuthService", "Credentials"]
+__all__ = ["GoogleOAuthService"]

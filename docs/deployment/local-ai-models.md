@@ -26,17 +26,21 @@ suggestions, never different scores.
 Speech is always local and does not use Ollama: `faster-whisper` transcribes
 audio/video for captions, `piper-tts` generates audio. They run on CPU.
 
-## Tested defaults
+## Evaluated defaults
 
-These ship as the defaults and were benchmarked against accessibility tasks
-(alt-text quality, ARIA correctness, explanation tone) in March 2026:
+AI remains disabled until an operator explicitly selects a provider. The model
+tags below are used only after `LLM_PROVIDER=ollama` is configured; they do not
+make Ollama, or any model, an implicit provider default.
 
-| Lane | Model | Download | Runs in | Why this one |
-|---|---|---|---|---|
-| Vision | `qwen2.5vl:3b` | ~3.2 GB | 8 GB RAM, CPU-capable | Strong OCR and chart understanding for its size; 125K context |
-| Text | `gemma3:4b` | ~3.3 GB | 8 GB RAM, CPU-capable | Warm, faculty-friendly explanation tone |
-| Code | `qwen2.5-coder:7b` | ~4.7 GB | 16 GB RAM or 8 GB VRAM | Best HTML structure, ARIA, and scope-attribute output in testing |
-| Embeddings | `nomic-embed-text` | ~0.3 GB | anywhere | Standard, fast, good WCAG retrieval quality |
+The exact tags passed the repository's bounded local-model fixtures on
+30 August 2026:
+
+| Lane | Exact model | Evidence in this release |
+|---|---|---|
+| Vision | `qwen2.5vl:3b` | Recovered every value from the tracked chart and the required fields from a rasterized syllabus page |
+| Text | `gemma3:4b` | Identified a tracked missing-alt issue, recommended the attribute fix, and preserved mandatory human review |
+| Code | `qwen2.5-coder:7b` | Returned parseable HTML with two explicit input-label relationships and the submit control preserved |
+| Embeddings | `nomic-embed-text:latest` | Ranked identical and alt-text-related WCAG text above an unrelated focus-visible control |
 
 Select local generation with `LLM_PROVIDER=ollama`. Exact WCAG rule grounding
 does not need embeddings. To add optional free-text semantic retrieval, also
@@ -52,42 +56,65 @@ The older `OLLAMA_FALLBACK_TEXT`, `OLLAMA_FALLBACK_CODE`, and
 `OLLAMA_FALLBACK_VISION` names remain accepted for compatibility, but the
 canonical `OLLAMA_*_MODEL` variables above take precedence.
 
-## Hardware tiers
+<!-- local-model-evidence:start -->
+## Reproduced support matrix
 
-| Tier | Hardware | Configuration |
-|---|---|---|
-| **Minimum** | 8 GB RAM, no GPU | Set all three lanes to `gemma3:4b` (one 3.3 GB model in memory). Vision quality drops; everything works. |
-| **Recommended** | 16 GB RAM, no GPU required | The tested defaults above. This is a spare desktop or a small VM. |
-| **GPU workstation** | 12 GB+ VRAM (e.g. RTX 3060 12GB and up) | Upgrade vision to `qwen3-vl:8b` (as of mid-2026, the strongest open vision model at this size — native Ollama support, 256K context, leads document/chart benchmarks like DocVQA; ~12 GB at Q4). Keep the other lanes as-is or move code to `qwen2.5-coder:14b`. |
-| **Department server** | 24 GB+ VRAM or multi-GPU | Larger open models (e.g. Qwen3-VL-30B-A3B, Gemma-family MoE releases) served via vLLM or any OpenAI-compatible endpoint — see below. |
+The checked-in [machine-readable result](local-ai-model-results.json) was produced by evaluator `1.0.0` on Apple M3 Pro with 18.0 GiB memory. These measurements describe that host only; they are not universal hardware claims.
 
-Throughput note: a CPU-only deployment remediates a document in tens of
-seconds rather than seconds. For batch jobs over large course archives, a
-single mid-range GPU is the meaningful upgrade, not a bigger model.
+| Lane | Exact model | Status | Fixture cases | Median latency | Maximum latency | Download / loaded | Processor |
+|---|---|---|---|---|---|---|---|
+| Vision | `qwen2.5vl:3b` | **Supported** | quarterly-revenue-chart, scanned-syllabus-page | 1.77-1.83 s | 12.04-12.93 s | 3.0 GiB / 5.0 GiB | 0.0% CPU / 100.0% GPU |
+| Text | `gemma3:4b` | **Supported** | missing-alt-explanation | 4.26 s | 6.11 s | 3.1 GiB / 5.0 GiB | 0.0% CPU / 100.0% GPU |
+| Code | `qwen2.5-coder:7b` | **Supported** | form-label-repair | 7.65 s | 22.89 s | 4.4 GiB / 5.2 GiB | 0.0% CPU / 100.0% GPU |
+| Embeddings | `nomic-embed-text:latest` | **Supported** | wcag-retrieval-ranking | 0.03 s | 0.59 s | 261.6 MiB / 809.4 MiB | 0.0% CPU / 100.0% GPU |
 
-## Using newer or bigger models
+Supported means the exact tag and model ID passed every required fixture run for that lane. Other Ollama tags remain configurable and API-compatible, but unverified by this release. Missing, timed-out, malformed, or validator-failing runs remain unsupported rather than falling back to a claim.
+<!-- local-model-evidence:end -->
 
-The model landscape moves fast; the defaults are pinned to what was tested,
-not to what is newest. Two upgrade paths, no code changes:
+## Hardware evidence
 
-1. **Any Ollama model**: set the env vars to any model tag Ollama can pull.
-2. **Any OpenAI-compatible endpoint**: point `OPENAI_API_BASE` at vLLM,
-   LM Studio, TGI, or another gateway serving an open model, and select the
-   `openai` provider. This is how you run models larger than Ollama
-   comfortably serves.
+The checked-in run is evidence for one configuration: an 18 GB Apple M3 Pro,
+Ollama 0.12.10, and sequential lane evaluation through Metal. The four model
+downloads total about 10.7 GiB. Observed loaded size ranged from 809.4 MiB to
+5.2 GiB because the evaluator runs one lane at a time.
 
-When evaluating a new vision model, test it on your own worst artifacts: a
-dense table screenshot, a multi-series chart, a scanned handout. Alt-text
-quality on clean photos is not the hard part; chart and document
-understanding is.
+No CPU-only host, 8 GB machine, discrete GPU, concurrent worker load, or
+department-scale batch was measured. Run the same harness on the intended
+host before treating it as supported:
 
-## Honest quality expectations
+```bash
+python scripts/evaluate_local_models.py --output local-model-results.json
+```
 
-- Local models produce noticeably plainer alt text and explanations than
-  cloud flagships. For many institutions that trade is correct: the prose is
-  reviewable in the remediation UI anyway, and the documents never leave.
-- Scoring, scanning, severity, and verification are identical in local and
-  cloud configurations — they never touch a model.
-- You can mix: local vision for sensitive scanned documents, a cloud key for
-  public web scans. Providers are configured per deployment, and BYOK
-  per-department key overrides exist for cost attribution.
+## Configuring other model tags
+
+An operator may set the four `OLLAMA_*_MODEL` variables to other tags served
+by Ollama. Those tags are API-compatible configuration choices, not supported
+recommendations from this release. To promote another tag, add it to the
+fixture matrix, run every required case repeatedly, and check in the resulting
+evidence and generated documentation block.
+
+Larger open models can also be served through an OpenAI-compatible endpoint by
+selecting the `openai` provider and configuring `OPENAI_API_BASE`. That path is
+outside this Ollama evidence matrix.
+
+## Quality boundary
+
+- The vision evidence covers one clean four-bar chart and one clean rasterized
+  syllabus page. It does not establish support for dense tables, handwriting,
+  damaged scans, arbitrary diagrams, or every OCR layout.
+- The code evidence covers explicit labels for two form inputs. It does not
+  establish general HTML, ARIA, table, or application-level repair quality.
+- The text evidence proves a missing-alt explanation that refuses invented alt
+  text and keeps human review mandatory. It does not compare tone or quality
+  with cloud models.
+- Embedding evidence proves one bounded WCAG retrieval ranking, not every
+  corpus or language.
+- Scoring, scanning, severity, and verification remain deterministic and work
+  with no AI provider configured.
+
+To validate the checked-in report and guide without running Ollama:
+
+```bash
+python scripts/evaluate_local_models.py --check
+```

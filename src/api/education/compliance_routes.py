@@ -114,6 +114,12 @@ async def get_department_compliance_stats(
                 "total_faculty": stats.total_faculty,
                 "participation_rate": stats.faculty_participation_rate,
             },
+            "cvd": {
+                "files_analyzed": stats.cvd_files_analyzed,
+                "affected_files": stats.cvd_affected_files,
+                "issues_total": stats.cvd_issues_total,
+                "accessibility_rate": stats.cvd_accessibility_rate,
+            },
         }
 
     except ValueError as e:

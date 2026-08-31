@@ -46,7 +46,7 @@ def test_job_contracts_are_typed_immutable_and_json_safe():
 
     assert success.result == {"ok": True, "items": [1, "two"]}
     assert failure.kind is FailureKind.DETERMINISTIC
-    assert failure.details == {"secret": "<non-json-value>"}
+    assert failure.details == {}
     assert json.loads(json.dumps(sanitize_json({"x": float("nan")}))) == {
         "x": "<non-finite-number>"
     }
@@ -302,6 +302,23 @@ def test_claim_query_is_skip_locked_and_dependency_gated():
     assert "completed" in sql
 
 
+def test_runnable_health_predicate_matches_claim_dependency_and_type_gate():
+    from sqlalchemy.dialects import postgresql
+
+    from src.jobs.job_processor import build_runnable_pending_query
+
+    sql = str(
+        build_runnable_pending_query({"scan", "sync"}).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    ).lower()
+
+    assert "depends_on_job_id is null" in sql
+    assert "cloud_job_queue_1.status = 'completed'" in sql
+    assert "job_type in ('scan', 'sync')" in sql
+    assert "scheduled_for <=" in sql
+
+
 def test_queue_json_columns_compile_for_postgres_and_sqlite():
     from sqlalchemy.dialects import postgresql, sqlite
 
@@ -351,7 +368,8 @@ def test_all_compose_modes_have_dedicated_worker_with_shared_storage():
         assert (
             worker["environment"]["DATABASE_URL"] == api["environment"]["DATABASE_URL"]
         )
-        assert worker["environment"]["JOB_WORKER_ID"]
+        assert "JOB_WORKER_ID" not in worker["environment"]
+        assert "container_name" not in worker
         assert str(worker["environment"]["SKIP_MIGRATIONS"]).lower() == "true"
         assert worker["depends_on"]["api"]["condition"] == "service_healthy"
         assert "src.jobs.healthcheck" in str(worker["healthcheck"]["test"])
@@ -396,6 +414,57 @@ async def test_heartbeat_database_error_fails_closed_and_rolls_back_handler_sess
 
 
 @pytest.mark.asyncio
+async def test_cancellation_request_interval_stays_nonterminal_until_handler_reaped():
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
+
+    started = asyncio.Event()
+    reaped = asyncio.Event()
+    cancellation_requested = False
+
+    async def handler(_context, _db, _token_manager):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            reaped.set()
+
+    class CancellationProcessor(JobProcessor):
+        acknowledged = False
+
+        def _owns_claim(self, _claim):
+            return True
+
+        def _cancellation_requested(self, _claim):
+            return cancellation_requested
+
+        def _fenced_update(self, _claim, _values):
+            return True
+
+        def _acknowledge_cancellation(self, _claim):
+            assert reaped.is_set()
+            self.acknowledged = True
+            return True
+
+    worker = CancellationProcessor(
+        heartbeat_interval=0.05,
+        registry=_complete_registry(handler),
+        session_factory=MagicMock(),
+    )
+    worker._token_manager = MagicMock()
+    claim = ClaimedJob("job-1", "scan", {}, "token-1", worker.worker_id, 1, 1)
+    task = asyncio.create_task(worker.process_claim(claim))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    cancellation_requested = True
+
+    await asyncio.sleep(0.01)
+    assert not task.done()
+    assert worker.acknowledged is False
+    assert await asyncio.wait_for(task, timeout=1) is True
+    assert reaped.is_set()
+    assert worker.acknowledged is True
+
+
+@pytest.mark.asyncio
 async def test_custom_handler_result_must_use_typed_job_contract():
     from src.jobs.job_processor import ClaimedJob, JobProcessor
 
@@ -424,6 +493,39 @@ async def test_custom_handler_result_must_use_typed_job_contract():
     assert await worker.process_claim(claim) is True
     assert worker.finished_values["status"] == "failed"
     assert worker.finished_values["last_error_code"] == "malformed_handler_result"
+
+
+@pytest.mark.asyncio
+async def test_handler_atomic_terminal_commit_skips_obsolete_claim_assertion():
+    from src.jobs.contracts import JobSuccess
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
+
+    async def atomically_committed(_context, _db, _token_manager):
+        return JobSuccess({"success": True}, handler_committed=True)
+
+    class AtomicProcessor(JobProcessor):
+        def _owns_claim(self, _claim):
+            return True
+
+        async def _assert_owned(self, _claim):
+            raise AssertionError("terminal child commit already cleared the claim")
+
+        def _handler_terminal_committed(self, _job_id):
+            return True
+
+        def _record_outcome(self, *, completed):
+            self.completed = completed
+
+    worker = AtomicProcessor(
+        heartbeat_interval=60,
+        registry=_complete_registry(atomically_committed),
+        session_factory=MagicMock(),
+    )
+    worker._token_manager = MagicMock()
+    claim = ClaimedJob("job-1", "scan", {}, "token-1", worker.worker_id, 1, 1)
+
+    assert await worker.process_claim(claim) is True
+    assert worker.completed is True
 
 
 @pytest.mark.asyncio

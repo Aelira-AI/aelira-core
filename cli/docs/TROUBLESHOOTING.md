@@ -1,7 +1,7 @@
 # Aelira CLI Troubleshooting Guide
 
-**Version:** v0.4.0
-**Last Updated:** March 17, 2026
+**Version:** v0.9.7
+**Last Updated:** August 31, 2026
 
 Common issues and their solutions.
 
@@ -901,7 +901,7 @@ wait
 
 ---
 
-**Last Updated:** March 17, 2026
-**CLI Version:** v0.4.0
+**Last Updated:** August 31, 2026
+**CLI Version:** v0.9.7
 
 **Made with 💜 by the Aelira team**

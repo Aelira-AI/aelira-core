@@ -10,9 +10,7 @@
 [![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-336791.svg)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Deploy-Docker_Compose-2496ED.svg)](docker-compose.quickstart.yml)
 
-> **Status: 0.9.6 beta.** The engine — scanning, deterministic scoring, remediation — is complete and tested (1,500+ backend tests). LMS integration maturity varies by platform: Canvas is production-verified, the others range from beta to untested (see the [integration status table](#lms-integration-status) below). Pre-1.0 means we're still hardening operational edges. Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. Known work is tracked openly in the issues.
-
-> **Main-branch release boundary (24 August 2026):** PDF OCR-output preservation, accessible-HTML sanitization, and descriptor-bound PDF publication are present on `main` after v0.9.5. They are not part of v0.9.5. A future release may include them after its own release gates; this merge created no release or deployment. The immutable v0.9.5 tag and release remain unchanged.
+> **Status: 0.9.7 beta.** The engine — scanning, deterministic scoring, remediation — is complete and tested (5,000+ backend tests). LMS integration maturity varies by platform: Canvas is production-verified, the others range from beta to untested (see the [integration status table](#lms-integration-status) below). Pre-1.0 means we're still hardening operational edges. Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. Known work is tracked openly in the issues.
 
 Most accessibility tools tell you a PDF has no tags, an image has no alt text, and a table has no headers. Someone still has to open the file and fix it. Aelira does the fixing: you give it a document, it gives you back a remediated one, with a report of what changed and why.
 
@@ -61,14 +59,15 @@ For document work, upload a file and get back a remediated file rather than only
 
 | Content | What it does |
 |---|---|
-| **PDF** | Scans text/OCR and structure; applies bounded metadata, tag, bookmark, table, and alt-text fixes where the file exposes a safe target. On `main`, eligible image-only pages are OCR'd in a private working copy and the searchable text is preserved in the delivered PDF; ambiguous or unsupported cases fail closed. |
+| **PDF** | Scans text/OCR and structure; applies bounded metadata, tag, bookmark, table, and alt-text fixes where the file exposes a safe target. Eligible image-only pages are OCR'd in a private working copy and the searchable text is preserved in the delivered PDF; ambiguous or unsupported cases fail closed. |
 | **Word, PowerPoint, Excel** | Format-specific structure, alternative-text, contrast, table, slide, and workbook checks with partial original-format remediation |
 | **LaTeX** | Remediates and returns `.tex` source directly, converts supported equations to MathML/ARIA descriptions, and can optionally produce PDF/HTML |
+| **General STEM visuals** | Uses source-bound, specialist-specific contracts for printed, multi-equation, vector, and handwritten mathematics; chemical formulas and molecular structures; commutative diagrams; and mixed visuals. Saved-file verification and exact-candidate human approval remain mandatory. |
 | **Web pages** | axe-core and Pa11y detection, with generated code fixes |
 | **Video and audio** | Transcription and WebVTT captions |
 | **Images** | Context-aware alt text, not filename echoes |
 
-MathML is one stage of the LaTeX pipeline; the source remains first-class. Source-level remediation can improve accessibility metadata and language, figures, tables, equations, and links, depending on the issues found. With AI configured, figure descriptions use the issue, location, and original LaTeX context rather than the filename alone, with a filename-based fallback when richer context is unavailable. Capabilities, dependencies, evidence level, and review limits for every document format are in the [document remediation hub](docs/document-remediation/README.md).
+MathML is one stage of the LaTeX pipeline; the source remains first-class. Source-level remediation can improve accessibility metadata and language, figures, tables, equations, and links, depending on the issues found. With AI configured, figure descriptions use the issue, location, and original LaTeX context rather than the filename alone, with a filename-based fallback when richer context is unavailable. Capabilities, dependencies, evidence level, and review limits for every document format are in the [document remediation hub](docs/document-remediation/README.md); the [General STEM guide](docs/document-remediation/general-stem.md) documents the visual trust pipeline and its limits.
 
 It reads course content directly from your LMS, plus **Google Drive** and **Microsoft 365**, so faculty do not have to download and re-upload anything.
 

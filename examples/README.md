@@ -8,7 +8,7 @@ For format-by-format scan/remediation boundaries, dependencies, current API and
 CLI entry points, output expectations, and human-review guidance, start with the
 [document remediation hub](../docs/document-remediation/README.md).
 
-The PDF safety architecture documented there is present on `main` after v0.9.5, is not part of v0.9.5, and can enter a future release only through a later release process. Its merge created no release or deployment. The direct example below scans only; managed PDF remediation additionally uses the exact-byte output-claim lifecycle described in the hub.
+The v0.9.7 PDF safety architecture keeps the source immutable and publishes managed PDF remediation from an exact-byte output claim. The direct example below scans only; managed remediation additionally uses the lifecycle described in the hub.
 
 | Example | What it shows | Needs a running server? |
 |---------|---------------|-------------------------|

@@ -3,6 +3,8 @@ import { useAuth } from '../context/auth-context';
 import { useToast } from '../context/toast-context';
 import { useFeatureAccess } from '../hooks/useFeatureAccess';
 import { llmProvidersApi } from '../api/llmProviders';
+import type { LLMProvidersListResponse } from '../api/llmProviders';
+import { normalizeProviderRevisionConflict } from '../utils/llmProviderContract';
 import { accountApi } from '../api/account';
 import type { DeletionStatusResponse } from '../api/account';
 import { AccountDeletionModal } from '../components/AccountDeletionModal';
@@ -40,10 +42,11 @@ interface FeatureItemProps {
 }
 
 interface Provider {
+  configured?: boolean;
   is_available?: boolean;
-  text_model?: string;
-  code_model?: string;
-  vision_model?: string;
+  text_model?: string | null;
+  code_model?: string | null;
+  vision_model?: string | null;
 }
 
 interface Profile {
@@ -84,10 +87,18 @@ const FeatureItem = ({ label, available }: FeatureItemProps): React.ReactElement
   </div>
 );
 
+const providerErrorMessage = (error: unknown, fallback: string): string => {
+  if (typeof error !== 'object' || error === null || !('response' in error)) {
+    return fallback;
+  }
+  const response = (error as { response?: { data?: { detail?: unknown } } }).response;
+  return typeof response?.data?.detail === 'string' ? response.data.detail : fallback;
+};
+
 
 
 export default function Settings(): React.ReactElement {
-  const { authMethod, department, logout } = useAuth();
+  const { authMethod, department, user, logout } = useAuth();
   const { showToast } = useToast();
   const {
     showAIProviderSettings,
@@ -108,8 +119,15 @@ export default function Settings(): React.ReactElement {
   const [providers, setProviders] = useState<Record<string, Provider>>({});
   const [primaryProvider, setPrimaryProvider] = useState<ProviderKey | null>(null);
   const [fallbackProvider, setFallbackProvider] = useState<ProviderKey | null>(null);
+  const [providerConfigRevision, setProviderConfigRevision] = useState<number | null>(null);
   const [loadingProviders, setLoadingProviders] = useState<boolean>(true);
+  const [providerLoadError, setProviderLoadError] = useState<boolean>(false);
   const [testingProvider, setTestingProvider] = useState<ProviderKey | null>(null);
+  const [configuringProvider, setConfiguringProvider] = useState<ProviderKey | null>(null);
+  const [providerMutationPending, setProviderMutationPending] = useState<boolean>(false);
+  const canManageAIProviders = showAIProviderSettings
+    && authMethod !== 'lti'
+    && (user?.role === 'admin' || user?.role === 'super_admin');
 
   // Profile state
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -223,13 +241,11 @@ export default function Settings(): React.ReactElement {
   };
 
 
-  const fetchProviders = useCallback(async (): Promise<void> => {
-    try {
-      setLoadingProviders(true);
-      const data = await llmProvidersApi.listProviders();
+  const applyProviderState = useCallback((data: LLMProvidersListResponse): void => {
       const providerRecord: Record<string, Provider> = {};
-      for (const p of data.providers || []) {
+      for (const p of data.providers) {
         providerRecord[p.name] = {
+          configured: p.configured,
           is_available: p.is_available,
           text_model: p.text_model,
           code_model: p.code_model,
@@ -237,32 +253,130 @@ export default function Settings(): React.ReactElement {
         };
       }
       setProviders(providerRecord);
+      setProviderConfigRevision(data.config_revision);
       setPrimaryProvider(data.primary_provider);
       setFallbackProvider(data.fallback_provider);
+  }, []);
+
+  const recoverProviderConflict = useCallback((error: unknown, focusId: string): boolean => {
+    const current = normalizeProviderRevisionConflict(error);
+    if (!current) {
+      return false;
+    }
+    applyProviderState(current);
+    showToast('Provider settings changed elsewhere. The latest settings are now shown.', 'warning');
+    window.requestAnimationFrame(() => document.getElementById(focusId)?.focus());
+    return true;
+  }, [applyProviderState, showToast]);
+
+  const fetchProviders = useCallback(async (): Promise<void> => {
+    try {
+      setLoadingProviders(true);
+      setProviderLoadError(false);
+      applyProviderState(await llmProvidersApi.listProviders());
     } catch (error) {
       console.error('Failed to fetch providers:', error);
+      setProviders({});
+      setProviderConfigRevision(null);
+      setPrimaryProvider(null);
+      setFallbackProvider(null);
+      setProviderLoadError(true);
       showToast('Failed to load LLM providers', 'error');
     } finally {
       setLoadingProviders(false);
     }
-  }, [showToast]);
+  }, [applyProviderState, showToast]);
 
   useEffect(() => {
-    if (showAIProviderSettings) {
+    if (canManageAIProviders) {
       fetchProviders();
     } else {
       setLoadingProviders(false);
     }
-  }, [showAIProviderSettings, fetchProviders]);
+  }, [canManageAIProviders, fetchProviders]);
 
   const handleSetPrimary = async (providerKey: ProviderKey): Promise<void> => {
+    if (providerConfigRevision === null) {
+      showToast('Load provider settings before changing them', 'error');
+      return;
+    }
     try {
-      await llmProvidersApi.setPrimaryProvider(providerKey, false);
-      setPrimaryProvider(providerKey);
-      showToast(`Set ${providerKey} as primary provider`, 'success');
+      setProviderMutationPending(true);
+      const result = await llmProvidersApi.updateSelection(
+        providerConfigRevision,
+        providerKey,
+        fallbackProvider === providerKey ? null : fallbackProvider,
+      );
+      setProviderConfigRevision(result.config_revision);
+      setPrimaryProvider(result.primary_provider);
+      setFallbackProvider(result.fallback_provider);
+      showToast(`${providerKey} is now the primary provider`, 'success');
     } catch (error) {
       console.error('Failed to set primary provider:', error);
-      showToast('Failed to set primary provider', 'error');
+      if (!recoverProviderConflict(error, `provider-${providerKey}-row`)) {
+        showToast(providerErrorMessage(error, 'Failed to set primary provider'), 'error');
+      }
+    } finally {
+      setProviderMutationPending(false);
+    }
+  };
+
+  const handleConfigureProvider = async (
+    providerKey: ProviderKey,
+    apiKey?: string,
+  ): Promise<void> => {
+    if (providerConfigRevision === null) {
+      showToast('Load provider settings before changing them', 'error');
+      return;
+    }
+    try {
+      setProviderMutationPending(true);
+      setConfiguringProvider(providerKey);
+      const result = await llmProvidersApi.configureProvider(
+        providerKey,
+        providerConfigRevision,
+        apiKey ? { apiKey } : {},
+      );
+      applyProviderState(result);
+      showToast(`${providerKey} configuration saved`, 'success');
+    } catch (error) {
+      const focusId = providerKey === 'ollama'
+        ? `provider-${providerKey}-row`
+        : `provider-${providerKey}-api-key`;
+      if (!recoverProviderConflict(error, focusId)) {
+        showToast(providerErrorMessage(error, 'Failed to configure provider'), 'error');
+      }
+    } finally {
+      setConfiguringProvider(null);
+      setProviderMutationPending(false);
+    }
+  };
+
+  const handleSetFallback = async (providerKey: ProviderKey | null): Promise<void> => {
+    if (providerConfigRevision === null) {
+      showToast('Load provider settings before changing them', 'error');
+      return;
+    }
+    const focusProvider = providerKey ?? fallbackProvider;
+    try {
+      setProviderMutationPending(true);
+      const result = await llmProvidersApi.updateSelection(
+        providerConfigRevision,
+        primaryProvider,
+        providerKey,
+      );
+      applyProviderState(result);
+      showToast(
+        providerKey ? `${providerKey} is now the fallback provider` : 'Fallback provider cleared',
+        'success',
+      );
+    } catch (error) {
+      const focusId = focusProvider ? `provider-${focusProvider}-row` : 'ai-provider-settings';
+      if (!recoverProviderConflict(error, focusId)) {
+        showToast(providerErrorMessage(error, 'Failed to set fallback provider'), 'error');
+      }
+    } finally {
+      setProviderMutationPending(false);
     }
   };
 
@@ -277,8 +391,7 @@ export default function Settings(): React.ReactElement {
       }
     } catch (error) {
       console.error('Failed to test provider:', error);
-      const err = error as { response?: { data?: { detail?: string } }; message?: string };
-      showToast(`Test failed: ${err.response?.data?.detail || err.message}`, 'error');
+      showToast(`Test failed: ${providerErrorMessage(error, 'Provider test failed')}`, 'error');
     } finally {
       setTestingProvider(null);
     }
@@ -597,14 +710,21 @@ export default function Settings(): React.ReactElement {
 
         {/* AI Provider Settings */}
         <AIProvidersCard
-          showAIProviderSettings={showAIProviderSettings}
+          showAIProviderSettings={canManageAIProviders}
           providers={providers}
           primaryProvider={primaryProvider}
           fallbackProvider={fallbackProvider}
           loadingProviders={loadingProviders}
+          providerStateReady={providerConfigRevision !== null}
+          providerLoadError={providerLoadError}
           testingProvider={testingProvider}
+          configuringProvider={configuringProvider}
+          providerMutationPending={providerMutationPending}
           onTestProvider={handleTestProvider}
           onSetPrimary={handleSetPrimary}
+          onSetFallback={handleSetFallback}
+          onConfigureProvider={handleConfigureProvider}
+          onRetry={fetchProviders}
         />
 
         {/* Account Actions */}

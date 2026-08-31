@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "repeat_count": 3,
+  "models": [
+    {
+      "lane": "text",
+      "model": "gemma3:4b",
+      "cases": [
+        {
+          "id": "missing-alt-explanation",
+          "kind": "text",
+          "fixture": "tests/fixtures/html/missing_alt_text.html"
+        }
+      ]
+    },
+    {
+      "lane": "code",
+      "model": "qwen2.5-coder:7b",
+      "cases": [
+        {
+          "id": "form-label-repair",
+          "kind": "code",
+          "fixture": "tests/fixtures/html/form_issues.html"
+        }
+      ]
+    },
+    {
+      "lane": "vision",
+      "model": "qwen2.5vl:3b",
+      "cases": [
+        {
+          "id": "quarterly-revenue-chart",
+          "kind": "chart",
+          "fixture": "tests/fixtures/sample_chart.png"
+        },
+        {
+          "id": "scanned-syllabus-page",
+          "kind": "scanned_document",
+          "fixture": "tests/fixtures/pdfs/simple_syllabus.pdf",
+          "page": 1,
+          "render_dpi": 144
+        }
+      ]
+    },
+    {
+      "lane": "embeddings",
+      "model": "nomic-embed-text:latest",
+      "cases": [
+        {
+          "id": "wcag-retrieval-ranking",
+          "kind": "embeddings",
+          "texts": {
+            "anchor": "Images must have text alternatives that serve the equivalent purpose.",
+            "identical": "Images must have text alternatives that serve the equivalent purpose.",
+            "related": "Provide meaningful alternative text for informative images.",
+            "unrelated": "Keyboard focus must remain visible when controls receive focus."
+          }
+        }
+      ]
+    }
+  ]
+}

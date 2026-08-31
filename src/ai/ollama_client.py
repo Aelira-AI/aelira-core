@@ -1,24 +1,9 @@
-"""Ollama client for accessibility analysis using open-source LLMs.
+"""Legacy Ollama classifier/coder client for accessibility analysis.
 
-Model Selection (Updated January 2026):
-
-Classification Benchmarks:
-- qwen2.5-coder:1.5b: 60% accuracy, 4.2s, 28.6 tok/s - FAST (current default)
-- qwen3:4b-instruct: 72% accuracy, 25.7s, 14.2 tok/s - MORE ACCURATE (6x slower)
-
-Code Generation Benchmarks:
-- qwen2.5-coder:3b: 100% accuracy!, 3.1s, 6.6 tok/s - BEST (current default)
-- qwen3:4b-instruct: 86% accuracy, 2.8s, 6.4 tok/s - faster but less accurate
-
-Vision/Alt Text (Updated Jan 2026):
-- minicpm-v:latest: 54% accuracy, 39s, 5GB - RECOMMENDED (5x better than moondream)
-- llava-llama3: 49% accuracy, 52s, 5.2GB - Alternative
-- moondream:latest: 10% accuracy - REMOVED (misidentifies basic images)
-
-Memory Requirements:
-- Minimal: qwen2.5-coder:1.5b only (~1GB) - for 8GB RAM systems
-- Recommended: 1.5b + 3b combo (~3GB) - for 16GB+ RAM systems
-- Quality: qwen3:4b-instruct (~3GB) - for higher accuracy on classification
+These profiles remain configurable for API compatibility. They are not part of
+the release's fixture-evaluated four-lane support matrix; see
+``docs/deployment/local-ai-models.md`` for the supported provider defaults and
+the reproducible evidence boundary.
 
 IMPORTANT - Qwen3 Thinking Mode:
 Base Qwen3 models (qwen3:4b, qwen3:8b) output to a separate 'thinking' field,
@@ -54,39 +39,32 @@ INSTRUCT_VARIANTS = {
     "qwen3:14b": "qwen3:14b-instruct",
 }
 
-# Model configurations based on January 2026 benchmarks
-# These can be overridden via environment variables for different hardware
+# Legacy compatibility profiles. These are configurable, not support claims.
 MODEL_CONFIGS = {
-    # For systems with limited RAM (8-16GB) - prioritize speed
     "minimal": {
         "classifier": "qwen2.5-coder:1.5b",
         "coder": "qwen2.5-coder:1.5b",
-        "description": "Single 1.5B model for all tasks (~1GB RAM)",
+        "description": "Unevaluated compatibility profile using one smaller model",
     },
-    # Recommended for most systems (16-32GB) - balanced speed/accuracy
     "recommended": {
-        "classifier": "qwen2.5-coder:1.5b",  # Fast classification (4.2s, 60% accuracy)
-        "coder": "qwen2.5-coder:3b",  # 100% code generation accuracy!
-        "description": "Optimized for speed and accuracy (~3GB RAM)",
+        "classifier": "qwen2.5-coder:1.5b",
+        "coder": "qwen2.5-coder:3b",
+        "description": "Unevaluated legacy two-model compatibility profile",
     },
-    # For higher-end systems (32GB+) - maximum accuracy
     "performance": {
         "classifier": "qwen2.5-coder:3b",
-        "coder": "qwen2.5-coder:3b",  # 100% code generation accuracy
-        "description": "Both tasks use 3B model (~2GB RAM, slower but more accurate)",
+        "coder": "qwen2.5-coder:3b",
+        "description": "Unevaluated compatibility profile using one 3B model",
     },
-    # Quality profile - uses Qwen3 for higher classification accuracy
-    # Trade-off: 6x slower classification (25s vs 4s) but +12% accuracy
     "quality": {
-        "classifier": "qwen3:4b-instruct",  # 72% accuracy, 25.7s (vs 60% accuracy, 4.2s)
-        "coder": "qwen2.5-coder:3b",  # Still use 2.5 Coder for code gen (100% vs 86%)
-        "description": "Higher classification accuracy with Qwen3 (~3GB RAM, slower)",
+        "classifier": "qwen3:4b-instruct",
+        "coder": "qwen2.5-coder:3b",
+        "description": "Unevaluated compatibility profile using Qwen3 classification",
     },
-    # Legacy configuration (not recommended - 7B is too slow for CPU)
     "legacy": {
         "classifier": "llama3.2:3b",
         "coder": "qwen2.5-coder:7b",
-        "description": "Original config - 7B model is too slow for CPU inference",
+        "description": "Original unevaluated compatibility profile",
     },
 }
 
@@ -113,11 +91,7 @@ def get_model_config() -> Dict[str, str]:
 
 
 class OllamaClient:
-    """Client for interacting with Ollama models for accessibility analysis.
-
-    Optimized for CPU inference on modest hardware (4 cores, 8-32GB RAM).
-    Uses benchmarked model selections for best speed/accuracy tradeoff.
-    """
+    """Compatibility client for the legacy classifier/coder workflow."""
 
     def __init__(
         self,
@@ -769,7 +743,7 @@ Use business language, not technical jargon. Focus on lawsuit risk."""
     def get_recommended_models_for_hardware(
         ram_gb: int, has_gpu: bool = False
     ) -> Dict[str, Any]:
-        """Get recommended model configuration based on hardware specs.
+        """Return a legacy compatibility profile without a support claim.
 
         Args:
             ram_gb: Available RAM in gigabytes
@@ -779,27 +753,30 @@ Use business language, not technical jargon. Focus on lawsuit risk."""
             Dict with recommended profile and models
         """
         if has_gpu:
-            # GPU users can handle larger models
             return {
                 "profile": "performance",
                 "models": MODEL_CONFIGS["performance"],
-                "reason": "GPU available - using larger models for maximum accuracy",
+                "support_status": "api_compatible_unverified",
+                "reason": "GPU compatibility profile; run the release evaluator before use",
             }
         elif ram_gb >= 32:
             return {
                 "profile": "performance",
                 "models": MODEL_CONFIGS["performance"],
-                "reason": "32GB+ RAM - using 3B model for all tasks",
+                "support_status": "api_compatible_unverified",
+                "reason": "32 GiB compatibility profile; no release support claim",
             }
         elif ram_gb >= 16:
             return {
                 "profile": "recommended",
                 "models": MODEL_CONFIGS["recommended"],
-                "reason": "16-32GB RAM - using 1.5B for classification, 3B for code fixes",
+                "support_status": "api_compatible_unverified",
+                "reason": "16 GiB compatibility profile; no release support claim",
             }
         else:
             return {
                 "profile": "minimal",
                 "models": MODEL_CONFIGS["minimal"],
-                "reason": "Under 16GB RAM - using single 1.5B model for all tasks",
+                "support_status": "api_compatible_unverified",
+                "reason": "Smaller compatibility profile; no release support claim",
             }

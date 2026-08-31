@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ...db.database import get_db_dependency
 from ...db.models import APIKey
 from ...education.image_alt_text import ImageAltTextGenerator
+from ...ai.workspace_provider_runtime import workspace_provider_runtime
 from ...middleware.quota import increment_image_usage
 from ._shared import (
     check_image_analysis_quota,
@@ -21,6 +22,10 @@ from ._shared import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _workspace_image_generator(workspace_id: str) -> ImageAltTextGenerator:
+    return ImageAltTextGenerator(lms_client=workspace_provider_runtime(workspace_id))
 
 
 @router.post("/image/alt-text")
@@ -86,7 +91,7 @@ async def generate_image_alt_text(
         logger.info(f"Generating alt text for: {file.filename} (user={user_id})")
 
         # Generate alt text
-        generator = ImageAltTextGenerator(allow_legacy_transport=True)
+        generator = _workspace_image_generator(department_id)
         result = await generator.generate_alt_text(
             image_path=tmp_path,
             context=context,
@@ -190,7 +195,7 @@ async def batch_generate_alt_text(
                 temp_files.append({"path": tmp.name, "filename": file.filename})
 
         # Process batch
-        generator = ImageAltTextGenerator(allow_legacy_transport=True)
+        generator = _workspace_image_generator(department_id)
         image_paths = [tf["path"] for tf in temp_files]
 
         batch_result = await generator.batch_generate_alt_text(
@@ -304,7 +309,7 @@ async def validate_image_alt_text(
         logger.info(f"Validating alt text for: {file.filename} (user={user_id})")
 
         # Validate alt text
-        generator = ImageAltTextGenerator(allow_legacy_transport=True)
+        generator = _workspace_image_generator(department_id)
         result = await generator.validate_alt_text(
             image_path=tmp_path, existing_alt_text=existing_alt_text, context=context
         )
@@ -415,7 +420,7 @@ async def score_alt_text_quality(
         logger.info(f"Scoring alt text quality for: {file.filename} (user={user_id})")
 
         # Score alt text quality
-        generator = ImageAltTextGenerator(allow_legacy_transport=True)
+        generator = _workspace_image_generator(department_id)
         result = await generator.score_alt_text_quality(
             image_path=tmp_path, alt_text=alt_text, context=context
         )
@@ -576,7 +581,7 @@ async def detect_image_type(
         logger.info(f"Detecting image type for: {file.filename} (user={user_id})")
 
         # Detect image type
-        generator = ImageAltTextGenerator(allow_legacy_transport=True)
+        generator = _workspace_image_generator(department_id)
         result = await generator.detect_image_type(image_path=tmp_path, context=context)
 
         processing_time = int((time.time() - start_time) * 1000)
@@ -702,7 +707,7 @@ async def describe_chart_or_graph(
         )
 
         # Generate chart description
-        generator = ImageAltTextGenerator(allow_legacy_transport=True)
+        generator = _workspace_image_generator(department_id)
         result = await generator.describe_chart_or_graph(
             image_path=tmp_path, context=context, detail_level=detail_level
         )
@@ -811,7 +816,7 @@ async def analyze_image_comprehensive(
         logger.info(f"Comprehensive image analysis: {file.filename} (user={user_id})")
 
         # Perform comprehensive analysis
-        generator = ImageAltTextGenerator(allow_legacy_transport=True)
+        generator = _workspace_image_generator(department_id)
         result = await generator.analyze_image_comprehensive(
             image_path=tmp_path, context=context, existing_alt_text=existing_alt_text
         )

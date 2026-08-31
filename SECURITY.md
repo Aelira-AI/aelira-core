@@ -6,8 +6,8 @@ We release patches for security vulnerabilities in the following versions:
 
 | Version  | Supported          |
 | -------- | ------------------ |
-| 0.9.6    | :white_check_mark: |
-| <= 0.9.5 | :x:                |
+| 0.9.7    | :white_check_mark: |
+| <= 0.9.6 | :x:                |
 
 As a pre-1.0 project, only the current security patch is supported. Earlier 0.x releases are not maintained.
 
@@ -75,7 +75,7 @@ If you self-host Aelira, please ensure:
 - **AI data flows are your choice** - With the Ollama provider, all AI inference runs locally and documents never leave your infrastructure. With a cloud provider, document content is sent to that provider's API - review their data terms before enabling it on sensitive content
 - **No user tracking** - We don't collect analytics on self-hosted instances
 - **Minimal data storage** - Scan results are stored only for your access
-- **No credential storage** - We never store your passwords (bcrypt hashes only)
+- **Credential handling** - Passwords are never stored; password verifiers and API keys are hashed where applicable, while OAuth tokens and workspace AI-provider credentials are encrypted at rest
 
 #### Authentication Logging
 
@@ -89,14 +89,14 @@ This protection is prospective: upgrading cannot rewrite logs emitted by an olde
 
 ### Document Processing
 
-- **PDF processing** - Uses Tesseract OCR; ensure PDFs are from trusted sources. On `main`, remediation keeps the original immutable, refuses signed/XFA/indeterminate and unsafe OCR cases, sanitizes PDF-derived accessible HTML and embedded images, and publishes managed PDFs from a private exact-byte output claim rather than reopening a mutable pathname.
-- **Release boundary** - This PDF hardening is present on `main` after v0.9.5, is not part of v0.9.5, and may enter a future release only after release gates. Its merge created no release or deployment.
+- **PDF processing** - Uses Tesseract OCR; ensure PDFs are from trusted sources. In v0.9.7, remediation keeps the original immutable, refuses signed/XFA/indeterminate and unsafe OCR cases, sanitizes PDF-derived accessible HTML and embedded images, and publishes managed PDFs from a private exact-byte output claim rather than reopening a mutable pathname.
+- **General STEM processing** - Visual recognition is source-bound, specialist-specific, independently verified, reopened after serialization, and held for exact-candidate human approval. Unsupported, ambiguous, mismatched, or stale evidence fails closed.
 - **PowerPoint processing** - Uses python-pptx; macro execution is disabled
 - **File uploads** - Size limits enforced; validate file types before processing
 
 ### AI Models
 
-- **Local execution available** - AI inference can run fully locally via the Ollama provider; cloud providers (Gemini) are opt-in per deployment
+- **Local execution available** - AI inference can run fully locally via Ollama; Gemini, OpenAI, Anthropic, xAI, and compatible remote endpoints are opt-in per deployment
 - **Model integrity** - Download models only from official Ollama sources
 - **Prompt injection** - Input sanitization applied to AI prompts
 

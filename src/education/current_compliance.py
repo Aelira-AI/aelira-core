@@ -134,10 +134,24 @@ class CurrentDocumentState:
     source_kind: str
     scan: Any | None
     result: Any | None
+    latest_attempt: Any | None = None
+    stale: bool = False
 
     @property
     def verified(self) -> bool:
         return _is_verified(self.scan, self.result)
+
+    @property
+    def scanned(self) -> bool:
+        return self.latest_attempt is not None
+
+    @property
+    def failed(self) -> bool:
+        return bool(
+            self.latest_attempt is not None
+            and _enum_value(getattr(self.latest_attempt, "status", ""))
+            == ScanStatus.FAILED.value.lower()
+        )
 
 
 @dataclass(frozen=True)
@@ -166,6 +180,18 @@ class CurrentComplianceProjection:
     @property
     def unverified_document_count(self) -> int:
         return self.enrolled_document_count - self.verified_document_count
+
+    @property
+    def scanned_document_count(self) -> int:
+        return sum(document.scanned for document in self.current_documents)
+
+    @property
+    def stale_document_count(self) -> int:
+        return sum(document.stale for document in self.current_documents)
+
+    @property
+    def failed_document_count(self) -> int:
+        return sum(document.failed for document in self.current_documents)
 
     @property
     def average_compliance_score(self) -> float | None:
@@ -262,6 +288,17 @@ def project_current_documents(
             managed_scan_ids.add(str(last_scan_id))
         scan = scans_by_id.get(str(last_scan_id)) if last_scan_id else None
         result = results_by_scan.get(str(last_scan_id)) if last_scan_id else None
+        cloud_attempts = [
+            candidate
+            for candidate in scans
+            if str(getattr(candidate, "document_id", "")) == str(cloud_file.id)
+            and _enum_value(getattr(candidate, "document_source", "")) == "cloud_file"
+        ]
+        if scan is not None and scan not in cloud_attempts:
+            cloud_attempts.append(scan)
+        latest_attempt = (
+            max(cloud_attempts, key=_scan_order) if cloud_attempts else None
+        )
         if not _is_verified(scan, result):
             scan = None
             result = None
@@ -274,6 +311,8 @@ def project_current_documents(
                 source_kind="cloud_file",
                 scan=scan,
                 result=result,
+                latest_attempt=latest_attempt,
+                stale=bool(getattr(cloud_file, "needs_rescan", False)),
             )
         )
 
@@ -301,6 +340,7 @@ def project_current_documents(
                 source_kind=source_kind,
                 scan=scan,
                 result=result,
+                latest_attempt=max(attempts, key=_scan_order),
             )
         )
 

@@ -14,6 +14,7 @@ from ...education.pdf_processor import PDFProcessor
 from ...education.pptx_processor import PowerPointProcessor
 from ...education.docx_processor import DocxProcessor
 from ...education.xlsx_processor import XlsxProcessor
+from ...education.cvd_metrics import serialize_cvd_analysis
 from ...education.latex_processor import LaTeXProcessor
 from ...middleware.quota import increment_usage, require_feature
 from ._shared import (
@@ -36,6 +37,8 @@ def process_pdf_background(
     scan_id: str,
     generate_alt_text: bool,
     enhance_descriptions: bool,
+    *,
+    workspace_id: str | None = None,
 ):
     """Background task to process PDF asynchronously - TRUE REAL-TIME PROGRESS!"""
     from ...db.database import SessionLocal
@@ -54,6 +57,14 @@ def process_pdf_background(
         if not scan:
             logger.error(f"[BACKGROUND] Scan {scan_id} not found!")
             return
+        resolved_workspace_id = workspace_id or scan.department_id
+        if resolved_workspace_id != scan.department_id:
+            raise ValueError("workspace_scope_invalid")
+        provider_runtime = None
+        if generate_alt_text or enhance_descriptions:
+            from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+            provider_runtime = workspace_provider_runtime(resolved_workspace_id)
 
         # Define progress callback
         def update_progress(current: int, total: int, message: str):
@@ -93,6 +104,7 @@ def process_pdf_background(
             enhance_descriptions=enhance_descriptions,
             db_session=None,  # PDFProcessor should create its own sessions when needed
             progress_callback=update_progress,
+            llm_client=provider_runtime,
         )
         result = processor.process_pdf(file_path, original_filename=filename)
 
@@ -122,6 +134,7 @@ def process_pdf_background(
             ),
             low_issues=len([i for i in result.issues if i.get("severity") == "low"]),
             issues=result.issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=result.structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,
@@ -183,7 +196,7 @@ async def scan_pdf(
 
      OPTIONAL: AI-powered alt text generation for images
     - Set generate_alt_text=true to automatically generate alt text for embedded images
-    - Uses llava:7b vision model for educational context descriptions
+    - Uses the explicitly configured vision lane for educational descriptions
     - Extracts images from PDF using PyMuPDF
     - Significantly increases processing time (~10s per image)
     """
@@ -297,6 +310,11 @@ def process_pptx_background(
         if not scan:
             logger.error(f"[BACKGROUND] Scan {scan_id} not found!")
             return
+        if scan.department_id != department_id:
+            raise ValueError("workspace_scope_invalid")
+        from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+        provider_runtime = workspace_provider_runtime(department_id)
 
         # Define progress callback
         def update_progress(current: int, total: int, message: str):
@@ -330,6 +348,7 @@ def process_pptx_background(
             generate_alt_text=generate_alt_text,
             validate_alt_text=validate_alt_text,
             progress_callback=update_progress,
+            llm_client=provider_runtime,
         )
         result = processor.process_pptx(file_path)
 
@@ -436,6 +455,7 @@ def process_pptx_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
@@ -490,7 +510,7 @@ async def scan_powerpoint(
 
      NEW: Optional AI-powered alt text generation
     - Set generate_alt_text=true to automatically generate alt text for images
-    - Uses llava:7b vision model for educational context descriptions
+    - Uses the explicitly configured vision lane for educational descriptions
     - Significantly increases processing time (~10s per image)
 
      NEW: Optional alt text validation
@@ -603,6 +623,11 @@ def process_docx_background(
         if not scan:
             logger.error(f"[BACKGROUND] Scan {scan_id} not found!")
             return
+        if scan.department_id != department_id:
+            raise ValueError("workspace_scope_invalid")
+        from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+        provider_runtime = workspace_provider_runtime(department_id)
 
         # Define progress callback
         def update_progress(current: int, total: int, message: str):
@@ -636,6 +661,7 @@ def process_docx_background(
             generate_alt_text=generate_alt_text,
             validate_alt_text=validate_alt_text,
             progress_callback=update_progress,
+            llm_client=provider_runtime,
         )
         result = processor.process_docx(file_path, original_filename=filename)
 
@@ -810,6 +836,7 @@ def process_docx_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
@@ -983,6 +1010,11 @@ def process_xlsx_background(
         if not scan:
             logger.error(f"[BACKGROUND] Scan {scan_id} not found!")
             return
+        if scan.department_id != department_id:
+            raise ValueError("workspace_scope_invalid")
+        from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+        provider_runtime = workspace_provider_runtime(department_id)
 
         # Define progress callback
         def update_progress(current: int, total: int, message: str):
@@ -1016,6 +1048,7 @@ def process_xlsx_background(
             generate_chart_descriptions=generate_chart_descriptions,
             generate_alt_text=generate_alt_text,
             progress_callback=update_progress,
+            llm_client=provider_runtime,
         )
         result = processor.process_xlsx(file_path, original_filename=filename)
 
@@ -1213,6 +1246,7 @@ def process_xlsx_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
@@ -1389,6 +1423,13 @@ def process_latex_background(
         if not scan:
             logger.error(f"[BACKGROUND] Scan {scan_id} not found!")
             return
+        if scan.department_id != department_id:
+            raise ValueError("workspace_scope_invalid")
+        provider_runtime = None
+        if use_ollama:
+            from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+            provider_runtime = workspace_provider_runtime(department_id)
 
         # Define progress callback
         def update_progress(current: int, total: int, message: str):
@@ -1421,6 +1462,7 @@ def process_latex_background(
         processor = LaTeXProcessor(
             use_ai=use_ollama,  # use_ollama maps to use_ai parameter
             progress_callback=update_progress,
+            llm_client=provider_runtime,
         )
         result = processor.process_document(file_path)
 
@@ -1582,6 +1624,8 @@ def process_latex_pdf_background(
     use_ollama: bool,
     user_id: str,
     department_id: str,
+    *,
+    workspace_id: str | None = None,
 ):
     """
     Background task to process PDF with LaTeX-aware mode.
@@ -1611,6 +1655,17 @@ def process_latex_pdf_background(
         if not scan:
             logger.error(f"[BACKGROUND] Scan {scan_id} not found!")
             return
+        resolved_workspace_id = workspace_id or department_id
+        if (
+            resolved_workspace_id != department_id
+            or scan.department_id != department_id
+        ):
+            raise ValueError("workspace_scope_invalid")
+        provider_runtime = None
+        if use_ollama:
+            from ...ai.workspace_provider_runtime import workspace_provider_runtime
+
+            provider_runtime = workspace_provider_runtime(resolved_workspace_id)
 
         # Update progress
         scan.progress = 10
@@ -1651,6 +1706,7 @@ def process_latex_pdf_background(
             enhance_descriptions=use_ollama,
             progress_callback=update_progress,
             latex_aware=True,  # Enable enhanced math/equation detection
+            llm_client=provider_runtime,
         )
         result = processor.process_pdf(file_path, filename)
 
@@ -1709,6 +1765,7 @@ def process_latex_pdf_background(
             medium_issues=medium,
             low_issues=low,
             issues=all_issues,
+            cvd_analysis=serialize_cvd_analysis(result),
             structure=structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,
