@@ -1202,7 +1202,7 @@ def test_ci_runs_kernel_enforced_worker_saturation_gate() -> None:
     settings = Settings(
         database_url=_PROBE_DATABASE_URL,
         env="test",
-        jwt_secret="kernel-quota-test-secret-at-least-32-bytes",
+        jwt_secret="example-kernel-quota-test-secret-at-least-32-bytes",
     )
     assert settings.database_url == _PROBE_DATABASE_URL
     probe_url = make_url(_PROBE_DATABASE_URL)
