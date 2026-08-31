@@ -87,6 +87,7 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
     openssl_upgrade = "RUN apk upgrade --no-cache libcrypto3 libssl3"
     runtime = dashboard.split("# Production stage", 1)[1]
     assert runtime.count(openssl_upgrade) == 1
+    assert "&& rm -f /var/log/apk.log" in runtime
     assert runtime.index(openssl_upgrade) < runtime.index("COPY --from=builder")
 
 
