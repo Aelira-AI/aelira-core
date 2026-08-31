@@ -13,7 +13,7 @@ import asyncio
 from typing import Dict, Any, Optional, List
 
 from .base import LLMProvider, LLMResponse, ProviderCapability
-from .types import ProviderConfig, ProviderType
+from .types import OLLAMA_EVALUATED_MODELS, ProviderConfig, ProviderType
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +44,12 @@ class OllamaProvider(LLMProvider):
 
         self.config = config
         self.host = config.host or "http://localhost:11434"
-        self.text_model = config.text_model or "llama3.2:3b"
-        self.code_model = config.code_model or "qwen2.5-coder:3b"
-        self.vision_model = config.vision_model or "llava:7b"
-        self.embedding_model = config.embedding_model or "nomic-embed-text"
+        self.text_model = config.text_model or OLLAMA_EVALUATED_MODELS["text"]
+        self.code_model = config.code_model or OLLAMA_EVALUATED_MODELS["code"]
+        self.vision_model = config.vision_model or OLLAMA_EVALUATED_MODELS["vision"]
+        self.embedding_model = (
+            config.embedding_model or OLLAMA_EVALUATED_MODELS["embeddings"]
+        )
         self.timeout = config.timeout
 
         self._available_models: List[str] = []
@@ -454,37 +456,17 @@ class OllamaProvider(LLMProvider):
     def get_recommended_models_for_hardware(
         ram_gb: int, has_gpu: bool = False
     ) -> Dict[str, Any]:
-        """Get recommended model configuration based on hardware specs."""
-        # Updated Jan 2026: minicpm-v (54% accuracy) replaces moondream (10% accuracy)
-        if has_gpu:
-            return {
-                "profile": "performance",
-                "text_model": "llama3.2:3b",
-                "code_model": "qwen2.5-coder:3b",
-                "vision_model": "minicpm-v:latest",  # Best accuracy (54%)
-                "reason": "GPU available - using larger models for maximum accuracy",
-            }
-        elif ram_gb >= 32:
-            return {
-                "profile": "performance",
-                "text_model": "llama3.2:3b",
-                "code_model": "qwen2.5-coder:3b",
-                "vision_model": "minicpm-v:latest",  # 54% accuracy, 5GB
-                "reason": "32GB+ RAM - using 3B model for all tasks",
-            }
-        elif ram_gb >= 16:
-            return {
-                "profile": "recommended",
-                "text_model": "llama3.2:3b",
-                "code_model": "qwen2.5-coder:1.5b",
-                "vision_model": "minicpm-v:latest",  # 54% accuracy, fits in 16GB
-                "reason": "16-32GB RAM - balanced speed/accuracy",
-            }
-        else:
-            return {
-                "profile": "minimal",
-                "text_model": "llama3.2:1b",
-                "code_model": "qwen2.5-coder:1.5b",
-                "vision_model": "minicpm-v:latest",  # Still use minicpm-v for accuracy
-                "reason": "Under 16GB RAM - using smaller models",
-            }
+        """Return the evaluated matrix without inventing hardware support claims."""
+        return {
+            "profile": "evaluated",
+            "text_model": OLLAMA_EVALUATED_MODELS["text"],
+            "code_model": OLLAMA_EVALUATED_MODELS["code"],
+            "vision_model": OLLAMA_EVALUATED_MODELS["vision"],
+            "embedding_model": OLLAMA_EVALUATED_MODELS["embeddings"],
+            "hardware_verified": False,
+            "reason": (
+                f"This is the fixture-evaluated model matrix, not a {ram_gb} GiB "
+                f"{'GPU' if has_gpu else 'CPU-only'} hardware claim. Run the "
+                "local-model evaluator on the target host before claiming support."
+            ),
+        }

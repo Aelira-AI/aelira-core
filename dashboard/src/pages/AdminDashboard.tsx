@@ -19,6 +19,7 @@ import { unwrapResponse } from '../utils/apiUnwrap';
 import { useAuth } from '../context/auth-context';
 import { useToast } from '../context/toast-context';
 import { LMSAIPolicyCard } from '../components/admin/LMSAIPolicyCard';
+import { InstitutionComplianceCard } from '../components/admin/InstitutionComplianceCard';
 
 // Type definitions
 type UserRole = 'faculty' | 'admin' | 'super_admin';
@@ -303,6 +304,8 @@ export function AdminDashboard(): React.ReactElement {
             <div className="text-sm text-tertiary mt-1">Awaiting acceptance</div>
           </div>
         </div>
+
+        <InstitutionComplianceCard />
 
         {/* Export Actions */}
         <div className="card mb-8">

@@ -98,6 +98,32 @@ export interface DeadlineProjectionResponse {
   projection: DeadlineProjection;
 }
 
+export interface DocumentCoverage {
+  enrolled: number;
+  scanned: number;
+  verified: number;
+  stale: number;
+  failed: number;
+  total_coverage_percent: number;
+}
+
+export interface DepartmentComplianceRollup {
+  department_id: string;
+  department_name: string;
+  document_weighted_score: number | null;
+  coverage: DocumentCoverage;
+}
+
+export interface InstitutionComplianceRollup {
+  institution_name: string;
+  document_weighted_score: number | null;
+  document_weighted_score_label: string;
+  flat_department_mean: number | null;
+  flat_department_mean_label: string;
+  coverage: DocumentCoverage;
+  departments: DepartmentComplianceRollup[];
+}
+
 export interface IssueStats {
   total: number;
   by_status: Record<string, number>;
@@ -433,6 +459,17 @@ export const scansApi = {
   },
 
   // ==================== Analytics & Historical Trending ====================
+
+  /**
+   * Get the authenticated administrator's current institution rollup.
+   * Institution scope is derived server-side from the authenticated department.
+   */
+  getInstitutionCompliance: async (): Promise<InstitutionComplianceRollup> => {
+    const response = await apiClient.get<InstitutionComplianceRollup>(
+      '/analytics/institution'
+    );
+    return response.data;
+  },
 
   /**
    * Get historical trend from snapshots

@@ -1,0 +1,50 @@
+groups:
+  - name: aelira-operational-health
+    interval: 30s
+    rules:
+      - alert: AeliraApiUnavailable
+        expr: up{job="aelira-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Aelira API has been unavailable for two minutes
+          description: Prometheus cannot scrape the Aelira API metrics target.
+          recovery: The alert resolves after the API target remains scrapeable again.
+
+      - alert: AeliraWorkerUnavailable
+        expr: >-
+          aelira_worker_health_collection_success == 1
+          and aelira_worker_live_workers < 1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: No Aelira worker heartbeat is live
+          description: No running or draining worker has reported within the freshness window.
+          recovery: The alert resolves after a worker heartbeat becomes live again.
+
+      - alert: AeliraWorkerExpiredLease
+        expr: >-
+          aelira_worker_health_collection_success == 1
+          and aelira_worker_expired_leases > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Aelira has processing jobs with expired leases
+          description: At least one processing job has no current worker lease.
+          recovery: The alert resolves after recovery clears every expired processing lease.
+
+      - alert: AeliraWorkerStalled
+        expr: >-
+          aelira_worker_health_collection_success == 1
+          and (aelira_worker_stalled_jobs > 0
+          or aelira_worker_health_state{state="stuck_runnable_backlog"} == 1)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Aelira worker processing is stalled
+          description: Processing exceeded its execution bound or a runnable backlog stopped advancing.
+          recovery: The alert resolves after stalled processing and runnable backlog state clear.

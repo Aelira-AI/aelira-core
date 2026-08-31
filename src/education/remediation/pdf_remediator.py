@@ -95,12 +95,15 @@ from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
 from .font_unicode_fixer import FontUnicodeFixer
 from .math_fixer import MathFixer, PendingScannedRegionAssociation
+from .handwritten_equation_verifier import HandwrittenEquationVerificationEvidence
 from .equation_image_source import WorkingEquationRegionOccurrence
 from src.education.math_contracts import CONCRETE_MATH_ISSUE_TYPES
 from src.education.pdf_checks.image_checker import _displayed_image_occurrences
 from src.education.visual_semantic_contract import (
     EmbeddedImageOccurrenceLocator,
     FrozenPageRasterRegionLocator,
+    HandwrittenEquationConsensusEvidenceV1,
+    HandwrittenEquationContract,
     MathMLExpressionV1,
     PrintedEquationContract,
     PrintedEquationRoundtripEvidenceV1,
@@ -211,10 +214,10 @@ def _saved_scanned_occurrence(path: str | Path, pending: Any) -> Dict[str, Any]:
         return matches[0]
 
 
-def _printed_equation_contract(
+def _visual_equation_contract_parts(
     path: str | Path, pending: Any, association: Any
-) -> PrintedEquationContract:
-    """Build a complete contract from bytes that passed reverse verification."""
+) -> tuple[MathMLExpressionV1, Any, Any, str]:
+    """Build shared semantic, locator, and saved evidence from reopened bytes."""
     semantic = MathMLExpressionV1(
         semantic_kind="mathml_expression_v1",
         mathml=str(pending.mathml_string),
@@ -222,10 +225,6 @@ def _printed_equation_contract(
         mathml_sha256=hashlib.sha256(
             str(pending.mathml_string).encode("utf-8")
         ).hexdigest(),
-    )
-    roundtrip = PrintedEquationRoundtripEvidenceV1(
-        evidence_kind="printed_equation_roundtrip_v1",
-        **asdict(pending.verification_evidence),
     )
     saved_file_sha256 = _file_sha256(path)
     alt_text_sha256 = hashlib.sha256(str(pending.alt_text).encode("utf-8")).hexdigest()
@@ -285,6 +284,20 @@ def _printed_equation_contract(
             image_stream_sha256=str(pending.image_stream_sha256),
         )
         normalized_source_sha256 = str(pending.verification_evidence.source_sha256)
+    return semantic, locator, saved, normalized_source_sha256
+
+
+def _printed_equation_contract(
+    path: str | Path, pending: Any, association: Any
+) -> PrintedEquationContract:
+    """Build a printed contract from bytes that passed reverse verification."""
+    semantic, locator, saved, normalized_source_sha256 = (
+        _visual_equation_contract_parts(path, pending, association)
+    )
+    roundtrip = PrintedEquationRoundtripEvidenceV1(
+        evidence_kind="printed_equation_roundtrip_v1",
+        **asdict(pending.verification_evidence),
+    )
 
     specialist_material = {
         "contract_kind": "printed_equation",
@@ -302,6 +315,46 @@ def _printed_equation_contract(
         **contract_material,
         contract_sha256=canonical_sha256(contract_material),
     )
+
+
+def _handwritten_equation_contract(
+    path: str | Path, pending: Any, association: Any
+) -> HandwrittenEquationContract:
+    """Build an HMER contract from bytes that passed reverse verification."""
+    semantic, locator, saved, normalized_source_sha256 = (
+        _visual_equation_contract_parts(path, pending, association)
+    )
+    consensus = HandwrittenEquationConsensusEvidenceV1(
+        evidence_kind="handwritten_equation_consensus_v1",
+        **asdict(pending.verification_evidence),
+    )
+    specialist_material = {
+        "contract_kind": "handwritten_equation",
+        "locator": locator,
+        "semantic_output": semantic,
+        "normalized_source_sha256": normalized_source_sha256,
+    }
+    specialist_sha256 = canonical_sha256(specialist_material)
+    contract_material = {
+        **specialist_material,
+        "verification_evidence": (consensus, saved),
+        "specialist_sha256": specialist_sha256,
+    }
+    return HandwrittenEquationContract(
+        **contract_material,
+        contract_sha256=canonical_sha256(contract_material),
+    )
+
+
+def _visual_equation_contract(
+    path: str | Path, pending: Any, association: Any
+) -> PrintedEquationContract | HandwrittenEquationContract:
+    """Dispatch contract construction from the exact staged verifier evidence."""
+    if isinstance(
+        pending.verification_evidence, HandwrittenEquationVerificationEvidence
+    ):
+        return _handwritten_equation_contract(path, pending, association)
+    return _printed_equation_contract(path, pending, association)
 
 
 _ALLOWED_PYMUPDF_HTML_TAGS = frozenset(
@@ -3062,7 +3115,7 @@ class PdfRemediator(BaseRemediator):
                 ):
                     working_pending = associated_pending_requests[association_index]
                     try:
-                        contract = _printed_equation_contract(
+                        contract = _visual_equation_contract(
                             verification_output_path,
                             working_pending,
                             association,
@@ -3329,7 +3382,9 @@ class PdfRemediator(BaseRemediator):
             issue, staged, association, contract = verified
             if not getattr(association, "success", False):
                 continue
-            if not isinstance(contract, PrintedEquationContract):
+            if not isinstance(
+                contract, (PrintedEquationContract, HandwrittenEquationContract)
+            ):
                 continue
             matching = [
                 manual for manual in remaining_manual if manual.issue_id == issue.id

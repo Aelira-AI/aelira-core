@@ -29,6 +29,7 @@ import hashlib
 import logging
 import os
 import secrets
+import uuid
 from urllib.parse import urlencode
 
 from fastapi.responses import JSONResponse
@@ -804,7 +805,11 @@ def _department_response(department: Department) -> DepartmentResponse:
     )
 
 
-def _new_department_from_request(request: CreateDepartmentRequest) -> Department:
+def _new_department_from_request(
+    request: CreateDepartmentRequest,
+    *,
+    institution_scope_id: str | None = None,
+) -> Department:
     """Build a department while preserving an omitted regulatory profile as NULL."""
 
     profile = DeadlineService.validate_regulatory_profile(
@@ -816,6 +821,7 @@ def _new_department_from_request(request: CreateDepartmentRequest) -> Department
     )
 
     return Department(
+        institution_scope_id=institution_scope_id or str(uuid.uuid4()),
         name=request.name,
         institution=request.institution,
         contact_email=_normalized_email(str(request.contact_email)),
@@ -833,6 +839,40 @@ def _new_department_from_request(request: CreateDepartmentRequest) -> Department
             else None
         ),
     )
+
+
+def _institution_scope_for_new_department(
+    db: Session,
+    request: CreateDepartmentRequest,
+    provisioner: AuthenticatedPrincipal | None,
+) -> str:
+    """Resolve sibling membership without trusting request text as authority."""
+
+    if provisioner is not None:
+        current = (
+            db.query(Department)
+            .filter(Department.id == provisioner.department_id)
+            .first()
+        )
+        if current is not None and _canonical_text(
+            current.institution
+        ) == _canonical_text(request.institution):
+            return str(current.institution_scope_id)
+
+        if provisioner.user_role is UserRole.SUPER_ADMIN:
+            existing_institution = (
+                db.query(Department)
+                .filter(
+                    func.lower(func.trim(Department.institution))
+                    == _canonical_text(request.institution)
+                )
+                .order_by(Department.id.asc())
+                .first()
+            )
+            if existing_institution is not None:
+                return str(existing_institution.institution_scope_id)
+
+    return str(uuid.uuid4())
 
 
 async def _send_admin_handoff_email(
@@ -1215,7 +1255,12 @@ async def create_department(
                 detail="The administrator email is unavailable",
             )
 
-        department = _new_department_from_request(request)
+        department = _new_department_from_request(
+            request,
+            institution_scope_id=_institution_scope_for_new_department(
+                db, request, _provisioner
+            ),
+        )
         db.add(department)
         db.flush()
         db.refresh(department)

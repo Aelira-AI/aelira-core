@@ -159,6 +159,7 @@ class PowerPointProcessingResult(BaseModel):
     ]  # {"contrast_issues": X, "alt_text_issues": Y, "total_issues": Z}
     compliance_score: float  # 0-100
     remediation_suggestions: List[str]
+    cvd_analysis: Optional[List[Dict[str, Any]]] = None
 
     @computed_field
     @property
@@ -283,6 +284,7 @@ class PowerPointProcessor:
         simulate_color_blindness: bool = True,
         detect_images_of_text: bool = False,
         progress_callback: callable = None,
+        llm_client=None,
     ):
         self.wcag_aa_ratio = 4.5  # WCAG 2.1 AA for normal text
         self.wcag_aaa_ratio = 7.0  # WCAG 2.1 AAA for normal text
@@ -305,7 +307,8 @@ class PowerPointProcessor:
                 from .image_alt_text import ImageAltTextGenerator
 
                 self.image_generator = ImageAltTextGenerator(
-                    allow_legacy_transport=True
+                    lms_client=llm_client,
+                    allow_legacy_transport=llm_client is None,
                 )
             except Exception as e:
                 print(
@@ -454,6 +457,14 @@ class PowerPointProcessor:
             summary, total_shapes, total_images
         )
         remediation_suggestions = self._generate_remediation_suggestions(summary)
+        cvd_analysis = None
+        if self.simulate_color_blindness:
+            cvd_analysis = [
+                {"issues": contrast_issue.color_blindness_issues}
+                for slide in slides_issues
+                for contrast_issue in slide.contrast_issues
+                if contrast_issue.color_blindness_issues
+            ]
 
         return PowerPointProcessingResult(
             file_path=file_path,
@@ -465,6 +476,7 @@ class PowerPointProcessor:
             summary=summary,
             compliance_score=compliance_score,
             remediation_suggestions=remediation_suggestions,
+            cvd_analysis=cvd_analysis,
         )
 
     def _get_slide_title(self, slide) -> Optional[str]:

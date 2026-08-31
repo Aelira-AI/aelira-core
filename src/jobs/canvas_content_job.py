@@ -407,6 +407,7 @@ def _authority_is_current(
         and job.status == CloudJobStatus.PROCESSING.value
         and job.claim_token == context.claim_token
         and job.worker_id == context.worker_id
+        and job.last_error_code != "scan_cancel_requested"
         and job.job_type == CANVAS_CONTENT_JOB_TYPE
         and job.provider == CloudProvider.CANVAS.value
         and job.credential_id == snapshot["credential_id"]

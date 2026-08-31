@@ -438,7 +438,7 @@ class EmailService:
         files_scanned: Optional[int] = None,
         average_score: float = 0,
         total_issues: int = 0,
-        issues_fixed: int = 0,
+        issues_fixed: Optional[int] = None,
         dashboard_url: str = None,
         unsubscribe_url: str = None,
         *,
@@ -466,6 +466,9 @@ class EmailService:
         weekly_scans = files_scanned
         if weekly_scans is None:
             weekly_scans = scans_this_week or 0
+        issues_fixed_display: int | str = (
+            issues_fixed if issues_fixed is not None else "Not available"
+        )
 
         severity_total = critical_count + serious_count + moderate_count + minor_count
 
@@ -485,7 +488,7 @@ class EmailService:
                 "scans_this_week": weekly_scans,
                 "average_score": f"{average_score:.0f}",
                 "total_issues": total_issues,
-                "issues_fixed": issues_fixed,
+                "issues_fixed": issues_fixed_display,
                 "score_change": score_change,
                 "critical_count": critical_count,
                 "serious_count": serious_count,
@@ -530,7 +533,7 @@ class EmailService:
                         </tr>
                         <tr>
                             <td style="padding: 8px 0;"><strong>Issues Fixed:</strong></td>
-                            <td style="text-align: right; color: #22c55e;">{issues_fixed}</td>
+                            <td style="text-align: right; color: #22c55e;">{issues_fixed_display}</td>
                         </tr>
                     </table>
                 </div>

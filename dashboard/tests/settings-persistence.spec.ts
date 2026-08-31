@@ -38,7 +38,20 @@ test('profile and email preferences persist after save and reload', async ({ pag
     if (path === '/auth/sessions') return route.fulfill({ json: { sessions: [] } });
     if (path === '/auth/keys') return route.fulfill({ json: [] });
     if (path === '/account/deletion-status') return route.fulfill({ status: 404, json: {} });
-    if (path === '/llm/providers') return route.fulfill({ json: { providers: [], primary_provider: null, fallback_provider: null } });
+    if (path === '/llm/providers') return route.fulfill({ json: {
+      primary: null,
+      fallback: null,
+      providers: Object.fromEntries(['ollama', 'gemini', 'openai', 'anthropic', 'xai'].map(name => [name, {
+        name,
+        display_name: name === 'xai' ? 'xAI' : name[0].toUpperCase() + name.slice(1),
+        is_available: false,
+        is_local: name === 'ollama',
+        status: 'not_configured',
+        text_model: null,
+        code_model: null,
+        vision_model: null,
+      }])),
+    } });
     return route.fulfill({ json: {} });
   });
 

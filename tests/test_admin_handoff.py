@@ -110,7 +110,7 @@ def _handoff(db, *, department_id: str, email: str, raw_token: str):
 
 
 def test_handoff_acceptance_is_normalized_atomic_and_replay_idempotent(handoff_db):
-    raw_token = "handoff-token-with-sufficient-entropy-123456789"
+    raw_token = "example-handoff-token-with-sufficient-entropy-123456789"
     _department(handoff_db, department_id="target", email="admin@example.edu")
     invitation = _handoff(
         handoff_db,
@@ -159,7 +159,7 @@ def test_handoff_acceptance_is_normalized_atomic_and_replay_idempotent(handoff_d
 
 
 def test_handoff_digest_cannot_be_submitted_as_the_bearer(handoff_db):
-    raw_token = "handoff-token-with-sufficient-entropy-123456789"
+    raw_token = "example-handoff-token-with-sufficient-entropy-123456789"
     _department(handoff_db, department_id="target", email="admin@example.edu")
     invitation = _handoff(
         handoff_db,
@@ -224,7 +224,7 @@ def test_handoff_email_is_globally_unique_across_departments(handoff_db):
         handoff_db,
         department_id="first",
         email="admin@example.edu",
-        raw_token="first-handoff-token-with-sufficient-entropy-12345",
+        raw_token="example-first-handoff-token-with-sufficient-entropy-12345",
     )
 
     with pytest.raises(IntegrityError):
@@ -232,14 +232,14 @@ def test_handoff_email_is_globally_unique_across_departments(handoff_db):
             handoff_db,
             department_id="second",
             email="admin@example.edu",
-            raw_token="second-handoff-token-with-sufficient-entropy-1234",
+            raw_token="example-second-handoff-token-with-sufficient-entropy-1234",
         )
 
     handoff_db.rollback()
 
 
 def test_deleted_email_block_prevents_handoff_acceptance(handoff_db):
-    raw_token = "handoff-token-with-sufficient-entropy-123456789"
+    raw_token = "example-handoff-token-with-sufficient-entropy-123456789"
     _department(handoff_db, department_id="target", email="admin@example.edu")
     invitation = _handoff(
         handoff_db,
@@ -293,7 +293,7 @@ def test_expired_deletion_cleanup_can_preserve_surrounding_transaction_lock():
 
 
 def test_handoff_never_moves_or_promotes_another_department_user(handoff_db):
-    raw_token = "handoff-token-with-sufficient-entropy-123456789"
+    raw_token = "example-handoff-token-with-sufficient-entropy-123456789"
     _department(handoff_db, department_id="source", email="admin@example.edu")
     _department(handoff_db, department_id="target", email="admin@example.edu")
     existing = User(
@@ -332,7 +332,7 @@ def test_handoff_never_moves_or_promotes_another_department_user(handoff_db):
 
 
 def test_expired_handoff_becomes_terminal_with_bounded_audit(handoff_db):
-    raw_token = "handoff-token-with-sufficient-entropy-123456789"
+    raw_token = "example-handoff-token-with-sufficient-entropy-123456789"
     _department(handoff_db, department_id="target", email="admin@example.edu")
     invitation = _handoff(
         handoff_db,
@@ -363,7 +363,7 @@ def test_expired_handoff_becomes_terminal_with_bounded_audit(handoff_db):
 
 
 def test_legacy_member_invitation_still_accepts_raw_token(handoff_db):
-    raw_token = "legacy-member-token-with-sufficient-entropy-12345"
+    raw_token = "example-legacy-member-token-with-sufficient-entropy-12345"
     _department(handoff_db, department_id="target", email="admin@example.edu")
     invitation = UserInvitation(
         id="legacy-invite",
