@@ -62,10 +62,176 @@ registry tooling instead of a mutable tag, for example
 `ghcr.io/aelira-ai/aelira-core-api@sha256:<digest>`. Keep the API and dashboard
 digests from the same release version when updating a deployment.
 
+## API and worker topology
+
+The API validates tenant scope and writes durable queue rows. It never consumes
+those rows. CPU-bound scans, Playwright sessions, multimedia transcription, and
+document/content remediation run only in the separate `worker` service through
+the explicit `python -m src.jobs.worker` entrypoint. API and worker replicas
+must use the same release image, PostgreSQL, Redis, provider configuration, and
+`/app/uploads` volume; decrypted provider credentials never belong in queue
+payloads.
+
+The container probe runs
+`python -m src.jobs.healthcheck --mode readiness` and verifies the worker's
+database heartbeat, queue progress, leases, and running-job age. A super
+administrator can inspect the same bounded global state at
+`/api/jobs/worker-status`. The response contains no tenant, document, worker,
+job, or provider credential data.
+
+### Resource limits
+
+`JOB_WORKER_MAX_CONCURRENCY` bounds simultaneous jobs in each worker process
+(Compose default `1`, valid range `1`–`64`). The shipped worker quota is `0.75`
+CPU so a one- or two-core host retains scheduler headroom for API health and
+authentication. Increase `JOB_WORKER_CPUS` or concurrency only after measuring
+peak memory, CPU, and API latency. The worker service intentionally has no fixed
+container name or fixed worker ID: Compose replicas receive independently
+generated claim identities. Scale with `docker compose -f
+docker-compose.prod.yml up -d --scale worker=N`, keeping the sum of worker CPU
+quotas below host capacity.
+
+`JOB_WORKER_MAX_EXECUTION_SECONDS` defaults to 3,600 seconds. The shipped
+`JOB_WORKER_STOP_GRACE_PERIOD` is 65 minutes, deliberately longer than that
+execution ceiling so a normal stop can drain or kill and reap child process
+groups before Docker sends SIGKILL. If you raise the execution ceiling, raise
+the stop grace period above it as well.
+
+### Worker recovery
+
+First stop new intake, then inspect `/api/jobs/worker-status` and the worker
+logs. Restart only the worker with
+`docker compose -f docker-compose.prod.yml restart worker`. Active claims keep
+their lease while work runs; after an unclean stop, expired claims are fenced
+and recovered by a healthy worker according to their bounded retry policy.
+PostgreSQL advisory authority distinguishes a live or frozen child from a dead
+one: cancellation remains a nonterminal request while the child connection is
+alive, and is acknowledged only after the child has stopped or its dead
+connection has released that authority. Do not force terminal queue state for
+a frozen worker; stop the owning container so recovery can prove child death.
+Confirm a fresh heartbeat and movement in the aggregate claimed/completed/failed
+counters before resuming intake. Never edit claim tokens or queue rows by hand.
+
+### Worker rollback
+
+Drain work before changing images. `docker compose -f docker-compose.prod.yml stop worker`
+sends the worker its drain signal; allow enough stop time for the
+largest admitted job. Pin `AELIRA_VERSION` to the previous verified release for
+both API and worker, restore the matching database backup if that release is not
+schema-compatible, then start the full matched stack. Do not run an older
+worker against a newer API/schema or roll back only one process. Recheck API
+health, `src.jobs.healthcheck`, and `/api/jobs/worker-status` before reopening
+intake.
+
+## Monitoring and sustained alerts
+
+The API separates process liveness from dependency readiness. `GET /live`
+returns `200` when the API process can answer without touching PostgreSQL or
+Redis. `GET /ready` checks both dependencies and returns `503` with only the
+bounded check names when the service should stop receiving traffic. The legacy
+`/health` and `/api/health` liveness routes remain available for existing
+integrations.
+
+The worker exposes the same distinction through its container command:
+
+```bash
+docker compose -f docker-compose.prod.yml exec worker \
+  python -m src.jobs.healthcheck --mode liveness --json
+docker compose -f docker-compose.prod.yml exec worker \
+  python -m src.jobs.healthcheck --mode readiness --json
+```
+
+Neither response includes a worker, tenant, job, scan, file, document,
+credential, or provider identifier. Inspect the default Docker health states
+with:
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+docker inspect --format '{{json .State.Health}}' \
+  "$(docker compose -f docker-compose.prod.yml ps -q worker)"
+```
+
+### Prometheus and Alertmanager
+
+Prometheus can scrape the API's existing `/metrics` endpoint from the private
+deployment network. The worker collector reads aggregate queue state from
+PostgreSQL and exports only fixed, low-cardinality gauges. A minimal scrape job
+is:
+
+```yaml
+scrape_configs:
+  - job_name: aelira-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: [api:8000]
+
+rule_files:
+  - /etc/prometheus/rules/aelira-alerts.yml
+```
+
+Mount the repository's `ops/prometheus/aelira-alerts.yml` at that rule path.
+The rules wait two to five minutes before firing for an unavailable API,
+missing worker heartbeat, expired lease, or stalled job. A single failed probe
+does not page an operator.
+
+Alertmanager sends recovery notifications when the receiver enables resolved
+delivery. For example:
+
+```yaml
+route:
+  receiver: operations
+receivers:
+  - name: operations
+    webhook_configs:
+      - url: https://monitoring.example.edu/aelira-alerts
+        send_resolved: true
+```
+
+Keep the receiver URL and credentials in your monitoring secret store, not in
+the Aelira repository or Compose environment. Prometheus automatically marks
+the matching alert resolved after its expression becomes false; the receiver
+then delivers the recovery event.
+
+### Gatus
+
+Gatus can distinguish a dead API from a dependency-blocked API with two
+endpoints. Use consecutive-failure conditions in the Gatus alert configuration
+so a single transient does not notify:
+
+```yaml
+endpoints:
+  - name: aelira-api-liveness
+    url: http://api:8000/live
+    interval: 30s
+    conditions: ["[STATUS] == 200", "[BODY].status == alive"]
+    alerts:
+      - type: email
+        failure-threshold: 4
+        success-threshold: 2
+  - name: aelira-api-readiness
+    url: http://api:8000/ready
+    interval: 30s
+    conditions: ["[STATUS] == 200", "[BODY].status == ready"]
+    alerts:
+      - type: email
+        failure-threshold: 4
+        success-threshold: 2
+```
+
+The four-failure threshold is two sustained minutes; the two-success recovery
+threshold prevents a single recovered probe from prematurely clearing an
+incident. Configure the referenced Gatus provider separately for your chosen
+notification channel.
+
 ## Required environment
 
-These come from `src/config/settings.py` (the load-bearing ones — full list
-is `.env.example`):
+These come from [`src/config/settings.py`](../../src/config/settings.py) (the
+load-bearing ones — the full list is [`.env.example`](../../.env.example)):
+
+After adding, removing, or renaming runtime configuration, run
+`python scripts/verify_environment_example.py`. CI runs the same deterministic
+parity contract and requires every runtime name to be documented there or
+explicitly classified as internal, derived, legacy, or Compose-only.
 
 | Variable | Purpose | Notes |
 |---|---|---|
@@ -159,6 +325,46 @@ creation is intentional, such as an isolated public demo. Anonymous browser
 clients still need a valid double-submit CSRF token and receive the same
 tenant-bound administrator handoff; the anonymous source is recorded explicitly
 in the audit trail. Keep the default `false` for institutional deployments.
+
+## Blackboard LTI signing keys
+
+Blackboard LTI uses one deployment-global RSA signing identity. Generate a
+matching RSA key pair of at least 2048 bits, store the private PEM in your
+secret manager, and mount both files read-only into every API replica. Set
+`BLACKBOARD_LTI_PRIVATE_KEY_PATH` and `BLACKBOARD_LTI_PUBLIC_KEY_PATH` to those
+mounted files. Register the canonical Tool JWKS URL with Anthology Blackboard:
+`https://<your-public-api>/lti/blackboard/jwks`.
+
+For example, generate a 3072-bit pair outside the application container:
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out blackboard-lti-private.pem
+openssl pkey -in blackboard-lti-private.pem -pubout -out blackboard-lti-public.pem
+chmod 600 blackboard-lti-private.pem
+```
+
+The JWKS endpoint publishes only RFC 7517 public parameters. Its `kid` is the
+stable RFC 7638 thumbprint of that public key. A missing, malformed, undersized,
+or mismatched active pair makes the endpoint return `503` until the operator
+repairs the configuration.
+
+Rotate in three cache-safe phases using the public-only, comma-separated
+`BLACKBOARD_LTI_OVERLAP_PUBLIC_KEY_PATHS` list:
+
+1. Prepublish the future public key in the overlap list on every replica,
+   restart or roll all replicas, and wait at least the JWKS cache TTL of 300
+   seconds. The old key remains active during this phase.
+2. Switch the active pair to the new matching private/public files, retain the
+   old public key in the overlap list, and restart or roll every replica. Both
+   public keys remain continuously available while new tokens use the new key.
+3. Remove the old public key only after the maximum old-token lifetime, allowed
+   clock skew, rolling-rollout duration, and an additional 300-second JWKS cache
+   TTL have all elapsed; then restart or roll every replica again.
+
+The active key appears first in JWKS; duplicate public keys are collapsed by
+their immutable thumbprint. A running process never rereads signing files:
+signing and JWKS publication use one construction-time snapshot, so rotations
+take effect only after that replica restarts.
 
 ## Postgres, Redis, and the Ollama profile
 
@@ -274,9 +480,8 @@ hosts. It is not a Windows filesystem portability promise. Path-oriented
 compatibility remains for non-PDF formats and direct library callers, but the
 managed PDF output claim is authoritative.
 
-This PDF publication hardening is present on `main` after v0.9.5 and is not part
-of v0.9.5. It may ship in a future release after release verification; merging
-it created no release or deployment.
+The immutable-source OCR and exact-byte PDF publication controls in this section
+are included in v0.9.7. They were not part of v0.9.5.
 
 Approval is a bounded writeback authorization, not indefinite retention. An
 approved but unwritten artifact is held only until its
@@ -310,9 +515,33 @@ manually delete artifact rows to force progress.
    ```
    The normal API entrypoint also runs this command and fails closed rather
    than serving against an incompatible schema.
-5. `docker compose -f docker-compose.prod.yml up -d`, then confirm `GET /health`
-   on the API and check `docker compose -f docker-compose.prod.yml logs -f api`
+5. `docker compose -f docker-compose.prod.yml up -d`, then confirm `GET /live`
+   and `GET /ready` on the API, run the worker readiness command documented
+   above, and check `docker compose -f docker-compose.prod.yml logs -f api`
    for migration or startup errors.
+
+### v0.9.7 upgrade
+
+Before replacing v0.9.6, drain active work and pause intake. Back up PostgreSQL,
+uploads, and managed artifacts, and verify the restore path. Run `alembic upgrade
+head` explicitly and confirm that the single Alembic head is
+`20260831_institution_scope` before resuming traffic.
+
+Set and retain `BYOK_ENCRYPTION_KEY` before storing workspace AI credentials.
+Choose `LLM_PROVIDER`, `LLM_FALLBACK_PROVIDER`, and `EMBEDDING_PROVIDER`
+deliberately; do not rely on an implicit vendor. Review `TRUSTED_PROXY_CIDRS`,
+cookie domains, Brightspace OAuth origins, Blackboard RSA signing keys, and the
+shared upload and artifact mounts on every API and worker replica.
+
+Deploy the API and dedicated `python -m src.jobs.worker` service from the same
+v0.9.7 image set. Confirm API readiness, a fresh worker readiness result, queue
+age, failed or quarantined rows, and alert recovery before reopening intake.
+
+Client integrations must account for three breaking changes: multimedia
+transcription now returns an asynchronous scan handle, Brightspace remediation
+returns HTTP `202` job descriptors, and the unauthenticated focus-order HTTP
+endpoints have been removed. Preserve every v0.9.6 operator action, including
+remediation timeout settings and deliberate handling of quarantined work.
 
 ### v0.9.4 upgrade
 

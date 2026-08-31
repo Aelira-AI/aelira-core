@@ -1,7 +1,7 @@
 # Aelira CLI Command Reference
 
-**Version:** v0.4.0
-**Last Updated:** March 17, 2026
+**Version:** v0.9.7
+**Last Updated:** August 31, 2026
 
 Complete reference for all Aelira CLI commands.
 
@@ -1183,8 +1183,8 @@ These flags work with all commands:
 
 ---
 
-**Last Updated:** March 17, 2026
-**CLI Version:** v0.4.0
-**Status:** All features complete - Production ready
+**Last Updated:** August 31, 2026
+**CLI Version:** v0.9.7
+**Status:** Beta
 
 **Made with by the Aelira team**

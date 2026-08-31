@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pathlib import Path
 
 from pydantic import (
@@ -34,10 +34,27 @@ from pydantic import (
 
 from src.education.equation_region_contract import PageRasterRegionLocator
 from src.education.visual_semantic_contract import (
+    ChemicalStructurePdfContract,
+    ChemicalStructureRecognitionEvidenceV1,
+    ChemicalFormulaPdfContract,
+    ChemicalFormulaRecognitionEvidenceV1,
+    CommutativeDiagramPdfContract,
+    CommutativeDiagramRecognitionEvidenceV1,
     EmbeddedImageOccurrenceLocator,
     FrozenPageRasterRegionLocator,
+    HandwrittenEquationConsensusEvidenceV1,
+    HandwrittenEquationContract,
     PrintedEquationRoundtripEvidenceV1,
+    PrintedEquationContract,
     VisualSemanticContract,
+)
+from src.education.handwritten_math_suitability import (
+    POLICY_SHA256 as HANDWRITTEN_SUITABILITY_POLICY_SHA256,
+    HandwrittenMathSuitabilityEvidence,
+)
+from src.education.handwritten_equation_policy import (
+    HANDWRITTEN_VERIFIER_POLICY_SHA256,
+    HANDWRITTEN_VERIFIER_POLICY_VERSION,
 )
 from src.education.math_contracts import (
     MATH_ISSUE_TYPES,
@@ -325,6 +342,66 @@ class VerificationEvidence(BaseModel):
         return value
 
 
+class HandwrittenVerificationEvidence(BaseModel):
+    """Allowlisted HMER consensus evidence safe for durable review records."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    passed: Literal[True]
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    suitability_evidence: HandwrittenMathSuitabilityEvidence
+    suitability_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    suitability_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verifier_policy_version: Literal["handwritten-equation-consensus-v1"]
+    verifier_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    agreement_count: Literal[2]
+    required_agreement_count: Literal[2]
+    mathml_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    primary_mathml_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verifier_mathml_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    primary_response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verifier_response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    primary_latex_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verifier_latex_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    primary_provider: str = Field(min_length=1, max_length=200)
+    primary_model: str = Field(min_length=1, max_length=200)
+    verifier_provider: str = Field(min_length=1, max_length=200)
+    verifier_model: str = Field(min_length=1, max_length=200)
+
+    @field_validator(
+        "primary_provider", "primary_model", "verifier_provider", "verifier_model"
+    )
+    @classmethod
+    def _bounded_identities(cls, value: str) -> str:
+        if value != value.strip() or not value.isprintable():
+            raise ValueError("HMER identities must be bounded printable text")
+        return value
+
+    @model_validator(mode="after")
+    def _exact_hmer_identity(self) -> "HandwrittenVerificationEvidence":
+        if (
+            self.suitability_policy_sha256 != HANDWRITTEN_SUITABILITY_POLICY_SHA256
+            or self.suitability_evidence.policy_sha256
+            != HANDWRITTEN_SUITABILITY_POLICY_SHA256
+            or self.suitability_evidence.disposition != "eligible"
+            or self.suitability_evidence_sha256
+            != self.suitability_evidence.evidence_sha256
+            or self.source_sha256 != self.suitability_evidence.source_sha256
+        ):
+            raise ValueError("HMER suitability identity is invalid")
+        if (
+            self.verifier_policy_version != HANDWRITTEN_VERIFIER_POLICY_VERSION
+            or self.verifier_policy_sha256 != HANDWRITTEN_VERIFIER_POLICY_SHA256
+        ):
+            raise ValueError("HMER verifier policy identity is invalid")
+        if (
+            self.mathml_sha256 != self.primary_mathml_sha256
+            or self.mathml_sha256 != self.verifier_mathml_sha256
+        ):
+            raise ValueError("HMER semantic readings do not agree")
+        return self
+
+
 class FixedIssue(BaseModel):
     """Represents a successfully fixed issue."""
 
@@ -342,7 +419,13 @@ class FixedIssue(BaseModel):
     model_used: Optional[str] = Field(default=None, min_length=1, max_length=50)
     source_kind: Optional[str] = Field(default=None, min_length=1, max_length=32)
     source_locator: Optional[PageRasterRegionLocator] = None
-    verification_evidence: Optional[VerificationEvidence] = None
+    verification_evidence: Optional[
+        VerificationEvidence
+        | ChemicalStructureRecognitionEvidenceV1
+        | ChemicalFormulaRecognitionEvidenceV1
+        | CommutativeDiagramRecognitionEvidenceV1
+        | HandwrittenVerificationEvidence
+    ] = None
     visual_semantic_contract: Optional[VisualSemanticContract] = None
     verification_passed: bool = True
     notes: Optional[str] = None
@@ -351,37 +434,105 @@ class FixedIssue(BaseModel):
 
     @model_validator(mode="after")
     def _region_locator_requires_image_equation_source(self) -> "FixedIssue":
-        if self.source_locator is not None and self.source_kind != "image_equation":
+        if self.source_locator is not None and self.source_kind not in {
+            "image_equation",
+            "chemical_structure",
+            "chemical_formula",
+            "commutative_diagram",
+        }:
             raise ValueError(
-                "page raster region locator requires image_equation source"
+                "page raster region locator requires image_equation, "
+                "chemical_formula, chemical_structure, or commutative_diagram source"
             )
         contract = self.visual_semantic_contract
         if contract is None:
             return self
+        if isinstance(contract, ChemicalFormulaPdfContract):
+            expected_fixed_content = contract.semantic_output.verified_notation.speech
+            expected_source_kind = "chemical_formula"
+        elif isinstance(contract, CommutativeDiagramPdfContract):
+            expected_fixed_content = contract.semantic_output.description.summary
+            expected_source_kind = "commutative_diagram"
+        elif isinstance(contract, ChemicalStructurePdfContract):
+            expected_fixed_content = contract.semantic_output.description.summary
+            expected_source_kind = "chemical_structure"
+        else:
+            expected_fixed_content = contract.semantic_output.alt_text
+            expected_source_kind = "image_equation"
         if (
-            self.source_kind != "image_equation"
+            self.source_kind != expected_source_kind
             or self.provider_used is None
             or self.model_used is None
             or self.verification_evidence is None
             or self.page_number is None
             or self.verification_passed is not True
-            or self.fixed_content != contract.semantic_output.alt_text
+            or self.fixed_content != expected_fixed_content
             or self.page_number != contract.locator.page_number
         ):
             raise ValueError(
-                "visual semantic contract requires a complete image equation envelope"
+                "visual semantic contract requires a complete visual-fix envelope"
             )
 
-        roundtrip = next(
-            (
-                evidence
-                for evidence in contract.verification_evidence
-                if isinstance(evidence, PrintedEquationRoundtripEvidenceV1)
-            ),
-            None,
-        )
-        if roundtrip is None or self.verification_evidence.model_dump(mode="json") != (
-            roundtrip.model_dump(mode="json", exclude={"evidence_kind"})
+        if isinstance(
+            contract,
+            CommutativeDiagramPdfContract
+            | ChemicalFormulaPdfContract
+            | ChemicalStructurePdfContract,
+        ):
+            if isinstance(contract, ChemicalFormulaPdfContract):
+                evidence_type = ChemicalFormulaRecognitionEvidenceV1
+            elif isinstance(contract, ChemicalStructurePdfContract):
+                evidence_type = ChemicalStructureRecognitionEvidenceV1
+            else:
+                evidence_type = CommutativeDiagramRecognitionEvidenceV1
+            contract_evidence = next(
+                (
+                    evidence
+                    for evidence in contract.verification_evidence
+                    if isinstance(evidence, evidence_type)
+                ),
+                None,
+            )
+            if (
+                contract_evidence is None
+                or not isinstance(self.verification_evidence, evidence_type)
+                or self.verification_evidence != contract_evidence
+            ):
+                raise ValueError(
+                    "visual semantic contract evidence does not match recognition"
+                )
+        elif isinstance(contract, PrintedEquationContract):
+            contract_evidence = next(
+                (
+                    evidence
+                    for evidence in contract.verification_evidence
+                    if isinstance(evidence, PrintedEquationRoundtripEvidenceV1)
+                ),
+                None,
+            )
+            expected_type = VerificationEvidence
+        elif isinstance(contract, HandwrittenEquationContract):
+            contract_evidence = next(
+                (
+                    evidence
+                    for evidence in contract.verification_evidence
+                    if isinstance(evidence, HandwrittenEquationConsensusEvidenceV1)
+                ),
+                None,
+            )
+            expected_type = HandwrittenVerificationEvidence
+        else:
+            raise ValueError("unsupported visual semantic contract")
+        if not isinstance(
+            contract,
+            CommutativeDiagramPdfContract
+            | ChemicalFormulaPdfContract
+            | ChemicalStructurePdfContract,
+        ) and (
+            contract_evidence is None
+            or not isinstance(self.verification_evidence, expected_type)
+            or self.verification_evidence.model_dump(mode="json")
+            != contract_evidence.model_dump(mode="json", exclude={"evidence_kind"})
         ):
             raise ValueError(
                 "visual semantic contract evidence does not match legacy evidence"

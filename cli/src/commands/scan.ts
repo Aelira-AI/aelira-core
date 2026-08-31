@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import { chromium } from 'playwright'
 
 import { ApiClient } from '../utils/api-client.js'
+import { buildReportEvidence, generateVerifiedPdfReport } from '../utils/report-artifact.js'
 
 export default class Scan extends Command {
   static args = {
@@ -25,6 +26,7 @@ static examples = [
     '<%= config.bin %> <%= command.id %> http://localhost:3000',
     '<%= config.bin %> <%= command.id %> https://example.com --format json --mode comprehensive',
     '<%= config.bin %> <%= command.id %> . --threshold 80',
+    '<%= config.bin %> <%= command.id %> ./index.html --pdf accessibility-report.pdf',
   ]
 static flags = {
     'api-url': Flags.string({
@@ -56,7 +58,7 @@ static flags = {
       description: 'Save report to file',
     }),
     pdf: Flags.string({
-      description: 'Generate PDF report and save to specified path (temporarily unavailable)',
+      description: 'Generate a verified server PDF report and save it atomically',
     }),
     threshold: Flags.integer({
       char: 't',
@@ -75,17 +77,6 @@ static flags = {
   public async run(): Promise<void> {
     const { args, flags } = await this.parse(Scan)
     const startTime = Date.now()
-
-    // The backend has no /education/scans/generate-pdf route (verified: zero
-    // hits across backend/src), so --pdf can only 404. Say so up front rather
-    // than running a full scan and then failing on the last step. A replacement
-    // (submit the scan, then fetch the report by id) is tracked separately.
-    if (flags.pdf) {
-      this.error(
-        'PDF report generation is temporarily unavailable. Re-run without --pdf and use --format json or the console output instead.',
-        { exit: 1 },
-      )
-    }
 
     intro('Aelira CLI - Accessibility Scanner')
 
@@ -144,7 +135,7 @@ static flags = {
           s.stop(succeeded ? `Scan complete in ${scanDuration}ms` : 'Scan failed')
         }
 
-        await this.printResults(axeResults, flags, startTime)
+        await this.printResults(axeResults, flags, startTime, args.target)
       } else {
         // Local HTML file scanning
         const s = spinner()
@@ -177,7 +168,7 @@ static flags = {
           s.stop(succeeded ? `Scan complete in ${scanDuration}ms` : 'Scan failed')
         }
 
-        await this.printResults(axeResults, flags, startTime)
+        await this.printResults(axeResults, flags, startTime, args.target)
       }
 
       // Check threshold for CI/CD (reuse cached scan results)
@@ -208,32 +199,31 @@ static flags = {
     return Math.round(passRate * 100)
   }
 
-  // Unreachable while the --pdf guard in run() stands: /education/scans/generate-pdf
-  // is not a registered backend route. Kept as the shell for the tracked
-  // replacement (submit the scan, then fetch the report by id).
-  private async generatePdfReport(results: any, pdfPath: string, apiUrl: string): Promise<void> {
+  private async generatePdfReport(
+    results: any,
+    pdfPath: string,
+    apiUrl: string,
+    target: string,
+  ): Promise<void> {
     const s = spinner()
     s.start('Generating PDF report...')
 
     try {
-      // Send scan results to backend for PDF generation
       const api = new ApiClient({ apiUrl })
-      const response = await api.post('/education/scans/generate-pdf', {
-        scan_results: results,
-        scan_type: 'website',
-        url: results.url || 'Unknown',
-      }, { timeout: 60_000 })
-
-      // Save PDF to file
-      const pdfBuffer = Buffer.from(await response.arrayBuffer())
-      await fs.writeFile(pdfPath, pdfBuffer)
+      await generateVerifiedPdfReport({
+        api,
+        destination: pdfPath,
+        evidence: buildReportEvidence({
+          axeResults: results,
+          reportKind: 'scan',
+          target,
+        }),
+      })
 
       s.stop(`PDF report saved to ${pdfPath}`)
     } catch (error: any) {
       s.stop('PDF generation failed')
-      this.warn(`Could not generate PDF: ${error.message}`)
-      this.log('\nℹ️  Make sure the backend API is running and accessible')
-      this.log(`   Backend URL: ${apiUrl}`)
+      throw error
     }
   }
 
@@ -241,7 +231,12 @@ static flags = {
     return /^https?:\/\//i.test(target)
   }
 
-  private async printResults(results: any, flags: any, startTime: number): Promise<void> {
+  private async printResults(
+    results: any,
+    flags: any,
+    startTime: number,
+    target: string,
+  ): Promise<void> {
     if (flags.format === 'json') {
       const output = JSON.stringify(results, null, 2)
       if (flags.output) {
@@ -251,10 +246,7 @@ static flags = {
         this.log(output)
       }
 
-      return
-    }
-
-    if (flags.format === 'console') {
+    } else if (flags.format === 'console') {
       // Calculate score
       const score = this.calculateScore(results)
 
@@ -301,7 +293,7 @@ static flags = {
 
     // Generate PDF report if requested
     if (flags.pdf) {
-      await this.generatePdfReport(results, flags.pdf, flags['api-url'])
+      await this.generatePdfReport(results, flags.pdf, flags['api-url'], target)
     }
   }
 

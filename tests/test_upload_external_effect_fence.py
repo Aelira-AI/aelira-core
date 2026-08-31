@@ -32,8 +32,9 @@ def test_upload_external_effect_columns_and_constraints_are_dedicated():
     assert "external_effect_state IS NULL" in pair
     assert "external_effect_token IS NULL" in pair
     assert "external_effect_started_at IS NULL" in pair
-    scope = checks["ck_cloud_job_queue_external_effect_upload_only"]
-    assert "job_type = 'upload'" in scope
+    scope = checks["ck_cloud_job_queue_external_effect_owned"]
+    assert "'upload'" in scope
+    assert "'weekly_summary'" in scope
 
 
 @pytest.mark.asyncio

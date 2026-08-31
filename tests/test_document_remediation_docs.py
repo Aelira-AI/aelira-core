@@ -42,6 +42,37 @@ REQUIRED_DOCS = {
         "## Output and review",
         "## Tests",
     ],
+    "general-stem.md": [
+        "## Trust pipeline",
+        "## Specialist boundaries",
+        "## Mixed composition",
+        "## Human review and semantic limits",
+        "## Source and test evidence",
+    ],
+    "commutative-diagrams.md": [
+        "## Canonical identity",
+        "## Accessible outputs",
+        "## PDF recognition and saved-file proof",
+        "## Deliberate limits",
+    ],
+    "chemical-formulas.md": [
+        "## Supported notation",
+        "## Accessible projections",
+        "## PDF recognition and saved-file proof",
+        "## Deliberate refusals",
+    ],
+    "handwritten-math.md": [
+        "## Suitability is not recognition",
+        "## Recognition and verification",
+        "## Provenance and limits",
+        "## Reproduce the corpus and evaluation",
+    ],
+    "molecular-graphs.md": [
+        "## Supported graph",
+        "## Stereo and aromaticity boundary",
+        "## Accessible description",
+        "## Deliberate refusals",
+    ],
 }
 
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
@@ -67,6 +98,7 @@ def test_readmes_link_to_the_canonical_hub_and_name_four_equal_pillars():
     examples_readme = _text(ROOT / "examples" / "README.md")
     hub = "docs/document-remediation/README.md"
     assert hub in root_readme
+    assert "docs/document-remediation/general-stem.md" in root_readme
     assert "../docs/document-remediation/README.md" in examples_readme
     for pillar in ("documents", "LMS", "web", "media"):
         assert pillar in root_readme
@@ -311,7 +343,7 @@ def test_operator_docs_describe_current_parent_cleanup_fence():
         assert contract in self_hosting
 
 
-def test_post_v095_pdf_hardening_is_not_claimed_as_released():
+def test_v097_docs_remove_stale_pre_release_boundary_language():
     pages = (
         ROOT / "README.md",
         ROOT / "examples" / "README.md",
@@ -321,16 +353,67 @@ def test_post_v095_pdf_hardening_is_not_claimed_as_released():
         ROOT / "SECURITY.md",
     )
     corpus = "\n".join(_text(page) for page in pages).lower()
-    assert "present on `main`" in corpus
-    assert "not part of v0.9.5" in corpus
-    assert "future release" in corpus
-    assert "no release or deployment" in corpus
-
-    canonical_pdf = _text(DOCS / "pdf.md").lower()
-    for boundary in (
+    for stale in (
         "present on `main`",
-        "not part of v0.9.5",
         "future release",
         "no release or deployment",
     ):
+        assert stale not in corpus
+
+    canonical_pdf = _text(DOCS / "pdf.md").lower()
+    for boundary in ("v0.9.7 boundary", "included in v0.9.7", "not part of v0.9.5"):
         assert boundary in canonical_pdf
+
+
+def test_general_stem_docs_cover_every_v097_specialist_and_trust_boundary():
+    stem = _text(DOCS / "general-stem.md").lower()
+    for specialist in (
+        "printed equation",
+        "multi-equation",
+        "vector equation",
+        "handwritten mathematics",
+        "chemical formula",
+        "molecular structure",
+        "commutative diagram",
+        "mixed visual",
+    ):
+        assert specialist in stem
+
+    for boundary in (
+        "purpose-bound",
+        "source identity",
+        "saved pdf is reopened",
+        "human approval",
+        "fails closed",
+        "not evidence",
+    ):
+        assert boundary in stem
+
+    for evidence in (
+        "multi_equation_region.py",
+        "vector_equation_semantics.py",
+        "chemical_formula_pdf.py",
+        "chemical_structure_pdf.py",
+        "commutative_diagram_pdf.py",
+        "mixed_stem_composition.py",
+        "test_mixed_stem_composition.py",
+    ):
+        assert evidence in stem
+
+
+def test_v097_self_hosting_upgrade_names_required_operator_actions():
+    self_hosting = _text(ROOT / "docs" / "deployment" / "self-hosting.md")
+    start = self_hosting.index("### v0.9.7 upgrade")
+    section = self_hosting[start : self_hosting.index("### v0.9.4 upgrade", start)]
+    for contract in (
+        "20260831_institution_scope",
+        "BYOK_ENCRYPTION_KEY",
+        "LLM_PROVIDER",
+        "LLM_FALLBACK_PROVIDER",
+        "EMBEDDING_PROVIDER",
+        "TRUSTED_PROXY_CIDRS",
+        "python -m src.jobs.worker",
+        "HTTP `202`",
+        "v0.9.6 operator action",
+    ):
+        assert contract in section

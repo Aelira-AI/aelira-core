@@ -1,7 +1,7 @@
 """
 Microsoft OAuth Service
 
-Provides OAuth 2.0 authentication for Microsoft 365 using MSAL.
+Provides OAuth 2.0 authentication for Microsoft 365.
 This is a facade over the main OAuthTokenManager for Microsoft-specific operations.
 """
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class MicrosoftOAuthService:
     """
-    Microsoft OAuth 2.0 service using MSAL.
+    Microsoft OAuth 2.0 service.
 
     Provides OAuth flow management for Microsoft 365 integration.
     This is a wrapper around the main OAuthTokenManager for Microsoft-specific operations.

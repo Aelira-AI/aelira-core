@@ -40,6 +40,10 @@ import { resolveBrightspaceContentStatus } from '../utils/brightspaceContentStat
 import { apiClient } from '../api/client';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
+import {
+  runOwnedRequest,
+  useAbortableRequestOwner,
+} from '../hooks/useAbortableRequestOwner';
 
 // ============================================================================
 // Helpers
@@ -110,6 +114,7 @@ export default function BrightspaceContentPage({
   // Batch action states
   const [remediatingAll, setRemediatingAll] = useState(false);
   const remediatingRef = useRef(false);
+  const remediationOwner = useAbortableRequestOwner(orgUnitId);
   const [approvingAll, setApprovingAll] = useState(false);
   const [writingBackAll, setWritingBackAll] = useState(false);
   const [rollingBackAll, setRollingBackAll] = useState(false);
@@ -318,36 +323,46 @@ export default function BrightspaceContentPage({
 
     setRemediatingAll(true);
     remediatingRef.current = true;
-    try {
-      const summary = await remediateAllInChunks(eligibleIds, (cloudFileIds) =>
+    await runOwnedRequest({
+      owner: remediationOwner,
+      execute: (signal) => remediateAllInChunks(eligibleIds, (cloudFileIds) =>
         batchRemediateContent({
           org_unit_id: orgUnitIdNum,
           cloud_file_ids: cloudFileIds,
-        })
-      );
-      const message =
-        `Requested: ${summary.requestedCount}, Processed: ${summary.processedCount}, ` +
-        `Completed: ${summary.completedCount}, Fixed: ${summary.fixedCount}, ` +
-        `Manual: ${summary.manualCount}, Failed: ${summary.failedCount}` +
-        (summary.chunkFailures.length > 0
-          ? `, Chunk failures: ${summary.chunkFailures
-              .slice(0, 3)
-              .map((failure) => `#${failure.chunkNumber} ${failure.message}`)
-              .join('; ')} (${summary.unreportedCount} outcomes unavailable)`
-          : '');
-      if (summary.failedCount > 0 || summary.chunkFailures.length > 0) {
-        toast.warning(message, 'Remediation Complete');
-      } else {
-        toast.success(message, 'Remediation Complete');
-      }
-      await fetchStatus();
-    } catch (err) {
-      console.error('Failed to batch remediate:', err);
-      toast.error('Remediation failed.', 'Error');
-    } finally {
-      setRemediatingAll(false);
-      remediatingRef.current = false;
-    }
+        }, { signal }),
+        signal
+      ),
+      notify: (summary) => {
+        const message =
+          `Requested: ${summary.requestedCount}, Processed: ${summary.processedCount}, ` +
+          `Completed: ${summary.completedCount}, Fixed: ${summary.fixedCount}, ` +
+          `Manual: ${summary.manualCount}, Failed: ${summary.failedCount}` +
+          (summary.chunkFailures.length > 0
+            ? `, Chunk failures: ${summary.chunkFailures
+                .slice(0, 3)
+                .map((failure) => `#${failure.chunkNumber} ${failure.message}`)
+                .join('; ')} (${summary.unreportedCount} outcomes unavailable)`
+            : '');
+        if (summary.failedCount > 0 || summary.chunkFailures.length > 0) {
+          toast.warning(message, 'Remediation Complete');
+        } else {
+          toast.success(message, 'Remediation Complete');
+        }
+      },
+      refresh: (signal) => getCourseContentStatus(orgUnitIdNum, signal),
+      commitRefresh: (result) => {
+        setData(result);
+        setError(null);
+      },
+      fail: (err) => {
+        console.error('Failed to batch remediate:', err);
+        toast.error('Remediation failed.', 'Error');
+      },
+      settle: () => {
+        setRemediatingAll(false);
+        remediatingRef.current = false;
+      },
+    });
   };
 
   const handleApproveAll = async (): Promise<void> => {

@@ -16,7 +16,7 @@ import uuid
 from typing import Any, BinaryIO, Callable, Dict, List, NoReturn, Optional, TypeVar
 from pathlib import Path
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..db.models import (
@@ -38,6 +38,7 @@ from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
 from ..ai.lms_remediation_client import LMSRemediationClient
+from ..ai.workspace_provider_runtime import workspace_provider_runtime
 from ..education.remediation.base import (
     IssueCategory,
     classify_issue_category,
@@ -379,6 +380,10 @@ def _fence_claim_for_handler_commit(job: Any, db: Session) -> None:
             CloudJobQueue.status == CloudJobStatus.PROCESSING.value,
             CloudJobQueue.claim_token == token,
             CloudJobQueue.worker_id == worker_id,
+            or_(
+                CloudJobQueue.last_error_code.is_(None),
+                CloudJobQueue.last_error_code != "scan_cancel_requested",
+            ),
         )
         .with_for_update()
     ).scalar_one_or_none()
@@ -699,6 +704,16 @@ async def process_remediation_job(
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if not scan:
             return {"success": False, "error": f"Scan not found: {scan_id}"}
+        if (
+            not isinstance(department_id, str)
+            or not department_id
+            or scan.department_id != department_id
+        ):
+            return {
+                "success": False,
+                "error": "invalid_job_payload",
+                "scan_id": scan_id,
+            }
         prior_scan_state = {
             field: getattr(scan, field, None)
             for field in ("status", "remediation_outcome", "completed_at")
@@ -853,6 +868,11 @@ async def process_remediation_job(
 
         is_pdf = scan.scan_type in ("PDF", "pdf", ScanType.PDF)
         killable_execution = remediation_job_id is not None and assert_owned is not None
+        if not lms_policy_authoritative and bool(options.get("use_ai", True)):
+            if ai_client is None:
+                ai_client = workspace_provider_runtime(str(department_id))
+            if alt_text_client is None:
+                alt_text_client = ai_client
         if not killable_execution:
             effective_use_ai = (
                 ai_client is not None if lms_policy_authoritative else True
@@ -864,7 +884,7 @@ async def process_remediation_job(
                 use_ai=effective_use_ai,
                 ai_client=ai_client,
                 alt_text_client=alt_text_client,
-                allow_legacy_nested_ai=not lms_policy_authoritative,
+                allow_legacy_nested_ai=False,
                 allow_embedded_alt=(
                     alt_text_client is not None or not lms_policy_authoritative
                 ),
@@ -915,6 +935,9 @@ async def process_remediation_job(
                         ),
                     },
                     work_root=artifact_service.root / ".work",
+                    workspace_id=(
+                        None if lms_policy_authoritative else str(department_id)
+                    ),
                     lms_binding=lms_binding,
                     timeout_seconds=settings.remediation_execution_timeout_seconds,
                     termination_grace_seconds=(
@@ -1899,6 +1922,17 @@ async def handle_remediation_job(
     Returns:
         Remediation results
     """
+    explicit_scan_id = None
+    payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
+    if (
+        job.provider == CloudProvider.BRIGHTSPACE.value
+        and payload.get("execution") == "brightspace_content"
+    ):
+        from .brightspace_content_job import (
+            handle_brightspace_content_remediation_job,
+        )
+
+        return await handle_brightspace_content_remediation_job(job, db, token_manager)
     cloud_file = db.get(CloudFile, job.cloud_file_id) if job.cloud_file_id else None
     credential = (
         db.get(
@@ -1909,8 +1943,6 @@ async def handle_remediation_job(
         if job.credential_id
         else None
     )
-    explicit_scan_id = None
-    payload = job.payload if isinstance(getattr(job, "payload", None), dict) else {}
     candidate = payload.get("scan_id")
     if isinstance(candidate, str) and candidate.strip():
         explicit_scan_id = candidate
@@ -1993,7 +2025,7 @@ async def handle_remediation_job(
 
     remediation_client = None
     alt_text_client = None
-    if provider in _LMS_PROVIDERS or local_job:
+    if provider in _LMS_PROVIDERS:
         binding = {
             "department_id": job.department_id,
             "job_id": str(job.id),
@@ -2016,6 +2048,9 @@ async def handle_remediation_job(
                 await _commit_terminal_failure(
                     job, db, "policy_not_permitted", scan=authoritative_scan
                 )
+    else:
+        remediation_client = workspace_provider_runtime(str(job.department_id))
+        alt_text_client = remediation_client
 
     job_data = {
         "job_id": str(job.id),
@@ -2039,7 +2074,7 @@ async def handle_remediation_job(
         db,
         ai_client=remediation_client,
         alt_text_client=alt_text_client,
-        lms_policy_authoritative=provider in _LMS_PROVIDERS or local_job,
+        lms_policy_authoritative=provider in _LMS_PROVIDERS,
         credential=credential,
         token_manager=token_manager,
         defer_final_commit=True,

@@ -94,7 +94,7 @@ services:
       OLLAMA_TEXT_MODEL: ${OLLAMA_TEXT_MODEL:-gemma3:4b}
       OLLAMA_CODE_MODEL: ${OLLAMA_CODE_MODEL:-qwen2.5-coder:7b}
       OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-qwen2.5vl:3b}
-      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text:latest}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_TEXT_MODEL: ${GEMINI_TEXT_MODEL:-gemini-2.5-flash}
       GEMINI_CODE_MODEL: ${GEMINI_CODE_MODEL:-gemini-2.5-flash}
@@ -113,6 +113,8 @@ services:
       XAI_CODE_MODEL: ${XAI_CODE_MODEL:-grok-2}
       XAI_VISION_MODEL: ${XAI_VISION_MODEL:-grok-2-vision}
       REMEDIATION_ARTIFACT_DIR: /app/uploads/remediation-artifacts
+      REPORT_ARTIFACT_DIR: ${REPORT_ARTIFACT_DIR:-/app/uploads/report-artifacts}
+      REPORT_ARTIFACT_MAX_BYTES: ${REPORT_ARTIFACT_MAX_BYTES:-20971520}
       REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS: ${REMEDIATION_ARTIFACT_APPROVED_RETENTION_DAYS:-30}
     volumes:
       - ./src:/app/src
@@ -126,7 +128,7 @@ services:
     command: >
       sh -c "alembic upgrade head && uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload --no-proxy-headers"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ready || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -138,12 +140,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    container_name: aelira-worker
     environment:
       <<: *api-environment
-      JOB_WORKER_ID: aelira-worker
-      JOB_WORKER_MAX_CONCURRENCY: ${JOB_WORKER_MAX_CONCURRENCY:-4}
+      JOB_WORKER_MAX_CONCURRENCY: ${JOB_WORKER_MAX_CONCURRENCY:-1}
+      JOB_WORKER_MAX_EXECUTION_SECONDS: ${JOB_WORKER_MAX_EXECUTION_SECONDS:-3600}
       SKIP_MIGRATIONS: "true"
+    cpus: ${JOB_WORKER_CPUS:-0.75}
+    mem_limit: ${JOB_WORKER_MEMORY_LIMIT:-4g}
+    pids_limit: ${JOB_WORKER_PIDS_LIMIT:-512}
+    stop_grace_period: ${JOB_WORKER_STOP_GRACE_PERIOD:-65m}
     volumes:
       - ./src:/app/src
       - ./alembic:/app/alembic
@@ -157,7 +162,7 @@ services:
         condition: service_healthy
     command: python -m src.jobs.worker
     healthcheck:
-      test: ["CMD", "python", "-m", "src.jobs.healthcheck"]
+      test: ["CMD", "python", "-m", "src.jobs.healthcheck", "--mode", "readiness"]
       interval: 30s
       timeout: 10s
       retries: 3
