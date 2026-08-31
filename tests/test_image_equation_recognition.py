@@ -71,6 +71,22 @@ def test_printed_equation_uses_only_purpose_bound_vision_and_returns_latex():
     assert "JSON" in client.calls[0]["prompt"]
 
 
+def test_equation_system_uses_one_complete_system_prompt():
+    from src.education.remediation.equation_recognizer import EquationRecognizer
+
+    client = Client(
+        success(
+            '{"classification":"printed_equation","latex":"\\\\begin{cases}x=1\\\\\\\\y=2\\\\end{cases}"}'
+        )
+    )
+    result = EquationRecognizer(client).recognize_system(PAYLOAD)
+
+    assert result.classification == "printed_equation"
+    assert len(client.calls) == 1
+    assert "complete image" in client.calls[0]["prompt"]
+    assert "line order" in client.calls[0]["prompt"]
+
+
 def test_not_equation_requires_null_latex():
     from src.education.remediation.equation_recognizer import EquationRecognizer
 

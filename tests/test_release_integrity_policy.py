@@ -202,6 +202,16 @@ def test_immutable_image_gate_precedes_receipts_and_signs_version_index() -> Non
     )
     assert workflow.count(pinned_cosign_install) == 2
     assert "format: spdx-json" in workflow
+    final_package_gate = "Verify final API image Python package state"
+    assert workflow.count(final_package_gate) == 1
+    assert "if: matrix.image == 'aelira-core-api'" in workflow
+    assert 'docker pull "$IMAGE"' in workflow
+    assert workflow.count("/app/scripts/verify_final_python_packages.py") == 2
+    assert "/usr/local/bin/python" in workflow
+    assert "/opt/venv/bin/python" in workflow
+    assert workflow.index(final_package_gate) < workflow.index(
+        "Generate SPDX JSON SBOM for immutable image"
+    )
     assert "exit-code: '1'" in workflow
     assert "severity: HIGH,CRITICAL" in workflow
     assert "ignore-unfixed: true" in workflow
@@ -322,9 +332,9 @@ def test_trivy_blocking_ignore_has_exact_bounded_layer_false_positives() -> None
     assert len(justifications) == 2
     assert all("#160" in justification for justification in justifications)
     assert all(
-        "final filesystem" in justification.lower()
-        and "fixed" in justification.lower()
-        and "version" in justification.lower()
+        "trivy 0.74.0" in justification.lower()
+        and "syft 1.51.1" in justification.lower()
+        and "final-image gate" in justification.lower()
         for justification in justifications
     )
     documentation = (ROOT / "docs" / "RELEASE_INTEGRITY.md").read_text()
@@ -333,6 +343,10 @@ def test_trivy_blocking_ignore_has_exact_bounded_layer_false_positives() -> None
     assert "CVE-2025-47273" in documentation
     assert "2026-09-30" in documentation
     assert "issue #160" in documentation
+    assert "Trivy 0.74.0" in documentation
+    assert "Syft 1.51.1" in documentation
+    assert "scripts/verify_final_python_packages.py" in documentation
+    assert "before SBOM generation" in documentation
     assert "complete unsuppressed inventory" in documentation
 
 

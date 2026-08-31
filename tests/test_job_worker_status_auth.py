@@ -33,6 +33,7 @@ def _principal(
 
 def _db():
     db = MagicMock()
+    db.scalar.return_value = 0
     db.query.return_value.group_by.return_value = []
     db.query.return_value.filter.return_value.scalar.return_value = 0
     db.query.return_value.scalar.return_value = None
@@ -51,7 +52,48 @@ def test_worker_status_allows_only_super_admin():
         UserRole.SUPER_ADMIN
     )
     app.dependency_overrides[get_db_dependency] = _db
-    assert TestClient(app).get("/api/jobs/worker-status").status_code == 200
+    response = TestClient(app).get("/api/jobs/worker-status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["progress"] == {
+        "jobs_claimed": 0,
+        "jobs_completed": 0,
+        "jobs_failed": 0,
+        "oldest_pending_created_at": None,
+        "oldest_pending_age_seconds": None,
+        "oldest_processing_heartbeat_at": None,
+        "oldest_running_job_age_seconds": None,
+        "runnable_pending": 0,
+        "expired_processing": 0,
+        "stalled_processing": 0,
+        "latest_progress_at": None,
+        "latest_progress_age_seconds": None,
+    }
+    assert body["weekly_summary_scheduler"] == {
+        "state": "not_started",
+        "last_success_at": None,
+        "last_success_age_seconds": None,
+        "last_error_code": None,
+    }
+
+    def keys(value):
+        if isinstance(value, dict):
+            return set(value).union(*(keys(item) for item in value.values()))
+        if isinstance(value, list):
+            return set().union(*(keys(item) for item in value))
+        return set()
+
+    assert not {
+        "department_id",
+        "tenant_id",
+        "scan_id",
+        "cloud_file_id",
+        "worker_id",
+        "job_id",
+        "provider",
+        "credential_id",
+        "file_name",
+    } & keys(body)
 
 
 @pytest.mark.parametrize(

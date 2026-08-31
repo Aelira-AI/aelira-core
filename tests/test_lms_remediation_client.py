@@ -13,7 +13,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.ai.providers.base import LLMResponse
-from src.ai.providers.types import ProviderConfig, ProviderType
+from src.ai.providers.types import (
+    OLLAMA_EVALUATED_MODELS,
+    ProviderConfig,
+    ProviderType,
+)
 from src.db.models import AuditLogStatus, Department, User
 
 
@@ -1347,7 +1351,7 @@ def test_ollama_provider_uses_one_host_bound_client_for_full_lifecycle(monkeypat
         "gemma3:4b",
         "qwen2.5-coder:7b",
         "qwen2.5vl:3b",
-        "nomic-embed-text",
+        OLLAMA_EVALUATED_MODELS["embeddings"],
     ]
     fake_client = MagicMock()
     fake_client.list.return_value = {
@@ -1394,7 +1398,7 @@ def test_ollama_provider_uses_one_host_bound_client_for_full_lifecycle(monkeypat
     assert provider._client is None
     fake_client.chat.assert_called_once()
     fake_client.embeddings.assert_called_once_with(
-        model="nomic-embed-text", prompt="text"
+        model=OLLAMA_EVALUATED_MODELS["embeddings"], prompt="text"
     )
     assert fake_client.list.call_count == 3
     fake_client.close.assert_called_once_with()

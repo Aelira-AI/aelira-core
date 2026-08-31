@@ -160,17 +160,37 @@ class ImageAltTextGenerator:
                     provider,
                     "",
                 )
-            if provider == "unknown":
-                result_provider = result.get("provider")
-                if isinstance(result_provider, str) and result_provider.casefold() in {
-                    "gemini",
-                    "ollama",
-                    "anthropic",
-                    "openai",
-                    "xai",
-                    "local",
-                }:
-                    provider = result_provider.casefold()
+            result_provider = result.get("provider")
+            if isinstance(result_provider, str) and result_provider.casefold() in {
+                "gemini",
+                "ollama",
+                "anthropic",
+                "openai",
+                "xai",
+                "local",
+            }:
+                provider = result_provider.casefold()
+            metadata = result.get("metadata")
+            attempted = (
+                metadata.get("attempted_providers")
+                if isinstance(metadata, dict)
+                else None
+            )
+            if isinstance(attempted, list):
+                bounded_attempts = [
+                    item.casefold()
+                    for item in attempted
+                    if isinstance(item, str)
+                    and item.casefold()
+                    in {"gemini", "ollama", "anthropic", "openai", "xai", "local"}
+                ]
+                if bounded_attempts:
+                    self._usage["providers_attempted"] = list(
+                        dict.fromkeys(bounded_attempts)
+                    )
+                    self._usage["external_ai_used"] = any(
+                        item not in {"ollama", "local"} for item in bounded_attempts
+                    )
             model = result.get("model", "")
             elapsed = result.get("inference_time", 0.0)
             if not result.get("success"):

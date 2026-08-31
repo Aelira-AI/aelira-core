@@ -3,27 +3,22 @@ LLM Provider API endpoints.
 
 Allows users to view and manage their LLM provider settings.
 
-SECURITY: All endpoints require API key authentication.
-
-Gemini Model Options (January 2026 Benchmarks):
-- gemini-3-flash-preview: 100% accuracy, 5.4s - BEST QUALITY
-- gemini-2.5-flash: 87% accuracy, 5.4s - balanced option
-- gemini-2.0-flash-exp: 87% accuracy, 1.8s - FASTEST (free tier default)
-
-Users can switch models via PUT /llm/providers/gemini/models
-Users can bring their own API key via POST /llm/providers/add
+Workspace provider settings are provider-neutral, durable, and restricted to
+non-LTI session or API-key administrators. Supported choices are Ollama,
+Gemini, OpenAI, Anthropic, and xAI; no provider is selected by default.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, Query, status
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     StrictBool,
     StrictInt,
+    field_validator,
     model_validator,
 )
-from typing import Literal, Optional, Dict, Tuple, Union
+from typing import Any, Literal, Optional, Dict, Tuple, Union
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 import logging
@@ -32,6 +27,11 @@ from src.ai.providers import (
     get_provider_manager,
     ProviderType,
     ProviderConfig,
+)
+from src.ai.workspace_provider_config import (
+    PROVIDER_DISPLAY_NAMES,
+    SUPPORTED_WORKSPACE_PROVIDERS,
+    test_provider_row,
 )
 from src.ai.providers.manager import get_rate_limiter
 from src.ai.cache import get_llm_cache
@@ -42,7 +42,15 @@ from src.auth.dependencies import (
     get_authenticated_principal,
     get_required_api_key,
 )
-from src.db.models import APIKey, AuditLog, AuditLogAction, Department, User, UserRole
+from src.db.models import (
+    APIKey,
+    AuditLog,
+    AuditLogAction,
+    Department,
+    DepartmentAIProviderConfig,
+    User,
+    UserRole,
+)
 from src.db.database import get_db_dependency
 from src.utils.encryption import (
     encrypt_api_key,
@@ -61,6 +69,7 @@ class ProviderInfo(BaseModel):
 
     name: str
     display_name: str
+    configured: bool
     is_available: bool
     is_local: bool
     status: str
@@ -72,6 +81,8 @@ class ProviderInfo(BaseModel):
 class ProviderListResponse(BaseModel):
     """Response listing all providers."""
 
+    schema_version: Literal[1] = 1
+    config_revision: int
     primary: Optional[str]
     fallback: Optional[str]
     providers: Dict[str, ProviderInfo]
@@ -84,11 +95,58 @@ class SetProviderRequest(BaseModel):
     as_fallback: bool = False
 
 
+class ProviderSelectionUpdate(BaseModel):
+    """Complete workspace primary/fallback replacement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: StrictInt = Field(ge=0)
+    primary: Literal["ollama", "gemini", "openai", "anthropic", "xai"] | None
+    fallback: Literal["ollama", "gemini", "openai", "anthropic", "xai"] | None
+
+    @model_validator(mode="after")
+    def selections_must_be_distinct(self):
+        if self.primary is not None and self.primary == self.fallback:
+            raise ValueError("primary and fallback providers must be different")
+        return self
+
+
+class ProviderConfigUpdate(BaseModel):
+    """Create or replace one workspace provider configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: StrictInt = Field(ge=0)
+    # Credential validation happens inside the authorized route so framework
+    # validation errors can never echo the submitted secret in a 422 response.
+    api_key: Any = Field(
+        default=None,
+        json_schema_extra={"type": "string", "writeOnly": True},
+    )
+    clear_api_key: StrictBool = False
+    text_model: Optional[str] = Field(default=None, max_length=128)
+    code_model: Optional[str] = Field(default=None, max_length=128)
+    vision_model: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("text_model", "code_model", "vision_model")
+    @classmethod
+    def validate_model_identifier(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        import re
+
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,127}", value):
+            raise ValueError("invalid model identifier")
+        return value
+
+
 class AddProviderRequest(BaseModel):
     """Request to add a new provider with API key."""
 
     provider: str
-    api_key: str
+    api_key: Any = Field(
+        json_schema_extra={"type": "string", "writeOnly": True},
+    )
     text_model: Optional[str] = None
     code_model: Optional[str] = None
     vision_model: Optional[str] = None
@@ -109,7 +167,6 @@ class TestResponse(BaseModel):
     provider: str
     model: str
     inference_time: float
-    response_preview: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -236,6 +293,148 @@ def _get_own_department(
     if department is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return department
+
+
+def _require_provider_admin(principal: AuthenticatedPrincipal) -> None:
+    """Restrict provider settings to normal workspace admin channels."""
+
+    if principal.auth_method not in {"session", "api_key"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    if principal.user_role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+
+def _provider_type(provider: str) -> ProviderType:
+    try:
+        return ProviderType.from_string(provider)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported provider",
+        ) from exc
+
+
+def _validated_provider_api_key(update: ProviderConfigUpdate) -> str | None:
+    """Validate a submitted secret without reflecting it through Pydantic errors."""
+
+    if update.api_key is None:
+        return None
+    if update.clear_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="API key actions cannot be combined",
+        )
+    if not isinstance(update.api_key, str):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid provider API key",
+        )
+    value = update.api_key.strip()
+    if not value or len(value) > 4096:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid provider API key",
+        )
+    return value
+
+
+def _workspace_provider_rows(
+    db: Session, department_id: str
+) -> dict[str, DepartmentAIProviderConfig]:
+    rows = (
+        db.query(DepartmentAIProviderConfig)
+        .filter(DepartmentAIProviderConfig.department_id == department_id)
+        .all()
+    )
+    return {row.provider: row for row in rows}
+
+
+def _workspace_provider_response(
+    db: Session, department: Department
+) -> ProviderListResponse:
+    rows = _workspace_provider_rows(db, department.id)
+    providers: dict[str, ProviderInfo] = {}
+    for provider_name in SUPPORTED_WORKSPACE_PROVIDERS:
+        row = rows.get(provider_name)
+        defaults = ProviderConfig.default_for_provider(ProviderType(provider_name))
+        providers[provider_name] = ProviderInfo(
+            name=provider_name,
+            display_name=PROVIDER_DISPLAY_NAMES[provider_name],
+            configured=row is not None,
+            is_available=row is not None,
+            is_local=provider_name == "ollama",
+            status="configured" if row is not None else "not_configured",
+            text_model=(row.text_model or defaults.text_model) if row else None,
+            code_model=(row.code_model or defaults.code_model) if row else None,
+            vision_model=(row.vision_model or defaults.vision_model) if row else None,
+        )
+    return ProviderListResponse(
+        config_revision=department.ai_provider_config_revision,
+        primary=department.ai_primary_provider,
+        fallback=department.ai_fallback_provider,
+        providers=providers,
+    )
+
+
+def _locked_provider_department(
+    db: Session,
+    principal: AuthenticatedPrincipal,
+    expected_revision: int,
+) -> Department:
+    department = _get_own_department(db, principal.department_id, for_update=True)
+    if department.ai_provider_config_revision != expected_revision:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "provider_config_revision_conflict",
+                "reason": "stale_revision",
+                "current": _workspace_provider_response(db, department).model_dump(),
+            },
+        )
+    return department
+
+
+def _provider_audit(
+    *,
+    principal: AuthenticatedPrincipal,
+    action: str,
+    provider: str | None,
+    old_revision: int,
+    new_revision: int,
+    changed_fields: list[str],
+    old_selection: dict[str, str | None],
+    new_selection: dict[str, str | None],
+) -> AuditLog:
+    return AuditLog(
+        user_id=principal.user_id,
+        department_id=principal.department_id,
+        action=AuditLogAction.AI_PROVIDER_CONFIG_UPDATE.value,
+        resource_type="department_ai_provider_config",
+        resource_id=principal.department_id,
+        details={
+            "schema_version": 1,
+            "action": action,
+            "provider": provider,
+            "changed_fields": sorted(changed_fields),
+            "old_selection": old_selection,
+            "new_selection": new_selection,
+            "old_revision": old_revision,
+            "new_revision": new_revision,
+            "outcome": "updated",
+        },
+        status="success",
+    )
+
+
+def _commit_provider_update(db: Session) -> None:
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Provider configuration update failed",
+        ) from exc
 
 
 def _require_policy_admin(principal: AuthenticatedPrincipal) -> None:
@@ -409,308 +608,380 @@ def update_lms_ai_policy(
 
 
 @router.get("/providers", response_model=ProviderListResponse)
-async def list_providers(
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+def list_providers(
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
 ):
-    """
-    List all available LLM providers.
+    """Return the caller's durable, secret-free workspace configuration."""
 
-    Requires authentication via API key.
+    _require_provider_admin(principal)
+    department = _get_own_department(db, principal.department_id)
+    return _workspace_provider_response(db, department)
 
-    Returns information about each provider's status and capabilities.
-    """
-    manager = get_provider_manager()
 
-    # Initialize if needed
-    if not manager._initialized:
-        await manager.initialize()
+@router.put("/providers/selection", response_model=ProviderListResponse)
+def update_workspace_provider_selection_route(
+    update: ProviderSelectionUpdate,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
+):
+    return _update_workspace_provider_selection(update, principal, db)
 
-    manager.health_check()
 
-    providers = {}
-    for ptype in ProviderType:
-        provider = manager.get_provider(ptype)
-        if provider:
-            provider_health = provider.health_check()
-            providers[ptype.value] = ProviderInfo(
-                name=ptype.value,
-                display_name=provider.display_name,
-                is_available=provider.is_available,
-                is_local=provider.is_local,
-                status=provider_health.get("status", "unknown"),
-                text_model=provider_health.get("text_model"),
-                code_model=provider_health.get("code_model"),
-                vision_model=provider_health.get("vision_model"),
-            )
-        else:
-            # Provider not initialized
-            providers[ptype.value] = ProviderInfo(
-                name=ptype.value,
-                display_name=ptype.value.title(),
-                is_available=False,
-                is_local=ptype == ProviderType.OLLAMA,
-                status="not_configured",
-            )
+@router.put("/providers/{provider}", response_model=ProviderListResponse)
+def configure_workspace_provider(
+    provider: str,
+    update: ProviderConfigUpdate,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
+):
+    """Create or update one provider in the caller's workspace."""
 
-    return ProviderListResponse(
-        primary=manager.primary_type.value if manager.primary_type else None,
-        fallback=manager.fallback_type.value if manager.fallback_type else None,
-        providers=providers,
+    _require_provider_admin(principal)
+    provider_type = _provider_type(provider)
+    provider_name = provider_type.value
+    api_key = _validated_provider_api_key(update)
+    department = _locked_provider_department(db, principal, update.expected_revision)
+    old_revision = department.ai_provider_config_revision
+    old_selection = {
+        "primary": department.ai_primary_provider,
+        "fallback": department.ai_fallback_provider,
+    }
+    row = (
+        db.query(DepartmentAIProviderConfig)
+        .filter(
+            DepartmentAIProviderConfig.department_id == principal.department_id,
+            DepartmentAIProviderConfig.provider == provider_name,
+        )
+        .first()
     )
+
+    if provider_type is ProviderType.OLLAMA:
+        if api_key is not None or update.clear_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ollama does not accept an API key",
+            )
+        encrypted_key = None
+    else:
+        if update.clear_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Delete the provider configuration to remove its key",
+            )
+        if api_key is None and row is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="A provider API key is required",
+            )
+        encrypted_key = row.api_key_encrypted if row is not None else None
+        if api_key is not None:
+            if not is_encryption_configured():
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Provider credential encryption is unavailable",
+                )
+            try:
+                encrypted_key = encrypt_api_key(api_key)
+            except EncryptionError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Provider credential encryption failed",
+                ) from exc
+
+    if row is None:
+        row = DepartmentAIProviderConfig(
+            department_id=principal.department_id,
+            provider=provider_name,
+        )
+        db.add(row)
+    row.api_key_encrypted = encrypted_key
+    for field_name in ("text_model", "code_model", "vision_model"):
+        if field_name in update.model_fields_set:
+            setattr(row, field_name, getattr(update, field_name))
+
+    changed_fields = ["provider_configuration"]
+    if api_key is not None:
+        changed_fields.append("credential")
+    for field_name in ("text_model", "code_model", "vision_model"):
+        if field_name in update.model_fields_set:
+            changed_fields.append(field_name)
+
+    department.ai_provider_config_revision = old_revision + 1
+    db.add(
+        _provider_audit(
+            principal=principal,
+            action="configure",
+            provider=provider_name,
+            old_revision=old_revision,
+            new_revision=old_revision + 1,
+            changed_fields=changed_fields,
+            old_selection=old_selection,
+            new_selection=old_selection,
+        )
+    )
+    _commit_provider_update(db)
+    return _workspace_provider_response(db, department)
+
+
+def _update_workspace_provider_selection(
+    update: ProviderSelectionUpdate,
+    principal: AuthenticatedPrincipal,
+    db: Session,
+):
+    """Atomically replace durable primary and fallback selections."""
+
+    _require_provider_admin(principal)
+    department = _locked_provider_department(db, principal, update.expected_revision)
+    configured = set(_workspace_provider_rows(db, principal.department_id))
+    for selected in (update.primary, update.fallback):
+        if selected is not None and selected not in configured:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "provider_not_configured",
+                    "provider": selected,
+                },
+            )
+
+    old_revision = department.ai_provider_config_revision
+    old_selection = {
+        "primary": department.ai_primary_provider,
+        "fallback": department.ai_fallback_provider,
+    }
+    new_selection = {"primary": update.primary, "fallback": update.fallback}
+    department.ai_primary_provider = update.primary
+    department.ai_fallback_provider = update.fallback
+    department.ai_provider_config_revision = old_revision + 1
+    db.add(
+        _provider_audit(
+            principal=principal,
+            action="selection",
+            provider=None,
+            old_revision=old_revision,
+            new_revision=old_revision + 1,
+            changed_fields=["primary", "fallback"],
+            old_selection=old_selection,
+            new_selection=new_selection,
+        )
+    )
+    _commit_provider_update(db)
+    return _workspace_provider_response(db, department)
+
+
+@router.delete("/providers/{provider}", response_model=ProviderListResponse)
+def delete_workspace_provider(
+    provider: str,
+    expected_revision: int = Query(ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
+):
+    """Delete one unselected provider configuration."""
+
+    _require_provider_admin(principal)
+    provider_name = _provider_type(provider).value
+    department = _locked_provider_department(db, principal, expected_revision)
+    if provider_name in {
+        department.ai_primary_provider,
+        department.ai_fallback_provider,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "provider_is_selected", "provider": provider_name},
+        )
+    row = (
+        db.query(DepartmentAIProviderConfig)
+        .filter(
+            DepartmentAIProviderConfig.department_id == principal.department_id,
+            DepartmentAIProviderConfig.provider == provider_name,
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    old_revision = department.ai_provider_config_revision
+    selection = {
+        "primary": department.ai_primary_provider,
+        "fallback": department.ai_fallback_provider,
+    }
+    db.delete(row)
+    department.ai_provider_config_revision = old_revision + 1
+    db.add(
+        _provider_audit(
+            principal=principal,
+            action="delete",
+            provider=provider_name,
+            old_revision=old_revision,
+            new_revision=old_revision + 1,
+            changed_fields=["provider_configuration", "credential"],
+            old_selection=selection,
+            new_selection=selection,
+        )
+    )
+    _commit_provider_update(db)
+    return _workspace_provider_response(db, department)
 
 
 @router.post("/providers/primary")
-async def set_primary_provider(
+def set_primary_provider(
     request: SetProviderRequest,
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
 ):
-    """
-    Set the primary or fallback LLM provider.
+    """Compatibility wrapper for the historical primary-selection route."""
 
-    Requires authentication via API key.
-
-    The provider must already be configured and available.
-    """
-    try:
-        provider_type = ProviderType.from_string(request.provider)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    manager = get_provider_manager()
-
-    if not manager._initialized:
-        await manager.initialize()
-
-    if request.as_fallback:
-        success = manager.set_fallback_provider(provider_type)
-        action = "fallback"
-    else:
-        success = manager.set_primary_provider(provider_type)
-        action = "primary"
-
-    if not success:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Provider {request.provider} is not available. "
-            f"Configure it first using POST /llm/providers/add",
-        )
-
+    _require_provider_admin(principal)
+    department = _get_own_department(db, principal.department_id, for_update=True)
+    update = ProviderSelectionUpdate(
+        expected_revision=department.ai_provider_config_revision,
+        primary=(
+            department.ai_primary_provider if request.as_fallback else request.provider
+        ),
+        fallback=(
+            request.provider if request.as_fallback else department.ai_fallback_provider
+        ),
+    )
+    current = _update_workspace_provider_selection(update, principal, db)
     return {
         "success": True,
-        "message": f"Set {request.provider} as {action} provider",
-        "primary": manager.primary_type.value if manager.primary_type else None,
-        "fallback": manager.fallback_type.value if manager.fallback_type else None,
+        "message": f"Set {request.provider} as {'fallback' if request.as_fallback else 'primary'} provider",
+        "primary": current.primary,
+        "fallback": current.fallback,
+        "config_revision": current.config_revision,
     }
 
 
 @router.post("/providers/add")
-async def add_provider(
+def add_provider(
     request: AddProviderRequest,
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Add or update a provider with an API key (BYOK - Bring Your Own Key).
+    """Compatibility wrapper for historical BYOK configuration."""
 
-    Requires authentication via API key.
-
-    Use this to configure OpenAI, Anthropic, or Gemini with your own API key.
-    This persists your BYOK configuration to your department for pilot/department tiers.
-    """
-    try:
-        provider_type = ProviderType.from_string(request.provider)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Build config
-    config = ProviderConfig.default_for_provider(provider_type)
-    config.api_key = request.api_key
-
-    if request.text_model:
-        config.text_model = request.text_model
-    if request.code_model:
-        config.code_model = request.code_model
-    if request.vision_model:
-        config.vision_model = request.vision_model
-
-    manager = get_provider_manager()
-
-    success = await manager.add_provider(provider_type, config)
-
-    if not success:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to initialize provider {request.provider}. "
-            f"Check your API key and try again.",
-        )
-
-    # Persist BYOK configuration to department for pilot/department tiers
-    api_key_obj, _, _ = api_key_info
-    byok_persisted = False
-    encryption_warning = None
-
-    if api_key_obj and api_key_obj.department_id:
-        department = (
-            db.query(Department)
-            .filter(Department.id == api_key_obj.department_id)
-            .first()
-        )
-        if department:
-            department.byok_provider = request.provider
-            department.byok_configured_at = datetime.now(timezone.utc)
-
-            # Encrypt and persist the API key if encryption is configured
-            if is_encryption_configured():
-                try:
-                    encrypted_key = encrypt_api_key(request.api_key)
-                    department.byok_api_key_encrypted = encrypted_key
-                    byok_persisted = True
-                    logger.info(
-                        f"Persisted encrypted BYOK key for department {department.id} "
-                        f"(provider: {request.provider})"
-                    )
-                except EncryptionError as e:
-                    logger.warning(f"Failed to encrypt BYOK key: {e}")
-                    encryption_warning = (
-                        "API key could not be encrypted for persistent storage"
-                    )
-            else:
-                encryption_warning = (
-                    "BYOK_ENCRYPTION_KEY not configured. "
-                    "API key is active but not persisted for future sessions."
-                )
-                logger.warning(
-                    f"BYOK encryption not configured - key for department "
-                    f"{department.id} will not persist across restarts"
-                )
-
-            db.commit()
-
+    _require_provider_admin(principal)
+    department = _get_own_department(db, principal.department_id, for_update=True)
+    current = configure_workspace_provider(
+        request.provider,
+        ProviderConfigUpdate(
+            expected_revision=department.ai_provider_config_revision,
+            api_key=request.api_key,
+            text_model=request.text_model,
+            code_model=request.code_model,
+            vision_model=request.vision_model,
+        ),
+        principal,
+        db,
+    )
     return {
         "success": True,
         "message": f"Provider {request.provider} configured successfully",
         "provider": request.provider,
-        "byok_saved": byok_persisted,
-        "warning": encryption_warning,
+        "byok_saved": True,
+        "warning": None,
+        "config_revision": current.config_revision,
     }
 
 
 @router.put("/providers/{provider}/models")
-async def update_provider_models(
+def update_provider_models(
     provider: str,
     request: UpdateModelsRequest,
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
 ):
-    """
-    Update models for an existing provider without changing the API key.
+    """Compatibility wrapper for durable model updates."""
 
-    Requires authentication via API key.
-    """
-    try:
-        provider_type = ProviderType.from_string(provider)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    manager = get_provider_manager()
-
-    if not manager._initialized:
-        await manager.initialize()
-
-    provider_instance = manager.get_provider(provider_type)
-    if not provider_instance or not provider_instance.is_available:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Provider {provider} is not configured. "
-            f"Use POST /llm/providers/add to configure it first.",
+    _require_provider_admin(principal)
+    provider_name = _provider_type(provider).value
+    department = _get_own_department(db, principal.department_id, for_update=True)
+    row = (
+        db.query(DepartmentAIProviderConfig)
+        .filter(
+            DepartmentAIProviderConfig.department_id == principal.department_id,
+            DepartmentAIProviderConfig.provider == provider_name,
         )
-
-    # Update the models on the existing provider
-    if request.text_model:
-        provider_instance.config.text_model = request.text_model
-    if request.code_model:
-        provider_instance.config.code_model = request.code_model
-    if request.vision_model:
-        provider_instance.config.vision_model = request.vision_model
-
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    current = configure_workspace_provider(
+        provider_name,
+        ProviderConfigUpdate(
+            expected_revision=department.ai_provider_config_revision,
+            text_model=request.text_model,
+            code_model=request.code_model,
+            vision_model=request.vision_model,
+        ),
+        principal,
+        db,
+    )
+    provider_info = current.providers[provider_name]
     return {
         "success": True,
         "message": f"Updated models for {provider}",
         "provider": provider,
-        "text_model": provider_instance.config.text_model,
-        "code_model": provider_instance.config.code_model,
-        "vision_model": provider_instance.config.vision_model,
+        "text_model": provider_info.text_model,
+        "code_model": provider_info.code_model,
+        "vision_model": provider_info.vision_model,
+        "config_revision": current.config_revision,
     }
 
 
 @router.post("/providers/test", response_model=TestResponse)
 async def test_provider(
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
     provider: Optional[str] = None,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
 ):
-    """
-    Test an LLM provider with a simple prompt.
+    """Test one fresh provider instance from the caller's workspace row."""
 
-    Requires authentication via API key.
-
-    If no provider specified, tests the primary provider.
-    """
-    manager = get_provider_manager()
-
-    if not manager._initialized:
-        await manager.initialize()
-
-    provider_type = None
-    if provider:
-        try:
-            provider_type = ProviderType.from_string(provider)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-    # Test with a simple accessibility-related prompt
-    response = await manager.generate_text(
-        prompt="What is WCAG 2.1? Answer in one sentence.",
-        max_tokens=100,
-        temperature=0.3,
-        provider=provider_type,
+    _require_provider_admin(principal)
+    department = _get_own_department(db, principal.department_id)
+    provider_name = (
+        _provider_type(provider).value if provider else department.ai_primary_provider
     )
-
-    return TestResponse(
-        success=response.success,
-        provider=response.provider,
-        model=response.model,
-        inference_time=response.inference_time,
-        response_preview=response.content[:200] if response.content else None,
-        error=response.error,
+    if provider_name is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "primary_provider_not_selected"},
+        )
+    row = (
+        db.query(DepartmentAIProviderConfig)
+        .filter(
+            DepartmentAIProviderConfig.department_id == principal.department_id,
+            DepartmentAIProviderConfig.provider == provider_name,
+        )
+        .first()
     )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    result = await test_provider_row(row, decryptor=decrypt_api_key)
+    return TestResponse(**result.__dict__)
 
 
 @router.get("/providers/{provider}/models")
-async def list_provider_models(
+def list_provider_models(
     provider: str,
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    db: Session = Depends(get_db_dependency),
 ):
-    """
-    List available models for a specific provider.
+    """Return static configured models without constructing a provider."""
 
-    Requires authentication via API key.
-    """
-    try:
-        provider_type = ProviderType.from_string(provider)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    manager = get_provider_manager()
-    provider_instance = manager.get_provider(provider_type)
-
-    if not provider_instance:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Provider {provider} not initialized",
-        )
-
+    _require_provider_admin(principal)
+    provider_name = _provider_type(provider).value
+    department = _get_own_department(db, principal.department_id)
+    response = _workspace_provider_response(db, department)
+    info = response.providers[provider_name]
+    if not info.is_available:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return {
-        "provider": provider,
-        "models": provider_instance.get_available_models(),
+        "provider": provider_name,
+        "models": [
+            model
+            for model in (info.text_model, info.code_model, info.vision_model)
+            if model is not None
+        ],
     }
 
 
@@ -754,7 +1025,7 @@ async def get_recommended_models(
                 "accuracy": "87%",
                 "avg_time": "1.8s",
                 "description": "Fastest response time, good for bulk operations",
-                "best_for": ["free_tier", "bulk_scanning", "real_time"],
+                "best_for": ["bulk_scanning", "real_time"],
             },
             "balanced": {
                 "model": "gemini-2.5-flash",
@@ -803,170 +1074,110 @@ async def get_recommended_models(
 
 
 @router.get("/byok/status")
-async def get_byok_status(
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+def get_byok_status(
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Get BYOK (Bring Your Own Key) configuration status for the authenticated department.
+    """Compatibility status for workspace-owned provider configuration."""
 
-    Returns information about the persisted API key configuration without exposing
-    the actual key.
-
-    Requires authentication via API key.
-    """
-    api_key_obj, _, _ = api_key_info
-
-    if not api_key_obj or not api_key_obj.department_id:
-        return {
-            "configured": False,
-            "message": "No department associated with this API key",
-        }
-
-    department = (
-        db.query(Department).filter(Department.id == api_key_obj.department_id).first()
-    )
-
-    if not department:
-        return {
-            "configured": False,
-            "message": "Department not found",
-        }
-
-    has_encrypted_key = bool(department.byok_api_key_encrypted)
-
+    _require_provider_admin(principal)
+    department = _get_own_department(db, principal.department_id)
+    rows = _workspace_provider_rows(db, principal.department_id)
+    reported_provider = department.ai_primary_provider
+    if reported_provider is None and len(rows) == 1:
+        reported_provider = next(iter(rows))
+    reported_row = rows.get(reported_provider) if reported_provider else None
     return {
-        "configured": has_encrypted_key,
-        "provider": department.byok_provider,
+        "configured": bool(rows),
+        "provider": reported_provider,
         "configured_at": (
-            department.byok_configured_at.isoformat()
-            if department.byok_configured_at
+            reported_row.configured_at.isoformat()
+            if reported_row is not None and reported_row.configured_at
             else None
         ),
         "tier": department.tier,
         "pilot_gemini_approved": department.pilot_gemini_approved,
         "encryption_available": is_encryption_configured(),
+        "config_revision": department.ai_provider_config_revision,
     }
 
 
 @router.post("/byok/load")
-async def load_byok_provider(
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+def load_byok_provider(
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Load the persisted BYOK provider configuration for the authenticated department.
+    """Deprecated no-op: durable rows need no process-global loading."""
 
-    This decrypts the stored API key and initializes the provider.
-    Call this on application startup or when you need to restore BYOK configuration.
-
-    Requires authentication via API key.
-    """
-    api_key_obj, _, _ = api_key_info
-
-    if not api_key_obj or not api_key_obj.department_id:
-        raise HTTPException(
-            status_code=400,
-            detail="No department associated with this API key",
-        )
-
-    department = (
-        db.query(Department).filter(Department.id == api_key_obj.department_id).first()
-    )
-
-    if not department:
-        raise HTTPException(status_code=404, detail="Department not found")
-
-    if not department.byok_api_key_encrypted:
-        raise HTTPException(
-            status_code=404,
-            detail="No BYOK API key configured for this department",
-        )
-
-    if not department.byok_provider:
-        raise HTTPException(
-            status_code=400,
-            detail="BYOK provider type not set",
-        )
-
-    # Decrypt the API key
-    try:
-        decrypted_key = decrypt_api_key(department.byok_api_key_encrypted)
-    except EncryptionError as e:
-        logger.error(f"Failed to decrypt BYOK key for department {department.id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to decrypt BYOK API key. The encryption key may have changed.",
-        )
-
-    # Initialize the provider
-    try:
-        provider_type = ProviderType.from_string(department.byok_provider)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    config = ProviderConfig.default_for_provider(provider_type)
-    config.api_key = decrypted_key
-
-    manager = get_provider_manager()
-    success = await manager.add_provider(provider_type, config)
-
-    if not success:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to initialize provider {department.byok_provider}. "
-            f"The stored API key may be invalid.",
-        )
-
-    logger.info(
-        f"Loaded BYOK provider {department.byok_provider} for department {department.id}"
-    )
-
+    _require_provider_admin(principal)
+    department = _get_own_department(db, principal.department_id)
+    rows = _workspace_provider_rows(db, principal.department_id)
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    reported_provider = department.ai_primary_provider
+    if reported_provider is None and len(rows) == 1:
+        reported_provider = next(iter(rows))
     return {
         "success": True,
-        "message": f"BYOK provider {department.byok_provider} loaded successfully",
-        "provider": department.byok_provider,
+        "message": "Workspace provider configuration is already durable",
+        "provider": reported_provider,
+        "config_revision": department.ai_provider_config_revision,
     }
 
 
 @router.delete("/byok")
-async def delete_byok_config(
-    api_key_info: Tuple[Optional[APIKey], str, str] = Depends(get_required_api_key),
+def delete_byok_config(
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Delete the BYOK configuration for the authenticated department.
+    """Compatibility wrapper deleting the selected provider configuration."""
 
-    This removes the encrypted API key from storage.
-
-    Requires authentication via API key.
-    """
-    api_key_obj, _, _ = api_key_info
-
-    if not api_key_obj or not api_key_obj.department_id:
-        raise HTTPException(
-            status_code=400,
-            detail="No department associated with this API key",
+    _require_provider_admin(principal)
+    department = _get_own_department(db, principal.department_id, for_update=True)
+    configured_rows = _workspace_provider_rows(db, principal.department_id)
+    provider = department.ai_primary_provider
+    if provider is None and len(configured_rows) == 1:
+        provider = next(iter(configured_rows))
+    if provider is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    old_provider = provider
+    row = (
+        db.query(DepartmentAIProviderConfig)
+        .filter(
+            DepartmentAIProviderConfig.department_id == principal.department_id,
+            DepartmentAIProviderConfig.provider == provider,
         )
-
-    department = (
-        db.query(Department).filter(Department.id == api_key_obj.department_id).first()
+        .first()
     )
-
-    if not department:
-        raise HTTPException(status_code=404, detail="Department not found")
-
-    old_provider = department.byok_provider
-    department.byok_provider = None
-    department.byok_api_key_encrypted = None
-    department.byok_configured_at = None
-    db.commit()
-
-    logger.info(
-        f"Deleted BYOK configuration for department {department.id} "
-        f"(was: {old_provider})"
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    old_revision = department.ai_provider_config_revision
+    old_selection = {
+        "primary": department.ai_primary_provider,
+        "fallback": department.ai_fallback_provider,
+    }
+    db.delete(row)
+    department.ai_primary_provider = None
+    if department.ai_fallback_provider == provider:
+        department.ai_fallback_provider = None
+    department.ai_provider_config_revision = old_revision + 1
+    new_selection = {
+        "primary": department.ai_primary_provider,
+        "fallback": department.ai_fallback_provider,
+    }
+    db.add(
+        _provider_audit(
+            principal=principal,
+            action="delete",
+            provider=provider,
+            old_revision=old_revision,
+            new_revision=old_revision + 1,
+            changed_fields=["provider_configuration", "credential", "primary"],
+            old_selection=old_selection,
+            new_selection=new_selection,
+        )
     )
-
+    _commit_provider_update(db)
     return {
         "success": True,
         "message": "BYOK configuration deleted",

@@ -1,4 +1,15 @@
 import { get, post } from './client';
+import {
+  aggregateBrightspaceRemediationBatch,
+  resolveBoundedBrightspaceRemediationBatch,
+  resolveBrightspaceRemediationJob,
+  type BrightspaceRemediationJobStatus,
+  type BrightspaceRemediationBatchResult,
+  type BrightspaceRemediationPollingOptions as RequiredPollingOptions,
+  type BrightspaceRemediationResult,
+} from '../utils/brightspaceRemediation';
+
+export type { BrightspaceRemediationJobStatus } from '../utils/brightspaceRemediation';
 
 // ============================================================================
 // Request Types
@@ -92,29 +103,32 @@ export interface BatchWritebackResponse {
   stale_count: number;
 }
 
-export interface RemediateResponse {
-  cloud_file_id: string;
-  status: 'completed' | 'manual_required' | 'no_op' | 'failed';
-  fixed_count: number;
-  manual_count: number;
-  failed_count: number;
-  skipped_count: number;
-  has_remediated_version: boolean;
-  ai_used: boolean;
-  external_ai_used: boolean;
-  providers: string[];
-  purpose_decisions: Record<string, string>;
-  error_code?: string | null;
+export type RemediateResponse = BrightspaceRemediationResult;
+
+export type BatchRemediateResponse = BrightspaceRemediationBatchResult;
+
+interface BatchRemediationJobsResponse {
+  status: 'queued';
+  requested_count: number;
+  jobs: BrightspaceRemediationJobStatus[];
 }
 
-export interface BatchRemediateResponse {
-  status: 'completed';
-  requested_count: number;
-  completed_count: number;
-  manual_count: number;
-  failed_count: number;
-  fixed_count: number;
-  results: RemediateResponse[];
+export interface BrightspaceRemediationPollingOptions
+  extends Omit<RequiredPollingOptions, 'getStatus'> {
+  getStatus?: (
+    statusUrl: string,
+    signal?: AbortSignal
+  ) => Promise<BrightspaceRemediationJobStatus>;
+  maxConcurrentJobs?: number;
+}
+
+function withStatusClient(
+  options: BrightspaceRemediationPollingOptions
+): RequiredPollingOptions {
+  const getStatus = options.getStatus
+    ?? ((statusUrl: string, signal?: AbortSignal) =>
+      get<BrightspaceRemediationJobStatus>(statusUrl, { signal }));
+  return { ...options, getStatus };
 }
 
 export interface AuditLogEntry {
@@ -161,10 +175,12 @@ export async function scanCourseContent(
  * GET /brightspace/content/courses/{orgUnitId}/status
  */
 export async function getCourseContentStatus(
-  orgUnitId: number
+  orgUnitId: number,
+  signal?: AbortSignal
 ): Promise<CourseContentStatusResponse> {
   return get<CourseContentStatusResponse>(
-    `/brightspace/content/courses/${encodeURIComponent(orgUnitId)}/status`
+    `/brightspace/content/courses/${encodeURIComponent(orgUnitId)}/status`,
+    { signal }
   );
 }
 
@@ -248,10 +264,16 @@ export async function batchWriteBack(
  * Remediate a single content item's accessibility issues.
  * POST /brightspace/content/{cloudFileId}/remediate
  */
-export async function remediateContent(cloudFileId: string): Promise<RemediateResponse> {
-  return post<RemediateResponse>(
-    `/brightspace/content/${encodeURIComponent(cloudFileId)}/remediate`
+export async function remediateContent(
+  cloudFileId: string,
+  pollingOptions: BrightspaceRemediationPollingOptions = {}
+): Promise<RemediateResponse> {
+  const queued = await post<BrightspaceRemediationJobStatus>(
+    `/brightspace/content/${encodeURIComponent(cloudFileId)}/remediate`,
+    undefined,
+    { signal: pollingOptions.signal }
   );
+  return resolveBrightspaceRemediationJob(queued, withStatusClient(pollingOptions));
 }
 
 /**
@@ -259,12 +281,19 @@ export async function remediateContent(cloudFileId: string): Promise<RemediateRe
  * POST /brightspace/content/batch-remediate
  */
 export async function batchRemediateContent(
-  request: BatchRemediateRequest
+  request: BatchRemediateRequest,
+  pollingOptions: BrightspaceRemediationPollingOptions = {}
 ): Promise<BatchRemediateResponse> {
-  return post<BatchRemediateResponse, BatchRemediateRequest>(
+  const queued = await post<BatchRemediationJobsResponse, BatchRemediateRequest>(
     '/brightspace/content/batch-remediate',
-    request
+    request,
+    { signal: pollingOptions.signal }
   );
+  const results = await resolveBoundedBrightspaceRemediationBatch(
+    queued.jobs,
+    withStatusClient(pollingOptions)
+  );
+  return aggregateBrightspaceRemediationBatch(queued.requested_count, results);
 }
 
 /**

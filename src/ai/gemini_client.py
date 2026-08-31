@@ -7,6 +7,7 @@ severity classifications in canonical WCAG guidelines.
 import time
 import httpx
 import logging
+from copy import copy
 from typing import Dict, Any, Optional
 
 from src.config.settings import get_settings
@@ -78,6 +79,15 @@ class GeminiClient:
             except Exception as e:
                 logger.warning(f"RAG knowledge base not available: {e}")
                 self.enable_rag = False
+
+    def bind_provider_manager(
+        self, provider_manager: ProviderManager
+    ) -> "GeminiClient":
+        """Clone the compatibility surface while sharing provider-neutral RAG state."""
+
+        bound = copy(self)
+        bound.provider_manager = provider_manager
+        return bound
 
     @staticmethod
     def _response_dict(response: LLMResponse) -> Dict[str, Any]:

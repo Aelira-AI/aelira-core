@@ -26,10 +26,23 @@ from ..education.equation_region_contract import (
     canonical_region_locator,
     valid_region_locator,
 )
-from ..education.remediation.base import FixedIssue, VerificationEvidence
+from ..education.remediation.base import (
+    FixedIssue,
+    HandwrittenVerificationEvidence,
+    VerificationEvidence,
+)
 from ..education.visual_semantic_contract import (
+    ChemicalStructurePdfContract,
+    ChemicalStructureRecognitionEvidenceV1,
+    ChemicalFormulaPdfContract,
+    ChemicalFormulaRecognitionEvidenceV1,
+    CommutativeDiagramPdfContract,
+    CommutativeDiagramRecognitionEvidenceV1,
     EmbeddedImageOccurrenceLocator,
     FrozenPageRasterRegionLocator,
+    HandwrittenEquationConsensusEvidenceV1,
+    HandwrittenEquationContract,
+    PrintedEquationContract,
     PrintedEquationRoundtripEvidenceV1,
     VisualSemanticContract,
     VisualSemanticContractAdapter,
@@ -38,6 +51,17 @@ from ..education.visual_semantic_contract import (
 from ..utils.sanitization import sanitize_for_postgres
 
 IMAGE_EQUATION_SOURCE_KIND = "image_equation"
+CHEMICAL_STRUCTURE_SOURCE_KIND = "chemical_structure"
+CHEMICAL_FORMULA_SOURCE_KIND = "chemical_formula"
+COMMUTATIVE_DIAGRAM_SOURCE_KIND = "commutative_diagram"
+REVIEW_GATED_VISUAL_SOURCE_KINDS = frozenset(
+    {
+        IMAGE_EQUATION_SOURCE_KIND,
+        CHEMICAL_STRUCTURE_SOURCE_KIND,
+        CHEMICAL_FORMULA_SOURCE_KIND,
+        COMMUTATIVE_DIAGRAM_SOURCE_KIND,
+    }
+)
 IMAGE_EQUATION_THRESHOLD_VERSION = "printed-equation-v1"
 IMAGE_EQUATION_REQUIRED_INK_IOU = 0.90
 IMAGE_EQUATION_REQUIRED_PIXEL_SIMILARITY = 0.98
@@ -217,16 +241,49 @@ def lock_scan_review_graph(
 
 def _evidence_dict(value: Any) -> dict[str, Any]:
     """Return only the typed durable evidence allowlist."""
-    evidence = VerificationEvidence.model_validate(value)
+    evidence = _validated_evidence(value)
     return evidence.model_dump(mode="json")
+
+
+def _validated_evidence(
+    value: Any,
+) -> (
+    VerificationEvidence
+    | HandwrittenVerificationEvidence
+    | ChemicalStructureRecognitionEvidenceV1
+    | ChemicalFormulaRecognitionEvidenceV1
+    | CommutativeDiagramRecognitionEvidenceV1
+):
+    """Validate one active compatibility projection without coercing variants."""
+    raw = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+    if (
+        isinstance(raw, dict)
+        and raw.get("evidence_kind") == "chemical_structure_recognition_v1"
+    ):
+        return ChemicalStructureRecognitionEvidenceV1.model_validate(raw)
+    if (
+        isinstance(raw, dict)
+        and raw.get("evidence_kind") == "chemical_formula_recognition_v1"
+    ):
+        return ChemicalFormulaRecognitionEvidenceV1.model_validate(raw)
+    if isinstance(raw, dict) and raw.get("evidence_kind") == (
+        "commutative_diagram_recognition_v1"
+    ):
+        return CommutativeDiagramRecognitionEvidenceV1.model_validate(raw)
+    try:
+        return VerificationEvidence.model_validate(raw)
+    except (TypeError, ValueError, ValidationError):
+        return HandwrittenVerificationEvidence.model_validate(raw)
 
 
 def valid_image_equation_evidence(value: Any) -> bool:
     """Validate shape, pass state, and calibrated metric thresholds."""
     try:
-        evidence = VerificationEvidence.model_validate(value)
+        evidence = _validated_evidence(value)
     except (TypeError, ValueError, ValidationError):
         return False
+    if isinstance(evidence, HandwrittenVerificationEvidence):
+        return evidence.passed is True
     return bool(
         evidence.passed
         and evidence.threshold_version == IMAGE_EQUATION_THRESHOLD_VERSION
@@ -257,7 +314,7 @@ def validated_visual_semantic_contract(
 
 def visual_semantic_disposition(fix: Any) -> str:
     """Classify stored visual evidence without exposing corrupt raw payloads."""
-    if getattr(fix, "source_kind", None) != IMAGE_EQUATION_SOURCE_KIND:
+    if getattr(fix, "source_kind", None) not in REVIEW_GATED_VISUAL_SOURCE_KINDS:
         return "not_applicable"
     raw_contract = getattr(fix, "visual_semantic_contract", None)
     if raw_contract is None:
@@ -269,7 +326,7 @@ def visual_semantic_disposition(fix: Any) -> str:
 def _contract_dict(value: Any) -> dict[str, Any]:
     contract = validated_visual_semantic_contract(value)
     if contract is None:
-        raise ValueError("image equation fix lacks a complete visual contract")
+        raise ValueError("visual fix lacks a complete visual contract")
     return contract.model_dump(mode="json")
 
 
@@ -282,25 +339,98 @@ def _valid_image_contract_binding(
     )
     if contract is None:
         return False
+    is_diagram = isinstance(contract, CommutativeDiagramPdfContract)
+    is_chemical_structure = isinstance(contract, ChemicalStructurePdfContract)
+    is_chemical_formula = isinstance(contract, ChemicalFormulaPdfContract)
+    if is_chemical_formula:
+        expected_source_kind = CHEMICAL_FORMULA_SOURCE_KIND
+        expected_fixed_content = contract.semantic_output.verified_notation.speech
+    elif is_chemical_structure:
+        expected_source_kind = CHEMICAL_STRUCTURE_SOURCE_KIND
+        expected_fixed_content = contract.semantic_output.description.summary
+    elif is_diagram:
+        expected_source_kind = COMMUTATIVE_DIAGRAM_SOURCE_KIND
+        expected_fixed_content = contract.semantic_output.description.summary
+    else:
+        expected_source_kind = IMAGE_EQUATION_SOURCE_KIND
+        expected_fixed_content = contract.semantic_output.alt_text
     if (
-        getattr(fix, "fixed_content", None) != contract.semantic_output.alt_text
+        getattr(fix, "source_kind", None) != expected_source_kind
+        or getattr(fix, "fixed_content", None) != expected_fixed_content
         or getattr(fix, "page_number", None) != contract.locator.page_number
     ):
         return False
-    roundtrip = next(
-        (
-            evidence
-            for evidence in contract.verification_evidence
-            if isinstance(evidence, PrintedEquationRoundtripEvidenceV1)
-        ),
-        None,
-    )
+    if is_chemical_formula:
+        contract_evidence = next(
+            (
+                evidence
+                for evidence in contract.verification_evidence
+                if isinstance(evidence, ChemicalFormulaRecognitionEvidenceV1)
+            ),
+            None,
+        )
+        expected_type = ChemicalFormulaRecognitionEvidenceV1
+        exclude_evidence_kind = False
+    elif is_chemical_structure:
+        contract_evidence = next(
+            (
+                evidence
+                for evidence in contract.verification_evidence
+                if isinstance(evidence, ChemicalStructureRecognitionEvidenceV1)
+            ),
+            None,
+        )
+        expected_type = ChemicalStructureRecognitionEvidenceV1
+        exclude_evidence_kind = False
+    elif is_diagram:
+        contract_evidence = next(
+            (
+                evidence
+                for evidence in contract.verification_evidence
+                if isinstance(evidence, CommutativeDiagramRecognitionEvidenceV1)
+            ),
+            None,
+        )
+        expected_type = CommutativeDiagramRecognitionEvidenceV1
+        exclude_evidence_kind = False
+    elif isinstance(contract, PrintedEquationContract):
+        contract_evidence = next(
+            (
+                evidence
+                for evidence in contract.verification_evidence
+                if isinstance(evidence, PrintedEquationRoundtripEvidenceV1)
+            ),
+            None,
+        )
+        expected_type = VerificationEvidence
+        exclude_evidence_kind = True
+    elif isinstance(contract, HandwrittenEquationContract):
+        contract_evidence = next(
+            (
+                evidence
+                for evidence in contract.verification_evidence
+                if isinstance(evidence, HandwrittenEquationConsensusEvidenceV1)
+            ),
+            None,
+        )
+        expected_type = HandwrittenVerificationEvidence
+        exclude_evidence_kind = True
+    else:
+        return False
     try:
-        legacy_evidence = _evidence_dict(getattr(fix, "verification_evidence", None))
+        raw_evidence = getattr(fix, "verification_evidence", None)
+        typed_evidence = _validated_evidence(raw_evidence)
+        legacy_evidence = typed_evidence.model_dump(mode="json")
     except (TypeError, ValueError, ValidationError):
         return False
-    if roundtrip is None or legacy_evidence != roundtrip.model_dump(
-        mode="json", exclude={"evidence_kind"}
+    if (
+        contract_evidence is None
+        or not isinstance(typed_evidence, expected_type)
+        or legacy_evidence
+        != contract_evidence.model_dump(
+            mode="json",
+            exclude={"evidence_kind"} if exclude_evidence_kind else None,
+        )
     ):
         return False
     raw_locator = getattr(fix, "source_locator", None)
@@ -350,7 +480,7 @@ def _review_digest_value(value: Any) -> Any:
 def review_digest_for(fix: Any) -> str | None:
     """Hash every canonical field that a reviewer is accepting."""
     contract: VisualSemanticContract | None = None
-    if getattr(fix, "source_kind", None) == IMAGE_EQUATION_SOURCE_KIND:
+    if getattr(fix, "source_kind", None) in REVIEW_GATED_VISUAL_SOURCE_KINDS:
         contract = validated_visual_semantic_contract(
             getattr(fix, "visual_semantic_contract", None)
         )
@@ -438,15 +568,51 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
     )
     raw_visual_contract = getattr(fix, "visual_semantic_contract", None)
     visual_contract = None
-    if source_kind == IMAGE_EQUATION_SOURCE_KIND:
+    if source_kind in REVIEW_GATED_VISUAL_SOURCE_KINDS:
         visual_contract = _contract_dict(raw_visual_contract)
+        contract_model = VisualSemanticContractAdapter.validate_python(visual_contract)
+        if source_kind == IMAGE_EQUATION_SOURCE_KIND:
+            evidence_valid = valid_image_equation_evidence(evidence)
+            kind_valid = not isinstance(
+                contract_model,
+                CommutativeDiagramPdfContract
+                | ChemicalFormulaPdfContract
+                | ChemicalStructurePdfContract,
+            )
+        elif source_kind == CHEMICAL_STRUCTURE_SOURCE_KIND:
+            try:
+                recognition = ChemicalStructureRecognitionEvidenceV1.model_validate(
+                    evidence
+                )
+            except (TypeError, ValueError, ValidationError):
+                recognition = None
+            evidence_valid = recognition is not None
+            kind_valid = isinstance(contract_model, ChemicalStructurePdfContract)
+        elif source_kind == CHEMICAL_FORMULA_SOURCE_KIND:
+            try:
+                recognition = ChemicalFormulaRecognitionEvidenceV1.model_validate(
+                    evidence
+                )
+            except (TypeError, ValueError, ValidationError):
+                recognition = None
+            evidence_valid = recognition is not None
+            kind_valid = isinstance(contract_model, ChemicalFormulaPdfContract)
+        else:
+            try:
+                recognition = CommutativeDiagramRecognitionEvidenceV1.model_validate(
+                    evidence
+                )
+            except (TypeError, ValueError, ValidationError):
+                recognition = None
+            evidence_valid = recognition is not None
+            kind_valid = isinstance(contract_model, CommutativeDiagramPdfContract)
         if (
             not getattr(fix, "provider_used", None)
             or not getattr(fix, "model_used", None)
-            or not valid_image_equation_evidence(evidence)
+            or not evidence_valid
+            or not kind_valid
         ):
-            raise ValueError("image equation fix lacks valid durable evidence")
-        contract_model = VisualSemanticContractAdapter.validate_python(visual_contract)
+            raise ValueError("visual fix lacks valid durable evidence")
         if source_locator is None:
             if not isinstance(contract_model.locator, EmbeddedImageOccurrenceLocator):
                 raise ValueError("image equation source locator is incomplete")
@@ -597,22 +763,25 @@ def persist_scan_fixes(
     return persisted
 
 
-def image_equation_review_blockers(fixes: Iterable[Any]) -> list[str]:
-    """Require durable, explicit human acceptance for each image equation."""
-    image_fixes = [
-        fix
-        for fix in fixes
-        if getattr(fix, "source_kind", None) == IMAGE_EQUATION_SOURCE_KIND
+def _review_gated_visual_blockers(
+    fixes: Iterable[Any],
+    *,
+    source_kind: str,
+    blocker_prefix: str,
+) -> list[str]:
+    """Require current explicit approval for one visual semantic variant."""
+    visual_fixes = [
+        fix for fix in fixes if getattr(fix, "source_kind", None) == source_kind
     ]
-    if not image_fixes:
+    if not visual_fixes:
         return []
 
     blockers: list[str] = []
-    dispositions = [visual_semantic_disposition(fix) for fix in image_fixes]
+    dispositions = [visual_semantic_disposition(fix) for fix in visual_fixes]
     if "legacy_incomplete" in dispositions:
-        blockers.append("image_equation_visual_contract_incomplete")
+        blockers.append(f"{blocker_prefix}_visual_contract_incomplete")
     if "invalid" in dispositions:
-        blockers.append("image_equation_visual_contract_invalid")
+        blockers.append(f"{blocker_prefix}_visual_contract_invalid")
     if any(
         getattr(fix, "fix_method", None) != "ai_vision"
         or not bool(getattr(fix, "needs_review", False))
@@ -626,33 +795,79 @@ def image_equation_review_blockers(fixes: Iterable[Any]) -> list[str]:
             getattr(fix, "source_locator", None) is not None
             and not valid_region_locator(getattr(fix, "source_locator", None))
         )
-        for fix in image_fixes
+        for fix in visual_fixes
     ):
-        blockers.append("image_equation_provenance_invalid")
-    if any(getattr(fix, "review_status", None) != "approved" for fix in image_fixes):
-        blockers.append("image_equation_not_human_approved")
-    if any(not getattr(fix, "reviewed_by", None) for fix in image_fixes):
-        blockers.append("image_equation_reviewer_missing")
-    if any(getattr(fix, "reviewed_at", None) is None for fix in image_fixes):
-        blockers.append("image_equation_review_time_missing")
-    if any(
-        not valid_image_equation_evidence(getattr(fix, "verification_evidence", None))
-        for fix in image_fixes
-    ):
-        blockers.append("image_equation_evidence_invalid")
-    current_digests = [_current_review_digest(fix) for fix in image_fixes]
+        blockers.append(f"{blocker_prefix}_provenance_invalid")
+    if any(getattr(fix, "review_status", None) != "approved" for fix in visual_fixes):
+        blockers.append(f"{blocker_prefix}_not_human_approved")
+    if any(not getattr(fix, "reviewed_by", None) for fix in visual_fixes):
+        blockers.append(f"{blocker_prefix}_reviewer_missing")
+    if any(getattr(fix, "reviewed_at", None) is None for fix in visual_fixes):
+        blockers.append(f"{blocker_prefix}_review_time_missing")
+    if source_kind == IMAGE_EQUATION_SOURCE_KIND:
+        evidence_invalid = any(
+            not valid_image_equation_evidence(
+                getattr(fix, "verification_evidence", None)
+            )
+            for fix in visual_fixes
+        )
+    else:
+        evidence_invalid = any(
+            not _valid_image_contract_binding(fix) for fix in visual_fixes
+        )
+    if evidence_invalid:
+        blockers.append(f"{blocker_prefix}_evidence_invalid")
+    current_digests = [_current_review_digest(fix) for fix in visual_fixes]
     if any(digest is None for digest in current_digests):
-        blockers.append("image_equation_review_digest_invalid")
+        blockers.append(f"{blocker_prefix}_review_digest_invalid")
     if any(
         getattr(fix, "review_status", None) == "approved"
         and (
             current_digest is None
             or getattr(fix, "approved_review_digest", None) != current_digest
         )
-        for fix, current_digest in zip(image_fixes, current_digests)
+        for fix, current_digest in zip(visual_fixes, current_digests)
     ):
-        blockers.append("image_equation_approval_digest_invalid")
+        blockers.append(f"{blocker_prefix}_approval_digest_invalid")
     return blockers
+
+
+def image_equation_review_blockers(fixes: Iterable[Any]) -> list[str]:
+    """Require durable, explicit human acceptance for each image equation."""
+    return _review_gated_visual_blockers(
+        fixes,
+        source_kind=IMAGE_EQUATION_SOURCE_KIND,
+        blocker_prefix="image_equation",
+    )
+
+
+def commutative_diagram_review_blockers(fixes: Iterable[Any]) -> list[str]:
+    """Require durable, explicit human acceptance for each verified diagram."""
+    return _review_gated_visual_blockers(
+        fixes,
+        source_kind=COMMUTATIVE_DIAGRAM_SOURCE_KIND,
+        blocker_prefix="commutative_diagram",
+    )
+
+
+def chemical_structure_review_blockers(fixes: Iterable[Any]) -> list[str]:
+    """Require durable, explicit human acceptance for chemical structures."""
+
+    return _review_gated_visual_blockers(
+        fixes,
+        source_kind=CHEMICAL_STRUCTURE_SOURCE_KIND,
+        blocker_prefix="chemical_structure",
+    )
+
+
+def chemical_formula_review_blockers(fixes: Iterable[Any]) -> list[str]:
+    """Require durable, explicit human acceptance for chemical notation."""
+
+    return _review_gated_visual_blockers(
+        fixes,
+        source_kind=CHEMICAL_FORMULA_SOURCE_KIND,
+        blocker_prefix="chemical_formula",
+    )
 
 
 def artifact_review_blockers(fixes: Iterable[Any]) -> list[str]:
@@ -687,6 +902,9 @@ def artifact_review_blockers(fixes: Iterable[Any]) -> list[str]:
     ):
         blockers.append("fix_approval_digest_invalid")
     blockers.extend(image_equation_review_blockers(rows))
+    blockers.extend(commutative_diagram_review_blockers(rows))
+    blockers.extend(chemical_structure_review_blockers(rows))
+    blockers.extend(chemical_formula_review_blockers(rows))
     return blockers
 
 
