@@ -253,6 +253,23 @@ _ARIA_SUBSTITUTIONS: List[tuple] = [
 ]
 
 
+def generate_equation_alt_text(latex: str) -> str:
+    """Return the existing deterministic plain-English equation label."""
+
+    label = latex.strip()
+    for delimiter_pair in [("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)")]:
+        start, end = delimiter_pair
+        if label.startswith(start) and label.endswith(end):
+            label = label[len(start) : len(label) - len(end)].strip()
+            break
+    if label.startswith("$") and label.endswith("$") and len(label) > 1:
+        label = label[1:-1].strip()
+    for pattern, replacement in _ARIA_SUBSTITUTIONS:
+        label = pattern.sub(replacement, label)
+    label = label.strip()
+    return label if len(label) >= 2 else "mathematical equation"
+
+
 # ---------------------------------------------------------------------------
 # Result dataclass
 # ---------------------------------------------------------------------------
@@ -1039,24 +1056,4 @@ class MathFixer:
         Returns:
             Plain-English label string.
         """
-        # Strip delimiters
-        label = latex.strip()
-        for delimiter_pair in [("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)")]:
-            start, end = delimiter_pair
-            if label.startswith(start) and label.endswith(end):
-                label = label[len(start) : len(label) - len(end)].strip()
-                break
-        if label.startswith("$") and label.endswith("$") and len(label) > 1:
-            label = label[1:-1].strip()
-
-        # Apply substitution table
-        for pattern, replacement in _ARIA_SUBSTITUTIONS:
-            label = pattern.sub(replacement, label)
-
-        label = label.strip()
-
-        # If the result is empty or too short, fall back to "mathematical equation"
-        if len(label) < 2:
-            label = "mathematical equation"
-
-        return label
+        return generate_equation_alt_text(latex)
