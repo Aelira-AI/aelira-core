@@ -31,6 +31,20 @@ def test_authoritative_release_versions_are_0_9_7():
     assert compose.count(f"${{AELIRA_VERSION:-{VERSION}}}") == 3
 
 
+def test_long_form_cli_docs_match_the_release_version():
+    for relative in (
+        "cli/docs/COMMANDS.md",
+        "cli/docs/EXAMPLES.md",
+        "cli/docs/TROUBLESHOOTING.md",
+    ):
+        text = (ROOT / relative).read_text()
+        assert "**Version:** v0.9.7" in text
+        assert "**CLI Version:** v0.9.7" in text
+        assert "v0.4.0" not in text
+        assert "March 17, 2026" not in text
+        assert "All features complete - Production ready" not in text
+
+
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
@@ -66,6 +80,7 @@ def _assert_v097_notice(notes: str) -> None:
         "worker readiness",
         "asynchronous multimedia",
         "Unsupported or ambiguous STEM content",
+        "fully resolved typed region graph",
         "human acceptance",
         "v0.9.6 operator action",
     ):

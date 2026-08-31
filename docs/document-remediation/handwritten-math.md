@@ -1,21 +1,21 @@
 # Handwritten math suitability corpus
 
-Issue #223 freezes the input boundary used by the handwritten mathematical
-expression recognition path added in issue #233. The corpus is intentionally small:
+The v0.9.7 handwritten-mathematics path uses a frozen suitability boundary before
+recognition. The corpus is intentionally small:
 it establishes deterministic policy and regression evidence, not broad claims
 about handwriting recognition quality.
 
 ## Suitability is not recognition
 
-The classifier answers one question: may this exact crop enter the later HMER
+The classifier answers one question: may this exact crop enter the HMER
 specialist? `eligible` does not mean that the expression was read correctly.
 It means only that the crop satisfies the frozen offline pixel policy. HMER
 semantics, independent verification, PDF association, and human approval remain
-separate requirements in issue #233.
+separate enforced boundaries.
 
 The public dispositions are:
 
-- `eligible` — the later HMER specialist may attempt recognition.
+- `eligible` — the HMER specialist may attempt recognition.
 - `human_review` — supported-looking material is ambiguous under the frozen
   boundary and must stay open for a person.
 - `unsupported` — the crop lacks the bounded handwritten-math structure needed
@@ -24,7 +24,7 @@ The public dispositions are:
 Low contrast, strike-throughs, annotations, and multiple lines always require
 human review in this corpus. Diagram-only content, dense unsupported marks,
 ordinary non-math handwriting, and visually similar non-math content are
-unsupported. Every HMER result in issue #233 will also always require human review
+unsupported. Every accepted HMER result requires human review
 before artifact availability, including crops that were eligible here.
 
 ## Recognition and verification

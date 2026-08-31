@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - General STEM semantics now covers scanned equations, ordered multi-equation screenshots, vector equations, handwritten mathematics, chemical formulas, molecular structures, commutative diagrams, and mixed visuals through bounded specialist contracts and independent verifiers.
+- Mixed STEM composition accepts only a fully resolved typed region graph, preserves source rendering and metadata, orders specialist outputs deterministically, reopens and verifies the serialized candidate, and binds human approval to that exact candidate.
 - Institution administrators can manage canonical regulatory profiles and workspace AI providers. Compliance evidence reports, current-state projections, institution coverage rollups, CVD metrics, durable weekly summaries, Brightspace course discovery, Blackboard signing keys, and verified CLI report retrieval extend operator and integration coverage.
 - Separate API and worker liveness/readiness probes, privacy-bounded health metrics, and sustained Prometheus alerts cover unavailable APIs, missing worker heartbeats, expired leases, and stalled jobs with recovery notifications.
 
