@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Release workflows use current Node 24-compatible dependency review, Docker Buildx, artifact, and Trivy actions pinned to reviewed commits.
 - Open-core makes no implicit AI-vendor choice. Text generation, fallback, and semantic embedding are independently opt-in; executable tenant inference resolves the workspace's durable provider selection.
 - CPU- and browser-intensive scans and remediations run only in the dedicated `python -m src.jobs.worker` service. API processes enqueue bounded jobs and remain independently responsive; Compose ships a single-job worker default, a 0.75-CPU quota, killable child-process execution, durable leases, and worker-specific health reporting.
 - Breaking API change: `POST /education/multimedia/transcribe` now returns an

@@ -175,7 +175,7 @@ def test_ci_reproducibility_jobs_use_an_oci_capable_buildx_driver() -> None:
     docker_job = workflow.split("  docker:\n", 1)[1]
     setup = (
         "uses: docker/setup-buildx-action@"
-        "8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3"
+        "37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0"
     )
 
     assert setup in docker_job
@@ -189,7 +189,7 @@ def test_immutable_image_gate_precedes_receipts_and_signs_version_index() -> Non
 
     for action in (
         "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0",
-        "aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0",
+        "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0",
         "sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1",
         "actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0",
     ):
@@ -370,12 +370,12 @@ def test_release_requires_verified_annotated_tag_and_attaches_exact_sboms() -> N
     assert "dashboard.cdx.json" in workflow
     assert "name: dependency-sboms-${{ github.run_attempt }}" in workflow
     assert (
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4"
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"
         in workflow
     )
 
     assert (
-        "actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5"
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1"
         in workflow
     )
     assert "pattern: dependency-sboms-+([0-9])" in workflow
