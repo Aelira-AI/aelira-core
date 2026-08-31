@@ -153,7 +153,7 @@ docker build \
 docker run -p 80:80 aelira-dashboard
 ```
 
-Vite environment variables are baked in at build time via `ARG`/`ENV` in the Dockerfile — set them at `docker build` time, not at container runtime. The build stage (`node:20-alpine`) runs `npm ci && npm run build`; the runtime stage (`nginx:alpine`) copies `dist/` and `nginx.conf`, which handles SPA fallback routing, gzip, cache headers for `/assets/`, and a `/health` endpoint.
+Vite environment variables are baked in at build time via `ARG`/`ENV` in the Dockerfile — set them at `docker build` time, not at container runtime. The build stage (`node:22-alpine`) runs `npm ci && npm run build`; the runtime stage (`nginx:alpine`) copies `dist/` and `nginx.conf`, which handles SPA fallback routing, gzip, cache headers for `/assets/`, and a `/health` endpoint.
 
 ## API Integration
 
