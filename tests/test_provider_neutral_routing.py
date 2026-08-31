@@ -174,6 +174,9 @@ async def test_provider_failure_preserves_deterministic_severity():
 
 
 class _AccessibilityAdapter:
+    def bind_provider_manager(self, _provider_manager):
+        return self
+
     async def classify_severity_with_rag(self, **_kwargs):
         return {
             "success": True,

@@ -62,6 +62,36 @@ Scores, pages, issue totals, severity totals, scan-type counts, and compliance
 bands use verified current documents only. Scan history, activity windows,
 trend volume, and evidence-report attempt counts remain historical.
 
+## Institution rollups
+
+`GET /analytics/institution` is available only to administrators. The server
+derives institution scope from the authenticated department's stable,
+non-public `institution_scope_id`; a caller cannot select an institution or
+gain access by supplying a matching display name.
+
+The primary institution score is the mean of every enrolled document that has
+a current verified result. Departments do not receive equal weight. The
+response also carries `Secondary: flat department mean`, which averages the
+current document-weighted score of each assessed department and is explicitly
+separate from the primary metric.
+
+Institution and department drill-downs report:
+
+- `enrolled`: current canonical document identities;
+- `scanned`: enrolled documents with at least one linked scan attempt;
+- `verified`: enrolled documents with a current verified result;
+- `stale`: enrolled provider or LMS documents marked for rescan;
+- `failed`: enrolled documents whose latest linked attempt failed; and
+- `total_coverage_percent`: verified divided by enrolled documents.
+
+These counts deliberately overlap. A failed rescan can leave the last verified
+score current while also incrementing `failed`; a provider document can be
+verified and stale at the same time. Canvas and other LMS content participates
+through its enrolled `CloudFile` identity, exactly like other provider-backed
+documents. Institution rollups contain current state only. Department
+`ComplianceSnapshot` rows and historical trend endpoints remain separate and
+are never recalculated when a department changes institution membership.
+
 ## Regulatory deadline metadata
 
 Deadline output is resolved from the department's persisted regulatory profile:

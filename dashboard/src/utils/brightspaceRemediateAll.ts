@@ -19,7 +19,8 @@ export interface RemediateAllSummary {
 
 export async function remediateAllInChunks(
   eligibleIds: readonly string[],
-  remediateChunk: (ids: string[]) => Promise<BatchRemediateResponse>
+  remediateChunk: (ids: string[]) => Promise<BatchRemediateResponse>,
+  signal?: AbortSignal
 ): Promise<RemediateAllSummary> {
   const summary: RemediateAllSummary = {
     requestedCount: eligibleIds.length,
@@ -37,6 +38,11 @@ export async function remediateAllInChunks(
     offset < eligibleIds.length;
     offset += BRIGHTSPACE_REMEDIATE_BATCH_SIZE, chunkNumber += 1
   ) {
+    if (signal?.aborted) {
+      const error = new Error('Brightspace remediation aborted');
+      error.name = 'AbortError';
+      throw error;
+    }
     const ids = eligibleIds.slice(
       offset,
       offset + BRIGHTSPACE_REMEDIATE_BATCH_SIZE
@@ -67,6 +73,11 @@ export async function remediateAllInChunks(
         });
       }
     } catch (error) {
+      if (signal?.aborted) {
+        const abort = new Error('Brightspace remediation aborted');
+        abort.name = 'AbortError';
+        throw abort;
+      }
       summary.chunkFailures.push({
         chunkNumber,
         requestedCount: ids.length,

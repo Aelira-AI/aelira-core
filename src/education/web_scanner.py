@@ -317,6 +317,7 @@ class WebScanner:
         crawl_strategy: str = "breadth_first",
         priority_patterns: List[str] = None,
         exclude_patterns: List[str] = None,
+        llm_client=None,
     ):
         """
         Initialize web scanner
@@ -364,7 +365,9 @@ class WebScanner:
                 "See backend/.env.example for template."
             )
         # Use LLM provider manager for AI processing (supports multiple providers)
-        self.llm_client = get_provider_manager()
+        self.llm_client = (
+            llm_client if llm_client is not None else get_provider_manager()
+        )
 
         # Initialize focus order analyzer if enabled
         self.focus_order_analyzer = FocusOrderAnalyzer() if scan_focus_order else None

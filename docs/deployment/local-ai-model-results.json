@@ -1,0 +1,404 @@
+{
+  "cases": [
+    {
+      "case_id": "missing-alt-explanation",
+      "input_sha256": "8ed6ac4b9817a1e54bae40cca1e72d573ac745119c2ed1e0cf2afe18817c3a12",
+      "kind": "text",
+      "lane": "text",
+      "model": "gemma3:4b",
+      "runs": [
+        {
+          "code": "passed",
+          "elapsed_ms": 6114.869,
+          "eval_tokens": 124,
+          "observations": {
+            "human_review_required": true,
+            "identified_missing_alt_text": true,
+            "recommended_alt_attribute": true
+          },
+          "passed": true,
+          "run": 1,
+          "tokens_per_second": 44.676
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 3487.709,
+          "eval_tokens": 124,
+          "observations": {
+            "human_review_required": true,
+            "identified_missing_alt_text": true,
+            "recommended_alt_attribute": true
+          },
+          "passed": true,
+          "run": 2,
+          "tokens_per_second": 45.858
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 4255.116,
+          "eval_tokens": 124,
+          "observations": {
+            "human_review_required": true,
+            "identified_missing_alt_text": true,
+            "recommended_alt_attribute": true
+          },
+          "passed": true,
+          "run": 3,
+          "tokens_per_second": 35.425
+        }
+      ],
+      "source": {
+        "path": "tests/fixtures/html/missing_alt_text.html",
+        "sha256": "8ed6ac4b9817a1e54bae40cca1e72d573ac745119c2ed1e0cf2afe18817c3a12"
+      },
+      "summary": {
+        "max_elapsed_ms": 6114.869,
+        "median_elapsed_ms": 4255.116,
+        "passed_runs": 3,
+        "total_runs": 3
+      }
+    },
+    {
+      "case_id": "form-label-repair",
+      "input_sha256": "347dd9cb042dc042b141411847379ff03dcaee047bcfc650848f433013c36a56",
+      "kind": "code",
+      "lane": "code",
+      "model": "qwen2.5-coder:7b",
+      "runs": [
+        {
+          "code": "passed",
+          "elapsed_ms": 22889.692,
+          "eval_tokens": 164,
+          "observations": {
+            "inputs": 2,
+            "labelled_inputs": 2,
+            "submit_button_preserved": true
+          },
+          "passed": true,
+          "run": 1,
+          "tokens_per_second": 27.109
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 7650.497,
+          "eval_tokens": 164,
+          "observations": {
+            "inputs": 2,
+            "labelled_inputs": 2,
+            "submit_button_preserved": true
+          },
+          "passed": true,
+          "run": 2,
+          "tokens_per_second": 22.516
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 6218.28,
+          "eval_tokens": 164,
+          "observations": {
+            "inputs": 2,
+            "labelled_inputs": 2,
+            "submit_button_preserved": true
+          },
+          "passed": true,
+          "run": 3,
+          "tokens_per_second": 27.955
+        }
+      ],
+      "source": {
+        "path": "tests/fixtures/html/form_issues.html",
+        "sha256": "347dd9cb042dc042b141411847379ff03dcaee047bcfc650848f433013c36a56"
+      },
+      "summary": {
+        "max_elapsed_ms": 22889.692,
+        "median_elapsed_ms": 7650.497,
+        "passed_runs": 3,
+        "total_runs": 3
+      }
+    },
+    {
+      "case_id": "quarterly-revenue-chart",
+      "input_sha256": "50b013696d8fb43cb865fb1c23eb52a38688a356e8c921cbb836eb07f3cdec4b",
+      "kind": "chart",
+      "lane": "vision",
+      "model": "qwen2.5vl:3b",
+      "runs": [
+        {
+          "code": "passed",
+          "elapsed_ms": 12933.842,
+          "eval_tokens": 78,
+          "observations": {
+            "series": {
+              "Q1": 65.0,
+              "Q2": 80.0,
+              "Q3": 55.0,
+              "Q4": 90.0
+            },
+            "title": "Quarterly Revenue ($M)"
+          },
+          "passed": true,
+          "run": 1,
+          "tokens_per_second": 52.52
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 1765.611,
+          "eval_tokens": 78,
+          "observations": {
+            "series": {
+              "Q1": 65.0,
+              "Q2": 80.0,
+              "Q3": 55.0,
+              "Q4": 90.0
+            },
+            "title": "Quarterly Revenue ($M)"
+          },
+          "passed": true,
+          "run": 2,
+          "tokens_per_second": 51.697
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 1725.596,
+          "eval_tokens": 78,
+          "observations": {
+            "series": {
+              "Q1": 65.0,
+              "Q2": 80.0,
+              "Q3": 55.0,
+              "Q4": 90.0
+            },
+            "title": "Quarterly Revenue ($M)"
+          },
+          "passed": true,
+          "run": 3,
+          "tokens_per_second": 52.731
+        }
+      ],
+      "source": {
+        "path": "tests/fixtures/sample_chart.png",
+        "sha256": "50b013696d8fb43cb865fb1c23eb52a38688a356e8c921cbb836eb07f3cdec4b"
+      },
+      "summary": {
+        "max_elapsed_ms": 12933.842,
+        "median_elapsed_ms": 1765.611,
+        "passed_runs": 3,
+        "total_runs": 3
+      }
+    },
+    {
+      "case_id": "scanned-syllabus-page",
+      "input_sha256": "eec212168e4a95acbc7d3beb943db5de0b9b845a03cd866bb941f5cb4cde1525",
+      "kind": "scanned_document",
+      "lane": "vision",
+      "model": "qwen2.5vl:3b",
+      "runs": [
+        {
+          "code": "passed",
+          "elapsed_ms": 12044.106,
+          "eval_tokens": 78,
+          "observations": {
+            "course": "math250introductiontostatistics",
+            "instructor": "dremilychen",
+            "office": "mathematicsbuildingroom312",
+            "office_hours": "tuesdaythursday200400pm",
+            "term": "fall2025"
+          },
+          "passed": true,
+          "run": 1,
+          "tokens_per_second": 49.859
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 1828.298,
+          "eval_tokens": 78,
+          "observations": {
+            "course": "math250introductiontostatistics",
+            "instructor": "dremilychen",
+            "office": "mathematicsbuildingroom312",
+            "office_hours": "tuesdaythursday200400pm",
+            "term": "fall2025"
+          },
+          "passed": true,
+          "run": 2,
+          "tokens_per_second": 49.703
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 1832.742,
+          "eval_tokens": 78,
+          "observations": {
+            "course": "math250introductiontostatistics",
+            "instructor": "dremilychen",
+            "office": "mathematicsbuildingroom312",
+            "office_hours": "tuesdaythursday200400pm",
+            "term": "fall2025"
+          },
+          "passed": true,
+          "run": 3,
+          "tokens_per_second": 49.884
+        }
+      ],
+      "source": {
+        "path": "tests/fixtures/pdfs/simple_syllabus.pdf",
+        "sha256": "370b9ecba9bc8fa4735174c444ebba0fd4c29a6193c5fb63cad1091dbe32bbae"
+      },
+      "summary": {
+        "max_elapsed_ms": 12044.106,
+        "median_elapsed_ms": 1832.742,
+        "passed_runs": 3,
+        "total_runs": 3
+      }
+    },
+    {
+      "case_id": "wcag-retrieval-ranking",
+      "input_sha256": "ca855bed6d072e097c06236946d3ba4ff5d61a23011b5670680739b5335d8a88",
+      "kind": "embeddings",
+      "lane": "embeddings",
+      "model": "nomic-embed-text:latest",
+      "runs": [
+        {
+          "code": "passed",
+          "elapsed_ms": 586.839,
+          "eval_tokens": 0,
+          "observations": {
+            "dimensions": 768,
+            "identical_similarity": 1.0,
+            "related_similarity": 0.888361,
+            "unrelated_similarity": 0.401182
+          },
+          "passed": true,
+          "run": 1,
+          "tokens_per_second": 0.0
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 31.064,
+          "eval_tokens": 0,
+          "observations": {
+            "dimensions": 768,
+            "identical_similarity": 1.0,
+            "related_similarity": 0.888361,
+            "unrelated_similarity": 0.401182
+          },
+          "passed": true,
+          "run": 2,
+          "tokens_per_second": 0.0
+        },
+        {
+          "code": "passed",
+          "elapsed_ms": 30.188,
+          "eval_tokens": 0,
+          "observations": {
+            "dimensions": 768,
+            "identical_similarity": 1.0,
+            "related_similarity": 0.888361,
+            "unrelated_similarity": 0.401182
+          },
+          "passed": true,
+          "run": 3,
+          "tokens_per_second": 0.0
+        }
+      ],
+      "source": {
+        "path": "tests/fixtures/local_models/matrix.json",
+        "sha256": "59fe2d14fe00f85cb48086ded56f9c5b201307315423481280e50963ac0fe05d"
+      },
+      "summary": {
+        "max_elapsed_ms": 586.839,
+        "median_elapsed_ms": 31.064,
+        "passed_runs": 3,
+        "total_runs": 3
+      }
+    }
+  ],
+  "endpoint": "http://127.0.0.1:11434",
+  "evaluator_version": "1.0.0",
+  "generated_at": "2026-08-30T11:13:01.066060+00:00",
+  "host": {
+    "architecture": "arm64",
+    "chip": "Apple M3 Pro",
+    "memory_bytes": 19327352832,
+    "ollama_version": "ollama version is 0.12.10",
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O"
+  },
+  "matrix_sha256": "058fee8dc786892e93c6921c768468553acf249190d69a810a2cb454c7f21116",
+  "models": {
+    "code": {
+      "download_bytes": 4683087561,
+      "loaded_bytes": 5618579456,
+      "model_id": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+      "processor": {
+        "cpu_percent": 0.0,
+        "gpu_percent": 100.0
+      },
+      "tag": "qwen2.5-coder:7b"
+    },
+    "embeddings": {
+      "download_bytes": 274302450,
+      "loaded_bytes": 848677888,
+      "model_id": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f",
+      "processor": {
+        "cpu_percent": 0.0,
+        "gpu_percent": 100.0
+      },
+      "tag": "nomic-embed-text:latest"
+    },
+    "text": {
+      "download_bytes": 3338801804,
+      "loaded_bytes": 5333539264,
+      "model_id": "a2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5a",
+      "processor": {
+        "cpu_percent": 0.0,
+        "gpu_percent": 100.0
+      },
+      "tag": "gemma3:4b"
+    },
+    "vision": {
+      "download_bytes": 3200627168,
+      "loaded_bytes": 5391488768,
+      "model_id": "fb90415cde1ef08aa669ae74b082d49b158729b6db1ab183c941417d507e71a1",
+      "processor": {
+        "cpu_percent": 0.0,
+        "gpu_percent": 100.0
+      },
+      "tag": "qwen2.5vl:3b"
+    }
+  },
+  "schema_version": 1,
+  "support": {
+    "code": {
+      "cases": [
+        "form-label-repair"
+      ],
+      "failure_modes": [],
+      "model": "qwen2.5-coder:7b",
+      "status": "supported"
+    },
+    "embeddings": {
+      "cases": [
+        "wcag-retrieval-ranking"
+      ],
+      "failure_modes": [],
+      "model": "nomic-embed-text:latest",
+      "status": "supported"
+    },
+    "text": {
+      "cases": [
+        "missing-alt-explanation"
+      ],
+      "failure_modes": [],
+      "model": "gemma3:4b",
+      "status": "supported"
+    },
+    "vision": {
+      "cases": [
+        "quarterly-revenue-chart",
+        "scanned-syllabus-page"
+      ],
+      "failure_modes": [],
+      "model": "qwen2.5vl:3b",
+      "status": "supported"
+    }
+  }
+}

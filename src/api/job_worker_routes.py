@@ -11,12 +11,11 @@ from sqlalchemy.orm import Session
 from src.db.database import get_db_dependency
 from src.db.models import (
     ArtifactOrphanQuarantine,
-    CloudJobQueue,
     ContentWritebackLog,
     RemediationArtifact,
     UserRole,
-    WorkerHeartbeat,
 )
+from src.jobs.operational_health import collect_worker_health_snapshot
 from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 
 router = APIRouter(prefix="/api/jobs", tags=["Job workers"])
@@ -31,33 +30,9 @@ def worker_status(
     # Global operational topology is never department/account-manager data.
     if principal.user_role is not UserRole.SUPER_ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    queue = {
-        status: count
-        for status, count in db.query(
-            CloudJobQueue.status, func.count(CloudJobQueue.id)
-        ).group_by(CloudJobQueue.status)
-    }
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
-    live_workers = (
-        db.query(func.count(WorkerHeartbeat.worker_id))
-        .filter(
-            WorkerHeartbeat.status.in_(("running", "draining")),
-            WorkerHeartbeat.heartbeat_at >= cutoff,
-        )
-        .scalar()
-        or 0
-    )
-    draining_workers = (
-        db.query(func.count(WorkerHeartbeat.worker_id))
-        .filter(
-            WorkerHeartbeat.status == "draining",
-            WorkerHeartbeat.heartbeat_at >= cutoff,
-        )
-        .scalar()
-        or 0
-    )
-    latest = db.query(func.max(WorkerHeartbeat.heartbeat_at)).scalar()
+    snapshot = collect_worker_health_snapshot(db)
     now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=2)
     cleanup_due = (
         db.query(func.count(RemediationArtifact.id))
         .filter(
@@ -121,19 +96,38 @@ def worker_status(
         "purging",
     )
     return {
-        "status": "healthy" if live_workers else "degraded",
-        "queue": {
-            "pending": queue.get("pending", 0),
-            "processing": queue.get("processing", 0),
-            "completed": queue.get("completed", 0),
-            "failed": queue.get("failed", 0),
-        },
+        "status": snapshot.status,
+        "health_state": snapshot.health_state,
+        "queue": snapshot.queue,
         "workers": {
-            "live": live_workers,
-            "draining": draining_workers,
-            "latest_heartbeat_at": latest,
+            "live": snapshot.live_workers,
+            "draining": snapshot.draining_workers,
+            "latest_heartbeat_at": snapshot.latest_heartbeat_at,
+            "latest_heartbeat_age_seconds": snapshot.latest_heartbeat_age_seconds,
+        },
+        "progress": {
+            "jobs_claimed": snapshot.jobs_claimed,
+            "jobs_completed": snapshot.jobs_completed,
+            "jobs_failed": snapshot.jobs_failed,
+            "oldest_pending_created_at": snapshot.oldest_pending_created_at,
+            "oldest_pending_age_seconds": snapshot.oldest_pending_age_seconds,
+            "oldest_processing_heartbeat_at": snapshot.oldest_processing_heartbeat_at,
+            "oldest_running_job_age_seconds": snapshot.oldest_running_job_age_seconds,
+            "runnable_pending": snapshot.runnable_pending,
+            "expired_processing": snapshot.expired_processing,
+            "stalled_processing": snapshot.stalled_processing,
+            "latest_progress_at": snapshot.latest_progress_at,
+            "latest_progress_age_seconds": snapshot.latest_progress_age_seconds,
         },
         "maintenance": {"artifact_cleanup_due": cleanup_due},
+        "weekly_summary_scheduler": {
+            "state": snapshot.weekly_summary_scheduler_state,
+            "last_success_at": snapshot.weekly_summary_last_success_at,
+            "last_success_age_seconds": (
+                snapshot.weekly_summary_last_success_age_seconds
+            ),
+            "last_error_code": snapshot.weekly_summary_last_error_code,
+        },
         "reconciliation": {
             "required": reconciliation_required,
             "manual_required": reconciliation_manual,

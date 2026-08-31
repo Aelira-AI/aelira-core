@@ -86,4 +86,23 @@ describe('remediateAllInChunks', () => {
     assert.equal(summary.fixedCount, 2);
     assert.equal(summary.unreportedCount, 1);
   });
+
+  it('stops starting chunks when the owning page aborts', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+
+    await assert.rejects(
+      remediateAllInChunks(
+        Array.from({ length: 45 }, (_, index) => `cf-${index}`),
+        async () => {
+          calls += 1;
+          controller.abort();
+          throw new Error('request canceled');
+        },
+        controller.signal
+      ),
+      { name: 'AbortError' }
+    );
+    assert.equal(calls, 1);
+  });
 });

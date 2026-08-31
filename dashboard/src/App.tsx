@@ -1,5 +1,5 @@
 import React, { ReactNode } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
@@ -26,6 +26,7 @@ import CanvasCourses from './pages/CanvasCourses';
 import CanvasContentPage from './pages/CanvasContentPage';
 import CanvasContentDiffPage from './pages/CanvasContentDiffPage';
 import CourseOverview from './pages/CourseOverview';
+import BrightspaceCourses from './pages/BrightspaceCourses';
 import BrightspaceContentPage from './pages/BrightspaceContentPage';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { ReviewQueuePage } from './pages/ReviewQueuePage';
@@ -70,6 +71,11 @@ function AppLayout({ children }: AppLayoutProps): React.ReactElement {
       </div>
     </div>
   );
+}
+
+function BrightspaceContentRoute(): React.ReactElement {
+  const { orgUnitId } = useParams<{ orgUnitId: string }>();
+  return <BrightspaceContentPage key={orgUnitId} />;
 }
 
 function App(): React.ReactElement {
@@ -205,9 +211,10 @@ function App(): React.ReactElement {
               }
             />
             <Route path="/integrations/canvas" element={<ProtectedRoute><AppLayout><CanvasCourses /></AppLayout></ProtectedRoute>} />
+            <Route path="/integrations/brightspace" element={<ProtectedRoute><AppLayout><BrightspaceCourses /></AppLayout></ProtectedRoute>} />
             <Route path="/canvas/courses/:courseId/content" element={<ProtectedRoute><AppLayout><CanvasContentPage /></AppLayout></ProtectedRoute>} />
             <Route path="/canvas/courses/:courseId/content/:cloudFileId/review" element={<ProtectedRoute><AppLayout><CanvasContentDiffPage /></AppLayout></ProtectedRoute>} />
-            <Route path="/brightspace/courses/:orgUnitId/content" element={<ProtectedRoute><AppLayout><BrightspaceContentPage /></AppLayout></ProtectedRoute>} />
+            <Route path="/brightspace/courses/:orgUnitId/content" element={<ProtectedRoute><AppLayout><BrightspaceContentRoute /></AppLayout></ProtectedRoute>} />
             <Route path="/brightspace/courses/:orgUnitId/content/:cloudFileId/review" element={<ProtectedRoute><AppLayout><LTIBrightspaceReview /></AppLayout></ProtectedRoute>} />
             <Route
               path="/admin"

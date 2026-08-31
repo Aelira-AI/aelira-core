@@ -195,7 +195,7 @@ def test_invalid_jwt_log_uses_exception_class_without_token_or_detail(
 
 
 def test_invalid_api_key_log_omits_key_and_prefix(monkeypatch, caplog):
-    api_key = "aelira_live_LOG_CANARY_SECRET_abcdefghijklmnopqrstuvwxyz"
+    api_key = "aelira_live_" + "LOG_CANARY_SECRET_abcdefghijklmnopqrstuvwxyz"
     db = MagicMock()
     db.query.return_value.filter.return_value.all.return_value = []
     monkeypatch.setattr(redis_rate_limiter, "get_redis_client", lambda: None)

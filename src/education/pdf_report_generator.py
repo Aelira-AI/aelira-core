@@ -262,6 +262,8 @@ class AccessibilityPDFReportGenerator:
         created_at = scan_data.get("created_at", datetime.now().isoformat())
         score = scan_data.get("compliance_score", 0)
         issues = scan_data.get("issues", [])
+        total_issues = scan_data.get("total_issues", len(issues))
+        severity_totals = scan_data.get("severity_totals")
         pages_scanned = scan_data.get("pages_scanned", 1)
 
         # Count issues by severity (support both "impact" from website scans
@@ -269,12 +271,20 @@ class AccessibilityPDFReportGenerator:
         def _get_severity(i: dict) -> str:
             return (i.get("impact") or i.get("severity") or "minor").lower()
 
-        critical = len([i for i in issues if _get_severity(i) == "critical"])
-        serious = len([i for i in issues if _get_severity(i) in ["serious", "high"]])
-        moderate = len(
-            [i for i in issues if _get_severity(i) in ["moderate", "medium"]]
-        )
-        minor = len([i for i in issues if _get_severity(i) in ["minor", "low"]])
+        if isinstance(severity_totals, dict):
+            critical = severity_totals.get("critical", 0)
+            serious = severity_totals.get("serious", 0)
+            moderate = severity_totals.get("moderate", 0)
+            minor = severity_totals.get("minor", 0)
+        else:
+            critical = len([i for i in issues if _get_severity(i) == "critical"])
+            serious = len(
+                [i for i in issues if _get_severity(i) in ["serious", "high"]]
+            )
+            moderate = len(
+                [i for i in issues if _get_severity(i) in ["moderate", "medium"]]
+            )
+            minor = len([i for i in issues if _get_severity(i) in ["minor", "low"]])
 
         # Format date
         try:
@@ -433,7 +443,10 @@ class AccessibilityPDFReportGenerator:
                     print(f"Error adding WCAG chart to PDF: {e}")
 
         # Issues Section
-        story.append(Paragraph(f"Accessibility Issues ({len(issues)})", heading_style))
+        issue_heading = f"Accessibility Issues ({total_issues})"
+        if total_issues > len(issues):
+            issue_heading += f" — showing first {len(issues)}"
+        story.append(Paragraph(issue_heading, heading_style))
         story.append(Spacer(1, 0.1 * inch))
 
         if not issues:

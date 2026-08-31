@@ -119,6 +119,22 @@ def _bounded_ollama_runtime_timeout(value: object) -> int:
     return int(max(1, min(120, value)))
 
 
+def _workspace_provider_rows(department: Any) -> tuple[Any, ...] | None:
+    """Return the authoritative workspace rows, or None for legacy objects."""
+
+    if not hasattr(department, "ai_provider_configs"):
+        return None
+    rows = getattr(department, "ai_provider_configs", None)
+    return None if rows is None else tuple(rows)
+
+
+def _apply_workspace_models(config: ProviderConfig, row: Any) -> None:
+    for field_name in ("text_model", "code_model", "vision_model"):
+        value = getattr(row, field_name, None)
+        if value is not None:
+            setattr(config, field_name, value)
+
+
 def resolve_lms_provider_config(
     department: Any,
     provider: str,
@@ -133,9 +149,24 @@ def resolve_lms_provider_config(
     env = environment if environment is not None else os.environ
     provider_type = ProviderType(provider)
     config = ProviderConfig.default_for_provider(provider_type)
+    workspace_rows = _workspace_provider_rows(department)
+    workspace_row = next(
+        (
+            row
+            for row in workspace_rows or ()
+            if getattr(row, "provider", None) == provider
+        ),
+        None,
+    )
 
     if provider_type is ProviderType.OLLAMA:
-        if getattr(department, "byok_provider", None) is not None or getattr(
+        if workspace_rows is not None and workspace_row is None:
+            return None, ProviderReadiness(False, "credentials_missing", "local")
+        if workspace_row is not None:
+            if getattr(workspace_row, "api_key_encrypted", None):
+                return None, ProviderReadiness(False, "credentials_forbidden", "local")
+            _apply_workspace_models(config, workspace_row)
+        elif getattr(department, "byok_provider", None) is not None or getattr(
             department, "byok_api_key_encrypted", None
         ):
             return None, ProviderReadiness(False, "credentials_forbidden", "local")
@@ -157,8 +188,18 @@ def resolve_lms_provider_config(
                 return None, ProviderReadiness(False, "model_missing", "local")
         return config, ProviderReadiness(True, "ready", "local", "local")
 
-    byok_provider = getattr(department, "byok_provider", None)
-    encrypted = getattr(department, "byok_api_key_encrypted", None)
+    if workspace_rows is not None:
+        byok_provider = provider if workspace_row is not None else None
+        encrypted = (
+            getattr(workspace_row, "api_key_encrypted", None)
+            if workspace_row is not None
+            else None
+        )
+        if workspace_row is not None:
+            _apply_workspace_models(config, workspace_row)
+    else:
+        byok_provider = getattr(department, "byok_provider", None)
+        encrypted = getattr(department, "byok_api_key_encrypted", None)
     if byok_provider is not None and byok_provider != provider:
         return None, ProviderReadiness(False, "credential_provider_mismatch", "remote")
     if byok_provider == provider:

@@ -247,11 +247,22 @@ def test_semantic_and_contract_adapters_expose_exact_discriminators():
     )
 
     assert SemanticOutputAdapter.json_schema()["discriminator"] == {
-        "mapping": {"mathml_expression_v1": "#/$defs/MathMLExpressionV1"},
+        "mapping": {
+            "chemical_structure_semantic_v1": "#/$defs/ChemicalStructureSemanticV1",
+            "chemical_formula_semantic_v1": "#/$defs/ChemicalFormulaSemanticV1",
+            "commutative_diagram_semantic_v1": "#/$defs/CommutativeDiagramSemanticV1",
+            "mathml_expression_v1": "#/$defs/MathMLExpressionV1",
+        },
         "propertyName": "semantic_kind",
     }
     assert VisualSemanticContractAdapter.json_schema()["discriminator"] == {
-        "mapping": {"printed_equation": "#/$defs/PrintedEquationContract"},
+        "mapping": {
+            "chemical_structure": "#/$defs/ChemicalStructurePdfContract",
+            "chemical_formula": "#/$defs/ChemicalFormulaPdfContract",
+            "commutative_diagram": "#/$defs/CommutativeDiagramPdfContract",
+            "handwritten_equation": "#/$defs/HandwrittenEquationContract",
+            "printed_equation": "#/$defs/PrintedEquationContract",
+        },
         "propertyName": "contract_kind",
     }
     with pytest.raises(ValidationError):

@@ -304,7 +304,7 @@ async def _run_route(
         )
         stack.enter_context(
             patch(
-                "src.api.education.remediation_routes.get_provider_manager",
+                "src.api.education.remediation_routes.workspace_provider_runtime",
                 return_value=object(),
             )
         )
