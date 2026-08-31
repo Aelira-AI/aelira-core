@@ -2,7 +2,7 @@
 
 PDF has the deepest end-to-end document-remediation evidence in this repository. That does not turn heuristic structure inference or a successful re-scan into a PDF/UA certificate.
 
-> **Release boundary (24 August 2026):** The hardening on this page is present on `main` after the immutable v0.9.5 release. It is not part of v0.9.5. It can become part of a future release only after that release's gates pass; merging it created no release or deployment.
+> **v0.9.7 boundary:** The immutable-source OCR, accessible-HTML sanitization, embedded-image validation, and exact-byte managed-publication controls on this page are included in v0.9.7. They were not part of v0.9.5.
 
 ## Verified capabilities
 
@@ -10,7 +10,7 @@ The [PDF processor](../../src/education/pdf_processor.py) can extract text, use 
 
 The [PDF remediator](../../src/education/remediation/pdf_remediator.py) can make bounded changes when the issue and PDF expose a safe target: document language and title, bookmarks, selected structure/heading/list/table tags, and figure alt text. The [structure helper](../../src/education/remediation/pdf_structure.py) performs direct structure-tree work with pikepdf.
 
-On `main`, the remediator stages a private working copy, so the original PDF remains immutable. It profiles direct text and image presence per page. Zero-text image pages are eligible for mixed-safe English OCR while pages with usable text pass through; OCR-generated searchable text is preserved in the delivered PDF and checked again by direct extraction from the output candidate. A blank page without images does not trigger OCR.
+The remediator stages a private working copy, so the original PDF remains immutable. It profiles direct text and image presence per page. Zero-text image pages are eligible for mixed-safe English OCR while pages with usable text pass through; OCR-generated searchable text is preserved in the delivered PDF and checked again by direct extraction from the output candidate. A blank page without images does not trigger OCR.
 
 OCR and rewrite decisions fail closed. Signed PDFs, XFA forms, indeterminate signature inspection, declared non-English documents that need OCR, image pages with partial direct text below the safe threshold, missing OCR support, OCR refusal for tagged or prior-OCR input, and OCR output without usable per-page text are refused for manual handling. A failed candidate generation or validation does not replace a prior valid output at the destination.
 

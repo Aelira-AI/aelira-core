@@ -480,9 +480,8 @@ hosts. It is not a Windows filesystem portability promise. Path-oriented
 compatibility remains for non-PDF formats and direct library callers, but the
 managed PDF output claim is authoritative.
 
-This PDF publication hardening is present on `main` after v0.9.5 and is not part
-of v0.9.5. It may ship in a future release after release verification; merging
-it created no release or deployment.
+The immutable-source OCR and exact-byte PDF publication controls in this section
+are included in v0.9.7. They were not part of v0.9.5.
 
 Approval is a bounded writeback authorization, not indefinite retention. An
 approved but unwritten artifact is held only until its
@@ -520,6 +519,29 @@ manually delete artifact rows to force progress.
    and `GET /ready` on the API, run the worker readiness command documented
    above, and check `docker compose -f docker-compose.prod.yml logs -f api`
    for migration or startup errors.
+
+### v0.9.7 upgrade
+
+Before replacing v0.9.6, drain active work and pause intake. Back up PostgreSQL,
+uploads, and managed artifacts, and verify the restore path. Run `alembic upgrade
+head` explicitly and confirm that the single Alembic head is
+`20260831_institution_scope` before resuming traffic.
+
+Set and retain `BYOK_ENCRYPTION_KEY` before storing workspace AI credentials.
+Choose `LLM_PROVIDER`, `LLM_FALLBACK_PROVIDER`, and `EMBEDDING_PROVIDER`
+deliberately; do not rely on an implicit vendor. Review `TRUSTED_PROXY_CIDRS`,
+cookie domains, Brightspace OAuth origins, Blackboard RSA signing keys, and the
+shared upload and artifact mounts on every API and worker replica.
+
+Deploy the API and dedicated `python -m src.jobs.worker` service from the same
+v0.9.7 image set. Confirm API readiness, a fresh worker readiness result, queue
+age, failed or quarantined rows, and alert recovery before reopening intake.
+
+Client integrations must account for three breaking changes: multimedia
+transcription now returns an asynchronous scan handle, Brightspace remediation
+returns HTTP `202` job descriptors, and the unauthenticated focus-order HTTP
+endpoints have been removed. Preserve every v0.9.6 operator action, including
+remediation timeout settings and deliberate handling of quarantined work.
 
 ### v0.9.4 upgrade
 

@@ -204,3 +204,11 @@ test('Settings consumes durable workspace state and gates provider controls by r
   assert.match(card, /Set Fallback/);
   assert.match(card, /Clear Fallback/);
 });
+
+test('provider controls stay inside their cards at narrow widths', () => {
+  const card = readFileSync(new URL('../../src/components/settings/AIProvidersCard.tsx', import.meta.url), 'utf8');
+
+  assert.match(card, /flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between/);
+  assert.match(card, /flex min-w-0 items-start gap-3/);
+  assert.match(card, /justify-start gap-2 sm:justify-end/);
+});
