@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
@@ -21,7 +23,86 @@ from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_prin
 router = APIRouter(prefix="/api/jobs", tags=["Job workers"])
 
 
-@router.get("/worker-status")
+NonNegativeInt = Annotated[int, Field(ge=0)]
+NonNegativeFloat = Annotated[float, Field(ge=0)]
+
+
+class WorkerQueueStatus(BaseModel):
+    pending: NonNegativeInt
+    processing: NonNegativeInt
+    completed: NonNegativeInt
+    failed: NonNegativeInt
+
+
+class WorkerLivenessStatus(BaseModel):
+    live: NonNegativeInt
+    draining: NonNegativeInt
+    latest_heartbeat_at: datetime | None
+    latest_heartbeat_age_seconds: NonNegativeFloat | None
+
+
+class WorkerProgressStatus(BaseModel):
+    jobs_claimed: NonNegativeInt
+    jobs_completed: NonNegativeInt
+    jobs_failed: NonNegativeInt
+    oldest_pending_created_at: datetime | None
+    oldest_pending_age_seconds: NonNegativeFloat | None
+    oldest_processing_heartbeat_at: datetime | None
+    oldest_running_job_age_seconds: NonNegativeFloat | None
+    runnable_pending: NonNegativeInt
+    expired_processing: NonNegativeInt
+    stalled_processing: NonNegativeInt
+    latest_progress_at: datetime | None
+    latest_progress_age_seconds: NonNegativeFloat | None
+
+
+class WorkerMaintenanceStatus(BaseModel):
+    artifact_cleanup_due: NonNegativeInt
+
+
+class WeeklySummarySchedulerStatus(BaseModel):
+    state: Literal["not_started", "healthy", "stale", "failed"]
+    last_success_at: datetime | None
+    last_success_age_seconds: NonNegativeFloat | None
+    last_error_code: Literal["weekly_summary_scheduler_failed"] | None
+
+
+class WorkerReconciliationStatus(BaseModel):
+    required: NonNegativeInt
+    manual_required: NonNegativeInt
+    failed_manual: NonNegativeInt
+
+
+class WorkerOrphanStatus(BaseModel):
+    pending_move: NonNegativeInt
+    quarantined: NonNegativeInt
+    restore_required: NonNegativeInt
+    reviewed: NonNegativeInt
+    purging: NonNegativeInt
+
+
+class WorkerStatusResponse(BaseModel):
+    generated_at: datetime
+    status: Literal["healthy", "degraded"]
+    health_state: Literal[
+        "worker_unavailable",
+        "expired_lease",
+        "stuck_processing",
+        "healthy_processing",
+        "stuck_runnable_backlog",
+        "healthy_advancing",
+        "healthy_idle",
+    ]
+    queue: WorkerQueueStatus
+    workers: WorkerLivenessStatus
+    progress: WorkerProgressStatus
+    maintenance: WorkerMaintenanceStatus
+    weekly_summary_scheduler: WeeklySummarySchedulerStatus
+    reconciliation: WorkerReconciliationStatus
+    orphans: WorkerOrphanStatus
+
+
+@router.get("/worker-status", response_model=WorkerStatusResponse)
 def worker_status(
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     db: Session = Depends(get_db_dependency),
@@ -96,6 +177,7 @@ def worker_status(
         "purging",
     )
     return {
+        "generated_at": now,
         "status": snapshot.status,
         "health_state": snapshot.health_state,
         "queue": snapshot.queue,
