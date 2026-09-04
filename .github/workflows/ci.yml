@@ -123,6 +123,12 @@ jobs:
           JWT_SECRET: test-secret-for-ci
           ENV: test
         run: pytest tests/ -v --tb=short
+      - name: Required PDF remediation acceptance corpus
+        env:
+          DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
+          JWT_SECRET: test-secret-for-ci
+          ENV: test
+        run: python scripts/pdf_acceptance_corpus.py --manifest tests/fixtures/pdf_acceptance/manifest.json
       - name: Create isolated worker test database
         env:
           PGPASSWORD: aelira
