@@ -112,7 +112,7 @@ python scripts/generate_wcag_embeddings.py
 
 Aelira Core is designed to run entirely on your own infrastructure. It needs PostgreSQL, Redis, and optionally Ollama for local inference.
 
-Two settings point the system at your deployment, and everything user-facing derives from them:
+Three settings point the system at your deployment, and everything user-facing derives from them:
 
 ```bash
 PUBLIC_API_URL=https://accessibility-api.your-university.edu
@@ -123,9 +123,13 @@ CORS_ORIGINS=https://accessibility.your-university.edu
 The production compose file runs the full stack (API, dashboard, PostgreSQL, Redis, optional Ollama) from the published images:
 
 ```bash
-cp .env.example .env   # set the REQUIRED section
+cp .env.example .env   # replace the production secret placeholders
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+Production Compose supplies service-local PostgreSQL and Redis URLs and
+`ENV=production` unless you explicitly override them. The commented localhost
+examples in `.env.example` are for running the API directly on the host.
 
 Full configuration is documented in [`.env.example`](.env.example) — reconciled against every variable the code reads — and the deployment guide is in [`docs/`](docs/).
 
