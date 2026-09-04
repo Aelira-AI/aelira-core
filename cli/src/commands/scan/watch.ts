@@ -10,6 +10,7 @@ import pc from 'picocolors'
 import { chromium } from 'playwright'
 
 import { ApiClient } from '../../utils/api-client.js'
+import { getApiUrl } from '../../utils/config.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -60,7 +61,6 @@ export default class ScanWatch extends Command {
   ]
   static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     concurrency: Flags.integer({
@@ -97,11 +97,12 @@ export default class ScanWatch extends Command {
     }
 
     // 2. Verify backend reachable
-    const api = new ApiClient({ apiUrl: flags['api-url'] })
+    const apiUrl = await getApiUrl(flags['api-url'])
+    const api = new ApiClient({ apiUrl })
     try {
       await api.get('/health', { retry: false, timeout: 10_000 })
     } catch {
-      this.error(`Backend unreachable at ${flags['api-url']}`)
+      this.error(`Backend unreachable at ${apiUrl}`)
     }
 
     // 3. Parse extensions

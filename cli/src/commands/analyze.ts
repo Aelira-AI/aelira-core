@@ -12,7 +12,7 @@ import { buildReportEvidence, generateVerifiedPdfReport, ReportArtifactError } f
 
 interface PdfReportOptions {
   aiResults: any
-  apiUrl: string
+  apiUrl?: string
   axeResults: any
   pdfPath: string
   url: string
@@ -39,7 +39,6 @@ static flags = {
       description: 'AI analysis timeout in seconds (default: auto-calculated based on issue count)',
     }),
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     format: Flags.string({

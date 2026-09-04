@@ -34,6 +34,16 @@ This opens the main menu where you can:
 
 Word and Excel scanning (`aelira scan docx`, `aelira scan xlsx`) are not on the interactive menu yet — run them directly.
 
+### API Configuration
+
+All network commands resolve the API endpoint in the same order: an explicit
+`--api-url`, `AELIRA_API_URL`, the active profile's `apiUrl`, then
+`http://localhost:8000`. Configure a deployment once with:
+
+```bash
+aelira config set api-url https://api.example.edu
+```
+
 **Navigation:**
 
 - Use arrow keys or number keys to select options
@@ -50,7 +60,7 @@ Scan PDF files for accessibility issues with OCR and remediation support.
 
 ```bash
 aelira scan pdf <file or directory>
-  --api-url <url>           # Default: http://localhost:8000
+  --api-url <url>
   --format console|json|csv
   --output <file>           # Output file (for JSON or CSV)
   --skip-ocr                # Skip OCR processing
@@ -621,7 +631,7 @@ View connection status for Google Workspace, Microsoft 365, Canvas LMS, Blackboa
 
 ```bash
 aelira integrations
-  --api-url <url>           # Default: http://localhost:8000
+  --api-url <url>
   --api-key <key>           # API key for authentication
   --format console|json
 ```

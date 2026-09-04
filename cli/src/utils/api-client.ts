@@ -70,7 +70,7 @@ export class ApiClient {
   private resolved = false
 
   constructor(options?: { apiKey?: string; apiUrl?: string; timeout?: number }) {
-    this.baseUrl = options?.apiUrl ?? process.env.AELIRA_API_URL
+    this.baseUrl = options?.apiUrl
     this.apiKey = options?.apiKey ?? process.env.AELIRA_API_KEY
     this.defaultTimeout = options?.timeout
   }
@@ -239,9 +239,7 @@ export class ApiClient {
 
   private async resolve(): Promise<void> {
     if (this.resolved) return
-    if (!this.baseUrl) {
-      this.baseUrl = await getApiUrl()
-    }
+    this.baseUrl = await getApiUrl(this.baseUrl)
 
     if (!this.apiKey) {
       const key = await getApiKey()

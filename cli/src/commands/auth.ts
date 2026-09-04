@@ -4,7 +4,7 @@ import * as os from 'node:os'
 import pc from 'picocolors'
 
 import { ApiClient, ApiConnectionError, ApiError } from '../utils/api-client.js'
-import { getApiKey, initializeConfig, setConfigValue } from '../utils/config.js'
+import { getApiKey, getApiUrl, initializeConfig, setConfigValue } from '../utils/config.js'
 
 export default class Auth extends Command {
   static args = {
@@ -21,7 +21,6 @@ export default class Auth extends Command {
   ]
   static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
   }
@@ -34,7 +33,7 @@ export default class Auth extends Command {
 
     switch (args.action) {
       case 'login': {
-        await this.handleLogin(flags)
+        await this.handleLogin({ 'api-url': await getApiUrl(flags['api-url']) })
         break
       }
 

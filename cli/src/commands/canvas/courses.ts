@@ -15,7 +15,6 @@ export default class CanvasCourses extends Command {
       description: 'API key for authentication (optional in development)',
     }),
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     department: Flags.string({

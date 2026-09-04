@@ -1,7 +1,17 @@
 import { expect } from 'chai'
 
 import { ApiClient, ApiConnectionError, ApiError } from '../../src/utils/api-client.js'
+import { initializeConfig, setConfigValue } from '../../src/utils/config.js'
 import { cleanTestDir, createTestDir, withTestConfig } from '../helpers/setup.js'
+
+function captureUrl(): { getUrl: () => string } {
+  let capturedUrl = ''
+  globalThis.fetch = (async (url: any) => {
+    capturedUrl = url.toString()
+    return new Response('{}', { status: 200 })
+  }) as typeof fetch
+  return { getUrl: () => capturedUrl }
+}
 
 describe('ApiClient', () => {
   let testDir: string
@@ -53,6 +63,48 @@ describe('ApiClient', () => {
   // URL construction
   // ---------------------------------------------------------------------------
 
+  describe('API URL precedence', () => {
+    it('uses an explicit API URL over environment and active profile', async () => {
+      await initializeConfig()
+      await setConfigValue('apiUrl', 'https://profile.example.test')
+      process.env.AELIRA_API_URL = 'https://environment.example.test'
+      const capture = captureUrl()
+
+      await new ApiClient({ apiUrl: 'https://explicit.example.test' }).get('/health')
+
+      expect(capture.getUrl()).to.equal('https://explicit.example.test/health')
+    })
+
+    it('uses the environment API URL over the active profile', async () => {
+      await initializeConfig()
+      await setConfigValue('apiUrl', 'https://profile.example.test')
+      process.env.AELIRA_API_URL = 'https://environment.example.test'
+      const capture = captureUrl()
+
+      await new ApiClient().get('/health')
+
+      expect(capture.getUrl()).to.equal('https://environment.example.test/health')
+    })
+
+    it('uses the active-profile API URL without explicit or environment configuration', async () => {
+      await initializeConfig()
+      await setConfigValue('apiUrl', 'https://profile.example.test')
+      const capture = captureUrl()
+
+      await new ApiClient().get('/health')
+
+      expect(capture.getUrl()).to.equal('https://profile.example.test/health')
+    })
+
+    it('uses the localhost API URL when no override is configured', async () => {
+      const capture = captureUrl()
+
+      await new ApiClient().get('/health')
+
+      expect(capture.getUrl()).to.equal('http://localhost:8000/health')
+    })
+  })
+
   describe('URL construction', () => {
     it('constructs URL from path and base URL', async () => {
       let capturedUrl = ''
@@ -87,6 +139,53 @@ describe('ApiClient', () => {
   // ---------------------------------------------------------------------------
 
   describe('auth headers', () => {
+    it('preserves explicit API key precedence over environment and active profile', async () => {
+      await initializeConfig()
+      await setConfigValue('apiKey', 'profile-key')
+      process.env.AELIRA_API_KEY = 'environment-key'
+      let capturedInit: RequestInit = {}
+      globalThis.fetch = (async (_url: any, init: any) => {
+        capturedInit = init
+        return new Response('{}', { status: 200 })
+      }) as typeof fetch
+
+      await new ApiClient({ apiKey: 'explicit-key' }).get('/health')
+
+      expect((capturedInit.headers as Record<string, string>).Authorization)
+        .to.equal('Bearer explicit-key')
+    })
+
+    it('preserves environment API key precedence over the active profile', async () => {
+      await initializeConfig()
+      await setConfigValue('apiKey', 'profile-key')
+      process.env.AELIRA_API_KEY = 'environment-key'
+      let capturedInit: RequestInit = {}
+      globalThis.fetch = (async (_url: any, init: any) => {
+        capturedInit = init
+        return new Response('{}', { status: 200 })
+      }) as typeof fetch
+
+      await new ApiClient().get('/health')
+
+      expect((capturedInit.headers as Record<string, string>).Authorization)
+        .to.equal('Bearer environment-key')
+    })
+
+    it('preserves active-profile API key resolution', async () => {
+      await initializeConfig()
+      await setConfigValue('apiKey', 'profile-key')
+      let capturedInit: RequestInit = {}
+      globalThis.fetch = (async (_url: any, init: any) => {
+        capturedInit = init
+        return new Response('{}', { status: 200 })
+      }) as typeof fetch
+
+      await new ApiClient().get('/health')
+
+      expect((capturedInit.headers as Record<string, string>).Authorization)
+        .to.equal('Bearer profile-key')
+    })
+
     it('attaches Authorization header when API key configured', async () => {
       let capturedInit: RequestInit = {}
       globalThis.fetch = (async (_url: any, init: any) => {

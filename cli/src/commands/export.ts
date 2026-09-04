@@ -14,7 +14,6 @@ export default class Export extends Command {
   ]
   static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     format: Flags.string({

@@ -213,9 +213,21 @@ describe('config utility', () => {
     })
 
     it('getDepartment returns env var over config', async () => {
+      await setConfigValue('department', 'profile-dept')
       process.env.AELIRA_DEPARTMENT = 'env-dept'
       const dept = await getDepartment()
       expect(dept).to.equal('env-dept')
+    })
+
+    it('preserves active-profile department precedence without an environment override', async () => {
+      await setConfigValue('department', 'profile-dept')
+      const dept = await getDepartment()
+      expect(dept).to.equal('profile-dept')
+    })
+
+    it('preserves the default department fallback', async () => {
+      const dept = await getDepartment()
+      expect(dept).to.equal('default')
     })
   })
 

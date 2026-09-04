@@ -19,7 +19,6 @@ export default class ReportEvidence extends Command {
   ]
   static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     output: Flags.string({

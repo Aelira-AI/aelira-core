@@ -22,7 +22,6 @@ static examples = [
   ]
 static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     batch: Flags.boolean({
@@ -161,7 +160,7 @@ static flags = {
     return files
   }
 
-  private async generateAltText(filePath: string, apiUrl: string): Promise<any> {
+  private async generateAltText(filePath: string, apiUrl: string | undefined): Promise<any> {
     const api = new ApiClient({ apiUrl })
     const formData = new FormData()
     formData.append('file', await fs.readFile(filePath), path.basename(filePath))
@@ -173,7 +172,7 @@ static flags = {
     return response.json()
   }
 
-  private async processBatch(files: string[], apiUrl: string): Promise<any[]> {
+  private async processBatch(files: string[], apiUrl: string | undefined): Promise<any[]> {
     const api = new ApiClient({ apiUrl })
     const formData = new FormData()
 
