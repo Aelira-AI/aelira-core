@@ -1066,13 +1066,13 @@ This makes the CLI resilient to transient network issues and backend restarts.
 
 ### `aelira ci` - CI/CD Command
 
-Dedicated command for CI/CD pipelines with proper exit codes, JUnit XML output, and badge generation.
+Dedicated command for CI/CD pipelines with proper exit codes, JSON, JUnit XML, SARIF 2.1.0, and badge generation.
 
 ```bash
 aelira ci <URL or file>
   --threshold <score>       # Minimum score to pass (default: 80)
   --fail-on <severity>      # Fail on severity level (default: serious)
-  --format console|json|junit
+  --format console|json|junit|sarif
   --output <file>           # Output file for reports
   --badge <file>            # Generate SVG badge
   --timeout <ms>
@@ -1093,12 +1093,17 @@ aelira ci https://example.com --threshold 85
 # Generate JUnit XML for test frameworks
 aelira ci ./dist --format junit --output results.xml
 
+# Generate SARIF 2.1.0 for code-scanning tools
+aelira ci ./dist --format sarif --output results.sarif
+
 # Generate accessibility badge
 aelira ci https://example.com --badge badge.svg
 
 # Fail only on critical issues
 aelira ci https://example.com --fail-on critical
 ```
+
+SARIF source annotations are deliberately narrow. When the target is an HTML file inside the current repository, Aelira adds a location only when the affected node's exact HTML occurs once in that file. Remote pages, files outside the repository, and ambiguous or unmatched nodes remain in the report without a fabricated path or region.
 
 ### GitHub Actions Example
 
@@ -1113,31 +1118,39 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
 
       - name: Install Aelira CLI
         run: npm install -g @aelira/cli
 
       - name: Run accessibility checks
+        id: aelira
+        continue-on-error: true
         run: |
           aelira ci ./dist \
             --threshold 85 \
-            --format junit \
-            --output results.xml \
+            --format sarif \
+            --output results.sarif \
             --badge accessibility-badge.svg
 
-      - name: Upload test results
-        uses: actions/upload-artifact@v3
+      - name: Upload SARIF to GitHub code scanning
+        uses: github/codeql-action/upload-sarif@v4
         with:
-          name: accessibility-results
-          path: results.xml
+          sarif_file: results.sarif
 
       - name: Upload badge
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: accessibility-badge
           path: accessibility-badge.svg
+
+      - name: Enforce Aelira result
+        if: steps.aelira.outcome == 'failure'
+        run: exit 1
 ```
 
 ---
