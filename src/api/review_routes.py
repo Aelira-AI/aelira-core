@@ -37,6 +37,7 @@ from ..db.models import (
 from ..education.equation_region_contract import PageRasterRegionLocator
 from ..education.visual_semantic_contract import VisualSemanticContract
 from ..education.reports.compliance_report import (
+    ACCEPTED_REVIEW_STATUSES,
     AuditReportGenerator,
     bounded_audit_details,
 )
@@ -82,8 +83,18 @@ get_auth = get_required_api_key
 
 _AUTO_APPROVED_STATUS = "auto_approved"
 _HUMAN_REVIEWED_STATUSES = frozenset({"approved", "edited", "rejected"})
-_ACCEPTED_STATUSES = frozenset({"approved", "edited", _AUTO_APPROVED_STATUS})
+_ACCEPTED_STATUSES = ACCEPTED_REVIEW_STATUSES
 _TERMINAL_STATUSES = _ACCEPTED_STATUSES | {"rejected"}
+
+
+def _audit_export_headers(scan_id: str, format: str) -> dict[str, str]:
+    """Build stable attachment metadata without reflecting unsafe path text."""
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", scan_id)[:64] or "scan"
+    prefix = "accessibility-review-evidence" if format == "pdf" else "audit"
+    return {
+        "Content-Disposition": f'attachment; filename="{prefix}-{safe_id}.{format}"',
+        "Cache-Control": "no-store",
+    }
 
 
 # -- Response Models --
@@ -732,6 +743,7 @@ def export_audit_trail(
 
     # Batch-load user names to avoid N+1 queries
     user_ids = {e.user_id for e in raw_entries if e.user_id}
+    user_ids.update(fix.reviewed_by for fix in fixes if fix.reviewed_by)
     user_map: dict[str, str] = {}
     if user_ids:
         users = db.query(User).filter(User.id.in_(user_ids)).all()
@@ -752,6 +764,11 @@ def export_audit_trail(
             },
         )()
         audit_entries.append(entry)
+
+    for fix in fixes:
+        fix._export_reviewer_name = (
+            user_map.get(fix.reviewed_by) if fix.reviewed_by else None
+        )
 
     # Fetch department for PDF/branding
     dept = db.query(Department).filter(Department.id == scan.department_id).first()
@@ -774,7 +791,10 @@ def export_audit_trail(
             matterhorn_results=matterhorn_results,
             department=dept,
         )
-        return JSONResponse(content=data)
+        return JSONResponse(
+            content=data,
+            headers=_audit_export_headers(scan_id, format),
+        )
 
     elif format == "csv":
         csv_content = AuditReportGenerator.generate_csv(
@@ -784,13 +804,10 @@ def export_audit_trail(
             matterhorn_results=matterhorn_results,
             department=dept,
         )
-        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", scan_id)[:64]
         return Response(
             content=csv_content,
             media_type="text/csv",
-            headers={
-                "Content-Disposition": f'attachment; filename="audit-{safe_id}.csv"',
-            },
+            headers=_audit_export_headers(scan_id, format),
         )
 
     else:  # pdf
@@ -801,13 +818,10 @@ def export_audit_trail(
             matterhorn_results=matterhorn_results,
             department=dept,
         )
-        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", scan_id)[:64]
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="accessibility-review-evidence-{safe_id}.pdf"',
-            },
+            headers=_audit_export_headers(scan_id, format),
         )
 
 
