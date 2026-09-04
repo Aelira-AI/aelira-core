@@ -9,6 +9,7 @@ TDD: These tests were written first, then the implementation.
 """
 
 import csv
+import hashlib
 import io
 import json
 from datetime import datetime, timezone
@@ -52,6 +53,7 @@ def _make_scan(
     scan.document_id = "document-001"
     scan.document_source = "standalone"
     scan.file_hash = "a" * 64
+    scan.storage_path = None
     scan.current_remediation_artifact = None
     return scan
 
@@ -446,6 +448,9 @@ class TestGenerateJSON:
         artifact.sha256 = "d" * 64
         artifact.review_status = "approved"
         artifact.approval_review_digest = "e" * 64
+        artifact.created_at = datetime(2026, 1, 16, 13, 0, 0, tzinfo=timezone.utc)
+        artifact.updated_at = datetime(2026, 1, 16, 14, 0, 0, tzinfo=timezone.utc)
+        artifact.expires_at = datetime(2026, 2, 16, 14, 0, 0, tzinfo=timezone.utc)
         artifact.written_back_at = datetime(2026, 1, 16, 15, 0, 0, tzinfo=timezone.utc)
         recorded_scan.current_remediation_artifact = artifact
 
@@ -467,6 +472,9 @@ class TestGenerateJSON:
             "sha256": "d" * 64,
             "review_status": "approved",
             "approval_review_digest": "e" * 64,
+            "created_at": "2026-01-16T13:00:00+00:00",
+            "updated_at": "2026-01-16T14:00:00+00:00",
+            "expires_at": "2026-02-16T14:00:00+00:00",
             "written_back_at": "2026-01-16T15:00:00+00:00",
         }
         assert recorded["reviewer_decisions"][0]["reviewer_name"] == "Jane Doe"
@@ -490,7 +498,17 @@ class TestGenerateJSON:
             matterhorn_results=[],
             department=_make_department(),
         )
-        assert set(missing["source"].values()) == {"unavailable"}
+        assert missing["source"] == {
+            "availability": "not_recorded",
+            "document_id": "unavailable",
+            "document_source": "unavailable",
+            "filename": "syllabus.pdf",
+            "media_type": "application/pdf",
+            "size_bytes": 102400,
+            "sha256": "unavailable",
+            "created_at": "2026-01-15T10:00:00+00:00",
+            "completed_at": "2026-01-15T10:05:00+00:00",
+        }
         assert missing["artifact"] == {"availability": "unavailable"}
         assert missing["reviewer_decisions"][0]["reviewer_name"] == "not recorded"
         assert missing["reviewer_decisions"][0]["review_digest"] == "not recorded"
@@ -1078,6 +1096,232 @@ class TestExportEndpoint:
         assert "scan-001" in disposition
         assert "accessibility-review-evidence" in disposition
         assert "compliance-report" not in disposition
+
+
+class TestEvidencePackageEndpoint:
+    """Tests for authenticated, tenant-scoped evidence-package generation."""
+
+    def _setup_app(self, *, authorized=True):
+        from fastapi import FastAPI, HTTPException
+        from fastapi.testclient import TestClient
+
+        from src.api.review_routes import router
+        from src.auth.dependencies import get_required_api_key
+        from src.db.database import get_db_dependency
+
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+        mock_db = MagicMock()
+
+        def mock_auth():
+            if not authorized:
+                raise HTTPException(status_code=401, detail="Authentication required")
+            return (None, "user-001", "dept-001")
+
+        app.dependency_overrides[get_required_api_key] = mock_auth
+        app.dependency_overrides[get_db_dependency] = lambda: mock_db
+        return TestClient(app), mock_db
+
+    def _setup_db(self, mock_db, *, scan=None, artifact=None):
+        from src.db.models import (
+            Department,
+            MatterhornResult,
+            RemediationArtifact,
+            ReviewAuditLog,
+            Scan,
+            ScanFix,
+        )
+
+        scan = scan or _make_scan()
+        scan.current_remediation_artifact_id = (
+            artifact.id if artifact is not None else None
+        )
+        department = _make_department()
+
+        def query(model):
+            result = MagicMock()
+            filtered = result.filter.return_value
+            if model is Scan:
+                filtered.first.return_value = scan
+            elif model is Department:
+                filtered.first.return_value = department
+            elif model is ScanFix:
+                filtered.order_by.return_value.all.return_value = []
+            elif model is ReviewAuditLog:
+                filtered.order_by.return_value.all.return_value = []
+            elif model is MatterhornResult:
+                filtered.all.return_value = []
+            elif model is RemediationArtifact:
+                filtered.one_or_none.return_value = artifact
+            return result
+
+        mock_db.query.side_effect = query
+        return scan
+
+    def test_package_requires_authentication(self):
+        client, _ = self._setup_app(authorized=False)
+
+        response = client.get("/api/reviews/scan-001/audit/package")
+
+        assert response.status_code == 401
+
+    def test_cross_tenant_package_is_unavailable(self):
+        client, mock_db = self._setup_app()
+        self._setup_db(mock_db, scan=_make_scan(department_id="dept-other"))
+
+        response = client.get("/api/reviews/scan-001/audit/package")
+
+        assert response.status_code == 404
+
+    def test_partial_package_has_explicit_unavailable_output_and_safe_headers(self):
+        from src.education.reports.evidence_package import verify_evidence_package
+
+        client, mock_db = self._setup_app()
+        self._setup_db(mock_db)
+
+        response = client.get("/api/reviews/scan-001/audit/package")
+        manifest = verify_evidence_package(response.content)
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert "aelira-evidence-scan-001.zip" in response.headers["content-disposition"]
+        assert manifest["output"]["availability"] == "unavailable"
+        assert manifest["output"]["identity"] is None
+        assert manifest["source"]["included"] is False
+
+    @patch("src.api.review_routes.RemediationArtifactService")
+    def test_expired_current_artifact_prevents_generation(self, service_cls):
+        from src.services.remediation_artifact_service import ArtifactExpiredError
+
+        artifact = MagicMock()
+        artifact.id = "artifact-001"
+        artifact.department_id = "dept-001"
+        artifact.scan_id = "scan-001"
+        artifact.cloud_file_id = None
+        client, mock_db = self._setup_app()
+        self._setup_db(mock_db, artifact=artifact)
+        service_cls.from_settings.return_value.resolve_record.side_effect = (
+            ArtifactExpiredError("expired")
+        )
+
+        response = client.get("/api/reviews/scan-001/audit/package")
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "Evidence artifact unavailable"}
+
+    @patch("src.api.review_routes.RemediationArtifactService")
+    def test_included_output_uses_verified_artifact_bytes(self, service_cls):
+        from contextlib import contextmanager
+
+        from src.education.reports.evidence_package import verify_evidence_package
+
+        output = b"output"
+        artifact = MagicMock()
+        artifact.id = "artifact-001"
+        artifact.department_id = "dept-001"
+        artifact.scan_id = "scan-001"
+        artifact.cloud_file_id = None
+        artifact.filename = "remediated.pdf"
+        artifact.mime_type = "application/pdf"
+        artifact.size_bytes = len(output)
+        artifact.sha256 = hashlib.sha256(output).hexdigest()
+        artifact.lifecycle_status = "available"
+        artifact.review_status = "approved"
+        artifact.approval_review_digest = "a" * 64
+        artifact.created_at = datetime(2026, 9, 4, tzinfo=timezone.utc)
+        artifact.updated_at = datetime(2026, 9, 4, tzinfo=timezone.utc)
+        artifact.expires_at = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        artifact.written_back_at = None
+        client, mock_db = self._setup_app()
+        self._setup_db(mock_db, artifact=artifact)
+
+        @contextmanager
+        def verified_stream(*args, **kwargs):
+            yield io.BytesIO(output)
+
+        service_cls.from_settings.return_value.open_verified.side_effect = (
+            verified_stream
+        )
+
+        response = client.get("/api/reviews/scan-001/audit/package?include_output=true")
+        manifest = verify_evidence_package(response.content)
+
+        assert response.status_code == 200
+        assert manifest["output"]["included"] is True
+        assert manifest["output"]["identity"] == "artifact-001"
+        service_cls.from_settings.return_value.open_verified.assert_called_once()
+
+    def test_source_bytes_require_matching_recorded_size_and_digest(self, tmp_path):
+        source = tmp_path / "source.pdf"
+        source.write_bytes(b"tamper")
+        scan = _make_scan()
+        scan.storage_path = str(source)
+        scan.file_size_bytes = 6
+        scan.file_hash = "0" * 64
+        client, mock_db = self._setup_app()
+        self._setup_db(mock_db, scan=scan)
+
+        response = client.get("/api/reviews/scan-001/audit/package?include_source=true")
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "Source evidence unavailable"}
+
+    def test_explicit_source_inclusion_uses_verified_recorded_bytes(self, tmp_path):
+        from src.education.reports.evidence_package import verify_evidence_package
+
+        content = b"source"
+        source = tmp_path / "source.pdf"
+        source.write_bytes(content)
+        scan = _make_scan()
+        scan.storage_path = str(source)
+        scan.file_size_bytes = len(content)
+        scan.file_hash = hashlib.sha256(content).hexdigest()
+        client, mock_db = self._setup_app()
+        self._setup_db(mock_db, scan=scan)
+
+        response = client.get("/api/reviews/scan-001/audit/package?include_source=true")
+        manifest = verify_evidence_package(response.content)
+
+        assert response.status_code == 200
+        assert manifest["source"]["included"] is True
+        assert manifest["source"]["size_bytes"] == len(content)
+        assert manifest["source"]["sha256"] == hashlib.sha256(content).hexdigest()
+
+    @patch("src.api.review_routes.RemediationArtifactService")
+    def test_cloud_output_requires_exact_current_artifact_lock(self, service_cls):
+        artifact = MagicMock()
+        artifact.id = "artifact-001"
+        artifact.department_id = "dept-001"
+        artifact.scan_id = "scan-001"
+        artifact.cloud_file_id = "cloud-001"
+        artifact.provider = "google"
+        artifact.filename = "remediated.pdf"
+        artifact.mime_type = "application/pdf"
+        artifact.size_bytes = 6
+        artifact.sha256 = hashlib.sha256(b"output").hexdigest()
+        artifact.lifecycle_status = "available"
+        artifact.review_status = "pending"
+        artifact.approval_review_digest = None
+        artifact.created_at = datetime(2026, 9, 4, tzinfo=timezone.utc)
+        artifact.updated_at = datetime(2026, 9, 4, tzinfo=timezone.utc)
+        artifact.expires_at = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        artifact.written_back_at = None
+        client, mock_db = self._setup_app()
+        self._setup_db(mock_db, artifact=artifact)
+
+        response = client.get("/api/reviews/scan-001/audit/package")
+
+        assert response.status_code == 200
+        service_cls.from_settings.return_value.lock_current.assert_called_once_with(
+            mock_db,
+            artifact_id="artifact-001",
+            department_id="dept-001",
+            cloud_file_id="cloud-001",
+            provider="google",
+        )
+        service_cls.from_settings.return_value.resolve_record.assert_called_once()
 
 
 @pytest.mark.parametrize("lifecycle", ["active", "expired", "revoked", "resolved"])

@@ -15,6 +15,7 @@ PDF reports include:
 import csv
 import io
 import logging
+import mimetypes
 import os
 from datetime import datetime, timezone
 from io import BytesIO
@@ -204,17 +205,40 @@ def _reviewer_decision(fix: Any) -> dict[str, Any]:
 
 
 def _source_evidence(scan: Any) -> dict[str, Any]:
+    filename = _recorded(getattr(scan, "file_name", None), "unavailable")
+    media_type = (
+        mimetypes.guess_type(filename)[0]
+        if isinstance(filename, str) and filename != "unavailable"
+        else None
+    )
     return {
+        "availability": (
+            "available"
+            if any(
+                getattr(scan, field, None) is not None
+                for field in ("document_id", "file_hash", "storage_path")
+            )
+            else "not_recorded"
+        ),
         "document_id": _recorded(getattr(scan, "document_id", None), "unavailable"),
         "document_source": _recorded(
             getattr(scan, "document_source", None), "unavailable"
         ),
+        "filename": filename,
+        "media_type": _recorded(media_type),
+        "size_bytes": _recorded(getattr(scan, "file_size_bytes", None)),
         "sha256": _recorded(getattr(scan, "file_hash", None), "unavailable"),
+        "created_at": _recorded(
+            _isoformat(getattr(scan, "created_at", None)), "not recorded"
+        ),
+        "completed_at": _recorded(
+            _isoformat(getattr(scan, "completed_at", None)), "not recorded"
+        ),
     }
 
 
-def _artifact_evidence(scan: Any) -> dict[str, Any]:
-    artifact = getattr(scan, "current_remediation_artifact", None)
+def artifact_evidence(artifact: Any) -> dict[str, Any]:
+    """Return bounded public evidence for one authorized managed artifact."""
     if artifact is None:
         return {"availability": "unavailable"}
     return {
@@ -230,10 +254,23 @@ def _artifact_evidence(scan: Any) -> dict[str, Any]:
         "approval_review_digest": _recorded(
             getattr(artifact, "approval_review_digest", None)
         ),
+        "created_at": _recorded(
+            _isoformat(getattr(artifact, "created_at", None)), "not recorded"
+        ),
+        "updated_at": _recorded(
+            _isoformat(getattr(artifact, "updated_at", None)), "not recorded"
+        ),
+        "expires_at": _recorded(
+            _isoformat(getattr(artifact, "expires_at", None)), "not recorded"
+        ),
         "written_back_at": _recorded(
             _isoformat(getattr(artifact, "written_back_at", None)), "not recorded"
         ),
     }
+
+
+def _artifact_evidence(scan: Any) -> dict[str, Any]:
+    return artifact_evidence(getattr(scan, "current_remediation_artifact", None))
 
 
 def _validator_result(total: int, passed: int, failed: int) -> str:
