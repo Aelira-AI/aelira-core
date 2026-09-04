@@ -7,7 +7,6 @@ Revises: 20260829_reg_profile_rev
 from alembic import op
 import sqlalchemy as sa
 
-
 revision = "20260829_ai_provider_cfg"
 down_revision = "20260829_reg_profile_rev"
 branch_labels = None
@@ -127,9 +126,7 @@ def upgrade() -> None:
 
     # Preserve only unambiguous legacy state. Selection remains null, and the
     # migration never decrypts, probes, or guesses unknown providers.
-    op.execute(
-        sa.text(
-            f"""
+    op.execute(sa.text(f"""
             INSERT INTO {_TABLE} (
                 id, department_id, provider, api_key_encrypted, configured_at, updated_at
             )
@@ -143,31 +140,23 @@ def upgrade() -> None:
                     byok_provider IN ('gemini', 'openai', 'anthropic', 'xai')
                     AND byok_api_key_encrypted IS NOT NULL
                 )
-            """
-        )
-    )
+            """))
     # The new table is the only credential authority after this migration.
     # Remove copied legacy ciphertext so rotation or deletion cannot leave an
     # older usable secret behind.
-    op.execute(
-        sa.text(
-            f"""
+    op.execute(sa.text(f"""
             UPDATE departments
             SET byok_provider = NULL,
                 byok_api_key_encrypted = NULL,
                 byok_configured_at = NULL
             WHERE id IN (SELECT department_id FROM {_TABLE})
-            """
-        )
-    )
+            """))
 
 
 def downgrade() -> None:
     # Restore the primary provider, or the sole configured provider, into the
     # legacy single-provider fields before removing the authoritative table.
-    op.execute(
-        sa.text(
-            f"""
+    op.execute(sa.text(f"""
             UPDATE departments
             SET byok_provider = (
                     SELECT provider FROM {_TABLE}
@@ -198,12 +187,8 @@ def downgrade() -> None:
                     SELECT COUNT(*) FROM {_TABLE}
                     WHERE department_id = departments.id
                 )
-            """
-        )
-    )
-    op.drop_index(
-        "ix_department_ai_provider_configs_department_id", table_name=_TABLE
-    )
+            """))
+    op.drop_index("ix_department_ai_provider_configs_department_id", table_name=_TABLE)
     op.drop_table(_TABLE)
 
     constraint_names = (

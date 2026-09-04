@@ -203,7 +203,7 @@ def test_cvd_storage_is_nullable_and_migration_is_the_single_head():
     assert ScanResult.__table__.c.cvd_analysis.nullable is True
 
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert scripts.get_heads() == ["20260831_institution_scope"]
+    assert scripts.get_heads() == ["20260905_review_deferrals"]
     revision = scripts.get_revision("20260830_cvd_metrics")
     assert revision is not None
     assert revision.down_revision == "20260830_weekly_summary"

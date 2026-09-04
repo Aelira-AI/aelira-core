@@ -83,6 +83,13 @@ def _make_fix(
     fix.reviewed_at = datetime(2026, 1, 16, 14, 0, 0, tzinfo=timezone.utc)
     fix._export_reviewer_name = "Jane Doe"
     fix.review_notes = review_notes
+    fix.deferral_status = None
+    fix.deferral_owner = None
+    fix.deferral_reason = None
+    fix.deferral_expires_at = None
+    fix.deferral_created_at = None
+    fix.deferral_updated_at = None
+    fix.deferral_closed_at = None
     fix.source_kind = "image_equation" if fix_method == "ai_vision" else None
     fix.source_locator = {"page": page_number} if fix.source_kind else None
     fix.verification_evidence = {"validator": "recorded"}
@@ -93,6 +100,27 @@ def _make_fix(
     fix.wcag_criteria = wcag_criteria
     fix.page_number = page_number
     fix.created_at = datetime(2026, 1, 15, 10, 2, 0, tzinfo=timezone.utc)
+    return fix
+
+
+def _deferred_fix(lifecycle: str = "active"):
+    fix = _make_fix(review_status="pending")
+    fix.deferral_status = "active" if lifecycle == "expired" else lifecycle
+    fix.deferral_owner = "Accessibility team"
+    fix.deferral_reason = "Awaiting source-author confirmation"
+    fix.deferral_expires_at = datetime(
+        2020 if lifecycle == "expired" else 2099,
+        1,
+        1,
+        tzinfo=timezone.utc,
+    )
+    fix.deferral_created_at = datetime(2026, 1, 16, tzinfo=timezone.utc)
+    fix.deferral_updated_at = datetime(2026, 1, 17, tzinfo=timezone.utc)
+    fix.deferral_closed_at = (
+        datetime(2026, 1, 18, tzinfo=timezone.utc)
+        if lifecycle in {"revoked", "resolved"}
+        else None
+    )
     return fix
 
 
@@ -1050,3 +1078,56 @@ class TestExportEndpoint:
         assert "scan-001" in disposition
         assert "accessibility-review-evidence" in disposition
         assert "compliance-report" not in disposition
+
+
+@pytest.mark.parametrize("lifecycle", ["active", "expired", "revoked", "resolved"])
+def test_deferral_lifecycle_is_exported_without_applied_credit(lifecycle):
+    from src.education.reports.compliance_report import AuditReportGenerator
+
+    fix = _deferred_fix(lifecycle)
+    result = AuditReportGenerator.generate_json(
+        scan=_make_scan(),
+        fixes=[fix],
+        audit_entries=[],
+        matterhorn_results=[],
+        department=_make_department(),
+    )
+
+    assert result["summary"]["applied_count"] == 0
+    assert result["summary"]["deferral_status_counts"][lifecycle] == 1
+    assert result["reviewer_decisions"][0]["deferral"] == {
+        "lifecycle": lifecycle,
+        "owner": "Accessibility team",
+        "reason": "Awaiting source-author confirmation",
+        "expires_at": fix.deferral_expires_at.isoformat(),
+        "created_at": fix.deferral_created_at.isoformat(),
+        "updated_at": fix.deferral_updated_at.isoformat(),
+        "closed_at": (
+            fix.deferral_closed_at.isoformat() if fix.deferral_closed_at else None
+        ),
+    }
+
+
+def test_csv_and_pdf_render_deferral_evidence():
+    from src.education.reports.compliance_report import AuditReportGenerator
+
+    args = {
+        "scan": _make_scan(),
+        "fixes": [_deferred_fix("expired")],
+        "audit_entries": [],
+        "matterhorn_results": [],
+        "department": _make_department(),
+    }
+    csv_result = AuditReportGenerator.generate_csv(**args)
+    assert "Deferral Lifecycle" in csv_result
+    assert "expired" in csv_result
+    assert "Accessibility team" in csv_result
+
+    pdf_result = AuditReportGenerator.generate_pdf(**args)
+    pdf_text = " ".join(
+        "\n".join(
+            page.extract_text() or ""
+            for page in PdfReader(io.BytesIO(pdf_result)).pages
+        ).split()
+    )
+    assert "Expired" in pdf_text

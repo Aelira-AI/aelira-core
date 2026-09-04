@@ -19,7 +19,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 
@@ -100,6 +100,16 @@ def _audit_export_headers(scan_id: str, format: str) -> dict[str, str]:
 # -- Response Models --
 
 
+class DeferralSummary(BaseModel):
+    lifecycle: Literal["active", "expired", "revoked", "resolved"]
+    owner: str
+    reason: str
+    expires_at: datetime
+    created_at: datetime
+    updated_at: datetime
+    closed_at: Optional[datetime] = None
+
+
 class FixSummary(BaseModel):
     id: str
     category: str
@@ -125,6 +135,7 @@ class FixSummary(BaseModel):
     approved_review_digest: Optional[str] = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
+    deferral: Optional[DeferralSummary] = None
 
 
 class QueueItem(BaseModel):
@@ -174,6 +185,29 @@ class FixAction(BaseModel):
     edited_content: Optional[str] = None
 
 
+class DeferralAction(BaseModel):
+    owner: str = Field(max_length=255)
+    reason: str = Field(max_length=4000)
+    expires_at: datetime
+
+    @field_validator("owner", "reason")
+    @classmethod
+    def validate_non_blank(cls, value: str, info) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError(f"{info.field_name} must not be blank")
+        return normalized
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_future_expiry(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must include a timezone")
+        if value <= datetime.now(timezone.utc):
+            raise ValueError("expires_at must be in the future")
+        return value.astimezone(timezone.utc)
+
+
 class BatchAction(BaseModel):
     action: Literal["approve", "reject"]
     min_confidence: Optional[float] = None
@@ -186,6 +220,12 @@ class ReviewResponse(BaseModel):
     status: str
     fix_id: str
     review_status: str
+
+
+class DeferralResponse(BaseModel):
+    status: str
+    fix_id: str
+    deferral: DeferralSummary
 
 
 class BatchResponse(BaseModel):
@@ -212,6 +252,84 @@ class DepartmentSummary(BaseModel):
 
 
 # -- Helper functions --
+
+
+def deferral_lifecycle(
+    fix: object, *, now: Optional[datetime] = None
+) -> Optional[Literal["active", "expired", "revoked", "resolved"]]:
+    """Return the reportable lifecycle without mutating persisted state."""
+    stored_status = getattr(fix, "deferral_status", None)
+    if stored_status is None:
+        return None
+    if stored_status in {"revoked", "resolved"}:
+        return stored_status
+    if stored_status != "active":
+        return None
+    expires_at = getattr(fix, "deferral_expires_at", None)
+    if expires_at is None:
+        return None
+    comparison_time = now or datetime.now(timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return "expired" if expires_at <= comparison_time else "active"
+
+
+def _deferral_snapshot(
+    fix: object, *, now: Optional[datetime] = None
+) -> Optional[dict[str, object]]:
+    lifecycle = deferral_lifecycle(fix, now=now)
+    if lifecycle is None:
+        return None
+
+    def iso(field: str) -> Optional[str]:
+        value = getattr(fix, field, None)
+        return value.isoformat() if isinstance(value, datetime) else None
+
+    return {
+        "lifecycle": lifecycle,
+        "owner": getattr(fix, "deferral_owner", None),
+        "reason": getattr(fix, "deferral_reason", None),
+        "expires_at": iso("deferral_expires_at"),
+        "created_at": iso("deferral_created_at"),
+        "updated_at": iso("deferral_updated_at"),
+        "closed_at": iso("deferral_closed_at"),
+    }
+
+
+def _deferral_summary(fix: object) -> Optional[DeferralSummary]:
+    snapshot = _deferral_snapshot(fix)
+    return DeferralSummary.model_validate(snapshot) if snapshot else None
+
+
+def _resolve_fix_deferral(
+    db: Session,
+    *,
+    fix: ScanFix,
+    user_id: str,
+    resolved_at: datetime,
+) -> bool:
+    """Resolve an open or expired deferral and append its history event."""
+    if getattr(fix, "deferral_status", None) != "active":
+        return False
+    previous = _deferral_snapshot(fix, now=resolved_at)
+    fix.deferral_status = "resolved"
+    fix.deferral_updated_at = resolved_at
+    fix.deferral_closed_at = resolved_at
+    db.add(
+        ReviewAuditLog(
+            id=str(uuid.uuid4()),
+            scan_id=fix.scan_id,
+            fix_id=fix.id,
+            user_id=user_id,
+            action="fix_deferral_resolved",
+            details={
+                "actor_id": user_id,
+                "previous": previous,
+                "current": _deferral_snapshot(fix, now=resolved_at),
+            },
+        )
+    )
+    return True
 
 
 def compute_compliance_level(total: int, failed: int) -> str:
@@ -316,6 +434,7 @@ def _fix_summary(fix: ScanFix) -> FixSummary:
             if valid_sha256(fix.approved_review_digest)
             else None
         ),
+        deferral=_deferral_summary(fix),
     )
 
 
@@ -581,6 +700,116 @@ def get_document_review(
     )
 
 
+@router.put("/{scan_id}/fixes/{fix_id}/deferral", response_model=DeferralResponse)
+def defer_fix(
+    scan_id: str,
+    fix_id: str,
+    body: DeferralAction,
+    db: Session = Depends(get_db_dependency),
+    auth_result=Depends(get_auth),
+):
+    """Create or change a controlled, time-bounded deferral."""
+    _, user_id, department_id = auth_result
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    graph = lock_scan_review_graph(db, scan_id)
+    fix = next((row for row in graph.fixes if row.id == fix_id), None)
+    if not fix:
+        raise HTTPException(status_code=404, detail="Fix not found")
+    if fix.review_status in _TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="Only unresolved findings can be deferred",
+        )
+
+    now = datetime.now(timezone.utc)
+    previous = _deferral_snapshot(fix, now=now)
+    changing = getattr(fix, "deferral_status", None) == "active"
+    fix.deferral_status = "active"
+    fix.deferral_owner = body.owner
+    fix.deferral_reason = body.reason
+    fix.deferral_expires_at = body.expires_at
+    if not changing:
+        fix.deferral_created_at = now
+    fix.deferral_updated_at = now
+    fix.deferral_closed_at = None
+
+    action = "fix_deferral_updated" if changing else "fix_deferral_created"
+    db.add(
+        ReviewAuditLog(
+            id=str(uuid.uuid4()),
+            scan_id=scan_id,
+            fix_id=fix_id,
+            user_id=user_id,
+            action=action,
+            details={
+                "actor_id": user_id,
+                "previous": previous,
+                "current": _deferral_snapshot(fix, now=now),
+            },
+        )
+    )
+    db.commit()
+    summary = _deferral_summary(fix)
+    if summary is None:  # Defensive: persistence fields were assigned above.
+        raise HTTPException(status_code=500, detail="Deferral state is invalid")
+    return DeferralResponse(status="ok", fix_id=fix_id, deferral=summary)
+
+
+@router.post(
+    "/{scan_id}/fixes/{fix_id}/deferral/revoke",
+    response_model=DeferralResponse,
+)
+def revoke_fix_deferral(
+    scan_id: str,
+    fix_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth_result=Depends(get_auth),
+):
+    """Revoke an active or expired controlled deferral."""
+    _, user_id, department_id = auth_result
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    graph = lock_scan_review_graph(db, scan_id)
+    fix = next((row for row in graph.fixes if row.id == fix_id), None)
+    if not fix:
+        raise HTTPException(status_code=404, detail="Fix not found")
+    if getattr(fix, "deferral_status", None) != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="Only an active or expired deferral can be revoked",
+        )
+
+    now = datetime.now(timezone.utc)
+    previous = _deferral_snapshot(fix, now=now)
+    fix.deferral_status = "revoked"
+    fix.deferral_updated_at = now
+    fix.deferral_closed_at = now
+    db.add(
+        ReviewAuditLog(
+            id=str(uuid.uuid4()),
+            scan_id=scan_id,
+            fix_id=fix_id,
+            user_id=user_id,
+            action="fix_deferral_revoked",
+            details={
+                "actor_id": user_id,
+                "previous": previous,
+                "current": _deferral_snapshot(fix, now=now),
+            },
+        )
+    )
+    db.commit()
+    summary = _deferral_summary(fix)
+    if summary is None:
+        raise HTTPException(status_code=500, detail="Deferral state is invalid")
+    return DeferralResponse(status="ok", fix_id=fix_id, deferral=summary)
+
+
 @router.post("/{scan_id}/fixes/{fix_id}", response_model=ReviewResponse)
 def review_fix(
     scan_id: str,
@@ -626,6 +855,12 @@ def review_fix(
     fix.reviewed_by = user_id
     fix.reviewed_at = now
     fix.review_notes = body.notes
+    _resolve_fix_deferral(
+        db,
+        fix=fix,
+        user_id=user_id,
+        resolved_at=now,
+    )
 
     db.add(
         ReviewAuditLog(
@@ -681,6 +916,13 @@ def batch_review(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    for fix in fixes:
+        _resolve_fix_deferral(
+            db,
+            fix=fix,
+            user_id=user_id,
+            resolved_at=now,
+        )
     invalidate_current_artifact_approvals(db, graph)
 
     db.add(

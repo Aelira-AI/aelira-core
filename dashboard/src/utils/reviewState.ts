@@ -4,6 +4,11 @@ export type ReviewQueueStatus = (typeof REVIEW_QUEUE_STATUSES)[number];
 
 interface ReviewFixState {
   review_status?: string | null;
+  deferral?: ReviewDeferralState | null;
+}
+
+export interface ReviewDeferralState {
+  lifecycle?: 'active' | 'expired' | 'revoked' | 'resolved' | null;
 }
 
 export interface ReviewSummary {
@@ -29,6 +34,19 @@ export function isHumanReviewedStatus(status?: string | null): boolean {
   return HUMAN_REVIEWED_STATUSES.has(status ?? '');
 }
 
+export function getDeferralLifecycle(
+  deferral?: ReviewDeferralState | null,
+): ReviewDeferralState['lifecycle'] {
+  return deferral?.lifecycle ?? null;
+}
+
+export function isAttentionRequired(fix: ReviewFixState): boolean {
+  if (!isPendingReviewStatus(fix.review_status)) {
+    return false;
+  }
+  return getDeferralLifecycle(fix.deferral) !== 'active';
+}
+
 export function getReviewQueueStatus(fixes: ReviewFixState[]): ReviewQueueStatus {
   if (fixes.some((fix) => isPendingReviewStatus(fix.review_status))) {
     return 'pending';
@@ -44,7 +62,7 @@ export function summarizeReviewFixes(fixes: ReviewFixState[]): ReviewSummary {
     (summary, fix) => {
       const status = fix.review_status;
       summary.total_fixes += 1;
-      if (isPendingReviewStatus(status)) {
+      if (isAttentionRequired(fix)) {
         summary.needs_review_count += 1;
       }
       if (status === 'auto_approved') {

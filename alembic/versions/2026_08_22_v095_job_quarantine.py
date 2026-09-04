@@ -25,9 +25,7 @@ def upgrade():
     # durable execution first becomes available. Preserve payload/result and any
     # external-effect evidence for operator review, but make the job terminal and
     # release every stale claim fence.
-    op.execute(
-        sa.text(
-            """
+    op.execute(sa.text("""
             UPDATE cloud_job_queue
                SET status = 'failed',
                    completed_at = now(),
@@ -41,9 +39,7 @@ def upgrade():
                    heartbeat_at = NULL,
                    lease_expires_at = NULL
              WHERE status IN ('pending', 'processing')
-            """
-        )
-    )
+            """))
 
 
 def downgrade():

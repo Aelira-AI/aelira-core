@@ -14,9 +14,9 @@ import { FixCard } from '../components/review/FixCard';
 import { MatterhornResultsBar } from '../components/review/MatterhornResultsBar';
 import type { Fix } from '../components/review/FixCard';
 import {
-  getReviewQueueStatus,
+  getDeferralLifecycle,
+  isAttentionRequired,
   isHumanReviewedStatus,
-  isPendingReviewStatus,
   summarizeReviewFixes,
 } from '../utils/reviewState';
 import type { ReviewQueueStatus } from '../utils/reviewState';
@@ -53,7 +53,15 @@ interface BatchResponse {
   affected: number;
 }
 
-type FixFilter = 'all' | 'needs_review' | 'auto_approved' | 'reviewed';
+type FixFilter =
+  | 'all'
+  | 'needs_review'
+  | 'auto_approved'
+  | 'reviewed'
+  | 'deferred_active'
+  | 'deferred_expired'
+  | 'deferred_revoked'
+  | 'deferred_resolved';
 
 const EVIDENCE_FORMATS: { value: ReviewEvidenceFormat; label: string }[] = [
   { value: 'json', label: 'JSON' },
@@ -112,11 +120,19 @@ export function DocumentReviewPage(): React.ReactElement {
     if (!review) return [];
     switch (fixFilter) {
       case 'needs_review':
-        return review.fixes.filter((f) => isPendingReviewStatus(f.review_status));
+        return review.fixes.filter((f) => isAttentionRequired(f));
       case 'auto_approved':
         return review.fixes.filter((f) => f.review_status === 'auto_approved');
       case 'reviewed':
         return review.fixes.filter((f) => isHumanReviewedStatus(f.review_status));
+      case 'deferred_active':
+        return review.fixes.filter((f) => getDeferralLifecycle(f.deferral) === 'active');
+      case 'deferred_expired':
+        return review.fixes.filter((f) => getDeferralLifecycle(f.deferral) === 'expired');
+      case 'deferred_revoked':
+        return review.fixes.filter((f) => getDeferralLifecycle(f.deferral) === 'revoked');
+      case 'deferred_resolved':
+        return review.fixes.filter((f) => getDeferralLifecycle(f.deferral) === 'resolved');
       default:
         return review.fixes;
     }
@@ -127,30 +143,13 @@ export function DocumentReviewPage(): React.ReactElement {
     if (!scanId) return;
     try {
       const action = editedContent ? 'edit' : 'approve';
-      const response = await apiClient.post<ReviewResponse>(`/api/reviews/${scanId}/fixes/${fixId}`, {
+      await apiClient.post<ReviewResponse>(`/api/reviews/${scanId}/fixes/${fixId}`, {
         action,
         edited_content: editedContent,
         notes,
       });
 
-      setReview((prev) => {
-        if (!prev) return prev;
-        const fixes = prev.fixes.map((fix) =>
-          fix.id === fixId
-            ? {
-                ...fix,
-                review_status: response.data.review_status,
-                fixed_content: editedContent ?? fix.fixed_content,
-              }
-            : fix
-        );
-        return {
-          ...prev,
-          status: getReviewQueueStatus(fixes),
-          fixes,
-          ...summarizeReviewFixes(fixes),
-        };
-      });
+      await fetchReview();
 
       toast.success(editedContent ? 'Fix edited and approved' : 'Fix approved', 'Review Updated');
     } catch (err: unknown) {
@@ -167,25 +166,12 @@ export function DocumentReviewPage(): React.ReactElement {
   const handleReject = async (fixId: string, notes?: string): Promise<void> => {
     if (!scanId) return;
     try {
-      const response = await apiClient.post<ReviewResponse>(`/api/reviews/${scanId}/fixes/${fixId}`, {
+      await apiClient.post<ReviewResponse>(`/api/reviews/${scanId}/fixes/${fixId}`, {
         action: 'reject',
         notes,
       });
 
-      setReview((prev) => {
-        if (!prev) return prev;
-        const fixes = prev.fixes.map((fix) =>
-          fix.id === fixId
-            ? { ...fix, review_status: response.data.review_status }
-            : fix
-        );
-        return {
-          ...prev,
-          status: getReviewQueueStatus(fixes),
-          fixes,
-          ...summarizeReviewFixes(fixes),
-        };
-      });
+      await fetchReview();
 
       toast.success('Fix rejected', 'Review Updated');
     } catch (err: unknown) {
@@ -198,11 +184,52 @@ export function DocumentReviewPage(): React.ReactElement {
     }
   };
 
+  const handleDefer = async (
+    fixId: string,
+    owner: string,
+    reason: string,
+    expiresAt: string,
+  ): Promise<void> => {
+    if (!scanId) return;
+    try {
+      await apiClient.put(`/api/reviews/${scanId}/fixes/${fixId}/deferral`, {
+        owner,
+        reason,
+        expires_at: expiresAt,
+      });
+      await fetchReview();
+      toast.success('Deferral recorded; the finding remains unresolved', 'Review Deferred');
+    } catch (err: unknown) {
+      const message = err instanceof AxiosError
+        ? err.response?.data?.detail || err.message
+        : err instanceof Error
+          ? err.message
+          : 'An unexpected error occurred';
+      toast.error(message, 'Deferral');
+    }
+  };
+
+  const handleRevokeDeferral = async (fixId: string): Promise<void> => {
+    if (!scanId) return;
+    try {
+      await apiClient.post(`/api/reviews/${scanId}/fixes/${fixId}/deferral/revoke`);
+      await fetchReview();
+      toast.success('Deferral revoked; the finding requires attention', 'Deferral Revoked');
+    } catch (err: unknown) {
+      const message = err instanceof AxiosError
+        ? err.response?.data?.detail || err.message
+        : err instanceof Error
+          ? err.message
+          : 'An unexpected error occurred';
+      toast.error(message, 'Deferral');
+    }
+  };
+
   // Handle approve all
   const handleApproveAll = async (): Promise<void> => {
     if (!scanId) return;
     const pendingFixIds = review?.fixes
-      .filter((fix) => isPendingReviewStatus(fix.review_status))
+      .filter((fix) => isAttentionRequired(fix))
       .map((fix) => fix.id) ?? [];
     if (pendingFixIds.length === 0) return;
     setApproveAllLoading(true);
@@ -402,6 +429,10 @@ export function DocumentReviewPage(): React.ReactElement {
                 { key: 'needs_review', label: 'Needs Review', count: needsReviewCount },
                 { key: 'auto_approved', label: 'Auto-Approved', count: summary.auto_approved_count },
                 { key: 'reviewed', label: 'Reviewed', count: summary.reviewed_count },
+                { key: 'deferred_active', label: 'Deferred: Active', count: review.fixes.filter((fix) => getDeferralLifecycle(fix.deferral) === 'active').length },
+                { key: 'deferred_expired', label: 'Deferred: Expired', count: review.fixes.filter((fix) => getDeferralLifecycle(fix.deferral) === 'expired').length },
+                { key: 'deferred_revoked', label: 'Deferred: Revoked', count: review.fixes.filter((fix) => getDeferralLifecycle(fix.deferral) === 'revoked').length },
+                { key: 'deferred_resolved', label: 'Deferred: Resolved', count: review.fixes.filter((fix) => getDeferralLifecycle(fix.deferral) === 'resolved').length },
               ] as { key: FixFilter; label: string; count: number }[]
             ).map(({ key, label, count }) => (
               <button
@@ -439,6 +470,8 @@ export function DocumentReviewPage(): React.ReactElement {
                   fix={fix}
                   onApprove={handleApprove}
                   onReject={handleReject}
+                  onDefer={handleDefer}
+                  onRevokeDeferral={handleRevokeDeferral}
                 />
               ))
             )}

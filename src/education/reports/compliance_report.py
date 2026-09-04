@@ -63,6 +63,7 @@ _EXPORTED_REVIEW_STATUSES = (
     "unresolved",
     "unavailable",
 )
+_EXPORTED_DEFERRAL_STATUSES = ("active", "expired", "revoked", "resolved")
 
 
 def _isoformat(dt: Any) -> str:
@@ -112,6 +113,46 @@ def _review_status_counts(fixes: list) -> dict[str, int]:
     return counts
 
 
+def _deferral_lifecycle(fix: Any, *, now: datetime | None = None) -> str | None:
+    stored_status = getattr(fix, "deferral_status", None)
+    if stored_status is None:
+        return None
+    if stored_status in {"revoked", "resolved"}:
+        return stored_status
+    if stored_status != "active":
+        return None
+    expires_at = getattr(fix, "deferral_expires_at", None)
+    if not isinstance(expires_at, datetime):
+        return None
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return "expired" if expires_at <= (now or datetime.now(timezone.utc)) else "active"
+
+
+def _deferral_evidence(fix: Any) -> dict[str, Any] | None:
+    lifecycle = _deferral_lifecycle(fix)
+    if lifecycle is None:
+        return None
+    return {
+        "lifecycle": lifecycle,
+        "owner": getattr(fix, "deferral_owner", None),
+        "reason": getattr(fix, "deferral_reason", None),
+        "expires_at": _isoformat(getattr(fix, "deferral_expires_at", None)),
+        "created_at": _isoformat(getattr(fix, "deferral_created_at", None)),
+        "updated_at": _isoformat(getattr(fix, "deferral_updated_at", None)),
+        "closed_at": (_isoformat(getattr(fix, "deferral_closed_at", None)) or None),
+    }
+
+
+def _deferral_status_counts(fixes: list) -> dict[str, int]:
+    counts = {status: 0 for status in _EXPORTED_DEFERRAL_STATUSES}
+    for fix in fixes:
+        lifecycle = _deferral_lifecycle(fix)
+        if lifecycle is not None:
+            counts[lifecycle] += 1
+    return counts
+
+
 def _machine_observation(fix: Any) -> dict[str, Any]:
     return {
         "id": fix.id,
@@ -158,6 +199,7 @@ def _reviewer_decision(fix: Any) -> dict[str, Any]:
         "approved_review_digest": _recorded(
             getattr(fix, "approved_review_digest", None)
         ),
+        "deferral": _deferral_evidence(fix),
     }
 
 
@@ -289,6 +331,7 @@ class AuditReportGenerator:
         mh_failed = sum(1 for m in matterhorn_results if m.status == "fail")
 
         status_counts = _review_status_counts(fixes)
+        deferral_counts = _deferral_status_counts(fixes)
         applied_count = sum(
             count
             for status, count in status_counts.items()
@@ -337,6 +380,7 @@ class AuditReportGenerator:
                 + status_counts["auto_approved"],
                 "rejected_count": status_counts["rejected"],
                 "review_status_counts": status_counts,
+                "deferral_status_counts": deferral_counts,
                 "matterhorn_total": mh_total,
                 "matterhorn_passed": mh_passed,
                 "matterhorn_failed": mh_failed,
@@ -465,6 +509,10 @@ class AuditReportGenerator:
                 "Review Notes",
                 "Review Digest",
                 "Approved Review Digest",
+                "Deferral Lifecycle",
+                "Deferral Owner",
+                "Deferral Reason",
+                "Deferral Expires At",
             ]
         )
         for decision in report["reviewer_decisions"]:
@@ -480,6 +528,14 @@ class AuditReportGenerator:
                     decision["review_notes"],
                     decision["review_digest"],
                     decision["approved_review_digest"],
+                    (decision["deferral"]["lifecycle"] if decision["deferral"] else ""),
+                    decision["deferral"]["owner"] if decision["deferral"] else "",
+                    decision["deferral"]["reason"] if decision["deferral"] else "",
+                    (
+                        decision["deferral"]["expires_at"]
+                        if decision["deferral"]
+                        else ""
+                    ),
                 ]
             )
         writer.writerow([])
@@ -698,6 +754,7 @@ class AuditReportGenerator:
         mh_passed = sum(1 for m in matterhorn_results if m.status == "pass")
         mh_failed = sum(1 for m in matterhorn_results if m.status == "fail")
         status_counts = _review_status_counts(fixes)
+        deferral_counts = _deferral_status_counts(fixes)
         applied_count = sum(
             count
             for status, count in status_counts.items()
@@ -728,6 +785,10 @@ class AuditReportGenerator:
             f"&bull; Rejected: <b>{status_counts['rejected']}</b><br/>"
             f"&bull; Unresolved: <b>{status_counts['unresolved']}</b><br/>"
             f"&bull; Unavailable: <b>{status_counts['unavailable']}</b><br/>"
+            f"&bull; Active Deferrals: <b>{deferral_counts['active']}</b><br/>"
+            f"&bull; Expired Deferrals: <b>{deferral_counts['expired']}</b><br/>"
+            f"&bull; Revoked Deferrals: <b>{deferral_counts['revoked']}</b><br/>"
+            f"&bull; Resolved Deferrals: <b>{deferral_counts['resolved']}</b><br/>"
             f"&bull; Matterhorn Checkpoints: <b>{mh_passed}/{mh_total} passed</b><br/>"
             f"&bull; Recorded Validator Result: <b>{_validator_result_label(validator_result)}</b>"
         )
@@ -806,7 +867,14 @@ class AuditReportGenerator:
         story.append(Paragraph("Reviewer Decisions", heading_style))
 
         if fixes:
-            fix_header = ["#", "Status", "Source", "Reviewer", "Review Digest"]
+            fix_header = [
+                "#",
+                "Status",
+                "Source",
+                "Reviewer",
+                "Deferral",
+                "Review Digest",
+            ]
             fix_rows = [fix_header]
             for i, f in enumerate(fixes, 1):
                 decision = _reviewer_decision(f)
@@ -817,13 +885,25 @@ class AuditReportGenerator:
                         status_display,
                         decision["decision_source"].replace("_", " ").title(),
                         Paragraph(str(decision["reviewer_name"])[:60], body_style),
+                        (
+                            decision["deferral"]["lifecycle"].replace("_", " ").title()
+                            if decision["deferral"]
+                            else "-"
+                        ),
                         Paragraph(str(decision["review_digest"])[:72], body_style),
                     ]
                 )
 
             fix_table = Table(
                 fix_rows,
-                colWidths=[0.4 * inch, 1.0 * inch, 0.9 * inch, 1.2 * inch, 2.4 * inch],
+                colWidths=[
+                    0.3 * inch,
+                    0.8 * inch,
+                    0.8 * inch,
+                    1.0 * inch,
+                    0.8 * inch,
+                    2.1 * inch,
+                ],
             )
             fix_table.setStyle(
                 TableStyle(

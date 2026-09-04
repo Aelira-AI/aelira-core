@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, inspect
 from conftest import require_disposable_postgres_url
 
 ROOT = Path(__file__).parents[1]
-HEAD = "20260831_institution_scope"
+HEAD = "20260905_review_deferrals"
 INSTITUTION_SCOPE_HEAD = "20260831_institution_scope"
 CVD_METRICS_HEAD = "20260830_cvd_metrics"
 WEEKLY_SUMMARY_HEAD = "20260830_weekly_summary"
