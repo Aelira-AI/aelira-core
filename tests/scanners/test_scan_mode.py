@@ -40,7 +40,7 @@ class TestScanMode:
         assert isinstance(description, str)
         assert "quick" in description.lower()
         assert "axe-core" in description.lower()
-        assert "90%" in description
+        assert "%" not in description
 
     def test_comprehensive_mode_description(self):
         """Test COMPREHENSIVE mode description"""
@@ -49,7 +49,7 @@ class TestScanMode:
         assert "comprehensive" in description.lower()
         assert "axe-core" in description.lower()
         assert "pa11y" in description.lower()
-        assert "95%" in description
+        assert "%" not in description
 
     def test_deep_mode_description(self):
         """Test DEEP mode description"""
@@ -57,7 +57,7 @@ class TestScanMode:
         assert isinstance(description, str)
         assert "deep" in description.lower()
         assert "ai" in description.lower() or "vision" in description.lower()
-        assert "maximum" in description.lower()
+        assert "requests" in description.lower()
 
     def test_quick_mode_engines(self):
         """Test QUICK mode uses only axe-core"""
@@ -234,16 +234,11 @@ class TestScanMode:
         engines1.append("test")
         assert len(engines2) == 1  # Should still be original length
 
-    def test_mode_coverage_claims(self):
-        """Test that coverage claims are documented in descriptions"""
-        # Quick should mention ~90% coverage
-        assert "90%" in ScanMode.QUICK.description
-
-        # Comprehensive should mention 95%+ coverage
-        assert "95%" in ScanMode.COMPREHENSIVE.description
-
-        # Deep should mention maximum confidence
-        assert "maximum" in ScanMode.DEEP.description.lower()
+    def test_mode_descriptions_state_requested_work_without_coverage_claims(self):
+        """Descriptions state intent; completed evidence is recorded separately."""
+        for mode in ScanMode:
+            assert "requests" in mode.description.lower()
+            assert "%" not in mode.description
 
     def test_mode_use_cases(self):
         """Test that mode descriptions suggest appropriate use cases"""
@@ -254,11 +249,11 @@ class TestScanMode:
         # Quick should emphasize speed
         assert "fast" in quick_desc or "quick" in quick_desc
 
-        # Comprehensive should emphasize thoroughness
-        assert "slower" in comp_desc or "coverage" in comp_desc
+        # Comprehensive should name the additional requested engine
+        assert "pa11y" in comp_desc
 
-        # Deep should emphasize confidence
-        assert "maximum" in deep_desc or "confidence" in deep_desc
+        # Deep should name its additional requested analysis
+        assert "ai vision" in deep_desc
 
     def test_all_modes_have_required_properties(self):
         """Test that all modes implement required properties"""

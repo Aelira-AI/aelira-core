@@ -91,6 +91,63 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
     assert runtime.index(openssl_upgrade) < runtime.index("COPY --from=builder")
 
 
+def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
+    production = (ROOT / "Dockerfile").read_text()
+    development = (ROOT / "Dockerfile.dev").read_text()
+    smoke_command = "RUN python scripts/smoke_pa11y_runtime.py"
+    configure_command = "RUN python scripts/configure_pa11y_chromium.py"
+
+    for dockerfile in (production, development):
+        assert dockerfile.count("npm install -g pa11y@9.0.1") == 1
+        assert "ENV PUPPETEER_SKIP_DOWNLOAD=true" in dockerfile
+        assert "ENV PA11Y_CONFIG_PATH=/app/config/pa11y.json" in dockerfile
+        assert (
+            "ENV PA11Y_CHROMIUM_PATH=/home/aelira/.local/bin/aelira-chromium"
+            in dockerfile
+        )
+        assert dockerfile.count("USER aelira") == 1
+        assert dockerfile.count(configure_command) == 1
+        assert dockerfile.count(smoke_command) == 1
+        assert dockerfile.index("USER aelira") < dockerfile.index(configure_command)
+        assert dockerfile.index(configure_command) < dockerfile.index(smoke_command)
+
+    config = (ROOT / "config" / "pa11y.json").read_text()
+    assert '"executablePath": "/home/aelira/.local/bin/aelira-chromium"' in config
+    assert '"--no-sandbox"' in config
+    assert '"--disable-setuid-sandbox"' in config
+    assert '"--disable-dev-shm-usage"' in config
+
+    smoke = (ROOT / "scripts" / "smoke_pa11y_runtime.py").read_text()
+    assert "os.geteuid() == 0" in smoke
+    assert "SUPPORTED_NODE_MAJORS = {20, 22, 24}" in smoke
+    assert 'EXPECTED_PA11Y_VERSION = "9.0.1"' in smoke
+    assert "ThreadingHTTPServer" in smoke
+    assert "scripts/fixtures/pa11y-smoke.html" in smoke
+
+
+def test_pa11y_evidence_claims_are_runtime_derived() -> None:
+    route = (ROOT / "src" / "api" / "education" / "web_scan_routes.py").read_text()
+    modes = (ROOT / "src" / "scanners" / "scan_mode.py").read_text()
+    dashboard = (
+        ROOT
+        / "dashboard"
+        / "src"
+        / "components"
+        / "results"
+        / "EngineComparisonStats.tsx"
+    ).read_text()
+
+    assert "if should_run_pa11y(mode):" in route
+    assert "if False" not in route
+    assert "estimate_coverage_for_engines(engines_used)" in route
+    assert '"comprehensive": 95.0' not in route
+    assert "estimated_coverage_pct = 90" not in dashboard
+    assert "~90% coverage" not in dashboard
+    assert "~95%+ coverage" not in dashboard
+    assert "90% coverage" not in modes
+    assert "95%+ coverage" not in modes
+
+
 def test_api_dockerfile_normalizes_content_level_build_nondeterminism() -> None:
     api = (ROOT / "Dockerfile").read_text()
 

@@ -110,6 +110,7 @@ COPY . .
 
 # Install Pa11y globally for multi-engine accessibility testing (as root)
 # Pa11y can run both axe-core and HTML_CodeSniffer engines
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 RUN npm install -g pa11y@9.0.1 && \
     npm cache clean --force && \
     rm -rf /root/.npm
@@ -133,10 +134,14 @@ USER aelira
 # Set HOME and Playwright environment variables
 ENV HOME=/home/aelira
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/aelira/.cache/ms-playwright
+ENV PA11Y_CONFIG_PATH=/app/config/pa11y.json
+ENV PA11Y_CHROMIUM_PATH=/home/aelira/.local/bin/aelira-chromium
 
 # Install Playwright Chromium browser (baked into image)
 # This runs as 'aelira' user and installs to /home/aelira/.cache/ms-playwright
 RUN playwright install chromium
+RUN python scripts/configure_pa11y_chromium.py
+RUN python scripts/smoke_pa11y_runtime.py
 
 # Expose port
 EXPOSE 8000

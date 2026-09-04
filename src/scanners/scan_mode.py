@@ -11,9 +11,9 @@ class ScanMode(str, Enum):
     """
     Accessibility scan mode - determines which engines run and scan depth.
 
-    QUICK: Fast scan using axe-core only (~90% coverage, 5-10s)
-    COMPREHENSIVE: Multi-engine scan with axe-core + Pa11y (~95%+ coverage, 15-25s)
-    DEEP: All engines + AI vision analysis (maximum confidence, 30-60s)
+    QUICK: Requests a fast axe-core-only scan (5-10s)
+    COMPREHENSIVE: Requests axe-core and Pa11y (15-25s)
+    DEEP: Requests all configured engines and AI vision analysis (30-60s)
     """
 
     QUICK = "quick"
@@ -24,9 +24,9 @@ class ScanMode(str, Enum):
     def description(self) -> str:
         """Human-readable description of scan mode"""
         descriptions = {
-            ScanMode.QUICK: "Quick Scan - axe-core only (fast, ~90% coverage)",
-            ScanMode.COMPREHENSIVE: "Comprehensive Scan - axe-core + Pa11y (slower, ~95%+ coverage)",
-            ScanMode.DEEP: "Deep Scan - All engines + AI vision (maximum confidence)",
+            ScanMode.QUICK: "Quick Scan - requests axe-core only (fast)",
+            ScanMode.COMPREHENSIVE: "Comprehensive Scan - requests axe-core + Pa11y",
+            ScanMode.DEEP: "Deep Scan - requests all configured engines + AI vision",
         }
         return descriptions[self]
 
