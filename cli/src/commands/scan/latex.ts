@@ -25,7 +25,6 @@ static examples = [
   ]
 static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     'expand-macros': Flags.boolean({
@@ -78,7 +77,7 @@ static flags = {
 
   private async convertLatex(
     filePath: string,
-    apiUrl: string,
+    apiUrl: string | undefined,
     flags: any,
     s: ReturnType<typeof spinner>,
   ): Promise<any> {

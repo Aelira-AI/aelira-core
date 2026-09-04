@@ -234,16 +234,19 @@ export async function listProfiles(): Promise<Array<{ active: boolean; config: P
 }
 
 /**
- * Get the API URL, with environment variable override support
+ * Resolve the API URL using the CLI-wide precedence contract.
  */
-export async function getApiUrl(): Promise<string> {
-  // Environment variable takes precedence
+export async function getApiUrl(explicitApiUrl?: string): Promise<string> {
+  if (explicitApiUrl) {
+    return explicitApiUrl
+  }
+
   if (process.env.AELIRA_API_URL) {
     return process.env.AELIRA_API_URL
   }
 
   const profile = await getActiveProfile()
-  return profile.apiUrl
+  return profile?.apiUrl || DEFAULT_CONFIG.profiles.default.apiUrl
 }
 
 /**

@@ -67,7 +67,6 @@ static examples = [
   ]
 static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     format: Flags.string({
@@ -330,7 +329,7 @@ static flags = {
     }
   }
 
-  private async transcribeMedia(filePath: string, apiUrl: string, progress: any): Promise<any> {
+  private async transcribeMedia(filePath: string, apiUrl: string | undefined, progress: any): Promise<any> {
     const api = new ApiClient({ apiUrl })
     const formData = new FormData()
     formData.append('file', await fs.readFile(filePath), path.basename(filePath))
