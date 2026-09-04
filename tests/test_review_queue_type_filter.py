@@ -43,10 +43,9 @@ class TestQueueStatsByType:
         """QueueStats model should include a by_type field."""
         stats = QueueStats(
             pending=10,
-            in_review=2,
             approved=5,
             rejected=1,
-            total=18,
+            total=16,
             by_type={"pdf": 8, "docx": 6, "web": 4},
         )
         assert stats.by_type == {"pdf": 8, "docx": 6, "web": 4}
@@ -55,10 +54,9 @@ class TestQueueStatsByType:
         """QueueStats.by_type should default to None when not provided."""
         stats = QueueStats(
             pending=10,
-            in_review=2,
             approved=5,
             rejected=1,
-            total=18,
+            total=16,
         )
         assert stats.by_type is None
 

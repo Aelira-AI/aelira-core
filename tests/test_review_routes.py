@@ -20,6 +20,7 @@ from src.api.review_routes import (
     FixSummary,
     QueueItem,
     QueueStats,
+    QueueResponse,
     DocumentReview,
     FixAction,
     BatchAction,
@@ -28,6 +29,7 @@ from src.api.review_routes import (
     AuditEntry,
     compute_compliance_level,
     compute_doc_status,
+    summarize_review_statuses,
     compute_validator_result,
     _fix_summary,
 )
@@ -98,14 +100,31 @@ class TestComputeValidatorResult:
 class TestComputeDocStatus:
     """Tests for the document-level status computation."""
 
-    def test_approved_when_no_pending(self):
-        assert compute_doc_status(0) == "approved"
+    def test_approved_when_every_fix_is_accepted(self):
+        assert compute_doc_status(["approved", "edited", "auto_approved"]) == "approved"
 
-    def test_pending_when_fixes_need_review(self):
-        assert compute_doc_status(1) == "pending"
+    def test_pending_takes_precedence(self):
+        assert compute_doc_status(["approved", "pending", "rejected"]) == "pending"
 
-    def test_pending_when_many_fixes_need_review(self):
-        assert compute_doc_status(42) == "pending"
+    def test_rejected_when_review_is_complete_with_rejections(self):
+        assert compute_doc_status(["approved", "rejected"]) == "rejected"
+
+    def test_empty_document_is_approved(self):
+        assert compute_doc_status([]) == "approved"
+
+
+class TestReviewStatusSummary:
+    def test_counts_canonical_states_and_treats_edited_as_approved(self):
+        summary = summarize_review_statuses(
+            ["pending", "approved", "edited", "auto_approved", "rejected"]
+        )
+
+        assert summary == {
+            "total_fixes": 5,
+            "needs_review_count": 1,
+            "auto_approved_count": 1,
+            "reviewed_count": 3,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -298,28 +317,46 @@ class TestQueueItem:
         assert item.department_id is None
 
 
+class TestQueueResponse:
+    def test_serialization_exposes_truthful_page_boundary(self):
+        now = datetime.now(timezone.utc)
+        item = QueueItem(
+            scan_id="scan-001",
+            file_name="syllabus.pdf",
+            total_fixes=2,
+            needs_review_count=1,
+            lowest_confidence=0.5,
+            status="pending",
+            created_at=now,
+        )
+
+        response = QueueResponse(items=[item], total=21, has_more=True)
+
+        assert response.model_dump()["total"] == 21
+        assert response.has_more is True
+        assert response.items[0].scan_id == "scan-001"
+
+
 class TestQueueStats:
     """Tests for the QueueStats response model."""
 
     def test_serialization(self):
         stats = QueueStats(
             pending=15,
-            in_review=3,
             approved=42,
             rejected=5,
-            total=65,
+            total=62,
         )
         data = stats.model_dump()
         assert data["pending"] == 15
-        assert data["in_review"] == 3
+        assert "in_review" not in data
         assert data["approved"] == 42
         assert data["rejected"] == 5
-        assert data["total"] == 65
+        assert data["total"] == 62
 
     def test_all_zeros(self):
         stats = QueueStats(
             pending=0,
-            in_review=0,
             approved=0,
             rejected=0,
             total=0,
@@ -356,7 +393,12 @@ class TestDocumentReview:
         doc = DocumentReview(
             scan_id="scan-001",
             file_name="test.pdf",
+            status="pending",
             fixes=fixes,
+            total_fixes=2,
+            needs_review_count=1,
+            auto_approved_count=1,
+            reviewed_count=0,
             matterhorn_total=10,
             matterhorn_passed=8,
             matterhorn_failed=2,
@@ -370,13 +412,22 @@ class TestDocumentReview:
         assert data["matterhorn_passed"] == 8
         assert data["matterhorn_failed"] == 2
         assert data["validator_result"] == "recorded_checkpoint_failures"
+        assert data["total_fixes"] == 2
+        assert data["needs_review_count"] == 1
+        assert data["auto_approved_count"] == 1
+        assert data["reviewed_count"] == 0
         assert "compliance_level" not in data
 
     def test_empty_fixes_list(self):
         doc = DocumentReview(
             scan_id="scan-002",
             file_name="empty.pdf",
+            status="approved",
             fixes=[],
+            total_fixes=0,
+            needs_review_count=0,
+            auto_approved_count=0,
+            reviewed_count=0,
             matterhorn_total=0,
             matterhorn_passed=0,
             matterhorn_failed=0,

@@ -9,12 +9,12 @@ import {
   Clock,
   XCircle,
   Loader,
-  Eye,
 } from 'lucide-react';
 import { AxiosError } from 'axios';
 import { apiClient } from '../api/client';
 import { useToast } from '../context/toast-context';
 import { ConfidenceBadge } from '../components/review/ConfidenceBadge';
+import type { ReviewQueueStatus } from '../utils/reviewState';
 
 // ============================================================================
 // Types
@@ -28,20 +28,29 @@ interface QueueItem {
   total_fixes: number;
   needs_review_count: number;
   lowest_confidence: number;
-  status: string;
+  status: ReviewQueueStatus;
   created_at: string;
 }
 
 interface QueueStats {
   pending: number;
-  in_review: number;
   approved: number;
   rejected: number;
   total: number;
   by_type?: Record<string, number>;
 }
 
-type StatusFilter = 'all' | 'pending_review' | 'in_review' | 'approved' | 'rejected';
+interface QueueResponse {
+  items: QueueItem[];
+  total: number;
+  has_more: boolean;
+}
+
+interface BatchResponse {
+  affected: number;
+}
+
+type StatusFilter = 'all' | ReviewQueueStatus;
 type ScanTypeFilter = 'all' | 'pdf' | 'word' | 'excel' | 'powerpoint' | 'latex' | 'web' | 'code' | 'multimedia';
 
 const PAGE_SIZE = 20;
@@ -55,7 +64,9 @@ export function ReviewQueuePage(): React.ReactElement {
   const toast = useToast();
 
   const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [stats, setStats] = useState<QueueStats>({ pending: 0, in_review: 0, approved: 0, rejected: 0, total: 0 });
+  const [stats, setStats] = useState<QueueStats>({ pending: 0, approved: 0, rejected: 0, total: 0 });
+  const [queueTotal, setQueueTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -80,11 +91,13 @@ export function ReviewQueuePage(): React.ReactElement {
       const queryString = params.toString();
 
       const [queueRes, statsRes] = await Promise.all([
-        apiClient.get<QueueItem[]>(`/api/reviews/queue?${queryString}`),
+        apiClient.get<QueueResponse>(`/api/reviews/queue?${queryString}`),
         apiClient.get<QueueStats>('/api/reviews/queue/stats'),
       ]);
 
-      setQueue(queueRes.data);
+      setQueue(queueRes.data.items);
+      setQueueTotal(queueRes.data.total);
+      setHasMore(queueRes.data.has_more);
       setStats(statsRes.data);
       setError(null);
     } catch (err: unknown) {
@@ -133,11 +146,16 @@ export function ReviewQueuePage(): React.ReactElement {
     setBatchLoading(true);
     try {
       const promises = Array.from(selectedIds).map((scanId) =>
-        apiClient.post(`/api/reviews/${scanId}/batch`, { action: 'approve', min_confidence: minConfidence })
+        apiClient.post<BatchResponse>(`/api/reviews/${scanId}/batch`, { action: 'approve', min_confidence: minConfidence })
       );
-      await Promise.all(promises);
+      const responses = await Promise.all(promises);
+      const affected = responses.reduce((total, response) => total + response.data.affected, 0);
       const pct = Math.round(minConfidence * 100);
-      toast.success(`Approved fixes >=${pct}% for ${selectedIds.size} document(s)`, 'Batch Approve');
+      if (affected > 0) {
+        toast.success(`Approved ${affected} fix${affected === 1 ? '' : 'es'} at or above ${pct}% confidence`, 'Batch Approve');
+      } else {
+        toast.warning(`No pending fixes met the ${pct}% confidence threshold`, 'Batch Approve');
+      }
       setSelectedIds(new Set());
       await fetchQueue();
     } catch (err: unknown) {
@@ -163,12 +181,10 @@ export function ReviewQueuePage(): React.ReactElement {
   };
 
   // Status badge styling
-  const getStatusStyle = (status: string): { label: string; color: string; bg: string } => {
+  const getStatusStyle = (status: ReviewQueueStatus): { label: string; color: string; bg: string } => {
     switch (status) {
-      case 'pending_review':
+      case 'pending':
         return { label: 'Pending', color: 'text-[var(--feature-warning-content)]', bg: 'bg-[var(--feature-warning-surface)]' };
-      case 'in_review':
-        return { label: 'In Review', color: 'text-[var(--feature-info-content)]', bg: 'bg-[var(--feature-info-surface)]' };
       case 'approved':
         return { label: 'Approved', color: 'text-[var(--feature-success-content)]', bg: 'bg-[var(--feature-success-surface)]' };
       case 'rejected':
@@ -214,20 +230,13 @@ export function ReviewQueuePage(): React.ReactElement {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
           <div className="card">
             <div className="flex items-center gap-2 mb-1">
               <Clock className="w-4 h-4 text-[var(--feature-warning-content)]" aria-hidden="true" />
               <p className="text-sm text-tertiary">Pending</p>
             </div>
             <p className="text-2xl font-bold text-[var(--feature-warning-content)]">{stats.pending}</p>
-          </div>
-          <div className="card">
-            <div className="flex items-center gap-2 mb-1">
-              <Eye className="w-4 h-4 text-[var(--feature-info-content)]" aria-hidden="true" />
-              <p className="text-sm text-tertiary">In Review</p>
-            </div>
-            <p className="text-2xl font-bold text-[var(--feature-info-content)]">{stats.in_review}</p>
           </div>
           <div className="card">
             <div className="flex items-center gap-2 mb-1">
@@ -262,8 +271,7 @@ export function ReviewQueuePage(): React.ReactElement {
               aria-label="Filter by review status"
             >
               <option value="all">All ({stats.total})</option>
-              <option value="pending_review">Pending ({stats.pending})</option>
-              <option value="in_review">In Review ({stats.in_review})</option>
+              <option value="pending">Pending ({stats.pending})</option>
               <option value="approved">Approved ({stats.approved})</option>
               <option value="rejected">Rejected ({stats.rejected})</option>
             </select>
@@ -404,11 +412,11 @@ export function ReviewQueuePage(): React.ReactElement {
               Previous
             </button>
             <span className="text-sm text-secondary">
-              Page {page}
+              Page {page} of {Math.max(1, Math.ceil(queueTotal / PAGE_SIZE))}
             </span>
             <button
               onClick={() => setPage((p) => p + 1)}
-              disabled={queue.length < PAGE_SIZE}
+              disabled={!hasMore}
               className="btn-secondary text-sm py-1.5 px-3 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
               aria-label="Next page"
             >
