@@ -16,6 +16,7 @@ describe('ci command', () => {
     expect(stdout).to.contain('console')
     expect(stdout).to.contain('json')
     expect(stdout).to.contain('junit')
+    expect(stdout).to.contain('sarif')
   })
 
   it('lists all fail-on severity options in help', async () => {
