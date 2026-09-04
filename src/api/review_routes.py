@@ -10,8 +10,13 @@ Provides endpoints for:
 - Audit export: export audit trail in JSON, CSV, or PDF format
 """
 
+import hashlib
+import hmac
 import logging
+import mimetypes
+import os
 import re
+import stat
 import uuid
 from datetime import datetime, timezone
 from collections.abc import Iterable
@@ -31,6 +36,7 @@ from ..db.models import (
     ScanFix,
     ScanType,
     MatterhornResult,
+    RemediationArtifact,
     ReviewAuditLog,
     User,
 )
@@ -39,7 +45,17 @@ from ..education.visual_semantic_contract import VisualSemanticContract
 from ..education.reports.compliance_report import (
     ACCEPTED_REVIEW_STATUSES,
     AuditReportGenerator,
+    artifact_evidence,
     bounded_audit_details,
+)
+from ..education.reports.evidence_package import (
+    EvidenceFile,
+    EvidencePackageError,
+    build_evidence_package,
+)
+from ..services.remediation_artifact_service import (
+    ArtifactError,
+    RemediationArtifactService,
 )
 from ..services.scan_fix_service import (
     apply_authenticated_batch_review,
@@ -81,6 +97,8 @@ def _scan_type_display(scan_type: object) -> str:
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 get_auth = get_required_api_key
 
+_MAX_INCLUDED_SOURCE_BYTES = 500 * 1024 * 1024
+
 _AUTO_APPROVED_STATUS = "auto_approved"
 _HUMAN_REVIEWED_STATUSES = frozenset({"approved", "edited", "rejected"})
 _ACCEPTED_STATUSES = ACCEPTED_REVIEW_STATUSES
@@ -95,6 +113,72 @@ def _audit_export_headers(scan_id: str, format: str) -> dict[str, str]:
         "Content-Disposition": f'attachment; filename="{prefix}-{safe_id}.{format}"',
         "Cache-Control": "no-store",
     }
+
+
+def _evidence_package_headers(scan_id: str) -> dict[str, str]:
+    """Build bounded attachment headers for a portable evidence package."""
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", scan_id)[:64] or "scan"
+    return {
+        "Content-Disposition": f'attachment; filename="aelira-evidence-{safe_id}.zip"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+def _read_verified_source(scan: Scan) -> EvidenceFile:
+    """Read explicitly requested source bytes through a descriptor-bound check."""
+    storage_path = getattr(scan, "storage_path", None)
+    expected_size = getattr(scan, "file_size_bytes", None)
+    expected_sha256 = getattr(scan, "file_hash", None)
+    if (
+        not isinstance(storage_path, str)
+        or not storage_path
+        or not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+        or expected_size > _MAX_INCLUDED_SOURCE_BYTES
+        or not isinstance(expected_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+    ):
+        raise EvidencePackageError("source evidence metadata is unavailable")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = -1
+    try:
+        fd = os.open(storage_path, flags)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size != expected_size:
+            raise EvidencePackageError("source size mismatch")
+        content = bytearray()
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, min(1024 * 1024, expected_size - len(content) + 1))
+            if not chunk:
+                break
+            content.extend(chunk)
+            digest.update(chunk)
+            if len(content) > expected_size:
+                raise EvidencePackageError("source size mismatch")
+        if len(content) != expected_size:
+            raise EvidencePackageError("source size mismatch")
+        if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+            raise EvidencePackageError("source checksum mismatch")
+    except EvidencePackageError:
+        raise
+    except OSError as exc:
+        raise EvidencePackageError("source bytes are missing or unsafe") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+    filename = getattr(scan, "file_name", None)
+    if not isinstance(filename, str) or not filename:
+        filename = "source.bin"
+    return EvidenceFile(
+        filename=filename,
+        media_type=mimetypes.guess_type(filename)[0],
+        content=bytes(content),
+    )
 
 
 # -- Response Models --
@@ -944,46 +1028,26 @@ def batch_review(
     return BatchResponse(status="ok", affected=len(fixes))
 
 
-@router.get("/{scan_id}/audit/export")
-def export_audit_trail(
-    scan_id: str,
-    format: Literal["json", "csv", "pdf"] = Query("json"),
-    db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
-):
-    """Export bounded scan, validator, remediation, and review evidence.
-
-    The export records issues, fixes, review history, and Matterhorn results;
-    it does not make an accessibility-standard or legal determination.
-    """
-    _, _user_id, department_id = auth_result
-
-    # Verify scan belongs to the authenticated user's department
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
-    if not scan or scan.department_id != department_id:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    # Fetch related data
+def _audit_export_inputs(db: Session, scan: Scan) -> tuple[list, list, list, object]:
+    """Load the bounded evidence graph shared by exports and packages."""
     fixes = (
         db.query(ScanFix)
-        .filter(ScanFix.scan_id == scan_id)
+        .filter(ScanFix.scan_id == scan.id)
         .order_by(ScanFix.confidence.asc())
         .all()
     )
 
     matterhorn_results = (
-        db.query(MatterhornResult).filter(MatterhornResult.scan_id == scan_id).all()
+        db.query(MatterhornResult).filter(MatterhornResult.scan_id == scan.id).all()
     )
 
-    # Build audit entries with user names
     raw_entries = (
         db.query(ReviewAuditLog)
-        .filter(ReviewAuditLog.scan_id == scan_id)
+        .filter(ReviewAuditLog.scan_id == scan.id)
         .order_by(ReviewAuditLog.created_at.asc())
         .all()
     )
 
-    # Batch-load user names to avoid N+1 queries
     user_ids = {e.user_id for e in raw_entries if e.user_id}
     user_ids.update(fix.reviewed_by for fix in fixes if fix.reviewed_by)
     user_map: dict[str, str] = {}
@@ -1012,10 +1076,8 @@ def export_audit_trail(
             user_map.get(fix.reviewed_by) if fix.reviewed_by else None
         )
 
-    # Fetch department for PDF/branding
     dept = db.query(Department).filter(Department.id == scan.department_id).first()
     if not dept:
-        # Fallback: create a minimal department-like object
         dept = type(
             "DeptFallback",
             (),
@@ -1024,6 +1086,28 @@ def export_audit_trail(
                 "institution": "Unknown Institution",
             },
         )()
+    return fixes, audit_entries, matterhorn_results, dept
+
+
+@router.get("/{scan_id}/audit/export")
+def export_audit_trail(
+    scan_id: str,
+    format: Literal["json", "csv", "pdf"] = Query("json"),
+    db: Session = Depends(get_db_dependency),
+    auth_result=Depends(get_auth),
+):
+    """Export bounded scan, validator, remediation, and review evidence.
+
+    The export records issues, fixes, review history, and Matterhorn results;
+    it does not make an accessibility-standard or legal determination.
+    """
+    _, _user_id, department_id = auth_result
+
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    fixes, audit_entries, matterhorn_results, dept = _audit_export_inputs(db, scan)
 
     if format == "json":
         data = AuditReportGenerator.generate_json(
@@ -1065,6 +1149,106 @@ def export_audit_trail(
             media_type="application/pdf",
             headers=_audit_export_headers(scan_id, format),
         )
+
+
+@router.get("/{scan_id}/audit/package")
+def export_evidence_package(
+    scan_id: str,
+    include_source: bool = Query(False),
+    include_output: bool = Query(False),
+    db: Session = Depends(get_db_dependency),
+    auth_result=Depends(get_auth),
+):
+    """Download a versioned evidence package without document bytes by default."""
+    _, _user_id, department_id = auth_result
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    source_file = None
+    if include_source:
+        try:
+            source_file = _read_verified_source(scan)
+        except EvidencePackageError:
+            raise HTTPException(
+                status_code=409, detail="Source evidence unavailable"
+            ) from None
+
+    artifact = None
+    output_file = None
+    artifact_id = getattr(scan, "current_remediation_artifact_id", None)
+    if artifact_id is not None:
+        artifact = (
+            db.query(RemediationArtifact)
+            .filter(
+                RemediationArtifact.id == artifact_id,
+                RemediationArtifact.scan_id == scan.id,
+                RemediationArtifact.department_id == department_id,
+            )
+            .one_or_none()
+        )
+        if artifact is None:
+            raise HTTPException(status_code=409, detail="Evidence artifact unavailable")
+        service = RemediationArtifactService.from_settings()
+        try:
+            if artifact.cloud_file_id is not None:
+                service.lock_current(
+                    db,
+                    artifact_id=artifact.id,
+                    department_id=department_id,
+                    cloud_file_id=artifact.cloud_file_id,
+                    provider=artifact.provider,
+                )
+            if include_output:
+                with service.open_verified(
+                    db,
+                    artifact,
+                    department_id=department_id,
+                    scan_id=scan.id,
+                    cloud_file_id=artifact.cloud_file_id,
+                ) as stream:
+                    output_file = EvidenceFile(
+                        filename=artifact.filename,
+                        media_type=artifact.mime_type,
+                        content=stream.read(),
+                    )
+            else:
+                service.resolve_record(
+                    db,
+                    artifact,
+                    department_id=department_id,
+                    scan_id=scan.id,
+                    cloud_file_id=artifact.cloud_file_id,
+                )
+        except ArtifactError:
+            raise HTTPException(
+                status_code=409, detail="Evidence artifact unavailable"
+            ) from None
+
+    fixes, audit_entries, matterhorn_results, dept = _audit_export_inputs(db, scan)
+    evidence = AuditReportGenerator.generate_json(
+        scan=scan,
+        fixes=fixes,
+        audit_entries=audit_entries,
+        matterhorn_results=matterhorn_results,
+        department=dept,
+    )
+    evidence["artifact"] = artifact_evidence(artifact)
+    try:
+        package = build_evidence_package(
+            evidence,
+            source_file=source_file,
+            output_file=output_file,
+        )
+    except EvidencePackageError:
+        raise HTTPException(
+            status_code=409, detail="Evidence package unavailable"
+        ) from None
+    return Response(
+        content=package,
+        media_type="application/zip",
+        headers=_evidence_package_headers(scan_id),
+    )
 
 
 @router.get("/{scan_id}/audit", response_model=list[AuditEntry])

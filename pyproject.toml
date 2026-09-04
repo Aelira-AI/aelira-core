@@ -38,6 +38,9 @@ Repository = "https://github.com/Aelira-AI/aelira-core"
 Issues = "https://github.com/Aelira-AI/aelira-core/issues"
 Changelog = "https://github.com/Aelira-AI/aelira-core/blob/main/CHANGELOG.md"
 
+[project.scripts]
+aelira-evidence-verify = "src.education.reports.evidence_package:main"
+
 [tool.black]
 target-version = ["py312"]
 
