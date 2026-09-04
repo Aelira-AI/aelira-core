@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  getDeferralLifecycle,
   getReviewQueueStatus,
+  isAttentionRequired,
   REVIEW_QUEUE_STATUSES,
   summarizeReviewFixes,
 } from '../../src/utils/reviewState.ts';
@@ -53,4 +55,27 @@ test('document status gives unresolved work precedence over rejection', () => {
     'rejected',
   );
   assert.equal(getReviewQueueStatus([]), 'approved');
+});
+
+test('deferral lifecycle filters distinguish every reportable state', () => {
+  assert.equal(getDeferralLifecycle({ lifecycle: 'active' }), 'active');
+  assert.equal(getDeferralLifecycle({ lifecycle: 'expired' }), 'expired');
+  assert.equal(getDeferralLifecycle({ lifecycle: 'revoked' }), 'revoked');
+  assert.equal(getDeferralLifecycle({ lifecycle: 'resolved' }), 'resolved');
+  assert.equal(getDeferralLifecycle(null), null);
+});
+
+test('attention returns at expiry but not during an active deferral', () => {
+  assert.equal(
+    isAttentionRequired({ review_status: 'pending', deferral: { lifecycle: 'active' } }),
+    false,
+  );
+  assert.equal(
+    isAttentionRequired({ review_status: 'pending', deferral: { lifecycle: 'expired' } }),
+    true,
+  );
+  assert.equal(
+    isAttentionRequired({ review_status: 'approved', deferral: { lifecycle: 'resolved' } }),
+    false,
+  );
 });

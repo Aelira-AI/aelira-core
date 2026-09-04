@@ -935,6 +935,16 @@ class ScanFix(Base):
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
     review_notes = Column(Text, nullable=True)
 
+    # Controlled deferral tracking. Deferral is operational metadata on an
+    # unresolved finding; it never replaces or advances review_status.
+    deferral_status = Column(String(20), nullable=True)
+    deferral_owner = Column(String(255), nullable=True)
+    deferral_reason = Column(Text, nullable=True)
+    deferral_expires_at = Column(DateTime(timezone=True), nullable=True)
+    deferral_created_at = Column(DateTime(timezone=True), nullable=True)
+    deferral_updated_at = Column(DateTime(timezone=True), nullable=True)
+    deferral_closed_at = Column(DateTime(timezone=True), nullable=True)
+
     # WCAG metadata
     wcag_criteria = Column(String(20), nullable=True)
     page_number = Column(Integer, nullable=True)
@@ -972,11 +982,32 @@ class ScanFix(Base):
             f"({_lower_hex_64_constraint('approved_review_digest')})",
             name="ck_scan_fixes_approved_review_digest",
         ),
+        CheckConstraint(
+            "(deferral_status IS NULL AND deferral_owner IS NULL AND "
+            "deferral_reason IS NULL AND deferral_expires_at IS NULL AND "
+            "deferral_created_at IS NULL AND deferral_updated_at IS NULL AND "
+            "deferral_closed_at IS NULL) OR "
+            "(deferral_status IN ('active', 'revoked', 'resolved') AND "
+            "length(trim(deferral_owner)) > 0 AND "
+            "length(trim(deferral_reason)) > 0 AND "
+            "deferral_expires_at IS NOT NULL AND "
+            "deferral_created_at IS NOT NULL AND "
+            "deferral_updated_at IS NOT NULL AND "
+            "((deferral_status = 'active' AND deferral_closed_at IS NULL) OR "
+            "(deferral_status IN ('revoked', 'resolved') AND "
+            "deferral_closed_at IS NOT NULL)))",
+            name="ck_scan_fixes_deferral_state",
+        ),
         UniqueConstraint(
             "scan_id", "occurrence_key", name="uq_scan_fixes_scan_occurrence"
         ),
         Index("idx_scan_fixes_scan_id", "scan_id"),
         Index("idx_scan_fixes_review", "needs_review", "review_status"),
+        Index(
+            "idx_scan_fixes_deferral",
+            "deferral_status",
+            "deferral_expires_at",
+        ),
         Index("idx_scan_fixes_confidence", "confidence"),
     )
 
