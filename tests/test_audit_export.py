@@ -49,6 +49,10 @@ def _make_scan(
     scan.file_size_bytes = 102400
     scan.created_at = datetime(2026, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
     scan.completed_at = datetime(2026, 1, 15, 10, 5, 0, tzinfo=timezone.utc)
+    scan.document_id = "document-001"
+    scan.document_source = "standalone"
+    scan.file_hash = "a" * 64
+    scan.current_remediation_artifact = None
     return scan
 
 
@@ -77,7 +81,15 @@ def _make_fix(
     fix.review_status = review_status
     fix.reviewed_by = "user-001"
     fix.reviewed_at = datetime(2026, 1, 16, 14, 0, 0, tzinfo=timezone.utc)
+    fix._export_reviewer_name = "Jane Doe"
     fix.review_notes = review_notes
+    fix.source_kind = "image_equation" if fix_method == "ai_vision" else None
+    fix.source_locator = {"page": page_number} if fix.source_kind else None
+    fix.verification_evidence = {"validator": "recorded"}
+    fix.review_digest = "b" * 64
+    fix.approved_review_digest = (
+        "c" * 64 if review_status in {"approved", "edited"} else None
+    )
     fix.wcag_criteria = wcag_criteria
     fix.page_number = page_number
     fix.created_at = datetime(2026, 1, 15, 10, 2, 0, tzinfo=timezone.utc)
@@ -344,6 +356,180 @@ class TestGenerateJSON:
         assert summary["matterhorn_total"] == 5
         assert summary["matterhorn_passed"] == 3
         assert summary["matterhorn_failed"] == 1
+
+    def test_review_states_and_applied_counts_are_truthful(self):
+        from src.education.reports.compliance_report import AuditReportGenerator
+
+        statuses = [
+            "pending",
+            "approved",
+            "rejected",
+            "edited",
+            "legacy_unknown",
+            None,
+            "auto_approved",
+        ]
+        fixes = [
+            _make_fix(fix_id=f"fix-{index}", review_status=status)
+            for index, status in enumerate(statuses)
+        ]
+        result = AuditReportGenerator.generate_json(
+            scan=_make_scan(),
+            fixes=fixes,
+            audit_entries=[],
+            matterhorn_results=[],
+            department=_make_department(),
+        )
+
+        assert result["summary"]["applied_count"] == 3
+        assert result["summary"]["review_status_counts"] == {
+            "pending": 1,
+            "approved": 1,
+            "rejected": 1,
+            "edited": 1,
+            "auto_approved": 1,
+            "unresolved": 1,
+            "unavailable": 1,
+        }
+        assert [
+            decision["review_status"] for decision in result["reviewer_decisions"]
+        ] == [
+            "pending",
+            "approved",
+            "rejected",
+            "edited",
+            "unresolved",
+            "unavailable",
+            "auto_approved",
+        ]
+        assert len(result["machine_observations"]) == len(fixes)
+        assert "review_status" not in result["machine_observations"][0]
+
+    def test_json_includes_recorded_provenance_and_explicit_absence(self):
+        from src.education.reports.compliance_report import AuditReportGenerator
+
+        recorded_scan = _make_scan()
+        artifact = MagicMock()
+        artifact.lifecycle_status = "available"
+        artifact.id = "artifact-001"
+        artifact.filename = "remediated-syllabus.pdf"
+        artifact.mime_type = "application/pdf"
+        artifact.size_bytes = 204800
+        artifact.sha256 = "d" * 64
+        artifact.review_status = "approved"
+        artifact.approval_review_digest = "e" * 64
+        artifact.written_back_at = datetime(2026, 1, 16, 15, 0, 0, tzinfo=timezone.utc)
+        recorded_scan.current_remediation_artifact = artifact
+
+        recorded = AuditReportGenerator.generate_json(
+            scan=recorded_scan,
+            fixes=[_make_fix()],
+            audit_entries=[],
+            matterhorn_results=[_make_matterhorn()],
+            department=_make_department(),
+        )
+        assert recorded["source"]["document_id"] == "document-001"
+        assert recorded["source"]["sha256"] == "a" * 64
+        assert recorded["artifact"] == {
+            "availability": "available",
+            "id": "artifact-001",
+            "filename": "remediated-syllabus.pdf",
+            "mime_type": "application/pdf",
+            "size_bytes": 204800,
+            "sha256": "d" * 64,
+            "review_status": "approved",
+            "approval_review_digest": "e" * 64,
+            "written_back_at": "2026-01-16T15:00:00+00:00",
+        }
+        assert recorded["reviewer_decisions"][0]["reviewer_name"] == "Jane Doe"
+        assert recorded["reviewer_decisions"][0]["review_digest"] == "b" * 64
+        assert recorded["validator_observations"][0]["checkpoint_id"] == "01-001"
+
+        scan = _make_scan()
+        scan.document_id = None
+        scan.document_source = None
+        scan.file_hash = None
+        fix = _make_fix(review_status=None)
+        fix.reviewed_by = None
+        fix.reviewed_at = None
+        fix._export_reviewer_name = None
+        fix.review_digest = None
+        fix.approved_review_digest = None
+        missing = AuditReportGenerator.generate_json(
+            scan=scan,
+            fixes=[fix],
+            audit_entries=[],
+            matterhorn_results=[],
+            department=_make_department(),
+        )
+        assert set(missing["source"].values()) == {"unavailable"}
+        assert missing["artifact"] == {"availability": "unavailable"}
+        assert missing["reviewer_decisions"][0]["reviewer_name"] == "not recorded"
+        assert missing["reviewer_decisions"][0]["review_digest"] == "not recorded"
+
+    def test_csv_and_pdf_separate_observations_from_decisions_and_keep_states(self):
+        from src.education.reports.compliance_report import (
+            ACCEPTED_REVIEW_STATUSES,
+            AuditReportGenerator,
+        )
+
+        fixes = [
+            _make_fix(fix_id="fix-pending", review_status="pending"),
+            _make_fix(fix_id="fix-approved", review_status="approved"),
+            _make_fix(fix_id="fix-rejected", review_status="rejected"),
+            _make_fix(fix_id="fix-edited", review_status="edited"),
+            _make_fix(fix_id="fix-auto", review_status="auto_approved"),
+            _make_fix(fix_id="fix-unresolved", review_status="legacy_unknown"),
+            _make_fix(fix_id="fix-unavailable", review_status=None),
+        ]
+        args = {
+            "scan": _make_scan(),
+            "fixes": fixes,
+            "audit_entries": [],
+            "matterhorn_results": [],
+            "department": _make_department(),
+        }
+
+        csv_result = AuditReportGenerator.generate_csv(**args)
+        assert "Machine Observations" in csv_result
+        assert "Reviewer Decisions" in csv_result
+        assert ["Applied Count", "3"] in list(csv.reader(io.StringIO(csv_result)))
+        for status in (
+            "pending",
+            "approved",
+            "rejected",
+            "edited",
+            "auto_approved",
+            "unresolved",
+            "unavailable",
+        ):
+            assert status in csv_result
+
+        pdf_result = AuditReportGenerator.generate_pdf(**args)
+        pdf_text = " ".join(
+            "\n".join(
+                page.extract_text() or ""
+                for page in PdfReader(io.BytesIO(pdf_result)).pages
+            ).split()
+        )
+        assert "Machine Observations" in pdf_text
+        assert "Reviewer Decisions" in pdf_text
+        assert "Durably Accepted: 3 (42.9%)" in pdf_text
+        for status in (
+            "Pending",
+            "Approved",
+            "Rejected",
+            "Edited",
+            "Auto Approved",
+            "Unresolved",
+            "Unavailable",
+        ):
+            assert status in pdf_text
+        assert ACCEPTED_REVIEW_STATUSES == {
+            "approved",
+            "edited",
+            "auto_approved",
+        }
 
     def test_json_records_all_validator_checkpoints_passed_without_conformance_claim(
         self,
@@ -698,7 +884,7 @@ class TestExportEndpoint:
     from the report generation (which is tested separately above).
     """
 
-    def _setup_app(self):
+    def _setup_app(self, authorized=True):
         """Create a minimal FastAPI app with mocked dependencies."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -711,6 +897,10 @@ class TestExportEndpoint:
 
         # Mock auth
         def mock_auth():
+            if not authorized:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=401, detail="Authentication required")
             return (None, "user-001", "dept-001")
 
         # Mock DB session
@@ -755,6 +945,8 @@ class TestExportEndpoint:
         response = client.get("/api/reviews/scan-001/audit/export?format=json")
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/json"
+        assert "attachment" in response.headers["content-disposition"]
+        assert "audit-scan-001.json" in response.headers["content-disposition"]
         assert response.json()["scan"]["id"] == "scan-001"
 
     @patch("src.api.review_routes.AuditReportGenerator")
@@ -803,6 +995,26 @@ class TestExportEndpoint:
 
         response = client.get("/api/reviews/scan-001/audit/export?format=xml")
         assert response.status_code == 422
+
+    def test_export_requires_authentication(self):
+        client, _mock_db = self._setup_app(authorized=False)
+
+        response = client.get("/api/reviews/scan-001/audit/export?format=json")
+        assert response.status_code == 401
+
+    def test_export_headers_bound_and_sanitize_reflected_scan_id(self):
+        from src.api.review_routes import _audit_export_headers
+
+        headers = _audit_export_headers("../" + "x" * 100, "csv")
+        assert headers == {
+            "Content-Disposition": f'attachment; filename="audit-{"x" * 64}.csv"',
+            "Cache-Control": "no-store",
+        }
+
+    def test_content_disposition_is_exposed_to_browser_clients(self):
+        from src.config.settings import Settings
+
+        assert "Content-Disposition" in Settings().cors_expose_headers
 
     @patch("src.api.review_routes.AuditReportGenerator")
     def test_default_format_is_json(self, mock_gen_cls):

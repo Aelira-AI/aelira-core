@@ -4,9 +4,9 @@ Generates bounded audit evidence in JSON, CSV, and PDF formats for
 the review workflow. Used by the GET /reviews/{scan_id}/audit/export endpoint.
 
 PDF reports include:
-- Executive Summary with fix/approval rates
-- Issues Found table
-- Fixes Applied table
+- Executive Summary with bounded review-state counts
+- Machine observations
+- Reviewer decisions
 - Review History (chronological audit log)
 - Matterhorn Protocol results (for PDF scans)
 - Scope and limitations
@@ -53,6 +53,17 @@ _SEVERITY_COLORS = {
     "minor": "#D1FAE5",
 }
 
+ACCEPTED_REVIEW_STATUSES = frozenset({"approved", "edited", "auto_approved"})
+_EXPORTED_REVIEW_STATUSES = (
+    "pending",
+    "approved",
+    "rejected",
+    "edited",
+    "auto_approved",
+    "unresolved",
+    "unavailable",
+)
+
 
 def _isoformat(dt: Any) -> str:
     """Safely convert a datetime to ISO format string."""
@@ -73,6 +84,114 @@ def _safe_str(value: Any, default: str = "") -> str:
     if hasattr(value, "value"):
         return str(value.value)
     return str(value)
+
+
+def _recorded(value: Any, missing: str = "not recorded") -> Any:
+    """Return recorded evidence without manufacturing a substitute."""
+    if value is None or value == "":
+        return missing
+    if hasattr(value, "value"):
+        return value.value
+    return value
+
+
+def _review_status(value: Any) -> str:
+    """Map persisted status to the bounded public evidence vocabulary."""
+    if value is None or not str(value).strip():
+        return "unavailable"
+    normalized = str(value).strip().lower()
+    if normalized in _EXPORTED_REVIEW_STATUSES:
+        return normalized
+    return "unresolved"
+
+
+def _review_status_counts(fixes: list) -> dict[str, int]:
+    counts = {status: 0 for status in _EXPORTED_REVIEW_STATUSES}
+    for fix in fixes:
+        counts[_review_status(getattr(fix, "review_status", None))] += 1
+    return counts
+
+
+def _machine_observation(fix: Any) -> dict[str, Any]:
+    return {
+        "id": fix.id,
+        "category": fix.category,
+        "severity": fix.severity,
+        "description": fix.description,
+        "fix_method": fix.fix_method,
+        "confidence": fix.confidence,
+        "wcag_criteria": _recorded(getattr(fix, "wcag_criteria", None)),
+        "page_number": _recorded(getattr(fix, "page_number", None)),
+        "source_kind": _recorded(getattr(fix, "source_kind", None), "unavailable"),
+        "source_locator": _recorded(
+            getattr(fix, "source_locator", None), "unavailable"
+        ),
+        "verification_evidence": _recorded(
+            getattr(fix, "verification_evidence", None), "unavailable"
+        ),
+        "created_at": _recorded(
+            _isoformat(getattr(fix, "created_at", None)), "not recorded"
+        ),
+    }
+
+
+def _reviewer_decision(fix: Any) -> dict[str, Any]:
+    status = _review_status(getattr(fix, "review_status", None))
+    if status == "auto_approved":
+        decision_source = "automated"
+    elif status in {"approved", "edited", "rejected"}:
+        decision_source = "human"
+    else:
+        decision_source = "not recorded"
+    return {
+        "fix_id": fix.id,
+        "review_status": status,
+        "accepted": status in ACCEPTED_REVIEW_STATUSES,
+        "decision_source": decision_source,
+        "reviewer_id": _recorded(getattr(fix, "reviewed_by", None)),
+        "reviewer_name": _recorded(getattr(fix, "_export_reviewer_name", None)),
+        "reviewed_at": _recorded(
+            _isoformat(getattr(fix, "reviewed_at", None)), "not recorded"
+        ),
+        "review_notes": _recorded(getattr(fix, "review_notes", None)),
+        "review_digest": _recorded(getattr(fix, "review_digest", None)),
+        "approved_review_digest": _recorded(
+            getattr(fix, "approved_review_digest", None)
+        ),
+    }
+
+
+def _source_evidence(scan: Any) -> dict[str, Any]:
+    return {
+        "document_id": _recorded(getattr(scan, "document_id", None), "unavailable"),
+        "document_source": _recorded(
+            getattr(scan, "document_source", None), "unavailable"
+        ),
+        "sha256": _recorded(getattr(scan, "file_hash", None), "unavailable"),
+    }
+
+
+def _artifact_evidence(scan: Any) -> dict[str, Any]:
+    artifact = getattr(scan, "current_remediation_artifact", None)
+    if artifact is None:
+        return {"availability": "unavailable"}
+    return {
+        "availability": _recorded(
+            getattr(artifact, "lifecycle_status", None), "unavailable"
+        ),
+        "id": _recorded(getattr(artifact, "id", None)),
+        "filename": _recorded(getattr(artifact, "filename", None)),
+        "mime_type": _recorded(getattr(artifact, "mime_type", None)),
+        "size_bytes": _recorded(getattr(artifact, "size_bytes", None)),
+        "sha256": _recorded(getattr(artifact, "sha256", None)),
+        "review_status": _recorded(getattr(artifact, "review_status", None)),
+        "approval_review_digest": _recorded(
+            getattr(artifact, "approval_review_digest", None)
+        ),
+        "written_back_at": _recorded(
+            _isoformat(getattr(artifact, "written_back_at", None)), "not recorded"
+        ),
+    }
 
 
 def _validator_result(total: int, passed: int, failed: int) -> str:
@@ -169,16 +288,29 @@ class AuditReportGenerator:
         mh_passed = sum(1 for m in matterhorn_results if m.status == "pass")
         mh_failed = sum(1 for m in matterhorn_results if m.status == "fail")
 
-        approved_count = sum(
-            1 for f in fixes if f.review_status in ("approved", "auto_approved")
+        status_counts = _review_status_counts(fixes)
+        applied_count = sum(
+            count
+            for status, count in status_counts.items()
+            if status in ACCEPTED_REVIEW_STATUSES
         )
-        rejected_count = sum(1 for f in fixes if f.review_status == "rejected")
 
         validator_result = _validator_result(mh_total, mh_passed, mh_failed)
 
-        applied_count = sum(1 for f in fixes if f.review_status != "rejected")
-        fix_rate = round(applied_count / len(fixes) * 100, 1) if fixes else 0.0
-        approval_rate = round(approved_count / len(fixes) * 100, 1) if fixes else 0.0
+        applied_rate = round(applied_count / len(fixes) * 100, 1) if fixes else 0.0
+        machine_observations = [_machine_observation(fix) for fix in fixes]
+        reviewer_decisions = [_reviewer_decision(fix) for fix in fixes]
+        validator_observations = [
+            {
+                "checkpoint_id": m.checkpoint_id,
+                "checkpoint_name": m.checkpoint_name,
+                "status": m.status,
+                "severity": _recorded(m.severity),
+                "details": _recorded(m.details),
+                "page_number": _recorded(m.page_number),
+            }
+            for m in matterhorn_results
+        ]
 
         return {
             "report_generated_at": _isoformat(datetime.now(timezone.utc)),
@@ -190,6 +322,8 @@ class AuditReportGenerator:
                 "created_at": _isoformat(scan.created_at),
                 "completed_at": _isoformat(scan.completed_at),
             },
+            "source": _source_evidence(scan),
+            "artifact": _artifact_evidence(scan),
             "department": {
                 "name": department.name,
                 "institution": department.institution,
@@ -197,32 +331,21 @@ class AuditReportGenerator:
             "summary": {
                 "total_issues": len(fixes),
                 "total_fixes": len(fixes),
-                "approved_count": approved_count,
-                "rejected_count": rejected_count,
-                "fix_rate": fix_rate,
-                "approval_rate": approval_rate,
+                "applied_count": applied_count,
+                "applied_rate": applied_rate,
+                "approved_count": status_counts["approved"]
+                + status_counts["auto_approved"],
+                "rejected_count": status_counts["rejected"],
+                "review_status_counts": status_counts,
                 "matterhorn_total": mh_total,
                 "matterhorn_passed": mh_passed,
                 "matterhorn_failed": mh_failed,
                 "validator_result": validator_result,
                 "is_conformance_determination": False,
             },
-            "fixes": [
-                {
-                    "id": f.id,
-                    "category": f.category,
-                    "severity": f.severity,
-                    "description": f.description,
-                    "fix_method": f.fix_method,
-                    "confidence": f.confidence,
-                    "review_status": f.review_status,
-                    "review_notes": f.review_notes,
-                    "wcag_criteria": f.wcag_criteria,
-                    "page_number": f.page_number,
-                    "created_at": _isoformat(getattr(f, "created_at", None)),
-                }
-                for f in fixes
-            ],
+            "machine_observations": machine_observations,
+            "reviewer_decisions": reviewer_decisions,
+            "fixes": machine_observations,
             "audit_trail": [
                 {
                     "id": e.id,
@@ -233,17 +356,12 @@ class AuditReportGenerator:
                 }
                 for e in audit_entries
             ],
-            "matterhorn_results": [
-                {
-                    "checkpoint_id": m.checkpoint_id,
-                    "checkpoint_name": m.checkpoint_name,
-                    "status": m.status,
-                    "severity": m.severity,
-                    "details": m.details,
-                    "page_number": m.page_number,
-                }
-                for m in matterhorn_results
-            ],
+            "validator_observations": validator_observations,
+            "matterhorn_results": validator_observations,
+            "limitations": (
+                "This package records review evidence. It does not establish WCAG, "
+                "PDF/UA, or legal conformance."
+            ),
         }
 
     @staticmethod
@@ -270,21 +388,37 @@ class AuditReportGenerator:
         Returns:
             CSV content as a string.
         """
+        report = AuditReportGenerator.generate_json(
+            scan=scan,
+            fixes=fixes,
+            audit_entries=audit_entries,
+            matterhorn_results=matterhorn_results,
+            department=department,
+        )
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # -- Metadata section --
-        writer.writerow(["Audit Trail Export"])
+        writer.writerow(["Accessibility Review Evidence"])
+        writer.writerow(["Evidence Boundary", report["limitations"]])
         writer.writerow(["Department", department.name])
         writer.writerow(["Institution", department.institution])
         writer.writerow(["Scan ID", scan.id])
         writer.writerow(["File Name", scan.file_name])
         writer.writerow(["Scan Type", _safe_str(scan.scan_type)])
-        writer.writerow(["Generated At", _isoformat(datetime.now(timezone.utc))])
+        writer.writerow(["Generated At", report["report_generated_at"]])
+        for key, value in report["source"].items():
+            writer.writerow([f"Source {key.replace('_', ' ').title()}", value])
+        for key, value in report["artifact"].items():
+            writer.writerow([f"Artifact {key.replace('_', ' ').title()}", value])
         writer.writerow([])
 
-        # -- Issues & Fixes section --
-        writer.writerow(["Issues & Fixes"])
+        writer.writerow(["Review State Summary"])
+        writer.writerow(["Applied Count", report["summary"]["applied_count"]])
+        for status, count in report["summary"]["review_status_counts"].items():
+            writer.writerow([status, count])
+        writer.writerow([])
+
+        writer.writerow(["Machine Observations"])
         writer.writerow(
             [
                 "Fix ID",
@@ -293,25 +427,59 @@ class AuditReportGenerator:
                 "Description",
                 "Fix Method",
                 "Confidence",
-                "Review Status",
-                "Review Notes",
                 "WCAG Criteria",
                 "Page",
+                "Source Kind",
+                "Source Locator",
+                "Verification Evidence",
             ]
         )
-        for f in fixes:
+        for observation in report["machine_observations"]:
             writer.writerow(
                 [
-                    f.id,
-                    f.category,
-                    f.severity,
-                    f.description,
-                    f.fix_method,
-                    f.confidence,
-                    f.review_status,
-                    _safe_str(f.review_notes),
-                    _safe_str(f.wcag_criteria),
-                    _safe_str(f.page_number),
+                    observation["id"],
+                    observation["category"],
+                    observation["severity"],
+                    observation["description"],
+                    observation["fix_method"],
+                    observation["confidence"],
+                    observation["wcag_criteria"],
+                    observation["page_number"],
+                    observation["source_kind"],
+                    observation["source_locator"],
+                    observation["verification_evidence"],
+                ]
+            )
+        writer.writerow([])
+
+        writer.writerow(["Reviewer Decisions"])
+        writer.writerow(
+            [
+                "Fix ID",
+                "Review Status",
+                "Accepted",
+                "Decision Source",
+                "Reviewer ID",
+                "Reviewer Name",
+                "Reviewed At",
+                "Review Notes",
+                "Review Digest",
+                "Approved Review Digest",
+            ]
+        )
+        for decision in report["reviewer_decisions"]:
+            writer.writerow(
+                [
+                    decision["fix_id"],
+                    decision["review_status"],
+                    decision["accepted"],
+                    decision["decision_source"],
+                    decision["reviewer_id"],
+                    decision["reviewer_name"],
+                    decision["reviewed_at"],
+                    decision["review_notes"],
+                    decision["review_digest"],
+                    decision["approved_review_digest"],
                 ]
             )
         writer.writerow([])
@@ -336,8 +504,7 @@ class AuditReportGenerator:
             )
         writer.writerow([])
 
-        # -- Matterhorn Results section --
-        writer.writerow(["Matterhorn Results"])
+        writer.writerow(["Validator Observations"])
         writer.writerow(
             [
                 "Checkpoint ID",
@@ -348,15 +515,15 @@ class AuditReportGenerator:
                 "Page",
             ]
         )
-        for m in matterhorn_results:
+        for observation in report["validator_observations"]:
             writer.writerow(
                 [
-                    m.checkpoint_id,
-                    m.checkpoint_name,
-                    m.status,
-                    _safe_str(m.severity),
-                    _safe_str(m.details),
-                    _safe_str(m.page_number),
+                    observation["checkpoint_id"],
+                    observation["checkpoint_name"],
+                    observation["status"],
+                    observation["severity"],
+                    observation["details"],
+                    observation["page_number"],
                 ]
             )
 
@@ -492,6 +659,8 @@ class AuditReportGenerator:
         )
 
         report_date = datetime.now(timezone.utc).strftime("%B %d, %Y")
+        source_evidence = _source_evidence(scan)
+        artifact_evidence = _artifact_evidence(scan)
 
         # -- Metadata table --
         meta_data = [
@@ -500,6 +669,10 @@ class AuditReportGenerator:
             ["Scan Type:", scan_type_str.upper() if scan_type_str else "N/A"],
             ["Department:", department.name],
             ["Institution:", department.institution],
+            ["Source Document ID:", source_evidence["document_id"]],
+            ["Source SHA-256:", source_evidence["sha256"]],
+            ["Artifact:", artifact_evidence.get("id", "unavailable")],
+            ["Artifact SHA-256:", artifact_evidence.get("sha256", "unavailable")],
             ["Generated By:", publisher_name],
         ]
         meta_table = Table(meta_data, colWidths=[1.8 * inch, 4.2 * inch])
@@ -524,13 +697,15 @@ class AuditReportGenerator:
         mh_total = len(matterhorn_results)
         mh_passed = sum(1 for m in matterhorn_results if m.status == "pass")
         mh_failed = sum(1 for m in matterhorn_results if m.status == "fail")
-        approved_count = sum(
-            1 for f in fixes if f.review_status in ("approved", "auto_approved")
+        status_counts = _review_status_counts(fixes)
+        applied_count = sum(
+            count
+            for status, count in status_counts.items()
+            if status in ACCEPTED_REVIEW_STATUSES
         )
-        rejected_count = sum(1 for f in fixes if f.review_status == "rejected")
         total_fixes = len(fixes)
-        approval_rate = (
-            round(approved_count / total_fixes * 100, 1) if total_fixes else 0.0
+        applied_rate = (
+            round(applied_count / total_fixes * 100, 1) if total_fixes else 0.0
         )
         validator_result = _validator_result(mh_total, mh_passed, mh_failed)
 
@@ -545,8 +720,14 @@ class AuditReportGenerator:
             f"<br/><br/>"
             f"<b>Key Metrics:</b><br/>"
             f"&bull; Total Issues Found: <b>{total_fixes}</b><br/>"
-            f"&bull; Fixes Approved: <b>{approved_count}</b> ({approval_rate}%)<br/>"
-            f"&bull; Fixes Rejected: <b>{rejected_count}</b><br/>"
+            f"&bull; Durably Accepted: <b>{applied_count}</b> ({applied_rate}%)<br/>"
+            f"&bull; Pending: <b>{status_counts['pending']}</b><br/>"
+            f"&bull; Approved: <b>{status_counts['approved']}</b><br/>"
+            f"&bull; Edited: <b>{status_counts['edited']}</b><br/>"
+            f"&bull; Auto Approved: <b>{status_counts['auto_approved']}</b><br/>"
+            f"&bull; Rejected: <b>{status_counts['rejected']}</b><br/>"
+            f"&bull; Unresolved: <b>{status_counts['unresolved']}</b><br/>"
+            f"&bull; Unavailable: <b>{status_counts['unavailable']}</b><br/>"
             f"&bull; Matterhorn Checkpoints: <b>{mh_passed}/{mh_total} passed</b><br/>"
             f"&bull; Recorded Validator Result: <b>{_validator_result_label(validator_result)}</b>"
         )
@@ -554,9 +735,9 @@ class AuditReportGenerator:
         story.append(Spacer(1, 0.3 * inch))
 
         # ==========================================================
-        # Section 2: Issues Found
+        # Section 2: Machine observations
         # ==========================================================
-        story.append(Paragraph("Issues Found", heading_style))
+        story.append(Paragraph("Machine Observations", heading_style))
 
         if fixes:
             issue_header = ["#", "Category", "Severity", "Description", "Page", "WCAG"]
@@ -620,22 +801,23 @@ class AuditReportGenerator:
         story.append(Spacer(1, 0.3 * inch))
 
         # ==========================================================
-        # Section 3: Fixes Applied
+        # Section 3: Reviewer decisions
         # ==========================================================
-        story.append(Paragraph("Fixes Applied", heading_style))
+        story.append(Paragraph("Reviewer Decisions", heading_style))
 
         if fixes:
-            fix_header = ["#", "Method", "Confidence", "Status", "Reviewer Notes"]
+            fix_header = ["#", "Status", "Source", "Reviewer", "Review Digest"]
             fix_rows = [fix_header]
             for i, f in enumerate(fixes, 1):
-                status_display = f.review_status.replace("_", " ").title()
+                decision = _reviewer_decision(f)
+                status_display = decision["review_status"].replace("_", " ").title()
                 fix_rows.append(
                     [
                         str(i),
-                        f.fix_method,
-                        f"{f.confidence:.0%}",
                         status_display,
-                        Paragraph(_safe_str(f.review_notes, "-")[:100], body_style),
+                        decision["decision_source"].replace("_", " ").title(),
+                        Paragraph(str(decision["reviewer_name"])[:60], body_style),
+                        Paragraph(str(decision["review_digest"])[:72], body_style),
                     ]
                 )
 
@@ -666,7 +848,7 @@ class AuditReportGenerator:
             story.append(fix_table)
         else:
             story.append(
-                Paragraph("<i>No recorded fix entries were available.</i>", body_style)
+                Paragraph("<i>No reviewer decisions were available.</i>", body_style)
             )
 
         story.append(Spacer(1, 0.3 * inch))

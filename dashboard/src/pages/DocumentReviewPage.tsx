@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Loader,
   FileText,
+  Download,
 } from 'lucide-react';
 import { AxiosError } from 'axios';
 import { apiClient } from '../api/client';
@@ -19,6 +20,11 @@ import {
   summarizeReviewFixes,
 } from '../utils/reviewState';
 import type { ReviewQueueStatus } from '../utils/reviewState';
+import {
+  evidenceContentType,
+  evidenceFilename,
+} from '../utils/reviewEvidenceDownload';
+import type { ReviewEvidenceFormat } from '../utils/reviewEvidenceDownload';
 
 // ============================================================================
 // Types
@@ -49,6 +55,12 @@ interface BatchResponse {
 
 type FixFilter = 'all' | 'needs_review' | 'auto_approved' | 'reviewed';
 
+const EVIDENCE_FORMATS: { value: ReviewEvidenceFormat; label: string }[] = [
+  { value: 'json', label: 'JSON' },
+  { value: 'csv', label: 'CSV' },
+  { value: 'pdf', label: 'PDF' },
+];
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -63,6 +75,7 @@ export function DocumentReviewPage(): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [fixFilter, setFixFilter] = useState<FixFilter>('all');
   const [approveAllLoading, setApproveAllLoading] = useState(false);
+  const [downloadingFormat, setDownloadingFormat] = useState<ReviewEvidenceFormat | null>(null);
 
   // Fetch document review data
   const fetchReview = useCallback(async (): Promise<void> => {
@@ -220,6 +233,48 @@ export function DocumentReviewPage(): React.ReactElement {
     }
   };
 
+  const handleEvidenceDownload = async (format: ReviewEvidenceFormat): Promise<void> => {
+    if (!scanId || downloadingFormat) return;
+    setDownloadingFormat(format);
+    try {
+      const response = await apiClient.get<Blob>(`/api/reviews/${scanId}/audit/export`, {
+        params: { format },
+        responseType: 'blob',
+      });
+      const contentTypeHeader = response.headers['content-type'];
+      const dispositionHeader = response.headers['content-disposition'];
+      const blob = new Blob([response.data], {
+        type: evidenceContentType(
+          typeof contentTypeHeader === 'string' ? contentTypeHeader : undefined,
+          format,
+        ),
+      });
+      const filename = evidenceFilename(
+        typeof dispositionHeader === 'string' ? dispositionHeader : undefined,
+        scanId,
+        format,
+      );
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      toast.success(`${format.toUpperCase()} evidence downloaded`, 'Evidence Download');
+    } catch (err: unknown) {
+      const message = err instanceof AxiosError
+        ? err.response?.data?.detail || err.message
+        : err instanceof Error
+          ? err.message
+          : 'An unexpected error occurred';
+      toast.error(message, 'Evidence Download');
+    } finally {
+      setDownloadingFormat(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64" role="status" aria-label="Loading document review">
@@ -254,10 +309,10 @@ export function DocumentReviewPage(): React.ReactElement {
     <div className="flex flex-col h-[calc(100vh-4rem)]">
       {/* Top bar */}
       <div
-        className="flex items-center justify-between px-6 py-3 shrink-0"
+        className="flex flex-col gap-3 px-4 py-3 shrink-0 sm:flex-row sm:items-center sm:justify-between sm:px-6"
         style={{ backgroundColor: 'var(--surface-secondary)', borderBottom: '1px solid var(--border-primary)' }}
       >
-        <div className="flex items-center gap-4 min-w-0">
+        <div className="flex items-center gap-3 min-w-0 w-full sm:w-auto sm:gap-4">
           <button
             onClick={() => navigate('/review')}
             className="p-1.5 rounded hover:bg-[var(--surface-tertiary)] transition-colors"
@@ -269,7 +324,7 @@ export function DocumentReviewPage(): React.ReactElement {
             <FileText className="w-5 h-5 text-[var(--accent)] shrink-0" aria-hidden="true" />
             <h1 className="text-lg font-semibold text-primary truncate">{review.file_name}</h1>
           </div>
-          <div className="flex items-center gap-4 text-sm text-secondary shrink-0">
+          <div className="hidden items-center gap-4 text-sm text-secondary shrink-0 md:flex">
             <span>{summary.total_fixes} fixes</span>
             <span className="text-[var(--border-primary)]">|</span>
             {needsReviewCount > 0 ? (
@@ -279,21 +334,41 @@ export function DocumentReviewPage(): React.ReactElement {
             )}
           </div>
         </div>
-        {needsReviewCount > 0 && (
-          <button
-            onClick={handleApproveAll}
-            disabled={approveAllLoading}
-            className="btn-primary text-sm py-1.5 px-4 flex items-center gap-2 disabled:opacity-50 shrink-0"
-            aria-label={`Approve all ${needsReviewCount} pending fixes`}
-          >
-            {approveAllLoading ? (
-              <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
-            )}
-            Approve All ({needsReviewCount})
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto sm:justify-end">
+          <div className="flex items-center gap-1" role="group" aria-label="Download review evidence">
+            {EVIDENCE_FORMATS.map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => handleEvidenceDownload(value)}
+                disabled={downloadingFormat !== null}
+                className="btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5 disabled:opacity-50"
+                aria-label={`Download ${label} review evidence`}
+              >
+                {downloadingFormat === value ? (
+                  <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Download className="w-4 h-4" aria-hidden="true" />
+                )}
+                {downloadingFormat === value ? 'Downloading' : label}
+              </button>
+            ))}
+          </div>
+          {needsReviewCount > 0 && (
+            <button
+              onClick={handleApproveAll}
+              disabled={approveAllLoading}
+              className="btn-primary text-sm py-1.5 px-4 flex items-center gap-2 disabled:opacity-50"
+              aria-label={`Approve all ${needsReviewCount} pending fixes`}
+            >
+              {approveAllLoading ? (
+                <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+              )}
+              Approve All ({needsReviewCount})
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Main content - split view */}

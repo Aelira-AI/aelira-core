@@ -163,6 +163,7 @@ class Settings(BaseSettings):
         "X-Device-Fingerprint",
         "X-Fingerprint-Quality",
     ]
+    cors_expose_headers: List[str] = ["Content-Disposition"]
 
     # Database - MUST be set via environment variable
     database_url: str = os.getenv("DATABASE_URL", "")

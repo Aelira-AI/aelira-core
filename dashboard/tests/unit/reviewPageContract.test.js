@@ -26,3 +26,19 @@ test('queue consumes the server-provided pagination boundary', () => {
   assert.match(queueSource, /has_more/);
   assert.doesNotMatch(queueSource, /queue\.length\s*<\s*PAGE_SIZE/);
 });
+
+test('document review downloads all evidence formats through the authenticated client', () => {
+  for (const format of ['json', 'csv', 'pdf']) {
+    assert.match(documentSource, new RegExp(`value: ['"]${format}['"]`));
+  }
+  assert.match(documentSource, /responseType:\s*['"]blob['"]/);
+  assert.match(documentSource, /response\.headers\[['"]content-disposition['"]\]/);
+  assert.match(documentSource, /URL\.createObjectURL/);
+  assert.match(documentSource, /Downloading/);
+});
+
+test('download failures are reported without a false success path', () => {
+  assert.match(documentSource, /toast\.error[\s\S]*Evidence Download/);
+  assert.match(documentSource, /toast\.success[\s\S]*Evidence Download/);
+  assert.match(documentSource, /setDownloadingFormat\(null\)/);
+});
