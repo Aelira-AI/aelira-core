@@ -1118,6 +1118,11 @@ class JobProcessor:
                         scan.error_message = "job_lease_expired"
                         scan.progress_message = "Scan failed"
                 recovered += 1
+            from ..services.visual_analysis_service import (
+                recover_stale_visual_analyses,
+            )
+
+            recovered += len(recover_stale_visual_analyses(db, now=now))
             db.commit()
         return recovered
 

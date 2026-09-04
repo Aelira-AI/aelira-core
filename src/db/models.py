@@ -1012,6 +1012,187 @@ class ScanFix(Base):
     )
 
 
+class VisualAnalysis(Base):
+    """Durable execution and review handoff for one visual-model request."""
+
+    __tablename__ = "visual_analyses"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    department_id = Column(
+        String(36), ForeignKey("departments.id", ondelete="CASCADE"), nullable=False
+    )
+    scan_id = Column(
+        String(36), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False
+    )
+    review_fix_id = Column(
+        String(36),
+        ForeignKey("scan_fixes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    source_kind = Column(String(16), nullable=False)
+    parent_artifact_sha256 = Column(String(64), nullable=False)
+    source_sha256 = Column(String(64), nullable=True)
+    source_locator = Column(JOB_JSON, nullable=False)
+    purpose = Column(String(32), nullable=False)
+    request_digest = Column(String(64), nullable=False)
+
+    status = Column(
+        String(32), nullable=False, default="queued", server_default="queued"
+    )
+    proposal = Column(JOB_JSON, nullable=True)
+    proposal_sha256 = Column(String(64), nullable=True)
+    failure_category = Column(String(64), nullable=True)
+    max_attempts = Column(Integer, nullable=False, default=3, server_default="3")
+    attempt_count = Column(Integer, nullable=False, default=0, server_default="0")
+
+    claim_token = Column(String(36), nullable=True)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    attempts = relationship(
+        "VisualAnalysisAttempt",
+        back_populates="analysis",
+        cascade="all, delete-orphan",
+        order_by="VisualAnalysisAttempt.attempt_number",
+    )
+    review_fix = relationship("ScanFix", foreign_keys=[review_fix_id])
+
+    __table_args__ = (
+        CheckConstraint(
+            "source_kind IN ('image', 'chart')",
+            name="ck_visual_analyses_source_kind",
+        ),
+        CheckConstraint(
+            f"{_lower_hex_64_constraint('parent_artifact_sha256')}",
+            name="ck_visual_analyses_parent_digest",
+        ),
+        CheckConstraint(
+            "source_sha256 IS NULL OR "
+            f"({_lower_hex_64_constraint('source_sha256')})",
+            name="ck_visual_analyses_source_digest",
+        ),
+        CheckConstraint(
+            f"{_lower_hex_64_constraint('request_digest')}",
+            name="ck_visual_analyses_request_digest",
+        ),
+        CheckConstraint(
+            "proposal_sha256 IS NULL OR "
+            f"({_lower_hex_64_constraint('proposal_sha256')})",
+            name="ck_visual_analyses_proposal_digest",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', "
+            "'retryable_failure', 'terminal_failure', 'review_required')",
+            name="ck_visual_analyses_status",
+        ),
+        CheckConstraint(
+            "purpose IN ('alt_text', 'chart_description', 'image_type', "
+            "'alt_text_validation', 'audio_description')",
+            name="ck_visual_analyses_purpose",
+        ),
+        CheckConstraint(
+            "max_attempts >= 1 AND max_attempts <= 20 AND "
+            "attempt_count >= 0 AND attempt_count <= max_attempts",
+            name="ck_visual_analyses_attempt_counts",
+        ),
+        CheckConstraint(
+            "(proposal IS NULL AND proposal_sha256 IS NULL) OR "
+            "(proposal IS NOT NULL AND proposal_sha256 IS NOT NULL)",
+            name="ck_visual_analyses_proposal_pair",
+        ),
+        CheckConstraint(
+            "(status = 'running' AND claim_token IS NOT NULL AND "
+            "claimed_at IS NOT NULL AND heartbeat_at IS NOT NULL AND "
+            "lease_expires_at IS NOT NULL) OR "
+            "(status <> 'running' AND claim_token IS NULL AND "
+            "claimed_at IS NULL AND heartbeat_at IS NULL AND "
+            "lease_expires_at IS NULL)",
+            name="ck_visual_analyses_claim_fence",
+        ),
+        UniqueConstraint(
+            "department_id",
+            "request_digest",
+            name="uq_visual_analyses_department_request",
+        ),
+        Index("idx_visual_analyses_scan_status", "scan_id", "status"),
+        Index("idx_visual_analyses_recovery", "status", "lease_expires_at"),
+    )
+
+
+class VisualAnalysisAttempt(Base):
+    """One immutable-by-convention provider attempt for a visual analysis."""
+
+    __tablename__ = "visual_analysis_attempts"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    analysis_id = Column(
+        String(36),
+        ForeignKey("visual_analyses.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    attempt_number = Column(Integer, nullable=False)
+    purpose = Column(String(32), nullable=False)
+    status = Column(String(32), nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    provider = Column(String(64), nullable=True)
+    model = Column(String(200), nullable=True)
+    failure_category = Column(String(64), nullable=True)
+    proposal = Column(JOB_JSON, nullable=True)
+    proposal_sha256 = Column(String(64), nullable=True)
+
+    analysis = relationship("VisualAnalysis", back_populates="attempts")
+
+    __table_args__ = (
+        CheckConstraint(
+            "attempt_number >= 1 AND attempt_number <= 20",
+            name="ck_visual_analysis_attempts_number",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'retryable_failure', "
+            "'terminal_failure')",
+            name="ck_visual_analysis_attempts_status",
+        ),
+        CheckConstraint(
+            "purpose IN ('alt_text', 'chart_description', 'image_type', "
+            "'alt_text_validation', 'audio_description')",
+            name="ck_visual_analysis_attempts_purpose",
+        ),
+        CheckConstraint(
+            "(status = 'running' AND finished_at IS NULL) OR "
+            "(status <> 'running' AND finished_at IS NOT NULL)",
+            name="ck_visual_analysis_attempts_finish",
+        ),
+        CheckConstraint(
+            "(proposal IS NULL AND proposal_sha256 IS NULL) OR "
+            "(proposal IS NOT NULL AND proposal_sha256 IS NOT NULL)",
+            name="ck_visual_analysis_attempts_proposal_pair",
+        ),
+        CheckConstraint(
+            "proposal_sha256 IS NULL OR "
+            f"({_lower_hex_64_constraint('proposal_sha256')})",
+            name="ck_visual_analysis_attempts_proposal_digest",
+        ),
+        CheckConstraint(
+            "failure_category IS NULL OR status IN "
+            "('retryable_failure', 'terminal_failure')",
+            name="ck_visual_analysis_attempts_failure_state",
+        ),
+        UniqueConstraint(
+            "analysis_id",
+            "attempt_number",
+            name="uq_visual_analysis_attempt_number",
+        ),
+        Index("idx_visual_analysis_attempts_analysis", "analysis_id"),
+    )
+
+
 class MatterhornResult(Base):
     """Matterhorn Protocol checkpoint result for PDF/UA validation.
 

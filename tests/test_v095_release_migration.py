@@ -16,7 +16,7 @@ from conftest import require_disposable_postgres_url
 ROOT = Path(__file__).parents[1]
 PREVIOUS_HEAD = "20260822_task21_provenance"
 V095_HEAD = "20260822_v095_job_quarantine"
-HEAD = "20260905_review_deferrals"
+HEAD = "20260905_visual_analysis"
 INSTITUTION_SCOPE_HEAD = "20260831_institution_scope"
 CVD_METRICS_HEAD = "20260830_cvd_metrics"
 WEEKLY_SUMMARY_HEAD = "20260830_weekly_summary"

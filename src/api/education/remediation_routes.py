@@ -1985,6 +1985,9 @@ async def remediate_scan(
 
     # Special case: IMAGE scan — generate alt text via AI
     if scan_type == ScanType.IMAGE:
+        from ...db.database import SessionLocal
+        from ...services.visual_analysis_service import DurableVisualAnalysisRecorder
+
         generator = ImageAltTextGenerator(
             lms_client=(
                 alt_text_tracker
@@ -1994,6 +1997,14 @@ async def remediate_scan(
                     if not lms_cloud_file
                     else None
                 )
+            ),
+            visual_analysis_recorder=DurableVisualAnalysisRecorder(
+                SessionLocal,
+                department_id=department_id,
+                scan_id=scan_id,
+                parent_artifact_sha256=hashlib.sha256(
+                    Path(file_path).read_bytes()
+                ).hexdigest(),
             ),
         )
         if lms_cloud_file and alt_text_client is None:
@@ -2022,6 +2033,11 @@ async def remediate_scan(
                 analysis = await generator.analyze_image_comprehensive(
                     image_path=file_path,
                     context=f"Educational course content: {scan.file_name}",
+                    analysis_locator={
+                        "kind": "page_image",
+                        "page_number": 1,
+                        "image_xref": 0,
+                    },
                 )
             finally:
                 alt_text_tracker.observe_image_usage(
@@ -2066,14 +2082,12 @@ async def remediate_scan(
             )
 
         success = bool(alt_text) or is_decorative
+        review_fix_id = analysis.get("review_fix_id")
+        review_required = bool(review_fix_id)
 
         try:
             scan.status = ScanStatus.COMPLETED if success else ScanStatus.FAILED
-            scan.remediation_outcome = (
-                RemediationOutcome.COMPLETED.value
-                if success
-                else RemediationOutcome.MANUAL_REQUIRED.value
-            )
+            scan.remediation_outcome = RemediationOutcome.MANUAL_REQUIRED.value
             _audit_terminal_remediation(
                 db=db,
                 request=request,
@@ -2087,8 +2101,8 @@ async def remediate_scan(
                 alt_text_tracker=alt_text_tracker,
                 successful=success,
                 total_issues=1,
-                fixed_count=1 if success else 0,
-                manual_count=0 if success else 1,
+                fixed_count=0,
+                manual_count=1,
                 failed_count=0,
             )
             db.commit()
@@ -2125,22 +2139,31 @@ async def remediate_scan(
                 status_code=500, detail="Remediation failed. Please try again."
             )
 
-        return {
+        response = {
             "success": success,
             "message": (
-                "Image alt text generated"
-                if alt_text
+                "Image analysis proposal ready for review"
+                if review_required
                 else (
-                    "Image classified as decorative"
-                    if is_decorative
+                    "Image analysis completed without a reviewable proposal"
+                    if success
                     else "manual_required"
                 )
             ),
-            "fixed_count": 1 if success else 0,
-            "manual_count": 0 if success else 1,
-            "remediated_alt_text": alt_text,
+            "fixed_count": 0,
+            "manual_count": 1,
+            "proposal_alt_text": alt_text,
             "is_decorative": is_decorative,
         }
+        if analysis.get("analysis_id"):
+            response.update(
+                {
+                    "analysis_id": analysis["analysis_id"],
+                    "analysis_status": analysis.get("analysis_status"),
+                    "review_fix_id": review_fix_id,
+                }
+            )
+        return response
 
     if not RemediatorClass:
         _best_effort_terminal_dispatch_failure(

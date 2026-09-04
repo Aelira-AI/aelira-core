@@ -126,10 +126,18 @@ def process_multimedia_background(
                     progress_db.close()
 
         # Process multimedia with all options
+        from ...services.visual_analysis_service import DurableVisualAnalysisRecorder
+
         processor = MultimediaProcessor(
             whisper_model=f"whisper:{whisper_model}",
             progress_callback=update_progress,
             llm_client=provider_runtime,
+            visual_analysis_recorder=DurableVisualAnalysisRecorder(
+                SessionLocal,
+                department_id=department_id,
+                scan_id=scan_id,
+                parent_artifact_sha256=hashlib.sha256(file_content).hexdigest(),
+            ),
         )
         result = processor.process_media(
             file_path,

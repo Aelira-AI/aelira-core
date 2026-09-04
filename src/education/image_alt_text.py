@@ -2,6 +2,8 @@
 
 import base64
 import asyncio
+import hashlib
+import json
 from functools import wraps
 import time
 import os
@@ -18,17 +20,84 @@ from src.education.alt_text_quality import normalize_usable_alt_text
 logger = logging.getLogger(__name__)
 
 
+def _analysis_request_fingerprint(method_name, args, kwargs) -> str:
+    """Hash prompt-affecting inputs without persisting their raw content."""
+    parameters = {
+        "version": "image-alt-text-request-v1",
+        "method": method_name,
+        "positional": list(args[1:]),
+        "keyword": {key: value for key, value in kwargs.items() if key != "image_path"},
+    }
+    try:
+        encoded = json.dumps(
+            parameters,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    except (TypeError, ValueError):
+        encoded = json.dumps(
+            {
+                "version": "image-alt-text-request-v1",
+                "method": method_name,
+                "parameter_types": [type(value).__name__ for value in args[1:]],
+                "keyword_types": {
+                    key: type(value).__name__
+                    for key, value in sorted(kwargs.items())
+                    if key != "image_path"
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _tracked_analysis(method):
     """Reset request-local usage once and aggregate nested analysis calls."""
 
     @wraps(method)
     async def wrapped(self, *args, **kwargs):
+        analysis_locator = kwargs.get("analysis_locator")
+        analysis_source_kind = kwargs.pop("analysis_source_kind", None)
+        purpose_by_method = {
+            "generate_alt_text": "alt_text",
+            "validate_alt_text": "alt_text_validation",
+            "detect_image_type": "image_type",
+            "describe_chart_or_graph": "chart_description",
+        }
+        purpose = purpose_by_method.get(method.__name__)
+        if purpose is not None:
+            kwargs.pop("analysis_locator", None)
         outermost = self._analysis_depth == 0
         if outermost:
             self._reset_usage_metadata()
         self._analysis_depth += 1
         try:
-            return await method(self, *args, **kwargs)
+            recorder = self.visual_analysis_recorder
+            if recorder is None or analysis_locator is None:
+                return await method(self, *args, **kwargs)
+            source_path = kwargs.get("image_path") or (args[0] if args else None)
+            if purpose is None or not isinstance(source_path, str):
+                return await method(self, *args, **kwargs)
+            source_kind = analysis_source_kind or (
+                "chart" if purpose == "chart_description" else "image"
+            )
+
+            async def invoke():
+                return await method(self, *args, **kwargs)
+
+            return await recorder.execute(
+                purpose=purpose,
+                source_kind=source_kind,
+                source_path=source_path,
+                source_locator=analysis_locator,
+                request_fingerprint=_analysis_request_fingerprint(
+                    method.__name__, args, kwargs
+                ),
+                invoke=invoke,
+            )
         finally:
             self._analysis_depth -= 1
 
@@ -38,7 +107,13 @@ def _tracked_analysis(method):
 class ImageAltTextGenerator:
     """Generate accessible alt text through an explicitly selected transport."""
 
-    def __init__(self, lms_client=None, *, allow_legacy_transport: bool = False):
+    def __init__(
+        self,
+        lms_client=None,
+        *,
+        allow_legacy_transport: bool = False,
+        visual_analysis_recorder=None,
+    ):
         """Create a generator without implicitly enabling any provider.
 
         LMS callers inject a purpose-bound compatibility client. Non-LMS
@@ -48,6 +123,7 @@ class ImageAltTextGenerator:
         self.lms_client = lms_client
         self.settings = get_settings()
         self.allow_legacy_transport = allow_legacy_transport
+        self.visual_analysis_recorder = visual_analysis_recorder
         self.gemini_api_key = None
         self.gemini_api_base = ""
         self.vision_model = ""
@@ -1055,7 +1131,12 @@ Important guidelines:
 
     @_tracked_analysis
     async def analyze_image_comprehensive(
-        self, image_path: str, context: str = None, existing_alt_text: str = None
+        self,
+        image_path: str,
+        context: str = None,
+        existing_alt_text: str = None,
+        *,
+        analysis_locator: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Comprehensive image analysis combining detection, description, and validation.
 
@@ -1078,7 +1159,9 @@ Important guidelines:
         result = {"image_path": image_path, "success": True, "total_inference_time": 0}
 
         # Step 1: Detect image type (decorative vs informative)
-        type_result = await self.detect_image_type(image_path, context)
+        type_result = await self.detect_image_type(
+            image_path, context, analysis_locator=analysis_locator
+        )
         result["type_detection"] = type_result
         result["total_inference_time"] += type_result.get("inference_time", 0)
 
@@ -1103,7 +1186,10 @@ Important guidelines:
         if image_purpose == "complex":
             # Use chart/graph description for complex images
             description_result = await self.describe_chart_or_graph(
-                image_path, context, detail_level="standard"
+                image_path,
+                context,
+                detail_level="standard",
+                analysis_locator=analysis_locator,
             )
             result["description"] = description_result
             result["total_inference_time"] += description_result.get(
@@ -1122,7 +1208,10 @@ Important guidelines:
         else:
             # Use standard alt text for informative images
             alt_result = await self.generate_alt_text(
-                image_path, context, educational_context=True
+                image_path,
+                context,
+                educational_context=True,
+                analysis_locator=analysis_locator,
             )
             result["description"] = alt_result
             result["total_inference_time"] += alt_result.get("inference_time", 0)
@@ -1137,7 +1226,10 @@ Important guidelines:
         # Step 4: Validate existing alt text if provided
         if existing_alt_text:
             validation_result = await self.validate_alt_text(
-                image_path, existing_alt_text, context
+                image_path,
+                existing_alt_text,
+                context,
+                analysis_locator=analysis_locator,
             )
             result["validation"] = validation_result
             result["total_inference_time"] += validation_result.get("inference_time", 0)
@@ -1152,6 +1244,14 @@ Important guidelines:
                         result["recommendation"]["suggested_improvement"] = (
                             validation_result.get("suggested_improvement")
                         )
+
+        for candidate_name in ("description", "type_detection", "validation"):
+            candidate = result.get(candidate_name)
+            if isinstance(candidate, dict) and candidate.get("review_fix_id"):
+                result["analysis_id"] = candidate.get("analysis_id")
+                result["analysis_status"] = candidate.get("analysis_status")
+                result["review_fix_id"] = candidate.get("review_fix_id")
+                break
 
         result["total_inference_time"] = time.perf_counter() - start_time
         return result

@@ -108,6 +108,7 @@ class MultimediaProcessor:
         progress_callback: callable = None,
         llm_client=None,
         alt_text_client=None,
+        visual_analysis_recorder=None,
     ):
         """
         Initialize multimedia processor
@@ -127,6 +128,7 @@ class MultimediaProcessor:
             alt_text_client if alt_text_client is not None else llm_client
         )
         self._image_generator = None  # For smart image analysis (charts/infographics)
+        self._visual_analysis_recorder = visual_analysis_recorder
         self._tts_processor = None  # For generating spoken audio descriptions
 
     def _get_llm_client(self):
@@ -152,6 +154,7 @@ class MultimediaProcessor:
                 self._image_generator = ImageAltTextGenerator(
                     lms_client=self._alt_text_client,
                     allow_legacy_transport=self._alt_text_client is None,
+                    visual_analysis_recorder=self._visual_analysis_recorder,
                 )
                 logger.info(
                     "[MultimediaProcessor] ImageAltTextGenerator loaded for smart image analysis"
@@ -2090,6 +2093,10 @@ class MultimediaProcessor:
                         image_generator.detect_image_type(
                             image_path=frame_path,
                             context=f"Video keyframe at {timestamp:.1f} seconds",
+                            analysis_locator={
+                                "kind": "media_frame",
+                                "timestamp_ms": max(0, int(timestamp * 1000)),
+                            },
                         )
                     )
 
@@ -2119,6 +2126,10 @@ class MultimediaProcessor:
                                     image_path=frame_path,
                                     context=f"Video keyframe at {timestamp:.1f} seconds - describing data visualization",
                                     detail_level="standard",
+                                    analysis_locator={
+                                        "kind": "media_frame",
+                                        "timestamp_ms": max(0, int(timestamp * 1000)),
+                                    },
                                 )
                             )
 
@@ -2174,25 +2185,58 @@ Provide a concise description (1-2 sentences) suitable for reading aloud between
 
 Format: Just the description text, no labels or explanations."""
 
-            # Call LLM provider with vision
-            result = llm_client.analyze_image_sync(
-                image_data=image_data,
-                prompt=prompt,
-                max_tokens=200,
-            )
+            async def invoke_audio_description():
+                raw_result = llm_client.analyze_image_sync(
+                    image_data=image_data,
+                    prompt=prompt,
+                    max_tokens=200,
+                )
+                if not isinstance(raw_result, dict) or not raw_result.get("success"):
+                    return raw_result
+                description = raw_result.get("content")
+                if not isinstance(description, str) or not description.strip():
+                    return {
+                        "success": False,
+                        "error": "invalid_provider_response",
+                        "provider": raw_result.get("provider"),
+                        "model": raw_result.get("model"),
+                    }
+                description = description.strip()
+                return {
+                    "success": True,
+                    "description": description,
+                    "scene_type": self._classify_scene_type(description),
+                    "importance": "medium",
+                    "timestamp_ms": max(0, int(timestamp * 1000)),
+                    "provider": raw_result.get("provider"),
+                    "model": raw_result.get("model"),
+                }
+
+            if self._visual_analysis_recorder is not None:
+                result = run_async_from_sync(
+                    self._visual_analysis_recorder.execute(
+                        purpose="audio_description",
+                        source_kind="image",
+                        source_path=frame_path,
+                        source_locator={
+                            "kind": "media_frame",
+                            "timestamp_ms": max(0, int(timestamp * 1000)),
+                        },
+                        invoke=invoke_audio_description,
+                    )
+                )
+            else:
+                result = run_async_from_sync(invoke_audio_description())
 
             if result.get("success"):
-                description_text = result.get("content", "").strip()
+                description_text = result.get("description", "").strip()
 
                 if description_text:
-                    # Classify scene type
-                    scene_type = self._classify_scene_type(description_text)
-
                     return AudioDescription(
                         timestamp=timestamp,
                         description=description_text,
-                        scene_type=scene_type,
-                        importance="medium",
+                        scene_type=result.get("scene_type"),
+                        importance=result.get("importance", "medium"),
                     )
 
             return None

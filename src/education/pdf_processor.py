@@ -74,6 +74,7 @@ class PDFProcessor:
         simulate_color_blindness: bool = False,
         latex_aware: bool = False,
         llm_client=None,
+        visual_analysis_recorder=None,
     ):
         self.tesseract_config = (
             "--oem 3 --psm 6"  # OCR Engine Mode 3, Page Segmentation Mode 6
@@ -105,6 +106,7 @@ class PDFProcessor:
                 self.image_generator = ImageAltTextGenerator(
                     lms_client=llm_client,
                     allow_legacy_transport=llm_client is None,
+                    visual_analysis_recorder=visual_analysis_recorder,
                 )
             except Exception as e:
                 print(

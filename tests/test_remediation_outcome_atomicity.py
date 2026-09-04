@@ -1131,7 +1131,7 @@ async def test_image_analysis_missing_optional_alt_text_is_manual_required(tmp_p
 
     assert result["success"] is False
     assert result["message"] == "manual_required"
-    assert result["remediated_alt_text"] == ""
+    assert result["proposal_alt_text"] == ""
     assert result["is_decorative"] is False
     assert scan.status == ScanStatus.FAILED
     assert scan.remediation_outcome == RemediationOutcome.MANUAL_REQUIRED.value
@@ -1258,6 +1258,10 @@ async def test_workspace_image_terminal_audit_uses_runtime_transport_metadata(
             "src.api.education.remediation_routes.workspace_provider_runtime",
             return_value=manager,
         ),
+        patch(
+            "src.services.visual_analysis_service.DurableVisualAnalysisRecorder",
+            return_value=None,
+        ),
     ]
 
     with ExitStack() as stack:
@@ -1277,7 +1281,7 @@ async def test_workspace_image_terminal_audit_uses_runtime_transport_metadata(
 
     assert result["success"] is expected_success
     if expected_success:
-        assert result["remediated_alt_text"] == ""
+        assert result["proposal_alt_text"] == ""
         assert result["is_decorative"] is True
         terminal = audit.log_remediation_complete.call_args.kwargs
     else:
