@@ -14,6 +14,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
+from collections.abc import Iterable
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -79,6 +80,11 @@ def _scan_type_display(scan_type: object) -> str:
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 get_auth = get_required_api_key
 
+_AUTO_APPROVED_STATUS = "auto_approved"
+_HUMAN_REVIEWED_STATUSES = frozenset({"approved", "edited", "rejected"})
+_ACCEPTED_STATUSES = frozenset({"approved", "edited", _AUTO_APPROVED_STATUS})
+_TERMINAL_STATUSES = _ACCEPTED_STATUSES | {"rejected"}
+
 
 # -- Response Models --
 
@@ -118,13 +124,18 @@ class QueueItem(BaseModel):
     total_fixes: int
     needs_review_count: int
     lowest_confidence: float
-    status: str  # pending / approved
+    status: Literal["pending", "approved", "rejected"]
     created_at: datetime
+
+
+class QueueResponse(BaseModel):
+    items: list[QueueItem]
+    total: int
+    has_more: bool
 
 
 class QueueStats(BaseModel):
     pending: int
-    in_review: int
     approved: int
     rejected: int
     total: int
@@ -134,7 +145,12 @@ class QueueStats(BaseModel):
 class DocumentReview(BaseModel):
     scan_id: str
     file_name: str
+    status: Literal["pending", "approved", "rejected"]
     fixes: list[FixSummary]
+    total_fixes: int
+    needs_review_count: int
+    auto_approved_count: int
+    reviewed_count: int
     matterhorn_total: int
     matterhorn_passed: int
     matterhorn_failed: int
@@ -216,12 +232,38 @@ def compute_validator_result(total: int, passed: int, failed: int) -> str:
     return "recorded_checkpoint_results_available"
 
 
-def compute_doc_status(needs_review_count: int) -> str:
-    """Determine document-level review status.
+def summarize_review_statuses(statuses: Iterable[Optional[str]]) -> dict[str, int]:
+    """Summarize persisted fix states for the review UI.
 
-    A document is 'approved' when no fixes remain pending review.
+    Unknown and legacy non-terminal states remain pending instead of being
+    silently presented as reviewed. ``edited`` is accepted for legacy rows,
+    although new edits are persisted as ``approved`` and recorded in audit logs.
     """
-    return "approved" if needs_review_count == 0 else "pending"
+    status_list = list(statuses)
+    return {
+        "total_fixes": len(status_list),
+        "needs_review_count": sum(
+            status not in _TERMINAL_STATUSES for status in status_list
+        ),
+        "auto_approved_count": sum(
+            status == _AUTO_APPROVED_STATUS for status in status_list
+        ),
+        "reviewed_count": sum(
+            status in _HUMAN_REVIEWED_STATUSES for status in status_list
+        ),
+    }
+
+
+def compute_doc_status(
+    statuses: Iterable[Optional[str]],
+) -> Literal["pending", "approved", "rejected"]:
+    """Determine document status from the persisted states of all its fixes."""
+    status_list = list(statuses)
+    if any(status not in _TERMINAL_STATUSES for status in status_list):
+        return "pending"
+    if "rejected" in status_list:
+        return "rejected"
+    return "approved"
 
 
 def _fix_summary(fix: ScanFix) -> FixSummary:
@@ -269,10 +311,10 @@ def _fix_summary(fix: ScanFix) -> FixSummary:
 # -- Endpoints --
 
 
-@router.get("/queue", response_model=list[QueueItem])
+@router.get("/queue", response_model=QueueResponse)
 def get_review_queue(
     department_id: Optional[str] = Query(None),
-    status: Optional[Literal["pending", "approved"]] = Query(None),
+    status: Optional[Literal["pending", "approved", "rejected"]] = Query(None),
     scan_type: Optional[str] = Query(None),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
@@ -291,9 +333,10 @@ def get_review_queue(
             Scan.scan_type,
             func.count(ScanFix.id).label("total_fixes"),
             func.sum(
-                case((ScanFix.needs_review == True, 1), else_=0)
-            ).label(  # noqa: E712
-                "needs_review_count"
+                case((ScanFix.review_status.in_(_TERMINAL_STATUSES), 0), else_=1)
+            ).label("needs_review_count"),
+            func.sum(case((ScanFix.review_status == "rejected", 1), else_=0)).label(
+                "rejected_count"
             ),
             func.min(ScanFix.confidence).label("lowest_confidence"),
             Scan.created_at,
@@ -313,13 +356,21 @@ def get_review_queue(
     # Filter by review status
     if status == "pending":
         query = query.having(
-            func.sum(case((ScanFix.review_status == "pending", 1), else_=0)) > 0
+            func.sum(case((ScanFix.review_status.in_(_TERMINAL_STATUSES), 0), else_=1))
+            > 0
         )
     elif status == "approved":
         query = query.having(
-            func.sum(case((ScanFix.review_status == "pending", 1), else_=0)) == 0
-        )
+            func.sum(case((ScanFix.review_status.in_(_TERMINAL_STATUSES), 0), else_=1))
+            == 0
+        ).having(func.sum(case((ScanFix.review_status == "rejected", 1), else_=0)) == 0)
+    elif status == "rejected":
+        query = query.having(
+            func.sum(case((ScanFix.review_status.in_(_TERMINAL_STATUSES), 0), else_=1))
+            == 0
+        ).having(func.sum(case((ScanFix.review_status == "rejected", 1), else_=0)) > 0)
 
+    total = query.count()
     rows = (
         query.order_by(func.min(ScanFix.confidence).asc())
         .offset(offset)
@@ -330,7 +381,11 @@ def get_review_queue(
     results = []
     for row in rows:
         pending_count = row.needs_review_count or 0
-        doc_status = compute_doc_status(pending_count)
+        doc_status = (
+            "pending"
+            if pending_count > 0
+            else "rejected" if (row.rejected_count or 0) > 0 else "approved"
+        )
         results.append(
             QueueItem(
                 scan_id=row.scan_id,
@@ -345,7 +400,11 @@ def get_review_queue(
             )
         )
 
-    return results
+    return QueueResponse(
+        items=results,
+        total=total,
+        has_more=offset + len(results) < total,
+    )
 
 
 @router.get("/queue/stats", response_model=QueueStats)
@@ -366,6 +425,10 @@ def get_review_stats(
     rows = query.group_by(ScanFix.review_status).all()
 
     counts = {status: count for status, count in rows}
+    total = sum(counts.values())
+    approved = sum(counts.get(status, 0) for status in _ACCEPTED_STATUSES)
+    rejected = counts.get("rejected", 0)
+    pending = total - approved - rejected
 
     # Per-type breakdown
     type_query = db.query(Scan.scan_type, func.count(func.distinct(Scan.id))).join(
@@ -380,11 +443,10 @@ def get_review_stats(
     }
 
     return QueueStats(
-        pending=counts.get("pending", 0),
-        in_review=counts.get("in_review", 0),
-        approved=counts.get("approved", 0) + counts.get("auto_approved", 0),
-        rejected=counts.get("rejected", 0),
-        total=sum(counts.values()),
+        pending=pending,
+        approved=approved,
+        rejected=rejected,
+        total=total,
         by_type=by_type if by_type else None,
     )
 
@@ -419,13 +481,10 @@ def get_department_summary(
     )
     status_counts = {status: count for status, count in status_rows}
 
-    approved_count = status_counts.get("approved", 0) + status_counts.get(
-        "auto_approved", 0
-    )
+    approved_count = sum(status_counts.get(status, 0) for status in _ACCEPTED_STATUSES)
     rejected_count = status_counts.get("rejected", 0)
-    # in_review is still pending human action, so count it as pending
-    pending_count = status_counts.get("pending", 0) + status_counts.get("in_review", 0)
     total_fixes = sum(status_counts.values())
+    pending_count = total_fixes - approved_count - rejected_count
 
     # 3. Calculate reviewed percentage
     reviewed = approved_count + rejected_count
@@ -495,11 +554,15 @@ def get_document_review(
     total = len(matterhorn)
 
     validator_result = compute_validator_result(total, passed, failed)
+    statuses = [fix.review_status for fix in fixes]
+    summary = summarize_review_statuses(statuses)
 
     return DocumentReview(
         scan_id=scan_id,
         file_name=scan.file_name,
+        status=compute_doc_status(statuses),
         fixes=[_fix_summary(fix) for fix in fixes],
+        **summary,
         matterhorn_total=total,
         matterhorn_passed=passed,
         matterhorn_failed=failed,
