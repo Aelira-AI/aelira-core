@@ -285,6 +285,7 @@ class PowerPointProcessor:
         detect_images_of_text: bool = False,
         progress_callback: callable = None,
         llm_client=None,
+        visual_analysis_recorder=None,
     ):
         self.wcag_aa_ratio = 4.5  # WCAG 2.1 AA for normal text
         self.wcag_aaa_ratio = 7.0  # WCAG 2.1 AAA for normal text
@@ -309,6 +310,7 @@ class PowerPointProcessor:
                 self.image_generator = ImageAltTextGenerator(
                     lms_client=llm_client,
                     allow_legacy_transport=llm_client is None,
+                    visual_analysis_recorder=visual_analysis_recorder,
                 )
             except Exception as e:
                 print(
@@ -1510,7 +1512,13 @@ class PowerPointProcessor:
                             # PHASE 1: Detect image type first
                             type_result = run_async_from_sync(
                                 self.image_generator.detect_image_type(
-                                    image_path=image_path, context=context
+                                    image_path=image_path,
+                                    context=context,
+                                    analysis_locator={
+                                        "kind": "slide_shape",
+                                        "slide_number": slide_number,
+                                        "shape_id": shape.shape_id,
+                                    },
                                 )
                             )
 
@@ -1552,6 +1560,11 @@ class PowerPointProcessor:
                                             image_path=image_path,
                                             context=context,
                                             detail_level="standard",
+                                            analysis_locator={
+                                                "kind": "slide_shape",
+                                                "slide_number": slide_number,
+                                                "shape_id": shape.shape_id,
+                                            },
                                         )
                                     )
                                     if chart_result.get("success"):
@@ -1574,6 +1587,11 @@ class PowerPointProcessor:
                                                 image_path=image_path,
                                                 context=context,
                                                 educational_context=True,
+                                                analysis_locator={
+                                                    "kind": "slide_shape",
+                                                    "slide_number": slide_number,
+                                                    "shape_id": shape.shape_id,
+                                                },
                                             )
                                         )
                                         if result.get("success"):
@@ -1585,6 +1603,11 @@ class PowerPointProcessor:
                                             image_path=image_path,
                                             context=context,
                                             educational_context=True,
+                                            analysis_locator={
+                                                "kind": "slide_shape",
+                                                "slide_number": slide_number,
+                                                "shape_id": shape.shape_id,
+                                            },
                                         )
                                     )
                                     if result.get("success"):
@@ -1599,6 +1622,11 @@ class PowerPointProcessor:
                                         image_path=image_path,
                                         context=context,
                                         educational_context=True,
+                                        analysis_locator={
+                                            "kind": "slide_shape",
+                                            "slide_number": slide_number,
+                                            "shape_id": shape.shape_id,
+                                        },
                                     )
                                 )
                                 if result.get("success"):
@@ -1653,6 +1681,11 @@ class PowerPointProcessor:
                                 image_path=image_path,
                                 existing_alt_text=existing_text,
                                 context=context,
+                                analysis_locator={
+                                    "kind": "slide_shape",
+                                    "slide_number": slide_number,
+                                    "shape_id": shape.shape_id,
+                                },
                             )
                         )
 

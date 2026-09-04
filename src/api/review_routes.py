@@ -39,6 +39,7 @@ from ..db.models import (
     RemediationArtifact,
     ReviewAuditLog,
     User,
+    VisualAnalysis,
 )
 from ..education.equation_region_contract import PageRasterRegionLocator
 from ..education.visual_semantic_contract import VisualSemanticContract
@@ -66,6 +67,11 @@ from ..services.scan_fix_service import (
     validate_fix_review_action,
     validated_visual_semantic_contract,
     visual_semantic_disposition,
+)
+from ..services.visual_analysis_service import (
+    SAFE_FAILURE_CATEGORIES,
+    canonical_visual_locator,
+    validated_visual_proposal,
 )
 
 logger = logging.getLogger(__name__)
@@ -222,6 +228,34 @@ class FixSummary(BaseModel):
     deferral: Optional[DeferralSummary] = None
 
 
+class VisualAnalysisSummary(BaseModel):
+    id: str
+    source_kind: Literal["image", "chart"]
+    source_locator: Optional[dict[str, int | str]] = None
+    purpose: Literal[
+        "alt_text",
+        "chart_description",
+        "image_type",
+        "alt_text_validation",
+        "audio_description",
+    ]
+    status: Literal[
+        "queued",
+        "running",
+        "succeeded",
+        "retryable_failure",
+        "terminal_failure",
+        "review_required",
+    ]
+    attempt_count: int
+    max_attempts: int
+    failure_category: Optional[str] = None
+    proposal: Optional[dict] = None
+    proposal_sha256: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    review_fix_id: Optional[str] = None
+    review_status: Optional[str] = None
+
+
 class QueueItem(BaseModel):
     scan_id: str
     file_name: str
@@ -261,6 +295,7 @@ class DocumentReview(BaseModel):
     matterhorn_passed: int
     matterhorn_failed: int
     validator_result: str
+    visual_analyses: list[VisualAnalysisSummary] = Field(default_factory=list)
 
 
 class FixAction(BaseModel):
@@ -522,6 +557,36 @@ def _fix_summary(fix: ScanFix) -> FixSummary:
     )
 
 
+def _visual_analysis_summary(
+    analysis: VisualAnalysis, fixes_by_id: dict[str, ScanFix]
+) -> VisualAnalysisSummary:
+    try:
+        locator = canonical_visual_locator(analysis.source_locator)
+    except ValueError:
+        locator = None
+    linked_fix = fixes_by_id.get(analysis.review_fix_id)
+    return VisualAnalysisSummary(
+        id=analysis.id,
+        source_kind=analysis.source_kind,
+        source_locator=locator,
+        purpose=analysis.purpose,
+        status=analysis.status,
+        attempt_count=analysis.attempt_count,
+        max_attempts=analysis.max_attempts,
+        failure_category=(
+            analysis.failure_category
+            if analysis.failure_category in SAFE_FAILURE_CATEGORIES
+            else None
+        ),
+        proposal=validated_visual_proposal(analysis.purpose, analysis.proposal),
+        proposal_sha256=(
+            analysis.proposal_sha256 if valid_sha256(analysis.proposal_sha256) else None
+        ),
+        review_fix_id=linked_fix.id if linked_fix is not None else None,
+        review_status=linked_fix.review_status if linked_fix is not None else None,
+    )
+
+
 # -- Endpoints --
 
 
@@ -762,6 +827,16 @@ def get_document_review(
     matterhorn = (
         db.query(MatterhornResult).filter(MatterhornResult.scan_id == scan_id).all()
     )
+    visual_analyses = (
+        db.query(VisualAnalysis)
+        .filter(
+            VisualAnalysis.scan_id == scan_id,
+            VisualAnalysis.department_id == department_id,
+        )
+        .order_by(VisualAnalysis.created_at.asc(), VisualAnalysis.id.asc())
+        .all()
+    )
+    fixes_by_id = {fix.id: fix for fix in fixes}
 
     passed = sum(1 for m in matterhorn if m.status == "pass")
     failed = sum(1 for m in matterhorn if m.status == "fail")
@@ -781,6 +856,10 @@ def get_document_review(
         matterhorn_passed=passed,
         matterhorn_failed=failed,
         validator_result=validator_result,
+        visual_analyses=[
+            _visual_analysis_summary(analysis, fixes_by_id)
+            for analysis in visual_analyses
+        ],
     )
 
 

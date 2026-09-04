@@ -98,6 +98,8 @@ def process_pdf_background(
                 if progress_db:
                     progress_db.close()
 
+        from ...services.visual_analysis_service import DurableVisualAnalysisRecorder
+
         # Process PDF (don't pass db_session to avoid holding connection for entire processing)
         processor = PDFProcessor(
             generate_alt_text=generate_alt_text,
@@ -105,6 +107,16 @@ def process_pdf_background(
             db_session=None,  # PDFProcessor should create its own sessions when needed
             progress_callback=update_progress,
             llm_client=provider_runtime,
+            visual_analysis_recorder=(
+                DurableVisualAnalysisRecorder(
+                    SessionLocal,
+                    department_id=scan.department_id,
+                    scan_id=scan.id,
+                    parent_artifact_sha256=hashlib.sha256(file_content).hexdigest(),
+                )
+                if generate_alt_text
+                else None
+            ),
         )
         result = processor.process_pdf(file_path, original_filename=filename)
 
@@ -343,12 +355,24 @@ def process_pptx_background(
                 if progress_db:
                     progress_db.close()
 
+        from ...services.visual_analysis_service import DurableVisualAnalysisRecorder
+
         # Process PowerPoint with progress callback
         processor = PowerPointProcessor(
             generate_alt_text=generate_alt_text,
             validate_alt_text=validate_alt_text,
             progress_callback=update_progress,
             llm_client=provider_runtime,
+            visual_analysis_recorder=(
+                DurableVisualAnalysisRecorder(
+                    SessionLocal,
+                    department_id=scan.department_id,
+                    scan_id=scan.id,
+                    parent_artifact_sha256=hashlib.sha256(file_content).hexdigest(),
+                )
+                if generate_alt_text or validate_alt_text
+                else None
+            ),
         )
         result = processor.process_pptx(file_path)
 

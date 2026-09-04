@@ -12,6 +12,10 @@ import { apiClient } from '../api/client';
 import { useToast } from '../context/toast-context';
 import { FixCard } from '../components/review/FixCard';
 import { MatterhornResultsBar } from '../components/review/MatterhornResultsBar';
+import {
+  VisualAnalysisStatusPanel,
+  type VisualAnalysisSummary,
+} from '../components/review/VisualAnalysisStatusPanel';
 import type { Fix } from '../components/review/FixCard';
 import {
   getDeferralLifecycle,
@@ -43,6 +47,7 @@ interface DocumentReview {
   needs_review_count: number;
   auto_approved_count: number;
   reviewed_count: number;
+  visual_analyses: VisualAnalysisSummary[];
 }
 
 interface ReviewResponse {
@@ -418,6 +423,7 @@ export function DocumentReviewPage(): React.ReactElement {
 
         {/* Right panel - fix list */}
         <div className="flex-1 flex flex-col min-w-0">
+          <VisualAnalysisStatusPanel analyses={review.visual_analyses} />
           {/* Filter bar */}
           <div
             className="flex items-center gap-2 px-4 py-2 shrink-0 overflow-x-auto"

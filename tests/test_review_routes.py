@@ -11,6 +11,7 @@ Run with the backend venv to ensure FastAPI and SQLAlchemy are available.
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +33,7 @@ from src.api.review_routes import (
     summarize_review_statuses,
     compute_validator_result,
     _fix_summary,
+    _visual_analysis_summary,
 )
 
 # ---------------------------------------------------------------------------
@@ -230,6 +232,80 @@ class TestFixSummary:
         assert summary["visual_semantic_disposition"] == disposition
         assert summary["review_digest"] is None
         assert summary["approved_review_digest"] is None
+
+
+class TestVisualAnalysisSummary:
+    def test_labels_machine_output_as_proposal_with_canonical_review_state(self):
+        fix = SimpleNamespace(id="fix-1", review_status="pending")
+        analysis = SimpleNamespace(
+            id="analysis-1",
+            source_kind="chart",
+            source_locator={
+                "kind": "slide_shape",
+                "slide_number": 2,
+                "shape_id": 7,
+            },
+            purpose="chart_description",
+            status="review_required",
+            attempt_count=1,
+            max_attempts=3,
+            failure_category=None,
+            proposal={
+                "short_description": "Enrollment rises each year",
+                "provider_payload": {"raw": "must not escape"},
+            },
+            proposal_sha256="a" * 64,
+            review_fix_id="fix-1",
+        )
+
+        summary = _visual_analysis_summary(analysis, {"fix-1": fix}).model_dump()
+
+        assert summary["proposal"] == {
+            "short_description": "Enrollment rises each year"
+        }
+        assert summary["review_status"] == "pending"
+        assert "alt_text" not in summary
+        assert "provider_payload" not in summary["proposal"]
+
+    def test_corrupt_diagnostic_fields_are_not_exposed(self):
+        analysis = SimpleNamespace(
+            id="analysis-1",
+            source_kind="image",
+            source_locator={"kind": "page_image", "path": "/srv/private"},
+            purpose="alt_text",
+            status="terminal_failure",
+            attempt_count=1,
+            max_attempts=3,
+            failure_category="/srv/private token=secret",
+            proposal={"provider_payload": {"secret": "value"}},
+            proposal_sha256="INVALID",
+            review_fix_id=None,
+        )
+
+        summary = _visual_analysis_summary(analysis, {}).model_dump()
+
+        assert summary["source_locator"] is None
+        assert summary["failure_category"] is None
+        assert summary["proposal"] is None
+        assert summary["proposal_sha256"] is None
+
+    def test_document_review_defaults_to_no_visual_analyses(self):
+        doc = DocumentReview(
+            scan_id="scan-1",
+            file_name="document.pdf",
+            status="approved",
+            fixes=[],
+            total_fixes=0,
+            needs_review_count=0,
+            auto_approved_count=0,
+            reviewed_count=0,
+            matterhorn_total=0,
+            matterhorn_passed=0,
+            matterhorn_failed=0,
+            validator_result="not_run",
+        )
+        assert doc.visual_analyses == []
+        assert "visual_analyses" in doc.model_dump()
 
     def test_openapi_contract_has_exact_locator_and_evidence_discriminators(self):
         schema = FixSummary.model_json_schema()

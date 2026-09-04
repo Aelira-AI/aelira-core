@@ -14,6 +14,10 @@ const fixCardSource = readFileSync(
   new URL('../../src/components/review/FixCard.tsx', import.meta.url),
   'utf8',
 );
+const visualAnalysisSource = readFileSync(
+  new URL('../../src/components/review/VisualAnalysisStatusPanel.tsx', import.meta.url),
+  'utf8',
+);
 
 test('document review sends the API-supported batch action', () => {
   assert.match(documentSource, /action:\s*['"]approve['"]/);
@@ -67,4 +71,19 @@ test('dashboard explains the evidence boundary for deferrals', () => {
   assert.match(fixCardSource, /operational decision/i);
   assert.match(fixCardSource, /not remediation/i);
   assert.match(fixCardSource, /conformance evidence/i);
+});
+
+test('document review renders durable visual analysis lifecycle states', () => {
+  assert.match(documentSource, /VisualAnalysisStatusPanel/);
+  for (const state of ['queued', 'running', 'retryable_failure', 'terminal_failure', 'review_required']) {
+    assert.match(visualAnalysisSource, new RegExp(state));
+  }
+  assert.match(visualAnalysisSource, /Failure category/);
+  assert.match(visualAnalysisSource, /Attempt \{analysis\.attempt_count\} of \{analysis\.max_attempts\}/);
+});
+
+test('machine visual output is never presented as accepted alt text', () => {
+  assert.match(visualAnalysisSource, /Machine output is a proposal until the linked fix is accepted in review/);
+  assert.match(visualAnalysisSource, /Machine proposal — not approved/);
+  assert.doesNotMatch(visualAnalysisSource, /approved alt text/i);
 });
