@@ -186,6 +186,7 @@ def enqueue_local_scan_job(
         raise LocalScanJobError("local_scan_scope_invalid")
     if not isinstance(scan.department_id, str) or not scan.department_id:
         raise LocalScanJobError("local_scan_scope_invalid")
+    db.flush([scan])
     locked_scan = db.scalar(
         select(Scan)
         .where(Scan.id == scan.id)

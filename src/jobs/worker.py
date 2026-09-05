@@ -10,6 +10,7 @@ from pathlib import Path
 
 from src.config.settings import get_settings
 from src.db.database import SessionLocal
+from src.monitoring.worker_sentry import init_worker_sentry
 from src.services.artifact_orphan_quarantine import ArtifactOrphanScanner
 from src.services.durable_maintenance import DurableMaintenanceRunner
 from src.services.canvas_reconciliation_service import CanvasReconciliationService
@@ -122,6 +123,7 @@ async def run_worker() -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    init_worker_sentry(get_settings())
     asyncio.run(run_worker())
 
 

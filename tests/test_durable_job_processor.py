@@ -284,6 +284,41 @@ def test_registry_startup_validation_covers_every_executable_type():
     registry.validate()
 
 
+def test_finish_reports_only_a_persisted_terminal_failure(monkeypatch):
+    from src.jobs.contracts import JobFailure
+    from src.jobs.job_processor import ClaimedJob, JobProcessor
+
+    report = MagicMock()
+    monkeypatch.setattr("src.jobs.job_processor.capture_terminal_job_failure", report)
+    worker = JobProcessor(registry=_complete_registry(AsyncMock()))
+    worker._external_effect_state = MagicMock(return_value=None)
+    worker._fenced_update = MagicMock(return_value=True)
+    worker._cancellation_requested = MagicMock(return_value=False)
+    claim = ClaimedJob("job-1", "scan", {}, "claim-1", "worker-1", 1, 3)
+
+    assert worker._finish(
+        claim, JobFailure.deterministic("local_scan_input_unavailable")
+    )
+    report.assert_called_once_with(
+        job_id="job-1",
+        job_type="scan",
+        error_code="local_scan_input_unavailable",
+        failure_kind="deterministic",
+        attempt_count=1,
+        max_retries=3,
+    )
+
+    report.reset_mock()
+    assert worker._finish(claim, JobFailure.retryable("provider_unavailable"))
+    report.assert_not_called()
+
+    worker._fenced_update.return_value = False
+    assert not worker._finish(
+        claim, JobFailure.deterministic("local_scan_input_unavailable")
+    )
+    report.assert_not_called()
+
+
 def test_claim_query_is_skip_locked_and_dependency_gated():
     from sqlalchemy.dialects import postgresql
 
