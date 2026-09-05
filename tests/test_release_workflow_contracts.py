@@ -1,5 +1,6 @@
 """Contracts that keep publication ordered and all release artifacts coherent."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -61,6 +62,75 @@ def test_release_dag_orders_ci_preflight_docker_npm_and_github_release() -> None
         "cancel-in-progress": False,
     }
     assert workflow["permissions"] == {"contents": "read"}
+
+
+def test_docker_registry_logins_use_reviewed_node24_action_pin() -> None:
+    text = DOCKER.read_text()
+    expected = "docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0"
+    login_uses = re.findall(r"docker/login-action@([^\s]+)(?: # ([^\n]+))?", text)
+
+    assert text.count(expected) == 3
+    assert login_uses == [("dbcb813823bdd20940b903addbd779551569679f", "v4.6.0")] * 3
+
+
+def test_artifact_metadata_write_is_granted_only_across_upload_paths() -> None:
+    release = load_workflow(RELEASE)
+    docker = load_workflow(DOCKER)
+    upload_jobs: set[tuple[str, str]] = set()
+
+    for workflow_name, workflow in (("release", release), ("docker", docker)):
+        for job_name, job in workflow["jobs"].items():
+            if "steps" not in job:
+                continue
+            uploads_artifacts = any(
+                str(step.get("uses", "")).startswith("actions/upload-artifact@")
+                for step in job["steps"]
+            )
+            if uploads_artifacts:
+                upload_jobs.add((workflow_name, job_name))
+                assert job["permissions"]["artifact-metadata"] == "write"
+            else:
+                assert "artifact-metadata" not in job["permissions"]
+
+    assert upload_jobs == {
+        ("release", "preflight"),
+        ("docker", "build"),
+        ("docker", "verify-digests"),
+    }
+
+    assert release["jobs"]["preflight"]["permissions"] == {
+        "contents": "read",
+        "artifact-metadata": "write",
+    }
+    assert release["jobs"]["docker-publish"]["permissions"] == {
+        "contents": "read",
+        "packages": "write",
+        "id-token": "write",
+        "attestations": "write",
+        "artifact-metadata": "write",
+    }
+    assert docker["permissions"] == {
+        "contents": "read",
+        "packages": "write",
+        "id-token": "write",
+        "attestations": "write",
+        "artifact-metadata": "write",
+    }
+    assert docker["jobs"]["build"]["permissions"] == {
+        "contents": "read",
+        "packages": "write",
+        "id-token": "write",
+        "attestations": "write",
+        "artifact-metadata": "write",
+    }
+    assert docker["jobs"]["verify-digests"]["permissions"] == {
+        "contents": "read",
+        "packages": "read",
+        "artifact-metadata": "write",
+    }
+
+    assert "write-all" not in RELEASE.read_text()
+    assert "write-all" not in DOCKER.read_text()
 
 
 def test_github_release_downloads_only_canonical_sboms_from_any_run_attempt() -> None:
@@ -294,16 +364,17 @@ def test_release_critical_jobs_are_bounded_and_permissions_are_least_privilege()
     assert npm["jobs"]["publish"]["timeout-minutes"] > 0
     assert gate["jobs"]["wait-for-ci"]["timeout-minutes"] > 0
 
-    assert release["jobs"]["preflight"].get("permissions", {}) in (
-        {},
-        {"contents": "read"},
-    )
+    assert release["jobs"]["preflight"]["permissions"] == {
+        "contents": "read",
+        "artifact-metadata": "write",
+    }
     assert release["jobs"]["github-release"]["permissions"] == {"contents": "write"}
     assert docker["permissions"] == {
         "contents": "read",
         "packages": "write",
         "id-token": "write",
         "attestations": "write",
+        "artifact-metadata": "write",
     }
 
 
