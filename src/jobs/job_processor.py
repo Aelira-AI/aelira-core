@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, aliased
 from ..db.database import SessionLocal
 from ..db.models import CloudJobQueue, CloudJobStatus, Scan, ScanStatus, WorkerHeartbeat
 from ..integrations.oauth_token_manager import OAuthTokenManager
+from ..monitoring.worker_sentry import capture_terminal_job_failure
 from .contracts import (
     FailureKind,
     JobContext,
@@ -825,10 +826,24 @@ class JobProcessor:
 
     def _finish(self, claim: ClaimedJob, result: JobResult) -> bool:
         state = self._external_effect_state(claim)
+        values = self._finish_values(claim, result, external_effect_state=state)
         finished = self._fenced_update(
             claim,
-            self._finish_values(claim, result, external_effect_state=state),
+            values,
         )
+        if (
+            finished
+            and isinstance(result, JobFailure)
+            and values["status"] == CloudJobStatus.FAILED.value
+        ):
+            capture_terminal_job_failure(
+                job_id=claim.job_id,
+                job_type=claim.job_type,
+                error_code=str(values["last_error_code"]),
+                failure_kind=result.kind.value,
+                attempt_count=claim.attempt_count,
+                max_retries=claim.max_retries,
+            )
         if not finished and self._cancellation_requested(claim):
             # Handler return means any killable child has already stopped and
             # been reaped. Cancellation owns the terminal transition now.

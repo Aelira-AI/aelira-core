@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
+from src.db.models import Scan, ScanStatus, ScanType
 from src.jobs.contracts import FailureKind, JobFailure, JobSuccess
 from src.jobs.local_scan_job import (
     LOCAL_SCAN_KINDS,
@@ -186,6 +189,7 @@ def test_enqueue_local_scan_job_uses_scan_tenant_and_deterministic_dedupe() -> N
 
     assert job.id == "job-a"
     locked_query = db.scalar.call_args.args[0]
+    assert db.method_calls[:2] == [call.flush([scan]), call.scalar(locked_query)]
     assert locked_query.get_execution_options()["populate_existing"] is True
     enqueue.assert_called_once_with(
         db,
@@ -199,6 +203,44 @@ def test_enqueue_local_scan_job_uses_scan_tenant_and_deterministic_dedupe() -> N
         },
         dedupe_key="local-scan:scan-a",
     )
+
+
+def test_enqueue_persists_dirty_storage_path_before_locked_refresh() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Scan.__table__.create(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    try:
+        with factory() as db:
+            scan = Scan(
+                id="scan-a",
+                department_id="dept-a",
+                scan_type=ScanType.PDF,
+                status=ScanStatus.PENDING,
+                file_name="document.pdf",
+            )
+            db.add(scan)
+            db.commit()
+
+            expected_path = "/app/uploads/dept-a/scan-a/document.pdf"
+            scan.storage_path = expected_path
+            enqueue_local_scan_job(
+                db,
+                scan=scan,
+                scan_kind="local_pdf",
+                options={
+                    "generate_alt_text": False,
+                    "enhance_descriptions": True,
+                },
+                input_sha256="a" * 64,
+                enqueue=MagicMock(return_value=SimpleNamespace(id="job-a")),
+            )
+            db.commit()
+
+        with factory() as db:
+            assert db.get(Scan, "scan-a").storage_path == expected_path
+    finally:
+        engine.dispose()
 
 
 def _job(payload: dict[str, object], *, department_id: str = "dept-a"):
