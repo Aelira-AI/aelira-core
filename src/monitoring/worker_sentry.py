@@ -24,8 +24,7 @@ def init_worker_sentry(settings: Any) -> bool:
         dsn=dsn,
         environment=os.getenv("SENTRY_ENVIRONMENT", settings.env),
         release=(
-            os.getenv("SENTRY_RELEASE")
-            or f"aelira-backend@{settings.api_version}"
+            os.getenv("SENTRY_RELEASE") or f"aelira-backend@{settings.api_version}"
         ),
         integrations=[SqlalchemyIntegration()],
         send_default_pii=False,
