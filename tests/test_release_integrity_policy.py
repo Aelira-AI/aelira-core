@@ -36,13 +36,15 @@ def test_dependency_gates_audit_only_the_three_shipped_surfaces_and_block() -> N
         "\n  lint:\n", 1
     )[0]
     audit_prerequisites = "sudo apt-get install -y libcairo2-dev pkg-config"
-    strict_python_audit = "pip-audit --requirement requirements.txt --strict"
+    strict_runtime_audit = "pip-audit --requirement requirements.txt --strict"
+    strict_development_audit = "pip-audit --requirement requirements-dev.txt --strict"
 
     assert "pip-audit==2.10.0" in workflow
     assert audit_prerequisites in dependency_job
-    assert strict_python_audit in dependency_job
+    assert strict_runtime_audit in dependency_job
+    assert strict_development_audit in dependency_job
     assert dependency_job.index(audit_prerequisites) < dependency_job.index(
-        strict_python_audit
+        strict_runtime_audit
     )
     assert "npm --prefix cli audit --audit-level=high" in workflow
     assert "npm --prefix dashboard audit --audit-level=high" in workflow
@@ -537,20 +539,33 @@ def test_ci_is_read_only_and_runs_reproducibility_and_allowlist_gates() -> None:
 
 def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
     documentation = (ROOT / "docs" / "RELEASE_INTEGRITY.md").read_text()
-    requirements = [
+    runtime_requirements = [
         line.split("#", 1)[0].strip()
         for line in (ROOT / "requirements.txt").read_text().splitlines()
         if line.split("#", 1)[0].strip()
     ]
+    development_lines = [
+        line.split("#", 1)[0].strip()
+        for line in (ROOT / "requirements-dev.txt").read_text().splitlines()
+        if line.split("#", 1)[0].strip()
+    ]
+    development_requirements = [
+        line for line in development_lines if not line.startswith("-r ")
+    ]
 
-    assert len(requirements) == 155
+    assert development_lines[0] == "-r requirements.txt"
+    assert len(runtime_requirements) == 140
+    assert len(development_requirements) == 30
     assert all(
         re.fullmatch(r"[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^=\s]+", line)
-        for line in requirements
+        for line in runtime_requirements + development_requirements
     )
-    assert not any("--hash=" in line for line in requirements)
+    assert not any(
+        "--hash=" in line for line in runtime_requirements + development_requirements
+    )
     for required_text in (
         "requirements.txt",
+        "requirements-dev.txt",
         "cli/package-lock.json",
         "dashboard/package-lock.json",
         "CycloneDX JSON",
@@ -581,7 +596,8 @@ def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
         "linux/amd64",
         "linux/arm64",
         "`--pull=false`",
-        "155",
+        "140",
+        "30",
         "no hashes",
         "deferred",
         "Python 3.12, 3.13, and 3.14",

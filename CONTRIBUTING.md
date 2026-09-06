@@ -33,7 +33,7 @@ docker compose -f docker-compose.dev.yml up -d
 # Option 2: Local Python
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 ### Running the API

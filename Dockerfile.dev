@@ -55,24 +55,11 @@ RUN npm install -g pa11y@9.0.1
 # Set working directory
 WORKDIR /app
 
-# Copy requirements
-COPY requirements.txt .
+# Copy runtime and development requirements
+COPY requirements.txt requirements-dev.txt ./
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install development dependencies
-RUN pip install --no-cache-dir \
-    pytest \
-    pytest-asyncio \
-    pytest-cov \
-    black \
-    ruff \
-    httpx \
-    ollama
-
-# Install Piper TTS for accessibility audio generation
-RUN pip install --no-cache-dir piper-tts
+# Install the pinned runtime and development dependency sets
+RUN pip install --no-cache-dir -r requirements-dev.txt
 
 # Download Piper voice model for TTS
 RUN mkdir -p /app/data/piper-voices && \
