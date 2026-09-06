@@ -29,7 +29,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
     assert (
         validate(
             "global",
-            version=_versions({"msgpack": "1.2.1"}),
+            version=_versions({"msgpack": "1.2.2"}),
             package_not_found=MissingPackage,
             purelib=tmp_path,
         )
@@ -38,7 +38,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
     assert (
         validate(
             "venv",
-            version=_versions({"msgpack": "1.2.1", "setuptools": "84.0.0"}),
+            version=_versions({"msgpack": "1.2.2", "setuptools": "84.0.0"}),
             package_not_found=MissingPackage,
             purelib=tmp_path,
         )
@@ -52,7 +52,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
         ("global", {"msgpack": "1.1.2"}, "global: msgpack is 1.1.2"),
         (
             "global",
-            {"msgpack": "1.2.1", "setuptools": "70.3.0"},
+            {"msgpack": "1.2.2", "setuptools": "70.3.0"},
             "global: setuptools is 70.3.0",
         ),
         (
@@ -62,7 +62,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
         ),
         (
             "venv",
-            {"msgpack": "1.2.1", "setuptools": "70.3.0"},
+            {"msgpack": "1.2.2", "setuptools": "70.3.0"},
             "venv: setuptools is 70.3.0",
         ),
     ],
@@ -94,7 +94,7 @@ def test_final_package_verifier_rejects_stale_metadata_names(
 
     errors = validate(
         "venv",
-        version=_versions({"msgpack": "1.2.1", "setuptools": "84.0.0"}),
+        version=_versions({"msgpack": "1.2.2", "setuptools": "84.0.0"}),
         package_not_found=MissingPackage,
         purelib=tmp_path,
     )

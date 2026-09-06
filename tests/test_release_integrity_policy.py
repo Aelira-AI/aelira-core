@@ -147,7 +147,7 @@ def test_api_runtime_replaces_global_msgpack_with_reviewed_version() -> None:
     api = (ROOT / "Dockerfile").read_text()
     runtime = api.split("# Stage 2: Runtime", 1)[1]
     uninstall = "/usr/local/bin/python -m pip uninstall --yes msgpack"
-    install = "/usr/local/bin/python -m pip install --no-cache-dir msgpack==1.2.1"
+    install = "/usr/local/bin/python -m pip install --no-cache-dir msgpack==1.2.2"
     copy_venv = "COPY --from=builder /opt/venv /opt/venv"
 
     assert runtime.count(uninstall) == 1
@@ -161,11 +161,11 @@ def test_api_build_asserts_global_and_copied_venv_python_package_versions() -> N
     copy_venv = "COPY --from=builder /opt/venv /opt/venv"
     global_assertion = (
         '/usr/local/bin/python -c "import importlib.metadata as m; '
-        "assert m.version('msgpack') == '1.2.1'\""
+        "assert m.version('msgpack') == '1.2.2'\""
     )
     venv_assertion = (
         '/opt/venv/bin/python -c "import importlib.metadata as m; '
-        "assert m.version('msgpack') == '1.2.1'; "
+        "assert m.version('msgpack') == '1.2.2'; "
         "assert m.version('setuptools') == '84.0.0'\""
     )
 
