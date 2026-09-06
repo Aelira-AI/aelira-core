@@ -149,7 +149,13 @@ export default function EmailPreferencesCard(): React.ReactElement {
   }, [showToast]);
 
   useEffect(() => {
-    fetchPreferences();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchPreferences();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchPreferences]);
 
   const updatePreference = <K extends keyof EmailPreferences>(key: K, value: EmailPreferences[K]) => {

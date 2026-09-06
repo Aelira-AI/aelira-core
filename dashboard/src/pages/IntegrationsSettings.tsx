@@ -33,10 +33,6 @@ export function IntegrationsSettings(): React.ReactElement {
     'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
   ];
 
-  useEffect(() => {
-    fetchSettings();
-  }, []);
-
   const fetchSettings = async (): Promise<void> => {
     try {
       const response = await apiClient.get('/alerts/settings');
@@ -48,6 +44,16 @@ export function IntegrationsSettings(): React.ReactElement {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchSettings();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSave = async (): Promise<void> => {
     setSaving(true);

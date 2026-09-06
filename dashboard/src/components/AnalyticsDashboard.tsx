@@ -38,6 +38,17 @@ interface TrendIconProps {
   size?: number;
 }
 
+function TrendIcon({ direction, size = 5 }: TrendIconProps): React.ReactElement {
+  const className = `w-${size} h-${size}`;
+  if (direction === 'improving') {
+    return <TrendingUp className={`${className} text-[var(--feature-success-content)]`} />;
+  }
+  if (direction === 'declining') {
+    return <TrendingDown className={`${className} text-[var(--feature-danger-content)]`} />;
+  }
+  return <Minus className={`${className} text-tertiary`} />;
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -106,17 +117,6 @@ export function AnalyticsDashboard({ departmentId }: AnalyticsDashboardProps): R
       </div>
     );
   }
-
-  // Format the trend direction icon
-  const TrendIcon: React.FC<TrendIconProps> = ({ direction, size = 5 }) => {
-    const className = `w-${size} h-${size}`;
-    if (direction === 'improving') {
-      return <TrendingUp className={`${className} text-[var(--feature-success-content)]`} />;
-    } else if (direction === 'declining') {
-      return <TrendingDown className={`${className} text-[var(--feature-danger-content)]`} />;
-    }
-    return <Minus className={`${className} text-tertiary`} />;
-  };
 
   return (
     <div className="card-glass">

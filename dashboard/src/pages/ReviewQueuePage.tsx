@@ -115,7 +115,13 @@ export function ReviewQueuePage(): React.ReactElement {
 
   // Fetch queue and stats
   useEffect(() => {
-    fetchQueue();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchQueue();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchQueue]);
 
   // Toggle selection

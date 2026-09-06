@@ -518,10 +518,6 @@ export function Integrations(): React.ReactElement {
   const [disconnectModal, setDisconnectModal] = useState<DisconnectModalState>({ isOpen: false, provider: null });
   const toast = useToast();
 
-  useEffect(() => {
-    fetchIntegrationStatus();
-  }, []);
-
   const fetchIntegrationStatus = async (): Promise<void> => {
     try {
       const response = await apiClient.get('/integrations/status');
@@ -532,6 +528,16 @@ export function Integrations(): React.ReactElement {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchIntegrationStatus();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // For LMS providers that require an instance URL, show the modal
   const handleConnect = (provider: ProviderKey): void => {
