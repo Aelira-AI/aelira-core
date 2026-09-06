@@ -527,7 +527,7 @@ class PDFProcessor:
 
             # Run OCRmyPDF to add searchable text layer + structure
             ocrmypdf.ocr(
-                input_file=file_path,
+                file_path,
                 output_file=output_path,
                 # OCR Options
                 force_ocr=False,  # Skip OCR if text layer exists (faster)
