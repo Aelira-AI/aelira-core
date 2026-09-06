@@ -143,7 +143,7 @@ src/
   api/           FastAPI routes (~330 endpoints)
   auth/          magic link, OAuth, API keys, sessions
 dashboard/       React 19 + Vite admin interface
-cli/             oclif command-line client (TypeScript, Node 20+)
+cli/             oclif command-line client (TypeScript, Node 22+)
 alembic/         database migrations
 tests/           pytest suite
 ```
@@ -153,7 +153,7 @@ tests/           pytest suite
 | API | FastAPI, Python 3.14, SQLAlchemy 2.0 |
 | Storage | PostgreSQL 16, Redis |
 | Dashboard | React 19, Vite, TypeScript, Tailwind |
-| CLI | oclif, TypeScript, Node 20+ |
+| CLI | oclif, TypeScript, Node 22+ |
 | AI | Bring your own: Gemini, OpenAI, Anthropic, xAI, any OpenAI-compatible endpoint, or fully local via Ollama |
 | PDF | pikepdf, PyMuPDF, pdfplumber, OCRmyPDF |
 | Office | python-docx, python-pptx, openpyxl |

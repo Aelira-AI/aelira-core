@@ -10,7 +10,7 @@
   "dependencies": {
     "@axe-core/playwright": "^4.11.1",
     "@clack/prompts": "^1.1.0",
-    "@oclif/core": "^4.9.0",
+    "@oclif/core": "^5.0.0",
     "@oclif/plugin-help": "^6.2.38",
     "axe-core": "^4.11.1",
     "form-data": "^4.0.5",
@@ -39,7 +39,7 @@
     "typescript": "^5"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "files": [
     "./LICENSE",
