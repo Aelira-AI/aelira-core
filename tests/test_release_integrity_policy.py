@@ -195,13 +195,13 @@ def test_immutable_image_gate_precedes_receipts_and_signs_version_index() -> Non
     for action in (
         "anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2",
         "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0",
-        "sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1",
+        "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2",
         "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2",
     ):
         assert action in workflow
     pinned_cosign_install = (
         "uses: sigstore/cosign-installer@"
-        "7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1\n"
+        "6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2\n"
         "        with:\n"
         "          cosign-release: 'v2.6.1'"
     )
