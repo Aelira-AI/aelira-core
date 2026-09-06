@@ -1,5 +1,6 @@
 import React from 'react';
 import { AlertCircle, AlertTriangle, Info, Zap, Search, Eye, LucideIcon } from 'lucide-react';
+import { shouldRenderGenericLocation } from './issueLocation';
 
 // ============================================================================
 // Types
@@ -471,8 +472,8 @@ export function IssueList({
                   </div>
                 )}
 
-                {/* Generic location (fallback if no page_url) */}
-                {issue.location && !issue.page_url && (
+                {/* Generic location (fallback if no page URL or PDF page number) */}
+                {shouldRenderGenericLocation(issue) && (
                   <p className="text-xs text-secondary mt-2">Location: {issue.location}</p>
                 )}
 
