@@ -11,8 +11,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 EXPECTED = {
-    "global": {"msgpack": "1.2.1", "setuptools": None},
-    "venv": {"msgpack": "1.2.1", "setuptools": "84.0.0"},
+    "global": {"msgpack": "1.2.2", "setuptools": None},
+    "venv": {"msgpack": "1.2.2", "setuptools": "84.0.0"},
 }
 FORBIDDEN_METADATA = {
     "msgpack": "1.1.2",
