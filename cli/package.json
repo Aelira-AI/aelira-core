@@ -28,7 +28,7 @@
     "@types/open": "^6.1.0",
     "@types/sinon": "^22.0.0",
     "chai": "^6.2.2",
-    "eslint": "9.39.5",
+    "eslint": "10.9.1",
     "eslint-config-oclif": "6.0.179",
     "eslint-config-prettier": "10.1.8",
     "mocha": "^11.8.0",
