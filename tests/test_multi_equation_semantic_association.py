@@ -784,7 +784,7 @@ def test_real_ocr_form_keeps_group_formula_order_and_search_layer(tmp_path) -> N
     owners = _planned_owners(source, group)
     try:
         ocrmypdf.ocr(
-            input_file=source,
+            source,
             output_file=ocr_source,
             force_ocr=False,
             skip_text=True,

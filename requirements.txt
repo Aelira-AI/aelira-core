@@ -71,7 +71,7 @@ msgpack==1.2.2
 msoffcrypto-tool==6.0.0
 mypy_extensions==1.1.0
 numpy==2.5.2
-ocrmypdf==16.11.1
+ocrmypdf==17.11.0
 olefile==0.47
 oletools==0.60.2
 ollama==0.6.2

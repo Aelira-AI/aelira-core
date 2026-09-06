@@ -789,7 +789,7 @@ def test_real_ocr_working_copy_keeps_search_layer_and_exact_region(tmp_path):
         )
     try:
         ocrmypdf.ocr(
-            input_file=source,
+            source,
             output_file=ocr_output,
             force_ocr=False,
             skip_text=True,
