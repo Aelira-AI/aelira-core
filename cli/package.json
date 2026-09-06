@@ -32,7 +32,7 @@
     "eslint-config-oclif": "6.0.179",
     "eslint-config-prettier": "10.1.8",
     "mocha": "^11.8.0",
-    "oclif": "^4.22.92",
+    "oclif": "^5.0.0",
     "shx": "^0.4.0",
     "sinon": "^22.1.0",
     "ts-node": "^10",
