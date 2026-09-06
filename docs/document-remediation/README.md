@@ -84,7 +84,7 @@ See the [artifact service](../../src/services/remediation_artifact_service.py), 
 
 ## Installation and dependencies
 
-The supported repository installation is the full pinned set in [`requirements.txt`](../../requirements.txt); the annotated inventory is [`docs/DEPENDENCIES.md`](../DEPENDENCIES.md). Python is declared as 3.12 or newer in [`pyproject.toml`](../../pyproject.toml). The API-backed CLI requires Node 20 or newer and is packaged separately under the MIT license.
+The supported repository installation is the full pinned set in [`requirements.txt`](../../requirements.txt); the annotated inventory is [`docs/DEPENDENCIES.md`](../DEPENDENCIES.md). Python is declared as 3.12 or newer in [`pyproject.toml`](../../pyproject.toml). The API-backed CLI requires Node 22 or newer and is packaged separately under the MIT license.
 
 Major document dependencies are:
 

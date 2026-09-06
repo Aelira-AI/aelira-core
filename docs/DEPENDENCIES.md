@@ -114,7 +114,7 @@ disabled by default. See the README's "note on analytics".
 
 ## CLI (`cli/`, TypeScript)
 
-oclif on Node 20+. Key runtime deps: `@oclif/core` (command framework),
+oclif on Node 22+. Key runtime deps: `@oclif/core` (command framework),
 `playwright` + `axe-core` (local web scans), `@clack/prompts` (interactive
 prompts), `picocolors` (terminal output).
 
