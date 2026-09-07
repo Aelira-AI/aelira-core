@@ -865,6 +865,8 @@ def _verify_multi_equation_ocr(
         "q",
         "Q",
         "cm",
+        "J",
+        "w",
         "g",
         "G",
         "rg",

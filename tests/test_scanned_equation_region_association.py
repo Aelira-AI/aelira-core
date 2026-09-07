@@ -834,6 +834,23 @@ def test_real_ocr_working_copy_keeps_search_layer_and_exact_region(tmp_path):
         assert alias not in xobjects
         original_form_payload = form.read_bytes()
         assert b"3 Tr" in original_form_payload
+        assert b" J\n" in original_form_payload
+        assert b" w\n" in original_form_payload
+        unsafe_graphics_state_payloads = (
+            b"3 J\n" + original_form_payload,
+            b"-1 w\n" + original_form_payload,
+            original_form_payload.replace(b"BT\n", b"BT\n2 J\n", 1),
+        )
+        for unsafe_payload in unsafe_graphics_state_payloads:
+            form.write(unsafe_payload)
+            with pytest.raises(
+                ScannedRegionAssociationError,
+                match="region_ocr_form_grammar_unsupported",
+            ):
+                associate_scanned_region_formula(pdf, fitz_document, pending)
+            assert Name.StructParents not in form
+        form.write(original_form_payload)
+
         form.write(original_form_payload.replace(b"3 Tr", b"0 Tr", 1))
         with pytest.raises(
             ScannedRegionAssociationError, match="region_ocr_text_not_invisible"

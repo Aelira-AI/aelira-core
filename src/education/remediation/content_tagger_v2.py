@@ -2410,6 +2410,9 @@ def _region_ocr_form_plan(
         raise ScannedRegionAssociationError("region_ocr_form_parse_failed") from exc
     if not form_ops or len(form_ops) > 10_000:
         raise ScannedRegionAssociationError("region_ocr_form_ops_unsupported")
+    # OCRmyPDF 17 prefixes its invisible-text form with line-cap and line-width
+    # state. Path construction and painting operators remain forbidden, so
+    # these settings cannot affect visible page content.
     allowed = {
         "BT",
         "ET",
@@ -2431,6 +2434,8 @@ def _region_ocr_form_plan(
         "q",
         "Q",
         "cm",
+        "J",
+        "w",
         "g",
         "G",
         "rg",
@@ -2461,10 +2466,22 @@ def _region_ocr_form_plan(
                 raise ScannedRegionAssociationError(
                     "region_ocr_form_grammar_unsupported"
                 )
-        elif operator in {"cm", "g", "G", "rg", "RG"}:
+        elif operator in {"cm", "J", "w", "g", "G", "rg", "RG"}:
             if start is not None or not all(
                 math.isfinite(float(value)) for value in op.operands
             ):
+                raise ScannedRegionAssociationError(
+                    "region_ocr_form_grammar_unsupported"
+                )
+            if operator == "J" and (
+                len(op.operands) != 1
+                or not float(op.operands[0]).is_integer()
+                or int(op.operands[0]) not in {0, 1, 2}
+            ):
+                raise ScannedRegionAssociationError(
+                    "region_ocr_form_grammar_unsupported"
+                )
+            if operator == "w" and (len(op.operands) != 1 or float(op.operands[0]) < 0):
                 raise ScannedRegionAssociationError(
                     "region_ocr_form_grammar_unsupported"
                 )
@@ -4110,6 +4127,8 @@ def _verify_region_ocr_form(
         "q",
         "Q",
         "cm",
+        "J",
+        "w",
         "g",
         "G",
         "rg",
