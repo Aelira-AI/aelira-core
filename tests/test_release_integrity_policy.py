@@ -139,7 +139,7 @@ def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
 
     smoke = (ROOT / "scripts" / "smoke_pa11y_runtime.py").read_text()
     assert "os.geteuid() == 0" in smoke
-    assert "SUPPORTED_NODE_MAJORS = {20, 22, 24}" in smoke
+    assert "SUPPORTED_NODE_MAJORS = {24}" in smoke
     assert 'EXPECTED_PA11Y_VERSION = "9.0.1"' in smoke
     assert 'TemporaryDirectory(prefix="aelira-pa11y-smoke-")' in smoke
     assert 'smoke_env["HOME"] = smoke_home' in smoke

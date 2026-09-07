@@ -51,6 +51,13 @@ class TestPDFStructureTree:
         marked = sample_pdf.Root[pikepdf.Name.MarkInfo][pikepdf.Name.Marked]
         assert marked == True  # noqa: E712 - pikepdf Boolean
 
+    def test_init_does_not_role_map_standard_tags_to_themselves(self, sample_pdf):
+        """Standard structure types need no RoleMap and self-maps can be invalid."""
+        PDFStructureTree(sample_pdf)
+
+        struct_root = sample_pdf.Root[pikepdf.Name.StructTreeRoot]
+        assert pikepdf.Name.RoleMap not in struct_root
+
     def test_set_document_language(self, sample_pdf):
         """Test setting document language."""
         struct_tree = PDFStructureTree(sample_pdf)

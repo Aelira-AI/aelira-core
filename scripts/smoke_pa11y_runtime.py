@@ -12,7 +12,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 EXPECTED_PA11Y_VERSION = "9.0.1"
-SUPPORTED_NODE_MAJORS = {20, 22, 24}
+SUPPORTED_NODE_MAJORS = {24}
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_RELATIVE_PATH = "scripts/fixtures/pa11y-smoke.html"
 

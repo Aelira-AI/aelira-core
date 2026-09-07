@@ -4,9 +4,10 @@ Application settings and configuration.
 Uses environment variables with sensible defaults.
 """
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, NoDecode
 from pydantic import Field, validator, field_validator, model_validator
-from typing import List
+from typing import Annotated, List
+import json
 import logging
 import os
 from pathlib import Path
@@ -130,7 +131,7 @@ class Settings(BaseSettings):
         "DELETED_ACCOUNT_EMAIL_DOMAIN", "deleted.invalid"
     )
     api_port: int = int(os.getenv("API_PORT", "8000"))
-    dashboard_url: str = os.getenv("DASHBOARD_URL", "https://dashboard.example.com")
+    dashboard_url: str = os.getenv("DASHBOARD_URL", "")
 
     # CORS Configuration
     # Localhost origins are only included in development/test environments.
@@ -139,13 +140,40 @@ class Settings(BaseSettings):
     # is served from. No vendor default on purpose: hardcoding the hosted
     # service's domains meant a self-hosted production deployment allowed
     # aelira.ai and blocked the operator's own dashboard.
-    cors_origins: List[str] = [
+    cors_origins: Annotated[List[str], NoDecode] = [
         o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()
     ] or (
         ["http://localhost:3000", "http://localhost:5173"]
         if os.getenv("ENV", "development").lower() in ("development", "test")
         else []
     )
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value):
+        """Accept the documented comma list and existing JSON-array values."""
+        if not isinstance(value, str):
+            return value
+
+        raw_value = value.strip()
+        if not raw_value:
+            return []
+
+        if raw_value.startswith("["):
+            try:
+                parsed = json.loads(raw_value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "CORS_ORIGINS must be a comma list or JSON array"
+                ) from exc
+            if not isinstance(parsed, list) or any(
+                not isinstance(origin, str) for origin in parsed
+            ):
+                raise ValueError("CORS_ORIGINS JSON value must be an array of strings")
+            return [origin.strip() for origin in parsed if origin.strip()]
+
+        return [origin.strip() for origin in raw_value.split(",") if origin.strip()]
+
     cors_allow_credentials: bool = True
     cors_allow_methods: List[str] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
     # Cannot use ["*"] with credentials=True (CORS spec violation)
@@ -432,9 +460,7 @@ class Settings(BaseSettings):
 
     # Magic Link Authentication
     magic_link_expire_minutes: int = int(os.getenv("MAGIC_LINK_EXPIRE_MINUTES", "15"))
-    magic_link_base_url: str = os.getenv(
-        "MAGIC_LINK_BASE_URL", "https://dashboard.example.com"
-    )
+    magic_link_base_url: str = os.getenv("MAGIC_LINK_BASE_URL", "")
 
     # Session Cookie Settings
     session_cookie_name: str = os.getenv("SESSION_COOKIE_NAME", "aelira_session")
@@ -691,6 +717,16 @@ class Settings(BaseSettings):
         set. Kept separate from validate_jwt_algorithm above, which only
         warns about HS256-in-production and doesn't touch jwt_secret.
         """
+        # Deployment identity has one canonical dashboard URL. Legacy aliases
+        # may override it, but an unset alias must never fall back to an example
+        # hostname in user-facing redirects or magic-link emails.
+        self.dashboard_url = (self.dashboard_url or self.public_dashboard_url).rstrip(
+            "/"
+        )
+        self.magic_link_base_url = (
+            self.magic_link_base_url or self.public_dashboard_url
+        ).rstrip("/")
+
         # JWT_SECRET only matters for HS256 (the symmetric, dev-oriented
         # default). RS256 deployments sign with JWT_PRIVATE_KEY_PATH /
         # JWT_PUBLIC_KEY_PATH instead and leave jwt_secret empty on purpose
