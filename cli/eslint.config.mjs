@@ -13,12 +13,18 @@ import {fileURLToPath} from 'node:url'
 
 const gitignorePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.gitignore')
 
-// eslint-config-oclif 6 still bundles eslint-plugin-mocha 10, whose rules use
-// context methods removed by ESLint 10. Patch only that plugin: wrapping the
-// entire config also proxies already-compatible rules such as Unicorn.
+// eslint-config-oclif 6 still bundles Mocha and import plugins that use APIs
+// removed by ESLint 10. Patch only those plugins: wrapping the entire config
+// also proxies already-compatible rules such as Unicorn.
 const compatibleOclif = oclif.map((config) => {
-  const mocha = config.plugins?.mocha
-  return mocha ? {...config, plugins: {...config.plugins, mocha: fixupPluginRules(mocha)}} : config
+  if (!config.plugins) return config
+
+  const plugins = {...config.plugins}
+  for (const name of ['import', 'mocha']) {
+    if (plugins[name]) plugins[name] = fixupPluginRules(plugins[name])
+  }
+
+  return {...config, plugins}
 })
 
 // Custom rules for CLI consuming REST API
