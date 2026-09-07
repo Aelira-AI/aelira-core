@@ -1717,7 +1717,7 @@ class PdfRemediator(BaseRemediator):
                 staged_path,
             )
             ocrmypdf.ocr(
-                input_file=staged_path,
+                staged_path,
                 output_file=ocr_path,
                 force_ocr=False,
                 # Mixed-safe: pages that already have text are passed
