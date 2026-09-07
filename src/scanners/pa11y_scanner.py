@@ -8,6 +8,8 @@ accessibility testing (axe-core + HTML_CodeSniffer).
 import asyncio
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
@@ -76,16 +78,26 @@ class Pa11yScanner:
     Runs Pa11y as subprocess, parses JSON output.
     """
 
-    def __init__(self, timeout: int = 60, pa11y_bin: str = "pa11y"):
+    def __init__(
+        self,
+        timeout: int = 60,
+        pa11y_bin: str = "pa11y",
+        config_path: Optional[str] = None,
+    ):
         """
         Initialize Pa11y scanner.
 
         Args:
             timeout: Maximum scan time in seconds
             pa11y_bin: Path to pa11y binary (default: "pa11y" in PATH)
+            config_path: Pa11y JSON config containing the Chromium launch contract
         """
         self.timeout = timeout
         self.pa11y_bin = pa11y_bin
+        default_config = Path(__file__).resolve().parents[2] / "config" / "pa11y.json"
+        self.config_path = config_path or os.getenv(
+            "PA11Y_CONFIG_PATH", str(default_config)
+        )
 
     async def scan(
         self, url: str, runner: str = "axe", standard: str = "WCAG2AA"
@@ -110,6 +122,8 @@ class Pa11yScanner:
 
         cmd = [
             self.pa11y_bin,
+            "--config",
+            self.config_path,
             "--reporter",
             "json",
             "--runner",

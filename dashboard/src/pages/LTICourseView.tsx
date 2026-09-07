@@ -490,8 +490,15 @@ export function LTICourseView(): React.ReactElement {
   useEffect(() => {
     if (accessToken && sessionCourseId && !routeScopeError) {
       clientRef.current = apiClient;
-      fetchData();
-      fetchContentData();
+      let cancelled = false;
+      queueMicrotask(() => {
+        if (cancelled) return;
+        void fetchData();
+        void fetchContentData();
+      });
+      return () => {
+        cancelled = true;
+      };
     }
   }, [accessToken, sessionCourseId, fetchData, fetchContentData, routeScopeError]);
 

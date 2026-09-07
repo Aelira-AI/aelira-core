@@ -11,6 +11,7 @@ Run with the backend venv to ensure FastAPI and SQLAlchemy are available.
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from src.api.review_routes import (
     FixSummary,
     QueueItem,
     QueueStats,
+    QueueResponse,
     DocumentReview,
     FixAction,
     BatchAction,
@@ -28,8 +30,10 @@ from src.api.review_routes import (
     AuditEntry,
     compute_compliance_level,
     compute_doc_status,
+    summarize_review_statuses,
     compute_validator_result,
     _fix_summary,
+    _visual_analysis_summary,
 )
 
 # ---------------------------------------------------------------------------
@@ -98,14 +102,31 @@ class TestComputeValidatorResult:
 class TestComputeDocStatus:
     """Tests for the document-level status computation."""
 
-    def test_approved_when_no_pending(self):
-        assert compute_doc_status(0) == "approved"
+    def test_approved_when_every_fix_is_accepted(self):
+        assert compute_doc_status(["approved", "edited", "auto_approved"]) == "approved"
 
-    def test_pending_when_fixes_need_review(self):
-        assert compute_doc_status(1) == "pending"
+    def test_pending_takes_precedence(self):
+        assert compute_doc_status(["approved", "pending", "rejected"]) == "pending"
 
-    def test_pending_when_many_fixes_need_review(self):
-        assert compute_doc_status(42) == "pending"
+    def test_rejected_when_review_is_complete_with_rejections(self):
+        assert compute_doc_status(["approved", "rejected"]) == "rejected"
+
+    def test_empty_document_is_approved(self):
+        assert compute_doc_status([]) == "approved"
+
+
+class TestReviewStatusSummary:
+    def test_counts_canonical_states_and_treats_edited_as_approved(self):
+        summary = summarize_review_statuses(
+            ["pending", "approved", "edited", "auto_approved", "rejected"]
+        )
+
+        assert summary == {
+            "total_fixes": 5,
+            "needs_review_count": 1,
+            "auto_approved_count": 1,
+            "reviewed_count": 3,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +233,80 @@ class TestFixSummary:
         assert summary["review_digest"] is None
         assert summary["approved_review_digest"] is None
 
+
+class TestVisualAnalysisSummary:
+    def test_labels_machine_output_as_proposal_with_canonical_review_state(self):
+        fix = SimpleNamespace(id="fix-1", review_status="pending")
+        analysis = SimpleNamespace(
+            id="analysis-1",
+            source_kind="chart",
+            source_locator={
+                "kind": "slide_shape",
+                "slide_number": 2,
+                "shape_id": 7,
+            },
+            purpose="chart_description",
+            status="review_required",
+            attempt_count=1,
+            max_attempts=3,
+            failure_category=None,
+            proposal={
+                "short_description": "Enrollment rises each year",
+                "provider_payload": {"raw": "must not escape"},
+            },
+            proposal_sha256="a" * 64,
+            review_fix_id="fix-1",
+        )
+
+        summary = _visual_analysis_summary(analysis, {"fix-1": fix}).model_dump()
+
+        assert summary["proposal"] == {
+            "short_description": "Enrollment rises each year"
+        }
+        assert summary["review_status"] == "pending"
+        assert "alt_text" not in summary
+        assert "provider_payload" not in summary["proposal"]
+
+    def test_corrupt_diagnostic_fields_are_not_exposed(self):
+        analysis = SimpleNamespace(
+            id="analysis-1",
+            source_kind="image",
+            source_locator={"kind": "page_image", "path": "/srv/private"},
+            purpose="alt_text",
+            status="terminal_failure",
+            attempt_count=1,
+            max_attempts=3,
+            failure_category="/srv/private token=secret",
+            proposal={"provider_payload": {"secret": "value"}},
+            proposal_sha256="INVALID",
+            review_fix_id=None,
+        )
+
+        summary = _visual_analysis_summary(analysis, {}).model_dump()
+
+        assert summary["source_locator"] is None
+        assert summary["failure_category"] is None
+        assert summary["proposal"] is None
+        assert summary["proposal_sha256"] is None
+
+    def test_document_review_defaults_to_no_visual_analyses(self):
+        doc = DocumentReview(
+            scan_id="scan-1",
+            file_name="document.pdf",
+            status="approved",
+            fixes=[],
+            total_fixes=0,
+            needs_review_count=0,
+            auto_approved_count=0,
+            reviewed_count=0,
+            matterhorn_total=0,
+            matterhorn_passed=0,
+            matterhorn_failed=0,
+            validator_result="not_run",
+        )
+        assert doc.visual_analyses == []
+        assert "visual_analyses" in doc.model_dump()
+
     def test_openapi_contract_has_exact_locator_and_evidence_discriminators(self):
         schema = FixSummary.model_json_schema()
         contract = schema["$defs"]["PrintedEquationContract"]["properties"]
@@ -298,28 +393,46 @@ class TestQueueItem:
         assert item.department_id is None
 
 
+class TestQueueResponse:
+    def test_serialization_exposes_truthful_page_boundary(self):
+        now = datetime.now(timezone.utc)
+        item = QueueItem(
+            scan_id="scan-001",
+            file_name="syllabus.pdf",
+            total_fixes=2,
+            needs_review_count=1,
+            lowest_confidence=0.5,
+            status="pending",
+            created_at=now,
+        )
+
+        response = QueueResponse(items=[item], total=21, has_more=True)
+
+        assert response.model_dump()["total"] == 21
+        assert response.has_more is True
+        assert response.items[0].scan_id == "scan-001"
+
+
 class TestQueueStats:
     """Tests for the QueueStats response model."""
 
     def test_serialization(self):
         stats = QueueStats(
             pending=15,
-            in_review=3,
             approved=42,
             rejected=5,
-            total=65,
+            total=62,
         )
         data = stats.model_dump()
         assert data["pending"] == 15
-        assert data["in_review"] == 3
+        assert "in_review" not in data
         assert data["approved"] == 42
         assert data["rejected"] == 5
-        assert data["total"] == 65
+        assert data["total"] == 62
 
     def test_all_zeros(self):
         stats = QueueStats(
             pending=0,
-            in_review=0,
             approved=0,
             rejected=0,
             total=0,
@@ -356,7 +469,12 @@ class TestDocumentReview:
         doc = DocumentReview(
             scan_id="scan-001",
             file_name="test.pdf",
+            status="pending",
             fixes=fixes,
+            total_fixes=2,
+            needs_review_count=1,
+            auto_approved_count=1,
+            reviewed_count=0,
             matterhorn_total=10,
             matterhorn_passed=8,
             matterhorn_failed=2,
@@ -370,13 +488,22 @@ class TestDocumentReview:
         assert data["matterhorn_passed"] == 8
         assert data["matterhorn_failed"] == 2
         assert data["validator_result"] == "recorded_checkpoint_failures"
+        assert data["total_fixes"] == 2
+        assert data["needs_review_count"] == 1
+        assert data["auto_approved_count"] == 1
+        assert data["reviewed_count"] == 0
         assert "compliance_level" not in data
 
     def test_empty_fixes_list(self):
         doc = DocumentReview(
             scan_id="scan-002",
             file_name="empty.pdf",
+            status="approved",
             fixes=[],
+            total_fixes=0,
+            needs_review_count=0,
+            auto_approved_count=0,
+            reviewed_count=0,
             matterhorn_total=0,
             matterhorn_passed=0,
             matterhorn_failed=0,

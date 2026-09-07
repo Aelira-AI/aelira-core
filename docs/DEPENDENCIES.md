@@ -1,12 +1,17 @@
 # Dependencies
 
 What Aelira Core is built from, and what each major dependency does. The
-authoritative pinned set is [`requirements.txt`](../requirements.txt) (Python,
-direct and transitive, one lockfile), [`dashboard/package.json`](../dashboard/package.json)
-(dashboard), and [`cli/package.json`](../cli/package.json) (CLI). This page is
-the human-readable map; the lockfiles are the truth.
+authoritative pinned sets are [`requirements.txt`](../requirements.txt) (Python
+runtime), [`requirements-dev.txt`](../requirements-dev.txt) (Python development
+and test tooling, including the runtime set),
+[`dashboard/package.json`](../dashboard/package.json) (dashboard), and
+[`cli/package.json`](../cli/package.json) (CLI). This page is the human-readable
+map; the pinned files and JavaScript lockfiles are the truth.
 
 ## Backend (Python)
+
+Runtime dependencies live in `requirements.txt`; the sections below explain
+the production roles that keep each one in the shipped environment.
 
 ### Web framework and API
 
@@ -93,7 +98,10 @@ vendor SDKs to keep the dependency surface small.
 |---|---|
 | `smtplib` (stdlib) + `httpx` | Transactional email via any SMTP host or SendGrid API |
 
-### Testing and tooling
+### Development and test dependencies
+
+These packages live in `requirements-dev.txt`. Installing that file also
+installs every runtime dependency through `-r requirements.txt`.
 
 | Dependency | Role |
 |---|---|
@@ -114,7 +122,7 @@ disabled by default. See the README's "note on analytics".
 
 ## CLI (`cli/`, TypeScript)
 
-oclif on Node 20+. Key runtime deps: `@oclif/core` (command framework),
+oclif on Node 22+. Key runtime deps: `@oclif/core` (command framework),
 `playwright` + `axe-core` (local web scans), `@clack/prompts` (interactive
 prompts), `picocolors` (terminal output).
 
@@ -132,9 +140,11 @@ Installed by the Docker images / quickstart, or by you when running bare:
 | Pandoc | Document format conversion |
 | FFmpeg | Audio/video decoding for captioning |
 
-## The rest of the lockfile
+## The rest of the dependency inventories
 
-Every remaining pin in `requirements.txt`, so nothing is unaccounted for.
+Every package resolved in the supported runtime and contributor environments is
+explicitly pinned in one of the two requirements files, so nothing is left to
+the resolver's latest-version choice.
 
 ### More direct dependencies
 
@@ -160,14 +170,15 @@ Every remaining pin in `requirements.txt`, so nothing is unaccounted for.
 | requests | `charset-normalizer`, `urllib3`, `brotli` |
 | Google API client | `google-api-core`, `google-auth`, `google-auth-httplib2`, `googleapis-common-protos`, `proto-plus`, `protobuf`, `httplib2`, `uritemplate`, `pyasn1`, `pyasn1_modules`, `rsa`, `cachetools`, `pyparsing` |
 | cryptography / bcrypt | `cffi`, `pycparser` |
-| oletools (malware screening) | `olefile`, `pcodedmp`, `colorclass`, `easygui` |
-| ocrmypdf | `pi_heif`, `deprecation`, `packaging`, `rich`, `typer-slim`, `markdown-it-py`, `mdurl`, `Pygments`, `img2pdf` |
+| oletools (malware screening) | `olefile`, `pcodedmp`, `colorclass`, `easygui`, `chardet`, `encutils` |
+| ocrmypdf | `pi_heif`, `deprecation`, `packaging`, `pathvalidate`, `pypdfium2`, `rich`, `typer`, `typer-slim`, `markdown-it-py`, `mdurl`, `Pygments`, `img2pdf` |
 | reportlab (PDF reports) | `freetype-py`, `pycairo`, `rlPyCairo`, `tinycss2`, `webencodings` |
 | faster-whisper / onnxruntime | `huggingface_hub`, `tokenizers`, `hf-xet`, `fsspec`, `filelock`, `tqdm`, `flatbuffers`, `sympy`, `mpmath` |
-| locust (load tests) | `Flask`, `flask-cors`, `Flask-Login`, `Werkzeug`, `Jinja2`, `itsdangerous`, `blinker`, `gevent`, `geventhttpclient`, `zope.event`, `zope.interface`, `msgpack`, `pyzmq`, `ConfigArgParse` |
-| pytest / black / mypy | `iniconfig`, `pluggy`, `coverage`, `pytokens`, `pathspec`, `platformdirs`, `mypy_extensions` |
+| locust (load tests) | `Flask`, `flask-cors`, `Flask-Login`, `Werkzeug`, `Jinja2`, `itsdangerous`, `blinker`, `gevent`, `geventhttpclient`, `zope.event`, `zope.interface`, `msgpack`, `pyzmq`, `ConfigArgParse`, `bidict`, `python-engineio`, `python-socketio`, `simple-websocket`, `websocket-client`, `wsproto` |
+| pytest / black | `iniconfig`, `pluggy`, `coverage`, `pytokens`, `pathspec`, `mypy_extensions` |
 | beautifulsoup4 / openpyxl / python-pptx / playwright | `soupsieve`, `et_xmlfile`, `XlsxWriter`, `pyee` |
-| email-validator / PyLTI1p3 / misc | `dnspython`, `Deprecated`, `wrapt`, `six`, `python-dateutil`, `more-itertools`, `setuptools`, `shellingham`, `pdfminer.six` (version managed by pdfplumber) |
+| scenedetect | `opencv-python`, `platformdirs` |
+| email-validator / PyLTI1p3 / misc | `dnspython`, `Deprecated`, `wrapt`, `six`, `python-dateutil`, `more-itertools`, `setuptools`, `shellingham`, `pdfminer.six` |
 
 Pins are audited against this test and removed when nothing requires them
 any more: no reverse dependencies among the installed packages, and no

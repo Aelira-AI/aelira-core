@@ -2280,11 +2280,19 @@ def test_local_scan_child_dies_with_hard_killed_worker_parent(tmp_path: Path) ->
     )
     owner = subprocess.Popen((sys.executable, "-c", parent))
     try:
-        for _ in range(100):
+        readiness_deadline = time.monotonic() + 5.0
+        while time.monotonic() < readiness_deadline:
             if started.exists():
                 break
+            owner_return_code = owner.poll()
+            if owner_return_code is not None:
+                pytest.fail(
+                    "owner process exited before readiness with return code "
+                    f"{owner_return_code}"
+                )
             time.sleep(0.01)
-        assert started.exists()
+        else:
+            pytest.fail("owner process did not become ready within 5 seconds")
         owner.kill()
         owner.wait(timeout=2)
         time.sleep(1.1)

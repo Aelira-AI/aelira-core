@@ -148,12 +148,6 @@ export default function Settings(): React.ReactElement {
   const [deactivating, setDeactivating] = useState<boolean>(false);
   const [exporting, setExporting] = useState<boolean>(false);
 
-  useEffect(() => {
-    fetchProfile();
-    fetchSessions();
-    fetchDeletionStatus();
-  }, []);
-
   const fetchDeletionStatus = async (): Promise<void> => {
     try {
       const status = await accountApi.getDeletionStatus();
@@ -190,6 +184,19 @@ export default function Settings(): React.ReactElement {
       setLoadingSessions(false);
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      void fetchProfile();
+      void fetchSessions();
+      void fetchDeletionStatus();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSaveProfile = async (): Promise<void> => {
     try {
@@ -288,11 +295,18 @@ export default function Settings(): React.ReactElement {
   }, [applyProviderState, showToast]);
 
   useEffect(() => {
-    if (canManageAIProviders) {
-      fetchProviders();
-    } else {
-      setLoadingProviders(false);
-    }
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (canManageAIProviders) {
+        void fetchProviders();
+      } else {
+        setLoadingProviders(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [canManageAIProviders, fetchProviders]);
 
   const handleSetPrimary = async (providerKey: ProviderKey): Promise<void> => {

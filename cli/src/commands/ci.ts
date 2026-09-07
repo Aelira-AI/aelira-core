@@ -8,6 +8,8 @@ import * as path from 'node:path'
 import pc from 'picocolors'
 import { chromium } from 'playwright'
 
+import {buildSarifLog, calculateCiExitCode, resolveSarifSource, type SarifLog} from '../utils/sarif.js'
+
 interface CIResult {
   criticalCount: number
   errorCount: number
@@ -32,6 +34,7 @@ static examples = [
     '<%= config.bin %> <%= command.id %> https://example.com --threshold 85',
     '<%= config.bin %> <%= command.id %> ./dist --threshold 90 --fail-on critical',
     '<%= config.bin %> <%= command.id %> https://example.com --format junit --output results.xml',
+    '<%= config.bin %> <%= command.id %> ./dist --format sarif --output results.sarif',
     '<%= config.bin %> <%= command.id %> https://example.com --badge badge.svg',
   ]
 static flags = {
@@ -46,8 +49,8 @@ static flags = {
     format: Flags.string({
       char: 'f',
       default: 'console',
-      description: 'Output format (console, json, junit)',
-      options: ['console', 'json', 'junit'],
+      description: 'Output format (console, json, junit, sarif)',
+      options: ['console', 'json', 'junit', 'sarif'],
     }),
     output: Flags.string({
       char: 'o',
@@ -69,8 +72,10 @@ static flags = {
 
     // CI mode - minimal output unless verbose
     const isCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true' || process.env.GITLAB_CI === 'true'
+    const isMachineReadableStdout = !flags.output && ['json', 'sarif'].includes(flags.format)
+    const quiet = isCI || isMachineReadableStdout
 
-    if (!isCI) {
+    if (!quiet) {
       intro('Aelira CLI - CI/CD Accessibility Check')
     }
 
@@ -79,7 +84,7 @@ static flags = {
     let exitCode = 0
 
     try {
-      const s = isCI ? null : spinner()
+      const s = quiet ? null : spinner()
       s?.start('Running accessibility checks...')
 
       browser = await chromium.launch({ headless: true })
@@ -99,12 +104,7 @@ static flags = {
       const result = this.calculateResults(args.target, axeResults, flags.threshold)
 
       // Determine if we should fail
-      const failSeverities = this.getFailSeverities(flags['fail-on'])
-      const hasFailingIssues = result.violations.some((v: any) => failSeverities.includes(v.impact))
-
-      if (!result.passedThreshold || hasFailingIssues) {
-        exitCode = 1
-      }
+      exitCode = calculateCiExitCode(result, flags.threshold, flags['fail-on'])
 
       // Output results in requested format
       switch (flags.format) {
@@ -118,15 +118,26 @@ static flags = {
           break
         }
 
+        case 'sarif': {
+          const sarif = buildSarifLog({
+            axeResults: {violations: result.violations},
+            source: await resolveSarifSource(args.target, process.cwd()),
+            target: args.target,
+            toolVersion: this.config.version,
+          })
+          await this.outputSarif(sarif, flags.output)
+          break
+        }
+
         default: {
           this.outputConsole(result, flags.threshold, flags['fail-on'], isCI)
         }
       }
 
       // Generate badge if requested
-      await this.writeBadge(result.score, flags.badge, isCI)
+      await this.writeBadge(result.score, flags.badge, quiet)
 
-      if (!isCI) {
+      if (!quiet) {
         outro(exitCode === 0 ? '✅ CI check passed!' : '❌ CI check failed')
       }
     } catch (error: any) {
@@ -235,30 +246,6 @@ static flags = {
     await fs.writeFile(outputPath, svg)
   }
 
-  private getFailSeverities(failOn: string): string[] {
-    switch (failOn) {
-      case 'critical': {
-        return ['critical']
-      }
-
-      case 'minor': {
-        return ['critical', 'serious', 'moderate', 'minor']
-      }
-
-      case 'moderate': {
-        return ['critical', 'serious', 'moderate']
-      }
-
-      case 'serious': {
-        return ['critical', 'serious']
-      }
-
-      default: {
-        return ['critical', 'serious']
-      }
-    }
-  }
-
   private getScoreDisplay(score: number): string {
     if (score >= 90) {
       return pc.green(`${score}%`)
@@ -354,6 +341,16 @@ static flags = {
       await fs.writeFile(outputPath, json)
     } else {
       this.log(json)
+    }
+  }
+
+  private async outputSarif(result: SarifLog, outputPath?: string): Promise<void> {
+    const sarif = JSON.stringify(result, null, 2)
+
+    if (outputPath) {
+      await fs.writeFile(outputPath, sarif)
+    } else {
+      this.log(sarif)
     }
   }
 

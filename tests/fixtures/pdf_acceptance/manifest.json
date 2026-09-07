@@ -1,0 +1,93 @@
+{
+  "schema_version": "pdf-remediation-acceptance-corpus-v1",
+  "corpus_version": "synthetic-pdf-v1",
+  "generated_by": "scripts/pdf_acceptance_corpus.py",
+  "origin": "repository-authored synthetic content",
+  "redistribution": "CC0-1.0",
+  "normal_ci_budget_seconds": 30,
+  "required_cases": [
+    {
+      "id": "accessible-baseline",
+      "fixture": "accessible-baseline.pdf",
+      "stages": ["scan"],
+      "machine_assertions": [
+        {"kind": "issue_type_absent", "value": "missing_language"},
+        {"kind": "issue_type_absent", "value": "missing_title"},
+        {"kind": "issue_type_absent", "value": "missing_structure_tree"},
+        {"kind": "text_contains", "value": "Accessible synthetic baseline"}
+      ]
+    },
+    {
+      "id": "metadata",
+      "fixture": "metadata.pdf",
+      "stages": ["scan", "remediation", "publication", "validation", "rescan"],
+      "machine_assertions": [
+        {"kind": "issue_type_present", "value": "missing_language"},
+        {"kind": "issue_type_present", "value": "missing_title"}
+      ],
+      "remediation_issue_types": ["missing_language", "missing_title"]
+    },
+    {
+      "id": "headings-reading-order",
+      "fixture": "headings-reading-order.pdf",
+      "stages": ["scan"],
+      "machine_assertions": [
+        {"kind": "issue_type_present", "value": "missing_structure_tree"},
+        {"kind": "text_contains", "value": "Heading level three"}
+      ],
+      "review_outcome": "human_review_required"
+    },
+    {
+      "id": "links",
+      "fixture": "links.pdf",
+      "stages": ["scan"],
+      "machine_assertions": [
+        {"kind": "issue_type_present", "value": "links_missing_alt"}
+      ]
+    },
+    {
+      "id": "tables",
+      "fixture": "tables.pdf",
+      "stages": ["scan"],
+      "machine_assertions": [
+        {"kind": "issue_type_present", "value": "missing_table_structure"}
+      ]
+    },
+    {
+      "id": "forms",
+      "fixture": "forms.pdf",
+      "stages": ["scan"],
+      "machine_assertions": [
+        {"kind": "issue_type_present", "value": "unlabeled_form_fields"},
+        {"kind": "issue_type_present", "value": "missing_tab_order"}
+      ]
+    },
+    {
+      "id": "images-charts",
+      "fixture": "images-charts.pdf",
+      "stages": ["scan"],
+      "machine_assertions": [
+        {"kind": "issue_type_present", "value": "image_missing_alt"}
+      ],
+      "review_outcome": "human_review_required"
+    },
+    {
+      "id": "math-stem",
+      "fixture": "math-stem.pdf",
+      "stages": ["scan"],
+      "latex_aware": true,
+      "machine_assertions": [
+        {"kind": "issue_type_present", "value": "math_content_accessibility"},
+        {"kind": "text_contains", "value": "Equation formula theorem proof"}
+      ],
+      "review_outcome": "human_review_required"
+    }
+  ],
+  "extended_cases": [
+    {
+      "id": "visual-description-quality",
+      "status": "quarantined",
+      "reason": "live_provider_required"
+    }
+  ]
+}

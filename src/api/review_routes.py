@@ -10,15 +10,21 @@ Provides endpoints for:
 - Audit export: export audit trail in JSON, CSV, or PDF format
 """
 
+import hashlib
+import hmac
 import logging
+import mimetypes
+import os
 import re
+import stat
 import uuid
 from datetime import datetime, timezone
+from collections.abc import Iterable
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 
@@ -30,14 +36,27 @@ from ..db.models import (
     ScanFix,
     ScanType,
     MatterhornResult,
+    RemediationArtifact,
     ReviewAuditLog,
     User,
+    VisualAnalysis,
 )
 from ..education.equation_region_contract import PageRasterRegionLocator
 from ..education.visual_semantic_contract import VisualSemanticContract
 from ..education.reports.compliance_report import (
+    ACCEPTED_REVIEW_STATUSES,
     AuditReportGenerator,
+    artifact_evidence,
     bounded_audit_details,
+)
+from ..education.reports.evidence_package import (
+    EvidenceFile,
+    EvidencePackageError,
+    build_evidence_package,
+)
+from ..services.remediation_artifact_service import (
+    ArtifactError,
+    RemediationArtifactService,
 )
 from ..services.scan_fix_service import (
     apply_authenticated_batch_review,
@@ -48,6 +67,11 @@ from ..services.scan_fix_service import (
     validate_fix_review_action,
     validated_visual_semantic_contract,
     visual_semantic_disposition,
+)
+from ..services.visual_analysis_service import (
+    SAFE_FAILURE_CATEGORIES,
+    canonical_visual_locator,
+    validated_visual_proposal,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,8 +103,101 @@ def _scan_type_display(scan_type: object) -> str:
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 get_auth = get_required_api_key
 
+_MAX_INCLUDED_SOURCE_BYTES = 500 * 1024 * 1024
+
+_AUTO_APPROVED_STATUS = "auto_approved"
+_HUMAN_REVIEWED_STATUSES = frozenset({"approved", "edited", "rejected"})
+_ACCEPTED_STATUSES = ACCEPTED_REVIEW_STATUSES
+_TERMINAL_STATUSES = _ACCEPTED_STATUSES | {"rejected"}
+
+
+def _audit_export_headers(scan_id: str, format: str) -> dict[str, str]:
+    """Build stable attachment metadata without reflecting unsafe path text."""
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", scan_id)[:64] or "scan"
+    prefix = "accessibility-review-evidence" if format == "pdf" else "audit"
+    return {
+        "Content-Disposition": f'attachment; filename="{prefix}-{safe_id}.{format}"',
+        "Cache-Control": "no-store",
+    }
+
+
+def _evidence_package_headers(scan_id: str) -> dict[str, str]:
+    """Build bounded attachment headers for a portable evidence package."""
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", scan_id)[:64] or "scan"
+    return {
+        "Content-Disposition": f'attachment; filename="aelira-evidence-{safe_id}.zip"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+def _read_verified_source(scan: Scan) -> EvidenceFile:
+    """Read explicitly requested source bytes through a descriptor-bound check."""
+    storage_path = getattr(scan, "storage_path", None)
+    expected_size = getattr(scan, "file_size_bytes", None)
+    expected_sha256 = getattr(scan, "file_hash", None)
+    if (
+        not isinstance(storage_path, str)
+        or not storage_path
+        or not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+        or expected_size > _MAX_INCLUDED_SOURCE_BYTES
+        or not isinstance(expected_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+    ):
+        raise EvidencePackageError("source evidence metadata is unavailable")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = -1
+    try:
+        fd = os.open(storage_path, flags)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size != expected_size:
+            raise EvidencePackageError("source size mismatch")
+        content = bytearray()
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, min(1024 * 1024, expected_size - len(content) + 1))
+            if not chunk:
+                break
+            content.extend(chunk)
+            digest.update(chunk)
+            if len(content) > expected_size:
+                raise EvidencePackageError("source size mismatch")
+        if len(content) != expected_size:
+            raise EvidencePackageError("source size mismatch")
+        if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+            raise EvidencePackageError("source checksum mismatch")
+    except EvidencePackageError:
+        raise
+    except OSError as exc:
+        raise EvidencePackageError("source bytes are missing or unsafe") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+    filename = getattr(scan, "file_name", None)
+    if not isinstance(filename, str) or not filename:
+        filename = "source.bin"
+    return EvidenceFile(
+        filename=filename,
+        media_type=mimetypes.guess_type(filename)[0],
+        content=bytes(content),
+    )
+
 
 # -- Response Models --
+
+
+class DeferralSummary(BaseModel):
+    lifecycle: Literal["active", "expired", "revoked", "resolved"]
+    owner: str
+    reason: str
+    expires_at: datetime
+    created_at: datetime
+    updated_at: datetime
+    closed_at: Optional[datetime] = None
 
 
 class FixSummary(BaseModel):
@@ -108,6 +225,35 @@ class FixSummary(BaseModel):
     approved_review_digest: Optional[str] = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
+    deferral: Optional[DeferralSummary] = None
+
+
+class VisualAnalysisSummary(BaseModel):
+    id: str
+    source_kind: Literal["image", "chart"]
+    source_locator: Optional[dict[str, int | str]] = None
+    purpose: Literal[
+        "alt_text",
+        "chart_description",
+        "image_type",
+        "alt_text_validation",
+        "audio_description",
+    ]
+    status: Literal[
+        "queued",
+        "running",
+        "succeeded",
+        "retryable_failure",
+        "terminal_failure",
+        "review_required",
+    ]
+    attempt_count: int
+    max_attempts: int
+    failure_category: Optional[str] = None
+    proposal: Optional[dict] = None
+    proposal_sha256: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    review_fix_id: Optional[str] = None
+    review_status: Optional[str] = None
 
 
 class QueueItem(BaseModel):
@@ -118,13 +264,18 @@ class QueueItem(BaseModel):
     total_fixes: int
     needs_review_count: int
     lowest_confidence: float
-    status: str  # pending / approved
+    status: Literal["pending", "approved", "rejected"]
     created_at: datetime
+
+
+class QueueResponse(BaseModel):
+    items: list[QueueItem]
+    total: int
+    has_more: bool
 
 
 class QueueStats(BaseModel):
     pending: int
-    in_review: int
     approved: int
     rejected: int
     total: int
@@ -134,17 +285,46 @@ class QueueStats(BaseModel):
 class DocumentReview(BaseModel):
     scan_id: str
     file_name: str
+    status: Literal["pending", "approved", "rejected"]
     fixes: list[FixSummary]
+    total_fixes: int
+    needs_review_count: int
+    auto_approved_count: int
+    reviewed_count: int
     matterhorn_total: int
     matterhorn_passed: int
     matterhorn_failed: int
     validator_result: str
+    visual_analyses: list[VisualAnalysisSummary] = Field(default_factory=list)
 
 
 class FixAction(BaseModel):
     action: Literal["approve", "reject", "edit"]
     notes: Optional[str] = None
     edited_content: Optional[str] = None
+
+
+class DeferralAction(BaseModel):
+    owner: str = Field(max_length=255)
+    reason: str = Field(max_length=4000)
+    expires_at: datetime
+
+    @field_validator("owner", "reason")
+    @classmethod
+    def validate_non_blank(cls, value: str, info) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError(f"{info.field_name} must not be blank")
+        return normalized
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_future_expiry(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must include a timezone")
+        if value <= datetime.now(timezone.utc):
+            raise ValueError("expires_at must be in the future")
+        return value.astimezone(timezone.utc)
 
 
 class BatchAction(BaseModel):
@@ -159,6 +339,12 @@ class ReviewResponse(BaseModel):
     status: str
     fix_id: str
     review_status: str
+
+
+class DeferralResponse(BaseModel):
+    status: str
+    fix_id: str
+    deferral: DeferralSummary
 
 
 class BatchResponse(BaseModel):
@@ -185,6 +371,84 @@ class DepartmentSummary(BaseModel):
 
 
 # -- Helper functions --
+
+
+def deferral_lifecycle(
+    fix: object, *, now: Optional[datetime] = None
+) -> Optional[Literal["active", "expired", "revoked", "resolved"]]:
+    """Return the reportable lifecycle without mutating persisted state."""
+    stored_status = getattr(fix, "deferral_status", None)
+    if stored_status is None:
+        return None
+    if stored_status in {"revoked", "resolved"}:
+        return stored_status
+    if stored_status != "active":
+        return None
+    expires_at = getattr(fix, "deferral_expires_at", None)
+    if expires_at is None:
+        return None
+    comparison_time = now or datetime.now(timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return "expired" if expires_at <= comparison_time else "active"
+
+
+def _deferral_snapshot(
+    fix: object, *, now: Optional[datetime] = None
+) -> Optional[dict[str, object]]:
+    lifecycle = deferral_lifecycle(fix, now=now)
+    if lifecycle is None:
+        return None
+
+    def iso(field: str) -> Optional[str]:
+        value = getattr(fix, field, None)
+        return value.isoformat() if isinstance(value, datetime) else None
+
+    return {
+        "lifecycle": lifecycle,
+        "owner": getattr(fix, "deferral_owner", None),
+        "reason": getattr(fix, "deferral_reason", None),
+        "expires_at": iso("deferral_expires_at"),
+        "created_at": iso("deferral_created_at"),
+        "updated_at": iso("deferral_updated_at"),
+        "closed_at": iso("deferral_closed_at"),
+    }
+
+
+def _deferral_summary(fix: object) -> Optional[DeferralSummary]:
+    snapshot = _deferral_snapshot(fix)
+    return DeferralSummary.model_validate(snapshot) if snapshot else None
+
+
+def _resolve_fix_deferral(
+    db: Session,
+    *,
+    fix: ScanFix,
+    user_id: str,
+    resolved_at: datetime,
+) -> bool:
+    """Resolve an open or expired deferral and append its history event."""
+    if getattr(fix, "deferral_status", None) != "active":
+        return False
+    previous = _deferral_snapshot(fix, now=resolved_at)
+    fix.deferral_status = "resolved"
+    fix.deferral_updated_at = resolved_at
+    fix.deferral_closed_at = resolved_at
+    db.add(
+        ReviewAuditLog(
+            id=str(uuid.uuid4()),
+            scan_id=fix.scan_id,
+            fix_id=fix.id,
+            user_id=user_id,
+            action="fix_deferral_resolved",
+            details={
+                "actor_id": user_id,
+                "previous": previous,
+                "current": _deferral_snapshot(fix, now=resolved_at),
+            },
+        )
+    )
+    return True
 
 
 def compute_compliance_level(total: int, failed: int) -> str:
@@ -216,12 +480,38 @@ def compute_validator_result(total: int, passed: int, failed: int) -> str:
     return "recorded_checkpoint_results_available"
 
 
-def compute_doc_status(needs_review_count: int) -> str:
-    """Determine document-level review status.
+def summarize_review_statuses(statuses: Iterable[Optional[str]]) -> dict[str, int]:
+    """Summarize persisted fix states for the review UI.
 
-    A document is 'approved' when no fixes remain pending review.
+    Unknown and legacy non-terminal states remain pending instead of being
+    silently presented as reviewed. ``edited`` is accepted for legacy rows,
+    although new edits are persisted as ``approved`` and recorded in audit logs.
     """
-    return "approved" if needs_review_count == 0 else "pending"
+    status_list = list(statuses)
+    return {
+        "total_fixes": len(status_list),
+        "needs_review_count": sum(
+            status not in _TERMINAL_STATUSES for status in status_list
+        ),
+        "auto_approved_count": sum(
+            status == _AUTO_APPROVED_STATUS for status in status_list
+        ),
+        "reviewed_count": sum(
+            status in _HUMAN_REVIEWED_STATUSES for status in status_list
+        ),
+    }
+
+
+def compute_doc_status(
+    statuses: Iterable[Optional[str]],
+) -> Literal["pending", "approved", "rejected"]:
+    """Determine document status from the persisted states of all its fixes."""
+    status_list = list(statuses)
+    if any(status not in _TERMINAL_STATUSES for status in status_list):
+        return "pending"
+    if "rejected" in status_list:
+        return "rejected"
+    return "approved"
 
 
 def _fix_summary(fix: ScanFix) -> FixSummary:
@@ -263,16 +553,47 @@ def _fix_summary(fix: ScanFix) -> FixSummary:
             if valid_sha256(fix.approved_review_digest)
             else None
         ),
+        deferral=_deferral_summary(fix),
+    )
+
+
+def _visual_analysis_summary(
+    analysis: VisualAnalysis, fixes_by_id: dict[str, ScanFix]
+) -> VisualAnalysisSummary:
+    try:
+        locator = canonical_visual_locator(analysis.source_locator)
+    except ValueError:
+        locator = None
+    linked_fix = fixes_by_id.get(analysis.review_fix_id)
+    return VisualAnalysisSummary(
+        id=analysis.id,
+        source_kind=analysis.source_kind,
+        source_locator=locator,
+        purpose=analysis.purpose,
+        status=analysis.status,
+        attempt_count=analysis.attempt_count,
+        max_attempts=analysis.max_attempts,
+        failure_category=(
+            analysis.failure_category
+            if analysis.failure_category in SAFE_FAILURE_CATEGORIES
+            else None
+        ),
+        proposal=validated_visual_proposal(analysis.purpose, analysis.proposal),
+        proposal_sha256=(
+            analysis.proposal_sha256 if valid_sha256(analysis.proposal_sha256) else None
+        ),
+        review_fix_id=linked_fix.id if linked_fix is not None else None,
+        review_status=linked_fix.review_status if linked_fix is not None else None,
     )
 
 
 # -- Endpoints --
 
 
-@router.get("/queue", response_model=list[QueueItem])
+@router.get("/queue", response_model=QueueResponse)
 def get_review_queue(
     department_id: Optional[str] = Query(None),
-    status: Optional[Literal["pending", "approved"]] = Query(None),
+    status: Optional[Literal["pending", "approved", "rejected"]] = Query(None),
     scan_type: Optional[str] = Query(None),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
@@ -291,9 +612,10 @@ def get_review_queue(
             Scan.scan_type,
             func.count(ScanFix.id).label("total_fixes"),
             func.sum(
-                case((ScanFix.needs_review == True, 1), else_=0)
-            ).label(  # noqa: E712
-                "needs_review_count"
+                case((ScanFix.review_status.in_(_TERMINAL_STATUSES), 0), else_=1)
+            ).label("needs_review_count"),
+            func.sum(case((ScanFix.review_status == "rejected", 1), else_=0)).label(
+                "rejected_count"
             ),
             func.min(ScanFix.confidence).label("lowest_confidence"),
             Scan.created_at,
@@ -313,13 +635,21 @@ def get_review_queue(
     # Filter by review status
     if status == "pending":
         query = query.having(
-            func.sum(case((ScanFix.review_status == "pending", 1), else_=0)) > 0
+            func.sum(case((ScanFix.review_status.in_(_TERMINAL_STATUSES), 0), else_=1))
+            > 0
         )
     elif status == "approved":
         query = query.having(
-            func.sum(case((ScanFix.review_status == "pending", 1), else_=0)) == 0
-        )
+            func.sum(case((ScanFix.review_status.in_(_TERMINAL_STATUSES), 0), else_=1))
+            == 0
+        ).having(func.sum(case((ScanFix.review_status == "rejected", 1), else_=0)) == 0)
+    elif status == "rejected":
+        query = query.having(
+            func.sum(case((ScanFix.review_status.in_(_TERMINAL_STATUSES), 0), else_=1))
+            == 0
+        ).having(func.sum(case((ScanFix.review_status == "rejected", 1), else_=0)) > 0)
 
+    total = query.count()
     rows = (
         query.order_by(func.min(ScanFix.confidence).asc())
         .offset(offset)
@@ -330,7 +660,11 @@ def get_review_queue(
     results = []
     for row in rows:
         pending_count = row.needs_review_count or 0
-        doc_status = compute_doc_status(pending_count)
+        doc_status = (
+            "pending"
+            if pending_count > 0
+            else "rejected" if (row.rejected_count or 0) > 0 else "approved"
+        )
         results.append(
             QueueItem(
                 scan_id=row.scan_id,
@@ -345,7 +679,11 @@ def get_review_queue(
             )
         )
 
-    return results
+    return QueueResponse(
+        items=results,
+        total=total,
+        has_more=offset + len(results) < total,
+    )
 
 
 @router.get("/queue/stats", response_model=QueueStats)
@@ -366,6 +704,10 @@ def get_review_stats(
     rows = query.group_by(ScanFix.review_status).all()
 
     counts = {status: count for status, count in rows}
+    total = sum(counts.values())
+    approved = sum(counts.get(status, 0) for status in _ACCEPTED_STATUSES)
+    rejected = counts.get("rejected", 0)
+    pending = total - approved - rejected
 
     # Per-type breakdown
     type_query = db.query(Scan.scan_type, func.count(func.distinct(Scan.id))).join(
@@ -380,11 +722,10 @@ def get_review_stats(
     }
 
     return QueueStats(
-        pending=counts.get("pending", 0),
-        in_review=counts.get("in_review", 0),
-        approved=counts.get("approved", 0) + counts.get("auto_approved", 0),
-        rejected=counts.get("rejected", 0),
-        total=sum(counts.values()),
+        pending=pending,
+        approved=approved,
+        rejected=rejected,
+        total=total,
         by_type=by_type if by_type else None,
     )
 
@@ -419,13 +760,10 @@ def get_department_summary(
     )
     status_counts = {status: count for status, count in status_rows}
 
-    approved_count = status_counts.get("approved", 0) + status_counts.get(
-        "auto_approved", 0
-    )
+    approved_count = sum(status_counts.get(status, 0) for status in _ACCEPTED_STATUSES)
     rejected_count = status_counts.get("rejected", 0)
-    # in_review is still pending human action, so count it as pending
-    pending_count = status_counts.get("pending", 0) + status_counts.get("in_review", 0)
     total_fixes = sum(status_counts.values())
+    pending_count = total_fixes - approved_count - rejected_count
 
     # 3. Calculate reviewed percentage
     reviewed = approved_count + rejected_count
@@ -489,22 +827,150 @@ def get_document_review(
     matterhorn = (
         db.query(MatterhornResult).filter(MatterhornResult.scan_id == scan_id).all()
     )
+    visual_analyses = (
+        db.query(VisualAnalysis)
+        .filter(
+            VisualAnalysis.scan_id == scan_id,
+            VisualAnalysis.department_id == department_id,
+        )
+        .order_by(VisualAnalysis.created_at.asc(), VisualAnalysis.id.asc())
+        .all()
+    )
+    fixes_by_id = {fix.id: fix for fix in fixes}
 
     passed = sum(1 for m in matterhorn if m.status == "pass")
     failed = sum(1 for m in matterhorn if m.status == "fail")
     total = len(matterhorn)
 
     validator_result = compute_validator_result(total, passed, failed)
+    statuses = [fix.review_status for fix in fixes]
+    summary = summarize_review_statuses(statuses)
 
     return DocumentReview(
         scan_id=scan_id,
         file_name=scan.file_name,
+        status=compute_doc_status(statuses),
         fixes=[_fix_summary(fix) for fix in fixes],
+        **summary,
         matterhorn_total=total,
         matterhorn_passed=passed,
         matterhorn_failed=failed,
         validator_result=validator_result,
+        visual_analyses=[
+            _visual_analysis_summary(analysis, fixes_by_id)
+            for analysis in visual_analyses
+        ],
     )
+
+
+@router.put("/{scan_id}/fixes/{fix_id}/deferral", response_model=DeferralResponse)
+def defer_fix(
+    scan_id: str,
+    fix_id: str,
+    body: DeferralAction,
+    db: Session = Depends(get_db_dependency),
+    auth_result=Depends(get_auth),
+):
+    """Create or change a controlled, time-bounded deferral."""
+    _, user_id, department_id = auth_result
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    graph = lock_scan_review_graph(db, scan_id)
+    fix = next((row for row in graph.fixes if row.id == fix_id), None)
+    if not fix:
+        raise HTTPException(status_code=404, detail="Fix not found")
+    if fix.review_status in _TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="Only unresolved findings can be deferred",
+        )
+
+    now = datetime.now(timezone.utc)
+    previous = _deferral_snapshot(fix, now=now)
+    changing = getattr(fix, "deferral_status", None) == "active"
+    fix.deferral_status = "active"
+    fix.deferral_owner = body.owner
+    fix.deferral_reason = body.reason
+    fix.deferral_expires_at = body.expires_at
+    if not changing:
+        fix.deferral_created_at = now
+    fix.deferral_updated_at = now
+    fix.deferral_closed_at = None
+
+    action = "fix_deferral_updated" if changing else "fix_deferral_created"
+    db.add(
+        ReviewAuditLog(
+            id=str(uuid.uuid4()),
+            scan_id=scan_id,
+            fix_id=fix_id,
+            user_id=user_id,
+            action=action,
+            details={
+                "actor_id": user_id,
+                "previous": previous,
+                "current": _deferral_snapshot(fix, now=now),
+            },
+        )
+    )
+    db.commit()
+    summary = _deferral_summary(fix)
+    if summary is None:  # Defensive: persistence fields were assigned above.
+        raise HTTPException(status_code=500, detail="Deferral state is invalid")
+    return DeferralResponse(status="ok", fix_id=fix_id, deferral=summary)
+
+
+@router.post(
+    "/{scan_id}/fixes/{fix_id}/deferral/revoke",
+    response_model=DeferralResponse,
+)
+def revoke_fix_deferral(
+    scan_id: str,
+    fix_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth_result=Depends(get_auth),
+):
+    """Revoke an active or expired controlled deferral."""
+    _, user_id, department_id = auth_result
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    graph = lock_scan_review_graph(db, scan_id)
+    fix = next((row for row in graph.fixes if row.id == fix_id), None)
+    if not fix:
+        raise HTTPException(status_code=404, detail="Fix not found")
+    if getattr(fix, "deferral_status", None) != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="Only an active or expired deferral can be revoked",
+        )
+
+    now = datetime.now(timezone.utc)
+    previous = _deferral_snapshot(fix, now=now)
+    fix.deferral_status = "revoked"
+    fix.deferral_updated_at = now
+    fix.deferral_closed_at = now
+    db.add(
+        ReviewAuditLog(
+            id=str(uuid.uuid4()),
+            scan_id=scan_id,
+            fix_id=fix_id,
+            user_id=user_id,
+            action="fix_deferral_revoked",
+            details={
+                "actor_id": user_id,
+                "previous": previous,
+                "current": _deferral_snapshot(fix, now=now),
+            },
+        )
+    )
+    db.commit()
+    summary = _deferral_summary(fix)
+    if summary is None:
+        raise HTTPException(status_code=500, detail="Deferral state is invalid")
+    return DeferralResponse(status="ok", fix_id=fix_id, deferral=summary)
 
 
 @router.post("/{scan_id}/fixes/{fix_id}", response_model=ReviewResponse)
@@ -552,6 +1018,12 @@ def review_fix(
     fix.reviewed_by = user_id
     fix.reviewed_at = now
     fix.review_notes = body.notes
+    _resolve_fix_deferral(
+        db,
+        fix=fix,
+        user_id=user_id,
+        resolved_at=now,
+    )
 
     db.add(
         ReviewAuditLog(
@@ -607,6 +1079,13 @@ def batch_review(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    for fix in fixes:
+        _resolve_fix_deferral(
+            db,
+            fix=fix,
+            user_id=user_id,
+            resolved_at=now,
+        )
     invalidate_current_artifact_approvals(db, graph)
 
     db.add(
@@ -628,47 +1107,28 @@ def batch_review(
     return BatchResponse(status="ok", affected=len(fixes))
 
 
-@router.get("/{scan_id}/audit/export")
-def export_audit_trail(
-    scan_id: str,
-    format: Literal["json", "csv", "pdf"] = Query("json"),
-    db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
-):
-    """Export bounded scan, validator, remediation, and review evidence.
-
-    The export records issues, fixes, review history, and Matterhorn results;
-    it does not make an accessibility-standard or legal determination.
-    """
-    _, _user_id, department_id = auth_result
-
-    # Verify scan belongs to the authenticated user's department
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
-    if not scan or scan.department_id != department_id:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    # Fetch related data
+def _audit_export_inputs(db: Session, scan: Scan) -> tuple[list, list, list, object]:
+    """Load the bounded evidence graph shared by exports and packages."""
     fixes = (
         db.query(ScanFix)
-        .filter(ScanFix.scan_id == scan_id)
+        .filter(ScanFix.scan_id == scan.id)
         .order_by(ScanFix.confidence.asc())
         .all()
     )
 
     matterhorn_results = (
-        db.query(MatterhornResult).filter(MatterhornResult.scan_id == scan_id).all()
+        db.query(MatterhornResult).filter(MatterhornResult.scan_id == scan.id).all()
     )
 
-    # Build audit entries with user names
     raw_entries = (
         db.query(ReviewAuditLog)
-        .filter(ReviewAuditLog.scan_id == scan_id)
+        .filter(ReviewAuditLog.scan_id == scan.id)
         .order_by(ReviewAuditLog.created_at.asc())
         .all()
     )
 
-    # Batch-load user names to avoid N+1 queries
     user_ids = {e.user_id for e in raw_entries if e.user_id}
+    user_ids.update(fix.reviewed_by for fix in fixes if fix.reviewed_by)
     user_map: dict[str, str] = {}
     if user_ids:
         users = db.query(User).filter(User.id.in_(user_ids)).all()
@@ -690,10 +1150,13 @@ def export_audit_trail(
         )()
         audit_entries.append(entry)
 
-    # Fetch department for PDF/branding
+    for fix in fixes:
+        fix._export_reviewer_name = (
+            user_map.get(fix.reviewed_by) if fix.reviewed_by else None
+        )
+
     dept = db.query(Department).filter(Department.id == scan.department_id).first()
     if not dept:
-        # Fallback: create a minimal department-like object
         dept = type(
             "DeptFallback",
             (),
@@ -702,6 +1165,28 @@ def export_audit_trail(
                 "institution": "Unknown Institution",
             },
         )()
+    return fixes, audit_entries, matterhorn_results, dept
+
+
+@router.get("/{scan_id}/audit/export")
+def export_audit_trail(
+    scan_id: str,
+    format: Literal["json", "csv", "pdf"] = Query("json"),
+    db: Session = Depends(get_db_dependency),
+    auth_result=Depends(get_auth),
+):
+    """Export bounded scan, validator, remediation, and review evidence.
+
+    The export records issues, fixes, review history, and Matterhorn results;
+    it does not make an accessibility-standard or legal determination.
+    """
+    _, _user_id, department_id = auth_result
+
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    fixes, audit_entries, matterhorn_results, dept = _audit_export_inputs(db, scan)
 
     if format == "json":
         data = AuditReportGenerator.generate_json(
@@ -711,7 +1196,10 @@ def export_audit_trail(
             matterhorn_results=matterhorn_results,
             department=dept,
         )
-        return JSONResponse(content=data)
+        return JSONResponse(
+            content=data,
+            headers=_audit_export_headers(scan_id, format),
+        )
 
     elif format == "csv":
         csv_content = AuditReportGenerator.generate_csv(
@@ -721,13 +1209,10 @@ def export_audit_trail(
             matterhorn_results=matterhorn_results,
             department=dept,
         )
-        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", scan_id)[:64]
         return Response(
             content=csv_content,
             media_type="text/csv",
-            headers={
-                "Content-Disposition": f'attachment; filename="audit-{safe_id}.csv"',
-            },
+            headers=_audit_export_headers(scan_id, format),
         )
 
     else:  # pdf
@@ -738,14 +1223,111 @@ def export_audit_trail(
             matterhorn_results=matterhorn_results,
             department=dept,
         )
-        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", scan_id)[:64]
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="accessibility-review-evidence-{safe_id}.pdf"',
-            },
+            headers=_audit_export_headers(scan_id, format),
         )
+
+
+@router.get("/{scan_id}/audit/package")
+def export_evidence_package(
+    scan_id: str,
+    include_source: bool = Query(False),
+    include_output: bool = Query(False),
+    db: Session = Depends(get_db_dependency),
+    auth_result=Depends(get_auth),
+):
+    """Download a versioned evidence package without document bytes by default."""
+    _, _user_id, department_id = auth_result
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    source_file = None
+    if include_source:
+        try:
+            source_file = _read_verified_source(scan)
+        except EvidencePackageError:
+            raise HTTPException(
+                status_code=409, detail="Source evidence unavailable"
+            ) from None
+
+    artifact = None
+    output_file = None
+    artifact_id = getattr(scan, "current_remediation_artifact_id", None)
+    if artifact_id is not None:
+        artifact = (
+            db.query(RemediationArtifact)
+            .filter(
+                RemediationArtifact.id == artifact_id,
+                RemediationArtifact.scan_id == scan.id,
+                RemediationArtifact.department_id == department_id,
+            )
+            .one_or_none()
+        )
+        if artifact is None:
+            raise HTTPException(status_code=409, detail="Evidence artifact unavailable")
+        service = RemediationArtifactService.from_settings()
+        try:
+            if artifact.cloud_file_id is not None:
+                service.lock_current(
+                    db,
+                    artifact_id=artifact.id,
+                    department_id=department_id,
+                    cloud_file_id=artifact.cloud_file_id,
+                    provider=artifact.provider,
+                )
+            if include_output:
+                with service.open_verified(
+                    db,
+                    artifact,
+                    department_id=department_id,
+                    scan_id=scan.id,
+                    cloud_file_id=artifact.cloud_file_id,
+                ) as stream:
+                    output_file = EvidenceFile(
+                        filename=artifact.filename,
+                        media_type=artifact.mime_type,
+                        content=stream.read(),
+                    )
+            else:
+                service.resolve_record(
+                    db,
+                    artifact,
+                    department_id=department_id,
+                    scan_id=scan.id,
+                    cloud_file_id=artifact.cloud_file_id,
+                )
+        except ArtifactError:
+            raise HTTPException(
+                status_code=409, detail="Evidence artifact unavailable"
+            ) from None
+
+    fixes, audit_entries, matterhorn_results, dept = _audit_export_inputs(db, scan)
+    evidence = AuditReportGenerator.generate_json(
+        scan=scan,
+        fixes=fixes,
+        audit_entries=audit_entries,
+        matterhorn_results=matterhorn_results,
+        department=dept,
+    )
+    evidence["artifact"] = artifact_evidence(artifact)
+    try:
+        package = build_evidence_package(
+            evidence,
+            source_file=source_file,
+            output_file=output_file,
+        )
+    except EvidencePackageError:
+        raise HTTPException(
+            status_code=409, detail="Evidence package unavailable"
+        ) from None
+    return Response(
+        content=package,
+        media_type="application/zip",
+        headers=_evidence_package_headers(scan_id),
+    )
 
 
 @router.get("/{scan_id}/audit", response_model=list[AuditEntry])

@@ -33,7 +33,6 @@ static examples = [
   ]
 static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     format: Flags.string({
@@ -360,7 +359,7 @@ static flags = {
 
   private async uploadAndScan(
     filePath: string,
-    apiUrl: string,
+    apiUrl: string | undefined,
     s: ReturnType<typeof spinner>,
   ): Promise<any> {
     const api = new ApiClient({ apiUrl })

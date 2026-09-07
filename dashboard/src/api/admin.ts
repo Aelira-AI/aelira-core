@@ -85,11 +85,78 @@ export interface LMSAIPolicyUpdate {
   expected_revision: number;
 }
 
+export type WorkerHealthState =
+  | 'worker_unavailable'
+  | 'expired_lease'
+  | 'stuck_processing'
+  | 'healthy_processing'
+  | 'stuck_runnable_backlog'
+  | 'healthy_advancing'
+  | 'healthy_idle';
+
+export interface WorkerStatusResponse {
+  generated_at: string;
+  status: 'healthy' | 'degraded';
+  health_state: WorkerHealthState;
+  queue: {
+    pending: number;
+    processing: number;
+    completed: number;
+    failed: number;
+  };
+  workers: {
+    live: number;
+    draining: number;
+    latest_heartbeat_at: string | null;
+    latest_heartbeat_age_seconds: number | null;
+  };
+  progress: {
+    jobs_claimed: number;
+    jobs_completed: number;
+    jobs_failed: number;
+    oldest_pending_created_at: string | null;
+    oldest_pending_age_seconds: number | null;
+    oldest_processing_heartbeat_at: string | null;
+    oldest_running_job_age_seconds: number | null;
+    runnable_pending: number;
+    expired_processing: number;
+    stalled_processing: number;
+    latest_progress_at: string | null;
+    latest_progress_age_seconds: number | null;
+  };
+  maintenance: {
+    artifact_cleanup_due: number;
+  };
+  weekly_summary_scheduler: {
+    state: 'not_started' | 'healthy' | 'stale' | 'failed';
+    last_success_at: string | null;
+    last_success_age_seconds: number | null;
+    last_error_code: 'weekly_summary_scheduler_failed' | null;
+  };
+  reconciliation: {
+    required: number;
+    manual_required: number;
+    failed_manual: number;
+  };
+  orphans: {
+    pending_move: number;
+    quarantined: number;
+    restore_required: number;
+    reviewed: number;
+    purging: number;
+  };
+}
+
 // ============================================================================
 // API Methods
 // ============================================================================
 
 export const adminApi = {
+  getWorkerStatus: async (): Promise<WorkerStatusResponse> => {
+    const response = await apiClient.get<WorkerStatusResponse>('/api/jobs/worker-status');
+    return response.data;
+  },
+
   getLMSAIPolicy: async (): Promise<LMSAIPolicy> => {
     const response = await apiClient.get<LMSAIPolicy>('/llm/lms-policy');
     return response.data;

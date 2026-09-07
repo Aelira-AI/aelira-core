@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useEffectEvent, useRef, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Loader2,
@@ -186,7 +186,13 @@ export function CanvasCourses(): React.ReactElement {
   }, []);
 
   useEffect(() => {
-    fetchCourses();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchCourses();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchCourses]);
 
   // --------------------------------------------------
@@ -251,7 +257,7 @@ export function CanvasCourses(): React.ReactElement {
     }
   }, []);
 
-  const startPolling = useCallback(
+  const startPolling = useEffectEvent(
     (courseId: string, fileIds: string[]): void => {
       stopPolling();
 
@@ -320,8 +326,7 @@ export function CanvasCourses(): React.ReactElement {
           console.error('Polling error:', err);
         }
       }, 2000);
-    },
-    [stopPolling, scanningFiles, toast]
+    }
   );
 
   // Start polling when files are scanning or remediating
@@ -339,7 +344,7 @@ export function CanvasCourses(): React.ReactElement {
     return () => {
       stopPolling();
     };
-  }, [expandedCourse, scanningFiles.size, remediatingFiles.size, courseFiles, startPolling, stopPolling]);
+  }, [expandedCourse, scanningFiles.size, remediatingFiles.size, courseFiles, stopPolling]);
 
   // Cleanup on unmount
   useEffect(() => {

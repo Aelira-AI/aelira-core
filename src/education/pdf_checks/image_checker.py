@@ -279,6 +279,11 @@ class ImageAccessibilityChecker:
                                     image_path=temp_path,
                                     existing_alt_text=existing_alt_text,
                                     context=context,
+                                    analysis_locator={
+                                        "kind": "page_image",
+                                        "page_number": page_num,
+                                        "image_xref": xref,
+                                    },
                                 )
                             )
 
@@ -363,7 +368,13 @@ class ImageAccessibilityChecker:
 
                 type_tasks = [
                     image_generator.detect_image_type(
-                        image_path=img_data["temp_path"], context=img_data["context"]
+                        image_path=img_data["temp_path"],
+                        context=img_data["context"],
+                        analysis_locator={
+                            "kind": "page_image",
+                            "page_number": img_data["page_num"],
+                            "image_xref": img_data["xref"],
+                        },
                     )
                     for img_data in images_to_analyze
                 ]
@@ -476,6 +487,11 @@ class ImageAccessibilityChecker:
                             image_path=img_data["temp_path"],
                             context=img_data["context"],
                             detail_level="standard",
+                            analysis_locator={
+                                "kind": "page_image",
+                                "page_number": img_data["page_num"],
+                                "image_xref": img_data["xref"],
+                            },
                         )
                         for img_data in chart_images
                     ]
@@ -558,6 +574,11 @@ class ImageAccessibilityChecker:
                             image_path=img_data["temp_path"],
                             context=img_data["context"],
                             educational_context=True,
+                            analysis_locator={
+                                "kind": "page_image",
+                                "page_number": img_data["page_num"],
+                                "image_xref": img_data["xref"],
+                            },
                         )
                         for img_data in informative_images
                     ]

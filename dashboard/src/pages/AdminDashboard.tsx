@@ -20,6 +20,7 @@ import { useAuth } from '../context/auth-context';
 import { useToast } from '../context/toast-context';
 import { LMSAIPolicyCard } from '../components/admin/LMSAIPolicyCard';
 import { InstitutionComplianceCard } from '../components/admin/InstitutionComplianceCard';
+import { OperationsHealthCard } from '../components/admin/OperationsHealthCard';
 
 // Type definitions
 type UserRole = 'faculty' | 'admin' | 'super_admin';
@@ -109,7 +110,13 @@ export function AdminDashboard(): React.ReactElement {
   };
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchData();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleInvite = async (e: FormEvent<HTMLFormElement>): Promise<void> => {
@@ -236,6 +243,7 @@ export function AdminDashboard(): React.ReactElement {
     <div className="p-8">
       <div className="max-w-7xl mx-auto">
         {['admin', 'super_admin'].includes(currentUserRole) && <LMSAIPolicyCard />}
+        {currentUserRole === 'super_admin' && <OperationsHealthCard />}
         <section aria-label="Dashboard users and statistics" aria-busy={loading}>
           {loading ? (
             <div className="flex items-center justify-center h-64" role="status" aria-label="Loading admin dashboard">

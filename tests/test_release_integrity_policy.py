@@ -36,13 +36,15 @@ def test_dependency_gates_audit_only_the_three_shipped_surfaces_and_block() -> N
         "\n  lint:\n", 1
     )[0]
     audit_prerequisites = "sudo apt-get install -y libcairo2-dev pkg-config"
-    strict_python_audit = "pip-audit --requirement requirements.txt --strict"
+    strict_runtime_audit = "pip-audit --requirement requirements.txt --strict"
+    strict_development_audit = "pip-audit --requirement requirements-dev.txt --strict"
 
     assert "pip-audit==2.10.0" in workflow
     assert audit_prerequisites in dependency_job
-    assert strict_python_audit in dependency_job
+    assert strict_runtime_audit in dependency_job
+    assert strict_development_audit in dependency_job
     assert dependency_job.index(audit_prerequisites) < dependency_job.index(
-        strict_python_audit
+        strict_runtime_audit
     )
     assert "npm --prefix cli audit --audit-level=high" in workflow
     assert "npm --prefix dashboard audit --audit-level=high" in workflow
@@ -89,6 +91,86 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
     assert runtime.count(openssl_upgrade) == 1
     assert "&& rm -f /var/log/apk.log" in runtime
     assert runtime.index(openssl_upgrade) < runtime.index("COPY --from=builder")
+
+
+def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
+    production = (ROOT / "Dockerfile").read_text()
+    development = (ROOT / "Dockerfile.dev").read_text()
+    smoke_command = "RUN python scripts/smoke_pa11y_runtime.py &&"
+    configure_command = "RUN python scripts/configure_pa11y_chromium.py"
+    verified_marker = (
+        "/tmp/pa11y-runtime-verified "
+        "/home/aelira/.local/share/aelira/pa11y-runtime-verified"
+    )
+
+    for dockerfile in (production, development):
+        assert dockerfile.count("npm install -g pa11y@9.0.1") == 1
+        assert "ENV PUPPETEER_SKIP_DOWNLOAD=true" in dockerfile
+        assert "ENV PA11Y_CONFIG_PATH=/app/config/pa11y.json" in dockerfile
+        assert (
+            "ENV PA11Y_CHROMIUM_PATH=/home/aelira/.local/bin/aelira-chromium"
+            in dockerfile
+        )
+        assert dockerfile.count("USER aelira") == 1
+        assert dockerfile.count(configure_command) == 1
+        assert dockerfile.count(smoke_command) == 1
+        assert dockerfile.count("FROM runtime AS pa11y-verified") == 1
+        assert dockerfile.count("FROM runtime AS final") == 1
+        assert dockerfile.count(verified_marker) == 1
+        assert dockerfile.index("USER aelira") < dockerfile.index(configure_command)
+        assert dockerfile.index(configure_command) < dockerfile.index(
+            "FROM runtime AS pa11y-verified"
+        )
+        assert dockerfile.index("FROM runtime AS pa11y-verified") < dockerfile.index(
+            smoke_command
+        )
+        assert dockerfile.index(smoke_command) < dockerfile.index(
+            "FROM runtime AS final"
+        )
+        assert dockerfile.index("FROM runtime AS final") < dockerfile.index(
+            verified_marker
+        )
+
+    config = (ROOT / "config" / "pa11y.json").read_text()
+    assert '"executablePath": "/home/aelira/.local/bin/aelira-chromium"' in config
+    assert '"--no-sandbox"' in config
+    assert '"--disable-setuid-sandbox"' in config
+    assert '"--disable-dev-shm-usage"' in config
+
+    smoke = (ROOT / "scripts" / "smoke_pa11y_runtime.py").read_text()
+    assert "os.geteuid() == 0" in smoke
+    assert "SUPPORTED_NODE_MAJORS = {20, 22, 24}" in smoke
+    assert 'EXPECTED_PA11Y_VERSION = "9.0.1"' in smoke
+    assert 'TemporaryDirectory(prefix="aelira-pa11y-smoke-")' in smoke
+    assert 'smoke_env["HOME"] = smoke_home' in smoke
+    assert 'smoke_env["XDG_CACHE_HOME"]' in smoke
+    assert 'smoke_env["XDG_CONFIG_HOME"]' in smoke
+    assert "env=smoke_env" in smoke
+    assert "ThreadingHTTPServer" in smoke
+    assert "scripts/fixtures/pa11y-smoke.html" in smoke
+
+
+def test_pa11y_evidence_claims_are_runtime_derived() -> None:
+    route = (ROOT / "src" / "api" / "education" / "web_scan_routes.py").read_text()
+    modes = (ROOT / "src" / "scanners" / "scan_mode.py").read_text()
+    dashboard = (
+        ROOT
+        / "dashboard"
+        / "src"
+        / "components"
+        / "results"
+        / "EngineComparisonStats.tsx"
+    ).read_text()
+
+    assert "if should_run_pa11y(mode):" in route
+    assert "if False" not in route
+    assert "estimate_coverage_for_engines(engines_used)" in route
+    assert '"comprehensive": 95.0' not in route
+    assert "estimated_coverage_pct = 90" not in dashboard
+    assert "~90% coverage" not in dashboard
+    assert "~95%+ coverage" not in dashboard
+    assert "90% coverage" not in modes
+    assert "95%+ coverage" not in modes
 
 
 def test_api_dockerfile_normalizes_content_level_build_nondeterminism() -> None:
@@ -457,20 +539,33 @@ def test_ci_is_read_only_and_runs_reproducibility_and_allowlist_gates() -> None:
 
 def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
     documentation = (ROOT / "docs" / "RELEASE_INTEGRITY.md").read_text()
-    requirements = [
+    runtime_requirements = [
         line.split("#", 1)[0].strip()
         for line in (ROOT / "requirements.txt").read_text().splitlines()
         if line.split("#", 1)[0].strip()
     ]
+    development_lines = [
+        line.split("#", 1)[0].strip()
+        for line in (ROOT / "requirements-dev.txt").read_text().splitlines()
+        if line.split("#", 1)[0].strip()
+    ]
+    development_requirements = [
+        line for line in development_lines if not line.startswith("-r ")
+    ]
 
-    assert len(requirements) == 155
+    assert development_lines[0] == "-r requirements.txt"
+    assert len(runtime_requirements) == 140
+    assert len(development_requirements) == 30
     assert all(
         re.fullmatch(r"[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^=\s]+", line)
-        for line in requirements
+        for line in runtime_requirements + development_requirements
     )
-    assert not any("--hash=" in line for line in requirements)
+    assert not any(
+        "--hash=" in line for line in runtime_requirements + development_requirements
+    )
     for required_text in (
         "requirements.txt",
+        "requirements-dev.txt",
         "cli/package-lock.json",
         "dashboard/package-lock.json",
         "CycloneDX JSON",
@@ -501,7 +596,8 @@ def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
         "linux/amd64",
         "linux/arm64",
         "`--pull=false`",
-        "155",
+        "140",
+        "30",
         "no hashes",
         "deferred",
         "Python 3.12, 3.13, and 3.14",

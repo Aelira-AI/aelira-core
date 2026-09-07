@@ -28,8 +28,8 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Adaptive Technologies",
 ]
-# The full pinned dependency set lives in requirements.txt (the deployment
-# lockfile); docs/DEPENDENCIES.md explains what each major dependency does.
+# The pinned runtime dependency set lives in requirements.txt; contributors
+# extend it through requirements-dev.txt. docs/DEPENDENCIES.md maps both sets.
 dynamic = ["dependencies"]
 
 [project.urls]
@@ -37,6 +37,9 @@ Homepage = "https://aelira.ai"
 Repository = "https://github.com/Aelira-AI/aelira-core"
 Issues = "https://github.com/Aelira-AI/aelira-core/issues"
 Changelog = "https://github.com/Aelira-AI/aelira-core/blob/main/CHANGELOG.md"
+
+[project.scripts]
+aelira-evidence-verify = "src.education.reports.evidence_package:main"
 
 [tool.black]
 target-version = ["py312"]

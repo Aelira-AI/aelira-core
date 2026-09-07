@@ -30,7 +30,6 @@ static examples = [
   ]
 static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL for PDF generation',
     }),
     format: Flags.string({
@@ -202,7 +201,7 @@ static flags = {
   private async generatePdfReport(
     results: any,
     pdfPath: string,
-    apiUrl: string,
+    apiUrl: string | undefined,
     target: string,
   ): Promise<void> {
     const s = spinner()

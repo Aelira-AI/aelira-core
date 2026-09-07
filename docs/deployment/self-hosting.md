@@ -24,6 +24,24 @@ What follows explains what the production file runs and verifies every
 image, service name, and environment variable against it,
 `src/config/settings.py`, and `.env.example`.
 
+## Configure the environment
+
+Start from the repository's canonical template and replace every placeholder
+in its **REQUIRED FOR PRODUCTION COMPOSE** section:
+
+```bash
+cp .env.example .env
+```
+
+The production file supplies `DATABASE_URL` and `REDIS_URL` with the bundled
+`postgres` and `redis` service names, and supplies `ENV=production`. Leave the
+direct host-development examples commented so they do not override that
+container topology. Operators using an external database, Redis instance, or
+another environment may explicitly set those variables in `.env`.
+
+Also set `PUBLIC_API_URL`, `PUBLIC_DASHBOARD_URL`, and `CORS_ORIGINS` to the
+public HTTPS origins served by your reverse proxy before starting the stack.
+
 ## Images
 
 Two Dockerfiles matter here:
@@ -32,8 +50,15 @@ Two Dockerfiles matter here:
   a builder stage installs Python dependencies from `requirements.txt` into a
   venv, then the runtime stage installs OS packages (Tesseract, Poppler,
   ffmpeg, the LaTeXML/TeX Live stack, Pandoc, Playwright's Chromium
-  dependencies, Node.js for Pa11y), copies the venv, runs as a non-root
-  `aelira` user, and starts via `entrypoint.sh`. `entrypoint.sh` runs
+  dependencies, and Node.js for Pa11y), copies the venv, runs as a non-root
+  `aelira` user, and starts via `entrypoint.sh`. Both the production and
+  development images pin Pa11y 9.0.1, reject Node majors outside 20, 22, and
+  24, and prevent Puppeteer from downloading a second browser. Pa11y uses the
+  Playwright-managed Chromium through `/home/aelira/.local/bin/aelira-chromium`
+  and the checked-in `config/pa11y.json` launch settings. Each image build
+  runs `scripts/smoke_pa11y_runtime.py` as `aelira` against a local HTML
+  fixture; the build fails unless Pa11y launches Chromium and returns JSON.
+  `entrypoint.sh` runs
   `alembic upgrade head` and fails closed if migration fails; only after a
   successful migration does it exec `uvicorn` with
   `--workers "${UVICORN_WORKERS:-2}"`. Set `UVICORN_WORKERS` to match the
@@ -235,9 +260,9 @@ explicitly classified as internal, derived, legacy, or Compose-only.
 
 | Variable | Purpose | Notes |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string | Required. `Settings` refuses to start if empty, or if it matches a known dev/placeholder pattern (`change_me`, `password@localhost`, etc. — see `validate_database_url`). |
-| `REDIS_URL` | Redis connection string | Defaults to `redis://localhost:6379/0` if unset — set it explicitly for anything other than same-host Redis. |
-| `ENV` | `production` | Must be one of `development`, `staging`, `production`, `test` (`validate_env`) — a typo like `prod` is rejected rather than silently falling through to dev behaviour. |
+| `DATABASE_URL` | Postgres connection string | Production Compose derives a service-local URL from `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. Set it explicitly only for an external database or direct host development. `Settings` refuses empty and known unsafe values (`change_me`, `password@localhost`, etc. — see `validate_database_url`). |
+| `REDIS_URL` | Redis connection string | Production Compose defaults to `redis://redis:6379/0`. Direct host development defaults to `redis://localhost:6379/0`; set it explicitly for any other topology. |
+| `ENV` | Runtime mode | Production Compose defaults to `production`; direct host development defaults to `development`. Must be one of `development`, `staging`, `production`, `test` (`validate_env`). |
 | `PUBLIC_API_URL` | Where the API is publicly reachable | Defaults to `http://localhost:8000`. Used to build absolute URLs (OAuth callbacks, links in emails) rather than hardcoding a vendor domain. |
 | `PUBLIC_DASHBOARD_URL` | Where the dashboard is publicly reachable | Defaults to `http://localhost:5173`. |
 | `CORS_ORIGINS` | Origins allowed to call the API | **Comma-separated** (`Settings` does `.split(",")` on this — a plain comma-separated list like `https://dashboard.example.org,https://scans.example.org`, not a JSON array). With no localhost fallback outside `development`/`test`, so a production deployment that leaves this unset blocks its own dashboard. |

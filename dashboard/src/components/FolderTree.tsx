@@ -238,7 +238,13 @@ export function FolderTree({ provider, onClose, onSave }: FolderTreeProps): Reac
   }, [provider]);
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchData();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchData]);
 
   const handleToggleSelect = (folder: SelectedFolder): void => {

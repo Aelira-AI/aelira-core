@@ -3,6 +3,7 @@ import { Args, Command, Flags } from '@oclif/core'
 import pc from 'picocolors'
 
 import { ApiClient } from '../../utils/api-client.js'
+import { getApiUrl } from '../../utils/config.js'
 
 interface LmsProvider {
   bodyField: string
@@ -81,7 +82,6 @@ static flags = {
       description: 'API key for authentication (optional in development)',
     }),
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     'instance-url': Flags.string({
@@ -120,10 +120,11 @@ static flags = {
     s.start(`Connecting to ${provider}...`)
 
     try {
-      const api = new ApiClient({ apiKey: flags['api-key'], apiUrl: flags['api-url'] })
+      const apiUrl = await getApiUrl(flags['api-url'])
+      const api = new ApiClient({ apiKey: flags['api-key'], apiUrl })
 
       const body: any = {
-        redirect_uri: `${flags['api-url']}/${provider}/callback`,
+        redirect_uri: `${apiUrl}/${provider}/callback`,
       }
 
       if (lms && instanceUrl) {

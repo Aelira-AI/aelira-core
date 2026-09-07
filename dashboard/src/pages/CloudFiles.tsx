@@ -131,7 +131,13 @@ export function CloudFiles(): React.ReactElement {
   }, [providerFilter]);
 
   useEffect(() => {
-    fetchFiles();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchFiles();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchFiles]);
 
   if (loading) {
