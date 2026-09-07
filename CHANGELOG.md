@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-09-08
+
+### Security
+
+- Production images exclude development dependency trees, upgrade vulnerable runtime packages, and verify the final installed package state before publication.
+- Review evidence exports and versioned evidence packages remain tenant-scoped, validate source and output identity, and fail closed on stale, missing, altered, or cross-tenant artifacts.
+- Visual-analysis proposals are bound to exact source bytes and durable attempts; unsupported or unverifiable outputs remain review-required instead of being presented as completed remediation.
+
+### Added
+
+- Reviewers can create owned, expiring deferrals, download review evidence, and verify portable evidence packages offline.
+- Durable image and chart analysis records expose bounded lifecycle, retry, provenance, and human-review states.
+- Administrators can inspect worker and queue health from the dashboard, while the CLI can emit SARIF 2.1 for CI systems.
+- A fixture-backed PDF acceptance corpus exercises representative scan and remediation behavior.
+
+### Fixed
+
+- Local uploaded documents are persisted before durable enqueue, preventing `local_scan_input_unavailable` failures after the request ends.
+- Pa11y runs inside production API and worker images with the packaged Chromium launcher and checked-in launch policy.
+- The dashboard shows each PDF issue location once, preserves scan actions at narrow widths, and reports aggregate remediation outcomes without inventing unavailable per-issue attribution.
+- Production Compose accepts the documented environment format, serves dashboard API traffic through a same-origin proxy, and derives public links and email branding from deployment settings.
+- PDF rollback comparisons are serialization-stable, invalid PDF role-map self-mappings are removed, and ScanFix JSON preserves genuine null outcomes.
+
+### Changed
+
+- Runtime and development Python dependencies are separated, with release checks covering both fully pinned sets.
+- CLI network commands consistently prefer explicit flags, then `AELIRA_API_URL`, then the active profile, then localhost.
+- Release actions use Node 24-compatible revisions and artifact-producing jobs receive only the required metadata permission.
+- CLI, dashboard, Python, GitHub Actions, OCRmyPDF, and transitive dependencies are refreshed to their reviewed v0.9.8 set.
+
+### Operator action required
+
+- Back up PostgreSQL and verify the restore path. Drain active work, then run `alembic upgrade head` and confirm the single head is `20260905_visual_analysis`.
+- Reconcile `.env` with the new production Compose template. Replace every required secret placeholder and set `PUBLIC_API_URL`, `PUBLIC_DASHBOARD_URL`, and `CORS_ORIGINS` for the public deployment.
+- Deploy API, worker, and dashboard from the same 0.9.8 release. Confirm API readiness, worker health, dashboard health, same-origin `/api/live`, queue age, and failed or quarantined jobs before resuming intake.
+- Review active deferrals for an owner and expiry. Visual-analysis and remediation outputs that remain manual or review-required must not be promoted as fixed.
+- Preserve every v0.9.7 operator action below, including database backup, provider-key, proxy, cookie, LMS, and human-approval requirements.
+
 ## [0.9.7] - 2026-08-31
 
 ### Security
