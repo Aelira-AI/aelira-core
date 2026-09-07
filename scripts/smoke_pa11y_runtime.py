@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -63,13 +64,22 @@ def main() -> None:
     server_thread.start()
     try:
         url = f"http://127.0.0.1:{server.server_port}/{fixture.name}"
-        completed = subprocess.run(
-            ["pa11y", "--config", str(config_path), "--reporter", "json", url],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        # Chromium writes host-specific caches during launch. Keep them in a
+        # disposable home so this build-time proof cannot perturb the final
+        # image layer or break reproducible builds.
+        with tempfile.TemporaryDirectory(prefix="aelira-pa11y-smoke-") as smoke_home:
+            smoke_env = os.environ.copy()
+            smoke_env["HOME"] = smoke_home
+            smoke_env["XDG_CACHE_HOME"] = str(Path(smoke_home) / "cache")
+            smoke_env["XDG_CONFIG_HOME"] = str(Path(smoke_home) / "config")
+            completed = subprocess.run(
+                ["pa11y", "--config", str(config_path), "--reporter", "json", url],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=smoke_env,
+            )
         if completed.returncode not in {0, 2}:
             raise RuntimeError(
                 f"Pa11y browser launch failed ({completed.returncode}): "
