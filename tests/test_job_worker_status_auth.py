@@ -1,5 +1,6 @@
 """Authorization boundary tests for operational worker status."""
 
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -55,6 +56,8 @@ def test_worker_status_allows_only_super_admin():
     response = TestClient(app).get("/api/jobs/worker-status")
     assert response.status_code == 200
     body = response.json()
+    generated_at = datetime.fromisoformat(body["generated_at"])
+    assert generated_at.tzinfo is not None
     assert body["progress"] == {
         "jobs_claimed": 0,
         "jobs_completed": 0,
@@ -94,6 +97,90 @@ def test_worker_status_allows_only_super_admin():
         "credential_id",
         "file_name",
     } & keys(body)
+
+
+def test_worker_status_declares_a_closed_bounded_response_contract():
+    openapi = app.openapi()
+    response_schema = openapi["paths"]["/api/jobs/worker-status"]["get"]["responses"][
+        "200"
+    ]["content"]["application/json"]["schema"]
+    assert response_schema["$ref"].endswith("/WorkerStatusResponse")
+
+    schema = openapi["components"]["schemas"]["WorkerStatusResponse"]
+    assert set(schema["required"]) == {
+        "generated_at",
+        "status",
+        "health_state",
+        "queue",
+        "workers",
+        "progress",
+        "maintenance",
+        "weekly_summary_scheduler",
+        "reconciliation",
+        "orphans",
+    }
+    assert schema["properties"]["status"]["enum"] == ["healthy", "degraded"]
+    assert set(schema["properties"]["health_state"]["enum"]) == {
+        "worker_unavailable",
+        "expired_lease",
+        "stuck_processing",
+        "healthy_processing",
+        "stuck_runnable_backlog",
+        "healthy_advancing",
+        "healthy_idle",
+    }
+
+    expected_nested_fields = {
+        "WorkerQueueStatus": {"pending", "processing", "completed", "failed"},
+        "WorkerLivenessStatus": {
+            "live",
+            "draining",
+            "latest_heartbeat_at",
+            "latest_heartbeat_age_seconds",
+        },
+        "WorkerProgressStatus": {
+            "jobs_claimed",
+            "jobs_completed",
+            "jobs_failed",
+            "oldest_pending_created_at",
+            "oldest_pending_age_seconds",
+            "oldest_processing_heartbeat_at",
+            "oldest_running_job_age_seconds",
+            "runnable_pending",
+            "expired_processing",
+            "stalled_processing",
+            "latest_progress_at",
+            "latest_progress_age_seconds",
+        },
+        "WorkerMaintenanceStatus": {"artifact_cleanup_due"},
+        "WeeklySummarySchedulerStatus": {
+            "state",
+            "last_success_at",
+            "last_success_age_seconds",
+            "last_error_code",
+        },
+        "WorkerReconciliationStatus": {
+            "required",
+            "manual_required",
+            "failed_manual",
+        },
+        "WorkerOrphanStatus": {
+            "pending_move",
+            "quarantined",
+            "restore_required",
+            "reviewed",
+            "purging",
+        },
+    }
+    for model_name, required_fields in expected_nested_fields.items():
+        assert set(openapi["components"]["schemas"][model_name]["required"]) == (
+            required_fields
+        )
+
+    queue_properties = openapi["components"]["schemas"]["WorkerQueueStatus"][
+        "properties"
+    ]
+    assert all(field["minimum"] == 0 for field in queue_properties.values())
 
 
 @pytest.mark.parametrize(

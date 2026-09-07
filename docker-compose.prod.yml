@@ -1,6 +1,6 @@
 # Aelira Core — production self-hosting
 #
-#   cp .env.example .env    # set the REQUIRED section at minimum
+#   cp .env.example .env    # set the REQUIRED FOR PRODUCTION COMPOSE section
 #   docker compose -f docker-compose.prod.yml up -d
 #
 # With fully local AI (documents never leave this host):
@@ -64,6 +64,7 @@ services:
       - path: .env
         required: true
     environment: &api-environment
+      ENV: ${ENV:-production}
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-aelira}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aelira}}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SESSION_REFRESH_GRACE_SECONDS: ${SESSION_REFRESH_GRACE_SECONDS:-10}

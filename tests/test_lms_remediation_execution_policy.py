@@ -2074,10 +2074,10 @@ async def test_generic_lms_image_injects_alt_text_client_without_legacy(tmp_path
             principal=_principal(),
         )
 
-    assert result["remediated_alt_text"] == "A chart"
+    assert result["proposal_alt_text"] == "A chart"
     assert scan.status == ScanStatus.COMPLETED
     assert scan.metadata == {"preserved": True}
-    assert scan.remediation_outcome == "completed"
+    assert scan.remediation_outcome == "manual_required"
     assert not hasattr(scan, "remediation_status")
     assert bind.call_args.kwargs["purpose"] == "alt_text"
     assert generator_class.call_args.kwargs["lms_client"].client is client
@@ -3906,7 +3906,7 @@ async def test_generic_image_without_valid_alt_or_explicit_decorative_is_manual(
         "message": "manual_required",
         "fixed_count": 0,
         "manual_count": 1,
-        "remediated_alt_text": "",
+        "proposal_alt_text": "",
         "is_decorative": False,
     }
     assert scan.status == ScanStatus.FAILED

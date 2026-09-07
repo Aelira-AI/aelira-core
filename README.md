@@ -112,7 +112,7 @@ python scripts/generate_wcag_embeddings.py
 
 Aelira Core is designed to run entirely on your own infrastructure. It needs PostgreSQL, Redis, and optionally Ollama for local inference.
 
-Two settings point the system at your deployment, and everything user-facing derives from them:
+Three settings point the system at your deployment, and everything user-facing derives from them:
 
 ```bash
 PUBLIC_API_URL=https://accessibility-api.your-university.edu
@@ -123,9 +123,13 @@ CORS_ORIGINS=https://accessibility.your-university.edu
 The production compose file runs the full stack (API, dashboard, PostgreSQL, Redis, optional Ollama) from the published images:
 
 ```bash
-cp .env.example .env   # set the REQUIRED section
+cp .env.example .env   # replace the production secret placeholders
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+Production Compose supplies service-local PostgreSQL and Redis URLs and
+`ENV=production` unless you explicitly override them. The commented localhost
+examples in `.env.example` are for running the API directly on the host.
 
 Full configuration is documented in [`.env.example`](.env.example) — reconciled against every variable the code reads — and the deployment guide is in [`docs/`](docs/).
 
@@ -185,10 +189,19 @@ aelira --help
 
 It lives in [`cli/`](cli/) if you prefer to run it from source (`npm ci && npm run build && ./bin/run.js`).
 
-The current document scan and remediation commands take `--api-url` with a command-local default of `http://localhost:8000`, matching the quickstart. Although `aelira config set api-url <url>` stores a profile value, these command sources currently use their own flag default rather than that stored value. Pass `--api-url` on each invocation for another deployment:
+Network commands resolve the API endpoint consistently. The precedence order is:
+
+1. An explicit `--api-url`
+2. `AELIRA_API_URL`
+3. The active profile's `apiUrl`, set with `aelira config set api-url <url>`
+4. `http://localhost:8000`
+
+Configure a self-hosted deployment once, or override it for a single command:
 
 ```bash
-./bin/run.js report analytics --api-url http://localhost:8000
+aelira config set api-url https://api.example.edu
+aelira report analytics
+aelira report analytics --api-url http://localhost:8000
 ```
 
 ## What is not here

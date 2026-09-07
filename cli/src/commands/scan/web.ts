@@ -21,7 +21,6 @@ static examples = [
   ]
 static flags = {
     'api-url': Flags.string({
-      default: 'http://localhost:8000',
       description: 'Aelira API URL',
     }),
     batch: Flags.boolean({

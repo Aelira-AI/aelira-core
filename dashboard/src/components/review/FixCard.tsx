@@ -7,6 +7,7 @@ import {
   Pencil,
   CheckCircle,
   XCircle,
+  CalendarClock,
 } from 'lucide-react';
 import { ConfidenceBadge } from './ConfidenceBadge';
 
@@ -26,12 +27,25 @@ export interface Fix {
   page_number: number | null;
   original_content?: string;
   fixed_content?: string;
+  deferral?: ReviewDeferral | null;
+}
+
+export interface ReviewDeferral {
+  lifecycle: 'active' | 'expired' | 'revoked' | 'resolved';
+  owner: string;
+  reason: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+  closed_at?: string | null;
 }
 
 interface FixCardProps {
   fix: Fix;
   onApprove: (fixId: string, editedContent?: string, notes?: string) => void;
   onReject: (fixId: string, notes?: string) => void;
+  onDefer: (fixId: string, owner: string, reason: string, expiresAt: string) => void;
+  onRevokeDeferral: (fixId: string) => void;
 }
 
 // ============================================================================
@@ -117,15 +131,36 @@ function getReviewStatusDisplay(status: string): { label: string; icon: React.Re
 // Component
 // ============================================================================
 
-export function FixCard({ fix, onApprove, onReject }: FixCardProps): React.ReactElement {
+function localDateTimeValue(value?: string): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+export function FixCard({
+  fix,
+  onApprove,
+  onReject,
+  onDefer,
+  onRevokeDeferral,
+}: FixCardProps): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editedContent, setEditedContent] = useState(fix.fixed_content || '');
   const [reviewNotes, setReviewNotes] = useState('');
+  const [deferring, setDeferring] = useState(false);
+  const [deferralOwner, setDeferralOwner] = useState(fix.deferral?.owner ?? '');
+  const [deferralReason, setDeferralReason] = useState(fix.deferral?.reason ?? '');
+  const [deferralExpiry, setDeferralExpiry] = useState(
+    localDateTimeValue(fix.deferral?.expires_at),
+  );
 
   const categoryStyle = getCategoryColor(fix.category);
   const alreadyReviewed = fix.review_status === 'approved' || fix.review_status === 'rejected' || fix.review_status === 'edited';
   const reviewDisplay = getReviewStatusDisplay(fix.review_status);
+  const openDeferral = fix.deferral?.lifecycle === 'active' || fix.deferral?.lifecycle === 'expired';
 
   const handleApprove = (): void => {
     onApprove(fix.id, editing ? editedContent : undefined, reviewNotes || undefined);
@@ -136,6 +171,17 @@ export function FixCard({ fix, onApprove, onReject }: FixCardProps): React.React
   const handleReject = (): void => {
     onReject(fix.id, reviewNotes || undefined);
     setReviewNotes('');
+  };
+
+  const handleDefer = (): void => {
+    if (!deferralOwner.trim() || !deferralReason.trim() || !deferralExpiry) return;
+    onDefer(
+      fix.id,
+      deferralOwner.trim(),
+      deferralReason.trim(),
+      new Date(deferralExpiry).toISOString(),
+    );
+    setDeferring(false);
   };
 
   return (
@@ -180,6 +226,12 @@ export function FixCard({ fix, onApprove, onReject }: FixCardProps): React.React
             <span className={`flex items-center gap-1 text-xs ${reviewDisplay.color}`}>
               {reviewDisplay.icon}
               {reviewDisplay.label}
+            </span>
+          )}
+          {fix.deferral && (
+            <span className="flex items-center gap-1 text-xs text-[var(--feature-warning-content)]">
+              <CalendarClock className="w-4 h-4" aria-hidden="true" />
+              {fix.deferral.lifecycle.replace('_', ' ')}
             </span>
           )}
 
@@ -238,6 +290,97 @@ export function FixCard({ fix, onApprove, onReject }: FixCardProps): React.React
                 placeholder="Add notes about this fix..."
                 aria-label="Review notes for this fix"
               />
+            </div>
+          )}
+
+          {!alreadyReviewed && (
+            <div className="rounded border border-[var(--feature-warning-content)]/40 bg-[var(--feature-warning-surface)] p-3 space-y-3">
+              <div>
+                <p className="text-sm font-medium text-[var(--feature-warning-content)]">
+                  {fix.deferral
+                    ? `Deferral: ${fix.deferral.lifecycle.replace('_', ' ')}`
+                    : 'Controlled deferral'}
+                </p>
+                <p className="text-xs text-[var(--content-secondary)] mt-1">
+                  A deferral is an operational decision. It leaves the finding unresolved; it is not remediation or conformance evidence.
+                </p>
+              </div>
+
+              {fix.deferral && !deferring && (
+                <dl className="grid grid-cols-1 gap-1 text-xs text-[var(--content-secondary)] sm:grid-cols-2">
+                  <div><dt className="font-medium inline">Owner:</dt> <dd className="inline">{fix.deferral.owner}</dd></div>
+                  <div><dt className="font-medium inline">Review date:</dt> <dd className="inline">{new Date(fix.deferral.expires_at).toLocaleString()}</dd></div>
+                  <div className="sm:col-span-2"><dt className="font-medium inline">Reason:</dt> <dd className="inline">{fix.deferral.reason}</dd></div>
+                </dl>
+              )}
+
+              {deferring ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="text-xs font-medium text-[var(--content-secondary)]">
+                    Owner
+                    <input
+                      value={deferralOwner}
+                      onChange={(event) => setDeferralOwner(event.target.value)}
+                      className="input mt-1 w-full text-sm"
+                      maxLength={255}
+                      required
+                    />
+                  </label>
+                  <label className="text-xs font-medium text-[var(--content-secondary)]">
+                    Expiry / review date
+                    <input
+                      type="datetime-local"
+                      value={deferralExpiry}
+                      onChange={(event) => setDeferralExpiry(event.target.value)}
+                      className="input mt-1 w-full text-sm"
+                      required
+                    />
+                  </label>
+                  <label className="text-xs font-medium text-[var(--content-secondary)] sm:col-span-2">
+                    Reason
+                    <textarea
+                      value={deferralReason}
+                      onChange={(event) => setDeferralReason(event.target.value)}
+                      className="input mt-1 h-16 w-full text-sm"
+                      maxLength={4000}
+                      required
+                    />
+                  </label>
+                  <div className="flex gap-2 sm:col-span-2">
+                    <button
+                      onClick={handleDefer}
+                      disabled={!deferralOwner.trim() || !deferralReason.trim() || !deferralExpiry}
+                      className="btn-primary px-3 py-1.5 text-sm disabled:opacity-50"
+                    >
+                      Save deferral
+                    </button>
+                    <button
+                      onClick={() => setDeferring(false)}
+                      className="btn-secondary px-3 py-1.5 text-sm"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setDeferring(true)}
+                    className="btn-secondary flex items-center gap-1 px-3 py-1.5 text-sm"
+                  >
+                    <CalendarClock className="w-4 h-4" aria-hidden="true" />
+                    {openDeferral ? 'Change deferral' : 'Defer'}
+                  </button>
+                  {openDeferral && (
+                    <button
+                      onClick={() => onRevokeDeferral(fix.id)}
+                      className="rounded border border-[var(--feature-danger-content)] px-3 py-1.5 text-sm text-[var(--feature-danger-content)] hover:bg-[var(--feature-danger-surface)]"
+                    >
+                      Revoke deferral
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

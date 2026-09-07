@@ -1053,7 +1053,7 @@ aelira history --filter "syllabus"
 
 ### `aelira ci` - CI/CD Mode
 
-Run scans in CI/CD pipelines with proper exit codes and JUnit output.
+Run scans in CI/CD pipelines with proper exit codes and console, JSON, JUnit, or SARIF 2.1.0 output.
 
 **Usage:**
 ```bash
@@ -1062,9 +1062,10 @@ aelira ci <target> [options]
 
 **Flags:**
 - `--threshold <score>` - Minimum passing score (default: 80)
-- `--junit <file>` - Output JUnit XML report
+- `--format <console|json|junit|sarif>` - Report format (default: console)
+- `--output <file>` - Output path for JSON, JUnit, or SARIF reports
 - `--badge <file>` - Generate status badge
-- `--fail-on <level>` - Fail on issue level (critical, high, medium, low)
+- `--fail-on <level>` - Fail on issue severity (critical, serious, moderate, minor)
 
 **Examples:**
 ```bash
@@ -1072,11 +1073,16 @@ aelira ci <target> [options]
 aelira ci https://example.com --threshold 90
 
 # With JUnit output for CI
-aelira ci ./build/ --junit results.xml --fail-on high
+aelira ci ./build/ --format junit --output results.xml --fail-on serious
+
+# With SARIF 2.1.0 output for code scanning
+aelira ci ./build/ --format sarif --output results.sarif
 
 # Generate badge
 aelira ci https://example.com --badge badge.svg
 ```
+
+SARIF locations are emitted only for targets inside the current repository when an axe node's exact HTML appears once in the scanned source file. Remote pages and ambiguous or unmatched nodes stay in the results without a guessed file path or region.
 
 **Exit Codes:**
 - `0` - Pass (score >= threshold)
@@ -1085,11 +1091,28 @@ aelira ci https://example.com --badge badge.svg
 
 **GitHub Actions Example:**
 ```yaml
-- name: Accessibility Check
-  run: |
-    npm install -g @aelira/cli
-    aelira ci ./dist/ --threshold 85 --junit a11y-results.xml
+permissions:
+  contents: read
+  security-events: write
+
+steps:
+  - uses: actions/checkout@v6
+  - name: Install Aelira CLI
+    run: npm install -g @aelira/cli
+  - name: Accessibility check
+    id: aelira
+    continue-on-error: true
+    run: aelira ci ./dist/ --threshold 85 --format sarif --output aelira.sarif
+  - name: Upload SARIF
+    uses: github/codeql-action/upload-sarif@v4
+    with:
+      sarif_file: aelira.sarif
+  - name: Enforce Aelira result
+    if: steps.aelira.outcome == 'failure'
+    run: exit 1
 ```
+
+The upload step is separate by design: Aelira writes the local report and never sends it to a vendor. See [GitHub's SARIF upload documentation](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file) for repository eligibility and workflow details.
 
 ---
 
