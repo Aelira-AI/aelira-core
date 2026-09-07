@@ -112,7 +112,13 @@ export function DocumentReviewPage(): React.ReactElement {
   }, [scanId]);
 
   useEffect(() => {
-    fetchReview();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchReview();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchReview]);
 
   const summary = useMemo(
