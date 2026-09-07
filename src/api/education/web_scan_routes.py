@@ -17,6 +17,10 @@ from ...education.cvd_metrics import serialize_cvd_analysis
 from ...education.web_scanner import WebScanner
 from ...middleware.quota import require_feature
 from ...scanners.scan_mode import ScanMode
+from ...scanners.engine_evidence import (
+    estimate_coverage_for_engines,
+    should_run_pa11y,
+)
 from ._shared import (
     MAX_SCANFIX_ISSUES,
     _stable_hash,
@@ -539,10 +543,9 @@ def process_web_scan_background(
         merged_results = None
         engines_used = ["axe-core"]
 
-        # Run Pa11y for comprehensive/deep modes
-        # DISABLED: Pa11y fails to launch browser when running as root without --no-sandbox
-        # Playwright + axe-core provides comprehensive results already
-        if False and mode in ("comprehensive", "deep"):
+        # Run Pa11y for comprehensive/deep modes. Container builds prove the
+        # configured browser launch before this runtime path can ship.
+        if should_run_pa11y(mode):
             logger.info(f"[BACKGROUND] Running Pa11y scan (mode={mode})")
             try:
                 from ...scanners.pa11y_scanner import Pa11yScanner
@@ -694,11 +697,8 @@ def process_web_scan_background(
             f"[BACKGROUND] Collected {len(all_issues)} issues from {result.pages_scanned} pages"
         )
 
-        # Calculate coverage percentage based on mode
-
-        coverage_pct = {"quick": 90.0, "comprehensive": 95.0, "deep": 98.0}.get(
-            mode, 90.0
-        )
+        # Derive the bounded estimate only from engines with persisted results.
+        coverage_pct = estimate_coverage_for_engines(engines_used)
 
         # Collect image scan results from all pages
         image_results = []

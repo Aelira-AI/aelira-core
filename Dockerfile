@@ -29,7 +29,7 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir piper-tts==1.6.0
 
 # Stage 2: Runtime
-FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
 
 ARG SOURCE_DATE_EPOCH=0
 
@@ -110,6 +110,7 @@ COPY . .
 
 # Install Pa11y globally for multi-engine accessibility testing (as root)
 # Pa11y can run both axe-core and HTML_CodeSniffer engines
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 RUN npm install -g pa11y@9.0.1 && \
     npm cache clean --force && \
     rm -rf /root/.npm
@@ -133,10 +134,13 @@ USER aelira
 # Set HOME and Playwright environment variables
 ENV HOME=/home/aelira
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/aelira/.cache/ms-playwright
+ENV PA11Y_CONFIG_PATH=/app/config/pa11y.json
+ENV PA11Y_CHROMIUM_PATH=/home/aelira/.local/bin/aelira-chromium
 
 # Install Playwright Chromium browser (baked into image)
 # This runs as 'aelira' user and installs to /home/aelira/.cache/ms-playwright
 RUN playwright install chromium
+RUN python scripts/configure_pa11y_chromium.py
 
 # Expose port
 EXPOSE 8000
@@ -148,3 +152,13 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Entrypoint runs alembic migrations then starts the configurable API workers.
 # Long-running scans execute in the separate durable worker service.
 ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Prove the browser runtime in a disposable stage. The shipped image starts
+# from the clean pre-smoke runtime so Chromium state cannot affect its bytes.
+FROM runtime AS pa11y-verified
+RUN python scripts/smoke_pa11y_runtime.py && \
+    printf 'verified\n' > /tmp/pa11y-runtime-verified
+
+FROM runtime AS final
+COPY --from=pa11y-verified --chown=aelira:aelira \
+    /tmp/pa11y-runtime-verified /home/aelira/.local/share/aelira/pa11y-runtime-verified

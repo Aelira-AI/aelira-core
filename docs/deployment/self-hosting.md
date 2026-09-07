@@ -50,8 +50,15 @@ Two Dockerfiles matter here:
   a builder stage installs Python dependencies from `requirements.txt` into a
   venv, then the runtime stage installs OS packages (Tesseract, Poppler,
   ffmpeg, the LaTeXML/TeX Live stack, Pandoc, Playwright's Chromium
-  dependencies, Node.js for Pa11y), copies the venv, runs as a non-root
-  `aelira` user, and starts via `entrypoint.sh`. `entrypoint.sh` runs
+  dependencies, and Node.js for Pa11y), copies the venv, runs as a non-root
+  `aelira` user, and starts via `entrypoint.sh`. Both the production and
+  development images pin Pa11y 9.0.1, reject Node majors outside 20, 22, and
+  24, and prevent Puppeteer from downloading a second browser. Pa11y uses the
+  Playwright-managed Chromium through `/home/aelira/.local/bin/aelira-chromium`
+  and the checked-in `config/pa11y.json` launch settings. Each image build
+  runs `scripts/smoke_pa11y_runtime.py` as `aelira` against a local HTML
+  fixture; the build fails unless Pa11y launches Chromium and returns JSON.
+  `entrypoint.sh` runs
   `alembic upgrade head` and fails closed if migration fails; only after a
   successful migration does it exec `uvicorn` with
   `--workers "${UVICORN_WORKERS:-2}"`. Set `UVICORN_WORKERS` to match the

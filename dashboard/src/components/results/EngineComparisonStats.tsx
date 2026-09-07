@@ -24,7 +24,6 @@ interface EngineComparisonStatsProps {
 interface ModeInfo {
   label: string;
   color: string;
-  desc: string;
 }
 
 // ============================================================================
@@ -59,7 +58,7 @@ export function EngineComparisonStats({
     pa11y_issues = 0,
     issues_found_by_both = 0,
     unique_issues = 0,
-    estimated_coverage_pct = 90,
+    estimated_coverage_pct,
     axe_duration_ms,
     pa11y_duration_ms,
   } = scanResult;
@@ -75,13 +74,13 @@ export function EngineComparisonStats({
 
   // Mode descriptions
   const modeInfoMap: Record<string, ModeInfo> = {
-    quick: { label: 'Quick Scan', color: 'blue', desc: '~90% coverage' },
-    comprehensive: { label: 'Comprehensive Scan', color: 'purple', desc: '~95%+ coverage' },
-    deep: { label: 'Deep Scan', color: 'indigo', desc: 'Maximum confidence' },
+    quick: { label: 'Quick Scan', color: 'blue' },
+    comprehensive: { label: 'Comprehensive Scan', color: 'purple' },
+    deep: { label: 'Deep Scan', color: 'indigo' },
   };
   const modeInfo: ModeInfo = scan_mode
-    ? modeInfoMap[scan_mode] || { label: 'Standard Scan', color: 'gray', desc: 'Multi-engine' }
-    : { label: 'Standard Scan', color: 'gray', desc: 'Multi-engine' };
+    ? modeInfoMap[scan_mode] || { label: 'Standard Scan', color: 'gray' }
+    : { label: 'Standard Scan', color: 'gray' };
 
   return (
     <div className="card bg-[var(--surface-secondary)] border-[var(--border-primary)]">
@@ -92,15 +91,17 @@ export function EngineComparisonStats({
             Multi-Engine Scan Results
           </h3>
           <p className="text-sm text-secondary mt-1">
-            {modeInfo.label} • {modeInfo.desc}
+            {modeInfo.label} • {engines_used.length} completed engines
           </p>
         </div>
-        <div className="text-right">
-          <div className="text-3xl font-bold text-primary">
-            {Math.round(estimated_coverage_pct)}%
+        {typeof estimated_coverage_pct === 'number' && (
+          <div className="text-right">
+            <div className="text-3xl font-bold text-primary">
+              {Math.round(estimated_coverage_pct)}%
+            </div>
+            <div className="text-xs text-secondary">Estimated WCAG Coverage</div>
           </div>
-          <div className="text-xs text-secondary">WCAG Coverage</div>
-        </div>
+        )}
       </div>
 
       {/* Engine Stats Grid */}
@@ -198,15 +199,6 @@ export function EngineComparisonStats({
         </div>
       )}
 
-      {/* Mode Upgrade Suggestion */}
-      {scan_mode === 'quick' && (
-        <div className="mt-4 p-3 bg-[var(--feature-info-surface)] rounded-lg border border-[var(--border-primary)]">
-          <p className="text-sm text-[var(--feature-info-content)]">
-            <strong>Tip:</strong> Try <strong>Comprehensive mode</strong> to run both axe-core and
-            Pa11y for ~95%+ WCAG coverage.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

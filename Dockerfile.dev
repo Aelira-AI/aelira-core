@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.14-slim AS runtime
 
 # Install system dependencies + LaTeXML stack + Node.js for Pa11y
 RUN apt-get update && apt-get install -y \
@@ -49,7 +49,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Pa11y globally for multi-engine accessibility scanning
-RUN npm install -g pa11y
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+RUN npm install -g pa11y@9.0.1
 
 # Set working directory
 WORKDIR /app
@@ -73,9 +74,6 @@ RUN pip install --no-cache-dir \
 # Install Piper TTS for accessibility audio generation
 RUN pip install --no-cache-dir piper-tts
 
-# Install Playwright browsers
-RUN playwright install chromium
-
 # Download Piper voice model for TTS
 RUN mkdir -p /app/data/piper-voices && \
     curl -L -o /app/data/piper-voices/en_US-lessac-medium.onnx \
@@ -86,8 +84,33 @@ RUN mkdir -p /app/data/piper-voices && \
 # Copy source code
 COPY . .
 
+# Match the production runtime user and prove Pa11y can launch its browser.
+RUN useradd -m -u 1000 aelira && \
+    chown -R aelira:aelira /app && \
+    mkdir -p /home/aelira/.cache && \
+    chown -R aelira:aelira /home/aelira
+USER aelira
+
+ENV HOME=/home/aelira
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/aelira/.cache/ms-playwright
+ENV PA11Y_CONFIG_PATH=/app/config/pa11y.json
+ENV PA11Y_CHROMIUM_PATH=/home/aelira/.local/bin/aelira-chromium
+
+RUN playwright install chromium
+RUN python scripts/configure_pa11y_chromium.py
+
 # Expose port
 EXPOSE 8000
 
 # Development command (overridden in docker-compose)
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--no-proxy-headers"]
+
+# Prove the browser runtime without carrying its writable state into the
+# development image.
+FROM runtime AS pa11y-verified
+RUN python scripts/smoke_pa11y_runtime.py && \
+    printf 'verified\n' > /tmp/pa11y-runtime-verified
+
+FROM runtime AS final
+COPY --from=pa11y-verified --chown=aelira:aelira \
+    /tmp/pa11y-runtime-verified /home/aelira/.local/share/aelira/pa11y-runtime-verified
