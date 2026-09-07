@@ -21,7 +21,7 @@
   "devDependencies": {
     "@eslint/compat": "2.1.0",
     "@oclif/prettier-config": "^0.2.1",
-    "@oclif/test": "^4.1.16",
+    "@oclif/test": "^5.0.0",
     "@types/chai": "^5.2.3",
     "@types/mocha": "^10",
     "@types/node": "^26.2.0",
