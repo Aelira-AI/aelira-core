@@ -6,9 +6,9 @@ import React from 'react';
 //   ≥90 → success, 70–89 → warning, <70 → danger, null → neutral
 // ---------------------------------------------------------------------------
 
-export type ScoreBand = 'success' | 'warning' | 'danger' | 'neutral';
+type ScoreBand = 'success' | 'warning' | 'danger' | 'neutral';
 
-export function bandForScore(score: number | null): ScoreBand {
+function bandForScore(score: number | null): ScoreBand {
   if (score === null) return 'neutral';
   if (score >= 90) return 'success';
   if (score >= 70) return 'warning';
