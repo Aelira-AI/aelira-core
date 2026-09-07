@@ -16,6 +16,15 @@ export function AccountDeletionModal({
   onClose,
   onDeleted,
 }: AccountDeletionModalProps): React.ReactElement | null {
+  if (!isOpen) return null;
+
+  return <AccountDeletionModalContent onClose={onClose} onDeleted={onDeleted} />;
+}
+
+function AccountDeletionModalContent({
+  onClose,
+  onDeleted,
+}: Omit<AccountDeletionModalProps, 'isOpen'>): React.ReactElement {
   const [step, setStep] = useState<Step>('warning');
   const [confirmText, setConfirmText] = useState('');
   const [code, setCode] = useState('');
@@ -25,18 +34,6 @@ export function AccountDeletionModal({
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const { showToast } = useToast();
   const codeInputRef = useRef<HTMLInputElement>(null);
-
-  // Reset state when modal opens/closes
-  useEffect(() => {
-    if (!isOpen) {
-      setStep('warning');
-      setConfirmText('');
-      setCode('');
-      setReason('');
-      setLoading(false);
-      setCodeExpiresAt(null);
-    }
-  }, [isOpen]);
 
   // Countdown timer for code expiry
   useEffect(() => {
@@ -63,8 +60,6 @@ export function AccountDeletionModal({
       codeInputRef.current.focus();
     }
   }, [step]);
-
-  if (!isOpen) return null;
 
   const handleSendCode = async (): Promise<void> => {
     if (confirmText !== 'DELETE') return;

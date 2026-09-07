@@ -188,7 +188,7 @@ cd dashboard && npm install && npm run dev
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 uvicorn src.api.main:app --reload --port 8000 --no-proxy-headers
 ```
 
@@ -270,8 +270,8 @@ This is the same sequence CI runs (`.github/workflows/ci.yml`), aside from
   meant as a starting point (linked from `CONTRIBUTING.md`).
 - Backend lint/format gates you'll need to pass before a PR is mergeable
   (`.github/workflows/ci.yml`): `ruff check .` and
-  `black --check src/ tests/ scripts/` (black is pinned to `26.3.1` in
-  `requirements.txt`; ruff's lint scope is deliberately pinned to the rule
+  `black --check src/ tests/ scripts/` (black is pinned to `26.5.1` in
+  `requirements-dev.txt`; ruff's lint scope is deliberately pinned to the rule
   families `E4`, `E7`, `E9`, `F` in `ruff.toml` rather than ruff's newer,
   much wider defaults — see the comment at the top of that file for why).
 - Dashboard gates: `npm run lint`, `npx tsc --noEmit`, `npm run build`.

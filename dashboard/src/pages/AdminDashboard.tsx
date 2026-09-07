@@ -110,7 +110,13 @@ export function AdminDashboard(): React.ReactElement {
   };
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void fetchData();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleInvite = async (e: FormEvent<HTMLFormElement>): Promise<void> => {

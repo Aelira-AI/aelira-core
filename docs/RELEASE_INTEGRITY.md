@@ -11,6 +11,9 @@ There are exactly three shipped dependency surfaces, and CI audits each one rath
 3. Dashboard runtime dependencies in `dashboard/package-lock.json` with `npm --prefix dashboard audit --audit-level=high`.
 
 Pull requests also run dependency review and fail at high severity. Audit failure is never advisory.
+The same CI job separately audits `requirements-dev.txt`, which includes the
+runtime set and adds contributor tooling; development packages are not a
+shipped dependency surface or part of the release SBOM.
 
 ## Immutable inputs and tools
 
@@ -61,7 +64,12 @@ CI runs both production Dockerfiles natively on `linux/amd64` and `linux/arm64`.
 
 ## Requirements hash evaluation
 
-`requirements.txt` currently contains **155** dependency entries, all exact `==` pins, and **no hashes**. Hashes are deferred; they must not be fabricated from one workstation or one platform. Exact pins plus the strict `pip-audit` gate are the current controls, but they are not represented as hash-locked installs.
+`requirements.txt` contains **140** runtime dependency entries.
+`requirements-dev.txt` includes that runtime file and adds **30** development-only
+entries. All 170 application dependencies use exact `==` pins. There are no hashes.
+Hashes are deferred; they must not be fabricated from one
+workstation or one platform. Exact pins plus the strict `pip-audit` gates are
+the current controls, but they are not represented as hash-locked installs.
 
 Security Engineering owns the hash-lock follow-up. Hash enforcement is accepted only after a platform-complete lock is generated and tested on Linux `linux/amd64` and `linux/arm64` for the supported Python 3.12, 3.13, and 3.14 matrix. Acceptance is fail closed and requires all of the following:
 

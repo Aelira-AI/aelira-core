@@ -71,25 +71,34 @@ export function Login(): React.ReactElement {
     const messageParam = searchParams.get('message');
 
     if (errorParam) {
+      let errorMessage: string;
       switch (errorParam) {
         case 'oauth_denied':
-          setError('OAuth login was cancelled.');
+          errorMessage = 'OAuth login was cancelled.';
           break;
         case 'invalid_state':
-          setError('Invalid OAuth state. Please try again.');
+          errorMessage = 'Invalid OAuth state. Please try again.';
           break;
         case 'token_error':
-          setError('Failed to authenticate with OAuth provider.');
+          errorMessage = 'Failed to authenticate with OAuth provider.';
           break;
         case 'tier_required':
-          setError(messageParam || 'No account exists for this email. Ask your administrator for an invitation.');
+          errorMessage = messageParam || 'No account exists for this email. Ask your administrator for an invitation.';
           break;
         case 'no_email':
-          setError('No email returned from OAuth provider.');
+          errorMessage = 'No email returned from OAuth provider.';
           break;
         default:
-          setError('Authentication failed. Please try again.');
+          errorMessage = 'Authentication failed. Please try again.';
       }
+
+      let cancelled = false;
+      queueMicrotask(() => {
+        if (!cancelled) setError(errorMessage);
+      });
+      return () => {
+        cancelled = true;
+      };
     }
   }, [searchParams]);
 

@@ -193,9 +193,16 @@ export default function CanvasContentPage(): React.ReactElement {
   }, [courseId]);
 
   useEffect(() => {
-    fetchStatus();
-    fetchCourseName();
-    fetchLiveFiles();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      void fetchStatus();
+      void fetchCourseName();
+      void fetchLiveFiles();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [fetchStatus, fetchCourseName, fetchLiveFiles]);
 
   const mergedItems = useMemo(

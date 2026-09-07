@@ -56,20 +56,14 @@ export function Dashboard(): React.ReactElement {
   const [reviewSummary, setReviewSummary] = useState<DepartmentReviewSummary | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [showWelcomeBanner, setShowWelcomeBanner] = useState<boolean>(false);
+  const [showWelcomeBanner, setShowWelcomeBanner] = useState<boolean>(
+    () => localStorage.getItem(WELCOME_BANNER_KEY) === null
+  );
   const [downloadingReport, setDownloadingReport] = useState<string | null>(null);
   const navigate = useNavigate();
   const { authMethod, department, user } = useAuth();
   const toast = useToast();
   const { hasFeature } = useFeatureAccess();
-
-  // Check if this is a first-time user (no scans yet and banner not dismissed)
-  useEffect(() => {
-    const bannerDismissed = localStorage.getItem(WELCOME_BANNER_KEY);
-    if (!bannerDismissed) {
-      setShowWelcomeBanner(true);
-    }
-  }, []);
 
   const dismissWelcomeBanner = (): void => {
     localStorage.setItem(WELCOME_BANNER_KEY, 'true');

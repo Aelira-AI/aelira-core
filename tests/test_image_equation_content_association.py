@@ -22,6 +22,13 @@ from src.education.remediation.math_fixer import (
 MATHML = "<math><msup><mi>x</mi><mn>2</mn></msup></math>"
 
 
+def _stable_pdf_bytes(pdf: pikepdf.Pdf) -> bytes:
+    """Serialize with a fixed trailer ID so only PDF state affects the bytes."""
+    serialized = BytesIO()
+    pdf.save(serialized, static_id=True)
+    return serialized.getvalue()
+
+
 def _evidence() -> MathVerificationEvidence:
     return MathVerificationEvidence(
         passed=True,
@@ -1191,19 +1198,19 @@ def test_parent_tree_kids_insert_new_key_sorted_and_update_limits(tmp_path):
     fitz_doc.close()
 
 
-def test_association_rolls_back_when_append_sabotaged(tmp_path, monkeypatch):
+@pytest.mark.parametrize("repeat", range(10))
+def test_association_rolls_back_when_append_sabotaged(tmp_path, monkeypatch, repeat):
     """A failure after structure mutation leaves no Formula or content change."""
     import src.education.remediation.content_tagger_v2 as module
 
-    source = tmp_path / "source.pdf"
+    source = tmp_path / f"source-{repeat}.pdf"
     _make_reused_image_pdf(source)
     fitz_doc = fitz.open(source)
     pending = _pending(fitz_doc, 1, 1)
     with pikepdf.open(source) as pdf:
         original_append = module._append_formula_to_structure
         before_content = pdf.pages[0].obj[Name.Contents].read_bytes()
-        before_serialized = BytesIO()
-        pdf.save(before_serialized)
+        before_serialized = _stable_pdf_bytes(pdf)
         before_root = pdf.Root.get(Name.StructTreeRoot)
         before_kids = list(before_root.get(Name.K, Array([]))) if before_root else []
 
@@ -1219,10 +1226,26 @@ def test_association_rolls_back_when_append_sabotaged(tmp_path, monkeypatch):
         after_kids = list(root.get(Name.K, Array([]))) if root is not None else []
         assert [kid.objgen for kid in after_kids] == [kid.objgen for kid in before_kids]
         assert not any(str(kid.get(Name.S, "")) == "/Formula" for kid in after_kids)
-        after_serialized = BytesIO()
-        pdf.save(after_serialized)
-        assert after_serialized.getvalue() == before_serialized.getvalue()
+        assert _stable_pdf_bytes(pdf) == before_serialized
     fitz_doc.close()
+
+
+@pytest.mark.parametrize("mutation", ["catalog", "page", "stream"])
+def test_stable_pdf_bytes_detects_object_tree_mutation(tmp_path, mutation):
+    source = tmp_path / f"source-{mutation}.pdf"
+    _make_reused_image_pdf(source)
+
+    with pikepdf.open(source) as pdf:
+        before = _stable_pdf_bytes(pdf)
+        if mutation == "catalog":
+            pdf.Root[Name.Lang] = "en-AU"
+        elif mutation == "page":
+            pdf.pages[0].obj[Name.Rotate] = 90
+        else:
+            contents = pdf.pages[0].obj[Name.Contents]
+            contents.write(contents.read_bytes() + b"\n% mutation")
+
+        assert _stable_pdf_bytes(pdf) != before
 
 
 def test_association_rolls_back_replaced_number_tree_after_stream_failure(
@@ -1254,8 +1277,7 @@ def test_association_rolls_back_replaced_number_tree_after_stream_failure(
         tree.struct_root[Name.ParentTree] = Dictionary(
             {"/Kids": Array([leaf]), "/Limits": Array([42, 99])}
         )
-        before = BytesIO()
-        pdf.save(before)
+        before = _stable_pdf_bytes(pdf)
         monkeypatch.setattr(
             module.pikepdf,
             "unparse_content_stream",
@@ -1265,9 +1287,7 @@ def test_association_rolls_back_replaced_number_tree_after_stream_failure(
         result = module.associate_image_formula(pdf, fitz_doc, pending)
 
         assert result.success is False
-        after = BytesIO()
-        pdf.save(after)
-        assert after.getvalue() == before.getvalue()
+        assert _stable_pdf_bytes(pdf) == before
     fitz_doc.close()
 
 
@@ -1292,15 +1312,12 @@ def test_hybrid_parent_tree_kids_and_nums_rejects_without_mutation(tmp_path):
                 "/Limits": Array([42, 42]),
             }
         )
-        before = BytesIO()
-        pdf.save(before)
+        before = _stable_pdf_bytes(pdf)
 
         result = associate_image_formula(pdf, fitz_doc, pending)
 
         assert result.success is False
-        after = BytesIO()
-        pdf.save(after)
-        assert after.getvalue() == before.getvalue()
+        assert _stable_pdf_bytes(pdf) == before
     fitz_doc.close()
 
 
