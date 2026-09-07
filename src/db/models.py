@@ -36,6 +36,12 @@ from enum import Enum
 import uuid
 
 JOB_JSON = JSON().with_variant(JSONB, "postgresql")
+# ScanFix evidence fields participate in SQL ``IS NULL`` constraints. Persist
+# absent Python values as SQL NULL, not JSON ``null``, so ordinary non-visual
+# fixes do not violate the visual-contract boundary at commit time.
+SCAN_FIX_JSON = JSON(none_as_null=True).with_variant(
+    JSONB(none_as_null=True), "postgresql"
+)
 
 
 def _lower_hex_64_constraint(column: str) -> str:
@@ -917,9 +923,9 @@ class ScanFix(Base):
     provider_used = Column(String(64), nullable=True)
     model_used = Column(String(50), nullable=True)
     source_kind = Column(String(32), nullable=True)
-    source_locator = Column(JOB_JSON, nullable=True)
-    verification_evidence = Column(JOB_JSON, nullable=True)
-    visual_semantic_contract = Column(JOB_JSON, nullable=True)
+    source_locator = Column(SCAN_FIX_JSON, nullable=True)
+    verification_evidence = Column(SCAN_FIX_JSON, nullable=True)
+    visual_semantic_contract = Column(SCAN_FIX_JSON, nullable=True)
     review_digest = Column(String(64), nullable=True)
     approved_review_digest = Column(String(64), nullable=True)
     confidence = Column(Float, nullable=False, default=1.0, server_default="1.0")

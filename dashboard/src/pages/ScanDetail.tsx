@@ -214,7 +214,7 @@ export function ScanDetail(): React.ReactElement {
   };
 
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-8">
       <div className="max-w-6xl mx-auto">
         {/* Breadcrumbs */}
         <Breadcrumbs items={[
@@ -223,9 +223,9 @@ export function ScanDetail(): React.ReactElement {
         ]} />
 
         <div className="mb-6">
-          <div className="flex items-start justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-primary mb-2">{scan.filename}</h1>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <h1 className="text-3xl font-bold text-primary mb-2 break-words">{scan.filename}</h1>
               <div className="flex items-center space-x-6 text-sm text-secondary">
                 <div className="flex items-center space-x-2">
                   <Calendar className="w-4 h-4" />
@@ -240,7 +240,7 @@ export function ScanDetail(): React.ReactElement {
 
             {/* Action Buttons */}
             {!isProcessing && scan.issues.length > 0 && (
-              <div className="flex items-center gap-3 shrink-0">
+              <div className="flex flex-wrap items-center gap-3 sm:shrink-0">
                 <button
                   onClick={() => navigate(`/remediate/${scan.id}`)}
                   className="btn-primary flex items-center gap-2"

@@ -12,6 +12,7 @@ All emails use a unified brand template with:
 """
 
 import html
+import os
 from typing import List, Dict, Any, Optional
 
 from src.education.deadline_config import DeadlineService
@@ -100,16 +101,37 @@ def get_email_wrapper(
     Returns:
         Complete HTML email with branded header/footer
     """
+    brand_name = html.escape(os.getenv("BRAND_NAME", "Aelira"))
+    public_api_url = html.escape(
+        os.getenv("PUBLIC_API_URL", "http://localhost:8000").rstrip("/"),
+        quote=True,
+    )
+    public_website_url = html.escape(
+        os.getenv(
+            "PUBLIC_WEBSITE_URL", "https://github.com/Aelira-AI/aelira-core"
+        ).rstrip("/"),
+        quote=True,
+    )
+    support_email = os.getenv("SUPPORT_EMAIL", "").strip()
+
     unsubscribe_link = ""
     if unsubscribe_url:
         unsubscribe_link = f'<a href="{unsubscribe_url}" style="color: #9ca3af; text-decoration: underline;">Unsubscribe</a> | '
+
+    support_link = ""
+    if support_email:
+        escaped_support_email = html.escape(support_email, quote=True)
+        support_link = (
+            f' | <a href="mailto:{escaped_support_email}" '
+            'style="color: #9ca3af; text-decoration: underline;">Support</a>'
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aelira</title>
+    <title>{brand_name}</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f3f4f6;">
@@ -121,8 +143,8 @@ def get_email_wrapper(
                     <!-- Header -->
                     <tr>
                         <td style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 50%, #3B82F6 100%); padding: 32px; text-align: center;">
-                            <a href="https://example.com" style="text-decoration: none;">
-                                <img src="https://api.example.com/static/logo.png" alt="Aelira" width="180" style="display: inline-block; max-width: 180px; height: auto; margin-bottom: 12px;" />
+                            <a href="{public_website_url}" style="text-decoration: none;">
+                                <img src="{public_api_url}/static/logo.png" alt="{brand_name}" width="180" style="display: inline-block; max-width: 180px; height: auto; margin-bottom: 12px;" />
                             </a>
                             <p style="margin: 0; font-size: 12px; color: rgba(255, 255, 255, 0.85); text-transform: uppercase; letter-spacing: 1.5px;">Higher Education Accessibility</p>
                         </td>
@@ -139,11 +161,10 @@ def get_email_wrapper(
                     <tr>
                         <td style="background-color: #1f2937; padding: 24px 40px; text-align: center;">
                             <p style="margin: 0 0 12px 0; font-size: 12px; color: #9ca3af;">
-                                {unsubscribe_link}<a href="https://example.com/privacy" style="color: #9ca3af; text-decoration: underline;">Privacy Policy</a> |
-                                <a href="mailto:support@example.com" style="color: #9ca3af; text-decoration: underline;">Support</a>
+                                {unsubscribe_link}<a href="{public_website_url}" style="color: #9ca3af; text-decoration: underline;">Project home</a>{support_link}
                             </p>
                             <p style="margin: 0; font-size: 11px; color: #6b7280;">
-                                © 2026 Aelira. All rights reserved.
+                                © 2026 {brand_name}. All rights reserved.
                             </p>
                         </td>
                     </tr>

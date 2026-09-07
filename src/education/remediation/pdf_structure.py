@@ -90,47 +90,6 @@ class PDFStructureTree:
                                 "/Nums": Array([]),  # Number tree for parent mappings
                             }
                         ),
-                        "/RoleMap": Dictionary(
-                            {
-                                # Map custom tags to standard structure types (PDF/UA-1)
-                                "/H1": Name.H1,
-                                "/H2": Name.H2,
-                                "/H3": Name.H3,
-                                "/H4": Name.H4,
-                                "/H5": Name.H5,
-                                "/H6": Name.H6,
-                                "/P": Name.P,
-                                "/Figure": Name.Figure,
-                                "/Table": Name.Table,
-                                "/TR": Name.TR,
-                                "/TH": Name.TH,
-                                "/TD": Name.TD,
-                                "/L": Name.L,  # List
-                                "/LI": Name.LI,  # List item
-                                "/Lbl": Name.Lbl,  # List label
-                                "/LBody": Name.LBody,  # List body
-                                # PDF/UA-2 (ISO 14289-2:2024) structure elements
-                                "/DocumentFragment": Name(
-                                    "/DocumentFragment"
-                                ),  # Part of document
-                                "/Aside": Name(
-                                    "/Aside"
-                                ),  # Side content (footnotes, annotations)
-                                "/FENote": Name("/FENote"),  # Footnote/endnote
-                                "/Sub": Name("/Sub"),  # Subscript
-                                "/Em": Name("/Em"),  # Emphasis (typically italic)
-                                "/Strong": Name(
-                                    "/Strong"
-                                ),  # Strong emphasis (typically bold)
-                                # Ruby text support for East Asian languages
-                                "/Ruby": Name("/Ruby"),  # Ruby annotation container
-                                "/RB": Name("/RB"),  # Ruby base text
-                                "/RT": Name("/RT"),  # Ruby annotation text
-                                "/RP": Name("/RP"),  # Ruby parenthesis
-                                # Phoneme for pronunciation hints
-                                "/Phoneme": Name("/Phoneme"),  # Pronunciation hint
-                            }
-                        ),
                     }
                 )
             )

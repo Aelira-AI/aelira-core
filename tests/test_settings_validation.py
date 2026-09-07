@@ -53,6 +53,60 @@ class TestValidConfig:
         assert settings.database_url.startswith("postgresql+asyncpg://")
 
 
+class TestCorsOriginsParsing:
+    def test_documented_comma_separated_environment_value(self, monkeypatch):
+        monkeypatch.setenv(
+            "CORS_ORIGINS",
+            "https://dashboard.example.org, https://admin.example.org",
+        )
+
+        settings = Settings(**_base_kwargs(env="production"))
+
+        assert settings.cors_origins == [
+            "https://dashboard.example.org",
+            "https://admin.example.org",
+        ]
+
+    def test_json_array_environment_value_remains_supported(self, monkeypatch):
+        monkeypatch.setenv(
+            "CORS_ORIGINS",
+            '["https://dashboard.example.org", "https://admin.example.org"]',
+        )
+
+        settings = Settings(**_base_kwargs(env="production"))
+
+        assert settings.cors_origins == [
+            "https://dashboard.example.org",
+            "https://admin.example.org",
+        ]
+
+
+class TestDeploymentIdentityDefaults:
+    def test_dashboard_aliases_inherit_public_dashboard_url(self):
+        settings = Settings(
+            **_base_kwargs(
+                public_dashboard_url="https://accessibility.example.edu/",
+                dashboard_url="",
+                magic_link_base_url="",
+            )
+        )
+
+        assert settings.dashboard_url == "https://accessibility.example.edu"
+        assert settings.magic_link_base_url == "https://accessibility.example.edu"
+
+    def test_dashboard_aliases_can_be_overridden(self):
+        settings = Settings(
+            **_base_kwargs(
+                public_dashboard_url="https://accessibility.example.edu",
+                dashboard_url="https://lti.example.edu/",
+                magic_link_base_url="https://login.example.edu/",
+            )
+        )
+
+        assert settings.dashboard_url == "https://lti.example.edu"
+        assert settings.magic_link_base_url == "https://login.example.edu"
+
+
 class TestDatabaseUrlValidation:
     def test_missing_database_url_fails(self):
         """An empty DATABASE_URL must fail fast at startup, not first query."""

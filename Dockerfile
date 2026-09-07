@@ -28,12 +28,23 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir piper-tts==1.6.0
 
+# Pa11y needs Node at runtime, but Debian's npm package pulls its full build
+# toolchain into the final image. Build the pinned Pa11y runtime separately and
+# copy only Node plus Pa11y's production dependency tree into the API image.
+FROM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS pa11y-node
+
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+RUN npm install -g pa11y@9.0.1 && \
+    npm cache clean --force && \
+    rm -rf /root/.npm \
+        /usr/local/lib/node_modules/pa11y/node_modules/extract-zip
+
 # Stage 2: Runtime
 FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
 
 ARG SOURCE_DATE_EPOCH=0
 
-# Install runtime dependencies + Playwright system dependencies + LaTeXML stack + Node.js for Pa11y.
+# Install runtime dependencies + Playwright system dependencies + LaTeXML stack.
 # TeX format dumps are content-nondeterministic even with a fixed epoch, so
 # omit them; Kpathsea recreates only the requested format in the user's cache.
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
@@ -47,9 +58,6 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     ffmpeg \
     libpq5 \
     curl \
-    # Node.js for Pa11y accessibility testing
-    nodejs \
-    npm \
     # Playwright Chromium dependencies
     libnss3 \
     libnspr4 \
@@ -96,6 +104,11 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Copy the minimal Pa11y runtime without Debian's npm toolchain.
+COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node
+COPY --from=pa11y-node /usr/local/lib/node_modules/pa11y /usr/local/lib/node_modules/pa11y
+RUN ln -s ../lib/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
+
 RUN /usr/local/bin/python -c "import importlib.metadata as m; assert m.version('msgpack') == '1.2.2'" && \
     /opt/venv/bin/python -c "import importlib.metadata as m; assert m.version('msgpack') == '1.2.2'; assert m.version('setuptools') == '84.0.0'"
 
@@ -108,13 +121,6 @@ COPY . .
 # Ensure dashboard dist is included (build it before Docker build)
 # Dashboard should be pre-built: cd dashboard && npm run build
 
-# Install Pa11y globally for multi-engine accessibility testing (as root)
-# Pa11y can run both axe-core and HTML_CodeSniffer engines
-ENV PUPPETEER_SKIP_DOWNLOAD=true
-RUN npm install -g pa11y@9.0.1 && \
-    npm cache clean --force && \
-    rm -rf /root/.npm
-
 # Download Piper voice model for TTS accessibility (as root, before user switch)
 RUN mkdir -p /app/data/piper-voices && \
     curl -fL -o /app/data/piper-voices/en_US-lessac-medium.onnx \
@@ -126,6 +132,7 @@ RUN mkdir -p /app/data/piper-voices && \
 
 # Create non-root user for security
 RUN useradd -m -u 1000 aelira && \
+    mkdir -p /app/uploads && \
     chown -R aelira:aelira /app && \
     mkdir -p /home/aelira/.cache && \
     chown -R aelira:aelira /home/aelira
