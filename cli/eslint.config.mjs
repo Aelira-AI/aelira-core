@@ -5,13 +5,21 @@
 // installed — a minor bump had already widened rule defaults with no code
 // change on our side. Mirrors the ruff.toml explicit-select pin on the
 // Python side, for the same reason (measured 2026-08-15).
-import {includeIgnoreFile} from '@eslint/compat'
+import {fixupPluginRules, includeIgnoreFile} from '@eslint/compat'
 import oclif from 'eslint-config-oclif'
 import prettier from 'eslint-config-prettier'
 import path from 'node:path'
 import {fileURLToPath} from 'node:url'
 
 const gitignorePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.gitignore')
+
+// eslint-config-oclif 6 still bundles eslint-plugin-mocha 10, whose rules use
+// context methods removed by ESLint 10. Patch only that plugin: wrapping the
+// entire config also proxies already-compatible rules such as Unicorn.
+const compatibleOclif = oclif.map((config) => {
+  const mocha = config.plugins?.mocha
+  return mocha ? {...config, plugins: {...config.plugins, mocha: fixupPluginRules(mocha)}} : config
+})
 
 // Custom rules for CLI consuming REST API
 const customRules = {
@@ -81,4 +89,4 @@ const customRules = {
   }
 }
 
-export default [includeIgnoreFile(gitignorePath), ...oclif, prettier, customRules]
+export default [includeIgnoreFile(gitignorePath), ...compatibleOclif, prettier, customRules]
