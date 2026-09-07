@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.14-slim AS runtime
 
 # Install system dependencies + LaTeXML stack + Node.js for Pa11y
 RUN apt-get update && apt-get install -y \
@@ -98,10 +98,19 @@ ENV PA11Y_CHROMIUM_PATH=/home/aelira/.local/bin/aelira-chromium
 
 RUN playwright install chromium
 RUN python scripts/configure_pa11y_chromium.py
-RUN python scripts/smoke_pa11y_runtime.py
 
 # Expose port
 EXPOSE 8000
 
 # Development command (overridden in docker-compose)
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--no-proxy-headers"]
+
+# Prove the browser runtime without carrying its writable state into the
+# development image.
+FROM runtime AS pa11y-verified
+RUN python scripts/smoke_pa11y_runtime.py && \
+    printf 'verified\n' > /tmp/pa11y-runtime-verified
+
+FROM runtime AS final
+COPY --from=pa11y-verified --chown=aelira:aelira \
+    /tmp/pa11y-runtime-verified /home/aelira/.local/share/aelira/pa11y-runtime-verified

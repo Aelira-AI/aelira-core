@@ -94,8 +94,12 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
 def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
     production = (ROOT / "Dockerfile").read_text()
     development = (ROOT / "Dockerfile.dev").read_text()
-    smoke_command = "RUN python scripts/smoke_pa11y_runtime.py"
+    smoke_command = "RUN python scripts/smoke_pa11y_runtime.py &&"
     configure_command = "RUN python scripts/configure_pa11y_chromium.py"
+    verified_marker = (
+        "/tmp/pa11y-runtime-verified "
+        "/home/aelira/.local/share/aelira/pa11y-runtime-verified"
+    )
 
     for dockerfile in (production, development):
         assert dockerfile.count("npm install -g pa11y@9.0.1") == 1
@@ -108,8 +112,22 @@ def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
         assert dockerfile.count("USER aelira") == 1
         assert dockerfile.count(configure_command) == 1
         assert dockerfile.count(smoke_command) == 1
+        assert dockerfile.count("FROM runtime AS pa11y-verified") == 1
+        assert dockerfile.count("FROM runtime AS final") == 1
+        assert dockerfile.count(verified_marker) == 1
         assert dockerfile.index("USER aelira") < dockerfile.index(configure_command)
-        assert dockerfile.index(configure_command) < dockerfile.index(smoke_command)
+        assert dockerfile.index(configure_command) < dockerfile.index(
+            "FROM runtime AS pa11y-verified"
+        )
+        assert dockerfile.index("FROM runtime AS pa11y-verified") < dockerfile.index(
+            smoke_command
+        )
+        assert dockerfile.index(smoke_command) < dockerfile.index(
+            "FROM runtime AS final"
+        )
+        assert dockerfile.index("FROM runtime AS final") < dockerfile.index(
+            verified_marker
+        )
 
     config = (ROOT / "config" / "pa11y.json").read_text()
     assert '"executablePath": "/home/aelira/.local/bin/aelira-chromium"' in config
