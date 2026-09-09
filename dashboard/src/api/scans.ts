@@ -185,6 +185,18 @@ export interface RemediationJobStatus extends RemediationJobStart {
   download_url: string | null;
 }
 
+export interface RemediationFixSummary {
+  id: string;
+  category: string;
+  severity: string;
+  description: string;
+  location?: string | null;
+  page_number: number | null;
+  fix_method: string;
+  needs_review: boolean;
+  review_status: string;
+}
+
 export interface BatchRemediationResult {
   job_id: string;
   scan_ids: string[];
@@ -701,6 +713,14 @@ export const scansApi = {
       `/education/scans/${encodeURIComponent(scanId)}/remediation/latest`
     );
     return response.data;
+  },
+
+  /** Read the current persisted fix records for an authorized scan. */
+  getRemediationFixes: async (scanId: string): Promise<RemediationFixSummary[]> => {
+    const response = await apiClient.get<{ fixes: RemediationFixSummary[] }>(
+      `/api/reviews/${encodeURIComponent(scanId)}`
+    );
+    return response.data.fixes;
   },
 
   /**

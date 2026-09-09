@@ -9,71 +9,6 @@ from pathlib import Path
 FIXTURES = Path(__file__).parent / "fixtures" / "pdfs"
 
 
-def _enrich_issues(issues):
-    """Add a 'type' key to each scan issue so the remediator can categorise it.
-
-    The PDF scanner outputs issues with 'rule', 'message', and sometimes
-    'issue_type' keys but does NOT include a 'type' or 'category' field.
-    The remediator's ``_normalize_issues`` looks for ``issue.get("type")``
-    to map to ``IssueCategory``, so we infer it here.
-    """
-    enriched = []
-    for issue in issues:
-        issue = dict(issue)  # shallow copy
-        if "type" not in issue and "category" not in issue:
-            # Infer from issue_type first (most specific)
-            it = issue.get("issue_type", "")
-            msg = issue.get("message", "").lower()
-            rule = issue.get("rule", "").lower()
-
-            if "language" in it or "3.1.1" in rule or "language" in msg:
-                issue["type"] = "language"
-            elif "title" in it or "2.4.2" in rule or "title" in msg:
-                issue["type"] = "title"
-            elif any(
-                x in it
-                for x in [
-                    "structure_tree",
-                    "content_marking",
-                    "parent_tree",
-                    "document_root",
-                    "pdfua",
-                    "not_marked",
-                    "missing_structure",
-                    "empty_structure",
-                ]
-            ) or ("structure" in it and "table" not in it and "list" not in it):
-                issue["type"] = "structure"
-            elif "table" in it or "table" in msg:
-                issue["type"] = "table"
-            elif "list" in it or "list" in msg:
-                issue["type"] = "list"
-            elif "heading" in it or "heading" in msg:
-                issue["type"] = "heading"
-            elif (
-                "alt" in it
-                or "1.1.1" in rule
-                or "alternative text" in msg
-                or "alt text" in msg
-            ):
-                issue["type"] = "alt_text"
-            elif "bookmark" in it or "navigation" in it:
-                issue["type"] = "navigation"
-            elif "reading_order" in it or "1.3.2" in rule:
-                issue["type"] = "reading_order"
-            elif "contrast" in it or "1.4.3" in rule:
-                issue["type"] = "contrast"
-            elif "form" in it or "4.1.2" in rule:
-                issue["type"] = "form"
-            elif "link" in it or "2.4.4" in rule:
-                issue["type"] = "link"
-            else:
-                issue["type"] = "other"
-
-        enriched.append(issue)
-    return enriched
-
-
 @pytest.mark.skipif(
     not (FIXTURES / "simple_syllabus.pdf").exists()
     and not (FIXTURES / "academic_paper.pdf").exists(),
@@ -98,17 +33,15 @@ def test_full_remediation_pipeline():
     initial_issues = scan_result.issues
     assert len(initial_issues) > 0, "Test PDF should have accessibility issues"
 
-    # Enrich issues with a 'type' key so the remediator can categorise them
-    enriched_issues = _enrich_issues(initial_issues)
-
     # Step 2: Remediate (no AI — rule-based and template fixes only)
     with tempfile.TemporaryDirectory() as tmpdir:
         config = RemediationConfig(
             use_ai=False,
             verify_fixes=True,
             output_directory=tmpdir,
+            allow_legacy_nested_ai=False,
         )
-        remediator = PdfRemediator(input_pdf, enriched_issues, config)
+        remediator = PdfRemediator(input_pdf, initial_issues, config)
         result = remediator.remediate()
 
         assert result.success, f"Remediation failed: {result.error_message}"
@@ -157,4 +90,111 @@ def test_full_remediation_pipeline():
         except Exception as e:
             print(f"Matterhorn validation skipped: {e}")
 
+        result.close_output_claim()
+
+
+def test_incident_fixture_raw_scanner_output_reconciles_every_finding():
+    """The production-shaped syllabus flow keeps every raw finding accounted for."""
+    from src.education.pdf_processor import PDFProcessor
+    from src.education.remediation.base import RemediationConfig
+    from src.education.remediation.pdf_remediator import PdfRemediator
+
+    input_pdf = str(FIXTURES / "simple_syllabus.pdf")
+    processor = PDFProcessor(generate_alt_text=False, validate_alt_text=False)
+    scan_result = processor.process_pdf(input_pdf)
+
+    assert len(scan_result.issues) == 8
+    structure_finding = next(
+        issue
+        for issue in scan_result.issues
+        if issue.get("issue_type") == "missing_structure_tree"
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        remediator = PdfRemediator(
+            input_pdf,
+            scan_result.issues,
+            RemediationConfig(
+                use_ai=False,
+                verify_fixes=True,
+                create_backup=False,
+                output_directory=tmpdir,
+                allow_legacy_nested_ai=False,
+            ),
+        )
+        result = remediator.remediate()
+
+        assert result.success, result.error_message
+        assert result.total_issues == 8
+        assert result.fixed_count == 5
+        assert result.manual_count == 3
+        assert result.failed_count == 0
+        assert result.skipped_count == 0
+        assert (
+            result.fixed_count
+            + result.manual_count
+            + result.failed_count
+            + result.skipped_count
+            == result.total_issues
+        )
+        assert any(
+            fixed.description == structure_finding["message"]
+            for fixed in result.fixed_issues
+        )
+        result.close_output_claim()
+
+
+def test_reported_three_finding_payload_fixes_every_issue_without_enrichment():
+    """The released three-finding failure is a successful, fully sourced run."""
+    from src.education.remediation.base import RemediationConfig
+    from src.education.remediation.pdf_remediator import PdfRemediator
+
+    issues = [
+        {
+            "rule": "WCAG 1.3.1",
+            "message": "Document should start with H1 heading",
+            "severity": "medium",
+            "location": "Beginning of document",
+            "page_number": 1,
+        },
+        {
+            "issue_type": "missing_title",
+            "rule": "WCAG 2.4.2",
+            "message": "PDF document title not set in metadata",
+            "severity": "medium",
+            "location": "Document metadata",
+            "page_number": 1,
+        },
+        {
+            "issue_type": "missing_pdfua_identifier",
+            "rule": "PDF/UA 6.6.4",
+            "message": "PDF/UA identifier not set in XMP metadata",
+            "severity": "medium",
+            "location": "XMP metadata",
+            "page_number": 1,
+        },
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = PdfRemediator(
+            str(FIXTURES / "simple_syllabus.pdf"),
+            issues,
+            RemediationConfig(
+                use_ai=False,
+                verify_fixes=True,
+                create_backup=False,
+                output_directory=tmpdir,
+                allow_legacy_nested_ai=False,
+            ),
+        ).remediate()
+
+        assert result.success, result.error_message
+        assert result.total_issues == 3
+        assert result.fixed_count == 3
+        assert result.manual_count == 0
+        assert result.failed_count == 0
+        assert result.skipped_count == 0
+        assert {fixed.description for fixed in result.fixed_issues} == {
+            issue["message"] for issue in issues
+        }
         result.close_output_claim()

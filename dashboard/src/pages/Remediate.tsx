@@ -13,7 +13,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { scansApi } from '../api/scans';
-import type { RemediationJobStatus } from '../api/scans';
+import type { RemediationFixSummary, RemediationJobStatus } from '../api/scans';
 import { Breadcrumbs } from '../components/layout/Breadcrumbs';
 import { useToast } from '../context/toast-context';
 import { trackEvent } from '../utils/analytics';
@@ -23,15 +23,17 @@ import {
   pollRemediationJob,
 } from '../utils/remediationJob';
 import type { RemediationJobState } from '../utils/remediationJob';
+import {
+  issueDescription,
+  outcomePresentation,
+  pairIssuesWithFixes,
+} from '../utils/remediationIssueOutcomes';
+import type {
+  RemediationIssueLike,
+  RemediationIssueRow,
+} from '../utils/remediationIssueOutcomes';
 
-interface Issue {
-  description?: string;
-  message?: string;
-  title?: string;
-  category?: string;
-  severity?: string;
-  rule?: string;
-}
+type Issue = RemediationIssueLike;
 
 interface Scan {
   file_name?: string;
@@ -81,7 +83,7 @@ const STATE_PRESENTATION: Record<PageState, StatePresentation> = {
   },
   completed: {
     title: 'Remediation complete',
-    description: 'The server completed the job. Only recorded aggregate results are shown below.',
+    description: 'The server completed the job. Recorded results are shown below.',
     icon: CheckCircle,
     color: 'text-[var(--feature-success-content)]',
     surface: 'bg-[var(--feature-success-surface)]',
@@ -177,7 +179,8 @@ function ScoreComparison({ job, scan }: { job: RemediationJobStatus; scan: Scan 
   );
 }
 
-function RecordedIssueRow({ issue }: { issue: Issue }): React.ReactElement {
+function RecordedIssueRow({ issue, fix, outcomeSource }: RemediationIssueRow): React.ReactElement {
+  const outcome = outcomePresentation(fix, outcomeSource);
   return (
     <div className="flex flex-col items-start justify-between gap-3 border-b border-[var(--border-primary)] p-3 last:border-b-0 sm:flex-row sm:gap-4">
       <div className="flex min-w-0 items-start gap-3">
@@ -185,16 +188,16 @@ function RecordedIssueRow({ issue }: { issue: Issue }): React.ReactElement {
           <FileText className="h-4 w-4 text-[var(--content-tertiary)]" aria-hidden="true" />
         </div>
         <div className="min-w-0">
-          <p className="text-sm font-medium text-primary">
-            {issue.description || issue.message || issue.title || 'Accessibility issue'}
+          <p className="text-sm font-medium leading-5 text-primary">
+            {issueDescription(issue)}
           </p>
-          <p className="text-xs text-tertiary">
+          <p className="mt-1 text-xs leading-4 text-tertiary">
             {issue.category || issue.severity || issue.rule || 'Recorded scan finding'}
           </p>
         </div>
       </div>
-      <span className="shrink-0 rounded bg-[var(--surface-tertiary)] px-2 py-1 text-xs text-tertiary sm:self-start">
-        Outcome not reported
+      <span className={`max-w-48 shrink-0 rounded px-2 py-1 text-right text-xs leading-4 sm:self-start ${outcome.className}`}>
+        {outcome.label}
       </span>
     </div>
   );
@@ -205,12 +208,32 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
   const toast = useToast();
   const pollController = useRef<AbortController | null>(null);
   const startCoordinator = useRef(createRemediationStartCoordinator());
+  const fixLoadGeneration = useRef(0);
 
   const [scan, setScan] = useState<Scan | null>(null);
   const [loading, setLoading] = useState(true);
   const [pageState, setPageState] = useState<PageState>('idle');
   const [job, setJob] = useState<RemediationJobStatus | null>(null);
+  const [recordedFixes, setRecordedFixes] = useState<RemediationFixSummary[] | null>(null);
   const [starting, setStarting] = useState(false);
+
+  const loadRecordedFixes = useCallback(async (
+    terminalJob: RemediationJobStatus
+  ): Promise<void> => {
+    const generation = ++fixLoadGeneration.current;
+    if (!scanId || typeof terminalJob.fixed_count !== 'number') {
+      setRecordedFixes(null);
+      return;
+    }
+    try {
+      const fixes = await scansApi.getRemediationFixes(scanId);
+      if (generation === fixLoadGeneration.current) {
+        setRecordedFixes(fixes.length === terminalJob.fixed_count ? fixes : null);
+      }
+    } catch {
+      if (generation === fixLoadGeneration.current) setRecordedFixes(null);
+    }
+  }, [scanId]);
 
   const monitorJob = useCallback(async (statusUrl: string): Promise<void> => {
     pollController.current?.abort();
@@ -235,6 +258,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
       }
       setJob(outcome.job);
       setPageState(outcome.state);
+      await loadRecordedFixes(outcome.job);
       if (outcome.state === 'completed') {
         toast.success('Remediation completed', 'Complete');
       } else if (outcome.state === 'partial') {
@@ -247,7 +271,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
         setPageState('monitoring_error');
       }
     }
-  }, [toast]);
+  }, [loadRecordedFixes, toast]);
 
   useEffect(() => {
     let active = true;
@@ -274,6 +298,8 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
           setPageState(latestState);
           if (latestState === 'queued' || latestState === 'running') {
             void monitorJob(latest.status_url);
+          } else {
+            await loadRecordedFixes(latest);
           }
         } catch {
           if (active) setPageState('monitoring_error');
@@ -291,10 +317,11 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
     void load();
     return () => {
       active = false;
+      fixLoadGeneration.current += 1;
       coordinator.invalidate();
       pollController.current?.abort();
     };
-  }, [monitorJob, scanId, toast]);
+  }, [loadRecordedFixes, monitorJob, scanId, toast]);
 
   const startRemediation = async (): Promise<void> => {
     if (!scanId || !scan || starting) return;
@@ -302,6 +329,8 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
     const attempt = startCoordinator.current.begin(scanId);
     setStarting(true);
     setJob(null);
+    fixLoadGeneration.current += 1;
+    setRecordedFixes(null);
     setPageState('queued');
     trackEvent('dash-remediate-started', {
       scan_type: scan.file_name?.split('.').pop() || 'unknown',
@@ -380,6 +409,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
   const canResume = Boolean(job?.status_url) && ['client_timeout', 'monitoring_error'].includes(pageState);
   const canDownload = job?.download_available === true && typeof job.download_url === 'string';
   const displayedProgress = job?.progress ?? (pageState === 'completed' ? 100 : 0);
+  const issueRows = pairIssuesWithFixes(scan.issues || [], recordedFixes || [], job || undefined);
 
   return (
     <div className="p-4 sm:p-8">
@@ -481,17 +511,24 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
         <section className="card" aria-labelledby="recorded-issues-heading">
           <div className="mb-4">
             <h2 id="recorded-issues-heading" className="text-lg font-semibold text-primary">
-              Recorded Issues ({scan.issues?.length || 0})
+              Recorded Issues ({issueRows.length})
             </h2>
             <p className="mt-1 text-sm text-tertiary">
-              Per-issue remediation outcomes are not available for this job.
+              {recordedFixes
+                ? 'Fixed outcomes come from persisted remediation records; manual outcomes are shown only when the job totals reconcile exactly.'
+                : 'Per-issue remediation outcomes are not available for this job.'}
             </p>
           </div>
           <div className="max-h-96 overflow-y-auto">
-            {(scan.issues || []).map((issue, index) => (
-              <RecordedIssueRow key={`${issue.description || issue.message || 'issue'}-${index}`} issue={issue} />
+            {issueRows.map((row, index) => (
+              <RecordedIssueRow
+                key={row.fix?.id || `${issueDescription(row.issue)}-${index}`}
+                issue={row.issue}
+                fix={row.fix}
+                outcomeSource={row.outcomeSource}
+              />
             ))}
-            {(!scan.issues || scan.issues.length === 0) && (
+            {issueRows.length === 0 && (
               <div className="py-8 text-center">
                 <FileText className="mx-auto mb-4 h-12 w-12 text-tertiary" aria-hidden="true" />
                 <p className="font-medium text-primary">No recorded issues are available for this scan.</p>

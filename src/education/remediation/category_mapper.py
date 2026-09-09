@@ -86,6 +86,43 @@ _IMPACT_CONFIDENCE_MAP: dict[str, float] = {
     "minor": 0.6,
 }
 
+# Built-in document scanner issue types. This is public within the
+# remediation package so strict classifiers and API adapters cannot drift.
+BUILTIN_ISSUE_TYPE_CATEGORY_MAP: dict[str, str] = {
+    "missing_title": "title",
+    "missing_author": "title",
+    "title_not_displayed": "title",
+    "missing_lang": "language",
+    "missing_language": "language",
+    "missing_alt_text": "alt_text",
+    "missing_figure_caption": "alt_text",
+    "missing_table_caption": "table",
+    "missing_table_structure": "table",
+    "complex_table_no_header": "table",
+    "equation_no_label": "aria",
+    "color_only_emphasis": "color",
+    "low_contrast_potential": "contrast",
+    "low_color_contrast": "contrast",
+    "unlabeled_hyperlink": "link",
+    "links_missing_alt": "link",
+    "vague_link_text": "link",
+    "missing_list_structure": "list",
+    "reading_order_mismatch": "reading_order",
+    "unlabeled_form_fields": "form",
+    "missing_tab_order": "form",
+    "missing_structure_tree": "structure",
+    "empty_structure_tree": "structure",
+    "not_marked_tagged": "structure",
+    "missing_content_marking": "structure",
+    "empty_parent_tree": "structure",
+    "missing_document_root": "structure",
+    "missing_pdfua_identifier": "structure",
+    "missing_bookmarks": "navigation",
+    "missing_tounicode": "structure",
+    "missing_role_map": "structure",
+    "incomplete_role_map": "structure",
+}
+
 
 # ---------------------------------------------------------------------------
 # Public API

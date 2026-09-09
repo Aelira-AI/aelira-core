@@ -3128,6 +3128,7 @@ def _worker_remediation_result(
     return SimpleNamespace(
         success=success,
         verification_passed=verification_passed,
+        total_issues=fixed_count,
         fixed_count=fixed_count,
         manual_count=0,
         failed_count=0,
@@ -3354,6 +3355,7 @@ async def test_worker_zero_issue_scan_is_durable_noop_without_remediator_or_noti
 
     assert result == {
         "success": True,
+        "total_issues": 0,
         "fixed_count": 0,
         "manual_count": 0,
         "failed_count": 0,
@@ -3496,6 +3498,7 @@ async def test_worker_persists_verified_output_before_temp_cleanup(tmp_path):
     assert scan.remediation_outcome == RemediationOutcome.COMPLETED.value
     assert scan.metadata is Scan.metadata
     assert result["fixed_count"] == 1
+    assert result["total_issues"] == 1
     assert result["manual_count"] == 0
     assert result["failed_count"] == 0
 

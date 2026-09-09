@@ -775,6 +775,7 @@ async def process_remediation_job(
                 raise
             return {
                 "success": True,
+                "total_issues": 0,
                 "fixed_count": 0,
                 "manual_count": 0,
                 "failed_count": 0,
