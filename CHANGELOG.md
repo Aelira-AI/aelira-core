@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.9] - 2026-09-09
 
+### Security
+
+- The CLI lockfile resolves `js-yaml` 4.3.2, closing GHSA-2883-xcg3-v3hh in the shipped dependency tree.
+
 ### Fixed
 
 - Strict PDF remediation recognizes every built-in scanner issue type, including versioned PDF/UA rule labels, without requiring an intermediate enrichment step.
