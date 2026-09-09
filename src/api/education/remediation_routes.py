@@ -39,6 +39,9 @@ from ...db.models import (
 )
 from ...db.scan_service import ScanService
 from ...education.image_alt_text import ImageAltTextGenerator
+from ...education.remediation.category_mapper import (
+    BUILTIN_ISSUE_TYPE_CATEGORY_MAP,
+)
 from ...middleware.quota import require_feature
 from ...services.remediation_artifact_service import (
     ArtifactError,
@@ -807,46 +810,7 @@ def _infer_category(issue: dict) -> str:
     # Use explicit category/type/issue_type if present
     explicit = issue.get("category") or issue.get("type") or issue.get("issue_type")
     if explicit:
-        # Map LaTeX-specific issue_type values to categories
-        issue_type_map = {
-            # LaTeX/general issue types
-            "missing_title": "title",
-            "missing_author": "title",
-            "title_not_displayed": "title",
-            "missing_lang": "language",
-            "missing_language": "language",
-            "missing_alt_text": "alt_text",
-            "missing_figure_caption": "alt_text",
-            "missing_table_caption": "table",
-            "missing_table_structure": "table",
-            "complex_table_no_header": "table",
-            "equation_no_label": "aria",
-            "color_only_emphasis": "color",
-            "low_contrast_potential": "contrast",
-            "low_color_contrast": "contrast",
-            "unlabeled_hyperlink": "link",
-            "links_missing_alt": "link",
-            "vague_link_text": "link",
-            "missing_list_structure": "list",
-            # PDF scanner issue types
-            "reading_order_mismatch": "reading_order",
-            "unlabeled_form_fields": "form",
-            "missing_tab_order": "form",
-            "missing_structure_tree": "structure",
-            "empty_structure_tree": "structure",
-            "not_marked_tagged": "structure",
-            "missing_content_marking": "structure",
-            "empty_parent_tree": "structure",
-            "missing_document_root": "structure",
-            "missing_pdfua_identifier": "structure",
-            "missing_bookmarks": "navigation",
-            "missing_tounicode": "structure",
-            "missing_role_map": "structure",
-            "incomplete_role_map": "structure",
-        }
-        if explicit in issue_type_map:
-            return issue_type_map[explicit]
-        return explicit
+        return BUILTIN_ISSUE_TYPE_CATEGORY_MAP.get(explicit, explicit)
 
     rule = (
         issue.get("rule")

@@ -60,6 +60,9 @@ from src.education.math_contracts import (
     MATH_ISSUE_TYPES,
     SCANNED_EQUATION_REGION_ISSUE_TYPE,
 )
+from src.education.remediation.category_mapper import (
+    BUILTIN_ISSUE_TYPE_CATEGORY_MAP,
+)
 
 try:
     from .output_claim import DescriptorBoundOutputClaim
@@ -191,7 +194,22 @@ _CATEGORY_ALIASES = {
     "1.3.1": IssueCategory.STRUCTURE,
     "1.4.3": IssueCategory.CONTRAST,
     **{issue_type: IssueCategory.STRUCTURE for issue_type in MATH_ISSUE_TYPES},
+    **{
+        issue_type: IssueCategory(category)
+        for issue_type, category in BUILTIN_ISSUE_TYPE_CATEGORY_MAP.items()
+    },
 }
+
+# Standards identify the rule family, not the remediation category. They are
+# safe context in strict payloads but must not compete with a specific issue
+# type such as missing_title or missing_structure_tree.
+_NON_CATEGORY_SEMANTIC_VALUES = frozenset({"pdf/ua", "pdfua"})
+
+
+def _is_non_category_semantic_value(value: str) -> bool:
+    return value in _NON_CATEGORY_SEMANTIC_VALUES or value.startswith(
+        ("pdf/ua_", "pdfua_")
+    )
 
 
 @dataclass(frozen=True)
@@ -249,6 +267,7 @@ def classify_issue_category(
         for field, value in values
         if field in {"category", "type", "issue_type", "rule", "rule_id"}
         and value not in _CATEGORY_ALIASES
+        and not _is_non_category_semantic_value(value)
         and not value.startswith("wcag_")
     }
     if authoritative and len(nonvisual) > 1:

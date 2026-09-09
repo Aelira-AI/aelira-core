@@ -19,6 +19,7 @@ compliance) and PyMuPDF (fitz) for text/image extraction during analysis.
 
 import base64
 import binascii
+from collections import Counter
 import hashlib
 import html
 import logging
@@ -1103,6 +1104,10 @@ class PdfRemediator(BaseRemediator):
                 except Exception as e:
                     logger.warning("ContrastFlagger failed (non-fatal): %s", e)
 
+            # No scanner finding may disappear merely because a new or
+            # unsupported category lacks an explicit dispatch loop above.
+            self._account_for_unprocessed_issues()
+
             # 17. Save + verify
             output_path = self._save_document(document)
             self.result.output_file = output_path
@@ -1142,6 +1147,31 @@ class PdfRemediator(BaseRemediator):
             self._cleanup_working_copy()
 
         return self.result
+
+    def _account_for_unprocessed_issues(self) -> None:
+        """Move every unaccounted input issue into the manual bucket."""
+        accounted: Counter[str] = Counter(
+            issue.issue_id for issue in self.result.fixed_issues
+        )
+        accounted.update(issue.issue_id for issue in self.result.manual_issues)
+        accounted.update(
+            str(issue.get("issue_id"))
+            for issue in self.result.failed_issues
+            if issue.get("issue_id") is not None
+        )
+
+        for issue in self.issues:
+            if accounted[issue.id] > 0:
+                accounted[issue.id] -= 1
+                continue
+            self._add_manual_issue(
+                issue,
+                reason="unhandled_issue_category",
+                recommendation=(
+                    "Review this finding manually; automated remediation does not "
+                    "yet handle its category."
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Specialist module dispatch

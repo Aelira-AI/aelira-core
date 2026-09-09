@@ -388,6 +388,74 @@ def test_authoritative_single_known_category_is_unchanged(probe_path):
     assert classification.manual_reason is None
 
 
+@pytest.mark.parametrize(
+    ("issue_type", "expected"),
+    [
+        ("missing_title", IssueCategory.TITLE),
+        ("missing_author", IssueCategory.TITLE),
+        ("title_not_displayed", IssueCategory.TITLE),
+        ("missing_lang", IssueCategory.LANGUAGE),
+        ("missing_language", IssueCategory.LANGUAGE),
+        ("missing_alt_text", IssueCategory.ALT_TEXT),
+        ("missing_figure_caption", IssueCategory.ALT_TEXT),
+        ("missing_table_caption", IssueCategory.TABLE),
+        ("missing_table_structure", IssueCategory.TABLE),
+        ("complex_table_no_header", IssueCategory.TABLE),
+        ("equation_no_label", IssueCategory.ARIA),
+        ("color_only_emphasis", IssueCategory.COLOR),
+        ("low_contrast_potential", IssueCategory.CONTRAST),
+        ("low_color_contrast", IssueCategory.CONTRAST),
+        ("unlabeled_hyperlink", IssueCategory.LINK),
+        ("links_missing_alt", IssueCategory.LINK),
+        ("vague_link_text", IssueCategory.LINK),
+        ("missing_list_structure", IssueCategory.LIST),
+        ("reading_order_mismatch", IssueCategory.READING_ORDER),
+        ("unlabeled_form_fields", IssueCategory.FORM),
+        ("missing_tab_order", IssueCategory.FORM),
+        ("missing_structure_tree", IssueCategory.STRUCTURE),
+        ("empty_structure_tree", IssueCategory.STRUCTURE),
+        ("not_marked_tagged", IssueCategory.STRUCTURE),
+        ("missing_content_marking", IssueCategory.STRUCTURE),
+        ("empty_parent_tree", IssueCategory.STRUCTURE),
+        ("missing_document_root", IssueCategory.STRUCTURE),
+        ("missing_pdfua_identifier", IssueCategory.STRUCTURE),
+        ("missing_bookmarks", IssueCategory.NAVIGATION),
+        ("missing_tounicode", IssueCategory.STRUCTURE),
+        ("missing_role_map", IssueCategory.STRUCTURE),
+        ("incomplete_role_map", IssueCategory.STRUCTURE),
+    ],
+)
+def test_authoritative_classifier_recognizes_every_builtin_issue_type(
+    issue_type, expected
+):
+    classification = classify_issue_category(
+        {"issue_type": issue_type}, authoritative=True
+    )
+
+    assert classification.category is expected
+    assert classification.manual_reason is None
+
+
+def test_authoritative_classifier_accepts_pdfua_rule_with_structure_issue_type():
+    classification = classify_issue_category(
+        {"issue_type": "missing_structure_tree", "rule": "PDF/UA 6.6.4"},
+        authoritative=True,
+    )
+
+    assert classification.category is IssueCategory.STRUCTURE
+    assert classification.manual_reason is None
+
+
+def test_pdfua_standard_label_does_not_override_specific_issue_category():
+    classification = classify_issue_category(
+        {"issue_type": "missing_title", "rule": "PDF/UA 6.6.4"},
+        authoritative=True,
+    )
+
+    assert classification.category is IssueCategory.TITLE
+    assert classification.manual_reason is None
+
+
 def test_worker_partition_fails_closed_for_conflicts_but_visual_purpose_wins():
     from src.jobs.remediation_job import _partition_authoritative_document_issues
 

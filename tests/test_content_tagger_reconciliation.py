@@ -133,3 +133,31 @@ class TestReconcileContentTaggerFixes:
         assert remediator.result.fixed_count == 1
         assert remediator.result.manual_count == 1
         assert remediator.result.manual_issues[0].issue_id == unrelated.id
+
+    def test_unhandled_issue_is_accounted_for_as_manual(self, tmp_path):
+        pdf_path = tmp_path / "input.pdf"
+        pdf_path.write_bytes(b"%PDF-1.7\n")
+        remediator = PdfRemediator(
+            str(pdf_path),
+            [
+                {
+                    "type": "future_scanner_category",
+                    "issue_type": "future_scanner_issue",
+                    "message": "A future scanner finding",
+                }
+            ],
+            RemediationConfig(
+                use_ai=False,
+                create_backup=False,
+                allow_legacy_nested_ai=False,
+            ),
+        )
+
+        remediator._account_for_unprocessed_issues()
+
+        assert remediator.result.total_issues == 1
+        assert remediator.result.fixed_count == 0
+        assert remediator.result.manual_count == 1
+        assert remediator.result.failed_count == 0
+        assert remediator.result.skipped_count == 0
+        assert remediator.result.manual_issues[0].reason == "unhandled_issue_category"

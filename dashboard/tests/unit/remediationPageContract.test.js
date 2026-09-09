@@ -6,6 +6,10 @@ const pageSource = readFileSync(
   new URL('../../src/pages/Remediate.tsx', import.meta.url),
   'utf8'
 );
+const outcomeSource = readFileSync(
+  new URL('../../src/utils/remediationIssueOutcomes.ts', import.meta.url),
+  'utf8'
+);
 
 describe('durable remediation page contract', () => {
   it('renders every terminal state and keeps browser timeout distinct', () => {
@@ -44,7 +48,16 @@ describe('durable remediation page contract', () => {
   it('does not invent scores or per-issue remediation outcomes', () => {
     assert.match(pageSource, /Remediated score/);
     assert.match(pageSource, /Not available/);
-    assert.match(pageSource, /Outcome not reported/);
+    assert.match(outcomeSource, /Outcome not reported/);
+    assert.match(pageSource, /fixes\.length === terminalJob\.fixed_count/);
+    assert.match(pageSource, /manual outcomes are shown only when the job totals reconcile exactly/);
+    assert.match(pageSource, /pairIssuesWithFixes\(scan\.issues \|\| \[\], recordedFixes \|\| \[\], job \|\| undefined\)/);
+    assert.match(outcomeSource, /manualAttributionIsProven/);
+    assert.match(outcomeSource, /counts\.failed_count === 0/);
+    assert.match(outcomeSource, /counts\.skipped_count === 0/);
+    assert.match(outcomeSource, /Fix proposed · review required/);
+    assert.match(outcomeSource, /Approved for remediation/);
+    assert.match(outcomeSource, /review_status === 'apply_failed'/);
     assert.doesNotMatch(pageSource, /fixedDescs|manualDescs|matchedFixed|matchedManual/);
     assert.doesNotMatch(pageSource, /remediated_(?:score|compliance_score)[^\n]*\|\|\s*100/);
     assert.doesNotMatch(pageSource, /status=\{issueStatuses/);
