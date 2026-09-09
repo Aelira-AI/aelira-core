@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-09-09
+
+### Fixed
+
+- Strict PDF remediation recognizes every built-in scanner issue type, including versioned PDF/UA rule labels, without requiring an intermediate enrichment step.
+- Every input finding is accounted for as fixed, manual, failed, or skipped; unsupported future categories remain explicit manual work instead of disappearing from the result.
+- The dashboard reconciles persisted fix records to scan findings one-to-one and reports fixed, proposed, approved, rejected, and failed outcomes without inferring unsupported detail.
+- Zero-issue remediation jobs now include an authoritative `total_issues` value.
+
+### Changed
+
+- The scan-to-remediation integration suite now passes raw scanner output directly into strict remediation and permanently exercises the reported H1, title-metadata, and PDF/UA three-finding regression.
+
+### Operator action required
+
+- No database migration or new environment variable is required.
+- Deploy API, worker, and dashboard from the same 0.9.9 release. Re-run any remediation that failed under v0.9.8, then confirm that fixed, manual, failed, and skipped counts sum to the total before relying on the artifact.
+- Preserve every v0.9.8 operator action below, including backup, deployment configuration, worker-health, and review requirements.
+
 ## [0.9.8] - 2026-09-08
 
 ### Security
