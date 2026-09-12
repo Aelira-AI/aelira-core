@@ -30,6 +30,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -394,6 +395,318 @@ class ContentTaggerV2:
                 return None
             selected.append(match)
         return selected
+
+    def promote_marked_paragraph_prefix(
+        self, page_index: int, text: str, level: int
+    ) -> bool:
+        """Bind a heading to the first complete BT of a uniquely owned paragraph.
+
+        The existing paragraph retains its MCID and remaining text. This bounded
+        path accepts plain standard-font text runs, never splits a BT, and never
+        introduces replacement text. Unsupported or ambiguous bindings are left
+        for manual review before any content or structure mutation.
+        """
+        try:
+            if self._parent_tree_parse_error is not None or level not in range(1, 7):
+                return False
+            page = self.pdf.pages[page_index]
+            key = page.obj.get(Name.StructParents)
+            if not isinstance(key, int) or key < 0:
+                return False
+            if sum(p.obj.get(Name.StructParents) == key for p in self.pdf.pages) != 1:
+                return False
+            root = self.pdf.Root.StructTreeRoot
+            parent_tree, entries = _number_tree_entries(root)
+            owners = dict(entries).get(key)
+            if not isinstance(owners, Array):
+                return False
+            ops = list(pikepdf.parse_content_stream(page))
+            regions = []
+            opened = None
+            seen_mcids = set()
+            text_start = None
+            source_runs = []
+            for index, op in enumerate(ops):
+                name = str(op.operator)
+                if name == "Do":
+                    # Form text has a separate resource/content scope. This
+                    # bounded path cannot prove page-wide title uniqueness.
+                    return False
+                if name == "BT":
+                    if text_start is not None:
+                        return False
+                    text_start = index
+                elif name == "ET":
+                    if text_start is None:
+                        return False
+                    run = ops[text_start : index + 1]
+                    run_text = _extract_text_from_ops(run)
+                    if any(
+                        str(item.operator) in {"Tj", "TJ", "'", '"'} for item in run
+                    ):
+                        if not run_text or not self._plain_standard_text_run(page, run):
+                            return False
+                        source_runs.append(run_text)
+                    text_start = None
+                elif name in {"Tj", "TJ", "'", '"'} and text_start is None:
+                    return False
+                if name in {"BMC", "BDC"}:
+                    if opened is not None or name != "BDC" or len(op.operands) != 2:
+                        return False
+                    props = op.operands[1]
+                    if not isinstance(props, Dictionary) or set(props.keys()) != {
+                        "/MCID"
+                    }:
+                        return False
+                    mcid = props.MCID
+                    if not isinstance(mcid, int) or mcid < 0 or mcid in seen_mcids:
+                        return False
+                    seen_mcids.add(mcid)
+                    opened = (index, mcid)
+                elif name == "EMC":
+                    if opened is None:
+                        return False
+                    regions.append((*opened, index))
+                    opened = None
+            if opened is not None or text_start is not None:
+                return False
+            compact_title = "".join(_normalize_nfkd(text).split())
+            compact_source = "".join(_normalize_nfkd("".join(source_runs)).split())
+            if not compact_title or compact_source.count(compact_title) != 1:
+                return False
+
+            candidates = []
+            for start, mcid, end in regions:
+                if mcid >= len(owners):
+                    return False
+                owner = owners[mcid]
+                if (
+                    not isinstance(owner, Dictionary)
+                    or str(owner.get(Name.S)) != "/P"
+                    or owner.get(Name.K) != mcid
+                    or str(ops[start].operands[0]) != "/P"
+                ):
+                    continue
+                runs = self._find_content_blocks(ops[start + 1 : end], page)
+                # Require two or more contiguous, complete BT/ET runs. A
+                # prefix leaves the original paragraph as one contiguous span.
+                if len(runs) < 2 or runs[0][0] != 0 or runs[-1][1] != end - start - 1:
+                    continue
+                if any(
+                    kind != "text"
+                    or str(ops[start + last].operator) != "ET"
+                    or (i and first != runs[i - 1][1])
+                    or sum(
+                        str(op.operator) == "BT"
+                        for op in ops[start + 1 + first : start + 1 + last]
+                    )
+                    != 1
+                    for i, (first, last, kind) in enumerate(runs)
+                ):
+                    continue
+                first_end = start + 1 + runs[0][1]
+                run = ops[start + 1 : first_end]
+                if not self._plain_standard_text_run(page, run):
+                    continue
+                if _extract_text_from_ops(run) != text:
+                    continue
+                candidates.append((start, first_end, mcid, owner))
+            if len(candidates) != 1:
+                return False
+            start, first_end, mcid, owner = candidates[0]
+            if owner.objgen == (0, 0):
+                return False
+            # Resolve the real containment edge, including documents whose
+            # page ownership exists only in ParentTree. Refuse shared nodes,
+            # contradictory /P or /Pg, and inherited replacement semantics.
+            matches = []
+            visited = set()
+            referenced_mcids = set()
+
+            def check_reference(reference, reference_owner, page_ref):
+                if page_ref is not None and page_ref.objgen != page.obj.objgen:
+                    return
+                if (
+                    not isinstance(reference, int)
+                    or reference < 0
+                    or reference >= len(owners)
+                    or reference not in seen_mcids
+                    or not isinstance(owners[reference], Dictionary)
+                    or owners[reference].objgen != reference_owner.objgen
+                    or reference in referenced_mcids
+                ):
+                    raise ValueError("Ambiguous or dangling structure MCID reference")
+                referenced_mcids.add(reference)
+
+            def visit(
+                node, parent=None, inherited_page=None, replacement=False, depth=0
+            ):
+                if depth > 50 or len(visited) > 20000:
+                    raise ValueError("Structure traversal limit")
+                if isinstance(node, int):
+                    check_reference(node, parent, inherited_page)
+                    return
+                if not isinstance(node, Dictionary):
+                    return
+                identity = node.objgen
+                if identity != (0, 0):
+                    if identity in visited:
+                        raise ValueError("Shared or cyclic structure node")
+                    visited.add(identity)
+                replacement = replacement or any(
+                    k in node for k in (Name.ActualText, Name.Alt)
+                )
+                page_ref = node.get(Name.Pg, inherited_page)
+                if Name.MCID in node:
+                    check_reference(node.MCID, parent, page_ref)
+                if identity == owner.objgen:
+                    if replacement or (
+                        page_ref is not None and page_ref.objgen != page.obj.objgen
+                    ):
+                        raise ValueError("Ambiguous paragraph semantics or page")
+                    if Name.P in node and node.P.objgen != parent.objgen:
+                        raise ValueError("Contradictory paragraph parent")
+                    matches.append(parent)
+                kids = node.get(Name.K, Array([]))
+                for child in kids if isinstance(kids, Array) else [kids]:
+                    visit(child, node, page_ref, replacement, depth + 1)
+
+            visit(root)
+            if referenced_mcids != seen_mcids:
+                return False
+            if len(matches) != 1 or str(matches[0].get(Name.S)) not in {
+                "/Document",
+                "/Sect",
+                "/Div",
+            }:
+                return False
+            parent = matches[0]
+            if parent.objgen == (0, 0):
+                return False
+            siblings = parent.K
+            if not isinstance(siblings, Array):
+                return False
+            siblings = list(siblings)
+            sibling_index = next(
+                i
+                for i, child in enumerate(siblings)
+                if isinstance(child, Dictionary) and child.objgen == owner.objgen
+            )
+            if (
+                sum(
+                    isinstance(item, Dictionary) and item.objgen == owner.objgen
+                    for _, values in entries
+                    for item in (values if isinstance(values, Array) else [values])
+                )
+                != 1
+            ):
+                return False
+            new_mcid = max(max(seen_mcids, default=-1) + 1, len(owners))
+            if new_mcid >= 20000:
+                return False
+            heading_name = Name(f"/H{level}")
+            new_ops = (
+                ops[:start]
+                + [
+                    pikepdf.ContentStreamInstruction(
+                        [heading_name, Dictionary(MCID=new_mcid)], Operator("BDC")
+                    )
+                ]
+                + ops[start + 1 : first_end]
+                + [pikepdf.ContentStreamInstruction([], Operator("EMC")), ops[start]]
+                + ops[first_end:]
+            )
+            new_bytes = pikepdf.unparse_content_stream(new_ops)
+        except Exception:
+            return False
+
+        heading = self.pdf.make_indirect(
+            Dictionary(
+                Type=Name.StructElem, S=heading_name, P=parent, Pg=page.obj, K=new_mcid
+            )
+        )
+        updated_owners = list(owners)
+        updated_owners.extend([None] * (new_mcid - len(updated_owners)))
+        updated_owners.append(heading)
+        updated_array = self.pdf.make_indirect(Array(updated_owners))
+        _set_number_tree_value(parent_tree, key, updated_array)
+        parent.K = Array(
+            siblings[:sibling_index] + [heading] + siblings[sibling_index:]
+        )
+        owner.P = parent
+        owner.Pg = page.obj
+        page.obj.Contents = self.pdf.make_stream(new_bytes)
+        self._preserved_parent_tree_entries[key] = updated_array
+        return True
+
+    @staticmethod
+    def _plain_standard_text_run(page: Any, run: List[Any]) -> bool:
+        """Bound literal matching to printable ASCII with known PDF encoding."""
+        fonts = page.obj.Resources.Font
+        font_set = False
+        for op in run:
+            name = str(op.operator)
+            if name == "Tf":
+                font = fonts[op.operands[0]]
+                if (
+                    str(font.get(Name.Subtype)) != "/Type1"
+                    or str(font.get(Name.BaseFont))
+                    not in {
+                        "/Helvetica",
+                        "/Helvetica-Bold",
+                        "/Helvetica-Oblique",
+                        "/Helvetica-BoldOblique",
+                        "/Times-Roman",
+                        "/Times-Bold",
+                        "/Times-Italic",
+                        "/Times-BoldItalic",
+                        "/Courier",
+                        "/Courier-Bold",
+                        "/Courier-Oblique",
+                        "/Courier-BoldOblique",
+                    }
+                    or Name.ToUnicode in font
+                    or str(font.get(Name.Encoding, Name.StandardEncoding))
+                    not in {"/StandardEncoding", "/WinAnsiEncoding"}
+                ):
+                    return False
+                font_set = True
+            elif name in {"Tj", "TJ"}:
+                if not font_set or len(op.operands) != 1:
+                    return False
+                if name == "Tj" and not isinstance(op.operands[0], String):
+                    return False
+                if name == "TJ" and not isinstance(op.operands[0], Array):
+                    return False
+                values = op.operands if name == "Tj" else op.operands[0]
+                for value in values:
+                    if isinstance(value, String):
+                        if any(
+                            byte < 32 or byte > 126 or byte in (39, 96)
+                            for byte in bytes(value)
+                        ):
+                            return False
+                    elif (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float, Decimal))
+                        or not math.isfinite(value)
+                    ):
+                        return False
+            elif name not in {
+                "BT",
+                "ET",
+                "Tm",
+                "Td",
+                "TD",
+                "T*",
+                "Tc",
+                "Tw",
+                "Tz",
+                "TL",
+                "Ts",
+            }:
+                return False
+        return font_set
 
     def tag_all_pages(self) -> Dict[str, int]:
         """Tag all pages with BDC/EMC markers using position-based matching.

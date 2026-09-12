@@ -4015,6 +4015,12 @@ class PdfRemediator(BaseRemediator):
             if self._struct_tree and not self._reserve_source_text_runs(
                 page_num - 1, [heading_text], document
             ):
+                tagger = ContentTaggerV2(self._struct_tree.pdf, document)
+                if tagger.promote_marked_paragraph_prefix(
+                    page_num - 1, heading_text, heading_level
+                ):
+                    self._structure_modified = True
+                    return True
                 logger.warning("Heading needs a partial text-run split; manual review")
                 return self._refuse_source_binding(
                     issue,
