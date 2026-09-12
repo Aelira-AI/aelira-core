@@ -11,6 +11,7 @@ stubbed: the browser that runs axe-core, and Canvas itself. Everything
 between them is the code a user drives.
 """
 
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -150,7 +151,10 @@ def client(db):
 
 
 @pytest.mark.asyncio
-async def test_scan_remediate_approve_write_back(db, seeded, client):
+@pytest.mark.parametrize("comparison_available", [True, False])
+async def test_scan_remediate_approve_write_back(
+    db, seeded, client, comparison_available
+):
     credential, page = seeded
     canvas = MagicMock()
     scanner = CanvasContentScanner(
@@ -208,14 +212,21 @@ async def test_scan_remediate_approve_write_back(db, seeded, client):
         attempt_count=1,
         report_progress=AsyncMock(return_value=True),
     )
-    with patch(
-        "src.jobs.canvas_content_job._remediate_snapshot",
-        return_value=_Candidate(
-            '<p>Welcome</p><img src="chart.png" alt="Chart">',
-            1,
-            0,
-            0,
-            100.0,
+    candidate_body = '<p>Welcome</p><img src="chart.png" alt="Chart">'
+    with (
+        patch(
+            "src.jobs.canvas_content_job._remediate_snapshot",
+            return_value=_Candidate(candidate_body, 1, 0, 0, 100.0),
+        ),
+        patch(
+            "src.jobs.canvas_content_job.run_deterministic_axe",
+            new=AsyncMock(
+                side_effect=(
+                    [_axe([_image_alt_violation()], passes=9), _axe([], passes=10)]
+                    if comparison_available
+                    else RuntimeError("scanner unavailable")
+                )
+            ),
         ),
     ):
         remediated = await handle_canvas_content_job(context, db, MagicMock())
@@ -235,10 +246,23 @@ async def test_scan_remediate_approve_write_back(db, seeded, client):
     db.refresh(page)
     assert page.remediated_body is not None
     assert page.writeback_status == "pending_review"
-    assert remediated.result["verified"] is False
-    assert page.remediated_compliance_score == 100.0
-    assert page.remediated_issues_remaining == 0
-    assert remediated.result["issues_introduced"] == 0
+    assert remediated.result["verified"] is comparison_available
+    assert page.remediated_compliance_score == (100.0 if comparison_available else None)
+    assert page.remediated_issues_remaining == (0 if comparison_available else 1)
+    assert remediated.result["issues_introduced"] == (
+        0 if comparison_available else None
+    )
+    assert remediated.result["score_measurement"] == (
+        {
+            "method_version": "canvas-axe-v1",
+            "source_sha256": hashlib.sha256(ORIGINAL_BODY.encode()).hexdigest(),
+            "output_sha256": hashlib.sha256(candidate_body.encode()).hexdigest(),
+            "source_score": 90.0,
+            "output_score": 100.0,
+        }
+        if comparison_available
+        else None
+    )
 
     # 4. The review view reports the split and where it came from.
     diff = client.get(f"/canvas/content/{page.id}/diff")
@@ -246,7 +270,7 @@ async def test_scan_remediate_approve_write_back(db, seeded, client):
     body = diff.json()
     assert body["original_html"] == ORIGINAL_BODY
     assert body["issues"][0]["id"] == "image-alt"
-    assert body["issues_verified_by_rescan"] is False
+    assert body["issues_verified_by_rescan"] is comparison_available
 
     # 5. Approve.
     approve = client.post(f"/canvas/content/{page.id}/approve")
@@ -277,6 +301,8 @@ async def test_scan_remediate_approve_write_back(db, seeded, client):
     assert page.writeback_at is not None
     # What Canvas holds is now the remediated copy.
     assert page.content_body == page.remediated_body
+    assert page.last_compliance_score == (100.0 if comparison_available else None)
+    assert page.needs_rescan is True
 
     # 7. The write-back left an audit trail naming who approved it.
     log = (

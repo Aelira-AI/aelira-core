@@ -409,6 +409,23 @@ def test_ci_system_package_install_has_bounded_network_retries() -> None:
     assert system_dependencies.count("timeout 5m") == 2
 
 
+def test_ci_installs_primary_and_fallback_pdf_ocr_dependencies() -> None:
+    workflow = load_workflow(CI)
+    system_dependencies = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if step.get("name") == "Install system dependencies"
+    )["run"]
+    packages = system_dependencies.split("install -y", 1)[1].split()
+    assert {
+        "unpaper",
+        "ghostscript",
+        "poppler-utils",
+        "tesseract-ocr",
+        "tesseract-ocr-eng",
+    } <= set(packages)
+
+
 def test_dashboard_failure_makes_every_publication_node_unreachable() -> None:
     release = load_workflow(RELEASE)
     docker = load_workflow(DOCKER)
