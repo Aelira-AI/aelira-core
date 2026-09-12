@@ -29,6 +29,23 @@ def run_scanner(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_dashboard_preview_fixtures_pass_builtin_release_safety(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    fixtures = sorted((ROOT / "dashboard" / "tests" / "fixtures").rglob("*"))
+    files = [fixture for fixture in fixtures if fixture.is_file()]
+    assert files, "expected dashboard preview fixtures"
+    for fixture in files:
+        target = repo / fixture.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(fixture.read_bytes())
+    subprocess.run(["git", "-C", str(repo), "add", "dashboard"], check=True)
+
+    result = run_scanner(repo, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == []
+
+
 def test_strict_policy_requires_explicit_denylist_before_scanning(
     tmp_path: Path,
 ) -> None:
