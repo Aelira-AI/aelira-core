@@ -23,6 +23,12 @@ from .models import ReadingOrderIssue, ReadingOrderResult
 logger = logging.getLogger(__name__)
 
 
+class _StructureBlocks(list):
+    """Text blocks with local completeness state, also retained in partial scans."""
+
+    incomplete = False
+
+
 def _structure_children(kids):
     """Yield dictionary children from either legal form of a structure /K."""
     if isinstance(kids, pikepdf.Dictionary):
@@ -47,7 +53,7 @@ def _element_page(elem, inherited_page, page_indices):
         pass
     # An explicit but invalid reference cannot borrow its parent's page.
     record_incomplete_check("reading_order.page_reference")
-    return -1
+    return -2
 
 
 class ReadingOrderVerifier:
@@ -100,7 +106,9 @@ class ReadingOrderVerifier:
                         page, file_path, page_num
                     )
 
-                    if structure_blocks:
+                    if structure_blocks or getattr(
+                        structure_blocks, "incomplete", False
+                    ):
                         has_structure_tree = True
 
                         # Skip reading order comparison for pages with
@@ -108,7 +116,9 @@ class ReadingOrderVerifier:
                         # row-by-row in the structure tree, which differs
                         # from visual y-sort (column-by-column).  This is
                         # intentional, not a reading order bug.
-                        if self._page_has_tables(file_path, page_num):
+                        if not getattr(
+                            structure_blocks, "incomplete", False
+                        ) and self._page_has_tables(file_path, page_num):
                             logger.debug(
                                 "[ReadingOrderVerifier] Skipping page %d "
                                 "(has table structures)",
@@ -253,9 +263,11 @@ class ReadingOrderVerifier:
         """
         if not HAS_PIKEPDF:
             record_incomplete_check("reading_order.dependency")
-            return []
+            blocks = _StructureBlocks()
+            blocks.incomplete = True
+            return blocks
 
-        structure_texts: List[Dict] = []
+        structure_texts = _StructureBlocks()
 
         try:
             with pikepdf.open(file_path) as pdf:
@@ -270,63 +282,104 @@ class ReadingOrderVerifier:
                 # this lookup belongs only to the currently opened document.
                 page_indices = {pg.obj.objgen: idx for idx, pg in enumerate(pdf.pages)}
 
-                # Collect structure elements with their content,
-                # only for elements that belong to *page_num*.
-                def collect_text(elem, inherited_page=-1, depth=0):
-                    """Recursively collect text from structure elements."""
-                    if depth > 50:
-                        record_incomplete_check("reading_order.structure_depth_limit")
-                        return
+                from .marked_content import MarkedContentResolver
 
-                    # Determine which page this element belongs to.
-                    elem_page = _element_page(elem, inherited_page, page_indices)
+                resolver = MarkedContentResolver(pdf, file_path)
+                visits = 0
 
-                    on_target_page = elem_page == page_num
+                def collect_text(kid, owner=None, inherited_page=-1, depth=0):
+                    """Return page-labelled blocks in semantic /K traversal order."""
+                    nonlocal visits
+                    visits += 1
+                    if depth > 50 or visits > 20000:
+                        resolver.fail("structure_depth_limit")
+                        return []
+                    if isinstance(kid, pikepdf.Array):
+                        if len(kid) > 20000:
+                            resolver.fail("structure_depth_limit")
+                            return []
+                        return [
+                            block
+                            for item in kid
+                            for block in collect_text(
+                                item, owner, inherited_page, depth + 1
+                            )
+                        ]
+                    is_mcr = isinstance(kid, pikepdf.Dictionary) and (
+                        kid.get("/Type") == Name.MCR or "/MCID" in kid
+                    )
+                    if isinstance(kid, int) or is_mcr:
+                        ref_page = inherited_page
+                        if is_mcr:
+                            ref_page = _element_page(kid, inherited_page, page_indices)
+                            if "/Stm" in kid or "/StmOwn" in kid:
+                                resolver.fail("stream_scope")
+                                return []
+                        key = resolver.resolve(
+                            owner,
+                            kid.get("/MCID") if is_mcr else kid,
+                            ref_page,
+                            invalid_page=ref_page == -2,
+                        )
+                        if key is None:
+                            return []
+                        # Retain page ownership even for empty/non-target content.
+                        block = resolver.text(key) if key[0] == page_num else None
+                        return [(key[0], block)]
+                    if not isinstance(kid, pikepdf.Dictionary):
+                        resolver.fail("structure_reference")
+                        return []
+                    if kid.get("/Type") == Name.OBJR:
+                        resolver.fail("object_reference")
+                        return []
+                    elem_page = _element_page(kid, inherited_page, page_indices)
+                    if elem_page == -2:
+                        resolver.fail("page_reference")
+                    descendants = (
+                        collect_text(kid.K, kid, elem_page, depth + 1)
+                        if "/K" in kid
+                        else []
+                    )
+                    if "/ActualText" in kid:
+                        # Validate children/ownership but replace their text exactly once.
+                        pages = {number for number, _ in descendants}
+                        if elem_page >= 0:
+                            pages.add(elem_page)
+                        if len(pages) != 1 or elem_page == -2:
+                            resolver.fail("replacement_page")
+                            return []
+                        if not isinstance(kid.ActualText, pikepdf.String):
+                            resolver.fail("actual_text")
+                            return []
+                        return [
+                            (
+                                pages.pop(),
+                                {
+                                    "text": str(kid.ActualText).strip(),
+                                    "source": "ActualText",
+                                },
+                            )
+                        ]
+                    if elem_page == page_num and "/Alt" in kid:
+                        descendants.insert(
+                            0,
+                            (
+                                elem_page,
+                                {"text": str(kid.Alt).strip(), "source": "Alt"},
+                            ),
+                        )
+                    return descendants
 
-                    # ActualText replaces this element and its descendants;
-                    # collecting both would duplicate the represented content.
-                    if hasattr(elem, "ActualText"):
-                        try:
-                            actual_text = str(elem.ActualText)
-                            if on_target_page and actual_text.strip():
-                                structure_texts.append(
-                                    {
-                                        "text": actual_text.strip(),
-                                        "source": "ActualText",
-                                    }
-                                )
-                        except Exception:
-                            record_incomplete_check("reading_order.collect_text")
-                        if elem_page < 0:
-                            record_incomplete_check("reading_order.replacement_page")
-                        return
-
-                    # Check for Alt text
-                    if on_target_page and hasattr(elem, "Alt"):
-                        try:
-                            alt_text = str(elem.Alt)
-                            if alt_text.strip():
-                                structure_texts.append(
-                                    {
-                                        "text": alt_text.strip(),
-                                        "source": "Alt",
-                                    }
-                                )
-                        except Exception:
-                            record_incomplete_check("reading_order.collect_text")
-                            pass
-
-                    # Recurse into children (pass page context down)
-                    if hasattr(elem, "K"):
-                        for kid in _structure_children(elem.K):
-                            collect_text(kid, elem_page, depth + 1)
-
-                # Start collection from root kids
-                for kid in _structure_children(struct_root[Name.K]):
-                    collect_text(kid)
+                structure_texts = _StructureBlocks(
+                    block
+                    for number, block in collect_text(struct_root.K)
+                    if number == page_num and block and block["text"]
+                )
+                structure_texts.incomplete = resolver.failed
 
         except Exception as e:
             record_incomplete_check("reading_order.collect_text")
+            structure_texts.incomplete = True
             logger.warning(f"[ReadingOrderVerifier] Error reading structure tree: {e}")
 
         return structure_texts
@@ -465,6 +518,13 @@ class ReadingOrderVerifier:
                     if visual
                     else None
                 ),
+            )
+
+        if getattr(structure, "incomplete", False):
+            return issue(
+                "Structure content could not be fully resolved. Review missing, "
+                "ambiguous, or unsupported reading-order references.",
+                "critical",
             )
 
         # Bound work without silently certifying an unchecked page suffix.
