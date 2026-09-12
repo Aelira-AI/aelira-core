@@ -306,6 +306,7 @@ class ContentTaggerV2:
         fitz_doc: Any,
         *,
         excluded_image_occurrences: Optional[List[Any]] = None,
+        order_generated_structure: bool = False,
     ) -> None:
         if not HAS_PIKEPDF:
             raise ImportError(
@@ -319,6 +320,9 @@ class ContentTaggerV2:
             )
         self.pdf = pdf
         self.fitz_doc = fitz_doc
+        self._order_generated_structure = order_generated_structure
+        self._content_positions: Dict[tuple, tuple[int, int]] = {}
+        self._marked_positions: Dict[tuple, tuple[int, int]] = {}
         self._excluded_image_occurrences: Dict[int, set[tuple[int, int]]] = {}
         for pending in excluded_image_occurrences or []:
             page_idx = int(pending.page_number) - 1
@@ -350,6 +354,46 @@ class ContentTaggerV2:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _complete_text_match(block_text: str, source_text: str) -> bool:
+        if block_text.startswith("\ufffd ") and source_text.startswith("\u2022 "):
+            block_text = "\u2022 " + block_text[2:]
+        return "".join(_normalize_nfkd(block_text).split()) == "".join(
+            _normalize_nfkd(source_text).split()
+        )
+
+    def source_text_bindings(
+        self, page_index: int, texts: List[str], reserved: set[int]
+    ) -> Optional[List[int]]:
+        """Find distinct complete text runs before generating semantic nodes.
+
+        No structure or content is changed. A partial BT run needs a splitter
+        or human review, not a semantic node whose ActualText hides other words.
+        """
+        page = self.pdf.pages[page_index]
+        ops = list(pikepdf.parse_content_stream(page))
+        candidates = [
+            (start, _extract_text_from_ops(ops[start:end]))
+            for start, end, kind in self._find_content_blocks(ops, page)
+            if kind == "text" and start not in reserved
+        ]
+        selected: List[int] = []
+        for text in texts:
+            match = next(
+                (
+                    start
+                    for start, block_text in candidates
+                    if start not in selected
+                    and block_text
+                    and self._complete_text_match(block_text, text)
+                ),
+                None,
+            )
+            if match is None:
+                return None
+            selected.append(match)
+        return selected
 
     def tag_all_pages(self) -> Dict[str, int]:
         """Tag all pages with BDC/EMC markers using position-based matching.
@@ -384,6 +428,8 @@ class ContentTaggerV2:
             stats["blocks_created"] += page_stats.get("created", 0)
 
         self._build_parent_tree(struct_root)
+        if self._order_generated_structure:
+            self._order_new_structure(struct_root)
         self._ensure_document_root(struct_root)
         self._set_pdfua_identifier()
 
@@ -393,7 +439,12 @@ class ContentTaggerV2:
     # Element collection
     # ------------------------------------------------------------------
 
-    def _collect_elements(self, element: Any, by_page: Dict[int, List[Any]]) -> None:
+    def _collect_elements(
+        self,
+        element: Any,
+        by_page: Dict[int, List[Any]],
+        inherited_page: Optional[int] = None,
+    ) -> None:
         """Recursively collect StructElem elements grouped by page index."""
         if not hasattr(element, "keys"):
             return
@@ -406,22 +457,25 @@ class ContentTaggerV2:
         if elem_type_raw in TABLE_TAGS:
             return
 
-        # If this element has a /Pg reference, assign it to the correct page
-        if Name("/Pg") in element or Name.Pg in element:
-            pg_ref = element.get(Name("/Pg")) or element.get(Name.Pg)
-            page_idx = self._page_index(pg_ref)
-            if page_idx is not None and Name.S in element:
-                by_page.setdefault(page_idx, []).append(element)
+        page_idx = inherited_page
+        if Name.Pg in element:
+            page_idx = self._page_index(element[Name.Pg])
 
         # Recurse into /K children
         kids = element.get(Name.K)
         if kids is None:
-            return
-        if not isinstance(kids, Array):
+            kids = Array([])
+        elif not isinstance(kids, Array):
             kids = Array([kids])
+        # Container nodes must not acquire content already owned by a child.
+        if not kids and page_idx is not None and Name.S in element:
+            # A leaf with existing MCID/MCR/OBJR children already owns content.
+            # Reusing its /ActualText for another identical visible occurrence
+            # would collapse two source occurrences into one replacement text.
+            by_page.setdefault(page_idx, []).append(element)
         for kid in kids:
             if hasattr(kid, "keys"):
-                self._collect_elements(kid, by_page)
+                self._collect_elements(kid, by_page, page_idx)
 
     def _page_index(self, page_ref: Any) -> Optional[int]:
         """Resolve a page object reference to a 0-based page index."""
@@ -463,6 +517,17 @@ class ContentTaggerV2:
 
         if not ops:
             return page_stats
+
+        # TableTagger can already own marked content. Its structure must retain
+        # its source position relative to the text this pass will bind.
+        for position, op in enumerate(ops):
+            if str(op.operator) == "BDC" and len(op.operands) == 2:
+                properties = op.operands[1]
+                if isinstance(properties, Dictionary) and Name.MCID in properties:
+                    self._marked_positions[(page.obj.objgen, int(properties.MCID))] = (
+                        page_idx,
+                        position,
+                    )
 
         content_blocks = self._find_content_blocks(ops, page)
         excluded_indices = self._excluded_do_indices(page_idx, page, ops)
@@ -541,6 +606,17 @@ class ContentTaggerV2:
                     elem = self._create_figure_element(page.obj)
                 else:
                     block_text = _extract_text_from_ops(block_ops)
+                    if block_text:
+                        compact = "".join(_normalize_nfkd(block_text).split())
+                        source_matches = {
+                            " ".join(block[4].split())
+                            for block in fitz_blocks
+                            if "".join(_normalize_nfkd(block[4]).split()) == compact
+                        }
+                        if len(source_matches) == 1:
+                            # PDF show-text operations omit layout whitespace.
+                            # Restore it only from an exact source-text match.
+                            block_text = source_matches.pop()
                     elem = self._create_p_element(page.obj, block_text)
                 matches.append(
                     MatchedBlock(
@@ -569,6 +645,10 @@ class ContentTaggerV2:
         # Record parent tree entries (forward order)
         for match in matches:
             self._set_mcid_on_element(match.struct_elem, match.mcid, page.obj)
+            self._content_positions[match.struct_elem.objgen] = (
+                page_idx,
+                match.block_start,
+            )
             page_entries.append((match.mcid, match.struct_elem))
 
         # Write new content stream
@@ -585,6 +665,49 @@ class ContentTaggerV2:
         self._parent_tree_entries[struct_parent] = page_entries
 
         return page_stats
+
+    def _order_new_structure(self, struct_root: Any) -> None:
+        """Order newly generated siblings by their bound source content.
+
+        Existing tagged documents never enter this path. This preserves list
+        hierarchy and MCID ownership; independent reading-order validation still
+        decides whether content-stream order agrees with the visible page.
+        """
+
+        def order(
+            element: Any, inherited_page: Any = None, depth: int = 0
+        ) -> Optional[tuple[int, int]]:
+            if isinstance(element, int):
+                return self._marked_positions.get((inherited_page, element))
+            if not isinstance(element, Dictionary) or depth > 50:
+                return None
+            page = element.get(Name.Pg)
+            page_key = page.objgen if page is not None else inherited_page
+            if Name.MCID in element:
+                return self._marked_positions.get((page_key, int(element.MCID)))
+            own = self._content_positions.get(element.objgen)
+            kids = element.get(Name.K)
+            if kids is None:
+                return own
+            if not isinstance(kids, Array):
+                child_rank = order(kids, page_key, depth + 1)
+                return own if own is not None else child_rank
+            ranked = [(kid, order(kid, page_key, depth + 1)) for kid in kids]
+            # Unknown children stay in place; do not invent their position.
+            known = sorted(
+                ((kid, rank) for kid, rank in ranked if rank is not None),
+                key=lambda item: item[1],
+            )
+            iterator = iter(known)
+            element[Name.K] = Array(
+                [next(iterator)[0] if rank is not None else kid for kid, rank in ranked]
+            )
+            ranks = [rank for _, rank in ranked if rank is not None]
+            if own is not None:
+                ranks.append(own)
+            return min(ranks) if ranks else None
+
+        order(struct_root)
 
     def _excluded_do_indices(
         self, page_idx: int, page: Any, ops: List[Any]
@@ -727,7 +850,10 @@ class ContentTaggerV2:
                         contains_markers = True
                     j += 1
                 end = j + 1 if j < len(ops) else j
-                if not contains_markers:
+                # Font/position setup alone is not semantic page content.
+                # Giving an empty BT run an MCID creates an unrepresented P
+                # that a complete reading-order check cannot account for.
+                if not contains_markers and _extract_text_from_ops(ops[start:end]):
                     blocks.append((start, end, "text"))
                 i = end
             elif op_name == "INLINE_IMAGE" and marked_depth == 0:
@@ -820,6 +946,18 @@ class ContentTaggerV2:
             if kind == "text" and is_figure:
                 continue
 
+            if kind == "text" and self._order_generated_structure:
+                block_text = _extract_text_from_ops(block_ops)
+                elem_text = self._get_element_text(elem)
+                if not block_text or not elem_text:
+                    continue
+                if not self._complete_text_match(block_text, elem_text):
+                    # A heading substring must not replace a whole BT run
+                    # containing additional source words via /ActualText.
+                    continue
+                used_indices.add(elem_idx)
+                return (elem, "text", 0.75)
+
             # --- Position match ---
             elem_bbox = self._get_element_bbox(elem)
             if elem_bbox is not None and fitz_blocks:
@@ -838,6 +976,19 @@ class ContentTaggerV2:
             block_text = _extract_text_from_ops(block_ops)
             if block_text:
                 elem_text = self._get_element_text(elem)
+                # ReportLab's built-in bullet can decode as U+FFFD in raw
+                # pikepdf strings. The source-extracted list body supplies the
+                # real glyph; require the entire remaining line to agree.
+                if (
+                    elem_type_raw == "LBody"
+                    and elem_text
+                    and block_text.startswith("\ufffd ")
+                    and elem_text.startswith("\u2022 ")
+                    and _normalize_nfkd(block_text[2:])
+                    == _normalize_nfkd(elem_text[2:])
+                ):
+                    used_indices.add(elem_idx)
+                    return (elem, "text", 0.75)
                 if elem_text and self._text_matches(block_text, elem_text):
                     used_indices.add(elem_idx)
                     return (elem, "text", 0.75)

@@ -1,6 +1,8 @@
 """Reading order verification for PDFs."""
 
 import logging
+from bisect import bisect_right
+from collections import Counter
 from .completeness import record_incomplete_check
 from typing import Dict, List, Optional
 
@@ -19,6 +21,33 @@ except ImportError:
 from .models import ReadingOrderIssue, ReadingOrderResult
 
 logger = logging.getLogger(__name__)
+
+
+def _structure_children(kids):
+    """Yield dictionary children from either legal form of a structure /K."""
+    if isinstance(kids, pikepdf.Dictionary):
+        yield kids
+    elif isinstance(kids, pikepdf.Array):
+        for kid in kids:
+            if isinstance(kid, pikepdf.Dictionary):
+                yield kid
+
+
+def _element_page(elem, inherited_page, page_indices):
+    """Resolve /Pg within the current document, inheriting only when absent."""
+    if Name.Pg not in elem:
+        return inherited_page
+    try:
+        reference = elem[Name.Pg]
+        if reference.is_indirect:
+            page_index = page_indices.get(reference.objgen)
+            if page_index is not None:
+                return page_index
+    except (AttributeError, TypeError, ValueError):
+        pass
+    # An explicit but invalid reference cannot borrow its parent's page.
+    record_incomplete_check("reading_order.page_reference")
+    return -1
 
 
 class ReadingOrderVerifier:
@@ -237,19 +266,9 @@ class ReadingOrderVerifier:
                 if Name.K not in struct_root:
                     return []
 
-                # Build a page-object -> index lookup so we can filter
-                # structure elements by the page they reference.
-                page_obj_ids = {}
-                for idx, pg in enumerate(pdf.pages):
-                    page_obj_ids[id(pg.obj)] = idx
-
-                def _page_index_of(pg_ref) -> int:
-                    """Resolve a /Pg reference to a 0-based page index."""
-                    try:
-                        return page_obj_ids.get(id(pg_ref), -1)
-                    except Exception:
-                        record_incomplete_check("reading_order._page_index_of")
-                        return -1
+                # Object number and generation are stable across wrappers;
+                # this lookup belongs only to the currently opened document.
+                page_indices = {pg.obj.objgen: idx for idx, pg in enumerate(pdf.pages)}
 
                 # Collect structure elements with their content,
                 # only for elements that belong to *page_num*.
@@ -260,19 +279,16 @@ class ReadingOrderVerifier:
                         return
 
                     # Determine which page this element belongs to.
-                    elem_page = inherited_page
-                    if hasattr(elem, "Pg"):
-                        resolved = _page_index_of(elem.Pg)
-                        if resolved >= 0:
-                            elem_page = resolved
+                    elem_page = _element_page(elem, inherited_page, page_indices)
 
                     on_target_page = elem_page == page_num
 
-                    # Check for ActualText (explicit text content)
-                    if on_target_page and hasattr(elem, "ActualText"):
+                    # ActualText replaces this element and its descendants;
+                    # collecting both would duplicate the represented content.
+                    if hasattr(elem, "ActualText"):
                         try:
                             actual_text = str(elem.ActualText)
-                            if actual_text.strip():
+                            if on_target_page and actual_text.strip():
                                 structure_texts.append(
                                     {
                                         "text": actual_text.strip(),
@@ -281,7 +297,9 @@ class ReadingOrderVerifier:
                                 )
                         except Exception:
                             record_incomplete_check("reading_order.collect_text")
-                            pass
+                        if elem_page < 0:
+                            record_incomplete_check("reading_order.replacement_page")
+                        return
 
                     # Check for Alt text
                     if on_target_page and hasattr(elem, "Alt"):
@@ -300,23 +318,12 @@ class ReadingOrderVerifier:
 
                     # Recurse into children (pass page context down)
                     if hasattr(elem, "K"):
-                        kids = elem.K
-                        if hasattr(kids, "__iter__") and not isinstance(
-                            kids, (str, bytes)
-                        ):
-                            for kid in kids:
-                                if hasattr(kid, "S") or hasattr(kid, "K"):
-                                    collect_text(kid, elem_page, depth + 1)
-                        elif hasattr(kids, "S") or hasattr(kids, "K"):
-                            collect_text(kids, elem_page, depth + 1)
+                        for kid in _structure_children(elem.K):
+                            collect_text(kid, elem_page, depth + 1)
 
                 # Start collection from root kids
-                kids = struct_root[Name.K]
-                if hasattr(kids, "__iter__") and not isinstance(kids, (str, bytes)):
-                    for kid in kids:
-                        collect_text(kid)
-                elif hasattr(kids, "S") or hasattr(kids, "K"):
-                    collect_text(kids)
+                for kid in _structure_children(struct_root[Name.K]):
+                    collect_text(kid)
 
         except Exception as e:
             record_incomplete_check("reading_order.collect_text")
@@ -353,23 +360,14 @@ class ReadingOrderVerifier:
                 if Name.K not in struct_root:
                     return False
 
-                # Build page lookup
-                page_obj_ids = {}
-                for idx, pg in enumerate(pdf.pages):
-                    page_obj_ids[id(pg.obj)] = idx
+                page_indices = {pg.obj.objgen: idx for idx, pg in enumerate(pdf.pages)}
 
                 def _has_table(elem, inherited_page=-1, depth=0):
                     if depth > 50:
                         record_incomplete_check("reading_order.structure_depth_limit")
                         return False
 
-                    elem_page = inherited_page
-                    if hasattr(elem, "Pg"):
-                        try:
-                            elem_page = page_obj_ids.get(id(elem.Pg), -1)
-                        except Exception:
-                            record_incomplete_check("reading_order._has_table")
-                            pass
+                    elem_page = _element_page(elem, inherited_page, page_indices)
 
                     # Check if this element is a table type on our page
                     if hasattr(elem, "S") and elem_page == page_num:
@@ -378,27 +376,14 @@ class ReadingOrderVerifier:
 
                     # Recurse into children
                     if hasattr(elem, "K"):
-                        kids = elem.K
-                        if hasattr(kids, "__iter__") and not isinstance(
-                            kids, (str, bytes)
-                        ):
-                            for kid in kids:
-                                if hasattr(kid, "S") or hasattr(kid, "K"):
-                                    if _has_table(kid, elem_page, depth + 1):
-                                        return True
-                        elif hasattr(kids, "S") or hasattr(kids, "K"):
-                            if _has_table(kids, elem_page, depth + 1):
+                        for kid in _structure_children(elem.K):
+                            if _has_table(kid, elem_page, depth + 1):
                                 return True
 
                     return False
 
-                kids = struct_root[Name.K]
-                if hasattr(kids, "__iter__") and not isinstance(kids, (str, bytes)):
-                    for kid in kids:
-                        if _has_table(kid):
-                            return True
-                elif hasattr(kids, "S") or hasattr(kids, "K"):
-                    if _has_table(kids):
+                for kid in _structure_children(struct_root[Name.K]):
+                    if _has_table(kid):
                         return True
 
         except Exception as e:
@@ -448,7 +433,7 @@ class ReadingOrderVerifier:
         structure: List[Dict],
         multi_column: bool = False,
     ) -> Optional[ReadingOrderIssue]:
-        """Compare visual and structure reading orders.
+        """Compare complete text sequences, not positions of extraction blocks.
 
         Args:
             page_num: 1-indexed page number
@@ -457,60 +442,130 @@ class ReadingOrderVerifier:
             multi_column: Whether this page has multi-column layout
 
         Returns:
-            ReadingOrderIssue if orders differ significantly, None otherwise
+            ReadingOrderIssue if comparable sequences differ, None otherwise.
+
+        PDF blocks and structure elements need not have matching boundaries.
+        Whitespace-normalized words retain order and multiplicity across those
+        boundaries. A short substring cannot stand in for a whole paragraph.
+        Nonvisual alternatives and unequal ActualText substitutions need review;
+        they are not sufficient evidence of a successful reading-order check.
         """
-        if not visual or not structure:
-            return None
+        visual_texts = [b["text"][:100] for b in visual[:5]]
+        structure_texts = [b["text"][:100] for b in structure[:5]]
 
-        # Extract text snippets for comparison
-        visual_texts = [b["text"][:100] for b in visual[:10]]
-        structure_texts = [b["text"][:100] for b in structure[:10]]
-
-        # Count how many visual items appear *somewhere* in the structure
-        # texts (regardless of position) -- this tells us if the content is
-        # present at all vs genuinely missing/reordered.
-        matches = 0
-        mismatches = 0
-        # For multi-column, allow wider positional tolerance since column
-        # order inherently differs from pure top-to-bottom visual sort.
-        pos_tolerance = 5 if multi_column else 3
-
-        for i, v_text in enumerate(visual_texts[:5]):
-            v_text_lower = v_text.lower().strip()
-            if not v_text_lower:
-                continue
-            found_match = False
-
-            for j, s_text in enumerate(structure_texts):
-                s_text_lower = s_text.lower().strip()
-                # Check for significant text overlap
-                if v_text_lower in s_text_lower or s_text_lower in v_text_lower:
-                    if abs(i - j) <= pos_tolerance:
-                        matches += 1
-                        found_match = True
-                        break
-
-            if not found_match:
-                mismatches += 1
-
-        # Multi-column layouts have inherently different visual vs structure
-        # order (left-col then right-col vs top-to-bottom).  Require a
-        # higher mismatch ratio before flagging.
-        threshold = 0.7 if multi_column else 0.4
-
-        total = matches + mismatches
-        if total > 0 and mismatches / total > threshold:
-            severity = "critical" if mismatches / total > 0.8 else "warning"
+        def issue(recommendation, severity="warning"):
             return ReadingOrderIssue(
                 page_number=page_num,
-                expected_order=visual_texts[:5],
-                actual_order=structure_texts[:5],
+                expected_order=visual_texts,
+                actual_order=structure_texts,
                 severity=severity,
-                recommendation="Structure tree reading order differs from visual layout. "
-                "Review and correct the reading order for screen reader users.",
+                recommendation=recommendation,
                 visual_positions=(
-                    [{"x": b["x"], "y": b["y"]} for b in visual[:5]] if visual else None
+                    [{"x": b.get("x", 0), "y": b.get("y", 0)} for b in visual[:5]]
+                    if visual
+                    else None
                 ),
             )
 
-        return None
+        # Bound work without silently certifying an unchecked page suffix.
+        if any(
+            len(blocks) > 20000 or sum(len(b["text"]) for b in blocks) > 200000
+            for blocks in (visual, structure)
+        ):
+            record_incomplete_check("reading_order.comparison_limit")
+            return issue("Reading-order comparison limit exceeded; review this page.")
+
+        nonvisual_review = None
+        if any(b.get("source") == "Alt" for b in structure):
+            # Image alternatives are not rendered page text. Their placement
+            # needs human review, not a failed text-extraction check.
+            nonvisual_review = issue(
+                "Review the placement of image descriptions in the reading order. "
+                "A text-only comparison cannot verify their position relative to images."
+            )
+            structure = [b for b in structure if b.get("source") != "Alt"]
+
+        def words(blocks):
+            return [
+                word for block in blocks for word in block["text"].casefold().split()
+            ]
+
+        visual_words = words(visual)
+        structure_words = words(structure)
+        if visual_words == structure_words:
+            return nonvisual_review
+
+        if Counter(visual_words) != Counter(structure_words):
+            return issue(
+                "Structure text does not correspond to all visible text. Review "
+                "missing, repeated, or substituted content before verifying reading order.",
+                "critical",
+            )
+
+        if multi_column:
+            column_order = self._column_reading_order(visual)
+            if column_order is not None and words(column_order) == structure_words:
+                return nonvisual_review
+
+        return issue(
+            "Structure tree reading order differs from visual layout. "
+            "Review and correct the reading order for screen reader users."
+        )
+
+    def _column_reading_order(self, blocks: List[Dict]) -> Optional[List[Dict]]:
+        """Offer a two-column alternative only where bounding boxes support it.
+
+        Full-width headings separate vertical bands. Within a band, preserve
+        top-to-bottom order in each column and read the left column first.
+        Ambiguous layouts retain the original comparison, never a wider index
+        tolerance that could also accept missing or arbitrarily reordered text.
+        """
+        if not blocks or any("bbox" not in block for block in blocks):
+            return None
+        starts = sorted({block["bbox"][0] for block in blocks})
+        gaps = [(right - left, right) for left, right in zip(starts, starts[1:])]
+        if not gaps:
+            return None
+        gap, right_start = max(gaps)
+        if gap <= 100:
+            return None
+
+        left, right, spanning = [], [], []
+        for block in blocks:
+            x0, _, x1, _ = block["bbox"]
+            if x0 >= right_start:
+                right.append(block)
+            elif x1 < right_start:
+                left.append(block)
+            else:
+                spanning.append(block)
+        if len(left) < 2 or len(right) < 2:
+            return None
+        if max(min(b["bbox"][1] for b in column) for column in (left, right)) >= min(
+            max(b["bbox"][3] for b in column) for column in (left, right)
+        ):
+            return None
+
+        spanning.sort(key=lambda b: b["bbox"][1])
+        if any(a["bbox"][3] > b["bbox"][1] for a, b in zip(spanning, spanning[1:])):
+            return None
+        bands = [[[], []] for _ in range(len(spanning) + 1)]
+        span_bottoms = [span["bbox"][3] for span in spanning]
+        for column_index, column in enumerate((left, right)):
+            for block in column:
+                band_index = bisect_right(span_bottoms, block["bbox"][1])
+                if (
+                    band_index < len(spanning)
+                    and block["bbox"][3] > spanning[band_index]["bbox"][1]
+                ):
+                    return None
+                bands[band_index][column_index].append(block)
+        ordered = []
+        for index, band in enumerate(bands):
+            for column in band:
+                ordered.extend(
+                    sorted(column, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+                )
+            if index < len(spanning):
+                ordered.append(spanning[index])
+        return ordered

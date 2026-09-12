@@ -4,6 +4,7 @@
 import pytest
 import tempfile
 import os
+from hashlib import sha256
 from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures" / "pdfs"
@@ -18,13 +19,15 @@ FIXTURES = Path(__file__).parent / "fixtures" / "pdfs"
     "fixture,expected_regressions",
     [("academic_paper.pdf", ["Matterhorn 13-004"]), ("simple_syllabus.pdf", [])],
 )
-def test_full_remediation_pipeline(fixture, expected_regressions):
+@pytest.mark.parametrize("_attempt", range(3))
+def test_full_remediation_pipeline(fixture, expected_regressions, _attempt):
     """Scan a PDF, remediate it, re-scan, and verify improvement."""
     from src.education.pdf_processor import PDFProcessor
     from src.education.remediation.pdf_remediator import PdfRemediator
     from src.education.remediation.base import RemediationConfig
 
     input_pdf = str(FIXTURES / fixture)
+    source_digest = sha256(Path(input_pdf).read_bytes()).hexdigest()
 
     # Step 1: Initial scan
     processor = PDFProcessor(generate_alt_text=False, validate_alt_text=False)
@@ -57,6 +60,14 @@ def test_full_remediation_pipeline(fixture, expected_regressions):
         # Step 3: Re-scan the remediated PDF
         re_scan = processor.process_pdf(result.output_file)
         remaining_issues = re_scan.issues
+        assert sha256(Path(input_pdf).read_bytes()).hexdigest() == source_digest
+
+        import fitz
+
+        with fitz.open(input_pdf) as source, fitz.open(result.output_file) as saved:
+            assert [page.get_text() for page in saved] == [
+                page.get_text() for page in source
+            ]
 
         # Step 4: Verify improvement — fewer issues after remediation
         assert len(remaining_issues) < len(initial_issues), (
