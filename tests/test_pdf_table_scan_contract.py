@@ -22,6 +22,55 @@ def save_fixture(directory, **kwargs):
     return path
 
 
+@pytest.mark.parametrize("pages", [1, 2])
+def test_content_bound_table_completes_real_remediation_and_saved_rescan(
+    tmp_path, pages
+):
+    """Valid table coverage survives the real writer, not a substituted output."""
+    import fitz
+
+    source = save_fixture(tmp_path / "source", pages=pages)
+    source_hash = sha256(source.read_bytes()).hexdigest()
+    processor = PDFProcessor(
+        generate_alt_text=False, validate_alt_text=False, require_complete_scan=True
+    )
+    before = processor.process_pdf(str(source))
+    assert before.issues, "The fixture must exercise actual remediation"
+    result = PdfRemediator(
+        str(source),
+        before.issues,
+        config=RemediationConfig(
+            use_ai=False,
+            verify_fixes=True,
+            create_backup=False,
+            output_directory=str(tmp_path / "output"),
+            allow_legacy_nested_ai=False,
+        ),
+    ).remediate()
+    try:
+        assert result.success, result.error_message
+        assert result.output_file is not None
+        after = processor.process_pdf(result.output_file)
+        assert result.verification_result is not None
+        assert result.verification_result.unavailable_checks == []
+        assert result.verification_passed is True, result.verification_result
+        assert result.fixed_count > 0
+        assert result.score_provenance == "scanner_rescan"
+        assert result.remediated_compliance_score == after.compliance_score
+        assert not any(
+            issue.get("issue_type") == "reading_order_mismatch"
+            for issue in after.issues
+        )
+        with fitz.open(source) as original, fitz.open(result.output_file) as saved:
+            assert len(saved) == len(original) == pages
+            assert [page.get_text() for page in saved] == [
+                page.get_text() for page in original
+            ]
+        assert sha256(source.read_bytes()).hexdigest() == source_hash
+    finally:
+        result.close_output_claim()
+
+
 @pytest.mark.parametrize(
     "order",
     [

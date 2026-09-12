@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.education.pdf_processor import PDFProcessor, PDFProcessingResult
+from src.education.pdf_checks.completeness import IncompletePDFScanError
 from src.education.pptx_processor import PowerPointProcessor, PowerPointProcessingResult
 from src.education.latex_processor import LaTeXProcessor, DocumentConversionResult
 
@@ -72,17 +73,30 @@ class TestPDFProcessorBasic:
         print(f"   Issues: {len(result.issues)}")
 
     def test_process_all_pdfs(self):
-        """Test processing all PDF fixtures"""
+        """All fixtures are attempted; unsupported table content refuses scoring."""
         processor = PDFProcessor(generate_alt_text=False)
 
         pdf_files = list(PDF_DIR.glob("*.pdf"))
         assert pdf_files, f"No PDF fixtures found in {PDF_DIR}"
 
         results = []
+        refused = set()
         for pdf_file in pdf_files:
+            if pdf_file.name == "academic_paper.pdf":
+                original = pdf_file.read_bytes()
+                with pytest.raises(IncompletePDFScanError, match="reading_order.table"):
+                    processor.process_pdf(str(pdf_file))
+                refused.add(pdf_file.name)
+                assert pdf_file.read_bytes() == original
+                continue
             result = processor.process_pdf(str(pdf_file))
             results.append(result)
             assert result.pages > 0, f"No pages in {pdf_file.name}"
+
+        assert refused == {"academic_paper.pdf"}
+        assert {result.file_name for result in results} == {
+            path.name for path in pdf_files
+        } - refused
 
         print(f"\n✅ Processed {len(results)} PDFs:")
         for r in results:
@@ -258,7 +272,7 @@ class TestLaTeXProcessorBasic:
 class TestBatchProcessing:
     """Test batch processing capabilities"""
 
-    def test_pdf_batch_processing(self):
+    def test_pdf_batch_processing(self, capsys):
         """Test batch processing of multiple PDFs"""
         from src.education.pdf_processor import PDFBatchProcessor
 
@@ -266,6 +280,11 @@ class TestBatchProcessing:
         results = processor.process_directory(str(PDF_DIR))
 
         assert results, f"No PDFs processed from {PDF_DIR}"
+        assert "academic_paper.pdf" not in {result.file_name for result in results}
+        assert "simple_syllabus.pdf" in {result.file_name for result in results}
+        output = capsys.readouterr().out
+        assert "Error processing academic_paper.pdf" in output
+        assert "reading_order.table" in output
 
         # Calculate aggregate stats
         total_pages = sum(r.pages for r in results)
