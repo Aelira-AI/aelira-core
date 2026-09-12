@@ -127,7 +127,7 @@ const STATE_PRESENTATION: Record<PageState, StatePresentation> = {
   },
   request_failed: {
     title: 'Remediation could not be started',
-    description: 'The server did not confirm a queued job. Try again when the service is available.',
+    description: 'The server did not confirm whether a job was queued. Check the recorded status before retrying.',
     icon: XCircle,
     color: 'text-[var(--feature-danger-content)]',
     surface: 'bg-[var(--feature-danger-surface)]',
@@ -142,6 +142,8 @@ function AggregateResults({ job }: { job: RemediationJobStatus }): React.ReactEl
     { label: 'Manual review', value: job.manual_count, color: 'text-[var(--feature-warning-content)]' },
     { label: 'Failed', value: job.failed_count, color: 'text-[var(--feature-danger-content)]' },
     { label: 'Skipped', value: job.skipped_count, color: 'text-[var(--content-secondary)]' },
+    { label: 'Withheld changes', value: job.withheld_count, color: 'text-[var(--content-secondary)]' },
+    { label: 'Outcome not reported', value: job.outcome_unreported_count, color: 'text-[var(--content-secondary)]' },
   ].filter((item): item is { label: string; value: number; color: string } =>
     typeof item.value === 'number' && Number.isFinite(item.value)
   );
@@ -160,13 +162,13 @@ function AggregateResults({ job }: { job: RemediationJobStatus }): React.ReactEl
   );
 }
 
-function RecordedIssueRow({ issue, fix, outcomeSource }: RemediationIssueRow): React.ReactElement {
-  const outcome = outcomePresentation(fix, outcomeSource);
+function RecordedIssueRow({ issue, fix, outcomeSource, recordedOutcome }: RemediationIssueRow): React.ReactElement {
+  const outcome = outcomePresentation(fix, outcomeSource, recordedOutcome);
   return (
     <div className="flex flex-col items-start justify-between gap-3 border-b border-[var(--border-primary)] p-3 last:border-b-0 sm:flex-row sm:gap-4">
       <div className="flex min-w-0 items-start gap-3">
         <div className="rounded bg-[var(--surface-tertiary)] p-1.5">
-          <FileText className="h-4 w-4 text-[var(--content-tertiary)]" aria-hidden="true" />
+          <FileText className="h-4 w-4 text-[var(--content-secondary)]" aria-hidden="true" />
         </div>
         <div className="min-w-0">
           <p className="text-sm font-medium leading-5 text-primary">
@@ -198,6 +200,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
   const [job, setJob] = useState<RemediationJobStatus | null>(null);
   const [recordedFixes, setRecordedFixes] = useState<RemediationFixSummary[] | null>(null);
   const [starting, setStarting] = useState(false);
+  const [statusRetry, setStatusRetry] = useState(0);
 
   const loadRecordedFixes = useCallback(async (
     terminalJob: RemediationJobStatus
@@ -278,7 +281,11 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
         try {
           const latest = await scansApi.getLatestRemediationJob(scanId);
           if (!active) return;
-          if (latest === null) return;
+          if (latest === null) {
+            setJob(null);
+            setPageState('idle');
+            return;
+          }
           const latestState = classifyRemediationJob(latest);
           setJob(latest);
           setPageState(latestState);
@@ -307,7 +314,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
       coordinator.invalidate();
       pollController.current?.abort();
     };
-  }, [loadRecordedFixes, monitorJob, scanId, toast]);
+  }, [loadRecordedFixes, monitorJob, scanId, toast, statusRetry]);
 
   const startRemediation = async (): Promise<void> => {
     if (!scanId || !scan || starting) return;
@@ -393,9 +400,8 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
     : STATE_PRESENTATION[pageState];
   const StatusIcon = presentation.icon;
   const canStart =
-    ['idle', 'completed', 'partial', 'timed_out', 'failed', 'request_failed'].includes(pageState)
-    || (pageState === 'monitoring_error' && job === null);
-  const canResume = Boolean(job?.status_url) && ['client_timeout', 'monitoring_error'].includes(pageState);
+    ['idle', 'completed', 'partial', 'timed_out', 'failed'].includes(pageState);
+  const canResume = ['client_timeout', 'monitoring_error', 'request_failed'].includes(pageState);
   const canDownload = job?.download_available === true && typeof job.download_url === 'string';
   const displayedProgress = job?.progress ?? (pageState === 'completed' ? 100 : 0);
   const issueRows = pairIssuesWithFixes(scan.issues || [], recordedFixes || [], job || undefined);
@@ -455,9 +461,9 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
                 {pageState === 'idle' ? 'Start Remediation' : 'Run Again'}
               </button>
             )}
-            {canResume && job && (
+            {canResume && (
               <button
-                onClick={() => void monitorJob(job.status_url)}
+                onClick={() => job ? void monitorJob(job.status_url) : setStatusRetry((value) => value + 1)}
                 className="btn-secondary flex items-center justify-center gap-2 sm:shrink-0"
               >
                 <RefreshCw className="h-4 w-4" aria-hidden="true" />
@@ -503,18 +509,21 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
               Recorded Findings and Changes ({issueRows.length})
             </h2>
             <p className="mt-1 text-sm text-tertiary">
-              {recordedFixes
+              {job?.issue_outcomes?.length
+                ? 'Outcomes come from the recorded job and its source findings. Withheld changes were not delivered. Application alone does not verify a fix.'
+                : recordedFixes
                 ? 'Applied changes come from persisted remediation records; manual outcomes are shown only when the job totals reconcile exactly. Application alone does not verify a fix.'
                 : 'Per-issue remediation outcomes are not available for this job.'}
             </p>
           </div>
-          <div className="max-h-96 overflow-y-auto">
+          <div className="max-h-96 overflow-y-auto focus-visible:outline-2 focus-visible:outline-[var(--content-accent)]" tabIndex={0} role="region" aria-label="Recorded findings and changes">
             {issueRows.map((row, index) => (
               <RecordedIssueRow
                 key={row.fix?.id || `${issueDescription(row.issue)}-${index}`}
                 issue={row.issue}
                 fix={row.fix}
                 outcomeSource={row.outcomeSource}
+                recordedOutcome={row.recordedOutcome}
               />
             ))}
             {issueRows.length === 0 && (

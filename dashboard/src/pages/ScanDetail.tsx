@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { Calendar, FileText, Loader, Wrench, Download } from 'lucide-react';
+import { useParams } from 'react-router-dom';
+import { Calendar, FileText, Loader, Download } from 'lucide-react';
 import { trackEvent } from '../utils/analytics';
 import { ComplianceScore } from '../components/results/ComplianceScore';
 import { IssueList } from '../components/results/IssueList';
 import { IssuesByTypeChart } from '../components/charts/IssuesByTypeChart';
 import { WCAGCriteriaChart } from '../components/charts/WCAGCriteriaChart';
-import { FormatDownloadButton } from '../components/results/FormatDownloadButton';
+import { RemediationStatusLink } from '../components/results/RemediationStatusLink';
 import { scansApi } from '../api/scans';
 import { Breadcrumbs } from '../components/layout/Breadcrumbs';
 import { useToast } from '../context/toast-context';
@@ -39,7 +39,6 @@ interface IssuesBySeverity {
 
 export function ScanDetail(): React.ReactElement {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const toast = useToast();
   const [scan, setScan] = useState<Scan | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -242,18 +241,6 @@ export function ScanDetail(): React.ReactElement {
             {!isProcessing && scan.issues.length > 0 && (
               <div className="flex flex-wrap items-center gap-3 sm:shrink-0">
                 <button
-                  onClick={() => navigate(`/remediate/${scan.id}`)}
-                  className="btn-primary flex items-center gap-2"
-                >
-                  <Wrench className="w-4 h-4" />
-                  Remediate
-                </button>
-                <FormatDownloadButton
-                  scanId={scan.id}
-                  scanType={scan.type}
-                  filename={scan.filename}
-                />
-                <button
                   onClick={handleDownloadReport}
                   disabled={downloadingReport}
                   className="btn-secondary flex items-center gap-2 disabled:opacity-50"
@@ -269,6 +256,13 @@ export function ScanDetail(): React.ReactElement {
             )}
           </div>
         </div>
+
+        {!isProcessing && (scan.issues.length > 0 || ['pdf', 'word', 'powerpoint', 'excel', 'latex'].includes(scan.type)) && (
+          <div className="mb-6">
+            <p className="mb-2 text-sm text-secondary">Original scan results are shown below. Remediation has its own status.</p>
+            <RemediationStatusLink key={scan.id} scanId={scan.id} />
+          </div>
+        )}
 
         {/* Processing Indicator */}
         {isProcessing && (

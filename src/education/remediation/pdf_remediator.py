@@ -4881,27 +4881,121 @@ Generate only the alt text, nothing else:"""
                         MatterhornValidator,
                     )
 
-                    mh_result = MatterhornValidator().validate(verification_path)
-                    if mh_result:
-                        failed_checks = [
+                    validator = MatterhornValidator()
+                    before_mh = validator.validate(self.file_path)
+                    after_mh = validator.validate(verification_path)
+                    if (
+                        not before_mh
+                        or not after_mh
+                        or not before_mh.checkpoints
+                        or not after_mh.checkpoints
+                    ):
+                        raise ValueError("Matterhorn comparison unavailable")
+
+                    def checkpoint_key(checkpoint):
+                        return (checkpoint.id, checkpoint.page_number)
+
+                    before_coverage = {
+                        checkpoint.id for checkpoint in before_mh.checkpoints
+                    }
+                    after_coverage = {
+                        checkpoint.id for checkpoint in after_mh.checkpoints
+                    }
+                    # Newly applicable passing checks (for example heading
+                    # hierarchy after adding headings) are useful evidence.
+                    # Lost checks or newly applicable failures lack a baseline.
+                    added = after_coverage - before_coverage
+                    if not before_coverage.issubset(after_coverage) or any(
+                        checkpoint.id in added
+                        and checkpoint.status != CheckpointStatus.PASS
+                        for checkpoint in after_mh.checkpoints
+                    ):
+                        raise ValueError("Matterhorn checkpoint coverage changed")
+                    before_failures = Counter(
+                        checkpoint_key(checkpoint)
+                        for checkpoint in before_mh.checkpoints
+                        if checkpoint.status == CheckpointStatus.FAIL
+                    )
+                    after_failures = Counter(
+                        checkpoint_key(checkpoint)
+                        for checkpoint in after_mh.checkpoints
+                        if checkpoint.status == CheckpointStatus.FAIL
+                    )
+                    new_failures = after_failures - before_failures
+                    persistent = after_failures & before_failures
+                    # Checkpoints can aggregate several broken elements. A
+                    # repeated ID does not prove unchanged damage. Without
+                    # element-level evidence, changed/absent details are unknown.
+                    uncertain_failures = set()
+                    for key in persistent:
+                        before_records = [
                             checkpoint
-                            for checkpoint in mh_result.checkpoints
-                            if checkpoint.status == CheckpointStatus.FAIL
+                            for checkpoint in before_mh.checkpoints
+                            if checkpoint_key(checkpoint) == key
+                            and checkpoint.status == CheckpointStatus.FAIL
                         ]
-                        if failed_checks:
-                            verification.passed = False
-                            verification.regressions.extend(
-                                f"Matterhorn {checkpoint.id}: {checkpoint.name}"
-                                for checkpoint in failed_checks
+                        after_records = [
+                            checkpoint
+                            for checkpoint in after_mh.checkpoints
+                            if checkpoint_key(checkpoint) == key
+                            and checkpoint.status == CheckpointStatus.FAIL
+                        ]
+
+                        def failure_evidence(checkpoint):
+                            return (
+                                getattr(checkpoint, "name", None),
+                                getattr(checkpoint, "severity", None),
+                                getattr(checkpoint, "details", None),
                             )
-                            logger.info(
-                                "Matterhorn: %d failed checkpoints",
-                                len(failed_checks),
+
+                        before_evidence = Counter(map(failure_evidence, before_records))
+                        after_evidence = Counter(map(failure_evidence, after_records))
+                        if (
+                            any(
+                                not isinstance(
+                                    getattr(checkpoint, "details", None), str
+                                )
+                                or not checkpoint.details.strip()
+                                for checkpoint in before_records + after_records
                             )
-                        else:
-                            logger.info("Matterhorn: all checkpoints passed")
+                            or after_evidence - before_evidence
+                        ):
+                            uncertain_failures.add(key)
+                            verification.unavailable_checks.append(
+                                f"matterhorn:{key[0]}:changed_failure_evidence"
+                            )
+                    if uncertain_failures:
+                        verification.passed = False
+                    verification.regressions.extend(
+                        f"Matterhorn {identifier}"
+                        + (f" on page {page}" if page is not None else "")
+                        for (identifier, page), count in new_failures.items()
+                        for _ in range(count)
+                    )
+                    verification.persistent_failures.extend(
+                        f"Matterhorn {identifier}"
+                        + (f" on page {page}" if page is not None else "")
+                        for (identifier, page), count in persistent.items()
+                        if (identifier, page) not in uncertain_failures
+                        for _ in range(count)
+                    )
+                    if new_failures:
+                        verification.passed = False
                 except Exception as e:
-                    logger.warning("Matterhorn validation skipped: %s", e)
+                    verification.passed = False
+                    verification.unavailable_checks.append("matterhorn")
+                    logger.warning("Matterhorn comparison unavailable: %s", e)
+
+                # Bind the validator comparison as well as the scanner scores
+                # to unchanged source and output bytes.
+                measurement = finish_measurement(
+                    snapshot,
+                    self.file_path,
+                    verification_path,
+                    source_result.compliance_score,
+                    new_result.compliance_score,
+                    "pdf-strict-v1",
+                )
 
             self.result.verification_passed = verification.passed
             self.result.verification_result = verification

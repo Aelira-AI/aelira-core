@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useMemo, ChangeEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { RemediationStatusLink } from '../components/results/RemediationStatusLink';
+import { batchRemediationReceiptIsConfirmed } from '../utils/batchRemediationReceipt';
 import {
   AlertTriangle,
   AlertCircle,
@@ -119,7 +122,7 @@ const SEVERITY_CONFIG: Record<SeverityLevel, SeverityConfig> = {
   },
   low: {
     icon: Info,
-    color: 'text-[var(--content-tertiary)]',
+    color: 'text-[var(--content-secondary)]',
     bg: 'bg-[var(--surface-tertiary)]',
     label: 'Low',
     priority: 4,
@@ -173,7 +176,7 @@ const STATUS_CONFIG: Record<IssueStatus, StatusConfig> = {
   },
   WONT_FIX: {
     label: "Won't Fix",
-    color: 'text-[var(--content-tertiary)]',
+    color: 'text-[var(--content-secondary)]',
     bg: 'bg-[var(--surface-tertiary)]',
   },
   FALSE_POSITIVE: {
@@ -360,7 +363,7 @@ function IssueCard({ issue, scanInfo, onRemediate, onStatusChange, onAddNote, is
 
             {/* Action Buttons */}
             <div className="flex flex-wrap gap-2 pt-2 border-t border-[var(--border-secondary)]">
-              {issue.can_auto_fix && issue.status !== 'RESOLVED' && (
+              {(['pdf', 'word', 'excel', 'powerpoint', 'latex'].includes(scanInfo.type.toLowerCase()) || issue.can_auto_fix) && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -368,12 +371,12 @@ function IssueCard({ issue, scanInfo, onRemediate, onStatusChange, onAddNote, is
                   }}
                   className="btn-primary text-sm py-1.5 px-3 flex items-center gap-1"
                   aria-label={
-                    `Auto-fix the whole document containing: ${issue.description}`
+                    `Open remediation review for the document containing: ${issue.description}`
                   }
-                  title="Remediates the entire document, not this issue alone"
+                  title="Review the whole document's remediation status and available output"
                 >
                   <Wrench className="w-4 h-4" aria-hidden="true" />
-                  Auto-Fix Document
+                  Review Document Remediation
                 </button>
               )}
               {!showNoteInput && (
@@ -422,7 +425,9 @@ export function Issues(): React.ReactElement {
     status: 'all',
     search: '',
   });
-  const [_remediating, setRemediating] = useState<Set<string>>(new Set());
+  const [startingBatch, setStartingBatch] = useState(false);
+  const [batchScanIds, setBatchScanIds] = useState<string[]>([]);
+  const navigate = useNavigate();
   const toast = useToast();
 
   useEffect(() => {
@@ -579,71 +584,36 @@ export function Issues(): React.ReactElement {
     });
   };
 
-  const handleRemediate = async (issue: Issue): Promise<void> => {
-    trackEvent('dash-issue-autofix', { scope: 'single' });
-    setRemediating((prev) => new Set(prev).add(issue.id));
-    try {
-      // There is no per-issue remediation endpoint: this remediates the
-      // whole document. Saying otherwise told people a single issue had
-      // been touched when every issue in the document may have been.
-      await scansApi.remediateScan(issue.scanId, { use_ai: true });
-      toast.success(
-        'Document remediated. Every issue in it may have been changed, not just this one.',
-        'Auto-Fix Complete'
-      );
-      // Refresh the scan data
-      const details = await scansApi.getScan(issue.scanId);
-      setScans((prev) =>
-        prev.map((s) =>
-          s.id === issue.scanId ? { ...s, issues: details.issues || [] } : s
-        )
-      );
-    } catch (err: unknown) {
-      const remediateError = err as Error;
-      toast.error(remediateError.message || 'Failed to remediate issue', 'Remediation Failed');
-    } finally {
-      setRemediating((prev) => {
-        const next = new Set(prev);
-        next.delete(issue.id);
-        return next;
-      });
-    }
+  const handleRemediate = (issue: Issue): void => {
+    trackEvent('dash-issue-remediation-review', { scope: 'document' });
+    navigate(`/remediate/${issue.scanId}`);
   };
 
   const handleBulkRemediate = async (): Promise<void> => {
-    const autoFixableIssues = filteredIssues.filter((i) => i.can_auto_fix);
-    if (autoFixableIssues.length === 0) {
-      toast.warning('No auto-fixable issues in current filter', 'Nothing to Fix');
+    if (startingBatch || batchScanIds.length > 0) return;
+    const scanIds = [...new Set(filteredIssues.filter((issue) => issue.can_auto_fix).map((issue) => issue.scanId))];
+    if (scanIds.length === 0) return;
+    if (scanIds.length > 50) {
+      toast.warning('Narrow the filter to at most 50 documents per batch.', 'Batch limit');
       return;
     }
-
-    const scanIds = [...new Set(autoFixableIssues.map((i) => i.scanId))];
-
+    setStartingBatch(true);
     trackEvent('dash-issue-autofix', { scope: 'bulk' });
     try {
-      await scansApi.batchRemediate(scanIds, { use_ai: true });
-      toast.success(
-        `Remediated ${autoFixableIssues.length} issues across ${scanIds.length} scans`,
-        'Bulk Remediation Complete'
-      );
-      // Refresh all affected scans
-      const refreshed = await Promise.all(
-        scanIds.map(async (scanId) => {
-          const details = await scansApi.getScan(scanId);
-          return { scanId, issues: details.issues || [] };
-        })
-      );
-      setScans((prev) =>
-        prev.map((s) => {
-          const updated = refreshed.find((r) => r.scanId === s.id);
-          return updated ? { ...s, issues: updated.issues } : s;
-        })
-      );
-    } catch (err: unknown) {
-      const bulkError = err as Error;
-      toast.error(bulkError.message || 'Bulk remediation failed', 'Error');
+      const receipt = await scansApi.batchRemediate(scanIds, { use_ai: true });
+      const queued = receipt.scans_queued;
+      if (!batchRemediationReceiptIsConfirmed(receipt, scanIds)) {
+        throw new Error('Unconfirmed queue receipt');
+      }
+      toast.success(`${queued.length} document jobs queued. Review their recorded outcomes below.`, 'Remediation queued');
+    } catch {
+      toast.warning('The queue request was not confirmed. Check each recorded job before retrying.', 'Status check required');
+    } finally {
+      setBatchScanIds(scanIds);
+      setStartingBatch(false);
     }
   };
+
 
   // Handle status change for tracked issues
   const handleStatusChange = async (issue: Issue, newStatus: string): Promise<void> => {
@@ -752,15 +722,28 @@ export function Issues(): React.ReactElement {
           <button
             onClick={handleBulkRemediate}
             className="btn-primary flex items-center gap-2"
-            disabled={filteredIssues.filter((i) => i.can_auto_fix).length === 0}
-            aria-label={`Fix all ${filteredIssues.filter((i) => i.can_auto_fix).length} auto-fixable issues`}
+            disabled={startingBatch || batchScanIds.length > 0 || filteredIssues.filter((i) => i.can_auto_fix).length === 0}
+            aria-label="Queue remediation jobs for documents with auto-fixable findings"
           >
             <Wrench className="w-4 h-4" aria-hidden="true" />
-            Fix All Auto-Fixable ({filteredIssues.filter((i) => i.can_auto_fix).length})
+            {startingBatch ? 'Queueing document jobs…' : 'Queue Document Remediation'}
           </button>
         </div>
 
         {/* Stats Overview */}
+        {batchScanIds.length > 0 && (
+          <section className="card mb-6 space-y-3" aria-label="Document remediation jobs">
+            <h2 className="text-lg font-semibold text-primary">Document Remediation Jobs</h2>
+            <p className="text-sm text-secondary">Original findings remain below. Review each document's recorded outcome before downloading output or retrying.</p>
+            {batchScanIds.map((scanId) => (
+              <div key={scanId}>
+                <h3 className="mb-2 text-sm font-medium text-primary">{scans.find((scan) => scan.id === scanId)?.filename || 'Document'}</h3>
+                <RemediationStatusLink scanId={scanId} />
+              </div>
+            ))}
+          </section>
+        )}
+
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div className="card">
             <p className="text-sm text-tertiary">Total Issues</p>

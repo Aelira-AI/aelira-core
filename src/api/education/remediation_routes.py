@@ -1354,6 +1354,32 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         output_sha256=getattr(score_artifact, "sha256", None) or "",
     )
     downloadable, artifact = _artifact_is_downloadable(db, job, scan_id)
+    if not downloadable and str(job.status) == "failed":
+        # Repair legacy display accounting without changing historical records
+        # or inventing per-finding dispositions. Prior fix claims were withheld.
+        previous_fixed = result.get("fixed_count")
+        result["fixed_count"] = 0
+        for outcome in result.get("issue_outcomes", []):
+            if outcome["status"] == "fixed":
+                outcome["status"] = "withheld"
+        if "withheld_count" not in result and type(previous_fixed) is int:
+            result["withheld_count"] = previous_fixed
+        known_counts = [
+            result.get(key)
+            for key in (
+                "manual_count",
+                "failed_count",
+                "skipped_count",
+                "withheld_count",
+            )
+        ]
+        total = result.get("total_issues")
+        if (
+            "outcome_unreported_count" not in result
+            and type(total) is int
+            and all(type(count) is int for count in known_counts)
+        ):
+            result["outcome_unreported_count"] = max(0, total - sum(known_counts))
     progress = job.progress if type(job.progress) is int else 0
     unresolved_counts = (
         result.get("manual_count"),
@@ -1365,6 +1391,16 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         if all(type(value) is int for value in unresolved_counts)
         else None
     )
+    if type(result.get("remaining_count")) is int:
+        remaining_count = result["remaining_count"]
+    # Older jobs may have withheld partial work without storing dispositions.
+    # With no published artifact, none of those source findings were delivered fixed.
+    if (
+        not downloadable
+        and str(job.status) == "failed"
+        and type(result.get("total_issues")) is int
+    ):
+        remaining_count = result["total_issues"]
     return {
         "job_id": str(job.id),
         "scan_id": scan_id,
@@ -1377,7 +1413,14 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         "started_at": job.started_at,
         "completed_at": job.completed_at,
         "error_code": public_job_error_code(job.last_error_code),
-        "fixed_count": result.get("fixed_count"),
+        "fixed_count": (
+            0
+            if not downloadable and str(job.status) == "failed"
+            else result.get("fixed_count")
+        ),
+        "withheld_count": result.get("withheld_count"),
+        "outcome_unreported_count": result.get("outcome_unreported_count"),
+        "issue_outcomes": result.get("issue_outcomes", []),
         "manual_count": result.get("manual_count"),
         "failed_count": result.get("failed_count"),
         "skipped_count": result.get("skipped_count"),

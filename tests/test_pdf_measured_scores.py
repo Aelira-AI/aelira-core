@@ -38,7 +38,9 @@ def setup_remediator(tmp_path, monkeypatch, before, after):
     monkeypatch.setattr("src.education.pdf_processor.PDFProcessor", constructor)
     monkeypatch.setattr(
         "src.education.validation.matterhorn.MatterhornValidator.validate",
-        lambda *_: None,
+        lambda *_: SimpleNamespace(
+            checkpoints=[SimpleNamespace(id="09-004", status="pass", page_number=None)]
+        ),
     )
     return remediator, constructor
 
@@ -103,3 +105,94 @@ def test_pdf_actual_regression_remains_measured(tmp_path, monkeypatch):
     assert remediator.result.score_provenance == "scanner_rescan"
     assert remediator.result.remediated_compliance_score == 49
     assert remediator.result.improvement == pytest.approx(-43)
+
+
+@pytest.mark.parametrize(
+    "before_status,after_status,new_failure",
+    [
+        ("fail", "fail", False),
+        ("pass", "fail", True),
+        ("fail", "pass", False),
+    ],
+)
+def test_matterhorn_uses_source_baseline(
+    tmp_path, monkeypatch, before_status, after_status, new_failure
+):
+    remediator, _ = setup_remediator(
+        tmp_path, monkeypatch, scan(92, [FINDING]), scan(100, [])
+    )
+
+    def result(status):
+        return SimpleNamespace(
+            checkpoints=[
+                SimpleNamespace(
+                    id="09-004",
+                    name="Role mappings",
+                    status=status,
+                    page_number=None,
+                    severity="error",
+                    details="Same recorded role-mapping failure",
+                )
+            ]
+        )
+
+    validator = Mock(side_effect=[result(before_status), result(after_status)])
+    monkeypatch.setattr(
+        "src.education.validation.matterhorn.MatterhornValidator.validate", validator
+    )
+    verification = remediator._verify_fixes("saved.pdf")
+    assert validator.call_count == 2
+    assert bool(verification.regressions) is new_failure
+    assert verification.passed is not new_failure
+    assert bool(verification.persistent_failures) is (
+        before_status == after_status == "fail"
+    )
+
+
+def test_matterhorn_unavailable_is_not_a_verification_pass(tmp_path, monkeypatch):
+    remediator, _ = setup_remediator(
+        tmp_path, monkeypatch, scan(92, [FINDING]), scan(100, [])
+    )
+    monkeypatch.setattr(
+        "src.education.validation.matterhorn.MatterhornValidator.validate",
+        lambda *_: None,
+    )
+    verification = remediator._verify_fixes("saved.pdf")
+    assert verification.passed is False
+    assert verification.unavailable_checks == ["matterhorn"]
+
+
+def test_worsening_existing_matterhorn_failure_cannot_pass(tmp_path, monkeypatch):
+    remediator, _ = setup_remediator(
+        tmp_path, monkeypatch, scan(92, [FINDING]), scan(100, [])
+    )
+
+    def result(details):
+        return SimpleNamespace(
+            checkpoints=[
+                SimpleNamespace(
+                    id="13-004",
+                    name="Alt text",
+                    status="fail",
+                    severity="error",
+                    page_number=None,
+                    details=details,
+                )
+            ]
+        )
+
+    validator = Mock(
+        side_effect=[
+            result("1 of 3 figures missing /Alt or /ActualText"),
+            result("2 of 3 figures missing /Alt or /ActualText"),
+        ]
+    )
+    monkeypatch.setattr(
+        "src.education.validation.matterhorn.MatterhornValidator.validate", validator
+    )
+    verification = remediator._verify_fixes("saved.pdf")
+    assert verification.passed is False
+    assert verification.unavailable_checks == [
+        "matterhorn:13-004:changed_failure_evidence"
+    ]
+    assert verification.persistent_failures == []

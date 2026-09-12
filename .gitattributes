@@ -1,0 +1,2 @@
+# Preserve the PDF fixture's byte offsets and fixed-width cross-reference records.
+tests/fixtures/document_stack/metadata.pdf binary

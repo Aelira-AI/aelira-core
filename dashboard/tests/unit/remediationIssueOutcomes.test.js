@@ -22,6 +22,63 @@ function fix(overrides) {
 }
 
 describe('persisted remediation issue outcomes', () => {
+  it('uses source-indexed outcomes to distinguish withheld changes from delivered fixes', () => {
+    const rows = pairIssuesWithFixes([{ id: 'a', description: 'Title' }, { id: 'b', description: 'Heading' }], [], {
+      total_issues: 2,
+      issue_outcomes: [{ source_index: 0, issue_id: 'a', status: 'withheld' }, { source_index: 1, issue_id: 'b', status: 'manual' }],
+    });
+    assert.equal(outcomePresentation(rows[0].fix, rows[0].outcomeSource, rows[0].recordedOutcome).label, 'Change withheld · not delivered');
+    assert.equal(outcomePresentation(rows[1].fix, rows[1].outcomeSource, rows[1].recordedOutcome).label, 'Manual remediation required');
+  });
+
+  it('does not attribute duplicate indices or mismatched source identities', () => {
+    for (const outcomes of [
+      [{ source_index: 0, status: 'fixed' }, { source_index: 0, status: 'manual' }],
+      [{ source_index: 0, issue_id: 'different', status: 'fixed' }],
+      [{ source_index: 1, status: 'fixed' }],
+    ]) {
+      const rows = pairIssuesWithFixes([{ id: 'source', description: 'Finding' }], [], { total_issues: 1, issue_outcomes: outcomes });
+      assert.equal(rows[0].recordedOutcome, undefined);
+      assert.equal(outcomePresentation(rows[0].fix, rows[0].outcomeSource, rows[0].recordedOutcome).label, 'Outcome not reported');
+    }
+  });
+
+  it('recorded job outcomes override stale persisted approval records', () => {
+    const rows = pairIssuesWithFixes([{ description: 'Title' }], [fix({ description: 'Title', location: undefined, page_number: null })], {
+      total_issues: 1, issue_outcomes: [{ source_index: 0, source_index_scope: 'original_scan', status: 'withheld' }],
+    });
+    assert.equal(outcomePresentation(rows[0].fix, rows[0].outcomeSource, rows[0].recordedOutcome).label, 'Change withheld · not delivered');
+  });
+
+  it('matches an approved subset by exact ID rather than its reordered subset index', () => {
+    const issues = [{ id: 'one', description: 'First' }, { id: 'two', description: 'Second' }];
+    const rows = pairIssuesWithFixes(issues, [], {
+      total_issues: 1,
+      issue_outcomes: [{ source_index: 0, source_index_scope: 'approved_subset', issue_id: 'two', status: 'withheld' }],
+    });
+    assert.equal(rows[0].recordedOutcome, undefined);
+    assert.equal(rows[1].recordedOutcome, 'withheld');
+  });
+
+  it('requires original-scan scope to attribute findings without IDs', () => {
+    const issues = [{ description: 'Finding' }];
+    for (const scope of [undefined, 'approved_subset', 'original_scan']) {
+      const rows = pairIssuesWithFixes(issues, [], {
+        total_issues: 1,
+        issue_outcomes: [{ source_index: 0, source_index_scope: scope, status: 'manual' }],
+      });
+      assert.equal(rows[0].recordedOutcome, scope === 'original_scan' ? 'manual' : undefined);
+    }
+  });
+
+  it('does not fall back to stale approvals when current job attribution is invalid', () => {
+    const rows = pairIssuesWithFixes([{ description: 'Title' }], [fix({ description: 'Title', location: undefined, page_number: null })], {
+      total_issues: 1,
+      issue_outcomes: [{ source_index: 0, source_index_scope: 'approved_subset', status: 'fixed' }],
+    });
+    assert.equal(outcomePresentation(rows[0].fix, rows[0].outcomeSource, rows[0].recordedOutcome).label, 'Outcome not reported');
+  });
+
   it('pairs the observed production findings with shuffled persisted fixes', () => {
     const issues = [
       { description: 'Document should start with H1 heading', location: 'Beginning of document', page_number: 1 },

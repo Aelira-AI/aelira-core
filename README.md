@@ -10,7 +10,7 @@
 [![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-336791.svg)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Deploy-Docker_Compose-2496ED.svg)](docker-compose.quickstart.yml)
 
-> **Status: 0.9.10 beta.** The engine — scanning, deterministic scoring, remediation — is complete and tested (5,000+ backend tests). LMS integration maturity varies by platform: Canvas is production-verified, the others range from beta to untested (see the [integration status table](#lms-integration-status) below). Pre-1.0 means we're still hardening operational edges. Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. Known work is tracked openly in the issues.
+> **Status: 0.9.11 beta.** Scanning and remediation remain under active validation. Automated scores describe scanner findings, not accessibility conformance. Some documents require manual work and cannot produce a downloadable remediated artifact. LMS integration maturity varies by platform (see the [integration status table](#lms-integration-status) below). Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. See the [0.9.11 corrective release notes](docs/releases/v0.9.11.md) for workflow fixes and verification limits.
 
 Most accessibility tools tell you a PDF has no tags, an image has no alt text, and a table has no headers. Someone still has to open the file and fix it. Aelira does the fixing: you give it a document, it gives you back a remediated one, with a report of what changed and why.
 

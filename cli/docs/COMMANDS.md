@@ -1,6 +1,6 @@
 # Aelira CLI Command Reference
 
-**Version:** v0.9.10
+**Version:** v0.9.11
 **Last Updated:** September 9, 2026
 
 Complete reference for all Aelira CLI commands.
@@ -1207,7 +1207,7 @@ These flags work with all commands:
 ---
 
 **Last Updated:** September 9, 2026
-**CLI Version:** v0.9.10
+**CLI Version:** v0.9.11
 **Status:** Beta
 
 **Made with by the Aelira team**

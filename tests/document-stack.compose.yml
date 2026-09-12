@@ -1,0 +1,96 @@
+# Disposable local acceptance stack. No production credentials or host data.
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg16
+    environment:
+      POSTGRES_DB: document_acceptance
+      POSTGRES_USER: aelira
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U aelira -d document_acceptance']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ['127.0.0.1:18325:8025']
+    networks: [default, browser]
+  api:
+    image: ${STACK_API_IMAGE:?Build the candidate API image and provide STACK_API_IMAGE}
+    ports: ['127.0.0.1:18300:8000']
+    networks: [default, browser]
+    environment: &environment
+      ENV: development
+      DEBUG: 'false'
+      ALLOW_MOCK_AUTH: 'false'
+      DATABASE_URL: postgresql://aelira@postgres:5432/document_acceptance
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${STACK_JWT_SECRET:?Generate a disposable test secret}
+      TOKEN_ENCRYPTION_KEY: ${STACK_ENCRYPTION_KEY:?Generate a disposable test key}
+      LLM_PROVIDER: none
+      LLM_FALLBACK_PROVIDER: none
+      EMBEDDING_PROVIDER: none
+      OPEN_SIGNUP: 'false'
+      DEFAULT_DEPARTMENT_TIER: department
+      PUBLIC_API_URL: http://localhost:18300
+      PUBLIC_DASHBOARD_URL: http://localhost:15373
+      PUBLIC_WEBSITE_URL: http://localhost:15373
+      MAGIC_LINK_BASE_URL: http://localhost:15373
+      CORS_ORIGINS: http://localhost:15373
+      SESSION_COOKIE_SECURE: 'false'
+      CSRF_COOKIE_SECURE: 'false'
+      SESSION_COOKIE_DOMAIN: ''
+      CSRF_COOKIE_DOMAIN: ''
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
+      SMTP_USER: ''
+      SMTP_PASSWORD: ''
+      FROM_EMAIL: noreply@example.org
+      MARKETING_EMAIL_ENABLED: 'false'
+      REMEDIATION_ARTIFACT_DIR: /app/uploads/remediation-artifacts
+      PYTHONDONTWRITEBYTECODE: '1'
+    volumes: &mounts
+      - ../src:/app/src:ro
+      - ../alembic:/app/alembic:ro
+      - ../alembic.ini:/app/alembic.ini:ro
+      - ../entrypoint.sh:/app/entrypoint.sh:ro
+      - uploads:/app/uploads
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    command: [uvicorn, 'src.api.main:app', --host, 0.0.0.0, --port, '8000', --no-proxy-headers]
+    healthcheck:
+      test: [CMD, curl, -fsS, 'http://localhost:8000/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  worker:
+    image: ${STACK_API_IMAGE:?Build the candidate API image and provide STACK_API_IMAGE}
+    environment:
+      <<: *environment
+      SKIP_MIGRATIONS: 'true'
+      JOB_WORKER_ID: document-acceptance
+      JOB_WORKER_MAX_CONCURRENCY: '1'
+    volumes: *mounts
+    command: [python, -m, src.jobs.worker]
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -m, src.jobs.healthcheck, --mode, readiness]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+networks:
+  default:
+    internal: true
+  browser:
+    driver: bridge
+volumes:
+  uploads:

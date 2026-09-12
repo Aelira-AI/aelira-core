@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-09-12
+
+### Fixed
+
+- Upload and scan-detail remediation status follows the authoritative job; download actions remain inside the artifact-aware review workflow.
+- Withheld output retains all original findings as unresolved, with explicit withheld and unreported outcomes instead of disappearing counts.
+- Corrected upload labels, nested interactive controls, review-list keyboard scrolling and affected label contrast.
+- PDF verification compares source and output checkpoint results to distinguish persistent failures from newly introduced regressions.
+
+### Changed
+
+- Added a blocking real API/queue/worker/download acceptance gate for synthetic PDF and Office files, alongside the existing browser testbed.
+- Scanner measurements and safety refusal are documented separately from accessibility conformance.
+
+### Operator action required
+
+- No database migration or new production environment variable is required. Deploy API, worker and dashboard from the same 0.9.11 release.
+- Re-run remediation from the retained original for new per-finding outcome records; historical estimates are not retroactively verified.
+- Preserve the v0.9.8 operator action requirements. Review saved files before publishing; partial-output safety restrictions remain in place.
+- See [the corrective release notes](docs/releases/v0.9.11.md). Published v0.9.10 artifacts remain unchanged.
+
 ## [0.9.10] - 2026-09-12
 
 ### Fixed

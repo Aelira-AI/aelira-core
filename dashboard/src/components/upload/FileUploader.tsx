@@ -16,6 +16,7 @@ import { Link } from 'react-router-dom';
 import { scansApi } from '../../api/scans';
 import { unwrapResponse } from '../../utils/apiUnwrap';
 import { trackEvent } from '../../utils/analytics';
+import { RemediationStatusLink } from '../results/RemediationStatusLink';
 
 // ============================================================================
 // Types
@@ -84,6 +85,7 @@ interface CompletedScanResult {
   result: ScanResult;
   isRemediating?: boolean;
   isRemediated?: boolean;
+  remediationStartFailed?: boolean;
 }
 
 interface UploadOptions {
@@ -245,11 +247,13 @@ export function FileUploader({
     setFiles((prev) => [...prev, ...newFiles]);
   }, []);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+  const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
     accept: config.accept,
     maxSize: 100 * 1024 * 1024, // 100MB
     multiple: true,
+    noClick: true,
+    noKeyboard: true,
   });
 
   const removeFile = (id: string): void => {
@@ -383,17 +387,17 @@ export function FileUploader({
             if (config.apiType === 'latex' && latexOutputFormats.length > 0) {
               remediateOptions.latex_formats = latexOutputFormats;
             }
-            await scansApi.remediateScan(scanId, remediateOptions);
+            await scansApi.startRemediationJob(scanId, remediateOptions);
             setCompletedScans((prev) =>
               prev.map((s) =>
-                s.scanId === scanId ? { ...s, isRemediating: false, isRemediated: true } : s
+                s.scanId === scanId ? { ...s, isRemediating: false, remediationStartFailed: false } : s
               )
             );
           } catch (remError) {
             console.error('[FileUploader] Auto-remediation failed:', remError);
             setCompletedScans((prev) =>
               prev.map((s) =>
-                s.scanId === scanId ? { ...s, isRemediating: false } : s
+                s.scanId === scanId ? { ...s, isRemediating: false, remediationStartFailed: true } : s
               )
             );
             // Don't fail the entire upload if remediation fails
@@ -569,16 +573,24 @@ export function FileUploader({
 
           // Auto-remediate if enabled (sync mode)
           if (autoRemediate && (result.scan_id || result.id)) {
+            const remediationScanId = result.scan_id || result.id || '';
+            setCompletedScans((prev) => prev.map((scan) => scan.scanId === remediationScanId
+              ? { ...scan, isRemediating: true } : scan));
             try {
               const remediateOptions: { use_ai: boolean; latex_formats?: string[] } = { use_ai: true };
               // Pass LaTeX output formats if applicable
               if (config.apiType === 'latex' && latexOutputFormats.length > 0) {
                 remediateOptions.latex_formats = latexOutputFormats;
               }
-              await scansApi.remediateScan(result.scan_id || result.id || '', remediateOptions);
+              await scansApi.startRemediationJob(remediationScanId, remediateOptions);
             } catch (remError) {
               console.error('[FileUploader] Auto-remediation failed (sync):', remError);
+              setCompletedScans((prev) => prev.map((scan) => scan.scanId === remediationScanId
+                ? { ...scan, remediationStartFailed: true } : scan));
               // Don't fail the entire upload if remediation fails
+            } finally {
+              setCompletedScans((prev) => prev.map((scan) => scan.scanId === remediationScanId
+                ? { ...scan, isRemediating: false } : scan));
             }
           }
         }
@@ -626,8 +638,8 @@ export function FileUploader({
                   Generate AI Alt Text for Images
                 </span>
                 <p className="text-xs text-secondary mt-0.5">
-                  Use llava:7b vision model to automatically generate accessible alt text for all
-                  images in the PDF. Adds ~10 seconds per image.
+                  Use the configured AI vision service to suggest image descriptions.
+                  Processing time varies; review generated descriptions against the source images.
                 </p>
               </div>
             </label>
@@ -672,7 +684,7 @@ export function FileUploader({
                 </span>
                 <p className="text-xs text-secondary mt-0.5">
                   Use AI vision to automatically generate accessible alt text for images missing
-                  descriptions. Adds ~10 seconds per image.
+                  descriptions. Processing time varies; review descriptions against the source images.
                 </p>
               </div>
             </label>
@@ -909,8 +921,8 @@ export function FileUploader({
                   </span>
                 </div>
                 <p className="text-xs text-secondary mt-0.5">
-                  Automatically fix accessibility issues after scanning completes. Creates a
-                  remediated version with AI-powered fixes applied.
+                  Starts a remediation job after scanning. Output may require manual review
+                  or be withheld when it cannot be safely published.
                 </p>
               </div>
             </label>
@@ -967,26 +979,24 @@ export function FileUploader({
 
       {/* Dropzone */}
       <div
-        {...getRootProps({
-          role: 'button',
-          'aria-label': `Upload ${config.label} files. Drag and drop or press Enter to browse.`,
-        })}
-        className={`border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-2 ${
+        {...getRootProps({ role: 'group', 'aria-label': `Upload ${config.label} files` })}
+        className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
           isDragActive
             ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
             : 'border-[var(--border-primary)] hover:border-[var(--border-accent)]'
         }`}
       >
-        <input {...getInputProps()} />
+        <input {...getInputProps({ 'aria-label': `Select ${config.label} files` })} />
         <Upload className="w-12 h-12 text-secondary mx-auto mb-4" />
         {isDragActive ? (
           <p className="text-lg text-primary-600 dark:text-primary-400">Drop files here...</p>
         ) : (
           <div>
             <p className="text-lg text-primary mb-2">
-              Drag & drop {config.label} files here, or click to select
+              Drag & drop {config.label} files here
             </p>
             <p className="text-sm text-secondary">Max file size: 100MB</p>
+            <button type="button" onClick={open} className="btn-secondary mt-4">Browse files</button>
           </div>
         )}
       </div>
@@ -1155,7 +1165,7 @@ export function FileUploader({
                 <div className="flex items-center space-x-2">
                   <CheckCircle className="w-6 h-6 text-[var(--feature-success-content)]" />
                   <span className="text-sm font-medium text-[var(--feature-success-content)]">
-                    Complete
+                    Original scan complete
                   </span>
                 </div>
               </div>
@@ -1254,114 +1264,8 @@ export function FileUploader({
                   <Download className="w-4 h-4" />
                   <span>Download Report</span>
                 </button>
-                {/* Remediate button for document types */}
                 {['pdf', 'word', 'powerpoint', 'excel', 'latex'].includes(config.apiType) && (
-                  <button
-                    onClick={async () => {
-                      try {
-                        await scansApi.remediateScan(scan.scanId, { use_ai: true });
-                        alert('Remediation started! The fixed file will be available shortly.');
-                      } catch (error) {
-                        console.error('Remediation failed:', error);
-                        const typedError = error as ApiError;
-                        alert(
-                          'Failed to remediate: ' +
-                            (typedError.response?.data?.detail || typedError.message)
-                        );
-                      }
-                    }}
-                    className="btn-secondary flex items-center space-x-2"
-                  >
-                    <Wrench className="w-4 h-4" />
-                    <span>Remediate</span>
-                  </button>
-                )}
-                {/* Download remediated file button - with format options for LaTeX */}
-                {['pdf', 'word', 'powerpoint', 'excel', 'latex'].includes(config.apiType) && (
-                  <div className="relative group">
-                    <button
-                      disabled={scan.isRemediating}
-                      onClick={async () => {
-                        if (scan.isRemediating) return;
-                        try {
-                          trackEvent('dash-download-fixed', { scan_type: scanType });
-                          // For LaTeX, default to tex format
-                          const format = config.apiType === 'latex' ? 'tex' : undefined;
-                          const blob = await scansApi.downloadRemediated(scan.scanId, format);
-                          const url = window.URL.createObjectURL(blob);
-                          const a = document.createElement('a');
-                          a.href = url;
-                          const ext = config.apiType === 'latex' ? '.tex' : '';
-                          a.download = `remediated_${scan.filename}${ext ? '' : ''}`;
-                          document.body.appendChild(a);
-                          a.click();
-                          window.URL.revokeObjectURL(url);
-                          document.body.removeChild(a);
-                        } catch (error) {
-                          console.error('Download remediated file failed:', error);
-                          const typedError = error as ApiError;
-                          if (typedError.response?.status === 404) {
-                            alert('Remediated file not found. Please run remediation first.');
-                          } else {
-                            alert(
-                              'Failed to download remediated file: ' +
-                                (typedError.response?.data?.detail || typedError.message)
-                            );
-                          }
-                        }
-                      }}
-                      className={`btn-secondary flex items-center space-x-2 ${scan.isRemediating ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      {scan.isRemediating ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Remediating...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Download className="w-4 h-4" />
-                          <span>Download Remediated</span>
-                        </>
-                      )}
-                    </button>
-                    {/* Format dropdown for LaTeX */}
-                    {config.apiType === 'latex' && (
-                      <div className="absolute right-0 mt-1 w-40 bg-[var(--surface-primary)] border border-[var(--border-primary)] rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
-                        <div className="py-1">
-                          {[
-                            { format: 'tex', label: 'LaTeX (.tex)', icon: '📄' },
-                            { format: 'pdf', label: 'PDF', icon: '📕' },
-                            { format: 'html', label: 'HTML', icon: '🌐' },
-                          ].map((opt) => (
-                            <button
-                              key={opt.format}
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                try {
-                                  const blob = await scansApi.downloadRemediated(scan.scanId, opt.format);
-                                  const url = window.URL.createObjectURL(blob);
-                                  const a = document.createElement('a');
-                                  a.href = url;
-                                  a.download = `remediated_${scan.filename.replace(/\.[^.]+$/, '')}.${opt.format}`;
-                                  document.body.appendChild(a);
-                                  a.click();
-                                  window.URL.revokeObjectURL(url);
-                                  document.body.removeChild(a);
-                                } catch (error) {
-                                  console.error(`Download ${opt.format} failed:`, error);
-                                  alert(`Failed to download ${opt.label}. The format may not have been generated.`);
-                                }
-                              }}
-                              className="w-full px-3 py-2 text-left text-sm hover:bg-[var(--surface-tertiary)] flex items-center gap-2"
-                            >
-                              <span>{opt.icon}</span>
-                              <span>{opt.label}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  <RemediationStatusLink scanId={scan.scanId} refreshKey={scan.isRemediating} startUnconfirmed={scan.remediationStartFailed} />
                 )}
               </div>
             </div>

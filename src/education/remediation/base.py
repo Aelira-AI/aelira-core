@@ -790,6 +790,8 @@ class VerificationResult(BaseModel):
     issues_fixed: List[str] = Field(default_factory=list)
     issues_remaining: List[str] = Field(default_factory=list)
     regressions: List[str] = Field(default_factory=list)  # New issues introduced
+    persistent_failures: List[str] = Field(default_factory=list)
+    unavailable_checks: List[str] = Field(default_factory=list)
     verification_score: float = 0.0  # 0-100 improvement score
 
 

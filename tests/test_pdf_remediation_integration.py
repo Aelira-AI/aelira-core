@@ -14,17 +14,17 @@ FIXTURES = Path(__file__).parent / "fixtures" / "pdfs"
     and not (FIXTURES / "academic_paper.pdf").exists(),
     reason="Test fixture not available",
 )
-def test_full_remediation_pipeline():
+@pytest.mark.parametrize(
+    "fixture,expected_regressions",
+    [("academic_paper.pdf", ["Matterhorn 13-004"]), ("simple_syllabus.pdf", [])],
+)
+def test_full_remediation_pipeline(fixture, expected_regressions):
     """Scan a PDF, remediate it, re-scan, and verify improvement."""
     from src.education.pdf_processor import PDFProcessor
     from src.education.remediation.pdf_remediator import PdfRemediator
     from src.education.remediation.base import RemediationConfig
 
-    # Pick whichever fixture exists
-    if (FIXTURES / "academic_paper.pdf").exists():
-        input_pdf = str(FIXTURES / "academic_paper.pdf")
-    else:
-        input_pdf = str(FIXTURES / "simple_syllabus.pdf")
+    input_pdf = str(FIXTURES / fixture)
 
     # Step 1: Initial scan
     processor = PDFProcessor(generate_alt_text=False, validate_alt_text=False)
@@ -64,32 +64,48 @@ def test_full_remediation_pipeline():
             f"{len(initial_issues)} before -> {len(remaining_issues)} after"
         )
 
-        # Step 5: Check built-in verification result for regressions (lenient)
-        if result.verification_result:
-            regressions = getattr(result.verification_result, "regressions", [])
-            if regressions:
-                # Log but don't fail — some regressions may be expected
-                print(f"Verification regressions (non-fatal): {regressions}")
+        # Every newly introduced failure blocks; existing inaccessible fixture
+        # failures remain visible without being mislabeled as regressions.
+        assert result.verification_result is not None
+        assert result.verification_result.regressions == expected_regressions
+        assert result.verification_result.unavailable_checks == []
+        if expected_regressions:
+            # Figure tagging exposes missing alt text on this manual fixture.
+            # The provisional candidate must never acquire publication authority.
+            assert result.verification_passed is False
+            assert result.manual_count > 0
 
-        # Step 6: Explicit Matterhorn validation (lenient — don't fail test)
-        try:
-            from src.education.validation.matterhorn import MatterhornValidator
+        from collections import Counter
+        from src.education.validation.matterhorn import MatterhornValidator
 
-            mh = MatterhornValidator()
-            mh_result = mh.validate(result.output_file)
-            if mh_result:
-                failed_cps = [
-                    cp for cp in mh_result.checkpoints if cp.status.value == "fail"
-                ]
-                if failed_cps:
-                    print(
-                        f"Matterhorn failures (non-fatal): {len(failed_cps)} "
-                        f"of {mh_result.total} checkpoints"
-                    )
-                else:
-                    print(f"Matterhorn: all {mh_result.total} checkpoints passed")
-        except Exception as e:
-            print(f"Matterhorn validation skipped: {e}")
+        mh = MatterhornValidator()
+        before_mh = mh.validate(input_pdf)
+        after_mh = mh.validate(result.output_file)
+        assert before_mh and after_mh
+        assert before_mh.total > 0 and after_mh.total > 0
+        before_ids = {cp.id for cp in before_mh.checkpoints}
+        after_ids = {cp.id for cp in after_mh.checkpoints}
+        assert before_ids.issubset(after_ids)
+        assert all(
+            cp.status.value == "pass"
+            for cp in after_mh.checkpoints
+            if cp.id not in before_ids
+        )
+        before_failures = Counter(
+            (cp.id, cp.page_number)
+            for cp in before_mh.checkpoints
+            if cp.status.value == "fail"
+        )
+        after_failures = Counter(
+            (cp.id, cp.page_number)
+            for cp in after_mh.checkpoints
+            if cp.status.value == "fail"
+        )
+        assert [
+            f"Matterhorn {identifier}"
+            for (identifier, _page), count in (after_failures - before_failures).items()
+            for _ in range(count)
+        ] == expected_regressions
 
         result.close_output_claim()
 
