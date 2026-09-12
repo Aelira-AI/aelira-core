@@ -1,7 +1,7 @@
 /** Dependencies replaced only by lti-preview.ts; never used in production. */
 export function useLTISession() {
   return {
-    accessToken: 'synthetic-session-marker', courseId: 'fixture-course',
+    accessToken: 'placeholder-lti-session', courseId: 'fixture-course',
     courseName: 'Synthetic Accessibility Course', platform: 'canvas',
     accountWide: false, loading: false, error: null,
   };
