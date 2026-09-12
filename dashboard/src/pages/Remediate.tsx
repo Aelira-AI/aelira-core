@@ -23,6 +23,8 @@ import {
   pollRemediationJob,
 } from '../utils/remediationJob';
 import type { RemediationJobState } from '../utils/remediationJob';
+import { remediationScore } from '../utils/remediationScore';
+import { ScoreComparison } from '../components/ScoreComparison';
 import {
   issueDescription,
   outcomePresentation,
@@ -132,20 +134,16 @@ const STATE_PRESENTATION: Record<PageState, StatePresentation> = {
   },
 };
 
-function displayScore(score: number | null | undefined): string {
-  return typeof score === 'number' ? `${Math.round(score)}/100` : 'Not available';
-}
-
 function AggregateResults({ job }: { job: RemediationJobStatus }): React.ReactElement | null {
   const values = [
-    { label: 'Fixed', value: job.fixed_count, color: 'text-[var(--feature-success-content)]' },
+    { label: 'Reported changes', value: job.score_verified === true ? job.fixed_count : null, color: 'text-primary' },
     { label: 'Remaining', value: job.remaining_count, color: 'text-[var(--feature-warning-content)]' },
     { label: 'Total issues', value: job.total_issues, color: 'text-primary' },
     { label: 'Manual review', value: job.manual_count, color: 'text-[var(--feature-warning-content)]' },
     { label: 'Failed', value: job.failed_count, color: 'text-[var(--feature-danger-content)]' },
     { label: 'Skipped', value: job.skipped_count, color: 'text-[var(--content-secondary)]' },
   ].filter((item): item is { label: string; value: number; color: string } =>
-    typeof item.value === 'number'
+    typeof item.value === 'number' && Number.isFinite(item.value)
   );
 
   if (values.length === 0) return null;
@@ -158,23 +156,6 @@ function AggregateResults({ job }: { job: RemediationJobStatus }): React.ReactEl
           <p className="mt-1 text-sm text-tertiary">{item.label}</p>
         </div>
       ))}
-    </div>
-  );
-}
-
-function ScoreComparison({ job, scan }: { job: RemediationJobStatus; scan: Scan }): React.ReactElement {
-  const originalScore = job.original_score ?? scan.compliance_score ?? scan.result?.compliance_score;
-
-  return (
-    <div className="grid gap-4 sm:grid-cols-2">
-      <div className="rounded-lg border border-[var(--border-primary)] p-4">
-        <p className="text-sm text-tertiary">Original score</p>
-        <p className="mt-2 text-xl font-semibold text-primary">{displayScore(originalScore)}</p>
-      </div>
-      <div className="rounded-lg border border-[var(--border-primary)] p-4">
-        <p className="text-sm text-tertiary">Remediated score</p>
-        <p className="mt-2 text-xl font-semibold text-primary">{displayScore(job.remediated_score)}</p>
-      </div>
     </div>
   );
 }
@@ -209,6 +190,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
   const pollController = useRef<AbortController | null>(null);
   const startCoordinator = useRef(createRemediationStartCoordinator());
   const fixLoadGeneration = useRef(0);
+  const scanSnapshot = useRef<Scan | null>(null);
 
   const [scan, setScan] = useState<Scan | null>(null);
   const [loading, setLoading] = useState(true);
@@ -260,7 +242,9 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
       setPageState(outcome.state);
       await loadRecordedFixes(outcome.job);
       if (outcome.state === 'completed') {
-        toast.success('Remediation completed', 'Complete');
+        const scores = remediationScore(outcome.job, scanSnapshot.current || {});
+        if (scores.success) toast.success(scores.description, scores.title);
+        else toast.warning(scores.description, scores.title);
       } else if (outcome.state === 'partial') {
         toast.warning('Manual review is required', 'Remediation stopped');
       } else if (outcome.state === 'failed' || outcome.state === 'timed_out') {
@@ -287,7 +271,9 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
         const result = scanData.result as Record<string, unknown> | undefined;
         const issues = (scanData.issues as Issue[]) || (result?.issues as Issue[]) || [];
         setStarting(false);
-        setScan({ ...(data as unknown as Scan), issues });
+        const loadedScan = { ...(data as unknown as Scan), issues };
+        scanSnapshot.current = loadedScan;
+        setScan(loadedScan);
 
         try {
           const latest = await scansApi.getLatestRemediationJob(scanId);
@@ -401,7 +387,10 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
     );
   }
 
-  const presentation = STATE_PRESENTATION[pageState];
+  const comparison = job ? remediationScore(job, scan) : null;
+  const presentation = pageState === 'completed' && comparison
+    ? { ...STATE_PRESENTATION[comparison.success ? 'completed' : 'partial'], title: comparison.title, description: comparison.description }
+    : STATE_PRESENTATION[pageState];
   const StatusIcon = presentation.icon;
   const canStart =
     ['idle', 'completed', 'partial', 'timed_out', 'failed', 'request_failed'].includes(pageState)
@@ -431,7 +420,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
           {canDownload && (
             <button onClick={downloadArtifact} className="btn-primary flex w-full items-center justify-center gap-2 sm:w-auto">
               <Download className="h-4 w-4" aria-hidden="true" />
-              Download Remediated File
+              Download Output for Review
             </button>
           )}
         </div>
@@ -511,11 +500,11 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
         <section className="card" aria-labelledby="recorded-issues-heading">
           <div className="mb-4">
             <h2 id="recorded-issues-heading" className="text-lg font-semibold text-primary">
-              Recorded Issues ({issueRows.length})
+              Recorded Findings and Changes ({issueRows.length})
             </h2>
             <p className="mt-1 text-sm text-tertiary">
               {recordedFixes
-                ? 'Fixed outcomes come from persisted remediation records; manual outcomes are shown only when the job totals reconcile exactly.'
+                ? 'Applied changes come from persisted remediation records; manual outcomes are shown only when the job totals reconcile exactly. Application alone does not verify a fix.'
                 : 'Per-issue remediation outcomes are not available for this job.'}
             </p>
           </div>

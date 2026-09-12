@@ -2834,16 +2834,8 @@ async def get_content_diff(
             db.query(ScanResult).filter(ScanResult.scan_id == cf.last_scan_id).first()
         )
         if scan_result and scan_result.issues:
-            total_issues = len(scan_result.issues)
-            if (
-                remediated
-                and cf.last_compliance_score is not None
-                and cf.last_compliance_score >= 100
-            ):
-                # Legacy row remediated before counts were persisted, but score says fully fixed
-                issues_fixed = total_issues
-            else:
-                issues_remaining = total_issues
+            # A stored score does not attribute legacy findings to verified fixes.
+            issues_remaining = len(scan_result.issues)
 
     return {
         "cloud_file_id": cf.id,

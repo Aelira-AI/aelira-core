@@ -1,6 +1,7 @@
 """Reading order verification for PDFs."""
 
 import logging
+from .completeness import record_incomplete_check
 from typing import Dict, List, Optional
 
 import fitz  # PyMuPDF for visual text extraction
@@ -111,6 +112,7 @@ class ReadingOrderVerifier:
                         )
 
         except Exception as e:
+            record_incomplete_check("reading_order.check")
             logger.error(f"[ReadingOrderVerifier] Error verifying reading order: {e}")
             return ReadingOrderResult(
                 total_pages=total_pages,
@@ -200,6 +202,7 @@ class ReadingOrderVerifier:
             blocks.sort(key=sort_key)
 
         except Exception as e:
+            record_incomplete_check("reading_order.sort_key")
             logger.warning(
                 f"[ReadingOrderVerifier] Error getting visual text order: {e}"
             )
@@ -220,6 +223,7 @@ class ReadingOrderVerifier:
             List of dicts with 'text' in structure tree order
         """
         if not HAS_PIKEPDF:
+            record_incomplete_check("reading_order.dependency")
             return []
 
         structure_texts: List[Dict] = []
@@ -244,6 +248,7 @@ class ReadingOrderVerifier:
                     try:
                         return page_obj_ids.get(id(pg_ref), -1)
                     except Exception:
+                        record_incomplete_check("reading_order._page_index_of")
                         return -1
 
                 # Collect structure elements with their content,
@@ -251,6 +256,7 @@ class ReadingOrderVerifier:
                 def collect_text(elem, inherited_page=-1, depth=0):
                     """Recursively collect text from structure elements."""
                     if depth > 50:
+                        record_incomplete_check("reading_order.structure_depth_limit")
                         return
 
                     # Determine which page this element belongs to.
@@ -274,6 +280,7 @@ class ReadingOrderVerifier:
                                     }
                                 )
                         except Exception:
+                            record_incomplete_check("reading_order.collect_text")
                             pass
 
                     # Check for Alt text
@@ -288,6 +295,7 @@ class ReadingOrderVerifier:
                                     }
                                 )
                         except Exception:
+                            record_incomplete_check("reading_order.collect_text")
                             pass
 
                     # Recurse into children (pass page context down)
@@ -311,6 +319,7 @@ class ReadingOrderVerifier:
                     collect_text(kids)
 
         except Exception as e:
+            record_incomplete_check("reading_order.collect_text")
             logger.warning(f"[ReadingOrderVerifier] Error reading structure tree: {e}")
 
         return structure_texts
@@ -330,6 +339,7 @@ class ReadingOrderVerifier:
             True if page has table structures
         """
         if not HAS_PIKEPDF:
+            record_incomplete_check("reading_order.dependency")
             return False
 
         table_types = {"/Table", "/TR", "/TD", "/TH", "/THead", "/TBody", "/TFoot"}
@@ -350,6 +360,7 @@ class ReadingOrderVerifier:
 
                 def _has_table(elem, inherited_page=-1, depth=0):
                     if depth > 50:
+                        record_incomplete_check("reading_order.structure_depth_limit")
                         return False
 
                     elem_page = inherited_page
@@ -357,6 +368,7 @@ class ReadingOrderVerifier:
                         try:
                             elem_page = page_obj_ids.get(id(elem.Pg), -1)
                         except Exception:
+                            record_incomplete_check("reading_order._has_table")
                             pass
 
                     # Check if this element is a table type on our page
@@ -390,6 +402,7 @@ class ReadingOrderVerifier:
                         return True
 
         except Exception as e:
+            record_incomplete_check("reading_order._has_table")
             logger.warning("[ReadingOrderVerifier] Error checking for tables: %s", e)
 
         return False

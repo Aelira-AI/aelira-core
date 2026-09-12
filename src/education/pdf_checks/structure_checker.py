@@ -1,6 +1,7 @@
 """Structure tree accessibility checking for PDFs."""
 
 import logging
+from .completeness import complete_scan_requested, record_incomplete_check
 from typing import Dict, List
 
 import fitz  # PyMuPDF for text extraction in list checks
@@ -83,6 +84,7 @@ class StructureTreeChecker:
             True if the structure tree contains at least one valid H1 element
         """
         if not HAS_PIKEPDF:
+            record_incomplete_check("structure_checker.dependency")
             return False
 
         try:
@@ -108,6 +110,9 @@ class StructureTreeChecker:
                         True if a valid heading element is found
                     """
                     if depth > 15:  # Prevent infinite recursion
+                        record_incomplete_check(
+                            "structure_checker.structure_depth_limit"
+                        )
                         return False
 
                     try:
@@ -146,6 +151,9 @@ class StructureTreeChecker:
                                             if find_heading(kid, depth + 1):
                                                 return True
                                     except Exception:
+                                        record_incomplete_check(
+                                            "structure_checker.find_heading"
+                                        )
                                         continue
                             elif isinstance(kids, pikepdf.Dictionary):
                                 if find_heading(kids, depth + 1):
@@ -154,6 +162,7 @@ class StructureTreeChecker:
                                 if find_heading(kids, depth + 1):
                                     return True
                     except Exception:
+                        record_incomplete_check("structure_checker.find_heading")
                         pass
 
                     return False
@@ -173,6 +182,7 @@ class StructureTreeChecker:
                 return False
 
         except Exception as e:
+            record_incomplete_check("structure_checker.find_heading")
             logger.warning(
                 f"[StructureTreeChecker] Error checking structure tree for H1: {e}"
             )
@@ -198,6 +208,7 @@ class StructureTreeChecker:
         issues = []
 
         if not HAS_PIKEPDF:
+            record_incomplete_check("structure_checker.dependency")
             logger.warning(
                 "pikepdf not available, skipping PDF structure accessibility checks"
             )
@@ -240,6 +251,9 @@ class StructureTreeChecker:
                         title_value = meta.get("dc:title")
                         has_title = bool(title_value and str(title_value).strip())
             except Exception:
+                record_incomplete_check(
+                    "structure_checker._check_pdf_structure_accessibility"
+                )
                 pass
 
             # Check ViewerPreferences.DisplayDocTitle
@@ -385,6 +399,9 @@ class StructureTreeChecker:
                                 has_content_marking = True
                                 break
                     except Exception:
+                        record_incomplete_check(
+                            "structure_checker._check_pdf_structure_accessibility"
+                        )
                         pass
                     if has_content_marking:
                         break
@@ -439,6 +456,9 @@ class StructureTreeChecker:
                 try:
                     is_struct = hasattr(kids, "get") and Name.S in kids
                 except Exception:
+                    record_incomplete_check(
+                        "structure_checker._check_pdf_structure_accessibility"
+                    )
                     is_struct = False
                 if is_struct:
                     elem_type = str(kids[Name.S])
@@ -453,6 +473,9 @@ class StructureTreeChecker:
                                     has_document_root = True
                                     break
                         except Exception:
+                            record_incomplete_check(
+                                "structure_checker._check_pdf_structure_accessibility"
+                            )
                             continue
 
                 if not has_document_root:
@@ -481,6 +504,9 @@ class StructureTreeChecker:
                     ):
                         has_pdfua_id = True
             except Exception:
+                record_incomplete_check(
+                    "structure_checker._check_pdf_structure_accessibility"
+                )
                 pass
 
             if has_struct_tree and not has_pdfua_id:
@@ -510,6 +536,9 @@ class StructureTreeChecker:
             )
 
         except Exception as e:
+            record_incomplete_check(
+                "structure_checker._check_pdf_structure_accessibility"
+            )
             logger.error(f"[StructureTreeChecker] Error checking PDF structure: {e}")
             # Don't fail the whole process, just skip structure checks
 
@@ -523,6 +552,7 @@ class StructureTreeChecker:
         issues = []
 
         if not HAS_PIKEPDF:
+            record_incomplete_check("structure_checker.dependency")
             return issues
 
         try:
@@ -548,6 +578,7 @@ class StructureTreeChecker:
                             if line and _is_list_item(line):
                                 text_list_items += 1
             except Exception:
+                record_incomplete_check("structure_checker._check_list_structure")
                 pass
 
             # If there are list items in text but no L elements in structure tree
@@ -568,6 +599,7 @@ class StructureTreeChecker:
 
             pdf.close()
         except Exception as e:
+            record_incomplete_check("structure_checker._check_list_structure")
             logger.warning(f"[StructureTreeChecker] List structure check error: {e}")
 
         return issues
@@ -582,6 +614,7 @@ class StructureTreeChecker:
             try:
                 is_struct_elem = hasattr(obj, "get") and Name.S in obj
             except Exception:
+                record_incomplete_check("structure_checker._count_list_elements")
                 pass
 
             if is_struct_elem:
@@ -594,6 +627,7 @@ class StructureTreeChecker:
                 for item in obj:
                     self._count_list_elements(item, count_ref)
         except Exception:
+            record_incomplete_check("structure_checker._count_list_elements")
             pass  # Skip malformed elements
 
     def _collect_tag_types(self, obj, tag_set: set) -> None:
@@ -603,6 +637,7 @@ class StructureTreeChecker:
             try:
                 is_struct_elem = hasattr(obj, "get") and Name.S in obj
             except Exception:
+                record_incomplete_check("structure_checker._collect_tag_types")
                 pass
             if is_struct_elem:
                 tag_set.add(str(obj[Name.S]))
@@ -613,6 +648,7 @@ class StructureTreeChecker:
                 for item in obj:
                     self._collect_tag_types(item, tag_set)
         except Exception:
+            record_incomplete_check("structure_checker._collect_tag_types")
             pass
 
     def _check_font_and_role_mapping(self, file_path: str) -> List[Dict]:
@@ -626,6 +662,7 @@ class StructureTreeChecker:
         """
         issues = []
         if not HAS_PIKEPDF:
+            record_incomplete_check("structure_checker.dependency")
             return issues
 
         try:
@@ -635,7 +672,8 @@ class StructureTreeChecker:
             fonts_checked = 0
             fonts_missing_unicode = 0
             # Sample first 5 pages for font checks (performance)
-            for page in list(pdf.pages)[:5]:
+            pages = list(pdf.pages)
+            for page in pages if complete_scan_requested() else pages[:5]:
                 resources = page.obj.get(Name("/Resources"))
                 if resources is None:
                     continue
@@ -684,6 +722,9 @@ class StructureTreeChecker:
                             if encoding is None:
                                 fonts_missing_unicode += 1
                     except Exception:
+                        record_incomplete_check(
+                            "structure_checker._check_font_and_role_mapping"
+                        )
                         pass
 
             if fonts_missing_unicode > 0:
@@ -796,6 +837,7 @@ class StructureTreeChecker:
 
             pdf.close()
         except Exception as e:
+            record_incomplete_check("structure_checker._check_font_and_role_mapping")
             logger.warning(f"[StructureTreeChecker] Font/role mapping check error: {e}")
 
         return issues

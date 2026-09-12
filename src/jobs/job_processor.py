@@ -242,6 +242,8 @@ class JobProcessor:
             )
             job.retry_count += 1
             job.error_message = code
+            if deterministic:
+                job.result_data = public_job_result(exc.details)
             if deterministic or job.retry_count >= job.max_retries:
                 job.status = CloudJobStatus.FAILED.value
                 job.completed_at = utcnow()

@@ -1308,6 +1308,51 @@ def _artifact_is_downloadable(
 
 def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str, Any]:
     result = public_job_result(job.result_data) or {}
+    from ...db.models import ScanResult
+    from ...education.remediation.score_reporting import score_fields
+
+    baseline = db.query(ScanResult).filter(ScanResult.scan_id == scan_id).first()
+    source_scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    raw_result = job.result_data if isinstance(job.result_data, dict) else {}
+    artifact_id = raw_result.get("artifact_id")
+    score_artifact = (
+        db.get(RemediationArtifact, artifact_id)
+        if isinstance(artifact_id, str)
+        else None
+    )
+    raw_result = dict(raw_result)
+    if raw_result.get("score_verified") is not True:
+        raw_result["score_verified"] = False
+    cloud_file_id = getattr(job, "cloud_file_id", None)
+    provider = getattr(job, "provider", None)
+    # Local publications are scan-owned and deliberately jobless. Cloud
+    # publications additionally bind the cloud file and remediation job.
+    artifact_authority = (
+        ("scan_id", scan_id),
+        ("department_id", getattr(job, "department_id", None)),
+        ("cloud_file_id", cloud_file_id),
+        ("remediation_job_id", job.id if cloud_file_id is not None else None),
+        ("provider", provider),
+    )
+    if cloud_file_id is None:
+        artifact_authority += (("provider", "local"),)
+    if raw_result.get("score_measurement") is not None:
+        if score_artifact is None:
+            raw_result["score_verification_reason"] = "output_file_missing"
+        elif cloud_file_id is None and provider != "local":
+            raw_result["score_verification_reason"] = "artifact_mismatch"
+        elif any(
+            str(getattr(score_artifact, field, "")) != str(expected)
+            for field, expected in artifact_authority
+        ):
+            raw_result["score_verification_reason"] = "artifact_mismatch"
+    scores = score_fields(
+        raw_result,
+        original_score=getattr(baseline, "compliance_score", None),
+        source_scan_type=getattr(source_scan, "scan_type", None),
+        source_sha256=getattr(source_scan, "file_hash", None) or "",
+        output_sha256=getattr(score_artifact, "sha256", None) or "",
+    )
     downloadable, artifact = _artifact_is_downloadable(db, job, scan_id)
     progress = job.progress if type(job.progress) is int else 0
     unresolved_counts = (
@@ -1338,9 +1383,18 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         "skipped_count": result.get("skipped_count"),
         "remaining_count": remaining_count,
         "total_issues": result.get("total_issues"),
-        "original_score": result.get("original_compliance_score"),
-        "remediated_score": result.get("remediated_compliance_score"),
-        "improvement": result.get("compliance_improvement"),
+        "original_score": scores["original_compliance_score"],
+        "remediated_score": scores["remediated_compliance_score"],
+        "improvement": scores["compliance_improvement"],
+        "score_verified": scores["score_verified"],
+        "score_provenance": scores["score_provenance"],
+        "score_measurement": scores["score_measurement"],
+        "score_verification_reason": scores["score_verification_reason"],
+        "human_review_required": not scores["score_verified"]
+        or result.get("human_review_required", True)
+        or remaining_count is None
+        or remaining_count > 0
+        or (scores["compliance_improvement"] or 0) < 0,
         "artifact_id": str(artifact.id) if downloadable and artifact else None,
         "download_available": downloadable,
         "download_url": _download_url(str(job.id)) if downloadable else None,
@@ -2482,6 +2536,24 @@ async def remediate_scan(
         # Fully materialize every response field before recording success or
         # committing. Enum/property/list failures must still roll back through
         # the single audited failure path.
+        from ...education.remediation.score_reporting import score_fields
+
+        recorded = scan.result
+        scores = score_fields(
+            {
+                "original_compliance_score": result.original_compliance_score,
+                "remediated_compliance_score": result.remediated_compliance_score,
+                "score_provenance": getattr(result, "score_provenance", None),
+                "score_measurement": getattr(result, "score_measurement", None),
+                "score_verification_reason": getattr(
+                    result, "score_verification_reason", None
+                ),
+            },
+            original_score=getattr(recorded, "compliance_score", None),
+            source_scan_type=scan.scan_type,
+            source_sha256=getattr(scan, "file_hash", None) or "",
+            output_sha256=getattr(artifact, "sha256", None) or "",
+        )
         response_payload = {
             "success": terminal_success if pdf_claim_required else result.success,
             "scan_id": scan_id,
@@ -2502,9 +2574,18 @@ async def remediate_scan(
             "manual_count": result.manual_count,
             "failed_count": result.failed_count,
             "skipped_count": getattr(result, "skipped_count", 0),
-            "original_score": result.original_compliance_score,
-            "remediated_score": result.remediated_compliance_score,
-            "improvement": result.improvement,
+            "original_score": scores["original_compliance_score"],
+            "remediated_score": scores["remediated_compliance_score"],
+            "improvement": scores["compliance_improvement"],
+            "score_verified": scores["score_verified"],
+            "score_provenance": scores["score_provenance"],
+            "score_measurement": scores["score_measurement"],
+            "score_verification_reason": scores["score_verification_reason"],
+            "human_review_required": not scores["score_verified"]
+            or not getattr(result, "verification_passed", False)
+            or result.manual_count > 0
+            or result.failed_count > 0
+            or any(fix.needs_review for fix in result.fixed_issues),
             "duration_seconds": result.duration_seconds,
             "fixed_issues": [
                 {

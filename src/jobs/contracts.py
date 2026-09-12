@@ -106,6 +106,9 @@ _PUBLIC_JOB_RESULT_FIELDS = frozenset(
         "manual_count",
         "original_compliance_score",
         "remediated_compliance_score",
+        "score_verified",
+        "score_provenance",
+        "human_review_required",
         "scan_id",
         "skipped_count",
         "status",
@@ -166,7 +169,12 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
         if key not in value:
             continue
         item = value[key]
-        if key in {"success", "download_available"}:
+        if key in {
+            "success",
+            "download_available",
+            "score_verified",
+            "human_review_required",
+        }:
             if type(item) is bool:
                 result[key] = item
         elif key in {"ai_used", "external_ai_used"}:
@@ -187,6 +195,9 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
                 result[key] = item
         elif key == "status":
             if item in {"completed", "manual_required", "no_op", "failed"}:
+                result[key] = item
+        elif key == "score_provenance":
+            if item == "scanner_rescan":
                 result[key] = item
         elif key == "providers":
             if item is None:
@@ -216,6 +227,32 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
                         "used",
                     }
                 }
+    if any(
+        key in value
+        for key in (
+            *_PUBLIC_SCORE_FIELDS,
+            "score_verification_reason",
+            "score_measurement",
+        )
+    ):
+        from ..education.remediation.score_reporting import score_fields
+
+        scores = score_fields(
+            {**value, "score_verified": value.get("score_verified") is True},
+            original_score=value.get("original_compliance_score"),
+        )
+        # Generic jobs have no persisted ScanResult baseline to repair legacy
+        # estimates. The scan-specific endpoint supplies that authoritative value.
+        for key in _PUBLIC_SCORE_FIELDS:
+            result.pop(key, None)
+        if scores["score_verified"]:
+            result.update(scores)
+        else:
+            result["score_verified"] = False
+            result.pop("score_provenance", None)
+            result["human_review_required"] = True
+            result["score_measurement"] = None
+            result["score_verification_reason"] = scores["score_verification_reason"]
     return result or None
 
 

@@ -1158,7 +1158,7 @@ export function LTICourseView(): React.ReactElement {
                       <span className="text-sm font-semibold tabular-nums" style={{ color: getComplianceColor(typeInfo.average_compliance) }}>
                         {Math.round(typeInfo.average_compliance)}%
                         <span className="sr-only">
-                          {typeInfo.average_compliance >= 90 ? ' compliant' : typeInfo.average_compliance >= 70 ? ' needs improvement' : ' non-compliant'}
+                          {' average automated scan score; conformance requires review'}
                         </span>
                       </span>
                     ) : (
@@ -1256,7 +1256,7 @@ export function LTICourseView(): React.ReactElement {
                       >
                         {item.compliance_score}%
                         <span className="sr-only">
-                          {item.compliance_score >= 90 ? ' compliant' : item.compliance_score >= 70 ? ' needs improvement' : ' non-compliant'}
+                          {' automated scan score; conformance requires review'}
                         </span>
                       </span>
                     ) : (
@@ -1387,9 +1387,9 @@ export function LTICourseView(): React.ReactElement {
             {overallCompliance !== null && (
               <p className="text-sm ml-8" style={{ color: getComplianceColor(overallCompliance) }}>
                 <span className="font-semibold tabular-nums">{overallCompliance}%</span>
-                {' '}overall compliance
+                {' '}average scan score
                 <span className="sr-only">
-                  {overallCompliance >= 90 ? ' — compliant' : overallCompliance >= 70 ? ' — needs improvement' : ' — non-compliant'}
+                  {' — average automated scan score; conformance requires review'}
                 </span>
               </p>
             )}
@@ -1733,7 +1733,7 @@ export function LTICourseView(): React.ReactElement {
                   style={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--card-border)' }}
                 >
                   <p className="text-xs font-medium mb-1" style={{ color: 'var(--content-secondary)' }}>
-                    Compliant
+                    Scan score 90+
                   </p>
                   <p className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--content-success)' }}>
                     {stats.compliant}
@@ -1890,7 +1890,7 @@ export function LTICourseView(): React.ReactElement {
                               >
                                 {score}%
                                 <span className="sr-only">
-                                  {score >= 90 ? ' compliant' : score >= 70 ? ' needs improvement' : ' non-compliant'}
+                                  {' automated scan score; conformance requires review'}
                                 </span>
                               </span>
                             ) : (

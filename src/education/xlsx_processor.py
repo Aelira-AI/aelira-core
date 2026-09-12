@@ -30,12 +30,15 @@ from src.utils.async_helpers import run_async_from_sync
 from PIL import Image
 from io import BytesIO
 import logging
+from .scan_completeness import record_incomplete_check
 import re
 
 from src.education.color_blindness_simulator import (
     ColorBlindnessSimulator,
     ColorBlindnessAnalysisResult,
 )
+
+from .office_findings import office_issue_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +237,7 @@ class XlsxProcessingResult(BaseModel):
             all_issues.append(
                 {
                     "id": f"sheet_name_{len(all_issues)}",
+                    "metadata": office_issue_metadata(issue, "sheet_name"),
                     "category": "sheet_name",
                     "severity": get_severity(issue.issue_type),
                     "title": f"Generic Sheet Name: {issue.sheet_name}",
@@ -254,6 +258,7 @@ class XlsxProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"table_{len(all_issues)}",
+                        "metadata": office_issue_metadata(issue, "table_header"),
                         "category": "table",
                         "severity": get_severity(issue.issue_type),
                         "title": issue.issue_type.replace("_", " ").title(),
@@ -273,6 +278,7 @@ class XlsxProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"chart_{len(all_issues)}",
+                        "metadata": office_issue_metadata(issue, "chart"),
                         "category": "alt_text",
                         "severity": "critical" if not issue.has_alt_text else "medium",
                         "title": (
@@ -338,6 +344,7 @@ class XlsxProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"image_{len(all_issues)}",
+                        "metadata": office_issue_metadata(issue, "image"),
                         "category": "alt_text",
                         "severity": severity,
                         "title": title,
@@ -367,6 +374,7 @@ class XlsxProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"merge_{len(all_issues)}",
+                        "metadata": office_issue_metadata(issue, "merge"),
                         "category": "structure",
                         "severity": get_severity(issue.issue_type),
                         "title": issue.issue_type.replace("_", " ").title(),
@@ -386,6 +394,7 @@ class XlsxProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"color_{len(all_issues)}",
+                        "metadata": office_issue_metadata(issue, "color"),
                         "category": "color",
                         "severity": get_severity(issue.issue_type),
                         "title": issue.issue_type.replace("_", " ").title(),
@@ -407,6 +416,7 @@ class XlsxProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"nav_{len(all_issues)}",
+                        "metadata": office_issue_metadata(issue, "navigation"),
                         "category": "navigation",
                         "severity": get_severity(issue.issue_type),
                         "title": issue.issue_type.replace("_", " ").title(),
@@ -423,6 +433,7 @@ class XlsxProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"contrast_{len(all_issues)}",
+                        "metadata": office_issue_metadata(issue, "contrast"),
                         "category": "contrast",
                         "severity": "high" if issue.contrast_ratio < 3.0 else "medium",
                         "title": f"Low Contrast ({issue.contrast_ratio:.1f}:1)",
@@ -442,6 +453,7 @@ class XlsxProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"cf_{len(all_issues)}",
+                        "metadata": office_issue_metadata(issue, "conditional_format"),
                         "category": "color",
                         "severity": "medium" if issue.uses_color_only else "low",
                         "title": f"Conditional Format: {issue.rule_type}",
@@ -467,6 +479,7 @@ class XlsxProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"pivot_{len(all_issues)}",
+                        "metadata": office_issue_metadata(issue, "pivot_table"),
                         "category": "structure",
                         "severity": (
                             "medium"
@@ -506,8 +519,10 @@ class XlsxProcessor:
         simulate_color_blindness: bool = False,
         progress_callback: callable = None,
         llm_client=None,
+        require_complete_scan: bool = True,
     ):
         self.generate_chart_descriptions = generate_chart_descriptions
+        self.require_complete_scan = require_complete_scan
         self.generate_alt_text = generate_alt_text
         self.validate_alt_text = validate_alt_text
         self.progress_callback = progress_callback
@@ -540,6 +555,15 @@ class XlsxProcessor:
                 self.validate_alt_text = False
 
     def process_xlsx(
+        self, file_path: str, original_filename: str = None
+    ) -> XlsxProcessingResult:
+        """Measure the workbook only when its required checks complete."""
+        from .scan_completeness import require_complete_scan
+
+        with require_complete_scan(self.require_complete_scan):
+            return self._process_xlsx(file_path, original_filename)
+
+    def _process_xlsx(
         self, file_path: str, original_filename: str = None
     ) -> XlsxProcessingResult:
         """
@@ -600,7 +624,6 @@ class XlsxProcessor:
 
         # Calculate compliance score
         total_elements = total_rows + total_charts + total_images + len(wb.sheetnames)
-        compliance_score = self._calculate_compliance_score(summary, total_elements)
 
         # Generate remediation suggestions
         remediation_suggestions = self._generate_remediation_suggestions(summary)
@@ -617,7 +640,7 @@ class XlsxProcessor:
 
         wb.close()
 
-        return XlsxProcessingResult(
+        result = XlsxProcessingResult(
             file_path=file_path,
             file_name=file_name,
             total_sheets=len(wb.sheetnames),
@@ -627,10 +650,17 @@ class XlsxProcessor:
             sheet_name_issues=sheet_name_issues,
             sheets=sheets_analysis,
             summary=summary,
-            compliance_score=compliance_score,
+            compliance_score=0.0,
             remediation_suggestions=remediation_suggestions,
             cvd_analysis=cvd_analysis,
         )
+
+        from .compliance_scoring import calculate_compliance_score
+
+        result.compliance_score = calculate_compliance_score(
+            result.issues, total_elements=total_elements
+        ).score
+        return result
 
     def _extract_workbook_context(self, wb, filename: str) -> Dict:
         """Extract workbook-level context for AI"""
@@ -875,6 +905,7 @@ class XlsxProcessor:
                         )
                     )
                 except Exception as e:
+                    record_incomplete_check("xlsx._check_charts")
                     logger.warning(
                         f"[XlsxProcessor] Chart description generation failed: {e}"
                     )
@@ -1000,6 +1031,7 @@ class XlsxProcessor:
                                 f"'{image_path}': {e}"
                             )
                 except Exception as e:
+                    record_incomplete_check("xlsx._check_images")
                     logger.warning(
                         f"[XlsxProcessor] Image alt text generation failed: {e}"
                     )
@@ -1079,6 +1111,7 @@ class XlsxProcessor:
                                     )
                                 )
                 except Exception as e:
+                    record_incomplete_check("xlsx._check_images")
                     logger.warning(
                         f"[XlsxProcessor] Image alt text validation failed: {e}"
                     )
@@ -1094,6 +1127,7 @@ class XlsxProcessor:
                     image.save(tmp, format="PNG")
                     return tmp.name
         except Exception as e:
+            record_incomplete_check("xlsx._extract_image")
             logger.warning(f"[XlsxProcessor] Failed to extract image: {e}")
         return None
 
@@ -1464,6 +1498,7 @@ class XlsxProcessor:
                     )
 
             except Exception as e:
+                record_incomplete_check("xlsx._analyze_pivot_tables")
                 logger.warning(f"[XlsxProcessor] Error analyzing pivot table: {e}")
 
             # Determine issue type and generate recommendations
@@ -1615,6 +1650,7 @@ class XlsxProcessor:
                         elif len(rgb) == 6:
                             return f"#{rgb}"
         except Exception:
+            record_incomplete_check("xlsx._get_font_color_hex")
             pass
         return "#000000"  # Default black
 
@@ -1634,6 +1670,7 @@ class XlsxProcessor:
                         elif len(rgb) == 6:
                             return f"#{rgb}"
         except Exception:
+            record_incomplete_check("xlsx._get_fill_color_hex")
             pass
         return "#ffffff"  # Default white
 
@@ -1669,6 +1706,7 @@ class XlsxProcessor:
 
             return (lighter + 0.05) / (darker + 0.05)
         except Exception:
+            record_incomplete_check("xlsx._calculate_contrast_ratio")
             return 21.0  # Return max contrast if calculation fails
 
     def _calculate_summary(
@@ -1913,11 +1951,13 @@ class XlsxProcessor:
                             if analysis.issues:
                                 results.append(analysis)
                         except Exception as e:
+                            record_incomplete_check("xlsx._analyze_cvd_accessibility")
                             logger.warning(
                                 f"[XlsxProcessor] CVD analysis failed for {fg_hex}/{bg_hex}: {e}"
                             )
 
         except Exception as e:
+            record_incomplete_check("xlsx._analyze_cvd_accessibility")
             logger.error(f"[XlsxProcessor] CVD analysis failed: {e}")
 
         return results

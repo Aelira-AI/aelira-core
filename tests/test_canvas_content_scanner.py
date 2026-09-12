@@ -904,7 +904,8 @@ class TestStaleDetection:
         )
 
     @pytest.mark.asyncio
-    async def test_write_back_succeeds_when_content_not_stale(self):
+    @pytest.mark.parametrize("measured", [False, True])
+    async def test_write_back_succeeds_when_content_not_stale(self, measured):
         from src.education.canvas_content_scanner import CanvasContentScanner
 
         canvas_client = AsyncMock()
@@ -929,6 +930,33 @@ class TestStaleDetection:
         cloud_file.remediated_body = "<p>Fixed content</p>"
         cloud_file.writeback_status = "approved"
         cloud_file.needs_rescan = False
+        cloud_file.last_scan_id = "scan-1"
+        cloud_file.last_compliance_score = 50.0
+        cloud_file.remediated_compliance_score = 100.0
+        cloud_file.remediated_issues_fixed = 1
+        cloud_file.remediated_issues_remaining = 0
+        cloud_file.provider_metadata = {}
+        if measured:
+            from src.education.canvas_score_verification import (
+                store_canvas_verification,
+            )
+
+            issues = [{"id": "image-alt", "nodes": [{}]}]
+            store_canvas_verification(
+                cloud_file,
+                issues,
+                {
+                    "score": 100.0,
+                    "source_score": 50.0,
+                    "fixed": 1,
+                    "remaining": 0,
+                    "introduced": 0,
+                },
+            )
+            db.query.return_value.filter.return_value.first.side_effect = [
+                None,
+                SimpleNamespace(issues=issues),
+            ]
 
         # Canvas still has the same updated_at
         canvas_client.get_page = AsyncMock(
@@ -965,6 +993,8 @@ class TestStaleDetection:
 
         assert result["success"] is True
         canvas_client.update_page.assert_awaited_once()
+        assert cloud_file.last_compliance_score == (100.0 if measured else None)
+        assert cloud_file.needs_rescan is True
         # Should have created a ContentWritebackLog
         db.add.assert_called()
 
@@ -1487,8 +1517,8 @@ async def test_alt_text_issues_never_reach_html_remediation_client(alt_issue):
     passed_issues = remediator_cls.call_args.args[1]
     assert [issue["id"] for issue in passed_issues] == expected_remediation_ids
     assert all(issue["category"] != "alt_text" for issue in passed_issues)
-    assert result["manual_count"] == expected_manual
-    assert result["issues_remaining"] == expected_manual
+    assert result["manual_count"] == expected_manual + len(expected_remediation_ids)
+    assert result["issues_remaining"] == expected_manual + len(expected_remediation_ids)
     assert result["fixed_count"] == 0
     assert result["purpose_decisions"]["alt_text"] == "denied_at_dispatch"
     assert result["purpose_decisions"]["remediation"] == "allowed_not_used"
@@ -1550,9 +1580,11 @@ async def test_alt_only_success_uses_alt_client_without_remediation_client_call(
     describe.assert_awaited_once()
     assert remediator_cls.call_args.args[1] == []
     remediation_client.generate_text_sync.assert_not_called()
-    assert result["fixed_count"] == 1
-    assert result["manual_count"] == 0
-    assert result["issues_remaining"] == 0
+    assert result["fixed_count"] == 0
+    assert result["manual_count"] == 1
+    assert result["issues_remaining"] == 1
+    assert result["verified"] is False
+    assert result["remediated_score"] is None
     assert result["purpose_decisions"] == {
         "remediation": "allowed_not_used",
         "alt_text": "allowed_not_used",
@@ -1740,7 +1772,10 @@ async def test_failed_rescan_log_uses_only_stable_sanitized_diagnostics(caplog):
 
     scanner = CanvasContentScanner(AsyncMock(), MagicMock(), "dept-1", "cred-1")
     cloud_file = SimpleNamespace(
-        id="cf-1", file_name="Welcome Page", last_scan_id="scan-7"
+        id="cf-1",
+        file_name="Welcome Page",
+        last_scan_id="scan-7",
+        content_body="<p>Source</p>",
     )
     sensitive_marker = "SENSITIVE-RESCAN-DETAIL"
 
@@ -1839,6 +1874,7 @@ async def test_verified_response_and_persistence_use_authoritative_rescan_counts
     scanner = CanvasContentScanner(AsyncMock(), db, "dept-1", "cred-1")
     verification = _PendingVerification(
         scan_id="verified-scan",
+        source_score=80.0,
         score=70.0,
         fixed=1,
         remaining=2,
@@ -1870,12 +1906,12 @@ async def test_verified_response_and_persistence_use_authoritative_rescan_counts
 
     assert result["verified"] is True
     assert result["fixed_count"] == 1
-    assert result["manual_count"] == 2
-    assert result["issues_remaining"] == 2
+    assert result["manual_count"] == 5
+    assert result["issues_remaining"] == 5
     assert result["issues_introduced"] == 3
     assert result["remediated_score"] == 70.0
     assert cloud_file.remediated_issues_fixed == 1
-    assert cloud_file.remediated_issues_remaining == 2
+    assert cloud_file.remediated_issues_remaining == 5
     assert cloud_file.remediated_compliance_score == 70.0
 
 
@@ -2025,6 +2061,7 @@ async def test_cleanup_failure_after_valid_output_prevents_durable_mutation_and_
     )
     verification = _PendingVerification(
         scan_id="verification-scan",
+        source_score=80.0,
         score=100.0,
         fixed=1,
         remaining=0,

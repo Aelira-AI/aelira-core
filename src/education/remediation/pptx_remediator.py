@@ -26,7 +26,6 @@ from .base import (
     BaseRemediator,
     RemediationIssue,
     IssueCategory,
-    IssueSeverity,
     RemediationConfig,
 )
 
@@ -88,6 +87,9 @@ class PptxRemediator(BaseRemediator):
     def _save_document(self, document: Presentation) -> str:
         """Save the remediated PowerPoint presentation."""
         output_path = self._get_output_path()
+        from .office_verification import require_separate_office_output
+
+        require_separate_office_output(self.file_path, output_path)
         logger.info(f"Saving remediated presentation to: {output_path}")
 
         # Ensure output directory exists
@@ -123,7 +125,12 @@ class PptxRemediator(BaseRemediator):
 
         if issue.category == IssueCategory.STRUCTURE:
             # Can add slide title
-            return issue.metadata.get("issue_type") == "missing_title"
+            return (
+                issue.metadata.get(
+                    "scanner_issue_type", issue.metadata.get("issue_type")
+                )
+                == "missing_title"
+            )
 
         if issue.category == IssueCategory.READING_ORDER:
             # Can adjust reading order
@@ -299,7 +306,17 @@ class PptxRemediator(BaseRemediator):
             slide = document.slides[slide_index]
 
             # Find the shape with the contrast issue
-            if shape_index is not None and shape_index < len(slide.shapes):
+            shape_id = issue.metadata.get("shape_id")
+            if shape_id is not None:
+                matches = [
+                    candidate
+                    for candidate in slide.shapes
+                    if candidate.shape_id == shape_id
+                ]
+                if len(matches) != 1:
+                    return False
+                shape = matches[0]
+            elif shape_index is not None and 0 <= shape_index < len(slide.shapes):
                 shape = slide.shapes[shape_index]
             else:
                 logger.warning("Could not find shape for contrast fix")
@@ -307,7 +324,11 @@ class PptxRemediator(BaseRemediator):
 
             # Calculate the fix - darken or lighten colors for better contrast
             if fg_color and bg_color:
-                new_fg = self._adjust_for_contrast(fg_color, bg_color)
+                new_fg = (
+                    fix_content
+                    if self.config.use_supplied_fixes
+                    else self._adjust_for_contrast(fg_color, bg_color)
+                )
                 if new_fg and self._apply_text_color(shape, new_fg):
                     logger.info(f"Applied contrast fix on slide {slide_index + 1}")
                     return True
@@ -425,7 +446,9 @@ class PptxRemediator(BaseRemediator):
         """Apply structure fix (e.g., add missing slide title)."""
         try:
             slide_index = issue.metadata.get("slide_index")
-            issue_type = issue.metadata.get("issue_type")
+            issue_type = issue.metadata.get(
+                "scanner_issue_type", issue.metadata.get("issue_type")
+            )
 
             if slide_index is None or slide_index >= len(document.slides):
                 return False
@@ -553,6 +576,8 @@ class PptxRemediator(BaseRemediator):
         self, issue: RemediationIssue, document: Any
     ) -> Optional[str]:
         """Get a rule-based fix for an issue."""
+        if self.config.use_supplied_fixes:
+            return issue.metadata.get("fixed_content")
         if issue.category == IssueCategory.ALT_TEXT:
             # Decorative images get empty alt text per WCAG 1.1.1
             if issue.metadata.get("is_decorative"):
@@ -570,9 +595,15 @@ class PptxRemediator(BaseRemediator):
             return None
 
         if issue.category == IssueCategory.STRUCTURE:
-            if issue.metadata.get("issue_type") == "missing_title":
-                slide_index = issue.metadata.get("slide_index", 0)
-                return f"Slide {slide_index + 1}"
+            if (
+                issue.metadata.get(
+                    "scanner_issue_type", issue.metadata.get("issue_type")
+                )
+                == "missing_title"
+            ):
+                # A numbered placeholder is not evidence of a meaningful title.
+                # Title authoring requires supplied/source-backed content.
+                return None
 
         if issue.category == IssueCategory.CONTRAST:
             # Return adjusted color based on metadata
@@ -756,29 +787,12 @@ class PptxRemediator(BaseRemediator):
 
         return f"Slide {slide_index + 1}"
 
-    def _calculate_scores(self):
-        """Calculate compliance scores for the remediation."""
-        if self.result.total_issues > 0:
-            severity_penalties = {
-                IssueSeverity.CRITICAL: 15,
-                IssueSeverity.HIGH: 10,
-                IssueSeverity.MEDIUM: 5,
-                IssueSeverity.LOW: 2,
-            }
+    def _verify_fixes(self, output_path: str):
+        from .office_verification import verify_office_output
 
-            total_penalty = sum(
-                severity_penalties.get(issue.severity, 5) for issue in self.issues
-            )
-            self.result.original_compliance_score = max(0, 100 - total_penalty)
+        return verify_office_output(self, output_path)
 
-            fixed_penalty_reduction = sum(
-                severity_penalties.get(fixed.severity, 5)
-                for fixed in self.result.fixed_issues
-            )
-            remaining_penalty = total_penalty - fixed_penalty_reduction
-            self.result.remediated_compliance_score = max(0, 100 - remaining_penalty)
+    def _calculate_scores(self) -> None:
+        from .office_verification import measured_office_scores
 
-            self.result.improvement = (
-                self.result.remediated_compliance_score
-                - self.result.original_compliance_score
-            )
+        measured_office_scores(self)

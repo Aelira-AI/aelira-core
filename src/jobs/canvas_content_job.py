@@ -34,6 +34,13 @@ from src.education.canvas_content_scanner import (
     _wrap_html_fragment,
 )
 from src.jobs.contracts import JobContext, JobFailure, JobSuccess, sanitize_json
+from src.education.deterministic_axe import run_deterministic_axe
+from src.education.canvas_score_verification import (
+    paired_canvas_outcome,
+    canvas_score_measurement,
+    store_canvas_verification,
+    unresolved_source_count,
+)
 from src.services.canvas_content_provenance import (
     canvas_content_sha256,
     install_canvas_content_owner,
@@ -49,6 +56,18 @@ MAX_COMPRESSED_BYTES = 180 * 1024
 MAX_QUEUE_PAYLOAD_BYTES = 262_144
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 MAX_ENCODED_SNAPSHOT_CHARS = ((MAX_COMPRESSED_BYTES + 2) // 3) * 4
+
+
+async def _rescan_saved_content(
+    body: str, original_issues: list, source_body: str
+) -> dict | None:
+    """Measure the final sanitized body with the source scan's axe rules."""
+    try:
+        source_results = await run_deterministic_axe(_wrap_html_fragment(source_body))
+        results = await run_deterministic_axe(_wrap_html_fragment(body))
+        return paired_canvas_outcome(source_results, results, original_issues)
+    except Exception:
+        return None
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -110,6 +129,8 @@ def _decode_snapshot(payload: Any) -> dict[str, Any]:
 def _scan_evidence(
     db: Session, cloud_file: CloudFile
 ) -> tuple[list[dict[str, Any]], float]:
+    if getattr(cloud_file, "needs_rescan", False) is True:
+        raise JobEnqueueError("canvas_content_rescan_required")
     row = (
         db.query(Scan, ScanResult)
         .join(ScanResult, ScanResult.scan_id == Scan.id)
@@ -440,6 +461,7 @@ def _authority_is_current(
         and cloud_file.content_slug == snapshot["content_slug"]
         and _content_updated_at(cloud_file) == snapshot["content_updated_at"]
         and cloud_file.last_scan_id == snapshot["scan_id"]
+        and getattr(cloud_file, "needs_rescan", False) is not True
         and isinstance(cloud_file.content_body, str)
         and canvas_content_sha256(cloud_file.content_body) == snapshot["content_sha256"]
         and isinstance(owner, dict)
@@ -557,25 +579,9 @@ def _remediate_snapshot(snapshot: dict[str, Any], job_id: str) -> _Candidate:
         manual += total - accounted
     elif accounted > total:
         raise ValueError("canvas_content_invalid_output")
-    score = getattr(result, "remediated_compliance_score", None)
-    if score is None:
-        original = snapshot.get("last_compliance_score")
-        score = (
-            min(
-                100.0,
-                round(float(original) + (100 - float(original)) * fixed / total, 1),
-            )
-            if isinstance(original, (int, float)) and total
-            else (float(original) if isinstance(original, (int, float)) else None)
-        )
-    if (
-        type(score) not in (int, float)
-        or not math.isfinite(float(score))
-        or not 0.0 <= float(score) <= 100.0
-    ):
-        raise ValueError("canvas_content_invalid_output")
-    score = float(score)
-    return _Candidate(body, fixed, manual, failed, score)
+    # Source-code scores do not measure the sanitized Canvas fragment. The
+    # worker establishes its score separately using the Canvas browser scanner.
+    return _Candidate(body, fixed, manual, failed, None)
 
 
 async def handle_canvas_content_job(
@@ -606,6 +612,21 @@ async def handle_canvas_content_job(
             else "canvas_content_remediation_failed"
         )
         return JobFailure.deterministic(code)
+    verification = await _rescan_saved_content(
+        candidate.body, snapshot["issues"], snapshot["content_body"]
+    )
+    if (
+        verification is not None
+        and verification["source_score"] != snapshot["last_compliance_score"]
+    ):
+        verification = None
+    fixed_count = verification["fixed"] if verification is not None else 0
+    remaining_count = (
+        verification["remaining"] + verification["introduced"]
+        if verification is not None
+        else unresolved_source_count(snapshot["issues"])
+    )
+    remediated_score = verification["score"] if verification is not None else None
     await context.assert_owned()
     db.rollback()
     authority = _lock_authority(db, context, snapshot)
@@ -617,11 +638,10 @@ async def handle_canvas_content_job(
     cloud_file.writeback_status = "pending_review"
     cloud_file.has_remediated_version = True
     cloud_file.remediation_origin = "manual"
-    cloud_file.remediated_compliance_score = candidate.score
-    cloud_file.remediated_issues_fixed = candidate.fixed_count
-    cloud_file.remediated_issues_remaining = (
-        candidate.manual_count + candidate.failed_count
-    )
+    cloud_file.remediated_compliance_score = remediated_score
+    cloud_file.remediated_issues_fixed = fixed_count
+    cloud_file.remediated_issues_remaining = remaining_count
+    store_canvas_verification(cloud_file, snapshot["issues"], verification)
     publish_canvas_content_candidate(
         cloud_file,
         credential_id=snapshot["credential_id"],
@@ -640,13 +660,24 @@ async def handle_canvas_content_job(
         "success": True,
         "cloud_file_id": str(cloud_file.id),
         "scan_id": snapshot["scan_id"],
-        "fixed_count": candidate.fixed_count,
-        "manual_count": candidate.manual_count,
-        "failed_count": candidate.failed_count,
-        "remediated_compliance_score": candidate.score,
-        "verified": False,
-        "issues_remaining": candidate.manual_count + candidate.failed_count,
-        "issues_introduced": 0,
+        "fixed_count": fixed_count,
+        "manual_count": remaining_count,
+        "failed_count": 0,
+        "remediated_compliance_score": remediated_score,
+        "original_compliance_score": snapshot["last_compliance_score"],
+        "verified": verification is not None,
+        "issues_remaining": remaining_count,
+        "issues_introduced": verification["introduced"] if verification else None,
+        "score_provenance": (
+            "scanner_rescan" if verification is not None else "unavailable"
+        ),
+        "score_measurement": (
+            canvas_score_measurement(
+                snapshot["content_body"], candidate.body, verification
+            )
+            if verification is not None
+            else None
+        ),
     }
     db.commit()
     return JobSuccess(completion)

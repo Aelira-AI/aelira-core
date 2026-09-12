@@ -326,10 +326,8 @@ class CanvasReconciliationService:
             cloud_file.remediated_file_id = observation.file_id
             cloud_file.writeback_status = "written_back"
             cloud_file.writeback_at = resolved_at
-            if cloud_file.remediated_compliance_score is not None:
-                cloud_file.last_compliance_score = (
-                    cloud_file.remediated_compliance_score
-                )
+            # Confirmation identifies a separate accessible copy. The original
+            # provider file and its recorded source scan retain their baseline.
             log.written_back_at = resolved_at
             log.canvas_revision = observation.version
             log.reconciliation_status = "reconciled"

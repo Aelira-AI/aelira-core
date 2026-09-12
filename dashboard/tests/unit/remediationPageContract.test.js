@@ -10,6 +10,8 @@ const outcomeSource = readFileSync(
   new URL('../../src/utils/remediationIssueOutcomes.ts', import.meta.url),
   'utf8'
 );
+const scoreSource = readFileSync(new URL('../../src/components/ScoreComparison.tsx', import.meta.url), 'utf8');
+const scoreDecisions = readFileSync(new URL('../../src/utils/remediationScore.ts', import.meta.url), 'utf8');
 
 describe('durable remediation page contract', () => {
   it('renders every terminal state and keeps browser timeout distinct', () => {
@@ -46,8 +48,8 @@ describe('durable remediation page contract', () => {
   });
 
   it('does not invent scores or per-issue remediation outcomes', () => {
-    assert.match(pageSource, /Remediated score/);
-    assert.match(pageSource, /Not available/);
+    assert.match(scoreSource, /Remediated score/);
+    assert.match(scoreDecisions, /Not available/);
     assert.match(outcomeSource, /Outcome not reported/);
     assert.match(pageSource, /fixes\.length === terminalJob\.fixed_count/);
     assert.match(pageSource, /manual outcomes are shown only when the job totals reconcile exactly/);
@@ -64,8 +66,14 @@ describe('durable remediation page contract', () => {
   });
 
   it('keeps server-authored fixed, remaining, and total aggregate counts', () => {
-    assert.match(pageSource, /label: 'Fixed', value: job\.fixed_count/);
+    assert.match(pageSource, /label: 'Reported changes', value: job\.score_verified === true \? job\.fixed_count : null/);
     assert.match(pageSource, /label: 'Remaining', value: job\.remaining_count/);
     assert.match(pageSource, /label: 'Total issues', value: job\.total_issues/);
+  });
+
+  it('labels findings and changes without claiming that application verifies a fix', () => {
+    assert.match(pageSource, /Recorded Findings and Changes \(\{issueRows\.length\}\)/);
+    assert.match(pageSource, /Application alone does not verify a fix/);
+    assert.match(pageSource, /Download Output for Review/);
   });
 });

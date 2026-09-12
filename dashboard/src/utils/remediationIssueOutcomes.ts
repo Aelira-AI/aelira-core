@@ -116,8 +116,8 @@ export function outcomePresentation(
   }
   if (['auto_approved', 'applied'].includes(fix.review_status)) {
     return {
-      label: 'Fixed',
-      className: 'bg-[var(--feature-success-surface)] text-[var(--feature-success-content)]',
+      label: 'Change applied · verification not reported',
+      className: 'bg-[var(--surface-tertiary)] text-tertiary',
     };
   }
   if (fix.review_status === 'approved') {

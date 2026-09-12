@@ -18,7 +18,7 @@ Additional capabilities:
 """
 
 from typing import List, Dict, Optional, Tuple
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from latex2mathml.converter import convert as latex_to_mathml
 import re
 import os
@@ -267,6 +267,8 @@ class DocumentConversionResult(BaseModel):
     equations: List[MathMLConversionResult]
     html_output: str  # Full HTML with accessible math
     compliance_score: float
+    conversion_success_rate: float = 0.0
+    source_issues: List[Dict] = Field(default_factory=list)
 
 
 class LaTeXAccessibilityIssue(BaseModel):
@@ -1668,6 +1670,20 @@ REQUIREMENTS:
 
         return eq_context
 
+    def scan_source(self, latex_content: str) -> Dict:
+        """Measure only findings in the input, independently of generated MathML."""
+        issues = [
+            issue.model_dump()
+            for issue in self.detect_accessibility_issues(latex_content)
+        ]
+        weights = {"critical": 10, "serious": 5, "moderate": 2, "minor": 1}
+        return {
+            "compliance_score": max(
+                0.0, 100.0 - sum(weights[issue["severity"]] for issue in issues)
+            ),
+            "issues": issues,
+        }
+
     def process_document(self, file_path: str) -> DocumentConversionResult:
         """
         Process a document containing LaTeX equations
@@ -1728,10 +1744,11 @@ REQUIREMENTS:
         successful = sum(1 for c in conversions if c.conversion_success)
         failed = len(conversions) - successful
 
-        # Calculate compliance score
-        compliance_score = (
+        # Conversion yield is separate from accessibility of the source document.
+        conversion_success_rate = (
             (successful / len(conversions) * 100) if conversions else 100.0
         )
+        source_scan = self.scan_source(text)
 
         return DocumentConversionResult(
             file_path=file_path,
@@ -1741,7 +1758,9 @@ REQUIREMENTS:
             failed_conversions=failed,
             equations=conversions,
             html_output=html,
-            compliance_score=compliance_score,
+            compliance_score=source_scan["compliance_score"],
+            conversion_success_rate=conversion_success_rate,
+            source_issues=source_scan["issues"],
         )
 
     def _generate_html(
@@ -1880,13 +1899,14 @@ REQUIREMENTS:
         successful = sum(1 for c in conversions if c.conversion_success)
         failed = len(conversions) - successful
 
-        # Build issue list combining conversion failures and accessibility issues
+        # Conversion failures describe generated output, not source findings.
         all_issues = []
+        conversion_issues = []
 
         # Add conversion failure issues
         for conv in conversions:
             if not conv.conversion_success:
-                all_issues.append(
+                conversion_issues.append(
                     {
                         "type": "conversion_failed",
                         "severity": "error",
@@ -1910,25 +1930,7 @@ REQUIREMENTS:
                 }
             )
 
-        # Calculate compliance score based on both conversions AND accessibility issues
-        # Weight: critical=10, serious=5, moderate=2, minor=1
-        severity_weights = {
-            "critical": 10,
-            "serious": 5,
-            "moderate": 2,
-            "minor": 1,
-            "error": 10,
-        }
-        total_penalty = sum(
-            severity_weights.get(issue["severity"], 1) for issue in all_issues
-        )
-
-        # Base score starts at 100, deduct penalties (min 0)
-        # Scale: 0 issues = 100%, each critical = -10%, serious = -5%, etc.
-        base_score = 100.0
-        max_penalty = 100.0  # Cap penalty at 100 points
-        penalty_applied = min(total_penalty, max_penalty)
-        compliance_score = max(0.0, base_score - penalty_applied)
+        compliance_score = self.scan_source(latex_content)["compliance_score"]
 
         # Count issues by severity
         critical_count = sum(1 for i in all_issues if i["severity"] == "critical")
@@ -1952,6 +1954,10 @@ REQUIREMENTS:
                 "total_equations": len(equations),
                 "successful_conversions": successful,
                 "failed_conversions": failed,
+                "conversion_success_rate": (
+                    successful / len(conversions) * 100 if conversions else 100.0
+                ),
+                "conversion_issues": conversion_issues,
                 "accessibility_issues_found": len(accessibility_issues),
             },
             "compliance": {

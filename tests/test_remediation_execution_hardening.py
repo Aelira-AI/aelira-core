@@ -388,17 +388,24 @@ def test_public_job_projection_drops_paths_payloads_and_unknown_errors(monkeypat
         completed_at=now,
     )
     monkeypatch.setattr(routes, "_artifact_is_downloadable", lambda *_: (False, None))
-    response = routes._public_job_shape(MagicMock(), job, "scan-1")
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        compliance_score=71.5
+    )
+    response = routes._public_job_shape(db, job, "scan-1")
     assert response["progress_message"] == "Failed"
     assert response["progress"] == 100
     assert response["error_code"] is None
     assert response["original_score"] == 71.5
-    assert response["remediated_score"] == 93.0
+    assert response["remediated_score"] is None
+    assert response["score_verified"] is False
     assert "/srv/" not in str(response)
     assert public_job_result(job.result_data) == {
         "fixed_count": 2,
-        "original_compliance_score": 71.5,
-        "remediated_compliance_score": 93.0,
+        "score_verified": False,
+        "human_review_required": True,
+        "score_measurement": None,
+        "score_verification_reason": "legacy_unverified",
     }
     assert public_job_error_code(job.last_error_code) is None
 

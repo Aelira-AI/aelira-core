@@ -1,6 +1,7 @@
 """Form field and link accessibility checking for PDFs."""
 
 import logging
+from .completeness import record_incomplete_check
 from typing import Dict, List
 
 try:
@@ -37,6 +38,7 @@ class FormFieldChecker:
         """
         issues = []
         if not HAS_PIKEPDF:
+            record_incomplete_check("form_checker.dependency")
             return issues
 
         try:
@@ -58,6 +60,7 @@ class FormFieldChecker:
             def check_field(field_obj, depth=0):
                 nonlocal unlabeled_count, total_fields
                 if depth > 10:  # Prevent infinite recursion
+                    record_incomplete_check("form_checker.structure_depth_limit")
                     return
                 if not hasattr(field_obj, "get"):
                     return
@@ -119,6 +122,7 @@ class FormFieldChecker:
                                 page_has_widgets = True
                                 break
                         except Exception:
+                            record_incomplete_check("form_checker.check_field")
                             pass
                     if page_has_widgets:
                         issues.append(
@@ -138,6 +142,7 @@ class FormFieldChecker:
 
             pdf.close()
         except Exception as e:
+            record_incomplete_check("form_checker.check_field")
             logger.warning(f"[FormFieldChecker] Form field check error: {e}")
 
         return issues
@@ -159,6 +164,7 @@ class FormFieldChecker:
         """
         issues = []
         if not HAS_PIKEPDF:
+            record_incomplete_check("form_checker.dependency")
             return issues
 
         try:
@@ -242,6 +248,7 @@ class FormFieldChecker:
 
             pdf.close()
         except Exception as e:
+            record_incomplete_check("form_checker.check_links")
             logger.warning(f"[FormFieldChecker] Link check error: {e}")
 
         return issues

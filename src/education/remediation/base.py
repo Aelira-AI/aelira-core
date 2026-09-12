@@ -739,6 +739,8 @@ class RemediationConfig(BaseModel):
     """Configuration options for remediation."""
 
     use_ai: bool = True  # Use AI for generating fixes
+    # Only authoritative callers may opt into applying reviewed content.
+    use_supplied_fixes: bool = False
     # Legacy nested helpers can acquire the global manager. Authoritative LMS
     # entry points disable that path until explicit client injection lands.
     allow_legacy_nested_ai: bool = True
@@ -820,6 +822,9 @@ class RemediationResult(BaseModel):
     original_compliance_score: Optional[float] = None
     remediated_compliance_score: Optional[float] = None
     improvement: Optional[float] = None
+    score_provenance: Optional[Literal["scanner_rescan"]] = None
+    score_measurement: Optional[Dict[str, Any]] = None
+    score_verification_reason: Optional[str] = None
 
     # Verification (post-remediation re-scan)
     verification_passed: bool = False
@@ -1172,8 +1177,11 @@ class BaseRemediator(ABC):
         severity_map = {
             "critical": IssueSeverity.CRITICAL,
             "high": IssueSeverity.HIGH,
+            "serious": IssueSeverity.HIGH,
             "medium": IssueSeverity.MEDIUM,
+            "moderate": IssueSeverity.MEDIUM,
             "low": IssueSeverity.LOW,
+            "minor": IssueSeverity.LOW,
             "error": IssueSeverity.HIGH,
             "warning": IssueSeverity.MEDIUM,
             "info": IssueSeverity.LOW,
@@ -1229,6 +1237,9 @@ class BaseRemediator(ABC):
             # Verify fixes if configured
             if self.config.verify_fixes:
                 self._verify_fixes(output_path)
+
+            if self.result.verification_result is None:
+                BaseRemediator._verify_fixes(self, output_path)
 
             # Calculate scores if possible
             self._calculate_scores()
@@ -1526,15 +1537,17 @@ class BaseRemediator(ABC):
         )
 
     def _calculate_scores(self) -> None:
-        """Calculate compliance scores if possible."""
-        # Subclasses can override to provide accurate scores
-        if self.result.total_issues > 0:
-            # Estimate improvement based on fixes
-            fix_rate = self.result.fixed_count / self.result.total_issues
-            # Assume original score was based on issue penalty
-            # This is a rough estimate - subclasses should override
-            estimated_improvement = fix_rate * 20  # Rough estimate
-            self.result.improvement = estimated_improvement
+        """Only measured before/after scores establish score improvement."""
+        if (
+            self.result.original_compliance_score is not None
+            and self.result.remediated_compliance_score is not None
+        ):
+            self.result.improvement = (
+                self.result.remediated_compliance_score
+                - self.result.original_compliance_score
+            )
+        else:
+            self.result.improvement = None
 
     # Abstract methods that subclasses must implement
 
@@ -1658,20 +1671,31 @@ class BaseRemediator(ABC):
         Returns:
             VerificationResult with comparison of issues before/after
         """
-        # Default implementation - subclasses should override for real verification
+        # A successful write does not establish that the finding is resolved.
+        originals = {issue.id: issue for issue in self.issues}
+        manual_ids = {issue.issue_id for issue in self.result.manual_issues}
+        for fixed in self.result.fixed_issues:
+            fixed.verification_passed = False
+            if fixed.issue_id in originals and fixed.issue_id not in manual_ids:
+                self._add_manual_issue(
+                    originals[fixed.issue_id],
+                    reason="Saved-file verification is unavailable for this remediation type.",
+                    recommendation="Review the saved output and rescan before use.",
+                )
+                manual_ids.add(fixed.issue_id)
+        self.result.fixed_issues = []
+        self.result.fixed_count = 0
+        self.result.remediated_compliance_score = None
+        self.result.improvement = None
+        self.result.score_provenance = None
+        self.result.score_measurement = None
+        self.result.score_verification_reason = (
+            self.result.score_verification_reason or "incomplete_comparison"
+        )
         verification = VerificationResult(
-            passed=True,
+            passed=False,
             issues_before=self.result.total_issues,
-            issues_after=self.result.manual_count,  # Assume only manual issues remain
-            issues_fixed=[f.issue_id for f in self.result.fixed_issues],
-            issues_remaining=[m.issue_id for m in self.result.manual_issues],
-            regressions=[],
-            verification_score=(
-                100.0
-                if self.result.manual_count == 0
-                else (1 - self.result.manual_count / max(self.result.total_issues, 1))
-                * 100
-            ),
+            issues_remaining=[issue.id for issue in self.issues],
         )
 
         self.result.verification_passed = verification.passed

@@ -58,6 +58,7 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.scan_fix_service import persist_scan_fixes
+from ..education.remediation.score_reporting import score_fields
 from .contracts import LostJobOwnership
 from .remediation_subprocess import (
     RemediationSubprocessError,
@@ -110,9 +111,16 @@ _JOB_FAILURE_CODES = {
 class RemediationJobFailed(RuntimeError):
     """Sanitized worker failure consumed by queue state machines."""
 
-    def __init__(self, code: str, terminal_state_committed: bool = False):
+    def __init__(
+        self,
+        code: str,
+        terminal_state_committed: bool = False,
+        *,
+        details: Dict[str, Any] | None = None,
+    ):
         self.code = code if code in _JOB_FAILURE_CODES else "remediation_failed"
         self.terminal_state_committed = terminal_state_committed is True
+        self.details = _safe_failure_result(self.code, details, None)
         super().__init__(self.code)
 
 
@@ -318,6 +326,11 @@ _SAFE_RESULT_FIELDS = {
     "compliance_improvement",
     "original_compliance_score",
     "remediated_compliance_score",
+    "score_verified",
+    "score_provenance",
+    "score_measurement",
+    "score_verification_reason",
+    "human_review_required",
     "upload_job_id",
     "scan_id",
     "artifact_id",
@@ -364,6 +377,12 @@ def _safe_failure_result(
     if isinstance(scan_id, str):
         safe["scan_id"] = scan_id
     safe["artifact_id"] = None
+    safe.update(
+        score_fields(
+            {**source, "score_verified": False},
+            original_score=source.get("original_compliance_score"),
+        )
+    )
     return safe
 
 
@@ -458,7 +477,9 @@ async def _commit_terminal_failure(
     rollback_scan_state: Dict[str, Any] | None = None,
 ) -> NoReturn:
     """Persist domain failure state, leaving queue finalization to the worker."""
-    failure = RemediationJobFailed(code)
+    failure = RemediationJobFailed(
+        code, details=_safe_failure_result(code, result, scan)
+    )
     code = failure.code
     if not commit_job:
         raise failure
@@ -497,8 +518,10 @@ async def _commit_terminal_failure(
         if scan is not None and prior_scan_state is not None:
             for field, value in prior_scan_state.items():
                 setattr(scan, field, value)
-        raise RemediationJobFailed(code, terminal_state_committed=False) from exc
-    raise RemediationJobFailed(code, terminal_state_committed=False)
+        raise RemediationJobFailed(
+            code, terminal_state_committed=False, details=failure.details
+        ) from exc
+    raise failure
 
 
 def sanitize_execution_context(value: Any) -> Dict[str, Any]:
@@ -728,6 +751,9 @@ async def process_remediation_job(
                 "scan_id": scan_id,
             }
         approved_fixes: list[ScanFix] = []
+        original_scan_score = getattr(scan_result, "compliance_score", None)
+        original_file_hash = getattr(scan, "file_hash", None)
+        source_scan_type = scan.scan_type
         approved_fix_snapshot: dict[str, tuple[Any, ...]] | None = None
         approved_fixes_only = options.get("approved_fixes_only") is True
         if approved_fixes_only:
@@ -809,7 +835,14 @@ async def process_remediation_job(
 
         # 4. Validate file exists
         if not file_path or not Path(file_path).exists():
-            return {"success": False, "error": f"File not found: {file_path}"}
+            return {
+                "success": False,
+                "error": "source_file_unavailable",
+                "scan_id": scan_id,
+                "score_verified": False,
+                "score_verification_reason": "original_file_missing",
+                "original_compliance_score": original_scan_score,
+            }
 
         # Managed artifacts supersede caller-visible backup paths.
 
@@ -1033,6 +1066,13 @@ async def process_remediation_job(
                 "success": False,
                 "error": "manual_required",
                 "fixed_count": 0,
+                "original_compliance_score": original_scan_score,
+                "score_verified": False,
+                "score_measurement": None,
+                "score_verification_reason": getattr(
+                    remediation_result, "score_verification_reason", None
+                )
+                or "incomplete_comparison",
                 "manual_count": remediation_result.manual_count,
                 "failed_count": remediation_result.failed_count,
                 "skipped_count": remediation_result.skipped_count,
@@ -1357,6 +1397,41 @@ async def process_remediation_job(
             "upload_job_id": upload_job_id,
             "scan_id": scan_id,
         }
+        response.update(
+            score_fields(
+                {
+                    "original_compliance_score": getattr(
+                        remediation_result, "original_compliance_score", None
+                    ),
+                    "remediated_compliance_score": getattr(
+                        remediation_result, "remediated_compliance_score", None
+                    ),
+                    "score_provenance": getattr(
+                        remediation_result, "score_provenance", None
+                    ),
+                    "score_measurement": getattr(
+                        remediation_result, "score_measurement", None
+                    ),
+                    "score_verification_reason": getattr(
+                        remediation_result, "score_verification_reason", None
+                    ),
+                },
+                original_score=original_scan_score,
+                source_scan_type=source_scan_type,
+                source_sha256=(
+                    original_file_hash if isinstance(original_file_hash, str) else ""
+                ),
+                output_sha256=(
+                    getattr(artifact, "sha256", "") if artifact is not None else ""
+                ),
+            )
+        )
+        response["human_review_required"] = (
+            not response["score_verified"]
+            or not getattr(remediation_result, "verification_passed", False)
+            or any(fix.needs_review for fix in remediation_result.fixed_issues)
+            or (response["compliance_improvement"] or 0) < 0
+        )
         if artifact is not None:
             from ..education.remediation.image_equation_gate import (
                 contains_image_equation_fixes,

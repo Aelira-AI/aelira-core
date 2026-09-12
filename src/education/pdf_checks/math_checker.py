@@ -1,6 +1,7 @@
 """Math/equation accessibility checking for PDFs."""
 
 import logging
+from .completeness import record_incomplete_check
 import re
 from typing import Dict, List, Optional
 
@@ -108,6 +109,9 @@ class MathEquationChecker:
                 try:
                     occurrences = _displayed_image_occurrences(page, page_index + 1)
                 except Exception:
+                    record_incomplete_check(
+                        "math_checker.find_image_equation_candidates"
+                    )
                     continue
                 if len(occurrences) != 1:
                     continue
@@ -116,6 +120,7 @@ class MathEquationChecker:
                     continue
                 region_sources.append((page_index, occurrence))
                 if len(region_sources) > MAX_REGION_PAGES_PER_DOCUMENT:
+                    record_incomplete_check("math_checker.region_page_limit")
                     region_limit_exceeded = True
                     region_sources = []
                     break
@@ -127,11 +132,16 @@ class MathEquationChecker:
                         doc, page, occurrence
                     )
                 except Exception:
+                    record_incomplete_check(
+                        "math_checker.find_image_equation_candidates"
+                    )
                     continue
                 if len(page_regions) > MAX_CANDIDATES_PER_PAGE:
+                    record_incomplete_check("math_checker.region_candidate_limit")
                     continue
                 region_candidates.extend(page_regions)
                 if len(region_candidates) > MAX_CANDIDATES_PER_DOCUMENT:
+                    record_incomplete_check("math_checker.document_candidate_limit")
                     region_limit_exceeded = True
                     region_candidates = []
                     break
@@ -248,6 +258,7 @@ class MathEquationChecker:
                                     equation_count += 1
 
             except Exception as e:
+                record_incomplete_check("math_checker.check")
                 logger.warning(
                     f"[MathEquationChecker] Error checking PDF math structure: {e}"
                 )

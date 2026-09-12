@@ -364,13 +364,14 @@ class MultimediaProcessor:
                     except Exception:
                         pass
 
-        # 9. Check WCAG compliance (enhanced with new features)
+        # Grade the uploaded source. Generated companion files are not evidence
+        # that the source contained captions or usable audio descriptions.
         score, issues = self._check_compliance(
             media_type=media_type,
             duration=duration,
-            has_captions=has_captions or (transcription is not None),
-            transcription=transcription,
-            audio_descriptions=audio_descriptions,
+            has_captions=has_captions,
+            transcription=None,
+            audio_descriptions=None,
             flashing_analysis=flashing_analysis,
         )
 
@@ -379,7 +380,7 @@ class MultimediaProcessor:
             file_name=os.path.basename(file_path),
             media_type=media_type,
             duration=duration,
-            has_captions=has_captions or (transcription is not None),
+            has_captions=has_captions,
             transcription=transcription,
             caption_formats=caption_formats,
             audio_descriptions=audio_descriptions,

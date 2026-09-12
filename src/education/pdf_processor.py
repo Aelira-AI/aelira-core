@@ -57,6 +57,10 @@ from src.education.pdf_checks.form_checker import FormFieldChecker
 from src.education.pdf_checks.reading_order import ReadingOrderVerifier
 from src.education.pdf_checks.math_checker import MathEquationChecker
 from src.education.pdf_checks.image_checker import ImageAccessibilityChecker
+from src.education.pdf_checks.completeness import (
+    record_incomplete_check,
+    require_complete_pdf_scan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +79,7 @@ class PDFProcessor:
         latex_aware: bool = False,
         llm_client=None,
         visual_analysis_recorder=None,
+        require_complete_scan: bool = True,
     ):
         self.tesseract_config = (
             "--oem 3 --psm 6"  # OCR Engine Mode 3, Page Segmentation Mode 6
@@ -97,6 +102,7 @@ class PDFProcessor:
         )
         # LaTeX-aware mode: enhanced math/equation detection for STEM PDFs
         self.latex_aware = latex_aware
+        self.require_complete_scan = require_complete_scan
 
         # Lazy import to avoid circular dependencies
         if self.generate_alt_text or self.validate_alt_text:
@@ -166,6 +172,13 @@ class PDFProcessor:
         return total_pages
 
     def process_pdf(
+        self, file_path: str, original_filename: str = None
+    ) -> PDFProcessingResult:
+        """Scan a PDF, optionally refusing scores from incomplete check runs."""
+        with require_complete_pdf_scan(self.require_complete_scan):
+            return self._process_pdf(file_path, original_filename)
+
+    def _process_pdf(
         self, file_path: str, original_filename: str = None
     ) -> PDFProcessingResult:
         """
@@ -327,13 +340,21 @@ class PDFProcessor:
                     f"[PDFProcessor] Updated compliance score after table checks: {score}"
                 )
         except Exception as e:
+            record_incomplete_check("tables")
             logger.warning(
                 f"[PDFProcessor] Table accessibility analysis failed (non-fatal): {e}"
             )
 
         # 7.56. Check reading order (visual vs structure tree order)
         try:
-            ro_result = ReadingOrderVerifier().check(file_path, max_pages=10)
+            ro_result = ReadingOrderVerifier().check(
+                file_path,
+                max_pages=(
+                    self._validate_pdf_pages(file_path)
+                    if self.require_complete_scan
+                    else 10
+                ),
+            )
             if ro_result.issues:
                 for ro_issue in ro_result.issues:
                     # Skip "no structure tree" issues (empty actual_order) --
@@ -363,6 +384,7 @@ class PDFProcessor:
                 if ro_result.multi_column_detected:
                     logger.info("[PDFProcessor] Multi-column layout detected")
         except Exception as e:
+            record_incomplete_check("reading_order")
             logger.warning(
                 f"[PDFProcessor] Reading order analysis failed (non-fatal): {e}"
             )
@@ -385,6 +407,7 @@ class PDFProcessor:
                     f"[PDFProcessor] Found {len(link_issues)} link issues, score: {score}"
                 )
         except Exception as e:
+            record_incomplete_check("forms_and_links")
             logger.warning(f"[PDFProcessor] Form/link check failed (non-fatal): {e}")
 
         # 7.61. Check color contrast (WCAG 1.4.3)
@@ -397,6 +420,7 @@ class PDFProcessor:
                     f"[PDFProcessor] Found {len(contrast_issues)} contrast issues, score: {score}"
                 )
         except Exception as e:
+            record_incomplete_check("contrast")
             logger.warning(
                 f"[PDFProcessor] Color contrast check failed (non-fatal): {e}"
             )
@@ -474,6 +498,7 @@ class PDFProcessor:
                     text += page_text + "\n\n"
             return text.strip()
         except Exception as e:
+            record_incomplete_check("text_extraction")
             print(f"[PDFProcessor] Text extraction failed: {e}")
             return ""
 
@@ -679,6 +704,7 @@ class PDFProcessor:
                     )
 
                 except Exception as batch_error:
+                    record_incomplete_check("ocr_batch")
                     logger.warning(
                         f"[PDFProcessor] OCR batch {start + 1}-{end} failed: {batch_error}"
                     )
@@ -687,6 +713,7 @@ class PDFProcessor:
             return "".join(all_text).strip()
 
         except Exception as e:
+            record_incomplete_check("ocr")
             logger.error(f"[PDFProcessor] Fallback pytesseract OCR failed: {e}")
             return ""
 
@@ -1150,6 +1177,7 @@ Be concise (2-3 sentences) and focus on practical solutions for PDF creators."""
             reader = PdfReader(file_path)
             return len(reader.pages)
         except Exception as e:
+            record_incomplete_check("page_count")
             print(f"[PDFProcessor] Failed to get page count: {e}")
             return 0
 

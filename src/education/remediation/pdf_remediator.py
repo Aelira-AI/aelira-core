@@ -4683,57 +4683,18 @@ Generate only the alt text, nothing else:"""
         return None
 
     def _calculate_scores(self):
-        """Calculate compliance scores for the remediation.
+        """Keep scanner measurements; absence of a rescan is not improvement."""
+        from .score_reporting import score_fields
 
-        Uses the unified compliance_scoring system for consistency with
-        the scanner pipeline (PDFProcessor.process_pdf).
+        scores = score_fields(
+            self.result.model_dump(),
+            original_score=self.result.original_compliance_score,
+        )
+        self.result.remediated_compliance_score = scores["remediated_compliance_score"]
+        self.result.improvement = scores["compliance_improvement"]
+        self.result.score_provenance = scores["score_provenance"]
 
-        If _verify_fixes() already ran a full re-scan via PDFProcessor,
-        its remediated_compliance_score is preserved — that score comes
-        from the same pipeline as the initial scan and is authoritative.
-        """
         if self.result.total_issues > 0:
-            from ..compliance_scoring import get_score_only
-
-            # Original score: use unified scoring on all original issues
-            original_issue_dicts = [
-                {"severity": issue.severity.value} for issue in self.issues
-            ]
-            self.result.original_compliance_score = get_score_only(original_issue_dicts)
-
-            # Remediated score: prefer the verified re-scan score when
-            # available — it runs the full scanner pipeline (reading order,
-            # form fields, links, contrast, etc.) on the actual output file.
-            # Check both verification_result AND that score was actually set
-            # (verification can fail with an exception, setting result but
-            # not the score).
-            if (
-                self.result.verification_result is not None
-                and self.result.remediated_compliance_score is not None
-            ):
-                # _verify_fixes already set remediated_compliance_score
-                # from PDFProcessor.process_pdf()
-                logger.info(
-                    "Using verified re-scan score: %.1f (not penalty estimate)",
-                    self.result.remediated_compliance_score,
-                )
-            else:
-                # Fallback: estimate from remaining issues using unified scoring
-                fixed_issue_ids = {f.issue_id for f in self.result.fixed_issues}
-                remaining_issue_dicts = [
-                    {"severity": issue.severity.value}
-                    for issue in self.issues
-                    if issue.id not in fixed_issue_ids
-                ]
-                self.result.remediated_compliance_score = get_score_only(
-                    remaining_issue_dicts
-                )
-
-            self.result.improvement = (
-                self.result.remediated_compliance_score
-                - self.result.original_compliance_score
-            )
-
             # Note about PDF remediation
             if self._structure_modified:
                 self.result.warnings.append(
@@ -4797,54 +4758,97 @@ Generate only the alt text, nothing else:"""
         """Re-scan only bytes borrowed from the descriptor-bound output claim."""
         from .base import VerificationResult
         from ..pdf_processor import PDFProcessor
+        from .score_measurement import (
+            MeasurementError,
+            begin_measurement,
+            finish_measurement,
+        )
 
         logger.info("Verifying descriptor-bound remediation output for %s", output_path)
 
+        stage = "original_scan_failed"
         try:
             with self._materialize_output_claim_for_verification() as verification_path:
+                snapshot = begin_measurement(self.file_path, verification_path)
                 processor = PDFProcessor(
                     generate_alt_text=False,
                     validate_alt_text=False,
                     simulate_color_blindness=False,
+                    require_complete_scan=True,
                 )
+                source_result = processor.process_pdf(self.file_path)
+                stage = "output_scan_failed"
                 new_result = processor.process_pdf(verification_path)
+                stage = "incomplete_comparison"
+                measurement = finish_measurement(
+                    snapshot,
+                    self.file_path,
+                    verification_path,
+                    source_result.compliance_score,
+                    new_result.compliance_score,
+                    "pdf-strict-v1",
+                )
 
-                new_issue_types = {
-                    (
-                        issue.get("type", issue.get("rule", "unknown")),
-                        issue.get("location", ""),
-                        issue.get("message", "")[:50],
-                    )
-                    for issue in new_result.issues
-                }
-                issues_fixed = []
-                issues_remaining = []
-                for issue in self.issues:
-                    still_exists = any(
-                        issue.category.value.lower() in str(new_type[0]).lower()
-                        or issue.description[:30].lower() in str(new_type[2]).lower()
-                        for new_type in new_issue_types
-                    )
-                    if still_exists:
-                        issues_remaining.append(issue.id)
-                    else:
-                        issues_fixed.append(issue.id)
+                from collections import Counter
 
-                regressions = []
-                for new_issue in new_result.issues:
-                    new_desc = new_issue.get("message", "")[:30].lower()
-                    new_type = new_issue.get("type", new_issue.get("rule", "")).lower()
-                    is_regression = not any(
-                        new_type in original.category.value.lower()
-                        or new_desc in original.description[:30].lower()
-                        for original in self.issues
+                def finding_key(issue):
+                    return (
+                        issue.category.value,
+                        issue.location or "",
+                        issue.description,
                     )
-                    if is_regression:
-                        regressions.append(
-                            new_issue.get("message", "Unknown issue")[:100]
+
+                before_findings = self._normalize_issues(source_result.issues)
+                after_findings = self._normalize_issues(new_result.issues)
+                before_keys = Counter(map(finding_key, before_findings))
+                after_keys = Counter(map(finding_key, after_findings))
+                if any(not before_keys[finding_key(issue)] for issue in self.issues):
+                    raise ValueError(
+                        "Source findings could not be reproduced by verification"
+                    )
+                originals = {issue.id: issue for issue in self.issues}
+                verified_fixes = []
+                manual_ids = {issue.issue_id for issue in self.result.manual_issues}
+                claimed_keys = set()
+                for fixed in self.result.fixed_issues:
+                    original = originals.get(fixed.issue_id)
+                    key = finding_key(original) if original else None
+                    if (
+                        key
+                        and before_keys[key] == 1
+                        and not after_keys[key]
+                        and key not in claimed_keys
+                    ):
+                        fixed.verification_passed = True
+                        if fixed.category in {
+                            IssueCategory.ALT_TEXT,
+                            IssueCategory.CHART,
+                        }:
+                            fixed.needs_review = True
+                            fixed.notes = "Saved-file presence verified; description accuracy requires human review."
+                        verified_fixes.append(fixed)
+                        claimed_keys.add(key)
+                    elif original and fixed.issue_id not in manual_ids:
+                        fixed.verification_passed = False
+                        self._add_manual_issue(
+                            original,
+                            reason="The saved-file rescan did not verify this finding was resolved.",
+                            recommendation="Review the saved PDF and rescan after correction.",
                         )
+                        manual_ids.add(fixed.issue_id)
+                self.result.fixed_issues = verified_fixes
+                self.result.fixed_count = len(verified_fixes)
+                issues_fixed = [fixed.issue_id for fixed in verified_fixes]
+                issues_remaining = [
+                    issue.id for issue in self.issues if issue.id not in issues_fixed
+                ]
+                regressions = [
+                    description[:100]
+                    for (_, _, description), count in (after_keys - before_keys).items()
+                    for _ in range(count)
+                ]
 
-                issues_before = len(self.issues)
+                issues_before = len(before_findings)
                 issues_after = len(new_result.issues)
                 if issues_before == 0:
                     verification_score = 100.0
@@ -4861,6 +4865,7 @@ Generate only the alt text, nothing else:"""
 
                 verification = VerificationResult(
                     passed=len(regressions) == 0
+                    and new_result.compliance_score >= source_result.compliance_score
                     and (len(issues_fixed) > 0 or issues_before == 0),
                     issues_before=issues_before,
                     issues_after=issues_after,
@@ -4900,7 +4905,11 @@ Generate only the alt text, nothing else:"""
 
             self.result.verification_passed = verification.passed
             self.result.verification_result = verification
+            self.result.original_compliance_score = source_result.compliance_score
             self.result.remediated_compliance_score = new_result.compliance_score
+            self.result.score_provenance = "scanner_rescan"
+            self.result.score_measurement = measurement
+            self.result.score_verification_reason = None
             logger.info(
                 "Verification complete: %d fixed, %d remaining, %d regressions",
                 len(issues_fixed),
@@ -4910,6 +4919,13 @@ Generate only the alt text, nothing else:"""
             return verification
         except Exception as e:
             logger.error("Verification failed: %s", e)
+            self.result.score_verification_reason = (
+                e.code if isinstance(e, MeasurementError) else stage
+            )
+            super()._verify_fixes(output_path)
+            self.result.remediated_compliance_score = None
+            self.result.improvement = None
+            self.result.score_provenance = None
             verification = VerificationResult(
                 passed=False,
                 issues_before=len(self.issues),

@@ -101,7 +101,8 @@ def adapt_legacy_handler(
                 )
             if type(exc).__name__ == "RemediationJobFailed" and exc.__cause__ is None:
                 return JobFailure.deterministic(
-                    code if isinstance(code, str) else "remediation_failed"
+                    code if isinstance(code, str) else "remediation_failed",
+                    public_job_result(getattr(exc, "details", None)),
                 )
             raise
         if isinstance(result, JobSuccess | JobFailure):

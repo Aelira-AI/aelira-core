@@ -32,7 +32,6 @@ from .base import (
     RemediationConfig,
     RemediationIssue,
     RemediationResult,
-    VerificationResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,7 +66,6 @@ class HtmlRemediator(BaseRemediator):
         IssueCategory.LINK,
         IssueCategory.CONTRAST,
     ]
-    VERIFIED_CATEGORIES = frozenset({IssueCategory.LANGUAGE, IssueCategory.ALT_TEXT})
 
     def __init__(
         self,
@@ -112,6 +110,9 @@ class HtmlRemediator(BaseRemediator):
     def _save_document(self, document: Any) -> str:
         """Save the remediated document."""
         output_path = self._get_output_path()
+        from .source_verification import require_separate_source_output
+
+        require_separate_source_output(self.file_path, output_path)
 
         # Ensure directory exists
         output_dir = Path(output_path).parent
@@ -633,75 +634,20 @@ Provide ONLY the fix content, no explanation."""
         return None
 
     def _verify_fixes(self, output_path: str):
-        """Verify the saved HTML; success means no supported issue remains."""
-        try:
-            with open(output_path, "r", encoding="utf-8") as f:
-                content = f.read()
+        """Measure the original and saved output with the same source scanner."""
+        from .source_verification import scan_code_source, verify_source_output
 
-            if self.is_html:
-                # Check for balanced tags
-                soup = BeautifulSoup(content, "html.parser")
-
-                categories = {issue.category for issue in self.issues}
-                categories.update(issue.category for issue in self.result.fixed_issues)
-                unsupported = sorted(
-                    category.value
-                    for category in categories
-                    if category not in self.VERIFIED_CATEGORIES
-                )
-                issues = [
-                    f"No implemented verifier for HTML category: {category}"
-                    for category in unsupported
-                ]
-
-                # Check lang attribute
-                html_tag = soup.find("html")
-                if html_tag and not html_tag.get("lang"):
-                    issues.append("Missing lang attribute on html element")
-
-                # Check for images without alt
-                for img in soup.find_all("img"):
-                    if not img.get("alt") and img.get("role") != "presentation":
-                        issues.append(f"Image missing alt: {img.get('src', 'unknown')}")
-
-                if issues:
-                    self.result.warnings.extend(issues[:5])  # Limit warnings
-
-                passed = not issues
-                issues_before = self.result.total_issues
-                issues_after = len(issues)
-                self.result.verification_result = VerificationResult(
-                    passed=passed,
-                    issues_before=issues_before,
-                    issues_after=issues_after,
-                    issues_fixed=(
-                        [issue.issue_id for issue in self.result.fixed_issues]
-                        if passed
-                        else []
-                    ),
-                    issues_remaining=issues,
-                    verification_score=(100.0 if passed else 0.0),
-                )
-                self.result.verification_passed = passed
-            else:
-                self.result.verification_result = VerificationResult(
-                    passed=False,
-                    issues_before=self.result.total_issues,
-                    issues_after=self.result.total_issues,
-                    issues_remaining=[
-                        "HTML verification unavailable for this file type"
-                    ],
-                )
-
-        except Exception as e:
-            self.result.warnings.append(f"Verification failed: {e}")
+        verification = verify_source_output(self, output_path, scan_code_source)
+        # HTML's completion verdict means no measured or manually unresolved
+        # issue remains; a comparable score can still describe partial progress.
+        if (
+            verification.issues_after
+            or self.result.manual_issues
+            or self.result.failed_issues
+        ):
+            verification.passed = False
             self.result.verification_passed = False
-            self.result.verification_result = VerificationResult(
-                passed=False,
-                issues_before=self.result.total_issues,
-                issues_after=self.result.total_issues,
-                issues_remaining=["HTML verification failed"],
-            )
+        return verification
 
     def auto_remediate(self) -> bool:
         """
@@ -791,12 +737,9 @@ Provide ONLY the fix content, no explanation."""
 
             # Save if any fixes were applied
             if fixes_applied > 0:
-                output_path = self._get_output_path()
-                with open(output_path, "w", encoding="utf-8") as f:
-                    f.write(str(self._soup))
-
+                output_path = self._save_document(self._soup)
                 self.result.output_file = output_path
-                self.result.fixed_count = fixes_applied
+                self._verify_fixes(output_path)
                 logger.info(f"Applied {fixes_applied} automatic fixes to {output_path}")
                 return True
 

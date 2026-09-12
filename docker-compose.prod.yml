@@ -49,7 +49,7 @@ services:
       retries: 5
 
   api:
-    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.9}
+    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.10}
     build:
       context: .
       dockerfile: Dockerfile
@@ -97,7 +97,7 @@ services:
       start_period: 40s
 
   worker:
-    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.9}
+    image: ghcr.io/aelira-ai/aelira-core-api:${AELIRA_VERSION:-0.9.10}
     build:
       context: .
       dockerfile: Dockerfile
@@ -132,7 +132,7 @@ services:
       start_period: 40s
 
   dashboard:
-    image: ghcr.io/aelira-ai/aelira-core-dashboard:${AELIRA_VERSION:-0.9.9}
+    image: ghcr.io/aelira-ai/aelira-core-dashboard:${AELIRA_VERSION:-0.9.10}
     build:
       context: ./dashboard
       dockerfile: Dockerfile

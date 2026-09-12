@@ -155,6 +155,14 @@ def process_multimedia_background(
 
         # Build result structure
         structure = {
+            "score_scope": "source_automated_checks",
+            "verification_passed": False,
+            "manual_review_required": True,
+            "verification_limitations": [
+                "Source feature checks do not verify caption accuracy or audio-description applicability.",
+                "Flashing detection samples the first 30 seconds when enabled.",
+                "Generated companion files have not undergone a comparable accessibility rescan.",
+            ],
             "media_type": result.media_type,
             "duration": result.duration,
             "has_captions": result.has_captions,

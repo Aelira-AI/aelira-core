@@ -1,6 +1,6 @@
 # Aelira CLI Usage Examples
 
-**Version:** v0.9.9
+**Version:** v0.9.10
 **Last Updated:** September 9, 2026
 
 Real-world usage examples for common accessibility workflows.
@@ -32,7 +32,7 @@ npm install -g @aelira/cli
 
 # Verify installation
 aelira --version
-# Output: v0.9.9
+# Output: v0.9.10
 
 # Check help
 aelira --help
@@ -636,6 +636,6 @@ aelira report evidence dept-cs --output final-evidence-report.pdf
 ---
 
 **Last Updated:** September 9, 2026
-**CLI Version:** v0.9.9
+**CLI Version:** v0.9.10
 
 **Made with 💜 by the Aelira team**

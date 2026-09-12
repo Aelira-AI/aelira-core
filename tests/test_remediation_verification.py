@@ -30,12 +30,14 @@ def _violation(rule_id, nodes, impact="serious"):
 
 
 def _cloud_file():
-    return MagicMock(id="cf-1", file_name="Welcome Page")
+    return MagicMock(id="cf-1", file_name="Welcome Page", content_body="<p>Source</p>")
 
 
 def test_html_remediator_marks_a_deterministic_fix_verified(tmp_path):
     source = tmp_path / "page.html"
-    source.write_text("<html><body><p>Course content</p></body></html>")
+    source.write_text(
+        '<html><head><title>Course</title></head><body><main role="main"><h1>Course</h1><p>Course content</p></main></body></html>'
+    )
     remediator = HtmlRemediator(
         str(source),
         [
@@ -43,7 +45,7 @@ def test_html_remediator_marks_a_deterministic_fix_verified(tmp_path):
                 "id": "language",
                 "category": "language",
                 "severity": "high",
-                "description": "Document language is missing",
+                "description": "HTML element must have a lang attribute",
             }
         ],
         RemediationConfig(create_backup=False, use_ai=False, verify_fixes=True),
@@ -60,7 +62,7 @@ def test_html_remediator_marks_a_deterministic_fix_verified(tmp_path):
 def test_html_remediator_keeps_verification_false_when_issues_remain(tmp_path):
     source = tmp_path / "page.html"
     source.write_text(
-        '<html><body><img src="unresolved.png"><p>Course content</p></body></html>'
+        '<html><head><title>Course</title></head><body><main role="main"><h1>Course</h1><img src="unresolved.png"><p>Course content</p></main></body></html>'
     )
     remediator = HtmlRemediator(
         str(source),
@@ -69,7 +71,7 @@ def test_html_remediator_keeps_verification_false_when_issues_remain(tmp_path):
                 "id": "language",
                 "category": "language",
                 "severity": "high",
-                "description": "Document language is missing",
+                "description": "HTML element must have a lang attribute",
             }
         ],
         RemediationConfig(create_backup=False, use_ai=False, verify_fixes=True),
@@ -88,7 +90,7 @@ def test_html_remediator_keeps_verification_false_when_issues_remain(tmp_path):
     "category",
     ["aria", "heading", "form", "navigation", "link", "contrast"],
 )
-def test_html_remediator_never_verifies_categories_without_implemented_verifier(
+def test_html_remediator_keeps_unmeasured_findings_for_manual_review(
     tmp_path, category
 ):
     source = tmp_path / "page.html"
@@ -113,10 +115,12 @@ def test_html_remediator_never_verifies_categories_without_implemented_verifier(
     assert result.verification_passed is False
     assert result.verification_result is not None
     assert result.verification_result.passed is False
-    assert any(
-        "no implemented verifier" in issue.lower()
-        for issue in result.verification_result.issues_remaining
-    )
+    assert result.fixed_count == 0
+    unresolved = [issue.issue_id for issue in result.manual_issues] + [
+        issue["issue_id"] for issue in result.failed_issues
+    ]
+    assert unresolved == [f"unsupported-{category}"]
+    assert result.score_provenance == "scanner_rescan"
 
 
 def test_navigation_fix_without_a_real_target_stays_unverified(tmp_path):
@@ -180,7 +184,11 @@ async def test_a_clean_rescan_reports_a_measured_score_and_no_remainder():
     before = [_violation("image-alt", 3), _violation("label", 1)]
     after = {"violations": [], "passes": [{}] * 9}
 
-    with patch.object(scanner, "_run_axe_scan", new=AsyncMock(return_value=after)):
+    with patch.object(
+        scanner,
+        "_run_axe_scan",
+        new=AsyncMock(side_effect=[{"violations": before, "passes": [{}]}, after]),
+    ):
         result = await scanner._verify_remediation(_cloud_file(), "<p>ok</p>", before)
 
     assert result.score == 100.0
@@ -198,7 +206,11 @@ async def test_issues_the_remediation_introduced_are_counted_separately():
         "passes": [{}] * 8,
     }
 
-    with patch.object(scanner, "_run_axe_scan", new=AsyncMock(return_value=after)):
+    with patch.object(
+        scanner,
+        "_run_axe_scan",
+        new=AsyncMock(side_effect=[{"violations": before, "passes": [{}]}, after]),
+    ):
         result = await scanner._verify_remediation(_cloud_file(), "<p>x</p>", before)
 
     # One of the two original nodes still fails, so one was fixed.
@@ -232,7 +244,11 @@ async def test_a_rule_that_fails_harder_afterwards_counts_as_introduced():
     before = [_violation("image-alt", 1)]
     after = {"violations": [_violation("image-alt", 3)], "passes": [{}] * 9}
 
-    with patch.object(scanner, "_run_axe_scan", new=AsyncMock(return_value=after)):
+    with patch.object(
+        scanner,
+        "_run_axe_scan",
+        new=AsyncMock(side_effect=[{"violations": before, "passes": [{}]}, after]),
+    ):
         result = await scanner._verify_remediation(_cloud_file(), "<p>x</p>", before)
 
     assert result.remaining == 1

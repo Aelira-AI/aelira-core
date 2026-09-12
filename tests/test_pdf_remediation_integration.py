@@ -38,6 +38,7 @@ def test_full_remediation_pipeline():
         config = RemediationConfig(
             use_ai=False,
             verify_fixes=True,
+            create_backup=False,
             output_directory=tmpdir,
             allow_legacy_nested_ai=False,
         )
@@ -144,8 +145,8 @@ def test_incident_fixture_raw_scanner_output_reconciles_every_finding():
         result.close_output_claim()
 
 
-def test_reported_three_finding_payload_fixes_every_issue_without_enrichment():
-    """The released three-finding failure is a successful, fully sourced run."""
+def test_reported_three_finding_payload_stays_unverified_when_source_differs():
+    """Historical findings cannot certify fixes a paired source scan cannot reproduce."""
     from src.education.remediation.base import RemediationConfig
     from src.education.remediation.pdf_remediator import PdfRemediator
 
@@ -190,11 +191,15 @@ def test_reported_three_finding_payload_fixes_every_issue_without_enrichment():
 
         assert result.success, result.error_message
         assert result.total_issues == 3
-        assert result.fixed_count == 3
-        assert result.manual_count == 0
+        assert result.fixed_count == 0
+        assert result.manual_count == 3
         assert result.failed_count == 0
         assert result.skipped_count == 0
-        assert {fixed.description for fixed in result.fixed_issues} == {
+        assert {manual.description for manual in result.manual_issues} == {
             issue["message"] for issue in issues
         }
+        assert result.verification_passed is False
+        assert result.remediated_compliance_score is None
+        assert result.score_measurement is None
+        assert result.score_verification_reason == "incomplete_comparison"
         result.close_output_claim()

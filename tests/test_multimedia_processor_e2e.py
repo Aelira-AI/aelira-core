@@ -116,7 +116,8 @@ class TestMultimediaProcessor:
             assert isinstance(result, MultimediaProcessingResult)
             assert result.media_type == "audio"
             assert result.duration == 10.0
-            assert result.has_captions is True
+            assert result.has_captions is False
+            assert result.compliance_score == 80.0
             assert len(result.transcription) == 2
             assert "webvtt" in result.caption_formats
             assert "srt" in result.caption_formats
