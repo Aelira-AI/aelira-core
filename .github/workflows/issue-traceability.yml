@@ -1,0 +1,47 @@
+name: Issue traceability
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  issues:
+    types: [labeled, unlabeled, edited, closed, reopened, deleted, transferred]
+  label:
+    types: [edited, deleted]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  statuses: write
+
+# Serialize writers. Every event scans all open PRs, including when GitHub replaces
+# a queued pending run with a newer one. Do not cancel an active status writer.
+concurrency:
+  group: issue-traceability-metadata
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # This workflow has a write token. Never check out or execute PR-head code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Invalidate previous statuses before tests or API validation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node --experimental-strip-types scripts/issue_traceability.ts --invalidate
+      - name: Test trusted policy implementation
+        run: node --experimental-strip-types --test scripts/issue_traceability.test.ts
+      - name: Validate current metadata and publish exact-head status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node --experimental-strip-types scripts/issue_traceability.ts
