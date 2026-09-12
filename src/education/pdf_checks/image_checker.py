@@ -8,6 +8,7 @@ import asyncio
 import concurrent.futures
 import hashlib
 import logging
+from .completeness import record_incomplete_check
 import math
 import os
 import re
@@ -34,10 +35,12 @@ def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
         ordinals[xref] = ordinal + 1
         raw_bbox = info.get("bbox")
         if xref <= 0 or xref not in resource_xrefs or not raw_bbox:
+            record_incomplete_check("image_checker.unaddressable_image")
             continue
         try:
             bbox = tuple(float(value) for value in raw_bbox)
         except (TypeError, ValueError):
+            record_incomplete_check("image_checker._displayed_image_occurrences")
             continue
         if (
             len(bbox) != 4
@@ -45,6 +48,7 @@ def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
             or bbox[2] <= bbox[0]
             or bbox[3] <= bbox[1]
         ):
+            record_incomplete_check("image_checker.invalid_image_bounds")
             continue
         identity = f"{page_number}|{xref}|{image_index}|{ordinal}|" + ",".join(
             f"{value:.6f}" for value in bbox
@@ -79,6 +83,7 @@ def _occurrence_alt_lookup(
         try:
             obj = doc.xref_object(xref)
         except Exception:
+            record_incomplete_check("image_checker._occurrence_alt_lookup")
             continue
         if "/Alt" not in obj:
             continue
@@ -91,6 +96,7 @@ def _occurrence_alt_lookup(
     try:
         struct_tree = page.get_text("dict")
     except Exception:
+        record_incomplete_check("image_checker._occurrence_alt_lookup")
         logger.warning(
             "[ImageChecker] Failed to read image structure metadata on page %s",
             getattr(page, "number", "unknown"),
@@ -102,6 +108,7 @@ def _occurrence_alt_lookup(
         try:
             block_bbox = tuple(float(value) for value in block.get("bbox", ()))
         except (TypeError, ValueError):
+            record_incomplete_check("image_checker._occurrence_alt_lookup")
             continue
         matches = [
             occurrence
@@ -240,6 +247,7 @@ class ImageAccessibilityChecker:
                                 }
                             )
                         except Exception as e:
+                            record_incomplete_check("image_checker.check")
                             logger.error(
                                 f"[ImageChecker] Failed to extract image on page {page_num}: {e}"
                             )
@@ -322,6 +330,7 @@ class ImageAccessibilityChecker:
                                         )
                                     )
                         except Exception as e:
+                            record_incomplete_check("image_checker.check")
                             logger.warning(
                                 f"[ImageChecker] Alt text validation failed for page {page_num}: {e}"
                             )
@@ -698,6 +707,7 @@ class ImageAccessibilityChecker:
             )
 
         except Exception as e:
+            record_incomplete_check("image_checker.check")
             logger.error(f"[ImageChecker] Failed to extract images from PDF: {e}")
 
         finally:
@@ -829,6 +839,7 @@ class ImageAccessibilityChecker:
                             pass
 
         except Exception as e:
+            record_incomplete_check("image_checker.check_cvd")
             logger.error(f"[ImageChecker] CVD analysis failed: {e}")
 
         return results
@@ -885,6 +896,7 @@ class ImageAccessibilityChecker:
             return (False, None)
 
         except Exception as e:
+            record_incomplete_check("image_checker._check_image_has_alt_text")
             logger.warning(
                 f"[ImageChecker] Failed to check alt text for image xref {xref}: {e}"
             )
@@ -946,5 +958,6 @@ class ImageAccessibilityChecker:
 
             return "\n".join(context_parts)
         except Exception as e:
+            record_incomplete_check("image_checker._get_page_context_for_image")
             logger.warning(f"[ImageChecker] Failed to extract page context: {e}")
             return self._build_context_string_for_image(document_context, page_num)

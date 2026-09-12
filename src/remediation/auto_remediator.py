@@ -103,12 +103,11 @@ class AutoRemediator:
             )
             result = remediator.remediate()
             try:
-                # A verified score comes from re-running the full scanner pipeline
-                # against the actual output file, so it reflects what remediation
-                # really produced. Without it, callers can only estimate.
-                score_verified = (
-                    result.verification_result is not None
-                    and result.remediated_compliance_score is not None
+                from ..education.remediation.score_reporting import score_fields
+
+                scores = score_fields(
+                    result.model_dump(),
+                    original_score=result.original_compliance_score,
                 )
 
                 return {
@@ -116,8 +115,7 @@ class AutoRemediator:
                     "fixed_count": len(result.fixed_issues),
                     "manual_count": len(result.manual_issues),
                     "output_path": result.output_file,
-                    "remediated_compliance_score": result.remediated_compliance_score,
-                    "score_verified": score_verified,
+                    **scores,
                     "fixed_issues": [
                         {"id": f.issue_id, "description": f.description}
                         for f in result.fixed_issues

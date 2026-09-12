@@ -125,6 +125,9 @@ class LatexRemediator(BaseRemediator):
         Returns the primary output file path (TEX by default).
         """
         output_path = self._get_output_path()
+        from .source_verification import require_separate_source_output
+
+        require_separate_source_output(self.file_path, output_path)
 
         # Ensure directory exists
         output_dir = Path(output_path).parent
@@ -757,7 +760,14 @@ Provide ONLY the fix content, no explanation."""
         return None
 
     def _verify_fixes(self, output_path: str):
-        """Verify that the LaTeX still compiles (basic check)."""
+        """Check syntax and rescan source findings on saved TEX output."""
+        from .source_verification import scan_latex_source, verify_source_output
+
+        if Path(output_path).suffix.lower() != ".tex":
+            self.result.warnings.append(
+                "PDF/HTML exports require their own accessibility verifier; source checks are not comparable."
+            )
+            return super()._verify_fixes(output_path)
         # Read the output file
         try:
             with open(output_path, "r", encoding="utf-8") as f:
@@ -783,9 +793,13 @@ Provide ONLY the fix content, no explanation."""
             if issues:
                 self.result.warnings.extend(issues)
                 logger.warning(f"LaTeX verification issues: {issues}")
+                return super()._verify_fixes(output_path)
 
-        except Exception as e:
-            self.result.warnings.append(f"Verification failed: {e}")
+        except Exception:
+            self.result.warnings.append("Saved LaTeX syntax could not be checked.")
+            return super()._verify_fixes(output_path)
+
+        return verify_source_output(self, output_path, scan_latex_source)
 
     def auto_remediate(self) -> bool:
         """

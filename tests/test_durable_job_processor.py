@@ -253,8 +253,10 @@ async def test_registry_adapter_keeps_only_public_failure_aggregates():
             "failed_count": 0,
             "skipped_count": 3,
             "total_issues": 6,
-            "original_compliance_score": 74.5,
-            "remediated_compliance_score": 81,
+            "score_verified": False,
+            "human_review_required": True,
+            "score_measurement": None,
+            "score_verification_reason": "legacy_unverified",
         },
     )
     assert (

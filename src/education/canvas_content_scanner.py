@@ -27,6 +27,13 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from bs4 import BeautifulSoup
+from .canvas_score_verification import (
+    unresolved_source_count,
+    paired_canvas_outcome,
+    canvas_score_measurement,
+    current_canvas_verification,
+    store_canvas_verification,
+)
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -357,6 +364,7 @@ class _PendingVerification:
     high_issues: int
     medium_issues: int
     low_issues: int
+    source_score: float
 
 
 @dataclass(frozen=True)
@@ -893,6 +901,16 @@ class CanvasContentScanner:
                 **usage_metadata(),
             }
 
+        if getattr(cloud_file, "needs_rescan", False) is True:
+            return {
+                "success": False,
+                "verified": False,
+                "fixed_count": 0,
+                "error": "Source changed; rescan required before remediation",
+                "error_code": "source_rescan_required",
+                **usage_metadata(),
+            }
+
         # Load issues from last scan
         issues = []
         if cloud_file.last_scan_id:
@@ -936,6 +954,7 @@ class CanvasContentScanner:
             "remediated_compliance_score",
             "remediated_issues_fixed",
             "remediated_issues_remaining",
+            "provider_metadata",
         )
         original_state = tuple(
             getattr(cloud_file, field, None) for field in state_fields
@@ -1004,29 +1023,21 @@ class CanvasContentScanner:
                     return failed_remediation()
                 remediated_doc = output_path.read_text(encoding="utf-8")
                 body_fragment = _unwrap_html_fragment(remediated_doc)
-                sanitized = _sanitize_html(body_fragment)
+                sanitized = sanitize_for_postgres(_sanitize_html(body_fragment))
 
                 verification = await self._verify_remediation(
                     cloud_file, sanitized, issues
                 )
-                remediated_score = getattr(result, "remediated_compliance_score", None)
-                if (
-                    verification is None
-                    and remediated_score is None
-                    and cloud_file.last_compliance_score is not None
-                ):
-                    total = fixed_count + manual_count + failed_count
-                    if total > 0:
-                        fix_ratio = fixed_count / total
-                        original = cloud_file.last_compliance_score
-                        remediated_score = min(
-                            100.0, round(original + (100 - original) * fix_ratio, 1)
-                        )
-                if verification is not None:
-                    remediated_score = verification.score
+                remediated_score = (
+                    verification.score if verification is not None else None
+                )
+                if verification is None:
+                    fixed_count = 0
+                    manual_count = unresolved_source_count(issues)
+                    failed_count = 0
 
                 pending = _PendingRemediation(
-                    body=sanitize_for_postgres(sanitized),
+                    body=sanitized,
                     fixed_count=fixed_count,
                     manual_count=manual_count,
                     failed_count=failed_count,
@@ -1046,7 +1057,9 @@ class CanvasContentScanner:
             verification = pending.verification
             if verification is not None:
                 cloud_file.remediated_issues_fixed = verification.fixed
-                cloud_file.remediated_issues_remaining = verification.remaining
+                cloud_file.remediated_issues_remaining = (
+                    verification.remaining + verification.introduced
+                )
                 self.db.add(
                     Scan(
                         id=verification.scan_id,
@@ -1074,6 +1087,24 @@ class CanvasContentScanner:
                     )
                 )
 
+            if verification is None:
+                cloud_file.remediated_issues_fixed = 0
+                cloud_file.remediated_issues_remaining = pending.manual_count
+            store_canvas_verification(
+                cloud_file,
+                issues,
+                (
+                    {
+                        "score": verification.score,
+                        "source_score": verification.source_score,
+                        "fixed": verification.fixed,
+                        "remaining": verification.remaining,
+                        "introduced": verification.introduced,
+                    }
+                    if verification is not None
+                    else None
+                ),
+            )
             self.db.commit()
 
             if verification is not None:
@@ -1099,11 +1130,22 @@ class CanvasContentScanner:
                     "success": True,
                     "verified": True,
                     "fixed_count": verification.fixed,
-                    "issues_remaining": verification.remaining,
+                    "issues_remaining": verification.remaining
+                    + verification.introduced,
                     "issues_introduced": verification.introduced,
-                    "manual_count": verification.remaining,
+                    "manual_count": verification.remaining + verification.introduced,
                     "remediated_score": verification.score,
+                    "original_compliance_score": verification.source_score,
                     "verification_scan_id": verification.scan_id,
+                    "score_provenance": "scanner_rescan",
+                    "score_measurement": canvas_score_measurement(
+                        cloud_file.content_body,
+                        pending.body,
+                        {
+                            "source_score": verification.source_score,
+                            "score": verification.score,
+                        },
+                    ),
                     **usage_metadata(),
                 }
 
@@ -1396,24 +1438,36 @@ class CanvasContentScanner:
         introduced counts nodes failing a rule that did not fail before, and
         fixed is the drop in node count across the rules that failed before.
 
-        Returns None when the rescan cannot run, in which case the caller
-        keeps the estimate and marks the result unverified.
+        Returns None when the rescan cannot run; no after score is available.
         """
-
-        def _nodes_by_rule(violations: List[Dict[str, Any]]) -> Dict[str, int]:
-            counts: Dict[str, int] = {}
-            for v in violations or []:
-                rule_id = v.get("id")
-                if rule_id:
-                    counts[rule_id] = counts.get(rule_id, 0) + len(v.get("nodes", []))
-            return counts
+        if getattr(cloud_file, "needs_rescan", False) is True:
+            return None
 
         try:
+            source_body = cloud_file.content_body
+            source_scan_id = cloud_file.last_scan_id
+            source_results = await self._run_axe_scan(
+                _wrap_html_fragment(source_body, cloud_file.file_name)
+            )
             wrapped = _wrap_html_fragment(remediated_fragment, cloud_file.file_name)
             axe_results = await self._run_axe_scan(wrapped)
+            outcome = paired_canvas_outcome(
+                source_results, axe_results, original_issues
+            )
+            source_score = getattr(cloud_file, "last_compliance_score", None)
+            if (
+                cloud_file.content_body != source_body
+                or cloud_file.last_scan_id != source_scan_id
+                or getattr(cloud_file, "needs_rescan", False) is True
+                or (
+                    type(source_score) in (int, float)
+                    and source_score != outcome["source_score"]
+                )
+            ):
+                return None
         except Exception as exc:
             logger.warning(
-                "Remediation rescan failed; falling back to the estimate",
+                "Remediation rescan failed; after score unavailable",
                 extra={
                     "cloud_file_id": cloud_file.id,
                     "scan_id": cloud_file.last_scan_id,
@@ -1424,36 +1478,17 @@ class CanvasContentScanner:
             return None
 
         violations = axe_results.get("violations", [])
-        passes = len(axe_results.get("passes", []))
-        total_rules = passes + len(violations)
-        score = round(passes / total_rules * 100, 1) if total_rules > 0 else 100.0
-
-        before = _nodes_by_rule(original_issues)
-        after = _nodes_by_rule(violations)
-
-        # A rule that failed before and fails harder afterwards has had
-        # failures introduced as well as failures remaining. Counting the
-        # whole after-total as "remaining" would hide that: the honest
-        # split is what was already failing, and what is new on top.
-        remaining = 0
-        introduced = 0
-        fixed = 0
-        for rule, count in after.items():
-            was = before.get(rule, 0)
-            remaining += min(count, was)
-            introduced += max(0, count - was)
-        for rule, was in before.items():
-            fixed += max(0, was - after.get(rule, 0))
 
         # Keep verification entirely local until the caller's owned artifact
         # directory has cleaned up. JSON strings make the nested provider data
         # immutable pending values rather than live mutable dictionaries.
         return _PendingVerification(
             scan_id=str(uuid.uuid4()),
-            score=score,
-            fixed=fixed,
-            remaining=remaining,
-            introduced=introduced,
+            score=outcome["score"],
+            source_score=outcome["source_score"],
+            fixed=outcome["fixed"],
+            remaining=outcome["remaining"],
+            introduced=outcome["introduced"],
             axe_results_json=json.dumps(axe_results, sort_keys=True),
             issues_json=json.dumps(violations, sort_keys=True),
             critical_issues=sum(
@@ -1743,8 +1778,8 @@ class CanvasContentScanner:
         cloud_file.remediated_file_id = str(upload.file_id)
         cloud_file.writeback_status = "written_back"
         cloud_file.writeback_at = now
-        if cloud_file.remediated_compliance_score is not None:
-            cloud_file.last_compliance_score = cloud_file.remediated_compliance_score
+        # The accessible copy has a new provider ID; this row's source scan
+        # and baseline still describe the original Canvas file.
         self.artifact_service.mark_written(
             self.db, artifact_id=str(artifact.id), provider_result=provider_result
         )
@@ -1945,6 +1980,20 @@ class CanvasContentScanner:
         cloud_file = current
         writeback_log = self.db.get(ContentWritebackLog, log_id)
         assert writeback_log is not None
+        verification = None
+        if (
+            isinstance(cloud_file.provider_metadata, dict)
+            and "content_score_verification" in cloud_file.provider_metadata
+        ):
+            source_result = (
+                self.db.query(ScanResult)
+                .filter(ScanResult.scan_id == cloud_file.last_scan_id)
+                .first()
+            )
+            if source_result is not None and isinstance(source_result.issues, list):
+                verification = current_canvas_verification(
+                    cloud_file, source_result.issues
+                )
         try:
             await self._update_canvas_content(
                 cloud_file,
@@ -1957,11 +2006,11 @@ class CanvasContentScanner:
             cloud_file.writeback_status = "written_back"
             cloud_file.writeback_at = now
             cloud_file.content_body = cloud_file.remediated_body
-            if cloud_file.remediated_compliance_score is not None:
-                cloud_file.last_compliance_score = (
-                    cloud_file.remediated_compliance_score
-                )
-            cloud_file.needs_rescan = False
+            cloud_file.last_compliance_score = (
+                verification["score"] if verification else None
+            )
+            # The previous scan ID and findings belong to the replaced source.
+            cloud_file.needs_rescan = True
             self.db.commit()
             return {"success": True, "stale": False}
         except Exception as exc:

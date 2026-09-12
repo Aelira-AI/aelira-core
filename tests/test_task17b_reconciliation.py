@@ -210,6 +210,7 @@ async def test_reconciliation_confirmed_marks_log_artifact_and_cloud_atomically(
 
     assert result["success"] is True
     assert result["resolution"] == "confirmed"
+    assert cloud.last_compliance_score == 70.0
     assert log.reconciliation_status == "reconciled"
     assert log.canvas_revision == "v99"
     assert cloud.remediated_file_id == "canvas-99"

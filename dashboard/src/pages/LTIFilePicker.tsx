@@ -138,7 +138,8 @@ function FileRowItem({
       <div className="text-right shrink-0 w-20">
         {isScanned && file.complianceScore !== null ? (
           <span className="text-sm font-semibold" style={{ color: scoreColor(file.complianceScore) }}>
-            {file.complianceScore.toFixed(0)}%
+            {file.complianceScore.toFixed(1)}%
+            <span className="sr-only">{' automated scan score; conformance requires review'}</span>
           </span>
         ) : (
           <span className="text-xs" style={{ color: statusColor(file.status) }}>

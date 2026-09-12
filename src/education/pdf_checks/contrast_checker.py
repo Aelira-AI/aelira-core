@@ -1,6 +1,7 @@
 """Color contrast accessibility checking for PDFs."""
 
 import logging
+from .completeness import complete_scan_requested, record_incomplete_check
 from typing import Dict, List
 
 try:
@@ -56,6 +57,7 @@ class ColorContrastChecker:
         """
         issues = []
         if not HAS_PIKEPDF:
+            record_incomplete_check("contrast_checker.dependency")
             return issues
 
         try:
@@ -63,10 +65,14 @@ class ColorContrastChecker:
             low_contrast_pages = set()
 
             # Check first 10 pages for performance
-            for page_idx, page in enumerate(list(pdf.pages)[:10]):
+            pages = list(pdf.pages)
+            for page_idx, page in enumerate(
+                pages if complete_scan_requested() else pages[:10]
+            ):
                 try:
                     ops = list(pikepdf.parse_content_stream(page))
                 except Exception:
+                    record_incomplete_check("contrast_checker.check")
                     continue
 
                 current_fill = (0.0, 0.0, 0.0)  # Default black
@@ -82,6 +88,7 @@ class ColorContrastChecker:
                                 float(operands[2]),
                             )
                         except (ValueError, TypeError):
+                            record_incomplete_check("contrast_checker.check")
                             pass
 
                     # Grayscale fill: g G
@@ -90,6 +97,7 @@ class ColorContrastChecker:
                             v = float(operands[0])
                             current_fill = (v, v, v)
                         except (ValueError, TypeError):
+                            record_incomplete_check("contrast_checker.check")
                             pass
 
                     # Text showing operators -- check current fill color
@@ -132,6 +140,7 @@ class ColorContrastChecker:
 
             pdf.close()
         except Exception as e:
+            record_incomplete_check("contrast_checker.check")
             logger.warning(f"[ColorContrastChecker] Color contrast check error: {e}")
 
         return issues

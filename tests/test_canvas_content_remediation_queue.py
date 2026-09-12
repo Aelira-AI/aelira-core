@@ -45,6 +45,19 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "alembic/versions/2026_08_25_canvas_content_queue.py"
 
 
+@pytest.fixture(autouse=True)
+def _no_browser_for_queue_contract_tests(monkeypatch):
+    from src.jobs import canvas_content_job
+
+    monkeypatch.setattr(
+        canvas_content_job,
+        "run_deterministic_axe",
+        AsyncMock(
+            side_effect=RuntimeError("Scanner unavailable in queue contract test")
+        ),
+    )
+
+
 def _snapshot() -> dict:
     return {
         "version": 1,
@@ -418,8 +431,6 @@ def test_output_limit_is_rechecked_after_html_normalization(monkeypatch):
         {"fixed_count": True},
         {"manual_count": 1.5},
         {"failed_count": "0"},
-        {"remediated_compliance_score": float("inf")},
-        {"remediated_compliance_score": 101.0},
     ],
 )
 def test_remediator_result_scalars_are_exact_and_bounded(monkeypatch, result_values):
@@ -479,7 +490,7 @@ def test_public_job_shape_allowlists_scalar_result_fields():
     assert public.manual_count is None
     assert public.failed_count == 1
     assert public.remediated_score is None
-    assert public.verified is None
+    assert public.verified is False
     assert public.issues_remaining is None
     assert "provider_payload" not in public.model_dump()
 
@@ -597,10 +608,16 @@ def test_canvas_evidence_identity_binds_persisted_provenance(dimension, replacem
 
 
 @pytest.mark.asyncio
-async def test_handler_revalidates_authority_before_and_after_work(monkeypatch):
+@pytest.mark.parametrize(
+    "verdict", ["pass", "regression", "unavailable", "baseline_mismatch"]
+)
+async def test_handler_revalidates_authority_before_and_after_work(
+    monkeypatch, verdict
+):
     from src.jobs import canvas_content_job as module
 
     snapshot = _snapshot()
+    snapshot["issues"] = [{"id": "image-alt", "nodes": [{}]}]
     snapshot["issues_sha256"] = module.hashlib.sha256(
         module._canonical_json(snapshot["issues"])
     ).hexdigest()
@@ -644,10 +661,45 @@ async def test_handler_revalidates_authority_before_and_after_work(monkeypatch):
         assert_owned=owned,
     )
     db = MagicMock()
+    captured = []
+
+    async def rescan(body):
+        captured.append(body)
+        if verdict == "unavailable":
+            raise RuntimeError("Scanner unavailable")
+        if len(captured) == 1:
+            return {
+                "passes": ([{}] if verdict == "baseline_mismatch" else [{}, {}, {}]),
+                "violations": snapshot["issues"],
+            }
+        return {
+            "passes": [{}],
+            "violations": (
+                [{"id": "new-rule", "nodes": [{}, {}]}]
+                if verdict == "regression"
+                else []
+            ),
+        }
+
+    monkeypatch.setattr(module, "run_deterministic_axe", rescan)
 
     result = await handle_canvas_content_job(context, db, MagicMock())
 
     assert isinstance(result, JobSuccess)
+    measured = verdict in {"pass", "regression"}
+    assert result.result["verified"] == measured
+    assert result.result["fixed_count"] == (1 if measured else 0)
+    assert (
+        result.result["issues_remaining"]
+        == {"pass": 0, "regression": 2, "unavailable": 1, "baseline_mismatch": 1}[
+            verdict
+        ]
+    )
+    if measured:
+        assert module._unwrap_html_fragment(captured[-1]) == cloud_file.remediated_body
+        assert result.result["score_measurement"]["method_version"] == "canvas-axe-v1"
+    else:
+        assert result.result["remediated_compliance_score"] is None
     assert locks.call_count == 2
     owned.assert_awaited_once()
     assert cloud_file.writeback_status == "pending_review"

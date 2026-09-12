@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-09-12
+
+### Fixed
+
+- Remediation scores use paired scans of the original and saved output instead of estimates from fix counts. Genuine score decreases remain visible.
+- Office uploads preserve canonical findings and target metadata. Legacy Office findings are recovered only when uniquely matched against the retained original, without rewriting scan history.
+- Incomplete PDF checks, missing source evidence, and unsupported comparisons no longer produce verified scores. Canvas content uses paired browser checks rather than static source scores.
+- The dashboard hides historical estimates, distinguishes applied changes from verified fixes, and explains unavailable comparisons with bounded diagnostic codes.
+
+### Changed
+
+- Verified comparisons include the scoring method version and SHA-256 identities of both measured artifacts.
+- Regression coverage includes pre-hotfix records, persistence-to-worker Office comparisons, failed scans, changed artifacts, and score decreases.
+
+### Operator action required
+
+- No database migration or new environment variable is required. Deploy API, worker, and dashboard from the same 0.9.10 release.
+- Old job estimates are not retrospectively verified. Re-run remediation from a retained original, or upload and scan the original again if it is unavailable. Original scan history is preserved.
+- Existing partial-output publication restrictions remain in force. A valid automated score does not establish accessibility conformance.
+- Preserve the v0.9.8 operator actions and backup requirements. See [the upgrade guide](docs/releases/v0.9.10.md) for comparison diagnostics and rescan guidance.
+
 ## [0.9.9] - 2026-09-09
 
 ### Security

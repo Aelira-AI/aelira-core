@@ -234,6 +234,7 @@ async def test_legacy_canvas_file_writeback_consumes_verified_descriptor_and_rec
     result = await scanner.write_back_file(cloud, approved_by="user-1")
 
     assert result["success"] is True
+    assert cloud.last_compliance_score == 70.0
     assert service.opened and service.marked
     kwargs = client.upload_file_stream.await_args.kwargs
     assert kwargs["stream"].closed is True

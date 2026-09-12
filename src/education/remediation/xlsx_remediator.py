@@ -27,7 +27,6 @@ from .base import (
     BaseRemediator,
     RemediationIssue,
     IssueCategory,
-    IssueSeverity,
     RemediationConfig,
 )
 
@@ -97,6 +96,9 @@ class XlsxRemediator(BaseRemediator):
     def _save_document(self, document: Any) -> str:
         """Save the remediated Excel workbook."""
         output_path = self._get_output_path()
+        from .office_verification import require_separate_office_output
+
+        require_separate_office_output(self.file_path, output_path)
         logger.info(f"Saving remediated spreadsheet to: {output_path}")
 
         # Ensure output directory exists
@@ -194,6 +196,14 @@ class XlsxRemediator(BaseRemediator):
 
             worksheet = document[sheet_name]
 
+            if self.config.use_supplied_fixes and (
+                not new_name
+                or new_name == sheet_name
+                or new_name.casefold()
+                in {name.casefold() for name in document.sheetnames}
+            ):
+                return False
+
             # Generate new name if not provided
             if not new_name or new_name == sheet_name:
                 new_name = self._generate_sheet_name(worksheet, sheet_index)
@@ -203,6 +213,12 @@ class XlsxRemediator(BaseRemediator):
 
             # Rename the sheet
             worksheet.title = new_name
+
+            # Remaining findings still refer to the original sheet name. Keep
+            # their in-memory targets attached to this same renamed worksheet.
+            for pending in self.issues:
+                if pending.metadata.get("sheet_name") == sheet_name:
+                    pending.metadata["sheet_name"] = new_name
 
             logger.info(f"Renamed sheet '{sheet_name}' to '{new_name}'")
             return True
@@ -514,6 +530,10 @@ class XlsxRemediator(BaseRemediator):
         self, issue: RemediationIssue, document: Any
     ) -> Optional[str]:
         """Get a rule-based fix for an issue."""
+        if self.config.use_supplied_fixes:
+            if issue.category != IssueCategory.SHEET:
+                return None
+            return issue.metadata.get("fixed_content")
         if issue.category == IssueCategory.ALT_TEXT:
             # Use pre-generated alt text from the scanner if available
             # Scanner stores as "suggested_alt_text", check both keys
@@ -678,29 +698,12 @@ Generate only the description, nothing else:"""
         # Returning None routes this issue to the human review queue (WCAG 1.1.1).
         return None
 
-    def _calculate_scores(self):
-        """Calculate compliance scores for the remediation."""
-        if self.result.total_issues > 0:
-            severity_penalties = {
-                IssueSeverity.CRITICAL: 15,
-                IssueSeverity.HIGH: 10,
-                IssueSeverity.MEDIUM: 5,
-                IssueSeverity.LOW: 2,
-            }
+    def _verify_fixes(self, output_path: str):
+        from .office_verification import verify_office_output
 
-            total_penalty = sum(
-                severity_penalties.get(issue.severity, 5) for issue in self.issues
-            )
-            self.result.original_compliance_score = max(0, 100 - total_penalty)
+        return verify_office_output(self, output_path)
 
-            fixed_penalty_reduction = sum(
-                severity_penalties.get(fixed.severity, 5)
-                for fixed in self.result.fixed_issues
-            )
-            remaining_penalty = total_penalty - fixed_penalty_reduction
-            self.result.remediated_compliance_score = max(0, 100 - remaining_penalty)
+    def _calculate_scores(self) -> None:
+        from .office_verification import measured_office_scores
 
-            self.result.improvement = (
-                self.result.remediated_compliance_score
-                - self.result.original_compliance_score
-            )
+        measured_office_scores(self)

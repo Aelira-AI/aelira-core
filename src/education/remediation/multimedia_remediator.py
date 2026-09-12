@@ -581,6 +581,11 @@ class MultimediaRemediator(BaseRemediator):
         if issues:
             self.result.warnings.extend(issues)
 
+        self.result.warnings.append(
+            "Generated companion files require content review; file presence is not an accessibility rescan."
+        )
+        return super()._verify_fixes(output_path)
+
     def auto_remediate(self) -> bool:
         """
         Perform automatic remediation by generating all companion files.

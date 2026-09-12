@@ -99,7 +99,8 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install system dependencies
-        # cairo/pkg-config: pycairo builds from source; tesseract: OCR tests;
+        # cairo/pkg-config: pycairo builds from source; OCRmyPDF uses
+        # unpaper/Ghostscript and its fallback uses Poppler/Tesseract.
         # ffmpeg: multimedia tests
         run: |
           timeout 5m sudo apt-get \
@@ -112,7 +113,7 @@ jobs:
             -o Acquire::http::Timeout=20 \
             -o Acquire::https::Timeout=20 \
             install -y libcairo2-dev pkg-config \
-            tesseract-ocr tesseract-ocr-eng ffmpeg
+            tesseract-ocr tesseract-ocr-eng unpaper ghostscript poppler-utils ffmpeg
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Install pinned equation-verifier browser

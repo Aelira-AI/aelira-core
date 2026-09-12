@@ -26,6 +26,7 @@ from pathlib import Path
 from PIL import Image
 from io import BytesIO
 import logging
+from .scan_completeness import record_incomplete_check
 import re
 
 from src.education.color_blindness_simulator import (
@@ -33,6 +34,8 @@ from src.education.color_blindness_simulator import (
     ColorBlindnessAnalysisResult,
 )
 from src.utils.async_helpers import run_async_from_sync
+
+from .office_findings import office_issue_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +274,7 @@ class DocxProcessingResult(BaseModel):
             all_issues.append(
                 {
                     "id": f"heading_{len(all_issues)}",
+                    "metadata": office_issue_metadata(issue, "heading"),
                     "category": "heading",
                     "severity": get_severity(issue.issue_type),
                     "title": title,
@@ -333,6 +337,7 @@ class DocxProcessingResult(BaseModel):
             all_issues.append(
                 {
                     "id": f"image_{len(all_issues)}",
+                    "metadata": office_issue_metadata(issue, "image"),
                     "category": "alt_text",
                     "severity": severity,
                     "title": title,
@@ -371,6 +376,7 @@ class DocxProcessingResult(BaseModel):
             all_issues.append(
                 {
                     "id": f"table_{len(all_issues)}",
+                    "metadata": office_issue_metadata(issue, "table"),
                     "category": "table",
                     "severity": get_severity(issue.issue_type),
                     "title": issue.issue_type.replace("_", " ").title(),
@@ -393,6 +399,7 @@ class DocxProcessingResult(BaseModel):
             all_issues.append(
                 {
                     "id": f"list_{len(all_issues)}",
+                    "metadata": office_issue_metadata(issue, "list"),
                     "category": "list",
                     "severity": get_severity(issue.issue_type),
                     "title": f"Fake {'Bullet' if issue.issue_type == 'fake_bullet' else 'Numbered'} List",
@@ -418,6 +425,7 @@ class DocxProcessingResult(BaseModel):
             all_issues.append(
                 {
                     "id": f"link_{len(all_issues)}",
+                    "metadata": office_issue_metadata(issue, "link"),
                     "category": "link",
                     "severity": get_severity(issue.issue_type),
                     "title": "Non-Descriptive Link Text",
@@ -441,6 +449,7 @@ class DocxProcessingResult(BaseModel):
             all_issues.append(
                 {
                     "id": f"language_{len(all_issues)}",
+                    "metadata": office_issue_metadata(issue, "language"),
                     "category": "language",
                     "severity": get_severity(issue.issue_type),
                     "title": issue.issue_type.replace("_", " ").title(),
@@ -468,6 +477,7 @@ class DocxProcessingResult(BaseModel):
             all_issues.append(
                 {
                     "id": f"title_{len(all_issues)}",
+                    "metadata": office_issue_metadata(issue, "title"),
                     "category": "title",
                     "severity": get_severity(issue.issue_type),
                     "title": issue.issue_type.replace("_", " ").title(),
@@ -487,6 +497,7 @@ class DocxProcessingResult(BaseModel):
             all_issues.append(
                 {
                     "id": f"font_{len(all_issues)}",
+                    "metadata": office_issue_metadata(issue, "font_size"),
                     "category": "font_size",
                     "severity": (
                         "high" if issue.issue_type == "very_small" else "medium"
@@ -547,8 +558,10 @@ class DocxProcessor:
         simulate_color_blindness: bool = False,
         progress_callback: callable = None,
         llm_client=None,
+        require_complete_scan: bool = True,
     ):
         self.generate_alt_text = generate_alt_text
+        self.require_complete_scan = require_complete_scan
         self.validate_alt_text = validate_alt_text
         self.enhance_descriptions = enhance_descriptions
         self.image_generator = None
@@ -576,6 +589,15 @@ class DocxProcessor:
                 self.validate_alt_text = False
 
     def process_docx(
+        self, file_path: str, original_filename: str = None
+    ) -> DocxProcessingResult:
+        """Measure the document only when its required checks complete."""
+        from .scan_completeness import require_complete_scan
+
+        with require_complete_scan(self.require_complete_scan):
+            return self._process_docx(file_path, original_filename)
+
+    def _process_docx(
         self, file_path: str, original_filename: str = None
     ) -> DocxProcessingResult:
         """
@@ -662,7 +684,6 @@ class DocxProcessor:
         total_elements = (
             total_paragraphs + total_images + total_tables + total_lists + total_links
         )
-        compliance_score = self._calculate_compliance_score(summary, total_elements)
 
         # Generate accessible HTML
         html_output = self._generate_html(doc, document_context, file_name)
@@ -680,7 +701,7 @@ class DocxProcessor:
                     f"[DocxProcessor] CVD analysis complete: {len(cvd_analysis)} color pairs tested"
                 )
 
-        return DocxProcessingResult(
+        result = DocxProcessingResult(
             file_path=file_path,
             file_name=file_name,
             total_paragraphs=total_paragraphs,
@@ -699,11 +720,18 @@ class DocxProcessor:
             smartart_issues=smartart_issues,
             embedded_object_issues=embedded_object_issues,
             summary=summary,
-            compliance_score=compliance_score,
+            compliance_score=0.0,
             html_output=html_output,
             remediation_suggestions=remediation_suggestions,
             cvd_analysis=cvd_analysis,
         )
+
+        from .compliance_scoring import calculate_compliance_score
+
+        result.compliance_score = calculate_compliance_score(
+            result.issues, total_elements=total_elements
+        ).score
+        return result
 
     def _extract_document_context(self, doc: Document, filename: str) -> Dict:
         """Extract document context for AI understanding"""
@@ -760,6 +788,7 @@ class DocxProcessor:
                 try:
                     level = int(_style_name(para).replace("Heading ", ""))
                 except Exception:
+                    record_incomplete_check("docx._check_heading_structure")
                     continue
                 heading_levels.append((i, level, para.text[:100]))
 
@@ -849,6 +878,7 @@ class DocxProcessor:
                                 # partname is like /word/media/image1.png — strip leading /
                                 image_zip_path = str(image_part.partname).lstrip("/")
                     except Exception:
+                        record_incomplete_check("docx._check_images")
                         pass
 
                     if not has_alt:
@@ -931,6 +961,7 @@ class DocxProcessor:
                                     except Exception:
                                         pass
                             except Exception as e:
+                                record_incomplete_check("docx._check_images")
                                 logger.warning(
                                     f"[DocxProcessor] Alt text generation failed: {e}"
                                 )
@@ -1037,6 +1068,7 @@ class DocxProcessor:
                 image.save(tmp, format="PNG")
                 return tmp.name
         except Exception as e:
+            record_incomplete_check("docx._extract_image_from_run")
             logger.warning(f"[DocxProcessor] Failed to extract image: {e}")
             return None
 
@@ -1095,6 +1127,7 @@ class DocxProcessor:
                     if shading:
                         has_header = True
                 except Exception:
+                    record_incomplete_check("docx._check_tables")
                     pass
 
             # Also check if table has explicit header row setting
@@ -1110,6 +1143,7 @@ class DocxProcessor:
                     if first_row_val == "1":
                         has_header = True
             except Exception:
+                record_incomplete_check("docx._check_tables")
                 pass
 
             if not has_header:
@@ -1221,6 +1255,7 @@ class DocxProcessor:
                         if rel:
                             link_url = rel.target_ref
                     except Exception:
+                        record_incomplete_check("docx._check_links")
                         pass
 
                 if not link_text:
@@ -1272,6 +1307,7 @@ class DocxProcessor:
             # This is a simplified check
 
         except Exception as e:
+            record_incomplete_check("docx._check_language")
             logger.debug(f"[DocxProcessor] Language check error: {e}")
 
         # Note: Word typically sets language by default, so we mainly check
@@ -1316,6 +1352,7 @@ class DocxProcessor:
             try:
                 title = doc.core_properties.title
             except Exception:
+                record_incomplete_check("docx._check_document_title")
                 pass
 
             # Get suggested title from context (first H1 or first paragraph)
@@ -1377,6 +1414,7 @@ class DocxProcessor:
                 )
 
         except Exception as e:
+            record_incomplete_check("docx._check_document_title")
             logger.debug(f"[DocxProcessor] Title check error: {e}")
 
         return issues
@@ -1482,6 +1520,7 @@ class DocxProcessor:
                         if para.style and para.style.font and para.style.font.size:
                             font_size_pt = para.style.font.size.pt
                     except Exception:
+                        record_incomplete_check("docx._check_font_sizes")
                         pass
 
                 # If still no font size, check document default
@@ -1491,6 +1530,7 @@ class DocxProcessor:
                         if default_style.font and default_style.font.size:
                             font_size_pt = default_style.font.size.pt
                     except Exception:
+                        record_incomplete_check("docx._check_font_sizes")
                         pass
 
                 # Skip if we couldn't determine font size (assume default 11pt)
@@ -1640,11 +1680,13 @@ class DocxProcessor:
                                 )
 
                     except Exception as e:
+                        record_incomplete_check("docx._detect_smartart")
                         logger.warning(
                             f"[DocxProcessor] Error parsing SmartArt {diagram_file}: {e}"
                         )
 
         except Exception as e:
+            record_incomplete_check("docx._detect_smartart")
             logger.warning(f"[DocxProcessor] Error detecting SmartArt: {e}")
 
         return issues
@@ -1711,6 +1753,7 @@ class DocxProcessor:
                         diagram_type = "picture"
 
         except Exception as e:
+            record_incomplete_check("docx._get_smartart_type")
             logger.debug(f"[DocxProcessor] Could not determine SmartArt type: {e}")
 
         return diagram_type
@@ -1746,6 +1789,7 @@ class DocxProcessor:
                         return True, match.group(1)
 
         except Exception as e:
+            record_incomplete_check("docx._get_smartart_alt_text")
             logger.debug(f"[DocxProcessor] Error checking SmartArt alt text: {e}")
 
         return False, None
@@ -1883,6 +1927,7 @@ class DocxProcessor:
                                         "id": rel_id,
                                     }
                     except Exception as e:
+                        record_incomplete_check("docx._detect_embedded_objects")
                         logger.debug(f"[DocxProcessor] Error parsing rels: {e}")
 
                 # Process each embedded file
@@ -1981,6 +2026,7 @@ class DocxProcessor:
                             )
 
                     except Exception as e:
+                        record_incomplete_check("docx._detect_embedded_objects")
                         logger.warning(
                             f"[DocxProcessor] Error processing embedded object {embed_file}: {e}"
                         )
@@ -2011,6 +2057,7 @@ class DocxProcessor:
                         )
 
         except Exception as e:
+            record_incomplete_check("docx._detect_embedded_objects")
             logger.warning(f"[DocxProcessor] Error detecting embedded objects: {e}")
 
         return issues
@@ -2049,6 +2096,7 @@ class DocxProcessor:
                         return True, match.group(1)
 
         except Exception as e:
+            record_incomplete_check("docx._get_embedded_alt_text")
             logger.debug(f"[DocxProcessor] Error checking embedded alt text: {e}")
 
         return False, None
@@ -2079,6 +2127,7 @@ class DocxProcessor:
                     )
 
         except Exception as e:
+            record_incomplete_check("docx._find_ole_objects_in_doc")
             logger.debug(f"[DocxProcessor] Error finding OLE objects: {e}")
 
         return ole_objects
@@ -2217,6 +2266,7 @@ class DocxProcessor:
                 try:
                     level = int(_style_name(para).replace("Heading ", ""))
                 except Exception:
+                    record_incomplete_check("docx._generate_html")
                     level = 2
                 html += f"  <h{level}>{self._escape_html(text)}</h{level}>\n"
             # Handle lists
@@ -2399,6 +2449,7 @@ class DocxProcessor:
                         if analysis.issues:
                             results.append(analysis)
                     except Exception as e:
+                        record_incomplete_check("docx._analyze_cvd_accessibility")
                         logger.warning(
                             f"[DocxProcessor] CVD analysis failed for {fg_hex}/{bg_hex}: {e}"
                         )
@@ -2436,11 +2487,16 @@ class DocxProcessor:
                                             if analysis.issues:
                                                 results.append(analysis)
                                         except Exception:
+                                            record_incomplete_check(
+                                                "docx._analyze_cvd_accessibility"
+                                            )
                                             pass
                         except Exception:
+                            record_incomplete_check("docx._analyze_cvd_accessibility")
                             pass
 
         except Exception as e:
+            record_incomplete_check("docx._analyze_cvd_accessibility")
             logger.error(f"[DocxProcessor] CVD analysis failed: {e}")
 
         return results

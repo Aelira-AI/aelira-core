@@ -867,6 +867,11 @@ class CodeScanner:
 
         except Exception as e:
             logger.warning(f"Error parsing CSS {file_path}: {e}")
+            from .scan_completeness import IncompleteScanError
+
+            raise IncompleteScanError(
+                "Required CSS accessibility checks did not complete"
+            ) from e
 
         return issues
 

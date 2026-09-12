@@ -24,12 +24,10 @@ from docx.oxml import OxmlElement
 from docx.shared import Pt
 from docx.enum.style import WD_STYLE_TYPE
 
-from ..docx_processor import _style_name
 from .base import (
     BaseRemediator,
     RemediationIssue,
     IssueCategory,
-    IssueSeverity,
     RemediationConfig,
     VerificationResult,
 )
@@ -151,6 +149,9 @@ class DocxRemediator(BaseRemediator):
     def _save_document(self, document: Document) -> str:
         """Save the remediated Word document."""
         output_path = self._get_output_path()
+        from .office_verification import require_separate_office_output
+
+        require_separate_office_output(self.file_path, output_path)
         logger.info(f"Saving remediated document to: {output_path}")
 
         # Ensure output directory exists
@@ -673,6 +674,16 @@ Rules:
         self, issue: RemediationIssue, document: Any
     ) -> Optional[str]:
         """Get a rule-based fix for an issue."""
+        if self.config.use_supplied_fixes:
+            # Structural handlers choose their own operations from metadata;
+            # they cannot promise to apply arbitrary reviewed text verbatim.
+            if issue.category not in {
+                IssueCategory.TITLE,
+                IssueCategory.ALT_TEXT,
+                IssueCategory.LINK,
+            }:
+                return None
+            return issue.metadata.get("fixed_content")
         if issue.category == IssueCategory.ALT_TEXT:
             # Decorative images get empty alt text per WCAG 1.1.1
             if issue.metadata.get("is_decorative"):
@@ -895,41 +906,9 @@ Generate only the link text, nothing else:"""
         return self._generate_link_text_from_url(url)
 
     def _verify_fixes(self, output_path: str) -> VerificationResult:
-        """Verify that fixes were applied correctly."""
-        try:
-            # Reload the document and check
-            verified_doc = Document(output_path)
+        from .office_verification import verify_office_output
 
-            verified_count = 0
-            for fixed in self.result.fixed_issues:
-                if fixed.category == IssueCategory.HEADING:
-                    # Verify heading was applied
-                    para_index = self._get_para_index_from_fixed(fixed)
-                    if para_index and para_index < len(verified_doc.paragraphs):
-                        para = verified_doc.paragraphs[para_index]
-                        if "Heading" in _style_name(para):
-                            verified_count += 1
-                            fixed.verification_passed = True
-                        else:
-                            fixed.verification_passed = False
-                            self.result.warnings.append(
-                                f"Heading fix may not have applied at paragraph {para_index}"
-                            )
-                else:
-                    # Assume other fixes passed
-                    verified_count += 1
-
-            logger.info(
-                f"Verified {verified_count}/{len(self.result.fixed_issues)} fixes"
-            )
-
-        except Exception as e:
-            logger.warning(f"Fix verification failed: {e}")
-            self.result.warnings.append(f"Could not verify fixes: {e}")
-
-        # Honour the base contract: summarise via the base implementation,
-        # which also records verification_result on self.result.
-        return super()._verify_fixes(output_path)
+        return verify_office_output(self, output_path)
 
     def _get_para_index_from_fixed(self, fixed) -> Optional[int]:
         """Extract paragraph index from fixed issue location."""
@@ -944,32 +923,6 @@ Generate only the link text, nothing else:"""
         return None
 
     def _calculate_scores(self) -> None:
-        """Calculate compliance scores for the remediation."""
-        # Simple calculation based on fixes made
-        if self.result.total_issues > 0:
-            # Estimate original score
-            # Each issue deducts based on severity
-            severity_penalties = {
-                IssueSeverity.CRITICAL: 15,
-                IssueSeverity.HIGH: 10,
-                IssueSeverity.MEDIUM: 5,
-                IssueSeverity.LOW: 2,
-            }
+        from .office_verification import measured_office_scores
 
-            total_penalty = sum(
-                severity_penalties.get(issue.severity, 5) for issue in self.issues
-            )
-            self.result.original_compliance_score = max(0, 100 - total_penalty)
-
-            # Calculate remediated score
-            fixed_penalty_reduction = sum(
-                severity_penalties.get(fixed.severity, 5)
-                for fixed in self.result.fixed_issues
-            )
-            remaining_penalty = total_penalty - fixed_penalty_reduction
-            self.result.remediated_compliance_score = max(0, 100 - remaining_penalty)
-
-            self.result.improvement = (
-                self.result.remediated_compliance_score
-                - self.result.original_compliance_score
-            )
+        measured_office_scores(self)

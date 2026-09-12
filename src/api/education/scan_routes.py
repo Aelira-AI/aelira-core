@@ -15,6 +15,7 @@ from ...education.pptx_processor import PowerPointProcessor
 from ...education.docx_processor import DocxProcessor
 from ...education.xlsx_processor import XlsxProcessor
 from ...education.cvd_metrics import serialize_cvd_analysis
+from ...education.office_findings import persisted_office_findings
 from ...education.latex_processor import LaTeXProcessor
 from ...middleware.quota import increment_usage, require_feature
 from ._shared import (
@@ -379,70 +380,10 @@ def process_pptx_background(
         processing_time = int((time.time() - start_time) * 1000)
         logger.info(f"[BACKGROUND] PPTX processed in {processing_time}ms: {filename}")
 
-        # Aggregate issues from all slides
-        all_issues = []
-        critical = high = medium = low = 0
-
-        for slide in result.slides:
-            for issue in slide.contrast_issues:
-                severity = "high" if issue.contrast_ratio < 3.0 else "medium"
-                issue_obj = {
-                    "slide": slide.slide_number,
-                    "type": "contrast",
-                    "severity": severity,
-                    **issue.model_dump(),
-                }
-                all_issues.append(issue_obj)
-                if severity == "high":
-                    high += 1
-                else:
-                    medium += 1
-
-            for issue in slide.alt_text_issues:
-                issue_obj = {
-                    "slide": slide.slide_number,
-                    "type": "alt_text",
-                    "severity": "critical",
-                    **issue.model_dump(),
-                }
-                all_issues.append(issue_obj)
-                critical += 1
-
-            # Slide title issues -> Medium severity (WCAG 1.3.1)
-            for issue in slide.title_issues:
-                medium += 1
-                all_issues.append(
-                    {
-                        "slide": slide.slide_number,
-                        "type": "title",
-                        "severity": "medium",
-                        "issue_type": issue.issue_type,
-                        "existing_title": issue.existing_title,
-                        "suggested_title": issue.suggested_title,
-                        "suggested_fix": issue.suggested_fix,
-                        "rule": "WCAG 1.3.1",
-                        "criterion": "1.3.1",
-                    }
-                )
-
-            # Image of text issues -> Medium severity (WCAG 1.4.5)
-            for issue in slide.image_of_text_issues:
-                medium += 1
-                all_issues.append(
-                    {
-                        "slide": slide.slide_number,
-                        "type": "image_of_text",
-                        "severity": "medium",
-                        "shape_id": issue.shape_id,
-                        "shape_name": issue.shape_name,
-                        "detected_text": issue.detected_text,
-                        "text_length": issue.text_length,
-                        "confidence": issue.confidence,
-                        "suggested_fix": issue.suggested_fix,
-                        "rule": "WCAG 1.4.5",
-                        "criterion": "1.4.5",
-                    }
-                )
+        all_issues, severity_counts = persisted_office_findings(result)
+        critical, high, medium, low = (
+            severity_counts[level] for level in ("critical", "high", "medium", "low")
+        )
 
         # Store slide structure
         structure = {
@@ -692,143 +633,10 @@ def process_docx_background(
         processing_time = int((time.time() - start_time) * 1000)
         logger.info(f"[BACKGROUND] DOCX processed in {processing_time}ms: {filename}")
 
-        # Aggregate all issues
-        all_issues = []
-        critical = high = medium = low = 0
-
-        # Heading issues -> Medium severity
-        for issue in result.heading_issues:
-            medium += 1
-            all_issues.append(
-                {
-                    "type": "heading",
-                    "severity": "medium",
-                    "paragraph_index": issue.paragraph_index,
-                    "text": issue.text,
-                    "issue_type": issue.issue_type,
-                    "current_level": issue.current_level,
-                    "expected_level": issue.expected_level,
-                    "suggested_fix": issue.suggested_fix,
-                    "rule": "WCAG 1.3.1",
-                    "criterion": "1.3.1",
-                }
-            )
-
-        # Image issues -> High severity
-        for issue in result.image_issues:
-            high += 1
-            all_issues.append(
-                {
-                    "type": "image",
-                    "severity": "high",
-                    "paragraph_index": issue.paragraph_index,
-                    "image_index": issue.image_index,
-                    "has_alt_text": issue.has_alt_text,
-                    "existing_alt_text": issue.existing_alt_text,
-                    "suggested_alt_text": issue.suggested_alt_text,
-                    "detected_image_type": issue.detected_image_type,
-                    "is_decorative": issue.is_decorative,
-                    "is_chart": issue.is_chart,
-                    "detailed_description": issue.detailed_description,
-                    "rule": "WCAG 1.1.1",
-                    "criterion": "1.1.1",
-                }
-            )
-
-        # Table issues -> Medium severity
-        for issue in result.table_issues:
-            medium += 1
-            all_issues.append(
-                {
-                    "type": "table",
-                    "severity": "medium",
-                    "table_index": issue.table_index,
-                    "issue_type": issue.issue_type,
-                    "row_count": issue.row_count,
-                    "column_count": issue.column_count,
-                    "suggested_fix": issue.suggested_fix,
-                    "rule": "WCAG 1.3.1",
-                    "criterion": "1.3.1",
-                }
-            )
-
-        # List issues -> Low severity
-        for issue in result.list_issues:
-            low += 1
-            all_issues.append(
-                {
-                    "type": "list",
-                    "severity": "low",
-                    "paragraph_index": issue.paragraph_index,
-                    "text": issue.text,
-                    "issue_type": issue.issue_type,
-                    "rule": "WCAG 1.3.1",
-                    "criterion": "1.3.1",
-                }
-            )
-
-        # Link issues -> Medium severity
-        for issue in result.link_issues:
-            medium += 1
-            all_issues.append(
-                {
-                    "type": "link",
-                    "severity": "medium",
-                    "paragraph_index": issue.paragraph_index,
-                    "link_text": issue.link_text,
-                    "link_url": issue.link_url,
-                    "issue_type": issue.issue_type,
-                    "rule": "WCAG 2.4.4",
-                    "criterion": "2.4.4",
-                }
-            )
-
-        # Language issues -> High severity (WCAG 3.1.1)
-        for issue in result.language_issues:
-            high += 1
-            all_issues.append(
-                {
-                    "type": "language",
-                    "severity": "high",
-                    "issue_type": issue.issue_type,
-                    "suggested_fix": issue.suggested_fix,
-                    "rule": "WCAG 3.1.1",
-                    "criterion": "3.1.1",
-                }
-            )
-
-        # Title issues -> Medium severity (WCAG 2.4.2)
-        for issue in result.title_issues:
-            medium += 1
-            all_issues.append(
-                {
-                    "type": "title",
-                    "severity": "medium",
-                    "issue_type": issue.issue_type,
-                    "existing_title": issue.existing_title,
-                    "suggested_title": issue.suggested_title,
-                    "suggested_fix": issue.suggested_fix,
-                    "rule": "WCAG 2.4.2",
-                    "criterion": "2.4.2",
-                }
-            )
-
-        # Font size issues -> Medium severity (WCAG 1.4.4)
-        for issue in result.font_size_issues:
-            medium += 1
-            all_issues.append(
-                {
-                    "type": "font_size",
-                    "severity": "medium",
-                    "paragraph_index": issue.paragraph_index,
-                    "text_preview": issue.text_preview,
-                    "font_size_pt": issue.font_size_pt,
-                    "issue_type": issue.issue_type,
-                    "suggested_fix": issue.suggested_fix,
-                    "rule": "WCAG 1.4.4",
-                    "criterion": "1.4.4",
-                }
-            )
+        all_issues, severity_counts = persisted_office_findings(result)
+        critical, high, medium, low = (
+            severity_counts[level] for level in ("critical", "high", "medium", "low")
+        )
 
         # Store document structure
         structure = {
@@ -1079,158 +887,10 @@ def process_xlsx_background(
         processing_time = int((time.time() - start_time) * 1000)
         logger.info(f"[BACKGROUND] XLSX processed in {processing_time}ms: {filename}")
 
-        # Aggregate all issues
-        all_issues = []
-        critical = high = medium = low = 0
-
-        # Sheet name issues -> Low severity
-        for issue in result.sheet_name_issues:
-            low += 1
-            all_issues.append(
-                {
-                    "type": "sheet_name",
-                    "severity": "low",
-                    "sheet_name": issue.sheet_name,
-                    "sheet_index": issue.sheet_index,
-                    "issue_type": issue.issue_type,
-                    "suggested_fix": issue.suggested_fix,
-                    "rule": "Best Practice",
-                    "criterion": "BP",
-                }
-            )
-
-        # Per-sheet issues
-        for sheet in result.sheets:
-            # Table header issues -> High severity
-            for issue in sheet.table_header_issues:
-                high += 1
-                all_issues.append(
-                    {
-                        "type": "table_header",
-                        "severity": "high",
-                        "sheet_name": issue.sheet_name,
-                        "table_range": issue.table_range,
-                        "issue_type": issue.issue_type,
-                        "row_count": issue.row_count,
-                        "column_count": issue.column_count,
-                        "suggested_fix": issue.suggested_fix,
-                        "rule": "WCAG 1.3.1",
-                        "criterion": "1.3.1",
-                    }
-                )
-
-            # Chart issues -> High severity
-            for issue in sheet.chart_issues:
-                high += 1
-                all_issues.append(
-                    {
-                        "type": "chart",
-                        "severity": "high",
-                        "sheet_name": issue.sheet_name,
-                        "chart_index": issue.chart_index,
-                        "chart_type": issue.chart_type,
-                        "has_alt_text": issue.has_alt_text,
-                        "existing_alt_text": issue.existing_alt_text,
-                        "suggested_alt_text": issue.suggested_alt_text,
-                        "detailed_description": issue.detailed_description,
-                        "data_summary": issue.data_summary,
-                        "rule": "WCAG 1.1.1",
-                        "criterion": "1.1.1",
-                    }
-                )
-
-            # Image issues -> High severity
-            for issue in sheet.image_issues:
-                high += 1
-                all_issues.append(
-                    {
-                        "type": "image",
-                        "severity": "high",
-                        "sheet_name": issue.sheet_name,
-                        "image_index": issue.image_index,
-                        "has_alt_text": issue.has_alt_text,
-                        "existing_alt_text": issue.existing_alt_text,
-                        "suggested_alt_text": issue.suggested_alt_text,
-                        "detected_image_type": issue.detected_image_type,
-                        "is_decorative": issue.is_decorative,
-                        "rule": "WCAG 1.1.1",
-                        "criterion": "1.1.1",
-                    }
-                )
-
-            # Merge issues -> Low severity
-            for issue in sheet.merge_issues:
-                low += 1
-                all_issues.append(
-                    {
-                        "type": "merge",
-                        "severity": "low",
-                        "sheet_name": issue.sheet_name,
-                        "merge_range": issue.merge_range,
-                        "rows_merged": issue.rows_merged,
-                        "cols_merged": issue.cols_merged,
-                        "issue_type": issue.issue_type,
-                        "suggested_fix": issue.suggested_fix,
-                        "rule": "Best Practice",
-                        "criterion": "BP",
-                    }
-                )
-
-            # Color issues -> Medium severity
-            for issue in sheet.color_issues:
-                medium += 1
-                all_issues.append(
-                    {
-                        "type": "color",
-                        "severity": "medium",
-                        "sheet_name": issue.sheet_name,
-                        "cell_range": issue.cell_range,
-                        "issue_type": issue.issue_type,
-                        "colors_used": issue.colors_used,
-                        "suggested_fix": issue.suggested_fix,
-                        "rule": "WCAG 1.4.1",
-                        "criterion": "1.4.1",
-                    }
-                )
-
-            # Navigation issues -> Low severity
-            for issue in sheet.navigation_issues:
-                low += 1
-                all_issues.append(
-                    {
-                        "type": "navigation",
-                        "severity": "low",
-                        "sheet_name": issue.sheet_name,
-                        "issue_type": issue.issue_type,
-                        "suggested_fix": issue.suggested_fix,
-                        "rule": "Best Practice",
-                        "criterion": "BP",
-                    }
-                )
-
-            # Contrast issues -> High/Medium severity (WCAG 1.4.3)
-            for issue in sheet.contrast_issues:
-                severity = "high" if issue.contrast_ratio < 3.0 else "medium"
-                if severity == "high":
-                    high += 1
-                else:
-                    medium += 1
-                all_issues.append(
-                    {
-                        "type": "contrast",
-                        "severity": severity,
-                        "sheet_name": issue.sheet_name,
-                        "cell_reference": issue.cell_reference,
-                        "text_preview": issue.text_preview,
-                        "foreground_color": issue.foreground_color,
-                        "background_color": issue.background_color,
-                        "contrast_ratio": issue.contrast_ratio,
-                        "wcag_aa_pass": issue.wcag_aa_pass,
-                        "suggested_fix": issue.suggested_fix,
-                        "rule": "WCAG 1.4.3",
-                        "criterion": "1.4.3",
-                    }
-                )
+        all_issues, severity_counts = persisted_office_findings(result)
+        critical, high, medium, low = (
+            severity_counts[level] for level in ("critical", "high", "medium", "low")
+        )
 
         # Store spreadsheet structure
         structure = {
@@ -1500,14 +1160,15 @@ def process_latex_background(
             f"[BACKGROUND] Found {len(accessibility_issues)} accessibility issues"
         )
 
-        # Aggregate issues from equations AND accessibility checks
+        # Source findings grade the input; conversion diagnostics describe output.
         all_issues = []
+        conversion_issues = []
         critical = high = medium = low = 0
 
         # Add equation conversion issues
         for eq in result.equations:
             if not eq.conversion_success:
-                all_issues.append(
+                conversion_issues.append(
                     {
                         "equation_id": eq.equation_id,
                         "type": "conversion_failed",
@@ -1518,9 +1179,8 @@ def process_latex_background(
                         "recommendation": "Check LaTeX syntax for errors.",
                     }
                 )
-                high += 1
             elif not eq.wcag_compliant:
-                all_issues.append(
+                conversion_issues.append(
                     {
                         "equation_id": eq.equation_id,
                         "type": "wcag_noncompliant",
@@ -1531,7 +1191,6 @@ def process_latex_background(
                         "recommendation": "Ensure equation has proper ARIA labeling.",
                     }
                 )
-                medium += 1
 
         # Add accessibility issues (missing alt text, captions, metadata, etc.)
         severity_map = {
@@ -1567,6 +1226,8 @@ def process_latex_background(
             "total_equations": result.total_equations,
             "successful_conversions": result.successful_conversions,
             "failed_conversions": result.failed_conversions,
+            "conversion_success_rate": result.conversion_success_rate,
+            "conversion_issues": conversion_issues,
             "accessibility_issues_found": len(accessibility_issues),
             "equations": [
                 {
@@ -1580,10 +1241,7 @@ def process_latex_background(
             ],
         }
 
-        # Calculate compliance score based on ALL issues (not just equation conversion)
-        # Weight: critical=10, high=5, medium=2, low=1
-        total_penalty = (critical * 10) + (high * 5) + (medium * 2) + (low * 1)
-        compliance_score = max(0.0, 100.0 - min(total_penalty, 100.0))
+        compliance_score = result.compliance_score
 
         logger.info(
             f"[BACKGROUND] LaTeX compliance: {compliance_score:.1f}% "

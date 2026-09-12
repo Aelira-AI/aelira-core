@@ -1,6 +1,7 @@
 """Table accessibility checking for PDFs."""
 
 import logging
+from .completeness import record_incomplete_check
 from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF for fitz-based table extraction fallback
@@ -86,6 +87,7 @@ class TableAccessibilityChecker:
                             results.append((table, header_detection, fix))
 
             except Exception as e:
+                record_incomplete_check("table_checker.check")
                 logger.warning(
                     f"[TableAccessibilityChecker] Error analyzing tables in {file_path}: {e}"
                 )
@@ -447,6 +449,7 @@ class TableAccessibilityChecker:
                         )
 
         except Exception as e:
+            record_incomplete_check("table_checker._extract_tables_with_pdfplumber")
             logger.warning(
                 f"[TableAccessibilityChecker] pdfplumber table extraction failed: {e}"
             )
@@ -475,6 +478,7 @@ class TableAccessibilityChecker:
                 def _has_th(elem, depth=0):
                     """Check if an element contains TH tags (for Table validation)."""
                     if depth > 10:
+                        record_incomplete_check("table_checker.structure_depth_limit")
                         return False
                     try:
                         s = str(elem.get(Name.S, "")) if hasattr(elem, "get") else ""
@@ -488,6 +492,7 @@ class TableAccessibilityChecker:
                                 if hasattr(child, "get") and _has_th(child, depth + 1):
                                     return True
                     except Exception:
+                        record_incomplete_check("table_checker._has_th")
                         pass
                     return False
 
@@ -495,6 +500,7 @@ class TableAccessibilityChecker:
                     """Walk the tree, counting Table elements with TH children."""
                     nonlocal tagged_tables
                     if depth > 30:
+                        record_incomplete_check("table_checker.structure_depth_limit")
                         return
                     try:
                         if not hasattr(elem, "get"):
@@ -511,6 +517,7 @@ class TableAccessibilityChecker:
                             for child in children:
                                 _walk(child, depth + 1)
                     except Exception:
+                        record_incomplete_check("table_checker._walk")
                         pass
 
                 kids = struct_root[Name.K]
@@ -522,6 +529,7 @@ class TableAccessibilityChecker:
 
                 return tagged_tables
         except Exception as e:
+            record_incomplete_check("table_checker._walk")
             logger.debug(
                 f"[TableAccessibilityChecker] Structure tree table check failed: {e}"
             )

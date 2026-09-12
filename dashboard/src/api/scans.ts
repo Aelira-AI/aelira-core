@@ -163,6 +163,14 @@ export interface RemediationJobStart {
   status_url: string;
 }
 
+export interface RemediationScoreMeasurement {
+  method_version: string;
+  source_sha256: string;
+  output_sha256: string;
+  source_score: number;
+  output_score: number;
+}
+
 export interface RemediationJobStatus extends RemediationJobStart {
   progress: number;
   progress_message: string | null;
@@ -179,6 +187,11 @@ export interface RemediationJobStatus extends RemediationJobStart {
   total_issues: number | null;
   original_score: number | null;
   remediated_score: number | null;
+  score_verified?: boolean;
+  score_provenance?: string | null;
+  score_verification_reason?: string | null;
+  score_measurement?: RemediationScoreMeasurement | null;
+  human_review_required?: boolean;
   improvement: number | null;
   artifact_id: string | null;
   download_available: boolean;

@@ -68,6 +68,31 @@ def _principal():
     )
 
 
+@pytest.mark.asyncio
+async def test_diff_does_not_convert_legacy_perfect_score_into_verified_fixes():
+    from src.api.brightspace_routes import get_content_diff
+
+    cloud_file = _cloud_file(
+        content_body="<p>Source</p>",
+        remediated_body="<p>Candidate</p>",
+        last_scan_id="scan-1",
+        last_compliance_score=100.0,
+        remediated_issues_fixed=None,
+        remediated_issues_remaining=None,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        issues=[{"id": "image-alt"}, {"id": "label"}]
+    )
+    with patch(
+        "src.api.brightspace_routes._get_authorized_cloud_file_or_404",
+        return_value=cloud_file,
+    ):
+        result = await get_content_diff(cloud_file.id, _principal(), db)
+    assert result["issues_fixed"] == 0
+    assert result["issues_remaining"] == 2
+
+
 def test_artifact_backed_document_is_approval_eligible_without_html_body():
     from src.api.brightspace_routes import _brightspace_approval_eligibility
 

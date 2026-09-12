@@ -51,8 +51,8 @@ describe('persisted remediation issue outcomes', () => {
 
     assert.deepEqual(rows.map((row) => row.fix?.id), ['heading', 'title', 'pdfua']);
     assert.equal(outcomePresentation(rows[0].fix).label, 'Fix proposed · review required');
-    assert.equal(outcomePresentation(rows[1].fix).label, 'Fixed');
-    assert.equal(outcomePresentation(rows[2].fix).label, 'Fixed');
+    assert.equal(outcomePresentation(rows[1].fix).label, 'Change applied · verification not reported');
+    assert.equal(outcomePresentation(rows[2].fix).label, 'Change applied · verification not reported');
   });
 
   it('consumes duplicate signatures one-to-one without inventing another match', () => {

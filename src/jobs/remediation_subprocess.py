@@ -197,7 +197,8 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
     lms_binding = request.get("lms_binding")
     ai_client, alt_text_client = _purpose_clients(lms_binding)
     authoritative = isinstance(lms_binding, dict)
-    use_ai = bool(options.get("use_ai", True))
+    approved_fixes_only = bool(options.get("approved_fixes_only", False))
+    use_ai = bool(options.get("use_ai", True)) and not approved_fixes_only
     if not authoritative and use_ai:
         workspace_id = request.get("workspace_id")
         if not isinstance(workspace_id, str) or not workspace_id:
@@ -207,9 +208,12 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
         ai_client = workspace_provider_runtime(workspace_id)
         alt_text_client = ai_client
     config = RemediationConfig(
-        use_ai=use_ai if not authoritative else ai_client is not None,
+        use_ai=(use_ai if not authoritative else ai_client is not None)
+        and not approved_fixes_only,
+        use_supplied_fixes=approved_fixes_only,
         allow_legacy_nested_ai=False,
-        fix_alt_text=(not authoritative or alt_text_client is not None),
+        fix_alt_text=approved_fixes_only
+        or (not authoritative or alt_text_client is not None),
         verify_fixes=True,
         create_backup=False,
         output_directory=str(work_dir),
@@ -225,6 +229,20 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
     config.include_original_in_zip = bool(options.get("include_original_in_zip", True))
     scan_type = str(request.get("scan_type", "")).upper()
     issues = _safe_issues(request.get("issues"))
+    office_type = {
+        "WORD": "word",
+        "DOCX": "word",
+        "POWERPOINT": "powerpoint",
+        "PPTX": "powerpoint",
+        "EXCEL": "excel",
+        "XLSX": "excel",
+    }.get(scan_type)
+    if office_type is not None:
+        from src.education.remediation.office_legacy import recover_office_findings
+
+        issues = recover_office_findings(
+            office_type, source, issues, approved_fixes_only=approved_fixes_only
+        )
 
     if scan_type == "PDF" or (scan_type == "LATEX" and source.suffix.lower() == ".pdf"):
         from src.education.remediation.pdf_remediator import PdfRemediator as cls
@@ -271,9 +289,19 @@ def _run_child(request: dict[str, Any]) -> dict[str, Any]:
             "skipped_count": result.skipped_count,
             "original_compliance_score": result.original_compliance_score,
             "remediated_compliance_score": result.remediated_compliance_score,
+            "score_provenance": getattr(result, "score_provenance", None),
+            "score_measurement": getattr(result, "score_measurement", None),
+            "score_verification_reason": getattr(
+                result, "score_verification_reason", None
+            ),
             "compliance_improvement": result.improvement,
             "duration_seconds": result.duration_seconds,
             "verification_passed": getattr(result, "verification_passed", False),
+            "human_review_required": not getattr(result, "verification_passed", False)
+            or any(fix.needs_review for fix in result.fixed_issues)
+            or result.manual_count > 0
+            or result.failed_count > 0
+            or result.skipped_count > 0,
             "fixed_issues": [_json_record(item) for item in result.fixed_issues],
             "manual_issues": [_json_record(item) for item in result.manual_issues],
             "failed_issues": [_json_record(item) for item in result.failed_issues],

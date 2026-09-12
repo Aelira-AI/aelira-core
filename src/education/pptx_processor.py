@@ -16,12 +16,14 @@ from pydantic import BaseModel, computed_field
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 import os
+from .scan_completeness import record_incomplete_check
 import tempfile
 from pathlib import Path
 
 from src.utils.async_helpers import run_async_from_sync
 from PIL import Image
 from io import BytesIO
+from .office_findings import office_issue_metadata
 
 
 class ContrastIssue(BaseModel):
@@ -182,6 +184,9 @@ class PowerPointProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"contrast_{len(all_issues)}",
+                        "metadata": office_issue_metadata(
+                            issue, "contrast", slide_index=slide.slide_number - 1
+                        ),
                         "category": "contrast",
                         "severity": "high" if issue.contrast_ratio < 3.0 else "medium",
                         "title": f"Low Contrast ({issue.contrast_ratio:.1f}:1)",
@@ -216,6 +221,9 @@ class PowerPointProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"alt_text_{len(all_issues)}",
+                        "metadata": office_issue_metadata(
+                            issue, "alt_text", slide_index=slide.slide_number - 1
+                        ),
                         "category": "alt_text",
                         "severity": severity,
                         "title": title,
@@ -244,6 +252,9 @@ class PowerPointProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"title_{len(all_issues)}",
+                        "metadata": office_issue_metadata(
+                            issue, "title", slide_index=slide.slide_number - 1
+                        ),
                         "category": "structure",
                         "severity": "high",
                         "title": issue.issue_type.replace("_", " ").title(),
@@ -252,7 +263,7 @@ class PowerPointProcessingResult(BaseModel):
                         "wcag_criterion": "WCAG 1.3.1",
                         "suggested_fix": issue.suggested_fix,
                         "slide_index": slide.slide_number - 1,
-                        "issue_type": issue.issue_type,
+                        "scanner_issue_type": issue.issue_type,
                     }
                 )
 
@@ -261,12 +272,59 @@ class PowerPointProcessingResult(BaseModel):
                 all_issues.append(
                     {
                         "id": f"image_text_{len(all_issues)}",
+                        "metadata": office_issue_metadata(
+                            issue, "image_of_text", slide_index=slide.slide_number - 1
+                        ),
                         "category": "image_of_text",
                         "severity": "medium",
                         "title": "Image Contains Text",
                         "description": f"Detected {issue.text_length} characters of text in image",
                         "location": f"{slide_loc}, Shape '{issue.shape_name}'",
                         "wcag_criterion": "WCAG 1.4.5",
+                        "suggested_fix": issue.suggested_fix,
+                    }
+                )
+
+            for issue in slide.animation_issues:
+                all_issues.append(
+                    {
+                        "id": f"animation_{len(all_issues)}",
+                        "metadata": office_issue_metadata(
+                            issue, "animation", slide_index=slide.slide_number - 1
+                        ),
+                        "category": "other",
+                        "severity": (
+                            "critical" if "rapid_flash" in issue.issues else "medium"
+                        ),
+                        "title": "Animation Accessibility",
+                        "description": ", ".join(issue.issues),
+                        "location": f"{slide_loc}, Animation {issue.animation_index + 1}",
+                        "wcag_criterion": (
+                            "WCAG 2.3.1"
+                            if "rapid_flash" in issue.issues
+                            else "WCAG 2.2.2"
+                        ),
+                        "suggested_fix": issue.suggested_fix,
+                    }
+                )
+
+            for issue in slide.embedded_media_issues:
+                all_issues.append(
+                    {
+                        "id": f"embedded_media_{len(all_issues)}",
+                        "metadata": office_issue_metadata(
+                            issue, "embedded_media", slide_index=slide.slide_number - 1
+                        ),
+                        "category": "other",
+                        "severity": "high",
+                        "title": issue.issue_type.replace("_", " ").title(),
+                        "description": f"Embedded {issue.media_type}: {issue.issue_type.replace('_', ' ')}",
+                        "location": f"{slide_loc}, Media {issue.media_index + 1}",
+                        "wcag_criterion": {
+                            "missing_captions": "WCAG 1.2.2",
+                            "missing_transcript": "WCAG 1.2.1",
+                            "missing_audio_description": "WCAG 1.2.3",
+                        }.get(issue.issue_type, "WCAG 1.2"),
                         "suggested_fix": issue.suggested_fix,
                     }
                 )
@@ -286,10 +344,12 @@ class PowerPointProcessor:
         progress_callback: callable = None,
         llm_client=None,
         visual_analysis_recorder=None,
+        require_complete_scan: bool = True,
     ):
         self.wcag_aa_ratio = 4.5  # WCAG 2.1 AA for normal text
         self.wcag_aaa_ratio = 7.0  # WCAG 2.1 AAA for normal text
         self.generate_alt_text = generate_alt_text
+        self.require_complete_scan = require_complete_scan
         self.validate_alt_text = (
             validate_alt_text  # Validate existing alt text accuracy
         )
@@ -351,6 +411,13 @@ class PowerPointProcessor:
                 self.detect_images_of_text = False
 
     def process_pptx(self, file_path: str) -> PowerPointProcessingResult:
+        """Measure the presentation only when its required checks complete."""
+        from .scan_completeness import require_complete_scan
+
+        with require_complete_scan(self.require_complete_scan):
+            return self._process_pptx(file_path)
+
+    def _process_pptx(self, file_path: str) -> PowerPointProcessingResult:
         """
         Process a PowerPoint file and check accessibility
 
@@ -455,9 +522,6 @@ class PowerPointProcessor:
 
         # Calculate summary and compliance score
         summary = self._calculate_summary(slides_issues)
-        compliance_score = self._calculate_compliance_score(
-            summary, total_shapes, total_images
-        )
         remediation_suggestions = self._generate_remediation_suggestions(summary)
         cvd_analysis = None
         if self.simulate_color_blindness:
@@ -468,7 +532,7 @@ class PowerPointProcessor:
                 if contrast_issue.color_blindness_issues
             ]
 
-        return PowerPointProcessingResult(
+        result = PowerPointProcessingResult(
             file_path=file_path,
             file_name=file_name,
             total_slides=len(prs.slides),
@@ -476,10 +540,17 @@ class PowerPointProcessor:
             total_images=total_images,
             slides=slides_issues,
             summary=summary,
-            compliance_score=compliance_score,
+            compliance_score=0.0,
             remediation_suggestions=remediation_suggestions,
             cvd_analysis=cvd_analysis,
         )
+
+        from .compliance_scoring import calculate_compliance_score
+
+        result.compliance_score = calculate_compliance_score(
+            result.issues, total_elements=total_shapes + total_images
+        ).score
+        return result
 
     def _get_slide_title(self, slide) -> Optional[str]:
         """Extract title from slide if present"""
@@ -487,6 +558,7 @@ class PowerPointProcessor:
             if slide.shapes.title:
                 return slide.shapes.title.text
         except Exception:
+            record_incomplete_check("pptx._get_slide_title")
             pass
         return None
 
@@ -524,6 +596,7 @@ class PowerPointProcessor:
             try:
                 has_title_placeholder = slide.shapes.title is not None
             except Exception:
+                record_incomplete_check("pptx._check_slide_title")
                 pass
 
             if has_title_placeholder and (not slide_title or not slide_title.strip()):
@@ -739,6 +812,7 @@ class PowerPointProcessor:
                 image.save(tmp, format="PNG")
                 return tmp.name
         except Exception as e:
+            record_incomplete_check("pptx._extract_image_from_shape")
             print(f"[PowerPointProcessor] Failed to extract image: {e}")
             return None
 
@@ -843,6 +917,7 @@ class PowerPointProcessor:
                     )
 
             except Exception as e:
+                record_incomplete_check("pptx._check_image_of_text")
                 print(f"[PowerPointProcessor] OCR failed for image: {e}")
                 # Clean up temp file on error
                 try:
@@ -1017,9 +1092,11 @@ class PowerPointProcessor:
                                         )
                                         anim_index += 1
                                 except ValueError:
+                                    record_incomplete_check("pptx._analyze_animations")
                                     pass
 
         except Exception as e:
+            record_incomplete_check("pptx._analyze_animations")
             print(f"[PowerPointProcessor] Animation analysis failed: {e}")
 
         return issues
@@ -1049,6 +1126,7 @@ class PowerPointProcessor:
                 if dur.isdigit():
                     return int(dur)
             except (ValueError, AttributeError):
+                record_incomplete_check("pptx._get_animation_duration")
                 pass
 
         # Check child cTn (common time node) element
@@ -1085,6 +1163,7 @@ class PowerPointProcessor:
                     try:
                         return int(repeat)
                     except ValueError:
+                        record_incomplete_check("pptx._get_repeat_count")
                         pass
         return None
 
@@ -1107,6 +1186,9 @@ class PowerPointProcessor:
                                     if str(shape.shape_id) == shape_id:
                                         return shape.name
                             except Exception:
+                                record_incomplete_check(
+                                    "pptx._get_animation_target_name"
+                                )
                                 pass
                             return f"Shape {shape_id}"
         return None
@@ -1356,6 +1438,7 @@ class PowerPointProcessor:
                         )
 
         except Exception as e:
+            record_incomplete_check("pptx._check_embedded_media")
             print(f"[PowerPointProcessor] Embedded media check failed: {e}")
 
         return issues
@@ -1420,6 +1503,7 @@ class PowerPointProcessor:
                         return True
 
         except Exception as e:
+            record_incomplete_check("pptx._check_speaker_notes_for_transcript")
             print(f"[PowerPointProcessor] Notes check failed: {e}")
 
         return False
@@ -1468,6 +1552,7 @@ class PowerPointProcessor:
                         return True
 
         except Exception as e:
+            record_incomplete_check("pptx._check_for_captions")
             print(f"[PowerPointProcessor] Caption check failed: {e}")
 
         return False
@@ -1725,6 +1810,7 @@ class PowerPointProcessor:
                     )
 
         except Exception as e:
+            record_incomplete_check("pptx._check_alt_text")
             print(f"[PowerPointProcessor] Error checking alt text: {e}")
         return None
 
@@ -1783,6 +1869,7 @@ class PowerPointProcessor:
                             for issue in cvd_analysis.issues
                         ]
                 except Exception as e:
+                    record_incomplete_check("pptx._check_text_contrast")
                     print(
                         f"[PowerPointProcessor] Color blindness simulation failed: {e}"
                     )
@@ -1804,6 +1891,7 @@ class PowerPointProcessor:
                     color_blindness_issues=cvd_issues,
                 )
         except Exception:
+            record_incomplete_check("pptx._check_text_contrast")
             pass
         return None
 
@@ -1814,6 +1902,7 @@ class PowerPointProcessor:
                 if shape.fill.fore_color.rgb:
                     return self._rgb_to_hex(shape.fill.fore_color.rgb)
         except Exception:
+            record_incomplete_check("pptx._get_fill_color")
             pass
         return None
 
@@ -1884,16 +1973,22 @@ class PowerPointProcessor:
         image_of_text_count = sum(
             len(slide.image_of_text_issues) for slide in slides_issues
         )
+        animation_count = sum(len(slide.animation_issues) for slide in slides_issues)
+        media_count = sum(len(slide.embedded_media_issues) for slide in slides_issues)
 
         return {
             "contrast_issues": contrast_count,
             "alt_text_issues": alt_text_count,
             "title_issues": title_count,
             "image_of_text_issues": image_of_text_count,
+            "animation_issues": animation_count,
+            "embedded_media_issues": media_count,
             "total_issues": contrast_count
             + alt_text_count
             + title_count
-            + image_of_text_count,
+            + image_of_text_count
+            + animation_count
+            + media_count,
             "slides_with_issues": sum(
                 1 for slide in slides_issues if slide.total_issues > 0
             ),

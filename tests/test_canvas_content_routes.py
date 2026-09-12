@@ -644,10 +644,24 @@ class TestContentDiff:
             remediated_issues_fixed=3,
             remediated_issues_remaining=1,
         )
+        cf.remediated_compliance_score = 75.0
         scan_result = MagicMock()
         scan_result.issues = [
             {"id": "image-alt", "impact": "critical", "nodes": [{}, {}, {}, {}]}
         ]
+        from src.education.canvas_score_verification import store_canvas_verification
+
+        store_canvas_verification(
+            cf,
+            scan_result.issues,
+            {
+                "score": 75.0,
+                "source_score": 50.0,
+                "fixed": 3,
+                "remaining": 1,
+                "introduced": 0,
+            },
+        )
         mock_session.query.return_value.filter.return_value.first.side_effect = [
             cf,
             scan_result,
@@ -687,7 +701,7 @@ class TestContentDiff:
         data = response.json()
         assert data["issues_verified_by_rescan"] is False
         assert data["issues_fixed"] == 0
-        assert data["issues_remaining"] == 1
+        assert data["issues_remaining"] == 2
 
     def test_diff_empty_issues_when_no_scan_results(
         self, client, mock_session, override_deps

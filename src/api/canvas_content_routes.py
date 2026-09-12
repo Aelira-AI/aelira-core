@@ -61,6 +61,11 @@ from ..db.models import (
     ScanResult,
 )
 from ..education.canvas_content_scanner import CanvasContentScanner
+from ..education.canvas_score_verification import (
+    count_nodes_by_rule,
+    current_canvas_verification,
+    canvas_score_measurement,
+)
 from ..jobs.canvas_content_job import enqueue_canvas_content_remediation
 from ..jobs.contracts import sanitize_json
 from ..integrations.canvas.content_models import CanvasContentType
@@ -238,6 +243,10 @@ class ContentDiffResponse(BaseModel):
     # copy. False means no rescan was recorded and the split is unknown,
     # which a client must show as unverified rather than as zero fixed.
     issues_verified_by_rescan: bool = False
+    verified: bool = False
+    issues_introduced: Optional[int] = None
+    remediated_compliance_score: Optional[float] = None
+    score_measurement: Optional[Dict[str, Any]] = None
     # Real findings from the last scan (axe-core violations). This is the
     # full pre-remediation issue set; per-issue fixed/remaining attribution
     # is not stored. Empty for older scans that predate this field, or if
@@ -907,27 +916,9 @@ async def get_content_diff(
 
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
 
-    # Get issue counts + the real issue list from the latest scan.
-    # `issues` is the real, unmodified pre-remediation violation set from
-    # the scan: every field a client renders from it must trace back to
-    # this list, never to a generated description.
-    #
-    # The fixed/remaining split comes from the rescan of the remediated
-    # copy, which is the only thing that knows whether a fix worked. Where
-    # no rescan was recorded the split is reported as unverified rather
-    # than assumed; the old behaviour counted every issue as fixed the
-    # moment a remediated body existed, which was a guess dressed as a
-    # measurement.
-    candidate_metadata = (
-        cf.provider_metadata.get("canvas_content_candidate")
-        if isinstance(cf.provider_metadata, dict)
-        else None
-    )
-    verified = (
-        candidate_metadata.get("verified") is True
-        if isinstance(candidate_metadata, dict)
-        else cf.remediated_issues_fixed is not None
-    )
+    # Only a measurement bound to this exact source scan and saved candidate
+    # establishes fixed/remaining counts. Legacy counters are not evidence.
+    verification = None
     issues_fixed = 0
     issues_remaining = 0
     issues: List[ContentIssueDetail] = []
@@ -935,13 +926,18 @@ async def get_content_diff(
         scan_result = (
             db.query(ScanResult).filter(ScanResult.scan_id == cf.last_scan_id).first()
         )
-        if scan_result and scan_result.issues:
-            issues_remaining = len(scan_result.issues)
+        if scan_result and isinstance(scan_result.issues, list):
+            try:
+                issues_remaining = sum(count_nodes_by_rule(scan_result.issues).values())
+            except ValueError:
+                issues_remaining = len(scan_result.issues)
             issues = [_format_scan_issue(raw) for raw in scan_result.issues]
-
-    if verified:
-        issues_fixed = cf.remediated_issues_fixed or 0
-        issues_remaining = cf.remediated_issues_remaining or 0
+            verification = current_canvas_verification(cf, scan_result.issues)
+            if verification is not None:
+                issues_fixed = verification["fixed"]
+                issues_remaining = (
+                    verification["remaining"] + verification["introduced"]
+                )
 
     return ContentDiffResponse(
         cloud_file_id=cf.id,
@@ -951,7 +947,15 @@ async def get_content_diff(
         remediated_html=cf.remediated_body,
         issues_fixed=issues_fixed,
         issues_remaining=issues_remaining,
-        issues_verified_by_rescan=verified,
+        issues_verified_by_rescan=verification is not None,
+        verified=verification is not None,
+        issues_introduced=verification["introduced"] if verification else None,
+        remediated_compliance_score=verification["score"] if verification else None,
+        score_measurement=(
+            canvas_score_measurement(cf.content_body, cf.remediated_body, verification)
+            if verification is not None
+            else None
+        ),
         issues=issues,
     )
 
@@ -995,6 +999,8 @@ class ContentRemediationJobStatus(BaseModel):
     remediated_score: Optional[float] = None
     verified: Optional[bool] = None
     issues_remaining: Optional[int] = None
+    issues_introduced: Optional[int] = None
+    score_measurement: Optional[Dict[str, Any]] = None
 
 
 _CANVAS_PUBLIC_JOB_ERRORS = frozenset(
@@ -1029,6 +1035,17 @@ def _content_remediation_job_shape(
 ) -> ContentRemediationJobStatus:
     safe = sanitize_json(job.result_data)
     result = safe if isinstance(safe, dict) else {}
+    from ..education.remediation.score_measurement import valid_measurement
+
+    measurement = valid_measurement(result.get("score_measurement"))
+    verified = (
+        result.get("verified") is True
+        and result.get("score_provenance") == "scanner_rescan"
+        and measurement is not None
+        and measurement["method_version"] == "canvas-axe-v1"
+        and measurement["source_score"] == result.get("original_compliance_score")
+        and measurement["output_score"] == result.get("remediated_compliance_score")
+    )
     public_messages = {
         "pending": "Queued",
         "processing": "Remediating content",
@@ -1056,11 +1073,17 @@ def _content_remediation_job_shape(
         fixed_count=_bounded_job_count(result.get("fixed_count")),
         manual_count=_bounded_job_count(result.get("manual_count")),
         failed_count=_bounded_job_count(result.get("failed_count")),
-        remediated_score=_bounded_job_score(result.get("remediated_compliance_score")),
-        verified=(
-            result.get("verified") if type(result.get("verified")) is bool else None
+        remediated_score=(
+            _bounded_job_score(result.get("remediated_compliance_score"))
+            if verified
+            else None
         ),
+        verified=verified,
         issues_remaining=_bounded_job_count(result.get("issues_remaining")),
+        issues_introduced=(
+            _bounded_job_count(result.get("issues_introduced")) if verified else None
+        ),
+        score_measurement=measurement if verified else None,
     )
 
 

@@ -2004,7 +2004,10 @@ def test_output_claim_and_verification_use_exact_bytes_after_output_path_mutates
 
     def process_exact_bytes(self, path):
         verification_path = Path(path)
+        assert self.require_complete_scan is True
         processor_reads.append(verification_path.read_bytes())
+        if verification_path == input_pdf:
+            return SimpleNamespace(issues=_language_issue(), compliance_score=90.0)
         assert stat.S_IMODE(verification_path.parent.stat().st_mode) == 0o700
         assert verification_path.parent != Path(expected_output).parent
         return SimpleNamespace(issues=[], compliance_score=100.0)
@@ -2029,7 +2032,14 @@ def test_output_claim_and_verification_use_exact_bytes_after_output_path_mutates
     assert result.verification_passed is True
     assert result.has_output_claim() is True
     assert len(expected) == 1
-    assert processor_reads == expected
+    assert processor_reads == [input_pdf.read_bytes(), *expected]
+    assert result.score_measurement == {
+        "method_version": "pdf-strict-v1",
+        "source_sha256": hashlib.sha256(input_pdf.read_bytes()).hexdigest(),
+        "output_sha256": hashlib.sha256(expected[0]).hexdigest(),
+        "source_score": 90.0,
+        "output_score": 100.0,
+    }
     assert matterhorn_reads == expected
     with result.open_output_stream() as stream:
         assert stream.read() == expected[0]
@@ -2081,7 +2091,10 @@ def test_output_claim_snapshots_validated_bytes_before_final_rename_returns(
         return result
 
     def process_exact_bytes(self, path):
+        assert self.require_complete_scan is True
         processor_reads.append(Path(path).read_bytes())
+        if Path(path) == input_pdf:
+            return SimpleNamespace(issues=_language_issue(), compliance_score=90.0)
         return SimpleNamespace(issues=[], compliance_score=100.0)
 
     def validate_exact_bytes(self, path):
@@ -2110,7 +2123,15 @@ def test_output_claim_snapshots_validated_bytes_before_final_rename_returns(
         "mime_type": "application/pdf",
         "filename": Path(result.output_file).name,
     }
-    assert processor_reads == [expected]
+    assert processor_reads == [input_pdf.read_bytes(), expected]
+    assert (
+        result.score_measurement["source_sha256"]
+        == hashlib.sha256(input_pdf.read_bytes()).hexdigest()
+    )
+    assert (
+        result.score_measurement["output_sha256"]
+        == hashlib.sha256(expected).hexdigest()
+    )
     assert matterhorn_reads == [expected]
     with result.open_output_stream() as stream:
         assert stream.read() == expected
