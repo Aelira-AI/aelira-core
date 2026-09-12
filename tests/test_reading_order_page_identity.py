@@ -69,7 +69,12 @@ def test_distinct_page_wrappers_keep_text_and_tables_on_their_pages(
 
     monkeypatch.setattr(reading_order.pikepdf, "open", retained_page_wrappers)
     verifier = ReadingOrderVerifier()
-    with require_complete_pdf_scan(True):
+    # Ownership is still resolved, but an Alt-only table has no verifiable
+    # visual placement and must not satisfy strict scan completeness.
+    with (
+        pytest.raises(IncompletePDFScanError, match="reading_order.table_empty"),
+        require_complete_pdf_scan(True),
+    ):
         assert _texts(verifier, path, 0) == ["First page"]
         assert _texts(verifier, path, 1) == ["Second page table"]
         assert not verifier._page_has_tables(str(path), 0)
@@ -100,7 +105,10 @@ def test_children_inherit_page_and_explicit_reference_overrides_it(
     _root(pdf, [first, second])
     pdf.save(path)
     verifier = ReadingOrderVerifier()
-    with require_complete_pdf_scan(True):
+    with (
+        pytest.raises(IncompletePDFScanError, match="reading_order.table_empty"),
+        require_complete_pdf_scan(True),
+    ):
         assert _texts(verifier, path, 0) == ["Inherited first page"]
         assert _texts(verifier, path, 1) == ["Explicit second page"]
         assert not verifier._page_has_tables(str(path), 0)
@@ -117,7 +125,10 @@ def test_table_inherits_page_reference(two_pages, singleton):
     _root(pdf, [parent], singleton)
     pdf.save(path)
     verifier = ReadingOrderVerifier()
-    with require_complete_pdf_scan(True):
+    with (
+        pytest.raises(IncompletePDFScanError, match="reading_order.table_empty"),
+        require_complete_pdf_scan(True),
+    ):
         assert _texts(verifier, path, 0) == []
         assert _texts(verifier, path, 1) == ["Inherited table"]
         assert not verifier._page_has_tables(str(path), 0)
@@ -168,11 +179,17 @@ def test_other_page_table_does_not_skip_comparison(two_pages, monkeypatch):
     pdf.save(path)
     verifier = ReadingOrderVerifier()
     compared = []
+    original_compare = verifier._compare_reading_orders
 
     def compare(page_num, visual, structure, multi_column=False):
         compared.append((page_num, [block["text"] for block in structure]))
+        return original_compare(page_num, visual, structure, multi_column)
 
     monkeypatch.setattr(verifier, "_compare_reading_orders", compare)
-    with require_complete_pdf_scan(True):
-        verifier.check(str(path))
-    assert compared == [(1, ["First page"])]
+    with (
+        pytest.raises(IncompletePDFScanError, match="reading_order.table"),
+        require_complete_pdf_scan(True),
+    ):
+        result = verifier.check(str(path))
+    assert compared == [(1, ["First page"]), (2, ["Second page"])]
+    assert any(issue.page_number == 2 for issue in result.issues)

@@ -27,7 +27,7 @@ from ...services.remediation_artifact_service import (
     ArtifactAuthorizationError,
     RemediationArtifactService,
 )
-from ._scope import authorize_scan_access
+from ._scope import authorize_scan_access, require_supported_scan_course
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -66,6 +66,7 @@ async def get_scan_history(
 
     # Course-scoped LTI history is constrained in SQL, not post-filtered.
     if principal.auth_method == "lti" and not principal.lti_account_wide:
+        require_supported_scan_course(principal)
         query = (
             db.query(Scan)
             .join(CloudFile, CloudFile.last_scan_id == Scan.id)
@@ -142,6 +143,10 @@ async def get_scan_details(
 
     authorize_scan_access(db, scan, principal)
 
+    from .remediation_routes import document_remediation_eligibility
+
+    remediation_eligibility = document_remediation_eligibility(db, scan, principal)
+
     # Debug logging to track issues data
     if scan.result and scan.result.issues:
         _debug_issues = scan.result.issues
@@ -193,6 +198,7 @@ async def get_scan_details(
             "scan_type": scan.scan_type.value,
             "status": scan.status.value,
             "pages": scan.pages,
+            "remediation_eligibility": remediation_eligibility,
             "file_size_bytes": scan.file_size_bytes,
             "processing_time_ms": scan.processing_time_ms,
             "created_at": scan.created_at.isoformat(),

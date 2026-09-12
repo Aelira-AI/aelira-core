@@ -25,12 +25,42 @@ describe('remediation entry points', () => {
     assert.doesNotMatch(issues, /Auto-Fix Complete|Bulk Remediation Complete|Document remediated\./);
     assert.match(issues, /<RemediationStatusLink/);
     assert.match(issues, /scans_queued/);
-    assert.match(issues, /\['pdf', 'word', 'excel', 'powerpoint', 'latex'\]\.includes\(scanInfo\.type\.toLowerCase\(\)\)/);
+    assert.match(issues, /remediation_eligibility: details\.remediation_eligibility/);
+    assert.match(issues, /selectEligibleIssueScanIds\(filteredIssues, scans\)/);
+    assert.match(issues, /const scanIds = eligibleScanIds/);
+    assert.match(issues, /eligibleScanIds\.length === 0/);
+    assert.doesNotMatch(issues, /filter\([^\n]*can_auto_fix/);
     assert.match(issues, /batchRemediationReceiptIsConfirmed\(receipt, scanIds\)/);
     const bulk = source('pages/BulkUpload.tsx');
     assert.match(bulk, /startRemediationJob\(remediationScanId/);
     assert.match(bulk, /<RemediationStatusLink/);
     assert.match(bulk, /Original scan complete/);
+  });
+
+  it('shows original findings without capability summaries, badges, or filtering', () => {
+    const issues = source('pages/Issues.tsx');
+    assert.match(issues, /flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between mb-6/);
+    assert.doesNotMatch(issues, /Auto-fix reported available|Auto-fix reported unavailable|Auto-fix capability unknown/i);
+    assert.doesNotMatch(issues, /Filter by auto-fix capability|filters\.autoFixable|matchesFindingAutoFixFilter|countFindingAutoFix|byAutoFix/);
+    assert.match(issues, />Issues Found</);
+    assert.match(issues, /Detected before remediation; includes issues since fixed\./);
+    assert.doesNotMatch(issues, />Original Findings</);
+    assert.doesNotMatch(issues, />Total Issues</);
+    assert.match(issues, />Critical\/High</);
+    assert.match(issues, /total: allIssues\.length/);
+    assert.match(issues, /filteredIssues\.map\(\(issue\) =>/);
+    for (const label of ['Filter by severity', 'Filter by category', 'Filter by status', 'Search issues by description or filename']) {
+      assert.ok(issues.includes(`aria-label="${label}"`));
+    }
+    assert.match(issues, /selectEligibleIssueScanIds\(filteredIssues, scans\)/);
+    assert.match(issues, /const scanIds = eligibleScanIds/);
+    assert.match(issues, /batchRemediationReceiptIsConfirmed\(receipt, scanIds\)/);
+    assert.match(issues, /parseTrackedIssueScanIds\(searchParams\)/);
+    assert.match(issues, /authorizedTrackedIssueScanIds\(searchParams, knownScans\)/);
+    assert.match(issues, /withTrackedIssueScanIds\(previous, scanIds\)/);
+    assert.match(issues, /<RemediationStatusLink scanId=\{scanId\}/);
+    assert.match(issues, /Original findings remain below/);
+    assert.match(issues, /\['pdf', 'word', 'excel', 'powerpoint', 'latex'\]\.includes\(scanInfo\.type\.toLowerCase\(\)\)\s*\|\| scanInfo\.remediation_eligibility\?\.eligible === true\s*\|\| issue\.autoFixCapability\.state === 'available'/);
   });
 
   it('names bulk upload navigation, row actions and concurrency selection', () => {

@@ -18,6 +18,19 @@ const visualAnalysisSource = readFileSync(
   new URL('../../src/components/review/VisualAnalysisStatusPanel.tsx', import.meta.url),
   'utf8',
 );
+const matterhornSource = readFileSync(
+  new URL('../../src/components/review/MatterhornResultsBar.tsx', import.meta.url),
+  'utf8',
+);
+
+test('review data stays bound to its route and aborts superseded requests', () => {
+  assert.match(documentSource, /<DocumentReviewContent key=\{scanId\} scanId=\{scanId\}/);
+  assert.match(documentSource, /useAbortableRequestOwner\(scanId\)/);
+  assert.match(documentSource, /signal: attempt\.controller\.signal/);
+  assert.match(documentSource, /if \(!reviewOwner\.isCurrent\(attempt\)\) return/);
+  assert.match(documentSource, /response\.data\.scan_id !== scanId/);
+  assert.match(documentSource, /review\.scan_id !== scanId/);
+});
 
 test('document review sends the API-supported batch action', () => {
   assert.match(documentSource, /action:\s*['"]approve['"]/);
@@ -55,6 +68,27 @@ test('document review exposes all controlled deferral filters', () => {
   for (const state of ['deferred_active', 'deferred_expired', 'deferred_revoked', 'deferred_resolved']) {
     assert.match(documentSource, new RegExp(state));
   }
+});
+
+test('source-backed comparison replaces unavailable preview above full-width review list', () => {
+  assert.match(documentSource, /<ReadingOrderComparison key=\{scanId\} scanId=\{scanId!\}/);
+  assert.doesNotMatch(documentSource, /w-1\/2|hidden lg:flex|fixes on the right/);
+  assert.doesNotMatch(documentSource, /This review record does not include/);
+});
+
+test('review filters wrap without a horizontal scroll container', () => {
+  assert.match(documentSource, /className="[^"]*flex-wrap[^"]*"\s+role="group"\s+aria-label="Filter fixes"/);
+  assert.doesNotMatch(documentSource, /overflow-x-auto/);
+});
+
+test('Matterhorn result groups can wrap on narrow review screens', () => {
+  assert.match(matterhornSource, /className="flex flex-wrap items-center justify-between/);
+  assert.match(matterhornSource, /className="flex flex-wrap items-center gap-/);
+});
+
+test('review content can grow vertically on short screens', () => {
+  assert.match(documentSource, /min-h-\[calc\(100dvh-4rem\)\]/);
+  assert.doesNotMatch(documentSource, /(?:^|\s)h-\[calc\(100vh-4rem\)\]|overflow-y-auto/);
 });
 
 test('deferral controls submit accountability fields and support revocation', () => {

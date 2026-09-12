@@ -7,6 +7,16 @@ from ...auth.dependencies import AuthenticatedPrincipal
 from ...db.models import CloudFile, CloudProvider, Scan
 
 
+def require_supported_scan_course(principal: AuthenticatedPrincipal) -> None:
+    """Course IDs from different LMS platforms are not interchangeable."""
+    if (
+        principal.auth_method == "lti"
+        and not principal.lti_account_wide
+        and principal.lti_platform != "canvas"
+    ):
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+
 def authorize_scan_access(
     db: Session, scan: Scan, principal: AuthenticatedPrincipal
 ) -> CloudFile | None:
@@ -24,6 +34,8 @@ def authorize_scan_access(
 
     if principal.auth_method != "lti" or principal.lti_account_wide:
         return None
+
+    require_supported_scan_course(principal)
 
     cloud_file = (
         db.query(CloudFile)

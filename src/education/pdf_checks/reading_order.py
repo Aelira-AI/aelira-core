@@ -2,7 +2,7 @@
 
 import logging
 from bisect import bisect_right
-from collections import Counter
+from collections import Counter, defaultdict
 from .completeness import record_incomplete_check
 from typing import Dict, List, Optional
 
@@ -111,29 +111,19 @@ class ReadingOrderVerifier:
                     ):
                         has_structure_tree = True
 
-                        # Skip reading order comparison for pages with
-                        # table structures — tables are correctly stored
-                        # row-by-row in the structure tree, which differs
-                        # from visual y-sort (column-by-column).  This is
-                        # intentional, not a reading order bug.
-                        if not getattr(
-                            structure_blocks, "incomplete", False
-                        ) and self._page_has_tables(file_path, page_num):
-                            logger.debug(
-                                "[ReadingOrderVerifier] Skipping page %d "
-                                "(has table structures)",
-                                page_num + 1,
-                            )
-                            continue
-
                         # Compare orders (multi-column pages get relaxed threshold)
                         is_multi_col = self._detect_multi_column(visual_blocks)
-                        issue = self._compare_reading_orders(
-                            page_num + 1,
-                            visual_blocks,
-                            structure_blocks,
-                            multi_column=is_multi_col,
-                        )
+                        if any("table_id" in block for block in structure_blocks):
+                            issue = self._compare_table_reading_orders(
+                                page_num + 1, page, visual_blocks, structure_blocks
+                            )
+                        else:
+                            issue = self._compare_reading_orders(
+                                page_num + 1,
+                                visual_blocks,
+                                structure_blocks,
+                                multi_column=is_multi_col,
+                            )
                         if issue:
                             issues.append(issue)
                     elif visual_blocks:
@@ -286,10 +276,14 @@ class ReadingOrderVerifier:
 
                 resolver = MarkedContentResolver(pdf, file_path)
                 visits = 0
+                table_count = 0
+                role_map = struct_root.get("/RoleMap", {})
 
-                def collect_text(kid, owner=None, inherited_page=-1, depth=0):
+                def collect_text(
+                    kid, owner=None, inherited_page=-1, depth=0, in_table=False
+                ):
                     """Return page-labelled blocks in semantic /K traversal order."""
-                    nonlocal visits
+                    nonlocal visits, table_count
                     visits += 1
                     if depth > 50 or visits > 20000:
                         resolver.fail("structure_depth_limit")
@@ -302,7 +296,7 @@ class ReadingOrderVerifier:
                             block
                             for item in kid
                             for block in collect_text(
-                                item, owner, inherited_page, depth + 1
+                                item, owner, inherited_page, depth + 1, in_table
                             )
                         ]
                     is_mcr = isinstance(kid, pikepdf.Dictionary) and (
@@ -335,12 +329,68 @@ class ReadingOrderVerifier:
                     elem_page = _element_page(kid, inherited_page, page_indices)
                     if elem_page == -2:
                         resolver.fail("page_reference")
+                    role_value = kid.get("/S")
+                    if "/S" in kid and not isinstance(role_value, pikepdf.Name):
+                        resolver.fail("table_role")
+                        role = ""
+                    else:
+                        role = str(role_value) if role_value is not None else ""
+                    seen_roles = set()
+                    while role in role_map:
+                        if role in seen_roles or len(seen_roles) >= 50:
+                            resolver.fail("table_role_map")
+                            break
+                        seen_roles.add(role)
+                        mapped_role = role_map[role]
+                        if not isinstance(mapped_role, pikepdf.Name):
+                            resolver.fail("table_role_map")
+                            break
+                        role = str(mapped_role)
+                    is_table = role == "/Table"
                     descendants = (
-                        collect_text(kid.K, kid, elem_page, depth + 1)
+                        collect_text(
+                            kid.K, kid, elem_page, depth + 1, in_table or is_table
+                        )
                         if "/K" in kid
                         else []
                     )
+                    on_page = elem_page == page_num or any(
+                        number == page_num for number, _ in descendants
+                    )
+                    if on_page and is_table and in_table:
+                        resolver.fail("table_nested")
+                    if (
+                        on_page
+                        and role in {"/TR", "/TH", "/TD", "/THead", "/TBody", "/TFoot"}
+                        and not in_table
+                    ):
+                        resolver.fail("table_orphan")
+                    if is_table:
+                        table_count += 1
+                        page_blocks = [
+                            block
+                            for number, block in descendants
+                            if number == page_num and block
+                        ]
+                        if (elem_page in (-1, page_num) and not descendants) or (
+                            any(number == page_num for number, _ in descendants)
+                            and not page_blocks
+                        ):
+                            resolver.fail("table_empty")
+                        for block in page_blocks:
+                            block["table_id"] = table_count
+                    contains_table = (
+                        is_table
+                        or in_table
+                        or any(
+                            block and "table_id" in block for _, block in descendants
+                        )
+                    )
+                    if on_page and contains_table and "/Alt" in kid:
+                        resolver.fail("table_replacement")
                     if "/ActualText" in kid:
+                        if on_page and contains_table:
+                            resolver.fail("table_replacement")
                         # Validate children/ownership but replace their text exactly once.
                         pages = {number for number, _ in descendants}
                         if elem_page >= 0:
@@ -360,11 +410,11 @@ class ReadingOrderVerifier:
                                 },
                             )
                         ]
-                    if elem_page == page_num and "/Alt" in kid:
+                    if on_page and "/Alt" in kid:
                         descendants.insert(
                             0,
                             (
-                                elem_page,
+                                page_num,
                                 {"text": str(kid.Alt).strip(), "source": "Alt"},
                             ),
                         )
@@ -383,6 +433,148 @@ class ReadingOrderVerifier:
             logger.warning(f"[ReadingOrderVerifier] Error reading structure tree: {e}")
 
         return structure_texts
+
+    def _compare_table_reading_orders(self, page_num, page, visual, structure):
+        """Compare separated, horizontal tables as atomic visual regions.
+
+        Exact, globally unique cell-text matches associate decoded structure
+        content with observed word boxes. This intentionally supports only
+        unambiguous text tables in a single-column flow. It does not infer cell
+        geometry or validate row/cell order, headers, or table semantics.
+        """
+
+        def finding(recommendation, severity="critical"):
+            return ReadingOrderIssue(
+                page_number=page_num,
+                expected_order=[b["text"][:100] for b in visual[:5]],
+                actual_order=[b["text"][:100] for b in structure[:5]],
+                severity=severity,
+                recommendation=recommendation,
+            )
+
+        def incomplete(reason):
+            record_incomplete_check("reading_order.table_" + reason)
+            return finding(
+                "Table placement and surrounding reading order could not be fully "
+                "verified. Review ambiguous or unsupported table layout and text."
+            )
+
+        if getattr(structure, "incomplete", False):
+            return self._compare_reading_orders(page_num, visual, structure)
+        if any(b.get("source") in {"ActualText", "Alt"} for b in structure):
+            return incomplete("replacement")
+        text_layout = page.get_text("dict")
+        if page.rotation or any(
+            line.get("dir", (1, 0)) != (1, 0)
+            for block in text_layout.get("blocks", [])
+            for line in block.get("lines", [])
+        ):
+            return incomplete("direction")
+        words = page.get_text("words", sort=False)
+        if (
+            len(words) > 20000
+            or len(structure) > 500
+            or sum(len(b["text"]) for b in structure) > 200000
+        ):
+            return incomplete("comparison_limit")
+        word_text = [word[4].casefold() for word in words]
+        starts = defaultdict(list)
+        for index, word in enumerate(word_text):
+            starts[word].append(index)
+        ownership, table_words = {}, defaultdict(list)
+        for block in structure:
+            if "table_id" not in block:
+                continue
+            tokens = block["text"].casefold().split()
+            matches = [
+                index
+                for index in starts[tokens[0]]
+                if word_text[index : index + len(tokens)] == tokens
+            ]
+            if len(matches) != 1:
+                return incomplete("text_match")
+            indices = range(matches[0], matches[0] + len(tokens))
+            for index in indices:
+                if index in ownership:
+                    return incomplete("text_ownership")
+                ownership[index] = block["table_id"]
+                table_words[block["table_id"]].append(words[index])
+        regions = {}
+        for table_id, entries in table_words.items():
+            regions[table_id] = (
+                min(w[0] for w in entries),
+                min(w[1] for w in entries),
+                max(w[2] for w in entries),
+                max(w[3] for w in entries),
+            )
+        ordered_regions = sorted(regions.items(), key=lambda item: item[1][1])
+        if any(a[1][3] > b[1][1] for a, b in zip(ordered_regions, ordered_regions[1:])):
+            return incomplete("overlapping_regions")
+        for index, word in enumerate(words):
+            if index not in ownership and any(
+                word[1] < box[3] and word[3] > box[1] for box in regions.values()
+            ):
+                return incomplete("overlapping_text")
+        # Inspect lines, including pages with only two surrounding blocks;
+        # the general column heuristic requires at least four blocks.
+        line_starts = defaultdict(list)
+        for block in text_layout.get("blocks", []):
+            for line in block.get("lines", []):
+                box = line["bbox"]
+                if not any(
+                    box[1] < region[3] and box[3] > region[1]
+                    for region in regions.values()
+                ):
+                    line_starts[int(box[1] / 20)].append(box[0])
+        for starts_on_line in line_starts.values():
+            ordered_starts = sorted(starts_on_line)
+            if any(
+                right - left > 100
+                for left, right in zip(ordered_starts, ordered_starts[1:])
+            ):
+                return incomplete("columns")
+        # Keep every unmatched word; missing/extra surrounding text must not
+        # disappear when a table's cells are collapsed to one comparison token.
+        visual_items = [
+            (word[1], word[0], ("text", word[4].casefold()))
+            for index, word in enumerate(words)
+            if index not in ownership
+        ]
+        visual_items.extend(
+            (box[1], box[0], ("table", table_id)) for table_id, box in regions.items()
+        )
+        visual_tokens = [
+            item[2]
+            for item in sorted(
+                visual_items, key=lambda item: (int(item[0] / 10), item[1])
+            )
+        ]
+        structure_tokens, seen_tables = [], set()
+        previous_table = None
+        for block in structure:
+            table_id = block.get("table_id")
+            if table_id is None:
+                structure_tokens.extend(
+                    ("text", word) for word in block["text"].casefold().split()
+                )
+            elif table_id != previous_table:
+                if table_id in seen_tables:
+                    return incomplete("discontiguous_structure")
+                seen_tables.add(table_id)
+                structure_tokens.append(("table", table_id))
+            previous_table = table_id
+        if visual_tokens == structure_tokens:
+            return None
+        if Counter(visual_tokens) != Counter(structure_tokens):
+            return finding(
+                "Structure text does not correspond to all visible text around the "
+                "table. Review missing, repeated, or substituted content."
+            )
+        return finding(
+            "Structure tree reading order differs from the visual placement of "
+            "tables and surrounding text. Review and correct the reading order.",
+            "warning",
+        )
 
     def _page_has_tables(self, file_path: str, page_num: int) -> bool:
         """Check if a page's structure tree contains table elements.

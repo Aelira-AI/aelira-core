@@ -936,7 +936,11 @@ class TestExportEndpoint:
         from fastapi.testclient import TestClient
         from src.api.review_routes import router
         from src.db.database import get_db_dependency
-        from src.auth.dependencies import get_required_api_key
+        from src.auth.dependencies import (
+            AuthenticatedPrincipal,
+            get_authenticated_principal,
+        )
+        from src.db.models import UserRole
 
         app = FastAPI()
         app.include_router(router, prefix="/api")
@@ -947,7 +951,9 @@ class TestExportEndpoint:
                 from fastapi import HTTPException
 
                 raise HTTPException(status_code=401, detail="Authentication required")
-            return (None, "user-001", "dept-001")
+            return AuthenticatedPrincipal(
+                None, "user-001", "dept-001", UserRole.FACULTY, "session"
+            )
 
         # Mock DB session
         mock_db = MagicMock()
@@ -955,7 +961,7 @@ class TestExportEndpoint:
         def mock_get_db():
             return mock_db
 
-        app.dependency_overrides[get_required_api_key] = mock_auth
+        app.dependency_overrides[get_authenticated_principal] = mock_auth
         app.dependency_overrides[get_db_dependency] = mock_get_db
 
         client = TestClient(app)
@@ -1106,7 +1112,11 @@ class TestEvidencePackageEndpoint:
         from fastapi.testclient import TestClient
 
         from src.api.review_routes import router
-        from src.auth.dependencies import get_required_api_key
+        from src.auth.dependencies import (
+            AuthenticatedPrincipal,
+            get_authenticated_principal,
+        )
+        from src.db.models import UserRole
         from src.db.database import get_db_dependency
 
         app = FastAPI()
@@ -1116,9 +1126,11 @@ class TestEvidencePackageEndpoint:
         def mock_auth():
             if not authorized:
                 raise HTTPException(status_code=401, detail="Authentication required")
-            return (None, "user-001", "dept-001")
+            return AuthenticatedPrincipal(
+                None, "user-001", "dept-001", UserRole.FACULTY, "session"
+            )
 
-        app.dependency_overrides[get_required_api_key] = mock_auth
+        app.dependency_overrides[get_authenticated_principal] = mock_auth
         app.dependency_overrides[get_db_dependency] = lambda: mock_db
         return TestClient(app), mock_db
 

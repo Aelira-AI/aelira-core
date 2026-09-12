@@ -15,11 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Withheld output retains all original findings as unresolved, with explicit withheld and unreported outcomes instead of disappearing counts.
 - Corrected upload labels, nested interactive controls, review-list keyboard scrolling and affected label contrast.
 - PDF verification compares source and output checkpoint results to distinguish persistent failures from newly introduced regressions.
+- Reading-order checks resolve supported MCID/ParentTree text and stable page ownership; generated headings and lists retain source content bindings.
+- Supported table pages compare table placement and surrounding text; ambiguous coverage stays explicitly incomplete instead of silently skipping the page. Internal table semantics remain a separate check.
+- Issues uses document queue eligibility, reload-safe status references and a clear-tracking control. The Issues Found total explicitly describes original findings.
+- Review controls wrap on narrow screens and document changes cannot display a stale review beside another file's preview.
+- Review document operations and aggregate queries preserve authenticated department and course scope; explicit filters cannot widen access.
+- Shared scan/remediation access and scan history reject unsupported LMS course bindings instead of matching course IDs across platforms.
 
 ### Changed
 
 - Added a blocking real API/queue/worker/download acceptance gate for synthetic PDF and Office files, alongside the existing browser testbed.
 - Scanner measurements and safety refusal are documented separately from accessibility conformance.
+- Added a read-only original/saved PDF reading-order viewer with checksum-bound evidence, course-scoped authorization and conservative rendering limits. Unsupported evidence remains unavailable; no edited or inferred order is presented as saved data.
 
 ### Operator action required
 

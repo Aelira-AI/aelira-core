@@ -25,12 +25,18 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, case
+from sqlalchemy import func, case, false
 from sqlalchemy.orm import Session
 
-from ..auth.dependencies import get_required_api_key
+from ..auth.dependencies import (
+    AuthenticatedPrincipal,
+    get_authenticated_principal,
+)
+from .education._scope import authorize_scan_access
 from ..db.database import get_db_dependency
 from ..db.models import (
+    CloudFile,
+    CloudProvider,
     Department,
     Scan,
     ScanFix,
@@ -42,6 +48,7 @@ from ..db.models import (
     VisualAnalysis,
 )
 from ..education.equation_region_contract import PageRasterRegionLocator
+from ..education.reading_order_snapshot import inspect_pdf_reading_order
 from ..education.visual_semantic_contract import VisualSemanticContract
 from ..education.reports.compliance_report import (
     ACCEPTED_REVIEW_STATUSES,
@@ -56,6 +63,8 @@ from ..education.reports.evidence_package import (
 )
 from ..services.remediation_artifact_service import (
     ArtifactError,
+    ArtifactExpiredError,
+    ArtifactIntegrityError,
     RemediationArtifactService,
 )
 from ..services.scan_fix_service import (
@@ -101,9 +110,45 @@ def _scan_type_display(scan_type: object) -> str:
 
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
-get_auth = get_required_api_key
+get_auth = get_authenticated_principal
+
+
+def _review_scope_filters(principal: AuthenticatedPrincipal) -> tuple:
+    """Apply scan authority before aggregates, counts, and pagination."""
+    filters = (Scan.department_id == principal.department_id,)
+    if principal.auth_method == "lti" and not principal.lti_account_wide:
+        # Course identifiers are platform-local. Only Canvas file bindings are
+        # supported here; another LMS cannot borrow a matching Canvas course ID.
+        if principal.lti_platform != "canvas":
+            return filters + (false(),)
+        # EXISTS preserves one scan row even when multiple links reference it.
+        filters += (
+            (
+                CloudFile.__table__.select()
+                .with_only_columns(CloudFile.id)
+                .where(
+                    CloudFile.last_scan_id == Scan.id,
+                    CloudFile.department_id == principal.department_id,
+                    CloudFile.provider == CloudProvider.CANVAS.value,
+                    CloudFile.provider_parent_id == principal.lti_course_id,
+                )
+                .correlate(Scan)
+                .exists()
+            ),
+        )
+    return filters
+
+
+def _check_review_department(
+    department_id: Optional[str], principal: AuthenticatedPrincipal
+) -> None:
+    """A query parameter may narrow selection, never widen authority."""
+    if department_id is not None and department_id != principal.department_id:
+        raise HTTPException(status_code=404, detail="Department not found")
+
 
 _MAX_INCLUDED_SOURCE_BYTES = 500 * 1024 * 1024
+_MAX_READING_ORDER_BYTES = 50 * 1024 * 1024
 
 _AUTO_APPROVED_STATUS = "auto_approved"
 _HUMAN_REVIEWED_STATUSES = frozenset({"approved", "edited", "rejected"})
@@ -131,7 +176,9 @@ def _evidence_package_headers(scan_id: str) -> dict[str, str]:
     }
 
 
-def _read_verified_source(scan: Scan) -> EvidenceFile:
+def _read_verified_source(
+    scan: Scan, *, max_bytes: int = _MAX_INCLUDED_SOURCE_BYTES
+) -> EvidenceFile:
     """Read explicitly requested source bytes through a descriptor-bound check."""
     storage_path = getattr(scan, "storage_path", None)
     expected_size = getattr(scan, "file_size_bytes", None)
@@ -142,7 +189,7 @@ def _read_verified_source(scan: Scan) -> EvidenceFile:
         or not isinstance(expected_size, int)
         or isinstance(expected_size, bool)
         or expected_size < 0
-        or expected_size > _MAX_INCLUDED_SOURCE_BYTES
+        or expected_size > max_bytes
         or not isinstance(expected_sha256, str)
         or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
     ):
@@ -185,6 +232,35 @@ def _read_verified_source(scan: Scan) -> EvidenceFile:
         media_type=mimetypes.guess_type(filename)[0],
         content=bytes(content),
     )
+
+
+def _unavailable_reading_order(page_number: int, reason: str) -> dict:
+    """Never expose unverified document metadata or underlying exception paths."""
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "sha256": None,
+        "page_count": 0,
+        "page_number": page_number,
+        "width": None,
+        "height": None,
+        "preview_png_base64": None,
+        "blocks": [],
+        "unpositioned_count": 0,
+    }
+
+
+def _reading_order_snapshot(content: bytes, page_number: int) -> dict:
+    if b"%PDF-" not in content[:1024]:
+        snapshot = _unavailable_reading_order(page_number, "unsupported_format")
+        snapshot["sha256"] = hashlib.sha256(content).hexdigest()
+        return snapshot
+    try:
+        return inspect_pdf_reading_order(content, page_number)
+    except Exception:
+        # Parsing an independently verified but malformed document must not hide
+        # the other document or leak native parser errors and filesystem paths.
+        return _unavailable_reading_order(page_number, "extraction_failed")
 
 
 # -- Response Models --
@@ -598,11 +674,10 @@ def get_review_queue(
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Get paginated review queue sorted by lowest confidence."""
-    _, _user_id, auth_department_id = auth_result
-    effective_department_id = department_id if department_id else auth_department_id
+    _check_review_department(department_id, auth_result)
 
     query = (
         db.query(
@@ -624,8 +699,7 @@ def get_review_queue(
         .group_by(Scan.id)
     )
 
-    if effective_department_id:
-        query = query.filter(Scan.department_id == effective_department_id)
+    query = query.filter(*_review_scope_filters(auth_result))
 
     if scan_type:
         enum_val = _SCAN_TYPE_MAP.get(scan_type.lower())
@@ -690,17 +764,16 @@ def get_review_queue(
 def get_review_stats(
     department_id: Optional[str] = Query(None),
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Get aggregate review queue statistics."""
-    _, _user_id, auth_department_id = auth_result
-    effective_department_id = department_id if department_id else auth_department_id
+    _check_review_department(department_id, auth_result)
 
-    query = db.query(ScanFix.review_status, func.count(ScanFix.id))
-    if effective_department_id:
-        query = query.join(Scan, Scan.id == ScanFix.scan_id).filter(
-            Scan.department_id == effective_department_id
-        )
+    query = (
+        db.query(ScanFix.review_status, func.count(ScanFix.id))
+        .join(Scan, Scan.id == ScanFix.scan_id)
+        .filter(*_review_scope_filters(auth_result))
+    )
     rows = query.group_by(ScanFix.review_status).all()
 
     counts = {status: count for status, count in rows}
@@ -713,8 +786,7 @@ def get_review_stats(
     type_query = db.query(Scan.scan_type, func.count(func.distinct(Scan.id))).join(
         ScanFix, ScanFix.scan_id == Scan.id
     )
-    if effective_department_id:
-        type_query = type_query.filter(Scan.department_id == effective_department_id)
+    type_query = type_query.filter(*_review_scope_filters(auth_result))
     type_counts = type_query.group_by(Scan.scan_type).all()
     by_type = {
         _scan_type_display(scan_type) if scan_type else "unknown": count
@@ -733,20 +805,20 @@ def get_review_stats(
 @router.get("/department-summary", response_model=DepartmentSummary)
 def get_department_summary(
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Get aggregate review summary for the authenticated user's department.
 
     Returns total documents scanned, percentage reviewed, counts by status,
     and average fix confidence. Used by the dashboard widget.
     """
-    _, _user_id, department_id = auth_result
+    scope_filters = _review_scope_filters(auth_result)
 
     # 1. Count distinct scans with fixes for this department
     total_documents = (
         db.query(func.count(func.distinct(Scan.id)))
         .join(ScanFix, ScanFix.scan_id == Scan.id)
-        .filter(Scan.department_id == department_id)
+        .filter(*scope_filters)
         .scalar()
     ) or 0
 
@@ -754,7 +826,7 @@ def get_department_summary(
     status_rows = (
         db.query(ScanFix.review_status, func.count(ScanFix.id))
         .join(Scan, Scan.id == ScanFix.scan_id)
-        .filter(Scan.department_id == department_id)
+        .filter(*scope_filters)
         .group_by(ScanFix.review_status)
         .all()
     )
@@ -776,7 +848,7 @@ def get_department_summary(
     avg_conf = (
         db.query(func.avg(ScanFix.confidence))
         .join(Scan, Scan.id == ScanFix.scan_id)
-        .filter(Scan.department_id == department_id)
+        .filter(*scope_filters)
         .scalar()
     )
 
@@ -784,7 +856,7 @@ def get_department_summary(
     type_counts = (
         db.query(Scan.scan_type, func.count(func.distinct(Scan.id)))
         .join(ScanFix, ScanFix.scan_id == Scan.id)
-        .filter(Scan.department_id == department_id)
+        .filter(*scope_filters)
         .group_by(Scan.scan_type)
         .all()
     )
@@ -808,14 +880,15 @@ def get_department_summary(
 def get_document_review(
     scan_id: str,
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Get document review data including all fixes and Matterhorn results."""
-    _, _user_id, department_id = auth_result
+    _, _user_id, department_id = auth_result.as_legacy_tuple()
 
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, auth_result)
 
     fixes = (
         db.query(ScanFix)
@@ -869,13 +942,14 @@ def defer_fix(
     fix_id: str,
     body: DeferralAction,
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Create or change a controlled, time-bounded deferral."""
-    _, user_id, department_id = auth_result
+    _, user_id, department_id = auth_result.as_legacy_tuple()
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, auth_result)
 
     graph = lock_scan_review_graph(db, scan_id)
     fix = next((row for row in graph.fixes if row.id == fix_id), None)
@@ -929,13 +1003,14 @@ def revoke_fix_deferral(
     scan_id: str,
     fix_id: str,
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Revoke an active or expired controlled deferral."""
-    _, user_id, department_id = auth_result
+    _, user_id, department_id = auth_result.as_legacy_tuple()
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, auth_result)
 
     graph = lock_scan_review_graph(db, scan_id)
     fix = next((row for row in graph.fixes if row.id == fix_id), None)
@@ -979,15 +1054,16 @@ def review_fix(
     fix_id: str,
     body: FixAction,
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Approve, reject, or edit a single fix."""
-    _, user_id, department_id = auth_result
+    _, user_id, department_id = auth_result.as_legacy_tuple()
 
     # Verify scan belongs to the authenticated user's department
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, auth_result)
 
     graph = lock_scan_review_graph(db, scan_id)
     fix = next((row for row in graph.fixes if row.id == fix_id), None)
@@ -1046,15 +1122,16 @@ def batch_review(
     scan_id: str,
     body: BatchAction,
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Batch approve or reject fixes by threshold, category, or explicit IDs."""
-    _, user_id, department_id = auth_result
+    _, user_id, department_id = auth_result.as_legacy_tuple()
 
     # Verify scan belongs to the authenticated user's department
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, auth_result)
 
     graph = lock_scan_review_graph(db, scan_id)
     fixes = [fix for fix in graph.fixes if fix.review_status == "pending"]
@@ -1173,18 +1250,19 @@ def export_audit_trail(
     scan_id: str,
     format: Literal["json", "csv", "pdf"] = Query("json"),
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Export bounded scan, validator, remediation, and review evidence.
 
     The export records issues, fixes, review history, and Matterhorn results;
     it does not make an accessibility-standard or legal determination.
     """
-    _, _user_id, department_id = auth_result
+    _, _user_id, department_id = auth_result.as_legacy_tuple()
 
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, auth_result)
 
     fixes, audit_entries, matterhorn_results, dept = _audit_export_inputs(db, scan)
 
@@ -1230,19 +1308,125 @@ def export_audit_trail(
         )
 
 
+@router.get("/{scan_id}/reading-order")
+def get_reading_order(
+    scan_id: str,
+    page: int = Query(1, ge=1),
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Inspect source and exact saved PDF bytes independently before approval.
+
+    This synchronous route runs file verification and PDF parsing in FastAPI's
+    threadpool. It is evidence for review and grants no publishing authority.
+    """
+    department_id = principal.department_id
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    authorize_scan_access(db, scan, principal)
+
+    source_size = getattr(scan, "file_size_bytes", None)
+    if isinstance(source_size, int) and source_size > _MAX_READING_ORDER_BYTES:
+        source = _unavailable_reading_order(page, "file_too_large")
+    else:
+        try:
+            source_file = _read_verified_source(
+                scan, max_bytes=_MAX_READING_ORDER_BYTES
+            )
+            source = _reading_order_snapshot(source_file.content, page)
+        except EvidencePackageError as exc:
+            reason = {
+                "source evidence metadata is unavailable": "source_metadata_unavailable",
+                "source bytes are missing or unsafe": "source_missing_or_unsafe",
+                "source size mismatch": "source_integrity_failed",
+                "source checksum mismatch": "source_integrity_failed",
+            }.get(str(exc), "source_unavailable")
+            source = _unavailable_reading_order(page, reason)
+
+    artifact_id = getattr(scan, "current_remediation_artifact_id", None)
+    saved = _unavailable_reading_order(page, "no_saved_artifact")
+    if artifact_id is not None:
+        artifact = (
+            db.query(RemediationArtifact)
+            .filter(
+                RemediationArtifact.id == artifact_id,
+                RemediationArtifact.scan_id == scan.id,
+                RemediationArtifact.department_id == department_id,
+            )
+            .one_or_none()
+        )
+        saved = _unavailable_reading_order(page, "saved_artifact_unavailable")
+        if artifact is not None:
+            try:
+                service = RemediationArtifactService.from_settings()
+                service.max_bytes = min(service.max_bytes, _MAX_READING_ORDER_BYTES)
+                if artifact.cloud_file_id is not None:
+                    service.lock_current(
+                        db,
+                        artifact_id=artifact.id,
+                        department_id=department_id,
+                        cloud_file_id=artifact.cloud_file_id,
+                        provider=artifact.provider,
+                    )
+                if artifact.size_bytes > _MAX_READING_ORDER_BYTES:
+                    saved = _unavailable_reading_order(page, "file_too_large")
+                else:
+                    with service.open_verified(
+                        db,
+                        artifact,
+                        department_id=department_id,
+                        scan_id=scan.id,
+                        cloud_file_id=artifact.cloud_file_id,
+                    ) as stream:
+                        content = stream.read(_MAX_READING_ORDER_BYTES + 1)
+                        # Bind extraction to these exact bytes even if storage
+                        # changed between the service's hash pass and this read.
+                        if (
+                            len(content) != artifact.size_bytes
+                            or len(content) > _MAX_READING_ORDER_BYTES
+                            or not hmac.compare_digest(
+                                hashlib.sha256(content).hexdigest(), artifact.sha256
+                            )
+                        ):
+                            raise ArtifactIntegrityError("saved bytes changed")
+                    saved = _reading_order_snapshot(content, page)
+            except ArtifactExpiredError:
+                saved = _unavailable_reading_order(page, "saved_artifact_expired")
+            except ArtifactIntegrityError:
+                saved = _unavailable_reading_order(
+                    page, "saved_artifact_integrity_failed"
+                )
+            except ArtifactError:
+                saved = _unavailable_reading_order(page, "saved_artifact_unavailable")
+
+    return JSONResponse(
+        content={
+            "scan_id": scan.id,
+            "page_number": page,
+            "artifact_id": artifact_id,
+            "source": source,
+            "saved": saved,
+        },
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
 @router.get("/{scan_id}/audit/package")
 def export_evidence_package(
     scan_id: str,
     include_source: bool = Query(False),
     include_output: bool = Query(False),
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Download a versioned evidence package without document bytes by default."""
-    _, _user_id, department_id = auth_result
+    _, _user_id, department_id = auth_result.as_legacy_tuple()
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, auth_result)
 
     source_file = None
     if include_source:
@@ -1334,15 +1518,16 @@ def export_evidence_package(
 def get_audit_trail(
     scan_id: str,
     db: Session = Depends(get_db_dependency),
-    auth_result=Depends(get_auth),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
 ):
     """Get chronological audit trail for a document."""
-    _, _user_id, department_id = auth_result
+    _, _user_id, department_id = auth_result.as_legacy_tuple()
 
     # Verify scan belongs to the authenticated user's department
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.department_id != department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, auth_result)
 
     entries = (
         db.query(ReviewAuditLog)

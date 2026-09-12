@@ -1444,17 +1444,15 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
     }
 
 
-def _enqueue_scan_remediation(
+def _resolve_remediation_queue_source(
     db: Session,
     *,
     scan: Scan,
     principal: AuthenticatedPrincipal,
-    options: dict[str, Any],
-    commit: bool = True,
-) -> CloudJobQueue:
+) -> tuple[CloudFile | None, CloudOAuthCredentials | None]:
+    """Resolve the authorized source identically for eligibility and enqueue."""
     authorized = authorize_scan_access(db, scan, principal)
     cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized)
-    provider = cloud_file.provider if cloud_file is not None else "local"
     credential = None
     if cloud_file is not None and cloud_file.credential_id:
         credential = _get_bound_cloud_credential(
@@ -1466,6 +1464,65 @@ def _enqueue_scan_remediation(
         source_path = scan.storage_path
         if not isinstance(source_path, str) or not os.path.isfile(source_path):
             raise HTTPException(status_code=400, detail="Original file not available")
+    return cloud_file, credential
+
+
+def document_remediation_eligibility(
+    db: Session, scan: Scan, principal: AuthenticatedPrincipal
+) -> dict[str, Any]:
+    """Read-only document queue preflight, never a per-finding fix promise.
+
+    Policy, remote fetch and saved-output verification still run in the worker.
+    Code/website approval workflows and standalone image descriptions are not
+    document batch remediation. The source is rechecked when a job is queued.
+    """
+    authorize_scan_access(db, scan, principal)
+    if scan.scan_type not in {
+        ScanType.PDF,
+        ScanType.WORD,
+        ScanType.EXCEL,
+        ScanType.POWERPOINT,
+        ScanType.LATEX,
+        ScanType.VIDEO,
+        ScanType.MULTIMEDIA,
+    }:
+        return {"eligible": False, "reason": "unsupported_document_type"}
+    if scan.status != ScanStatus.COMPLETED:
+        return {"eligible": False, "reason": "scan_not_completed"}
+    if not scan.result:
+        return {"eligible": False, "reason": "scan_results_unavailable"}
+    try:
+        cloud_file, credential = _resolve_remediation_queue_source(
+            db, scan=scan, principal=principal
+        )
+    except HTTPException as exc:
+        if exc.status_code != 400:
+            raise
+        return {"eligible": False, "reason": "source_file_unavailable"}
+    if cloud_file is not None:
+        if cloud_file.provider not in {"google", "microsoft", "canvas", "blackboard"}:
+            return {"eligible": False, "reason": "unsupported_source_provider"}
+        if (
+            credential is None
+            or credential.is_active is not True
+            or not cloud_file.provider_file_id
+        ):
+            return {"eligible": False, "reason": "source_file_unavailable"}
+    return {"eligible": True, "reason": None}
+
+
+def _enqueue_scan_remediation(
+    db: Session,
+    *,
+    scan: Scan,
+    principal: AuthenticatedPrincipal,
+    options: dict[str, Any],
+    commit: bool = True,
+) -> CloudJobQueue:
+    cloud_file, credential = _resolve_remediation_queue_source(
+        db, scan=scan, principal=principal
+    )
+    provider = cloud_file.provider if cloud_file is not None else "local"
     purposes = []
     if options.get("use_ai") is True:
         purposes.append("remediation")

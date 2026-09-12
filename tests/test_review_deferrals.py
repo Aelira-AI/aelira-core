@@ -22,7 +22,12 @@ from src.api.review_routes import (
     review_fix,
     revoke_fix_deferral,
 )
-from src.db.models import ReviewAuditLog, ScanFix
+from src.db.models import ReviewAuditLog, ScanFix, UserRole
+from src.auth.dependencies import AuthenticatedPrincipal
+
+SESSION_PRINCIPAL = AuthenticatedPrincipal(
+    None, "user-one", "dept-one", UserRole.FACULTY, "session"
+)
 
 FUTURE = datetime(2099, 1, 1, tzinfo=timezone.utc)
 
@@ -115,7 +120,7 @@ def test_authorized_reviewer_creates_deferral_without_resolving_finding():
                 expires_at=FUTURE,
             ),
             db=db,
-            auth_result=("key-one", "user-one", "dept-one"),
+            auth_result=SESSION_PRINCIPAL,
         )
 
     assert fix.review_status == "pending"
@@ -152,7 +157,7 @@ def test_changing_deferral_appends_old_and_new_state():
                 expires_at=FUTURE,
             ),
             db=db,
-            auth_result=("key-one", "user-one", "dept-one"),
+            auth_result=SESSION_PRINCIPAL,
         )
 
     logs = [call.args[0] for call in db.add.call_args_list]
@@ -180,7 +185,7 @@ def test_revoke_preserves_expired_deferral_history():
             "scan-one",
             "fix-one",
             db=db,
-            auth_result=("key-one", "user-one", "dept-one"),
+            auth_result=SESSION_PRINCIPAL,
         )
 
     assert response.deferral.lifecycle == "revoked"
@@ -200,14 +205,14 @@ def test_cross_tenant_deferral_writes_are_hidden(route):
                 "fix-one",
                 DeferralAction(owner="Team A", reason="Reason", expires_at=FUTURE),
                 db=db,
-                auth_result=("key-one", "user-one", "dept-one"),
+                auth_result=SESSION_PRINCIPAL,
             )
         else:
             revoke_fix_deferral(
                 "scan-one",
                 "fix-one",
                 db=db,
-                auth_result=("key-one", "user-one", "dept-one"),
+                auth_result=SESSION_PRINCIPAL,
             )
     assert exc.value.status_code == 404
 
@@ -232,7 +237,7 @@ def test_resolved_finding_cannot_be_deferred():
             "fix-one",
             DeferralAction(owner="Team A", reason="Reason", expires_at=FUTURE),
             db=db,
-            auth_result=("key-one", "user-one", "dept-one"),
+            auth_result=SESSION_PRINCIPAL,
         )
     assert exc.value.status_code == 409
 
@@ -243,7 +248,7 @@ def test_document_read_hides_cross_tenant_deferral_data():
         get_document_review(
             "scan-one",
             db=db,
-            auth_result=("key-one", "user-one", "dept-one"),
+            auth_result=SESSION_PRINCIPAL,
         )
     assert exc.value.status_code == 404
 
@@ -300,7 +305,7 @@ def test_individual_review_resolves_deferral_with_separate_audit_event():
             "fix-one",
             FixAction(action="approve"),
             db=db,
-            auth_result=("key-one", "user-one", "dept-one"),
+            auth_result=SESSION_PRINCIPAL,
         )
 
     assert response.review_status == "approved"
@@ -339,7 +344,7 @@ def test_batch_review_resolves_each_selected_deferral():
             "scan-one",
             BatchAction(action="approve"),
             db=db,
-            auth_result=("key-one", "user-one", "dept-one"),
+            auth_result=SESSION_PRINCIPAL,
         )
 
     assert response.affected == 2

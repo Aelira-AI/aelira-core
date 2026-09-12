@@ -76,6 +76,12 @@ export interface User {
   last_login?: string;
 }
 
+/** Whether the server can queue this document; does not promise automatic fixes. */
+export interface RemediationEligibility {
+  eligible: boolean;
+  reason: string | null;
+}
+
 export interface Scan {
   id: string;
   scan_id?: string; // API sometimes uses this alias
@@ -158,6 +164,7 @@ export interface ScanDetailResult {
 
 export interface ScanDetailResponse extends Scan {
   scan_id?: string;
+  remediation_eligibility?: RemediationEligibility;
   result?: ScanDetailResult | null;
   issues: Issue[];
   compliance_score: number | null;
