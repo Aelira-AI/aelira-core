@@ -1445,6 +1445,17 @@ class PdfRemediator(BaseRemediator):
                 page_number=page_num,
             )
         else:
+            source_refusal = getattr(self, "_source_binding_refusals", {}).get(issue.id)
+            if source_refusal:
+                self._add_manual_issue(
+                    issue,
+                    reason=source_refusal,
+                    recommendation=(
+                        "Review the source text and split its content runs before "
+                        "applying heading or list structure."
+                    ),
+                )
+                return
             table_refusal = getattr(self, "_table_safety_refusals", {}).get(issue.id)
             if issue.category == IssueCategory.TABLE and table_refusal:
                 issue.metadata["remediation_error_code"] = table_refusal
@@ -1938,6 +1949,10 @@ class PdfRemediator(BaseRemediator):
             try:
                 self._pikepdf_doc = pikepdf.open(
                     self._working_path, allow_overwriting_input=True
+                )
+                source_root = self._pikepdf_doc.Root.get("/StructTreeRoot")
+                self._generated_structure = source_root is None or not source_root.get(
+                    "/K"
                 )
                 self._struct_tree = PDFStructureTree(self._pikepdf_doc)
                 logger.info(
@@ -3002,6 +3017,9 @@ class PdfRemediator(BaseRemediator):
                         working_pdf,
                         working_fitz,
                         excluded_image_occurrences=working_pending_requests,
+                        order_generated_structure=getattr(
+                            self, "_generated_structure", False
+                        ),
                     )
                     stats = tagger.tag_all_pages()
                     self._content_tagger_stats = stats
@@ -3849,29 +3867,9 @@ class PdfRemediator(BaseRemediator):
                 # 2. Sets MarkInfo.Marked = true
                 if self._struct_tree:
                     # Structure tree already exists (was created in _load_document)
-                    # Always add at least a basic heading to ensure structure is non-empty
-                    # This prevents the follow-up "empty_structure_tree" issue
-                    if issue_type in ["missing_structure_tree", "empty_structure_tree"]:
-                        # Add at least a basic heading to make structure non-empty
-                        # Try to get title from first page
-                        title = "Document"
-                        if document and len(document) > 0:
-                            try:
-                                first_page_text = document[0].get_text("text").strip()
-                                if first_page_text:
-                                    lines = [
-                                        line.strip()
-                                        for line in first_page_text.split("\n")
-                                        if line.strip()
-                                    ]
-                                    if lines:
-                                        title = lines[0][:100]
-                            except Exception:
-                                pass
-                        self._struct_tree.add_heading(1, 1, title)
-                        logger.info(
-                            f"Added H1 heading to structure tree: {title[:50]}..."
-                        )
+                    # ContentTagger creates source-bound elements when saving.
+                    # A heading belongs to the separate heading pass; adding one
+                    # here duplicates it and invents content on empty pages.
 
                     self._structure_modified = True
                     logger.info(f"Structure tree created/fixed for issue: {issue_type}")
@@ -3948,6 +3946,26 @@ class PdfRemediator(BaseRemediator):
             logger.error(f"Error applying alt text fix: {e}")
             return False
 
+    def _refuse_source_binding(self, issue: RemediationIssue, reason: str) -> bool:
+        refusals = getattr(self, "_source_binding_refusals", {})
+        refusals[issue.id] = reason
+        self._source_binding_refusals = refusals
+        return False
+
+    def _reserve_source_text_runs(
+        self, page_index: int, texts: List[str], document: Any
+    ) -> bool:
+        """Reserve whole source runs before adding heading/list candidates."""
+        reservations = getattr(self, "_source_text_run_reservations", {})
+        reserved = reservations.get(page_index, set())
+        tagger = ContentTaggerV2(self._struct_tree.pdf, document)
+        bindings = tagger.source_text_bindings(page_index, texts, reserved)
+        if bindings is None:
+            return False
+        reservations.setdefault(page_index, set()).update(bindings)
+        self._source_text_run_reservations = reservations
+        return True
+
     def _apply_heading_fix(
         self, issue: RemediationIssue, document: Any, fix_content: str
     ) -> bool:
@@ -3981,6 +3999,33 @@ class PdfRemediator(BaseRemediator):
             if not heading_text:
                 logger.warning("No heading text available, cannot apply heading fix")
                 return False
+
+            if not 1 <= page_num <= len(document):
+                return False
+            source_lines = [
+                " ".join(line.split())
+                for line in document[page_num - 1].get_text("text").splitlines()
+            ]
+            if " ".join(heading_text.split()) not in source_lines:
+                logger.warning("Heading text is not a complete source line")
+                return self._refuse_source_binding(
+                    issue, "Heading text is not a complete source line."
+                )
+
+            if self._struct_tree and not self._reserve_source_text_runs(
+                page_num - 1, [heading_text], document
+            ):
+                tagger = ContentTaggerV2(self._struct_tree.pdf, document)
+                if tagger.promote_marked_paragraph_prefix(
+                    page_num - 1, heading_text, heading_level
+                ):
+                    self._structure_modified = True
+                    return True
+                logger.warning("Heading needs a partial text-run split; manual review")
+                return self._refuse_source_binding(
+                    issue,
+                    "Heading cannot be bound to a distinct complete source text run.",
+                )
 
             # Try to add heading structure tag with pikepdf
             if self._struct_tree and heading_text:
@@ -4344,6 +4389,7 @@ class PdfRemediator(BaseRemediator):
             # Use PyMuPDF to find list items on each page
             with fitz.open(self._working_path) as doc:
                 lists_added = 0
+                pending_lists = []
                 for page_num in range(len(doc)):
                     page = doc[page_num]
                     text = page.get_text()
@@ -4353,14 +4399,10 @@ class PdfRemediator(BaseRemediator):
                     current_ordered = False
 
                     def _flush_list():
-                        nonlocal lists_added
                         if len(current_list_items) >= 2:
-                            self._struct_tree.add_list(
-                                page_num=page_num + 1,
-                                items=current_list_items,
-                                ordered=current_ordered,
+                            pending_lists.append(
+                                (page_num, list(current_list_items), current_ordered)
                             )
-                            lists_added += 1
 
                     for line in lines:
                         line = line.strip()
@@ -4374,7 +4416,7 @@ class PdfRemediator(BaseRemediator):
                             # Strip the bullet and any trailing whitespace
                             item_text = line[1:].lstrip()
                             if item_text:
-                                current_list_items.append(item_text)
+                                current_list_items.append(line)
                                 current_ordered = False
                                 continue
 
@@ -4383,7 +4425,7 @@ class PdfRemediator(BaseRemediator):
                         if m:
                             item_text = line[m.end() :].strip()
                             if item_text:
-                                current_list_items.append(item_text)
+                                current_list_items.append(line)
                                 current_ordered = True
                                 continue
 
@@ -4394,6 +4436,28 @@ class PdfRemediator(BaseRemediator):
                     # Flush any remaining list at end of page
                     _flush_list()
                     current_list_items = []
+
+                # Every candidate must bind before any list structure is added.
+                # Otherwise a document-wide finding would be claimed fixed
+                # while an unsafe partial-run list remained unhandled.
+                for page_num, items, _ordered in pending_lists:
+                    if not self._reserve_source_text_runs(page_num, items, doc):
+                        logger.warning(
+                            "List needs a partial text-run split; manual review"
+                        )
+                        return self._refuse_source_binding(
+                            issue,
+                            "List items cannot be bound to distinct complete source text runs.",
+                        )
+                for page_num, items, ordered in pending_lists:
+                    lists_added += int(
+                        self._struct_tree.add_list(
+                            page_num=page_num + 1,
+                            items=items,
+                            ordered=ordered,
+                            source_items=True,
+                        )
+                    )
 
                 if lists_added > 0:
                     self._structure_modified = True
@@ -4560,20 +4624,13 @@ class PdfRemediator(BaseRemediator):
             # Try to extract heading text from issue metadata
             text = issue.metadata.get("text", "")
             if not text:
-                # Try to get title from PDF metadata
-                if self._pdf:
-                    try:
-                        metadata = self._pdf.metadata
-                        if metadata and metadata.get("title"):
-                            text = metadata.get("title")
-                            logger.info(f"Using PDF metadata title for heading: {text}")
-                    except Exception:
-                        pass
-            if not text:
-                # Try to extract from first page text (first line)
+                # Use the target page's source text, never document metadata.
                 if self._pdf and len(self._pdf) > 0:
                     try:
-                        first_page_text = self._pdf[0].get_text("text").strip()
+                        page_index = int(issue.metadata.get("page_number", 1)) - 1
+                        if not 0 <= page_index < len(self._pdf):
+                            return None
+                        first_page_text = self._pdf[page_index].get_text("text").strip()
                         if first_page_text:
                             # Use first non-empty line as title
                             lines = [
@@ -4582,15 +4639,11 @@ class PdfRemediator(BaseRemediator):
                                 if line.strip()
                             ]
                             if lines:
-                                text = lines[0][:100]  # Limit to 100 chars
+                                text = lines[0]
                                 logger.info(f"Using first line as heading: {text}")
                     except Exception:
                         pass
-            if not text:
-                # Fallback to generic title
-                text = "Document Title"
-                logger.info("Using placeholder 'Document Title' for heading")
-            return text
+            return text or None
 
         return None
 
@@ -4881,27 +4934,121 @@ Generate only the alt text, nothing else:"""
                         MatterhornValidator,
                     )
 
-                    mh_result = MatterhornValidator().validate(verification_path)
-                    if mh_result:
-                        failed_checks = [
+                    validator = MatterhornValidator()
+                    before_mh = validator.validate(self.file_path)
+                    after_mh = validator.validate(verification_path)
+                    if (
+                        not before_mh
+                        or not after_mh
+                        or not before_mh.checkpoints
+                        or not after_mh.checkpoints
+                    ):
+                        raise ValueError("Matterhorn comparison unavailable")
+
+                    def checkpoint_key(checkpoint):
+                        return (checkpoint.id, checkpoint.page_number)
+
+                    before_coverage = {
+                        checkpoint.id for checkpoint in before_mh.checkpoints
+                    }
+                    after_coverage = {
+                        checkpoint.id for checkpoint in after_mh.checkpoints
+                    }
+                    # Newly applicable passing checks (for example heading
+                    # hierarchy after adding headings) are useful evidence.
+                    # Lost checks or newly applicable failures lack a baseline.
+                    added = after_coverage - before_coverage
+                    if not before_coverage.issubset(after_coverage) or any(
+                        checkpoint.id in added
+                        and checkpoint.status != CheckpointStatus.PASS
+                        for checkpoint in after_mh.checkpoints
+                    ):
+                        raise ValueError("Matterhorn checkpoint coverage changed")
+                    before_failures = Counter(
+                        checkpoint_key(checkpoint)
+                        for checkpoint in before_mh.checkpoints
+                        if checkpoint.status == CheckpointStatus.FAIL
+                    )
+                    after_failures = Counter(
+                        checkpoint_key(checkpoint)
+                        for checkpoint in after_mh.checkpoints
+                        if checkpoint.status == CheckpointStatus.FAIL
+                    )
+                    new_failures = after_failures - before_failures
+                    persistent = after_failures & before_failures
+                    # Checkpoints can aggregate several broken elements. A
+                    # repeated ID does not prove unchanged damage. Without
+                    # element-level evidence, changed/absent details are unknown.
+                    uncertain_failures = set()
+                    for key in persistent:
+                        before_records = [
                             checkpoint
-                            for checkpoint in mh_result.checkpoints
-                            if checkpoint.status == CheckpointStatus.FAIL
+                            for checkpoint in before_mh.checkpoints
+                            if checkpoint_key(checkpoint) == key
+                            and checkpoint.status == CheckpointStatus.FAIL
                         ]
-                        if failed_checks:
-                            verification.passed = False
-                            verification.regressions.extend(
-                                f"Matterhorn {checkpoint.id}: {checkpoint.name}"
-                                for checkpoint in failed_checks
+                        after_records = [
+                            checkpoint
+                            for checkpoint in after_mh.checkpoints
+                            if checkpoint_key(checkpoint) == key
+                            and checkpoint.status == CheckpointStatus.FAIL
+                        ]
+
+                        def failure_evidence(checkpoint):
+                            return (
+                                getattr(checkpoint, "name", None),
+                                getattr(checkpoint, "severity", None),
+                                getattr(checkpoint, "details", None),
                             )
-                            logger.info(
-                                "Matterhorn: %d failed checkpoints",
-                                len(failed_checks),
+
+                        before_evidence = Counter(map(failure_evidence, before_records))
+                        after_evidence = Counter(map(failure_evidence, after_records))
+                        if (
+                            any(
+                                not isinstance(
+                                    getattr(checkpoint, "details", None), str
+                                )
+                                or not checkpoint.details.strip()
+                                for checkpoint in before_records + after_records
                             )
-                        else:
-                            logger.info("Matterhorn: all checkpoints passed")
+                            or after_evidence - before_evidence
+                        ):
+                            uncertain_failures.add(key)
+                            verification.unavailable_checks.append(
+                                f"matterhorn:{key[0]}:changed_failure_evidence"
+                            )
+                    if uncertain_failures:
+                        verification.passed = False
+                    verification.regressions.extend(
+                        f"Matterhorn {identifier}"
+                        + (f" on page {page}" if page is not None else "")
+                        for (identifier, page), count in new_failures.items()
+                        for _ in range(count)
+                    )
+                    verification.persistent_failures.extend(
+                        f"Matterhorn {identifier}"
+                        + (f" on page {page}" if page is not None else "")
+                        for (identifier, page), count in persistent.items()
+                        if (identifier, page) not in uncertain_failures
+                        for _ in range(count)
+                    )
+                    if new_failures:
+                        verification.passed = False
                 except Exception as e:
-                    logger.warning("Matterhorn validation skipped: %s", e)
+                    verification.passed = False
+                    verification.unavailable_checks.append("matterhorn")
+                    logger.warning("Matterhorn comparison unavailable: %s", e)
+
+                # Bind the validator comparison as well as the scanner scores
+                # to unchanged source and output bytes.
+                measurement = finish_measurement(
+                    snapshot,
+                    self.file_path,
+                    verification_path,
+                    source_result.compliance_score,
+                    new_result.compliance_score,
+                    "pdf-strict-v1",
+                )
 
             self.result.verification_passed = verification.passed
             self.result.verification_result = verification

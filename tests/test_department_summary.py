@@ -16,6 +16,8 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from src.api.review_routes import DepartmentSummary
+from src.auth.dependencies import AuthenticatedPrincipal
+from src.db.models import UserRole
 
 # ---------------------------------------------------------------------------
 # Pydantic model tests
@@ -98,16 +100,17 @@ class TestDepartmentSummaryModel:
 def _make_client(mock_db_session, auth_override=None):
     """Create a test client with overridden dependencies."""
     from src.api.main import app
-    from src.auth.dependencies import get_required_api_key
+    from src.auth.dependencies import get_authenticated_principal
     from src.db.database import get_db_dependency
 
     if auth_override is None:
-        mock_api_key = MagicMock()
-        mock_api_key.user_id = "test-user"
-        mock_api_key.department_id = "test-dept"
-        auth_override = lambda: (mock_api_key, "test-user", "test-dept")  # noqa: E731
 
-    app.dependency_overrides[get_required_api_key] = auth_override
+        def auth_override():
+            return AuthenticatedPrincipal(
+                None, "test-user", "test-dept", UserRole.FACULTY, "session"
+            )
+
+    app.dependency_overrides[get_authenticated_principal] = auth_override
     app.dependency_overrides[get_db_dependency] = lambda: mock_db_session
 
     client = TestClient(app)
@@ -116,10 +119,10 @@ def _make_client(mock_db_session, auth_override=None):
 
 def _cleanup(app):
     """Remove dependency overrides."""
-    from src.auth.dependencies import get_required_api_key
+    from src.auth.dependencies import get_authenticated_principal
     from src.db.database import get_db_dependency
 
-    app.dependency_overrides.pop(get_required_api_key, None)
+    app.dependency_overrides.pop(get_authenticated_principal, None)
     app.dependency_overrides.pop(get_db_dependency, None)
 
 
@@ -337,11 +340,11 @@ class TestDepartmentSummaryEndpoint:
     def test_auth_required(self):
         """Endpoint should return 401 when no auth is provided."""
         from src.api.main import app
-        from src.auth.dependencies import get_required_api_key
+        from src.auth.dependencies import get_authenticated_principal
         from src.db.database import get_db_dependency
 
         # Clear any overrides to test real auth behavior
-        app.dependency_overrides.pop(get_required_api_key, None)
+        app.dependency_overrides.pop(get_authenticated_principal, None)
         app.dependency_overrides.pop(get_db_dependency, None)
 
         client = TestClient(app, raise_server_exceptions=False)

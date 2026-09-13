@@ -270,6 +270,7 @@ export function Sidebar(): React.ReactElement {
         }}
         onKeyDown={handleKeyDownTrap}
         aria-hidden={!mobileOpen}
+        inert={!mobileOpen}
       >
         <div className="pt-16">
           <NavContent onItemClick={() => setMobileOpen(false)} navigation={navigation} />

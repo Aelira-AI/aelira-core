@@ -59,6 +59,7 @@ from ..services.remediation_artifact_service import (
 )
 from ..services.scan_fix_service import persist_scan_fixes
 from ..education.remediation.score_reporting import score_fields
+from ..education.remediation.outcome_accounting import outcome_accounting
 from .contracts import LostJobOwnership
 from .remediation_subprocess import (
     RemediationSubprocessError,
@@ -317,6 +318,10 @@ def transition_retryable_remediation_job(
 
 
 _SAFE_RESULT_FIELDS = {
+    "withheld_count",
+    "outcome_unreported_count",
+    "remaining_count",
+    "issue_outcomes",
     "success",
     "fixed_count",
     "manual_count",
@@ -368,9 +373,26 @@ def _safe_failure_result(
         "failed_count",
         "skipped_count",
         "total_issues",
+        "withheld_count",
+        "outcome_unreported_count",
+        "remaining_count",
     ):
         value = source.get(field, 0)
         safe[field] = value if type(value) is int and value >= 0 else 0
+    from .contracts import public_job_result
+
+    if "issue_outcomes" in source:
+        safe["issue_outcomes"] = (public_job_result(source) or {}).get(
+            "issue_outcomes", []
+        )
+        for outcome in safe["issue_outcomes"]:
+            if outcome["status"] == "fixed":
+                outcome["status"] = "withheld"
+    # A terminal failure has no delivered artifact, even if a legacy handler
+    # reports provisional changes as fixed.
+    safe["withheld_count"] += safe["fixed_count"]
+    safe["fixed_count"] = 0
+    safe["remaining_count"] = safe["total_issues"]
     scan_id = source.get("scan_id")
     if not isinstance(scan_id, str) and scan is not None:
         scan_id = str(scan.id)
@@ -866,6 +888,30 @@ async def process_remediation_job(
             if approved_fixes_only
             else (scan_result.issues or [])
         )
+        # Give findings without IDs stable source-array identities before the
+        # remediator normalizes them. Do not mutate persisted scan findings.
+        original_source_issues = issues
+        issues = [
+            (
+                {**issue, "id": issue.get("id") or f"source-{index}"}
+                if isinstance(issue, dict)
+                else issue
+            )
+            for index, issue in enumerate(issues)
+        ]
+        source_issues = issues
+
+        def account_outcomes(result, *, published):
+            return outcome_accounting(
+                source_issues,
+                result,
+                published=published,
+                original_issues=original_source_issues,
+                source_index_scope=(
+                    "approved_subset" if approved_fixes_only else "original_scan"
+                ),
+            )
+
         embedded_alt_manual = []
         if lms_policy_authoritative and scan.scan_type not in (
             "IMAGE",
@@ -1078,6 +1124,7 @@ async def process_remediation_job(
                 "skipped_count": remediation_result.skipped_count,
                 "total_issues": remediation_result.total_issues,
                 "scan_id": scan_id,
+                **account_outcomes(remediation_result, published=False),
             }
 
         artifact = None
@@ -1133,6 +1180,7 @@ async def process_remediation_job(
                     "skipped_count": remediation_result.skipped_count,
                     "total_issues": remediation_result.total_issues,
                     "scan_id": scan_id,
+                    **account_outcomes(remediation_result, published=False),
                 }
 
             artifact_service = RemediationArtifactService.from_settings()
@@ -1199,6 +1247,7 @@ async def process_remediation_job(
                         "skipped_count": remediation_result.skipped_count,
                         "total_issues": remediation_result.total_issues,
                         "scan_id": scan_id,
+                        **account_outcomes(remediation_result, published=False),
                     }
                 if is_pdf:
                     pdf_claim_metadata = output_claim_metadata
@@ -1398,6 +1447,9 @@ async def process_remediation_job(
             "scan_id": scan_id,
         }
         response.update(
+            account_outcomes(remediation_result, published=artifact is not None)
+        )
+        response.update(
             score_fields(
                 {
                     "original_compliance_score": getattr(
@@ -1428,6 +1480,14 @@ async def process_remediation_job(
         )
         response["human_review_required"] = (
             not response["score_verified"]
+            or getattr(remediation_result, "human_review_required", False) is True
+            or bool(
+                getattr(
+                    getattr(remediation_result, "verification_result", None),
+                    "persistent_failures",
+                    [],
+                )
+            )
             or not getattr(remediation_result, "verification_passed", False)
             or any(fix.needs_review for fix in remediation_result.fixed_issues)
             or (response["compliance_improvement"] or 0) < 0

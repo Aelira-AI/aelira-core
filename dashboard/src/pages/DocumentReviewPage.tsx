@@ -10,7 +10,9 @@ import {
 import { AxiosError } from 'axios';
 import { apiClient } from '../api/client';
 import { useToast } from '../context/toast-context';
+import { useAbortableRequestOwner } from '../hooks/useAbortableRequestOwner';
 import { FixCard } from '../components/review/FixCard';
+import { ReadingOrderComparison } from '../components/review/ReadingOrderComparison';
 import { MatterhornResultsBar } from '../components/review/MatterhornResultsBar';
 import {
   VisualAnalysisStatusPanel,
@@ -80,6 +82,10 @@ const EVIDENCE_FORMATS: { value: ReviewEvidenceFormat; label: string }[] = [
 
 export function DocumentReviewPage(): React.ReactElement {
   const { scanId } = useParams<{ scanId: string }>();
+  return <DocumentReviewContent key={scanId} scanId={scanId} />;
+}
+
+function DocumentReviewContent({ scanId }: { scanId: string | undefined }): React.ReactElement {
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -89,16 +95,21 @@ export function DocumentReviewPage(): React.ReactElement {
   const [fixFilter, setFixFilter] = useState<FixFilter>('all');
   const [approveAllLoading, setApproveAllLoading] = useState(false);
   const [downloadingFormat, setDownloadingFormat] = useState<ReviewEvidenceFormat | null>(null);
+  const reviewOwner = useAbortableRequestOwner(scanId);
 
   // Fetch document review data
   const fetchReview = useCallback(async (): Promise<void> => {
     if (!scanId) return;
+    const attempt = reviewOwner.begin();
     try {
       setLoading(true);
-      const response = await apiClient.get<DocumentReview>(`/api/reviews/${scanId}`);
+      const response = await apiClient.get<DocumentReview>(`/api/reviews/${scanId}`, { signal: attempt.controller.signal });
+      if (!reviewOwner.isCurrent(attempt)) return;
+      if (response.data.scan_id !== scanId) throw new Error('Review response does not match this document.');
       setReview(response.data);
       setError(null);
     } catch (err: unknown) {
+      if (!reviewOwner.isCurrent(attempt)) return;
       console.error('Failed to fetch review:', err);
       const message = err instanceof AxiosError
         ? err.response?.data?.detail || err.message
@@ -107,9 +118,9 @@ export function DocumentReviewPage(): React.ReactElement {
           : 'An unexpected error occurred';
       setError(message);
     } finally {
-      setLoading(false);
+      if (reviewOwner.finish(attempt)) setLoading(false);
     }
-  }, [scanId]);
+  }, [scanId, reviewOwner]);
 
   useEffect(() => {
     let cancelled = false;
@@ -322,7 +333,7 @@ export function DocumentReviewPage(): React.ReactElement {
     );
   }
 
-  if (error || !review) {
+  if (error || !review || review.scan_id !== scanId) {
     return (
       <div className="p-8">
         <div className="max-w-6xl mx-auto">
@@ -344,23 +355,23 @@ export function DocumentReviewPage(): React.ReactElement {
   const needsReviewCount = summary.needs_review_count;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
+    <div className="flex min-w-0 flex-col min-h-[calc(100dvh-4rem)]">
       {/* Top bar */}
       <div
-        className="flex flex-col gap-3 px-4 py-3 shrink-0 sm:flex-row sm:items-center sm:justify-between sm:px-6"
+        className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 shrink-0 sm:px-6"
         style={{ backgroundColor: 'var(--surface-secondary)', borderBottom: '1px solid var(--border-primary)' }}
       >
-        <div className="flex items-center gap-3 min-w-0 w-full sm:w-auto sm:gap-4">
+        <div className="flex flex-[1_1_20rem] items-center gap-3 min-w-0 sm:gap-4">
           <button
             onClick={() => navigate('/review')}
-            className="p-1.5 rounded hover:bg-[var(--surface-tertiary)] transition-colors"
+            className="p-1.5 shrink-0 rounded hover:bg-[var(--surface-tertiary)] transition-colors"
             aria-label="Back to review queue"
           >
             <ArrowLeft className="w-5 h-5 text-[var(--content-secondary)]" aria-hidden="true" />
           </button>
           <div className="flex items-center gap-2 min-w-0">
             <FileText className="w-5 h-5 text-[var(--accent)] shrink-0" aria-hidden="true" />
-            <h1 className="text-lg font-semibold text-primary truncate">{review.file_name}</h1>
+            <h1 className="text-lg font-semibold text-primary truncate" title={review.file_name}>{review.file_name}</h1>
           </div>
           <div className="hidden items-center gap-4 text-sm text-secondary shrink-0 md:flex">
             <span>{summary.total_fixes} fixes</span>
@@ -372,14 +383,14 @@ export function DocumentReviewPage(): React.ReactElement {
             )}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto sm:justify-end">
-          <div className="flex items-center gap-1" role="group" aria-label="Download review evidence">
+        <div className="flex flex-wrap items-center gap-2 max-w-full sm:justify-end">
+          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Download review evidence">
             {EVIDENCE_FORMATS.map(({ value, label }) => (
               <button
                 key={value}
                 onClick={() => handleEvidenceDownload(value)}
                 disabled={downloadingFormat !== null}
-                className="btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5 disabled:opacity-50"
+                className="btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
                 aria-label={`Download ${label} review evidence`}
               >
                 {downloadingFormat === value ? (
@@ -395,7 +406,7 @@ export function DocumentReviewPage(): React.ReactElement {
             <button
               onClick={handleApproveAll}
               disabled={approveAllLoading}
-              className="btn-primary text-sm py-1.5 px-4 flex items-center gap-2 disabled:opacity-50"
+              className="btn-primary text-sm py-1.5 px-4 flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
               aria-label={`Approve all ${needsReviewCount} pending fixes`}
             >
               {approveAllLoading ? (
@@ -409,30 +420,18 @@ export function DocumentReviewPage(): React.ReactElement {
         </div>
       </div>
 
-      {/* Main content - split view */}
-      <div className="flex flex-1 min-h-0">
-        {/* Left panel - source preview status */}
-        <div
-          className="hidden lg:flex lg:flex-col w-1/2 border-r border-[var(--border-primary)]"
-          style={{ backgroundColor: 'var(--surface-tertiary)' }}
-        >
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center p-8 max-w-md">
-              <FileText className="w-16 h-16 mx-auto mb-4 text-[var(--content-tertiary)] opacity-40" aria-hidden="true" />
-              <p className="text-lg font-medium text-primary">Document preview unavailable</p>
-              <p className="text-sm text-tertiary mt-2">
-                This review record does not include document-bound preview, table structure, or reading-order data. Review the sourced fixes on the right.
-              </p>
-            </div>
-          </div>
-        </div>
+      {/* Main content */}
+      <div className="flex flex-1 flex-col min-w-0">
+        <ReadingOrderComparison key={scanId} scanId={scanId!} />
 
-        {/* Right panel - fix list */}
+        {/* Fix list */}
         <div className="flex-1 flex flex-col min-w-0">
           <VisualAnalysisStatusPanel analyses={review.visual_analyses} />
           {/* Filter bar */}
           <div
-            className="flex items-center gap-2 px-4 py-2 shrink-0 overflow-x-auto"
+            className="flex flex-wrap items-center gap-2 px-4 py-2 shrink-0"
+            role="group"
+            aria-label="Filter fixes"
             style={{ borderBottom: '1px solid var(--border-primary)' }}
           >
             {(
@@ -463,7 +462,7 @@ export function DocumentReviewPage(): React.ReactElement {
           </div>
 
           {/* Fix cards */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex-1 p-4 space-y-3">
             {filteredFixes.length === 0 ? (
               <div className="text-center py-12">
                 <CheckCircle2 className="w-10 h-10 mx-auto text-[var(--feature-success-content)] mb-3" aria-hidden="true" />

@@ -1354,6 +1354,32 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         output_sha256=getattr(score_artifact, "sha256", None) or "",
     )
     downloadable, artifact = _artifact_is_downloadable(db, job, scan_id)
+    if not downloadable and str(job.status) == "failed":
+        # Repair legacy display accounting without changing historical records
+        # or inventing per-finding dispositions. Prior fix claims were withheld.
+        previous_fixed = result.get("fixed_count")
+        result["fixed_count"] = 0
+        for outcome in result.get("issue_outcomes", []):
+            if outcome["status"] == "fixed":
+                outcome["status"] = "withheld"
+        if "withheld_count" not in result and type(previous_fixed) is int:
+            result["withheld_count"] = previous_fixed
+        known_counts = [
+            result.get(key)
+            for key in (
+                "manual_count",
+                "failed_count",
+                "skipped_count",
+                "withheld_count",
+            )
+        ]
+        total = result.get("total_issues")
+        if (
+            "outcome_unreported_count" not in result
+            and type(total) is int
+            and all(type(count) is int for count in known_counts)
+        ):
+            result["outcome_unreported_count"] = max(0, total - sum(known_counts))
     progress = job.progress if type(job.progress) is int else 0
     unresolved_counts = (
         result.get("manual_count"),
@@ -1365,6 +1391,16 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         if all(type(value) is int for value in unresolved_counts)
         else None
     )
+    if type(result.get("remaining_count")) is int:
+        remaining_count = result["remaining_count"]
+    # Older jobs may have withheld partial work without storing dispositions.
+    # With no published artifact, none of those source findings were delivered fixed.
+    if (
+        not downloadable
+        and str(job.status) == "failed"
+        and type(result.get("total_issues")) is int
+    ):
+        remaining_count = result["total_issues"]
     return {
         "job_id": str(job.id),
         "scan_id": scan_id,
@@ -1377,7 +1413,14 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         "started_at": job.started_at,
         "completed_at": job.completed_at,
         "error_code": public_job_error_code(job.last_error_code),
-        "fixed_count": result.get("fixed_count"),
+        "fixed_count": (
+            0
+            if not downloadable and str(job.status) == "failed"
+            else result.get("fixed_count")
+        ),
+        "withheld_count": result.get("withheld_count"),
+        "outcome_unreported_count": result.get("outcome_unreported_count"),
+        "issue_outcomes": result.get("issue_outcomes", []),
         "manual_count": result.get("manual_count"),
         "failed_count": result.get("failed_count"),
         "skipped_count": result.get("skipped_count"),
@@ -1401,17 +1444,15 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
     }
 
 
-def _enqueue_scan_remediation(
+def _resolve_remediation_queue_source(
     db: Session,
     *,
     scan: Scan,
     principal: AuthenticatedPrincipal,
-    options: dict[str, Any],
-    commit: bool = True,
-) -> CloudJobQueue:
+) -> tuple[CloudFile | None, CloudOAuthCredentials | None]:
+    """Resolve the authorized source identically for eligibility and enqueue."""
     authorized = authorize_scan_access(db, scan, principal)
     cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized)
-    provider = cloud_file.provider if cloud_file is not None else "local"
     credential = None
     if cloud_file is not None and cloud_file.credential_id:
         credential = _get_bound_cloud_credential(
@@ -1423,6 +1464,65 @@ def _enqueue_scan_remediation(
         source_path = scan.storage_path
         if not isinstance(source_path, str) or not os.path.isfile(source_path):
             raise HTTPException(status_code=400, detail="Original file not available")
+    return cloud_file, credential
+
+
+def document_remediation_eligibility(
+    db: Session, scan: Scan, principal: AuthenticatedPrincipal
+) -> dict[str, Any]:
+    """Read-only document queue preflight, never a per-finding fix promise.
+
+    Policy, remote fetch and saved-output verification still run in the worker.
+    Code/website approval workflows and standalone image descriptions are not
+    document batch remediation. The source is rechecked when a job is queued.
+    """
+    authorize_scan_access(db, scan, principal)
+    if scan.scan_type not in {
+        ScanType.PDF,
+        ScanType.WORD,
+        ScanType.EXCEL,
+        ScanType.POWERPOINT,
+        ScanType.LATEX,
+        ScanType.VIDEO,
+        ScanType.MULTIMEDIA,
+    }:
+        return {"eligible": False, "reason": "unsupported_document_type"}
+    if scan.status != ScanStatus.COMPLETED:
+        return {"eligible": False, "reason": "scan_not_completed"}
+    if not scan.result:
+        return {"eligible": False, "reason": "scan_results_unavailable"}
+    try:
+        cloud_file, credential = _resolve_remediation_queue_source(
+            db, scan=scan, principal=principal
+        )
+    except HTTPException as exc:
+        if exc.status_code != 400:
+            raise
+        return {"eligible": False, "reason": "source_file_unavailable"}
+    if cloud_file is not None:
+        if cloud_file.provider not in {"google", "microsoft", "canvas", "blackboard"}:
+            return {"eligible": False, "reason": "unsupported_source_provider"}
+        if (
+            credential is None
+            or credential.is_active is not True
+            or not cloud_file.provider_file_id
+        ):
+            return {"eligible": False, "reason": "source_file_unavailable"}
+    return {"eligible": True, "reason": None}
+
+
+def _enqueue_scan_remediation(
+    db: Session,
+    *,
+    scan: Scan,
+    principal: AuthenticatedPrincipal,
+    options: dict[str, Any],
+    commit: bool = True,
+) -> CloudJobQueue:
+    cloud_file, credential = _resolve_remediation_queue_source(
+        db, scan=scan, principal=principal
+    )
+    provider = cloud_file.provider if cloud_file is not None else "local"
     purposes = []
     if options.get("use_ai") is True:
         purposes.append("remediation")

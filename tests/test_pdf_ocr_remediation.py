@@ -1980,6 +1980,7 @@ def test_output_claim_and_verification_use_exact_bytes_after_output_path_mutates
     verification_dirs = []
     real_save = PdfRemediator._save_document
     real_mkdtemp = tempfile.mkdtemp
+    real_validate = matterhorn_mod.MatterhornValidator.validate
 
     def save_then_mutate_path(self, document):
         output_path = real_save(self, document)
@@ -2014,7 +2015,7 @@ def test_output_claim_and_verification_use_exact_bytes_after_output_path_mutates
 
     def validate_exact_bytes(self, path):
         matterhorn_reads.append(Path(path).read_bytes())
-        return None
+        return real_validate(self, path)
 
     config = _config(tmp_path)
     config.verify_fixes = True
@@ -2040,7 +2041,7 @@ def test_output_claim_and_verification_use_exact_bytes_after_output_path_mutates
         "source_score": 90.0,
         "output_score": 100.0,
     }
-    assert matterhorn_reads == expected
+    assert matterhorn_reads == [input_pdf.read_bytes(), *expected]
     with result.open_output_stream() as stream:
         assert stream.read() == expected[0]
     assert len(verification_dirs) == 1
@@ -2062,6 +2063,7 @@ def test_output_claim_snapshots_validated_bytes_before_final_rename_returns(
     matterhorn_reads = []
     mutation = b"caller-visible inode mutation"
     real_rename = os.rename
+    real_validate = matterhorn_mod.MatterhornValidator.validate
 
     def rename_then_mutate_final(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
         if src != "candidate.pdf":
@@ -2099,7 +2101,7 @@ def test_output_claim_snapshots_validated_bytes_before_final_rename_returns(
 
     def validate_exact_bytes(self, path):
         matterhorn_reads.append(Path(path).read_bytes())
-        return None
+        return real_validate(self, path)
 
     config = _config(tmp_path)
     config.verify_fixes = True
@@ -2132,7 +2134,7 @@ def test_output_claim_snapshots_validated_bytes_before_final_rename_returns(
         result.score_measurement["output_sha256"]
         == hashlib.sha256(expected).hexdigest()
     )
-    assert matterhorn_reads == [expected]
+    assert matterhorn_reads == [input_pdf.read_bytes(), expected]
     with result.open_output_stream() as stream:
         assert stream.read() == expected
 

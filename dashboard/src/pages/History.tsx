@@ -87,7 +87,6 @@ export function History(): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>('all');
   const [downloadingReport, setDownloadingReport] = useState<string | null>(null);
-  const [downloadingFixes, setDownloadingFixes] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<boolean>(false);
   const [deleteConfirm, setDeleteConfirm] = useState<Scan | null>(null);
   const navigate = useNavigate();
@@ -116,26 +115,7 @@ export function History(): React.ReactElement {
     }
   };
 
-  const handleDownloadFixes = async (scan: Scan): Promise<void> => {
-    setDownloadingFixes(scan.id);
-    try {
-      const blob = await scansApi.downloadRemediated(scan.id);
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `remediated-${scan.filename}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-      toast.success('Remediated file downloaded', 'Download Complete');
-    } catch (err) {
-      console.error('Failed to download remediated file:', err);
-      toast.error('No remediated file available. Run remediation first from the scan detail page.', 'Download Failed');
-    } finally {
-      setDownloadingFixes(null);
-    }
-  };
+
 
   const handleDeleteScan = async (scan: Scan): Promise<void> => {
     setDeleting(true);
@@ -329,7 +309,7 @@ export function History(): React.ReactElement {
                       </div>
                     </div>
                   </div>
-                  <span className={`px-2.5 py-1 text-xs font-semibold rounded-full shrink-0 ml-2 ${scan.compliance_score == null ? 'text-tertiary bg-[var(--surface-tertiary)]' : getScoreColor(scan.compliance_score)}`}>
+                  <span className={`px-2.5 py-1 text-xs font-semibold rounded-full shrink-0 ml-2 ${scan.compliance_score == null ? 'text-secondary bg-[var(--surface-tertiary)]' : getScoreColor(scan.compliance_score)}`}>
                     {scan.compliance_score == null ? 'Unverified' : `${scan.compliance_score}/100`}
                   </span>
                 </div>
@@ -358,16 +338,11 @@ export function History(): React.ReactElement {
                       )}
                     </button>
                     <button
-                      onClick={() => handleDownloadFixes(scan)}
-                      disabled={downloadingFixes === scan.id}
+                      onClick={() => navigate(`/remediate/${scan.id}`)}
                       className="p-2 text-tertiary hover:text-[var(--content-success)] transition-colors rounded-lg hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
-                      aria-label={`Download remediated file for ${scan.filename}`}
+                      aria-label={`Open remediation review for ${scan.filename}`}
                     >
-                      {downloadingFixes === scan.id ? (
-                        <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <FileCode className="w-4 h-4" aria-hidden="true" />
-                      )}
+                      <FileCode className="w-4 h-4" aria-hidden="true" />
                     </button>
                     <button
                       onClick={() => setDeleteConfirm(scan)}
@@ -393,22 +368,22 @@ export function History(): React.ReactElement {
                 </caption>
                 <thead>
                   <tr>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-tertiary uppercase tracking-wider">
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">
                       File Name
                     </th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-tertiary uppercase tracking-wider">
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">
                       Type
                     </th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-tertiary uppercase tracking-wider">
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">
                       Uploaded
                     </th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-tertiary uppercase tracking-wider">
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">
                       Score
                     </th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-tertiary uppercase tracking-wider">
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">
                       Issues
                     </th>
-                    <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-tertiary uppercase tracking-wider">
+                    <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-secondary uppercase tracking-wider">
                       Actions
                     </th>
                   </tr>
@@ -436,7 +411,7 @@ export function History(): React.ReactElement {
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`px-3 py-1 text-sm font-semibold rounded-full ${scan.compliance_score == null ? 'text-tertiary bg-[var(--surface-tertiary)]' : getScoreColor(scan.compliance_score)}`}>
+                        <span className={`px-3 py-1 text-sm font-semibold rounded-full ${scan.compliance_score == null ? 'text-secondary bg-[var(--surface-tertiary)]' : getScoreColor(scan.compliance_score)}`}>
                           {scan.compliance_score == null ? 'Unverified' : `${scan.compliance_score}/100`}
                         </span>
                       </td>
@@ -467,16 +442,11 @@ export function History(): React.ReactElement {
                             )}
                           </button>
                           <button
-                            onClick={() => handleDownloadFixes(scan)}
-                            disabled={downloadingFixes === scan.id}
+                            onClick={() => navigate(`/remediate/${scan.id}`)}
                             className="p-2 text-tertiary hover:text-[var(--content-success)] transition-colors rounded-lg hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
-                            aria-label={`Download remediated file for ${scan.filename}`}
+                            aria-label={`Open remediation review for ${scan.filename}`}
                           >
-                            {downloadingFixes === scan.id ? (
-                              <Loader className="w-5 h-5 animate-spin" aria-hidden="true" />
-                            ) : (
-                              <FileCode className="w-5 h-5" aria-hidden="true" />
-                            )}
+                            <FileCode className="w-5 h-5" aria-hidden="true" />
                           </button>
                           <button
                             onClick={() => setDeleteConfirm(scan)}

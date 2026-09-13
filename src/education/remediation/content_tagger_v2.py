@@ -30,6 +30,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -306,6 +307,7 @@ class ContentTaggerV2:
         fitz_doc: Any,
         *,
         excluded_image_occurrences: Optional[List[Any]] = None,
+        order_generated_structure: bool = False,
     ) -> None:
         if not HAS_PIKEPDF:
             raise ImportError(
@@ -319,6 +321,9 @@ class ContentTaggerV2:
             )
         self.pdf = pdf
         self.fitz_doc = fitz_doc
+        self._order_generated_structure = order_generated_structure
+        self._content_positions: Dict[tuple, tuple[int, int]] = {}
+        self._marked_positions: Dict[tuple, tuple[int, int]] = {}
         self._excluded_image_occurrences: Dict[int, set[tuple[int, int]]] = {}
         for pending in excluded_image_occurrences or []:
             page_idx = int(pending.page_number) - 1
@@ -350,6 +355,358 @@ class ContentTaggerV2:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _complete_text_match(block_text: str, source_text: str) -> bool:
+        if block_text.startswith("\ufffd ") and source_text.startswith("\u2022 "):
+            block_text = "\u2022 " + block_text[2:]
+        return "".join(_normalize_nfkd(block_text).split()) == "".join(
+            _normalize_nfkd(source_text).split()
+        )
+
+    def source_text_bindings(
+        self, page_index: int, texts: List[str], reserved: set[int]
+    ) -> Optional[List[int]]:
+        """Find distinct complete text runs before generating semantic nodes.
+
+        No structure or content is changed. A partial BT run needs a splitter
+        or human review, not a semantic node whose ActualText hides other words.
+        """
+        page = self.pdf.pages[page_index]
+        ops = list(pikepdf.parse_content_stream(page))
+        candidates = [
+            (start, _extract_text_from_ops(ops[start:end]))
+            for start, end, kind in self._find_content_blocks(ops, page)
+            if kind == "text" and start not in reserved
+        ]
+        selected: List[int] = []
+        for text in texts:
+            match = next(
+                (
+                    start
+                    for start, block_text in candidates
+                    if start not in selected
+                    and block_text
+                    and self._complete_text_match(block_text, text)
+                ),
+                None,
+            )
+            if match is None:
+                return None
+            selected.append(match)
+        return selected
+
+    def promote_marked_paragraph_prefix(
+        self, page_index: int, text: str, level: int
+    ) -> bool:
+        """Bind a heading to the first complete BT of a uniquely owned paragraph.
+
+        The existing paragraph retains its MCID and remaining text. This bounded
+        path accepts plain standard-font text runs, never splits a BT, and never
+        introduces replacement text. Unsupported or ambiguous bindings are left
+        for manual review before any content or structure mutation.
+        """
+        try:
+            if self._parent_tree_parse_error is not None or level not in range(1, 7):
+                return False
+            page = self.pdf.pages[page_index]
+            key = page.obj.get(Name.StructParents)
+            if not isinstance(key, int) or key < 0:
+                return False
+            if sum(p.obj.get(Name.StructParents) == key for p in self.pdf.pages) != 1:
+                return False
+            root = self.pdf.Root.StructTreeRoot
+            parent_tree, entries = _number_tree_entries(root)
+            owners = dict(entries).get(key)
+            if not isinstance(owners, Array):
+                return False
+            ops = list(pikepdf.parse_content_stream(page))
+            regions = []
+            opened = None
+            seen_mcids = set()
+            text_start = None
+            source_runs = []
+            for index, op in enumerate(ops):
+                name = str(op.operator)
+                if name == "Do":
+                    # Form text has a separate resource/content scope. This
+                    # bounded path cannot prove page-wide title uniqueness.
+                    return False
+                if name == "BT":
+                    if text_start is not None:
+                        return False
+                    text_start = index
+                elif name == "ET":
+                    if text_start is None:
+                        return False
+                    run = ops[text_start : index + 1]
+                    run_text = _extract_text_from_ops(run)
+                    if any(
+                        str(item.operator) in {"Tj", "TJ", "'", '"'} for item in run
+                    ):
+                        if not run_text or not self._plain_standard_text_run(page, run):
+                            return False
+                        source_runs.append(run_text)
+                    text_start = None
+                elif name in {"Tj", "TJ", "'", '"'} and text_start is None:
+                    return False
+                if name in {"BMC", "BDC"}:
+                    if opened is not None or name != "BDC" or len(op.operands) != 2:
+                        return False
+                    props = op.operands[1]
+                    if not isinstance(props, Dictionary) or set(props.keys()) != {
+                        "/MCID"
+                    }:
+                        return False
+                    mcid = props.MCID
+                    if not isinstance(mcid, int) or mcid < 0 or mcid in seen_mcids:
+                        return False
+                    seen_mcids.add(mcid)
+                    opened = (index, mcid)
+                elif name == "EMC":
+                    if opened is None:
+                        return False
+                    regions.append((*opened, index))
+                    opened = None
+            if opened is not None or text_start is not None:
+                return False
+            compact_title = "".join(_normalize_nfkd(text).split())
+            compact_source = "".join(_normalize_nfkd("".join(source_runs)).split())
+            if not compact_title or compact_source.count(compact_title) != 1:
+                return False
+
+            candidates = []
+            for start, mcid, end in regions:
+                if mcid >= len(owners):
+                    return False
+                owner = owners[mcid]
+                if (
+                    not isinstance(owner, Dictionary)
+                    or str(owner.get(Name.S)) != "/P"
+                    or owner.get(Name.K) != mcid
+                    or str(ops[start].operands[0]) != "/P"
+                ):
+                    continue
+                runs = self._find_content_blocks(ops[start + 1 : end], page)
+                # Require two or more contiguous, complete BT/ET runs. A
+                # prefix leaves the original paragraph as one contiguous span.
+                if len(runs) < 2 or runs[0][0] != 0 or runs[-1][1] != end - start - 1:
+                    continue
+                if any(
+                    kind != "text"
+                    or str(ops[start + last].operator) != "ET"
+                    or (i and first != runs[i - 1][1])
+                    or sum(
+                        str(op.operator) == "BT"
+                        for op in ops[start + 1 + first : start + 1 + last]
+                    )
+                    != 1
+                    for i, (first, last, kind) in enumerate(runs)
+                ):
+                    continue
+                first_end = start + 1 + runs[0][1]
+                run = ops[start + 1 : first_end]
+                if not self._plain_standard_text_run(page, run):
+                    continue
+                if _extract_text_from_ops(run) != text:
+                    continue
+                candidates.append((start, first_end, mcid, owner))
+            if len(candidates) != 1:
+                return False
+            start, first_end, mcid, owner = candidates[0]
+            if owner.objgen == (0, 0):
+                return False
+            # Resolve the real containment edge, including documents whose
+            # page ownership exists only in ParentTree. Refuse shared nodes,
+            # contradictory /P or /Pg, and inherited replacement semantics.
+            matches = []
+            visited = set()
+            referenced_mcids = set()
+
+            def check_reference(reference, reference_owner, page_ref):
+                if page_ref is not None and page_ref.objgen != page.obj.objgen:
+                    return
+                if (
+                    not isinstance(reference, int)
+                    or reference < 0
+                    or reference >= len(owners)
+                    or reference not in seen_mcids
+                    or not isinstance(owners[reference], Dictionary)
+                    or owners[reference].objgen != reference_owner.objgen
+                    or reference in referenced_mcids
+                ):
+                    raise ValueError("Ambiguous or dangling structure MCID reference")
+                referenced_mcids.add(reference)
+
+            def visit(
+                node, parent=None, inherited_page=None, replacement=False, depth=0
+            ):
+                if depth > 50 or len(visited) > 20000:
+                    raise ValueError("Structure traversal limit")
+                if isinstance(node, int):
+                    check_reference(node, parent, inherited_page)
+                    return
+                if not isinstance(node, Dictionary):
+                    return
+                identity = node.objgen
+                if identity != (0, 0):
+                    if identity in visited:
+                        raise ValueError("Shared or cyclic structure node")
+                    visited.add(identity)
+                replacement = replacement or any(
+                    k in node for k in (Name.ActualText, Name.Alt)
+                )
+                page_ref = node.get(Name.Pg, inherited_page)
+                if Name.MCID in node:
+                    check_reference(node.MCID, parent, page_ref)
+                if identity == owner.objgen:
+                    if replacement or (
+                        page_ref is not None and page_ref.objgen != page.obj.objgen
+                    ):
+                        raise ValueError("Ambiguous paragraph semantics or page")
+                    if Name.P in node and node.P.objgen != parent.objgen:
+                        raise ValueError("Contradictory paragraph parent")
+                    matches.append(parent)
+                kids = node.get(Name.K, Array([]))
+                for child in kids if isinstance(kids, Array) else [kids]:
+                    visit(child, node, page_ref, replacement, depth + 1)
+
+            visit(root)
+            if referenced_mcids != seen_mcids:
+                return False
+            if len(matches) != 1 or str(matches[0].get(Name.S)) not in {
+                "/Document",
+                "/Sect",
+                "/Div",
+            }:
+                return False
+            parent = matches[0]
+            if parent.objgen == (0, 0):
+                return False
+            siblings = parent.K
+            if not isinstance(siblings, Array):
+                return False
+            siblings = list(siblings)
+            sibling_index = next(
+                i
+                for i, child in enumerate(siblings)
+                if isinstance(child, Dictionary) and child.objgen == owner.objgen
+            )
+            if (
+                sum(
+                    isinstance(item, Dictionary) and item.objgen == owner.objgen
+                    for _, values in entries
+                    for item in (values if isinstance(values, Array) else [values])
+                )
+                != 1
+            ):
+                return False
+            new_mcid = max(max(seen_mcids, default=-1) + 1, len(owners))
+            if new_mcid >= 20000:
+                return False
+            heading_name = Name(f"/H{level}")
+            new_ops = (
+                ops[:start]
+                + [
+                    pikepdf.ContentStreamInstruction(
+                        [heading_name, Dictionary(MCID=new_mcid)], Operator("BDC")
+                    )
+                ]
+                + ops[start + 1 : first_end]
+                + [pikepdf.ContentStreamInstruction([], Operator("EMC")), ops[start]]
+                + ops[first_end:]
+            )
+            new_bytes = pikepdf.unparse_content_stream(new_ops)
+        except Exception:
+            return False
+
+        heading = self.pdf.make_indirect(
+            Dictionary(
+                Type=Name.StructElem, S=heading_name, P=parent, Pg=page.obj, K=new_mcid
+            )
+        )
+        updated_owners = list(owners)
+        updated_owners.extend([None] * (new_mcid - len(updated_owners)))
+        updated_owners.append(heading)
+        updated_array = self.pdf.make_indirect(Array(updated_owners))
+        _set_number_tree_value(parent_tree, key, updated_array)
+        parent.K = Array(
+            siblings[:sibling_index] + [heading] + siblings[sibling_index:]
+        )
+        owner.P = parent
+        owner.Pg = page.obj
+        page.obj.Contents = self.pdf.make_stream(new_bytes)
+        self._preserved_parent_tree_entries[key] = updated_array
+        return True
+
+    @staticmethod
+    def _plain_standard_text_run(page: Any, run: List[Any]) -> bool:
+        """Bound literal matching to printable ASCII with known PDF encoding."""
+        fonts = page.obj.Resources.Font
+        font_set = False
+        for op in run:
+            name = str(op.operator)
+            if name == "Tf":
+                font = fonts[op.operands[0]]
+                if (
+                    str(font.get(Name.Subtype)) != "/Type1"
+                    or str(font.get(Name.BaseFont))
+                    not in {
+                        "/Helvetica",
+                        "/Helvetica-Bold",
+                        "/Helvetica-Oblique",
+                        "/Helvetica-BoldOblique",
+                        "/Times-Roman",
+                        "/Times-Bold",
+                        "/Times-Italic",
+                        "/Times-BoldItalic",
+                        "/Courier",
+                        "/Courier-Bold",
+                        "/Courier-Oblique",
+                        "/Courier-BoldOblique",
+                    }
+                    or Name.ToUnicode in font
+                    or str(font.get(Name.Encoding, Name.StandardEncoding))
+                    not in {"/StandardEncoding", "/WinAnsiEncoding"}
+                ):
+                    return False
+                font_set = True
+            elif name in {"Tj", "TJ"}:
+                if not font_set or len(op.operands) != 1:
+                    return False
+                if name == "Tj" and not isinstance(op.operands[0], String):
+                    return False
+                if name == "TJ" and not isinstance(op.operands[0], Array):
+                    return False
+                values = op.operands if name == "Tj" else op.operands[0]
+                for value in values:
+                    if isinstance(value, String):
+                        if any(
+                            byte < 32 or byte > 126 or byte in (39, 96)
+                            for byte in bytes(value)
+                        ):
+                            return False
+                    elif (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float, Decimal))
+                        or not math.isfinite(value)
+                    ):
+                        return False
+            elif name not in {
+                "BT",
+                "ET",
+                "Tm",
+                "Td",
+                "TD",
+                "T*",
+                "Tc",
+                "Tw",
+                "Tz",
+                "TL",
+                "Ts",
+            }:
+                return False
+        return font_set
 
     def tag_all_pages(self) -> Dict[str, int]:
         """Tag all pages with BDC/EMC markers using position-based matching.
@@ -384,6 +741,8 @@ class ContentTaggerV2:
             stats["blocks_created"] += page_stats.get("created", 0)
 
         self._build_parent_tree(struct_root)
+        if self._order_generated_structure:
+            self._order_new_structure(struct_root)
         self._ensure_document_root(struct_root)
         self._set_pdfua_identifier()
 
@@ -393,7 +752,12 @@ class ContentTaggerV2:
     # Element collection
     # ------------------------------------------------------------------
 
-    def _collect_elements(self, element: Any, by_page: Dict[int, List[Any]]) -> None:
+    def _collect_elements(
+        self,
+        element: Any,
+        by_page: Dict[int, List[Any]],
+        inherited_page: Optional[int] = None,
+    ) -> None:
         """Recursively collect StructElem elements grouped by page index."""
         if not hasattr(element, "keys"):
             return
@@ -406,22 +770,25 @@ class ContentTaggerV2:
         if elem_type_raw in TABLE_TAGS:
             return
 
-        # If this element has a /Pg reference, assign it to the correct page
-        if Name("/Pg") in element or Name.Pg in element:
-            pg_ref = element.get(Name("/Pg")) or element.get(Name.Pg)
-            page_idx = self._page_index(pg_ref)
-            if page_idx is not None and Name.S in element:
-                by_page.setdefault(page_idx, []).append(element)
+        page_idx = inherited_page
+        if Name.Pg in element:
+            page_idx = self._page_index(element[Name.Pg])
 
         # Recurse into /K children
         kids = element.get(Name.K)
         if kids is None:
-            return
-        if not isinstance(kids, Array):
+            kids = Array([])
+        elif not isinstance(kids, Array):
             kids = Array([kids])
+        # Container nodes must not acquire content already owned by a child.
+        if not kids and page_idx is not None and Name.S in element:
+            # A leaf with existing MCID/MCR/OBJR children already owns content.
+            # Reusing its /ActualText for another identical visible occurrence
+            # would collapse two source occurrences into one replacement text.
+            by_page.setdefault(page_idx, []).append(element)
         for kid in kids:
             if hasattr(kid, "keys"):
-                self._collect_elements(kid, by_page)
+                self._collect_elements(kid, by_page, page_idx)
 
     def _page_index(self, page_ref: Any) -> Optional[int]:
         """Resolve a page object reference to a 0-based page index."""
@@ -463,6 +830,17 @@ class ContentTaggerV2:
 
         if not ops:
             return page_stats
+
+        # TableTagger can already own marked content. Its structure must retain
+        # its source position relative to the text this pass will bind.
+        for position, op in enumerate(ops):
+            if str(op.operator) == "BDC" and len(op.operands) == 2:
+                properties = op.operands[1]
+                if isinstance(properties, Dictionary) and Name.MCID in properties:
+                    self._marked_positions[(page.obj.objgen, int(properties.MCID))] = (
+                        page_idx,
+                        position,
+                    )
 
         content_blocks = self._find_content_blocks(ops, page)
         excluded_indices = self._excluded_do_indices(page_idx, page, ops)
@@ -541,6 +919,17 @@ class ContentTaggerV2:
                     elem = self._create_figure_element(page.obj)
                 else:
                     block_text = _extract_text_from_ops(block_ops)
+                    if block_text:
+                        compact = "".join(_normalize_nfkd(block_text).split())
+                        source_matches = {
+                            " ".join(block[4].split())
+                            for block in fitz_blocks
+                            if "".join(_normalize_nfkd(block[4]).split()) == compact
+                        }
+                        if len(source_matches) == 1:
+                            # PDF show-text operations omit layout whitespace.
+                            # Restore it only from an exact source-text match.
+                            block_text = source_matches.pop()
                     elem = self._create_p_element(page.obj, block_text)
                 matches.append(
                     MatchedBlock(
@@ -569,6 +958,10 @@ class ContentTaggerV2:
         # Record parent tree entries (forward order)
         for match in matches:
             self._set_mcid_on_element(match.struct_elem, match.mcid, page.obj)
+            self._content_positions[match.struct_elem.objgen] = (
+                page_idx,
+                match.block_start,
+            )
             page_entries.append((match.mcid, match.struct_elem))
 
         # Write new content stream
@@ -585,6 +978,49 @@ class ContentTaggerV2:
         self._parent_tree_entries[struct_parent] = page_entries
 
         return page_stats
+
+    def _order_new_structure(self, struct_root: Any) -> None:
+        """Order newly generated siblings by their bound source content.
+
+        Existing tagged documents never enter this path. This preserves list
+        hierarchy and MCID ownership; independent reading-order validation still
+        decides whether content-stream order agrees with the visible page.
+        """
+
+        def order(
+            element: Any, inherited_page: Any = None, depth: int = 0
+        ) -> Optional[tuple[int, int]]:
+            if isinstance(element, int):
+                return self._marked_positions.get((inherited_page, element))
+            if not isinstance(element, Dictionary) or depth > 50:
+                return None
+            page = element.get(Name.Pg)
+            page_key = page.objgen if page is not None else inherited_page
+            if Name.MCID in element:
+                return self._marked_positions.get((page_key, int(element.MCID)))
+            own = self._content_positions.get(element.objgen)
+            kids = element.get(Name.K)
+            if kids is None:
+                return own
+            if not isinstance(kids, Array):
+                child_rank = order(kids, page_key, depth + 1)
+                return own if own is not None else child_rank
+            ranked = [(kid, order(kid, page_key, depth + 1)) for kid in kids]
+            # Unknown children stay in place; do not invent their position.
+            known = sorted(
+                ((kid, rank) for kid, rank in ranked if rank is not None),
+                key=lambda item: item[1],
+            )
+            iterator = iter(known)
+            element[Name.K] = Array(
+                [next(iterator)[0] if rank is not None else kid for kid, rank in ranked]
+            )
+            ranks = [rank for _, rank in ranked if rank is not None]
+            if own is not None:
+                ranks.append(own)
+            return min(ranks) if ranks else None
+
+        order(struct_root)
 
     def _excluded_do_indices(
         self, page_idx: int, page: Any, ops: List[Any]
@@ -727,7 +1163,10 @@ class ContentTaggerV2:
                         contains_markers = True
                     j += 1
                 end = j + 1 if j < len(ops) else j
-                if not contains_markers:
+                # Font/position setup alone is not semantic page content.
+                # Giving an empty BT run an MCID creates an unrepresented P
+                # that a complete reading-order check cannot account for.
+                if not contains_markers and _extract_text_from_ops(ops[start:end]):
                     blocks.append((start, end, "text"))
                 i = end
             elif op_name == "INLINE_IMAGE" and marked_depth == 0:
@@ -820,6 +1259,18 @@ class ContentTaggerV2:
             if kind == "text" and is_figure:
                 continue
 
+            if kind == "text" and self._order_generated_structure:
+                block_text = _extract_text_from_ops(block_ops)
+                elem_text = self._get_element_text(elem)
+                if not block_text or not elem_text:
+                    continue
+                if not self._complete_text_match(block_text, elem_text):
+                    # A heading substring must not replace a whole BT run
+                    # containing additional source words via /ActualText.
+                    continue
+                used_indices.add(elem_idx)
+                return (elem, "text", 0.75)
+
             # --- Position match ---
             elem_bbox = self._get_element_bbox(elem)
             if elem_bbox is not None and fitz_blocks:
@@ -838,6 +1289,19 @@ class ContentTaggerV2:
             block_text = _extract_text_from_ops(block_ops)
             if block_text:
                 elem_text = self._get_element_text(elem)
+                # ReportLab's built-in bullet can decode as U+FFFD in raw
+                # pikepdf strings. The source-extracted list body supplies the
+                # real glyph; require the entire remaining line to agree.
+                if (
+                    elem_type_raw == "LBody"
+                    and elem_text
+                    and block_text.startswith("\ufffd ")
+                    and elem_text.startswith("\u2022 ")
+                    and _normalize_nfkd(block_text[2:])
+                    == _normalize_nfkd(elem_text[2:])
+                ):
+                    used_indices.add(elem_idx)
+                    return (elem, "text", 0.75)
                 if elem_text and self._text_matches(block_text, elem_text):
                     used_indices.add(elem_idx)
                     return (elem, "text", 0.75)

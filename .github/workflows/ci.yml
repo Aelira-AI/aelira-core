@@ -146,6 +146,84 @@ jobs:
           ENV: test
         run: pytest tests/test_durable_job_processor_postgres.py -v --tb=short --no-cov
 
+  document-stack:
+    name: Real document queue and artifact acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_USER: aelira
+          POSTGRES_PASSWORD: aelira
+          POSTGRES_DB: document_acceptance
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports: ['6379:6379']
+      mailpit:
+        image: axllent/mailpit:latest
+        ports: ['1025:1025', '18325:8025']
+    env:
+      ENV: development
+      DEBUG: 'false'
+      ALLOW_MOCK_AUTH: 'false'
+      DATABASE_URL: postgresql://aelira:aelira@localhost:5432/document_acceptance
+      REDIS_URL: redis://localhost:6379/0
+      LLM_PROVIDER: none
+      LLM_FALLBACK_PROVIDER: none
+      EMBEDDING_PROVIDER: none
+      OPEN_SIGNUP: 'false'
+      DEFAULT_DEPARTMENT_TIER: department
+      PUBLIC_API_URL: http://localhost:18300
+      PUBLIC_DASHBOARD_URL: http://localhost:15373
+      PUBLIC_WEBSITE_URL: http://localhost:15373
+      MAGIC_LINK_BASE_URL: http://localhost:15373
+      CORS_ORIGINS: http://localhost:15373
+      SESSION_COOKIE_SECURE: 'false'
+      CSRF_COOKIE_SECURE: 'false'
+      SMTP_HOST: localhost
+      SMTP_PORT: '1025'
+      SMTP_USER: ''
+      SMTP_PASSWORD: ''
+      FROM_EMAIL: noreply@example.org
+      MARKETING_EMAIL_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Install document runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev pkg-config tesseract-ocr ghostscript poppler-utils unzip
+          pip install -r requirements-dev.txt
+      - name: Verify real API, durable worker and downloaded files
+        run: |
+          set -euo pipefail
+          export JWT_SECRET="$(openssl rand -hex 48)"
+          export TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          export REMEDIATION_ARTIFACT_DIR="$RUNNER_TEMP/document-artifacts"
+          alembic upgrade head
+          uvicorn src.api.main:app --host 127.0.0.1 --port 18300 --no-proxy-headers > "$RUNNER_TEMP/document-api.log" 2>&1 &
+          api_pid=$!
+          python -m src.jobs.worker > "$RUNNER_TEMP/document-worker.log" 2>&1 &
+          worker_pid=$!
+          trap 'kill "$api_pid" "$worker_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in {1..60}; do
+            if curl -fsS http://localhost:18300/ready >/dev/null; then ready=true; break; fi
+            sleep 1
+          done
+          test "$ready" = true
+          node --experimental-strip-types scripts/verify_document_stack.ts
+
   dashboard:
     runs-on: ubuntu-latest
     timeout-minutes: 30

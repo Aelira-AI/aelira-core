@@ -86,7 +86,13 @@ def sanitize_json(value: Any, *, _depth: int = 0) -> Any:
         return value if math.isfinite(value) else "<non-finite-number>"
     if isinstance(value, Mapping):
         return {
-            str(key)[:256]: sanitize_json(item, _depth=_depth + 1)
+            str(key)[:256]: (
+                (public_job_result({"issue_outcomes": item}) or {}).get(
+                    "issue_outcomes", []
+                )
+                if key == "issue_outcomes"
+                else sanitize_json(item, _depth=_depth + 1)
+            )
             for key, item in list(value.items())[:256]
         }
     if isinstance(value, (list, tuple, set, frozenset)):
@@ -96,6 +102,10 @@ def sanitize_json(value: Any, *, _depth: int = 0) -> Any:
 
 _PUBLIC_JOB_RESULT_FIELDS = frozenset(
     {
+        "withheld_count",
+        "outcome_unreported_count",
+        "remaining_count",
+        "issue_outcomes",
         "artifact_id",
         "ai_used",
         "compliance_improvement",
@@ -120,7 +130,16 @@ _PUBLIC_JOB_RESULT_FIELDS = frozenset(
 )
 _PUBLIC_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _PUBLIC_COUNT_FIELDS = frozenset(
-    {"failed_count", "fixed_count", "manual_count", "skipped_count", "total_issues"}
+    {
+        "failed_count",
+        "fixed_count",
+        "manual_count",
+        "skipped_count",
+        "total_issues",
+        "withheld_count",
+        "outcome_unreported_count",
+        "remaining_count",
+    }
 )
 _PUBLIC_SCORE_FIELDS = frozenset(
     {
@@ -177,6 +196,32 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
         }:
             if type(item) is bool:
                 result[key] = item
+        elif key == "issue_outcomes" and isinstance(item, list):
+            outcomes = []
+            for record in item[:10_000]:
+                if not isinstance(record, Mapping):
+                    continue
+                index, status = record.get("source_index"), record.get("status")
+                if (
+                    type(index) is not int
+                    or not 0 <= index < 10_000
+                    or status
+                    not in {"fixed", "withheld", "manual", "failed", "unreported"}
+                ):
+                    continue
+                outcome = {"source_index": index, "status": status}
+                if record.get("source_index_scope") in {
+                    "original_scan",
+                    "approved_subset",
+                }:
+                    outcome["source_index_scope"] = record["source_index_scope"]
+                identifier = record.get("issue_id")
+                if isinstance(identifier, str) and _PUBLIC_IDENTIFIER_RE.fullmatch(
+                    identifier
+                ):
+                    outcome["issue_id"] = identifier
+                outcomes.append(outcome)
+            result[key] = outcomes
         elif key in {"ai_used", "external_ai_used"}:
             if item is None or type(item) is bool:
                 result[key] = item
@@ -269,7 +314,14 @@ def validate_json_object(value: Any, *, max_bytes: int = 262_144) -> dict[str, A
     sanitized = sanitize_json(value)
     if not isinstance(sanitized, dict):
         raise ValueError("job JSON value must be an object")
-    if len(json.dumps(sanitized, separators=(",", ":")).encode()) > max_bytes:
+    # The bounded per-source ledger can contain up to 10,000 findings. Keep
+    # its budget separate from the ordinary result, rather than truncating it.
+    outcomes = sanitized.get("issue_outcomes", [])
+    ordinary = {key: item for key, item in sanitized.items() if key != "issue_outcomes"}
+    if (
+        len(json.dumps(ordinary, separators=(",", ":")).encode()) > max_bytes
+        or len(json.dumps(outcomes, separators=(",", ":")).encode()) > 2_621_440
+    ):
         raise ValueError("job JSON value exceeds size limit")
     return sanitized
 

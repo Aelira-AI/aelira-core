@@ -7,6 +7,12 @@ from sqlalchemy import Column, DateTime, Float, MetaData, String, Table, create_
 from sqlalchemy.orm import Session
 
 from src.api.review_routes import get_review_queue, get_review_stats
+from src.auth.dependencies import AuthenticatedPrincipal
+from src.db.models import UserRole
+
+SESSION_PRINCIPAL = AuthenticatedPrincipal(
+    None, "user-one", "dept-one", UserRole.FACULTY, "session"
+)
 
 
 @pytest.fixture
@@ -139,7 +145,7 @@ def _queue(db: Session, *, status=None, offset=0, limit=20):
         offset=offset,
         limit=limit,
         db=db,
-        auth_result=("key-one", "user-one", "dept-one"),
+        auth_result=SESSION_PRINCIPAL,
     )
 
 
@@ -185,7 +191,7 @@ def test_queue_stats_use_the_same_status_vocabulary(review_queue_db):
     stats = get_review_stats(
         department_id=None,
         db=review_queue_db,
-        auth_result=("key-one", "user-one", "dept-one"),
+        auth_result=SESSION_PRINCIPAL,
     )
 
     assert stats.model_dump() == {

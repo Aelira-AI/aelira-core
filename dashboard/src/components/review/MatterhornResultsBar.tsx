@@ -49,12 +49,12 @@ export function MatterhornResultsBar({ total, passed, failed, result }: Matterho
 
   return (
     <div
-      className="flex items-center justify-between px-6 py-3"
+      className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6"
       style={{ backgroundColor: 'var(--surface-secondary)', borderTop: '1px solid var(--border-primary)' }}
       role="status"
       aria-label="Matterhorn Protocol validation results"
     >
-      <div className="flex items-center gap-6">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <span className="text-sm font-medium text-[var(--content-secondary)]">Matterhorn Protocol</span>
 
         <div className="flex items-center gap-1.5">

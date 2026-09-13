@@ -155,8 +155,10 @@ def test_public_job_shape_exposes_recorded_total_and_aggregate_remaining(monkeyp
 
     result = routes._public_job_shape(MagicMock(), job, "scan-1")
 
-    assert result["fixed_count"] == 2
-    assert result["remaining_count"] == 6
+    assert result["fixed_count"] == 0
+    assert result["withheld_count"] == 2
+    assert result["outcome_unreported_count"] == 0
+    assert result["remaining_count"] == 8
     assert result["total_issues"] == 8
 
 

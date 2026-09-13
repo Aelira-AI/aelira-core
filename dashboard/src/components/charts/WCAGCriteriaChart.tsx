@@ -11,14 +11,13 @@ import {
 } from 'recharts';
 import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
+import { wcagCriterion, type CriterionIssue } from '../../utils/wcagCriterion';
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface Issue {
-  criterion?: string;
-  wcag_criterion?: string;
+interface Issue extends CriterionIssue {
   severity?: string;
   impact?: string;
 }
@@ -45,11 +44,8 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
   const criterionMap = new Map<string, CriterionData>();
 
   issues.forEach((issue) => {
-    const criterion = issue.criterion || issue.wcag_criterion || 'Unknown';
-
-    // Extract just the number part (e.g., "1.1.1" from "WCAG 2.1 Level AA: 1.1.1 Non-text Content")
-    const match = criterion.match(/(\d+\.\d+(?:\.\d+)?)/);
-    const criterionNum = match ? match[1] : criterion;
+    const criterionNum = wcagCriterion(issue);
+    if (criterionNum === null) return;
 
     if (!criterionMap.has(criterionNum)) {
       criterionMap.set(criterionNum, {
@@ -87,7 +83,7 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
     return (
       <div className="card">
         <h3 className="text-lg font-semibold text-primary mb-4">Top WCAG Criteria Issues</h3>
-        <div className="text-center py-8 text-secondary">No WCAG criteria violations found</div>
+        <div className="text-center py-8 text-secondary">No WCAG success criteria were recorded for these findings.</div>
       </div>
     );
   }
@@ -134,7 +130,7 @@ export function WCAGCriteriaChart({ issues }: WCAGCriteriaChartProps): React.Rea
     <div className="card">
       <h3 className="text-lg font-semibold text-primary mb-4">Top WCAG Criteria Issues</h3>
       <p className="text-sm text-secondary mb-4">
-        Most common WCAG 2.1 AA criteria violations (showing top 10)
+        Recorded WCAG success criteria (showing top 10). Other standards and unspecified criteria are excluded.
       </p>
 
       <div

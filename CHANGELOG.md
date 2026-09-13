@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-09-12
+
+### Fixed
+
+- Upload and scan-detail remediation status follows the authoritative job; download actions remain inside the artifact-aware review workflow.
+- Withheld output retains all original findings as unresolved, with explicit withheld and unreported outcomes instead of disappearing counts.
+- Corrected upload labels, nested interactive controls, review-list keyboard scrolling and affected label contrast.
+- PDF verification compares source and output checkpoint results to distinguish persistent failures from newly introduced regressions.
+- Reading-order checks resolve supported MCID/ParentTree text and stable page ownership; generated headings and lists retain source content bindings.
+- Supported table pages compare table placement and surrounding text; ambiguous coverage stays explicitly incomplete instead of silently skipping the page. Internal table semantics remain a separate check.
+- Issues uses document queue eligibility, reload-safe status references and a clear-tracking control. The Issues Found total explicitly describes original findings.
+- Review controls wrap on narrow screens and document changes cannot display a stale review beside another file's preview.
+- Review document operations and aggregate queries preserve authenticated department and course scope; explicit filters cannot widen access.
+- Shared scan/remediation access and scan history reject unsupported LMS course bindings instead of matching course IDs across platforms.
+
+### Changed
+
+- Added a blocking real API/queue/worker/download acceptance gate for synthetic PDF and Office files, alongside the existing browser testbed.
+- Scanner measurements and safety refusal are documented separately from accessibility conformance.
+- Added a read-only original/saved PDF reading-order viewer with checksum-bound evidence, course-scoped authorization and conservative rendering limits. Unsupported evidence remains unavailable; no edited or inferred order is presented as saved data.
+
+### Operator action required
+
+- No database migration or new production environment variable is required. Deploy API, worker and dashboard from the same 0.9.11 release.
+- Re-run remediation from the retained original for new per-finding outcome records; historical estimates are not retroactively verified.
+- Preserve the v0.9.8 operator action requirements. Review saved files before publishing; partial-output safety restrictions remain in place.
+- See [the corrective release notes](docs/releases/v0.9.11.md). Published v0.9.10 artifacts remain unchanged.
+
 ## [0.9.10] - 2026-09-12
 
 ### Fixed

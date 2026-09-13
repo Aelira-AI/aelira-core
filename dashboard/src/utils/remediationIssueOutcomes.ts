@@ -1,4 +1,4 @@
-import type { RemediationFixSummary } from '../api/scans';
+import type { RecordedRemediationOutcome, RemediationFixSummary } from '../api/scans';
 
 export interface RemediationIssueLike {
   id?: string;
@@ -15,7 +15,8 @@ export interface RemediationIssueLike {
 export interface RemediationIssueRow {
   issue: RemediationIssueLike;
   fix?: RemediationFixSummary;
-  outcomeSource: 'persisted_fix' | 'aggregate_manual' | 'unreported';
+  outcomeSource: 'persisted_fix' | 'aggregate_manual' | 'unreported' | 'recorded_job';
+  recordedOutcome?: RecordedRemediationOutcome['status'];
 }
 
 export interface RemediationOutcomeCounts {
@@ -25,6 +26,7 @@ export interface RemediationOutcomeCounts {
   manual_count?: number | null;
   failed_count?: number | null;
   skipped_count?: number | null;
+  issue_outcomes?: RecordedRemediationOutcome[] | null;
 }
 
 export function issueDescription(issue: RemediationIssueLike): string {
@@ -64,9 +66,32 @@ export function pairIssuesWithFixes(
     }
   }
 
+  // The job's source index identifies the original finding, not a guessed text match.
+  // Reject duplicate indices and conflicting identities rather than invent attribution.
+  if (Array.isArray(counts?.issue_outcomes)) {
+    const recorded = counts.issue_outcomes;
+    for (const [index, issue] of issues.entries()) {
+      rows[index].outcomeSource = 'unreported';
+      const idIsUnique = typeof issue.id === 'string' && issues.filter((source) => source.id === issue.id).length === 1;
+      const identityMatches = idIsUnique ? recorded.filter((item) => item.issue_id === issue.id) : [];
+      const matches = identityMatches.length > 0 ? identityMatches : recorded.filter((item) =>
+        item.source_index_scope === 'original_scan'
+        && counts.total_issues === issues.length
+        && item.source_index === index,
+      );
+      if (matches.length !== 1) continue;
+      const item = matches[0];
+      if (item.issue_id != null && item.issue_id !== issue.id) continue;
+      if (!['fixed', 'withheld', 'manual', 'failed', 'unreported'].includes(item.status)) continue;
+      rows[index].outcomeSource = 'recorded_job';
+      rows[index].recordedOutcome = item.status;
+    }
+  }
+
   const unmatchedRows = rows.filter((row) => row.outcomeSource === 'unreported');
   const manualAttributionIsProven = Boolean(
     counts
+      && !Array.isArray(counts.issue_outcomes)
       && counts.total_issues === issues.length
       && counts.fixed_count === fixes.length
       && counts.manual_count === unmatchedRows.length
@@ -83,17 +108,28 @@ export function pairIssuesWithFixes(
 export function outcomePresentation(
   fix?: RemediationFixSummary,
   outcomeSource: RemediationIssueRow['outcomeSource'] = fix ? 'persisted_fix' : 'unreported',
+  recordedOutcome?: RecordedRemediationOutcome['status'],
 ): { label: string; className: string } {
+  if (outcomeSource === 'recorded_job' && recordedOutcome) {
+    const labels = {
+      fixed: 'Change applied · verification not reported',
+      withheld: 'Change withheld · not delivered',
+      manual: 'Manual remediation required',
+      failed: 'Remediation failed',
+      unreported: 'Outcome not reported',
+    };
+    return { label: labels[recordedOutcome], className: 'bg-[var(--surface-tertiary)] text-secondary' };
+  }
   if (outcomeSource === 'aggregate_manual') {
     return {
       label: 'Manual remediation required',
       className: 'bg-[var(--feature-warning-surface)] text-[var(--feature-warning-content)]',
     };
   }
-  if (!fix) {
+  if (!fix || outcomeSource === 'unreported') {
     return {
       label: 'Outcome not reported',
-      className: 'bg-[var(--surface-tertiary)] text-tertiary',
+      className: 'bg-[var(--surface-tertiary)] text-secondary',
     };
   }
   if (fix.review_status === 'apply_failed') {
@@ -117,7 +153,7 @@ export function outcomePresentation(
   if (['auto_approved', 'applied'].includes(fix.review_status)) {
     return {
       label: 'Change applied · verification not reported',
-      className: 'bg-[var(--surface-tertiary)] text-tertiary',
+      className: 'bg-[var(--surface-tertiary)] text-secondary',
     };
   }
   if (fix.review_status === 'approved') {
@@ -134,6 +170,6 @@ export function outcomePresentation(
   }
   return {
     label: 'Fix recorded · status unknown',
-    className: 'bg-[var(--surface-tertiary)] text-tertiary',
+    className: 'bg-[var(--surface-tertiary)] text-secondary',
   };
 }

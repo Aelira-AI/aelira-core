@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.education.pdf_processor import PDFProcessor, PDFBatchProcessor
+from src.education.pdf_checks.completeness import IncompletePDFScanError
 
 # Fixture paths
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "pdfs"
@@ -41,12 +42,20 @@ def batch_processor():
 class TestPDFProcessingWorkflow:
     """Test complete PDF processing workflow."""
 
-    def test_academic_paper_processing(self, pdf_processor):
-        """Test processing of academic paper PDF."""
+    def test_academic_paper_requires_resolvable_table_content(self, pdf_processor):
+        """The immutable Alt-only table fixture cannot complete a strict scan."""
+        original = ACADEMIC_PAPER.read_bytes()
+        with pytest.raises(IncompletePDFScanError, match="reading_order.table"):
+            pdf_processor.process_pdf(str(ACADEMIC_PAPER))
+        assert ACADEMIC_PAPER.read_bytes() == original
+
+    def test_academic_paper_partial_extraction(self):
+        """Partial diagnostics still extract content without certifying its score."""
         assert ACADEMIC_PAPER.exists(), f"Test fixture not found: {ACADEMIC_PAPER}"
 
-        # Process PDF
-        result = pdf_processor.process_pdf(str(ACADEMIC_PAPER))
+        result = PDFProcessor(require_complete_scan=False).process_pdf(
+            str(ACADEMIC_PAPER)
+        )
 
         # Verify result is PDFProcessingResult dataclass
         assert result is not None, "PDF processing returned None"
@@ -75,11 +84,13 @@ class TestPDFProcessingWorkflow:
         assert len(result.html_output) > 0
         assert "<html" in result.html_output.lower()
 
-        # Verify compliance scoring
-        assert (
-            0 <= result.compliance_score <= 100
-        ), f"Invalid compliance score: {result.compliance_score}"
+        # Partial findings remain visible; the returned heuristic score is not
+        # evidence of a complete scan and is deliberately not asserted here.
         assert isinstance(result.issues, list)
+        assert any(
+            issue.get("issue_type") == "reading_order_mismatch"
+            for issue in result.issues
+        )
 
     def test_lecture_notes_processing(self, pdf_processor):
         """Test processing of lecture notes PDF."""
@@ -163,9 +174,11 @@ class TestPDFProcessingWorkflow:
 class TestPDFStructureDetection:
     """Test PDF structure detection accuracy."""
 
-    def test_heading_detection(self, pdf_processor):
-        """Test heading detection in PDFs."""
-        result = pdf_processor.process_pdf(str(ACADEMIC_PAPER))
+    def test_heading_detection(self):
+        """Heading extraction remains available in explicit partial diagnostics."""
+        result = PDFProcessor(require_complete_scan=False).process_pdf(
+            str(ACADEMIC_PAPER)
+        )
         structure = result.structure
         headings = structure.get("headings", [])
 
@@ -213,7 +226,9 @@ class TestPDFImageProcessing:
     def test_image_issues_field(self, pdf_processor):
         """Default processing performs scan-only image discovery without AI."""
         assert pdf_processor.image_generator is None
-        result = pdf_processor.process_pdf(str(ACADEMIC_PAPER))
+        result = PDFProcessor(require_complete_scan=False).process_pdf(
+            str(ACADEMIC_PAPER)
+        )
 
         assert result.image_issues
         assert all(issue.occurrence_id for issue in result.image_issues)
@@ -244,11 +259,17 @@ class TestPDFComplianceScoring:
         score = result.compliance_score
         assert 0 <= score <= 100, f"Invalid score: {score}"
 
-    def test_issues_list_format(self, pdf_processor):
-        """Test issues are in expected format."""
-        result = pdf_processor.process_pdf(str(ACADEMIC_PAPER))
+    def test_partial_issues_list_format(self):
+        """Partial-scan findings keep their public format and incomplete warning."""
+        result = PDFProcessor(require_complete_scan=False).process_pdf(
+            str(ACADEMIC_PAPER)
+        )
 
         assert isinstance(result.issues, list)
+        assert any(
+            issue.get("issue_type") == "reading_order_mismatch"
+            for issue in result.issues
+        )
         for issue in result.issues:
             assert isinstance(issue, dict)
             # Issues should have some identifying information
@@ -266,14 +287,13 @@ class TestPDFComplianceScoring:
 class TestPDFBatchProcessing:
     """Test batch PDF processing functionality."""
 
-    def test_batch_directory_processing(self, batch_processor):
-        """Test processing entire directory of PDFs."""
+    def test_batch_directory_processing(self, batch_processor, capsys):
+        """Strict batches report the unsupported fixture and retain valid scans."""
         results = batch_processor.process_directory(str(FIXTURES_DIR))
 
         # Verify core fixture PDFs were processed
         processed_files = {r.file_name for r in results}
         expected_files = {
-            "academic_paper.pdf",
             "lecture_notes.pdf",
             "lab_manual.pdf",
             "textbook_chapter.pdf",
@@ -282,6 +302,10 @@ class TestPDFBatchProcessing:
         assert expected_files.issubset(
             processed_files
         ), f"Missing files: {expected_files - processed_files}"
+        assert "academic_paper.pdf" not in processed_files
+        output = capsys.readouterr().out
+        assert "Error processing academic_paper.pdf" in output
+        assert "reading_order.table" in output
 
     def test_batch_processing_error_handling(self, batch_processor):
         """Test batch processing handles individual file errors gracefully."""
@@ -335,9 +359,11 @@ class TestPDFHTMLExport:
             "<!DOCTYPE html>" in html or "<html" in html
         ), "HTML missing document declaration"
 
-    def test_html_semantic_structure(self, pdf_processor):
-        """Test HTML output uses semantic structure."""
-        result = pdf_processor.process_pdf(str(ACADEMIC_PAPER))
+    def test_html_semantic_structure(self):
+        """Partial extraction preserves semantic HTML without score authority."""
+        result = PDFProcessor(require_complete_scan=False).process_pdf(
+            str(ACADEMIC_PAPER)
+        )
         html = result.html_output
 
         # Check for semantic HTML elements

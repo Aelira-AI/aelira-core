@@ -15,10 +15,10 @@ import {
   ArrowLeft,
   Download,
   Eye,
-  Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { scansApi } from '../api/scans';
+import { RemediationStatusLink } from '../components/results/RemediationStatusLink';
 import { useToast } from '../context/toast-context';
 import { FeatureGate } from '../components/FeatureGate';
 import { trackEvent } from '../utils/analytics';
@@ -46,6 +46,8 @@ interface FileItem {
   scanId: string | null;
   result: ScanResult | null;
   error: string | null;
+  remediationStarting?: boolean;
+  remediationStartFailed?: boolean;
 }
 
 interface StatusConfig {
@@ -59,7 +61,6 @@ interface FileRowProps {
   file: FileItem;
   onRemove: (id: string) => void;
   onView: (scanId: string) => void;
-  onRemediate: (scanId: string) => void;
 }
 
 interface BatchProgressProps {
@@ -86,7 +87,7 @@ const FILE_EXTENSIONS: Record<string, ScanType> = {
 };
 
 const STATUS_CONFIG: Record<FileStatus, StatusConfig> = {
-  pending: { icon: FileText, color: 'text-tertiary', bg: 'bg-[var(--surface-tertiary)]' },
+  pending: { icon: FileText, color: 'text-secondary', bg: 'bg-[var(--surface-tertiary)]' },
   queued: { icon: Loader, color: 'text-[var(--feature-info-content)]', bg: 'bg-[var(--feature-info-surface)]' },
   uploading: { icon: Loader, color: 'text-[var(--feature-info-content)]', bg: 'bg-[var(--feature-info-surface)]', animate: true },
   processing: { icon: Loader, color: 'text-[var(--feature-info-content)]', bg: 'bg-[var(--feature-info-surface)]', animate: true },
@@ -94,14 +95,14 @@ const STATUS_CONFIG: Record<FileStatus, StatusConfig> = {
   error: { icon: AlertCircle, color: 'text-[var(--feature-danger-content)]', bg: 'bg-[var(--feature-danger-surface)]' },
 };
 
-function FileRow({ file, onRemove, onView, onRemediate }: FileRowProps): React.ReactElement {
+function FileRow({ file, onRemove, onView }: FileRowProps): React.ReactElement {
   const config = STATUS_CONFIG[file.status] || STATUS_CONFIG.pending;
   const StatusIcon = config.icon;
   const ext = file.file.name.substring(file.file.name.lastIndexOf('.')).toLowerCase();
   const fileType = FILE_EXTENSIONS[ext] || 'unknown';
 
   return (
-    <div className="flex items-center gap-4 p-3 border-b border-[var(--border-primary)] last:border-b-0">
+    <div className="flex flex-wrap items-center gap-4 p-3 border-b border-[var(--border-primary)] last:border-b-0">
       <div className={`p-2 rounded ${config.bg}`}>
         <StatusIcon
           className={`w-4 h-4 ${config.color} ${config.animate ? 'animate-spin' : ''}`}
@@ -110,6 +111,7 @@ function FileRow({ file, onRemove, onView, onRemediate }: FileRowProps): React.R
 
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-primary truncate">{file.file.name}</p>
+        {file.status === 'complete' && <p className="text-xs text-secondary">Original scan complete</p>}
         <div className="flex items-center gap-2 mt-0.5">
           <span className="text-xs text-tertiary">
             {(file.file.size / 1024 / 1024).toFixed(2)} MB
@@ -151,15 +153,9 @@ function FileRow({ file, onRemove, onView, onRemediate }: FileRowProps): React.R
               onClick={() => onView(file.scanId!)}
               className="p-1.5 text-tertiary hover:text-accent transition-colors"
               title="View Details"
+              aria-label={`View scan details for ${file.file.name}`}
             >
               <Eye className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => onRemediate(file.scanId!)}
-              className="p-1.5 text-tertiary hover:text-[var(--feature-success-content)] transition-colors"
-              title="Remediate"
-            >
-              <Wrench className="w-4 h-4" />
             </button>
           </>
         )}
@@ -168,11 +164,15 @@ function FileRow({ file, onRemove, onView, onRemediate }: FileRowProps): React.R
             onClick={() => onRemove(file.id)}
             className="p-1.5 text-tertiary hover:text-[var(--feature-danger-content)] transition-colors"
             title="Remove"
+            aria-label={`Remove ${file.file.name}`}
           >
             <X className="w-4 h-4" />
           </button>
         )}
       </div>
+      {file.status === 'complete' && file.scanId && (
+        <RemediationStatusLink scanId={file.scanId} refreshKey={file.remediationStarting} startUnconfirmed={file.remediationStartFailed} />
+      )}
     </div>
   );
 }
@@ -276,10 +276,10 @@ export function BulkUpload(): React.ReactElement {
     setFiles((prev) => [...prev, ...newFiles]);
   }, [toast]);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+  const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
-    noClick: false,
-    noKeyboard: false,
+    noClick: true,
+    noKeyboard: true,
     maxSize: 100 * 1024 * 1024,
     multiple: true,
   });
@@ -313,6 +313,7 @@ export function BulkUpload(): React.ReactElement {
       }
 
       const result = await scansApi.uploadFile(fileItem.file, fileType, uploadOptions);
+      const remediationScanId = result.scan_id || result.id || '';
 
       // Handle async processing
       if (result.status?.toUpperCase() === 'PROCESSING' && result.scan_id) {
@@ -350,7 +351,7 @@ export function BulkUpload(): React.ReactElement {
                       ...f,
                       status: 'complete' as FileStatus,
                       progress: 100,
-                      result: scanDetails as ScanResult,
+                      result: (scanDetails.result || scanDetails) as ScanResult,
                     }
                   : f
               )
@@ -377,11 +378,18 @@ export function BulkUpload(): React.ReactElement {
       }
 
       // Auto-remediate if enabled
-      if (options.autoRemediate && fileItem.scanId) {
+      if (options.autoRemediate && remediationScanId) {
+        setFiles((prev) => prev.map((file) => file.id === fileItem.id
+          ? { ...file, remediationStarting: true } : file));
         try {
-          await scansApi.remediateScan(fileItem.scanId, { use_ai: true });
+          await scansApi.startRemediationJob(remediationScanId, { use_ai: true });
         } catch (remError) {
           console.error('Auto-remediation failed:', remError);
+          setFiles((prev) => prev.map((file) => file.id === fileItem.id
+            ? { ...file, remediationStartFailed: true } : file));
+        } finally {
+          setFiles((prev) => prev.map((file) => file.id === fileItem.id
+            ? { ...file, remediationStarting: false } : file));
         }
       }
     } catch (error) {
@@ -531,6 +539,7 @@ export function BulkUpload(): React.ReactElement {
         <div className="flex items-center gap-4 mb-6">
           <button
             onClick={() => navigate('/upload')}
+            aria-label="Back to upload"
             className="p-2 rounded-lg hover:bg-[var(--surface-secondary)] transition-colors"
           >
             <ArrowLeft className="w-5 h-5 text-tertiary" />
@@ -554,19 +563,19 @@ export function BulkUpload(): React.ReactElement {
           <div className="lg:col-span-2 space-y-6">
             {/* Dropzone */}
             <div
-              {...getRootProps()}
-              className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+              {...getRootProps({ role: 'group', 'aria-label': 'Bulk file upload' })}
+              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
                 isDragActive
                   ? 'border-accent bg-[var(--surface-accent-subtle)]'
                   : 'border-[var(--border-primary)] hover:border-accent'
               }`}
             >
-              <input {...getInputProps()} />
+              <input {...getInputProps({ 'aria-label': 'Select files for bulk upload' })} />
               <div className="flex items-center justify-center gap-8">
                 <div className="text-center">
                   <Upload className="w-12 h-12 text-tertiary mx-auto mb-2" />
                   <p className="text-sm font-medium text-primary">Drop files here</p>
-                  <p className="text-xs text-tertiary">or click to browse</p>
+                  <button type="button" onClick={open} className="btn-secondary mt-2">Browse files</button>
                 </div>
                 <div className="text-tertiary">or</div>
                 <div className="text-center">
@@ -603,7 +612,6 @@ export function BulkUpload(): React.ReactElement {
                       file={file}
                       onRemove={removeFile}
                       onView={(scanId) => navigate(`/scan/${scanId}`)}
-                      onRemediate={(scanId) => navigate(`/remediate/${scanId}`)}
                     />
                   ))}
                 </div>
@@ -645,15 +653,16 @@ export function BulkUpload(): React.ReactElement {
                   />
                   <div>
                     <p className="text-sm font-medium text-primary">Auto-Remediate</p>
-                    <p className="text-xs text-tertiary">Automatically fix issues after scan</p>
+                    <p className="text-xs text-secondary">Queue remediation after scanning. Output may need review or be withheld.</p>
                   </div>
                 </label>
 
                 <div>
-                  <label className="text-sm font-medium text-primary block mb-2">
+                  <label htmlFor="bulk-concurrency" className="text-sm font-medium text-primary block mb-2">
                     Concurrent Uploads
                   </label>
                   <select
+                    id="bulk-concurrency"
                     value={options.concurrency}
                     onChange={(e: ChangeEvent<HTMLSelectElement>) =>
                       setOptions((o) => ({ ...o, concurrency: parseInt(e.target.value) }))

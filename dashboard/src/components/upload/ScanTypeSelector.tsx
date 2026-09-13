@@ -169,8 +169,8 @@ export function ScanTypeSelector({ selected, onSelect }: ScanTypeSelectorProps):
                   </div>
                 )}
               </div>
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2 mb-1">
                   <h3 className={`font-semibold ${isAvailable ? 'text-primary' : 'text-tertiary'}`}>
                     {type.name}
                   </h3>
@@ -178,8 +178,8 @@ export function ScanTypeSelector({ selected, onSelect }: ScanTypeSelectorProps):
                     <span
                       className="text-xs px-2 py-0.5 rounded-full font-medium"
                       style={{
-                        backgroundColor: 'rgba(245, 158, 11, 0.15)',
-                        color: '#D97706',
+                        backgroundColor: 'var(--feature-warning-surface)',
+                        color: 'var(--feature-warning-content)',
                       }}
                     >
                       Locked
@@ -191,9 +191,9 @@ export function ScanTypeSelector({ selected, onSelect }: ScanTypeSelectorProps):
                         style={{
                           backgroundColor:
                             type.badge === 'New'
-                              ? 'rgba(16, 185, 129, 0.15)'
-                              : 'rgba(99, 102, 241, 0.15)',
-                          color: type.badge === 'New' ? '#059669' : '#4F46E5',
+                              ? 'var(--feature-success-surface)'
+                              : 'var(--feature-info-surface)',
+                          color: type.badge === 'New' ? 'var(--feature-success-content)' : 'var(--feature-info-content)',
                         }}
                       >
                         {type.badge}

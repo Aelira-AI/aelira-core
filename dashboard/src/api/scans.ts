@@ -171,6 +171,13 @@ export interface RemediationScoreMeasurement {
   output_score: number;
 }
 
+export interface RecordedRemediationOutcome {
+  source_index: number;
+  source_index_scope: 'original_scan' | 'approved_subset';
+  issue_id?: string | null;
+  status: 'fixed' | 'withheld' | 'manual' | 'failed' | 'unreported';
+}
+
 export interface RemediationJobStatus extends RemediationJobStart {
   progress: number;
   progress_message: string | null;
@@ -183,6 +190,9 @@ export interface RemediationJobStatus extends RemediationJobStart {
   manual_count: number | null;
   failed_count: number | null;
   skipped_count: number | null;
+  withheld_count?: number | null;
+  outcome_unreported_count?: number | null;
+  issue_outcomes?: RecordedRemediationOutcome[] | null;
   remaining_count: number | null;
   total_issues: number | null;
   original_score: number | null;
@@ -211,9 +221,12 @@ export interface RemediationFixSummary {
 }
 
 export interface BatchRemediationResult {
-  job_id: string;
-  scan_ids: string[];
-  status: string;
+  success: boolean;
+  batch_id: string;
+  total_scans: number;
+  scans_queued: string[];
+  job_ids: string[];
+  message: string;
 }
 
 export interface AvailableFormat {

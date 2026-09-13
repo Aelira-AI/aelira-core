@@ -95,6 +95,14 @@ describe('measured remediation scores', () => {
       assert.doesNotMatch(result.description, /unexpected detail|script|__proto__|constructor/);
     }
   });
+  it('does not instruct people to review an output that was not published', () => {
+    const unavailable = remediationScore({ score_verified: false, download_available: false, score_verification_reason: 'incomplete_comparison' }, scan);
+    assert.match(unavailable.description, /Review the original document and unresolved findings/);
+    assert.doesNotMatch(unavailable.description, /Review the output/);
+    assert.equal(unavailable.title, 'Manual review required');
+    const available = remediationScore({ score_verified: false, download_available: true }, scan);
+    assert.match(available.description, /Review the output before use/);
+  });
   it('honors every supported failure reason even if a stale verified flag is present', () => {
     for (const score_verification_reason of ['original_file_missing', 'original_scan_failed',
       'output_file_missing', 'output_scan_failed', 'incomplete_comparison', 'baseline_mismatch',

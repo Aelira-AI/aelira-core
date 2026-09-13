@@ -311,6 +311,7 @@ class PDFStructureTree:
         page_num: int,
         items: List[str],
         ordered: bool = False,
+        source_items: bool = False,
     ) -> bool:
         """
         Add a list structure with proper list item markup.
@@ -319,6 +320,8 @@ class PDFStructureTree:
             page_num: 1-indexed page number
             items: List of item texts
             ordered: Whether this is an ordered list
+            source_items: Items include their original labels in one content run.
+                Keep each run in LBody, without a synthetic duplicate Lbl.
 
         Returns:
             True if list was successfully added
@@ -355,19 +358,20 @@ class PDFStructureTree:
                     )
                 )
 
-                # Add label (bullet or number)
-                label = f"{idx + 1}." if ordered else "\u2022"
-                lbl_elem = self.pdf.make_indirect(
-                    Dictionary(
-                        {
-                            "/Type": Name.StructElem,
-                            "/S": Name.Lbl,
-                            "/P": li_elem,
-                            "/ActualText": String(label),
-                        }
+                if not source_items:
+                    # Separately supplied bodies retain the legacy label API.
+                    label = f"{idx + 1}." if ordered else "\u2022"
+                    lbl_elem = self.pdf.make_indirect(
+                        Dictionary(
+                            {
+                                "/Type": Name.StructElem,
+                                "/S": Name.Lbl,
+                                "/P": li_elem,
+                                "/ActualText": String(label),
+                            }
+                        )
                     )
-                )
-                li_kids.append(lbl_elem)
+                    li_kids.append(lbl_elem)
 
                 # Add body
                 lbody_elem = self.pdf.make_indirect(

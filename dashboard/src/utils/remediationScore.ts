@@ -2,7 +2,7 @@ import type { RemediationJobStatus } from '../api/scans';
 
 export type RemediationScoreJob = Partial<Pick<RemediationJobStatus,
   'original_score' | 'remediated_score' | 'score_verified' | 'human_review_required'
-  | 'score_verification_reason' | 'score_measurement'>>;
+  | 'score_verification_reason' | 'score_measurement' | 'download_available'>>;
 
 const REASONS = {
   original_file_missing: 'The original file is unavailable, so its score could not be measured.',
@@ -54,11 +54,12 @@ export function remediationScore(job: RemediationScoreJob,
   const after = reasonCode === null && job.score_verified === true && hasMeasurement ? output : null;
   const delta = before !== null && after !== null ? after - before : null;
   const success = delta !== null && delta > 0 && job.human_review_required === false;
-  const title = delta === null ? 'Output needs review'
+  const title = delta === null ? (job.download_available === true ? 'Output needs review' : 'Manual review required')
     : delta < 0 ? 'Score decreased — review required'
     : delta === 0 ? 'Score unchanged' : 'Measured score increased';
   const description = delta === null
-    ? `${reasonCode ? REASONS[reasonCode] : REASONS.incomplete_comparison} Review the output before use.`
+    ? `${reasonCode ? REASONS[reasonCode] : REASONS.incomplete_comparison} ${job.download_available === true
+      ? 'Review the output before use.' : 'Review the original document and unresolved findings; no downloadable output is available.'}`
     : delta < 0 ? 'The output scored lower on the same scanner. Review the remaining findings and changes before use.'
     : 'Both scores use the same scanner. Automated scores do not establish accessibility conformance. Review all changes before use.';
   const roundedDelta = delta === null ? null : Number(delta.toFixed(1));

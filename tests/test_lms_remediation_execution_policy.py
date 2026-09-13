@@ -3418,7 +3418,11 @@ async def test_authoritative_document_fixes_fail_when_artifact_cannot_persist(tm
 
 
 @pytest.mark.asyncio
-async def test_worker_persists_verified_output_before_temp_cleanup(tmp_path):
+@pytest.mark.parametrize("source_linked", [True, False])
+async def test_worker_persists_verified_output_before_temp_cleanup(
+    tmp_path, source_linked
+):
+    from src.education.remediation.base import FixedIssue
     from src.jobs.remediation_job import process_remediation_job
 
     path = tmp_path / "file.docx"
@@ -3443,6 +3447,19 @@ async def test_worker_persists_verified_output_before_temp_cleanup(tmp_path):
     remediator.remediate.return_value = _worker_remediation_result(
         path, fixed_count=1, verification_passed=True
     )
+    # An aggregate count alone cannot prove which source finding was fixed.
+    # The worker assigns source-0 to this scan finding before remediation.
+    if source_linked:
+        remediator.remediate.return_value.fixed_issues = [
+            FixedIssue(
+                issue_id="source-0",
+                category="heading",
+                severity="medium",
+                description="Heading structure corrected",
+                fixed_content="Heading 1",
+                fix_method="rule",
+            )
+        ]
     artifact = SimpleNamespace(
         id="artifact-1",
         mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -3497,10 +3514,19 @@ async def test_worker_persists_verified_output_before_temp_cleanup(tmp_path):
     assert not published_source.exists()
     assert scan.remediation_outcome == RemediationOutcome.COMPLETED.value
     assert scan.metadata is Scan.metadata
-    assert result["fixed_count"] == 1
+    assert result["fixed_count"] == int(source_linked)
     assert result["total_issues"] == 1
     assert result["manual_count"] == 0
     assert result["failed_count"] == 0
+    assert result["outcome_unreported_count"] == int(not source_linked)
+    assert result["remaining_count"] == int(not source_linked)
+    assert result["issue_outcomes"] == [
+        {
+            "source_index": 0,
+            "source_index_scope": "original_scan",
+            "status": "fixed" if source_linked else "unreported",
+        }
+    ]
 
 
 @pytest.mark.asyncio

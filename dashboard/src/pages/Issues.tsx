@@ -1,4 +1,19 @@
 import React, { useState, useEffect, useMemo, ChangeEvent } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { RemediationStatusLink } from '../components/results/RemediationStatusLink';
+import { batchRemediationReceiptIsConfirmed } from '../utils/batchRemediationReceipt';
+import { describeIssueFinding } from '../utils/issueFindingDescription';
+import {
+  authorizedTrackedIssueScanIds,
+  withTrackedIssueScanIds,
+  parseTrackedIssueScanIds,
+  missingTrackedIssueScanIds,
+} from '../utils/issueRemediationTracking';
+import {
+  normalizeFindingAutoFix,
+  selectEligibleIssueScanIds,
+  type FindingAutoFix,
+} from '../utils/issueRemediationEligibility';
 import {
   AlertTriangle,
   AlertCircle,
@@ -18,7 +33,7 @@ import {
   LucideIcon,
 } from 'lucide-react';
 import { scansApi } from '../api/scans';
-import type { Issue as ApiIssue } from '../types/api';
+import type { Issue as ApiIssue, RemediationEligibility } from '../types/api';
 import { trackEvent } from '../utils/analytics';
 import { useToast } from '../context/toast-context';
 
@@ -44,6 +59,7 @@ interface ScanInfo {
   id: string;
   filename: string;
   type: string;
+  remediation_eligibility?: RemediationEligibility;
 }
 
 interface Issue {
@@ -55,7 +71,7 @@ interface Issue {
   location?: string;
   wcag_criteria?: string;
   recommendation?: string;
-  can_auto_fix?: boolean;
+  autoFixCapability: FindingAutoFix;
   assigned_to_name?: string;
   created_at?: string;
   notes?: string;
@@ -69,19 +85,18 @@ interface Scan {
   filename: string;
   type: string;
   issues: ApiIssue[];
+  remediation_eligibility?: RemediationEligibility;
 }
 
 interface Filters {
   severity: string;
   category: string;
-  autoFixable: string;
   status: string;
   search: string;
 }
 
 interface Stats {
   bySeverity: Record<string, number>;
-  byAutoFix: { fixable: number; manual: number };
   total: number;
 }
 
@@ -119,7 +134,7 @@ const SEVERITY_CONFIG: Record<SeverityLevel, SeverityConfig> = {
   },
   low: {
     icon: Info,
-    color: 'text-[var(--content-tertiary)]',
+    color: 'text-[var(--content-secondary)]',
     bg: 'bg-[var(--surface-tertiary)]',
     label: 'Low',
     priority: 4,
@@ -173,7 +188,7 @@ const STATUS_CONFIG: Record<IssueStatus, StatusConfig> = {
   },
   WONT_FIX: {
     label: "Won't Fix",
-    color: 'text-[var(--content-tertiary)]',
+    color: 'text-[var(--content-secondary)]',
     bg: 'bg-[var(--surface-tertiary)]',
   },
   FALSE_POSITIVE: {
@@ -238,11 +253,6 @@ function IssueCard({ issue, scanInfo, onRemediate, onStatusChange, onAddNote, is
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {issue.can_auto_fix && (
-            <span className="text-xs px-2 py-1 rounded bg-[var(--feature-success-surface)] text-[var(--feature-success-content)]">
-              Auto-fixable
-            </span>
-          )}
           {isExpanded ? (
             <ChevronDown className="w-5 h-5 text-tertiary" aria-hidden="true" />
           ) : (
@@ -360,7 +370,9 @@ function IssueCard({ issue, scanInfo, onRemediate, onStatusChange, onAddNote, is
 
             {/* Action Buttons */}
             <div className="flex flex-wrap gap-2 pt-2 border-t border-[var(--border-secondary)]">
-              {issue.can_auto_fix && issue.status !== 'RESOLVED' && (
+              {(['pdf', 'word', 'excel', 'powerpoint', 'latex'].includes(scanInfo.type.toLowerCase())
+                || scanInfo.remediation_eligibility?.eligible === true
+                || issue.autoFixCapability.state === 'available') && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -368,12 +380,12 @@ function IssueCard({ issue, scanInfo, onRemediate, onStatusChange, onAddNote, is
                   }}
                   className="btn-primary text-sm py-1.5 px-3 flex items-center gap-1"
                   aria-label={
-                    `Auto-fix the whole document containing: ${issue.description}`
+                    `Open remediation review for the document containing: ${issue.description}`
                   }
-                  title="Remediates the entire document, not this issue alone"
+                  title="Review the whole document's remediation status and available output"
                 >
                   <Wrench className="w-4 h-4" aria-hidden="true" />
-                  Auto-Fix Document
+                  Review Document Remediation
                 </button>
               )}
               {!showNoteInput && (
@@ -412,17 +424,23 @@ function IssueCard({ issue, scanInfo, onRemediate, onStatusChange, onAddNote, is
 
 export function Issues(): React.ReactElement {
   const [scans, setScans] = useState<Scan[]>([]);
+  const [trackedScans, setTrackedScans] = useState<Scan[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
   const [filters, setFilters] = useState<Filters>({
     severity: 'all',
     category: 'all',
-    autoFixable: 'all',
     status: 'all',
     search: '',
   });
-  const [_remediating, setRemediating] = useState<Set<string>>(new Set());
+  const [startingBatch, setStartingBatch] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const trackedIdsKey = parseTrackedIssueScanIds(searchParams).join(',');
+  const listedIdsKey = scans.map((scan) => scan.id).join(',');
+  const knownScans = useMemo(() => [...scans, ...trackedScans], [scans, trackedScans]);
+  const batchScanIds = useMemo(() => authorizedTrackedIssueScanIds(searchParams, knownScans), [searchParams, knownScans]);
+  const navigate = useNavigate();
   const toast = useToast();
 
   useEffect(() => {
@@ -443,6 +461,7 @@ export function Issues(): React.ReactElement {
                 filename: scan.file_name || 'Unknown',
                 type: scan.scan_type?.toLowerCase() || 'unknown',
                 issues: scanResult.result?.issues || details.issues || [],
+                remediation_eligibility: details.remediation_eligibility,
               };
             } catch {
               return {
@@ -468,18 +487,39 @@ export function Issues(): React.ReactElement {
     fetchScans();
   }, []);
 
+  useEffect(() => {
+    if (loading) return;
+    let cancelled = false;
+    const missingIds = missingTrackedIssueScanIds(trackedIdsKey.split(','), listedIdsKey.split(','));
+    void Promise.all(missingIds.map(async (scanId): Promise<Scan | null> => {
+      try {
+        const details = await scansApi.getScan(scanId);
+        const returnedId = details.scan_id || details.id;
+        if (returnedId?.toLowerCase() !== scanId) return null;
+        return {
+          id: returnedId,
+          filename: details.file_name,
+          type: details.scan_type.toLowerCase(),
+          // Restore document status references without expanding the current findings list.
+          issues: [],
+          remediation_eligibility: details.remediation_eligibility,
+        };
+      } catch {
+        return null;
+      }
+    })).then((results) => {
+      if (!cancelled) setTrackedScans(results.filter((scan): scan is Scan => scan !== null));
+    });
+    return () => { cancelled = true; };
+  }, [loading, listedIdsKey, trackedIdsKey]);
+
   // Flatten all issues with scan info, normalizing API fields to frontend shape
   const allIssues = useMemo<Issue[]>(() => {
     const issues: Issue[] = [];
     scans.forEach((scan) => {
       ((scan.issues || []) as unknown as Record<string, unknown>[]).forEach((rawIssue, index) => {
-        // Build a human-readable description from available fields
-        const issueType = (rawIssue.issue_type as string) || (rawIssue.type as string) || '';
-        const text = (rawIssue.text as string) || (rawIssue.shape_name as string) || '';
         const suggestedFix = (rawIssue.suggested_fix as string) || (rawIssue.suggested_alt_text as string) || '';
-        const description = (rawIssue.description as string)
-          || suggestedFix
-          || `${CATEGORY_LABELS[(rawIssue.type as string)] || (rawIssue.type as string) || 'Issue'}: ${issueType.replace(/_/g, ' ')}${text ? ` — ${text}` : ''}`;
+        const description = describeIssueFinding(rawIssue, CATEGORY_LABELS);
 
         // Map location from various scan-type-specific fields
         const slide = rawIssue.slide_number || rawIssue.slide;
@@ -502,7 +542,7 @@ export function Issues(): React.ReactElement {
           location: location || undefined,
           wcag_criteria: (rawIssue.criterion as string) || (rawIssue.rule as string) || undefined,
           recommendation: suggestedFix || undefined,
-          can_auto_fix: (rawIssue.can_auto_fix as boolean) || (rawIssue.auto_fix_available as boolean) || false,
+          autoFixCapability: normalizeFindingAutoFix(rawIssue),
           assigned_to_name: (rawIssue.assigned_to as string) || undefined,
           created_at: (rawIssue.created_at as string) || undefined,
           notes: (rawIssue.notes as string) || undefined,
@@ -512,6 +552,7 @@ export function Issues(): React.ReactElement {
             id: scan.id,
             filename: scan.filename,
             type: scan.type,
+            remediation_eligibility: scan.remediation_eligibility,
           },
         });
       });
@@ -524,8 +565,6 @@ export function Issues(): React.ReactElement {
     return allIssues.filter((issue) => {
       if (filters.severity !== 'all' && issue.severity !== filters.severity) return false;
       if (filters.category !== 'all' && issue.category !== filters.category) return false;
-      if (filters.autoFixable === 'yes' && !issue.can_auto_fix) return false;
-      if (filters.autoFixable === 'no' && issue.can_auto_fix) return false;
       if (filters.status !== 'all' && (issue.status || 'OPEN') !== filters.status) return false;
       if (filters.search) {
         const search = filters.search.toLowerCase();
@@ -544,6 +583,8 @@ export function Issues(): React.ReactElement {
     });
   }, [allIssues, filters]);
 
+  const eligibleScanIds = useMemo(() => selectEligibleIssueScanIds(filteredIssues, scans), [filteredIssues, scans]);
+
   // Get unique categories from issues
   const categories = useMemo<string[]>(() => {
     const cats = new Set(allIssues.map((i) => i.category).filter(Boolean));
@@ -553,18 +594,12 @@ export function Issues(): React.ReactElement {
   // Statistics
   const stats = useMemo<Stats>(() => {
     const bySeverity: Record<string, number> = {};
-    const byAutoFix = { fixable: 0, manual: 0 };
 
     allIssues.forEach((issue) => {
       bySeverity[issue.severity] = (bySeverity[issue.severity] || 0) + 1;
-      if (issue.can_auto_fix) {
-        byAutoFix.fixable++;
-      } else {
-        byAutoFix.manual++;
-      }
     });
 
-    return { bySeverity, byAutoFix, total: allIssues.length };
+    return { bySeverity, total: allIssues.length };
   }, [allIssues]);
 
   const toggleIssue = (issueId: string): void => {
@@ -579,71 +614,36 @@ export function Issues(): React.ReactElement {
     });
   };
 
-  const handleRemediate = async (issue: Issue): Promise<void> => {
-    trackEvent('dash-issue-autofix', { scope: 'single' });
-    setRemediating((prev) => new Set(prev).add(issue.id));
-    try {
-      // There is no per-issue remediation endpoint: this remediates the
-      // whole document. Saying otherwise told people a single issue had
-      // been touched when every issue in the document may have been.
-      await scansApi.remediateScan(issue.scanId, { use_ai: true });
-      toast.success(
-        'Document remediated. Every issue in it may have been changed, not just this one.',
-        'Auto-Fix Complete'
-      );
-      // Refresh the scan data
-      const details = await scansApi.getScan(issue.scanId);
-      setScans((prev) =>
-        prev.map((s) =>
-          s.id === issue.scanId ? { ...s, issues: details.issues || [] } : s
-        )
-      );
-    } catch (err: unknown) {
-      const remediateError = err as Error;
-      toast.error(remediateError.message || 'Failed to remediate issue', 'Remediation Failed');
-    } finally {
-      setRemediating((prev) => {
-        const next = new Set(prev);
-        next.delete(issue.id);
-        return next;
-      });
-    }
+  const handleRemediate = (issue: Issue): void => {
+    trackEvent('dash-issue-remediation-review', { scope: 'document' });
+    navigate(`/remediate/${issue.scanId}`);
   };
 
   const handleBulkRemediate = async (): Promise<void> => {
-    const autoFixableIssues = filteredIssues.filter((i) => i.can_auto_fix);
-    if (autoFixableIssues.length === 0) {
-      toast.warning('No auto-fixable issues in current filter', 'Nothing to Fix');
+    if (startingBatch || batchScanIds.length > 0) return;
+    const scanIds = eligibleScanIds;
+    if (scanIds.length === 0) return;
+    if (scanIds.length > 50) {
+      toast.warning('Narrow the filter to at most 50 documents per batch.', 'Batch limit');
       return;
     }
-
-    const scanIds = [...new Set(autoFixableIssues.map((i) => i.scanId))];
-
+    setStartingBatch(true);
     trackEvent('dash-issue-autofix', { scope: 'bulk' });
     try {
-      await scansApi.batchRemediate(scanIds, { use_ai: true });
-      toast.success(
-        `Remediated ${autoFixableIssues.length} issues across ${scanIds.length} scans`,
-        'Bulk Remediation Complete'
-      );
-      // Refresh all affected scans
-      const refreshed = await Promise.all(
-        scanIds.map(async (scanId) => {
-          const details = await scansApi.getScan(scanId);
-          return { scanId, issues: details.issues || [] };
-        })
-      );
-      setScans((prev) =>
-        prev.map((s) => {
-          const updated = refreshed.find((r) => r.scanId === s.id);
-          return updated ? { ...s, issues: updated.issues } : s;
-        })
-      );
-    } catch (err: unknown) {
-      const bulkError = err as Error;
-      toast.error(bulkError.message || 'Bulk remediation failed', 'Error');
+      const receipt = await scansApi.batchRemediate(scanIds, { use_ai: true });
+      const queued = receipt.scans_queued;
+      if (!batchRemediationReceiptIsConfirmed(receipt, scanIds)) {
+        throw new Error('Unconfirmed queue receipt');
+      }
+      toast.success(`${queued.length} document jobs queued. Review their recorded outcomes below.`, 'Remediation queued');
+    } catch {
+      toast.warning('The queue request was not confirmed. Check each recorded job before retrying.', 'Status check required');
+    } finally {
+      setSearchParams((previous) => withTrackedIssueScanIds(previous, scanIds), { replace: true });
+      setStartingBatch(false);
     }
   };
+
 
   // Handle status change for tracked issues
   const handleStatusChange = async (issue: Issue, newStatus: string): Promise<void> => {
@@ -747,41 +747,52 @@ export function Issues(): React.ReactElement {
   return (
     <div className="p-8">
       <div className="max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
           <h1 className="text-3xl font-bold text-primary">Issue Management</h1>
           <button
             onClick={handleBulkRemediate}
             className="btn-primary flex items-center gap-2"
-            disabled={filteredIssues.filter((i) => i.can_auto_fix).length === 0}
-            aria-label={`Fix all ${filteredIssues.filter((i) => i.can_auto_fix).length} auto-fixable issues`}
+            disabled={startingBatch || batchScanIds.length > 0 || eligibleScanIds.length === 0}
+            aria-label="Queue remediation jobs for eligible documents in the filtered findings"
+            aria-describedby="issue-queue-eligibility"
           >
             <Wrench className="w-4 h-4" aria-hidden="true" />
-            Fix All Auto-Fixable ({filteredIssues.filter((i) => i.can_auto_fix).length})
+            {startingBatch ? 'Queueing document jobs…' : 'Queue Document Remediation'}
           </button>
         </div>
+        <p id="issue-queue-eligibility" className="text-sm text-secondary mb-6">
+          {eligibleScanIds.length} eligible {eligibleScanIds.length === 1 ? 'document' : 'documents'} in the filtered findings.
+          {' '}Queueing processes the whole document; automatic fixes are not guaranteed. Documents without confirmed queue eligibility are excluded.
+        </p>
 
         {/* Stats Overview */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        {batchScanIds.length > 0 && (
+          <section className="card mb-6 space-y-3" aria-label="Document remediation jobs">
+            <h2 className="text-lg font-semibold text-primary">Tracked Document Remediation</h2>
+            <button type="button" className="btn-secondary" disabled={startingBatch}
+              onClick={() => setSearchParams((previous) => withTrackedIssueScanIds(previous, []), { replace: true })}
+              aria-describedby="clear-tracked-help">Clear tracked documents</button>
+            <p id="clear-tracked-help" className="text-sm text-secondary">Clearing this list does not cancel jobs or delete results. Check recorded outcomes before queueing the same documents again.</p>
+            <p className="text-sm text-secondary">Showing each document's latest recorded job. These document references survive reload; they do not confirm a particular batch was accepted. Original findings remain below. Check each recorded outcome before downloading output or retrying.</p>
+            {batchScanIds.map((scanId) => (
+              <div key={scanId}>
+                <h3 className="mb-2 text-sm font-medium text-primary">{knownScans.find((scan) => scan.id === scanId)?.filename || 'Document'}</h3>
+                <RemediationStatusLink scanId={scanId} />
+              </div>
+            ))}
+          </section>
+        )}
+
+        <div className="grid grid-cols-2 gap-4 mb-6">
           <div className="card">
-            <p className="text-sm text-tertiary">Total Issues</p>
+            <p className="text-sm text-tertiary">Issues Found</p>
             <p className="text-2xl font-bold text-primary">{stats.total}</p>
+            <p className="mt-1 text-sm text-secondary">Detected before remediation; includes issues since fixed.</p>
           </div>
           <div className="card">
             <p className="text-sm text-tertiary">Critical/High</p>
             <p className="text-2xl font-bold text-[var(--feature-danger-content)]">
               {(stats.bySeverity.critical || 0) + (stats.bySeverity.high || 0)}
-            </p>
-          </div>
-          <div className="card">
-            <p className="text-sm text-tertiary">Auto-Fixable</p>
-            <p className="text-2xl font-bold text-[var(--feature-success-content)]">
-              {stats.byAutoFix.fixable}
-            </p>
-          </div>
-          <div className="card">
-            <p className="text-sm text-tertiary">Manual Review</p>
-            <p className="text-2xl font-bold text-[var(--feature-warning-content)]">
-              {stats.byAutoFix.manual}
             </p>
           </div>
         </div>
@@ -831,17 +842,6 @@ export function Issues(): React.ReactElement {
                   {CATEGORY_LABELS[cat] || cat}
                 </option>
               ))}
-            </select>
-
-            <select
-              value={filters.autoFixable}
-              onChange={(e: ChangeEvent<HTMLSelectElement>) => setFilters((f) => ({ ...f, autoFixable: e.target.value }))}
-              className="input py-1.5 text-sm"
-              aria-label="Filter by auto-fix capability"
-            >
-              <option value="all">All Issues</option>
-              <option value="yes">Auto-Fixable Only</option>
-              <option value="no">Manual Review Only</option>
             </select>
 
             <select

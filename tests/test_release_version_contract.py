@@ -1,4 +1,4 @@
-"""Release-candidate metadata and operator notices must agree for v0.9.10."""
+"""Release-candidate metadata and operator notices must agree for v0.9.11."""
 
 import json
 import re
@@ -6,12 +6,12 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.9.10"
-RELEASE_HEADING = "## [0.9.10] - 2026-09-12"
-RELEASE_BODY = ROOT / "docs/releases/v0.9.10.md"
+VERSION = "0.9.11"
+RELEASE_HEADING = "## [0.9.11] - 2026-09-12"
+RELEASE_BODY = ROOT / "docs/releases/v0.9.11.md"
 
 
-def test_authoritative_release_versions_are_0_9_10():
+def test_authoritative_release_versions_are_0_9_11():
     readme = (ROOT / "README.md").read_text()
     settings = (ROOT / "src/config/settings.py").read_text()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -38,8 +38,8 @@ def test_long_form_cli_docs_match_the_release_version():
         "cli/docs/TROUBLESHOOTING.md",
     ):
         text = (ROOT / relative).read_text()
-        assert "**Version:** v0.9.10" in text
-        assert "**CLI Version:** v0.9.10" in text
+        assert "**Version:** v0.9.11" in text
+        assert "**CLI Version:** v0.9.11" in text
         assert "v0.4.0" not in text
         assert "March 17, 2026" not in text
         assert "All features complete - Production ready" not in text
@@ -48,8 +48,8 @@ def test_long_form_cli_docs_match_the_release_version():
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
-    assert re.search(r"\|\s*0\.9\.10\s*\|\s*:white_check_mark:\s*\|", security)
-    assert re.search(r"\|\s*<=\s*0\.9\.9\s*\|\s*:x:\s*\|", security)
+    assert re.search(r"\|\s*0\.9\.11\s*\|\s*:white_check_mark:\s*\|", security)
+    assert re.search(r"\|\s*<=\s*0\.9\.10\s*\|\s*:x:\s*\|", security)
     assert "current 0.9.x line" not in security
 
 
@@ -60,7 +60,7 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def _assert_v0910_notice(notes: str) -> None:
+def _assert_v0911_notice(notes: str) -> None:
     for heading in (
         "Fixed",
         "Changed",
@@ -69,7 +69,7 @@ def _assert_v0910_notice(notes: str) -> None:
         assert heading in notes
     for phrase in (
         "No database migration",
-        "same 0.9.10 release",
+        "same 0.9.11 release",
         "original",
         "estimates",
         "v0.9.8 operator action",
@@ -77,7 +77,7 @@ def _assert_v0910_notice(notes: str) -> None:
         assert phrase in notes
 
 
-def test_changelog_promotes_v0_9_10_and_preserves_history():
+def test_changelog_promotes_v0_9_11_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     unreleased = changelog.index("## [Unreleased]")
     release = changelog.index(RELEASE_HEADING)
@@ -85,14 +85,14 @@ def test_changelog_promotes_v0_9_10_and_preserves_history():
     unreleased_notes = changelog[unreleased + len("## [Unreleased]") : release].strip()
     assert not unreleased_notes
     assert unreleased < release < historical
-    _assert_v0910_notice(_release_notes(changelog, "## [0.9.8] - 2026-09-08"))
+    _assert_v0911_notice(_release_notes(changelog, "## [0.9.8] - 2026-09-08"))
 
 
 def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     body = RELEASE_BODY.read_text()
 
-    assert body.startswith("# Aelira v0.9.10\n")
-    _assert_v0910_notice(body)
+    assert body.startswith("# Aelira v0.9.11\n")
+    _assert_v0911_notice(body)
     assert "linux/amd64" in body
     assert "linux/arm64" in body
     assert "signed annotated tag" in body

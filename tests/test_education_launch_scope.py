@@ -4,8 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from src.api.education._scope import authorize_scan_access
 from src.api.education._shared import get_api_key_or_mock
 from src.api.main import app
 from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
@@ -25,7 +27,7 @@ COURSE = "course-1"
 OTHER_COURSE = "course-2"
 
 
-def _principal(role="Instructor", *, auth_method="lti"):
+def _principal(role="Instructor", *, auth_method="lti", platform="canvas"):
     if auth_method != "lti":
         return AuthenticatedPrincipal(
             api_key=None,
@@ -43,6 +45,7 @@ def _principal(role="Instructor", *, auth_method="lti"):
             auth_method="lti",
             lti_staff_role=role,
             lti_account_wide=True,
+            lti_platform=platform,
         )
     return AuthenticatedPrincipal(
         api_key=None,
@@ -52,6 +55,7 @@ def _principal(role="Instructor", *, auth_method="lti"):
         auth_method="lti",
         lti_course_id=COURSE,
         lti_staff_role=role,
+        lti_platform=platform,
     )
 
 
@@ -528,3 +532,160 @@ def test_html_route_in_scope_scan_without_html_keeps_html_specific_detail(client
 
     assert response.status_code == 404
     assert response.json() == {"detail": "HTML output not found"}
+
+
+@pytest.mark.parametrize("platform", ["blackboard", "brightspace"])
+def test_non_canvas_course_scope_is_denied_before_cloud_link_lookup(platform):
+    db = _db(scan=_scan(), cloud_file=_cloud_file())
+    with pytest.raises(HTTPException) as exc:
+        authorize_scan_access(db, _scan(), _principal(platform=platform))
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Scan not found"
+    db.query.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "actor",
+    [
+        _principal(),
+        _principal(auth_method="session"),
+        _principal("Administrator"),
+        _principal("Administrator", platform="blackboard"),
+        _principal("Administrator", platform="brightspace"),
+    ],
+)
+def test_supported_scan_authority_keeps_canvas_and_account_wide_access(actor):
+    cloud_file = _cloud_file()
+    db = _db(scan=_scan(), cloud_file=cloud_file)
+    result = authorize_scan_access(db, _scan(), actor)
+    if actor.auth_method == "lti" and not actor.lti_account_wide:
+        assert result is cloud_file
+        db.query.assert_called_once_with(CloudFile)
+    else:
+        assert result is None
+        db.query.assert_not_called()
+
+
+@pytest.mark.parametrize("platform", ["blackboard", "brightspace"])
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/education/scans/scan-1"),
+        ("GET", "/education/scans/scan-1/progress"),
+        ("POST", "/education/remediate/scan-1"),
+        ("POST", "/education/code/remediate/scan-1"),
+        ("GET", "/education/scans/scan-1/artifacts/artifact-1/download"),
+        ("POST", "/education/scans/scan-1/artifacts/artifact-1/approve"),
+    ],
+)
+def test_non_canvas_course_scan_and_remediation_routes_stop_before_effects(
+    client, platform, method, path
+):
+    scan = _scan(result=SimpleNamespace(issues=[]))
+    db = _db(scan=scan, cloud_file=_cloud_file())
+    _authenticate(client, _principal(platform=platform), db)
+    with (
+        patch(
+            "src.api.education.scan_history_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes.document_remediation_eligibility"
+        ) as eligibility,
+        patch(
+            "src.api.education.remediation_routes._enqueue_scan_remediation"
+        ) as enqueue,
+        patch(
+            "src.api.education.remediation_routes._resolve_bound_scan_cloud_file"
+        ) as resolve,
+        patch(
+            "src.api.education.remediation_routes.RemediationArtifactService.from_settings"
+        ) as artifacts,
+        patch(
+            "src.integrations.oauth_token_manager.OAuthTokenManager.refresh_if_expired",
+            new=AsyncMock(),
+        ) as refresh,
+    ):
+        response = client.request(method, path)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Scan not found"}
+    eligibility.assert_not_called()
+    enqueue.assert_not_called()
+    resolve.assert_not_called()
+    artifacts.assert_not_called()
+    refresh.assert_not_awaited()
+    db._cloud_query.filter.assert_not_called()
+    db.add.assert_not_called()
+    db.delete.assert_not_called()
+    db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("platform", ["blackboard", "brightspace"])
+def test_non_canvas_course_history_denies_before_database_query(client, platform):
+    db = _db(list_scans=[_scan()])
+    _authenticate(client, _principal(platform=platform), db)
+    with patch(
+        "src.api.education.scan_history_routes.ScanService.get_scan_history"
+    ) as history:
+        response = client.get("/education/scans")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Scan not found"}
+    db.query.assert_not_called()
+    history.assert_not_called()
+
+
+@pytest.mark.parametrize("platform", ["blackboard", "brightspace"])
+def test_non_canvas_account_admin_keeps_scan_details_and_history(client, platform):
+    scan = _scan()
+    db = _db(scan=scan)
+    _authenticate(client, _principal("Administrator", platform=platform), db)
+    with (
+        patch(
+            "src.api.education.scan_history_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.scan_history_routes.ScanService.get_scan_history",
+            return_value=[scan],
+        ) as history,
+    ):
+        details = client.get("/education/scans/scan-1")
+        listing = client.get("/education/scans")
+    assert details.status_code == listing.status_code == 200
+    assert listing.json()["total_returned"] == 1
+    history.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "actor",
+    [
+        _principal(),
+        _principal(auth_method="session"),
+        _principal("Administrator", platform="blackboard"),
+        _principal("Administrator", platform="brightspace"),
+    ],
+)
+def test_supported_course_and_account_admin_can_enqueue_remediation(client, actor):
+    scan = _scan(result=SimpleNamespace(issues=[]))
+    db = _db(scan=scan, cloud_file=_cloud_file())
+    _authenticate(client, actor, db)
+    with (
+        patch(
+            "src.api.education.remediation_routes.ScanService.get_scan_with_result",
+            return_value=scan,
+        ),
+        patch(
+            "src.api.education.remediation_routes._enqueue_scan_remediation",
+            return_value=SimpleNamespace(id="job-1"),
+        ) as enqueue,
+        patch(
+            "src.api.education.remediation_routes._respond_for_enqueued_job",
+            new=AsyncMock(return_value={"status": "queued"}),
+        ) as respond,
+    ):
+        response = client.post("/education/remediate/scan-1")
+    assert response.status_code == 200
+    assert response.json() == {"status": "queued"}
+    enqueue.assert_called_once()
+    assert enqueue.call_args.kwargs["principal"] is actor
+    respond.assert_awaited_once()

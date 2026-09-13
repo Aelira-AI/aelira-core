@@ -298,6 +298,13 @@ def _run_child(request: dict[str, Any]) -> dict[str, Any]:
             "duration_seconds": result.duration_seconds,
             "verification_passed": getattr(result, "verification_passed", False),
             "human_review_required": not getattr(result, "verification_passed", False)
+            or bool(
+                getattr(
+                    getattr(result, "verification_result", None),
+                    "persistent_failures",
+                    [],
+                )
+            )
             or any(fix.needs_review for fix in result.fixed_issues)
             or result.manual_count > 0
             or result.failed_count > 0

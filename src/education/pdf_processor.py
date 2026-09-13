@@ -357,9 +357,14 @@ class PDFProcessor:
             )
             if ro_result.issues:
                 for ro_issue in ro_result.issues:
-                    # Skip "no structure tree" issues (empty actual_order) --
-                    # already covered by document-level structure checks
-                    if not ro_issue.actual_order:
+                    # An empty extracted order does not imply absent tags:
+                    # MCID references may exist but be unresolved. Only dedupe
+                    # when the structure checker actually reported no tree.
+                    if not ro_issue.actual_order and any(
+                        issue.get("issue_type")
+                        in {"missing_structure_tree", "empty_structure_tree"}
+                        for issue in structure_issues
+                    ):
                         continue
                     issues.append(
                         {
