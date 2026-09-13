@@ -5,6 +5,15 @@ import { readFileSync } from 'node:fs';
 const source = (path) => readFileSync(new URL(`../../src/${path}`, import.meta.url), 'utf8');
 
 describe('remediation entry points', () => {
+  it('uses source-backed descriptions without changing finding identity or eligibility', () => {
+    const issues = source('pages/Issues.tsx');
+    assert.match(issues, /describeIssueFinding\(rawIssue, CATEGORY_LABELS\)/);
+    assert.match(issues, /id: `\$\{scan\.id\}-\$\{index\}`/);
+    assert.match(issues, /recommendation: suggestedFix \|\| undefined/);
+    assert.match(issues, /total: allIssues\.length/);
+    assert.match(issues, /selectEligibleIssueScanIds\(filteredIssues, scans\)/);
+  });
+
   it('routes upload and scan detail through durable remediation review', () => {
     for (const path of ['components/upload/FileUploader.tsx', 'pages/ScanDetail.tsx']) {
       const page = source(path);

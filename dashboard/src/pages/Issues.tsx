@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, ChangeEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RemediationStatusLink } from '../components/results/RemediationStatusLink';
 import { batchRemediationReceiptIsConfirmed } from '../utils/batchRemediationReceipt';
+import { describeIssueFinding } from '../utils/issueFindingDescription';
 import {
   authorizedTrackedIssueScanIds,
   withTrackedIssueScanIds,
@@ -517,13 +518,8 @@ export function Issues(): React.ReactElement {
     const issues: Issue[] = [];
     scans.forEach((scan) => {
       ((scan.issues || []) as unknown as Record<string, unknown>[]).forEach((rawIssue, index) => {
-        // Build a human-readable description from available fields
-        const issueType = (rawIssue.issue_type as string) || (rawIssue.type as string) || '';
-        const text = (rawIssue.text as string) || (rawIssue.shape_name as string) || '';
         const suggestedFix = (rawIssue.suggested_fix as string) || (rawIssue.suggested_alt_text as string) || '';
-        const description = (rawIssue.description as string)
-          || suggestedFix
-          || `${CATEGORY_LABELS[(rawIssue.type as string)] || (rawIssue.type as string) || 'Issue'}: ${issueType.replace(/_/g, ' ')}${text ? ` — ${text}` : ''}`;
+        const description = describeIssueFinding(rawIssue, CATEGORY_LABELS);
 
         // Map location from various scan-type-specific fields
         const slide = rawIssue.slide_number || rawIssue.slide;
