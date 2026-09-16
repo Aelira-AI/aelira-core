@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import fitz
+import pymupdf as fitz
 import ocrmypdf
 import pikepdf
 import pytest

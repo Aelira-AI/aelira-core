@@ -12,7 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 from PIL import Image
 from pikepdf import Array, Dictionary, Name, Operator

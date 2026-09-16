@@ -92,7 +92,7 @@ def test_remediation_pipeline_preserves_complete_scan_boundary(
         remaining_issues = re_scan.issues
         assert sha256(Path(input_pdf).read_bytes()).hexdigest() == source_digest
 
-        import fitz
+        import pymupdf as fitz
 
         with fitz.open(input_pdf) as source, fitz.open(result.output_file) as saved:
             assert [page.get_text() for page in saved] == [

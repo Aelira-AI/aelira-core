@@ -4,7 +4,7 @@ import hashlib
 import shutil
 from dataclasses import replace
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 import pytest
 from pikepdf import Array, Name, Operator

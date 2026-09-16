@@ -13,7 +13,7 @@ Key differences from v1 (content_tagger.py):
 - Stores bounding boxes in /A attribute with /BBox per spec Section 3.1
 
 Usage:
-    import fitz
+    import pymupdf as fitz
     import pikepdf
 
     fitz_doc = fitz.open('input.pdf')
@@ -52,7 +52,7 @@ except ImportError:
     String = Any  # type: ignore[assignment,misc]
 
 try:
-    import fitz  # PyMuPDF
+    import pymupdf as fitz  # PyMuPDF
 
     HAS_FITZ = True
 except ImportError:

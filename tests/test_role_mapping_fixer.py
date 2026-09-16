@@ -56,7 +56,7 @@ def _make_pdf_with_nonstandard_tags():
 
 def test_role_mapping_fixer_maps_nonstandard_tags():
     """RoleMappingFixer should add /RoleMap entries for non-standard tags."""
-    import fitz as fitz_mod
+    import pymupdf as fitz_mod
     import tempfile
     import os
 

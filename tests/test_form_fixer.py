@@ -62,7 +62,7 @@ def _make_pdf_with_form():
 
 def test_form_fixer_adds_tu_label():
     """FormFixer should add /TU tooltip to unlabeled fields."""
-    import fitz as fitz_mod
+    import pymupdf as fitz_mod
     import tempfile
     import os
 
@@ -107,7 +107,7 @@ def test_form_fixer_adds_tu_label():
 
 def test_form_fixer_adds_tabs():
     """FormFixer should add /Tabs /S to pages missing tab order."""
-    import fitz as fitz_mod
+    import pymupdf as fitz_mod
     import tempfile
     import os
 

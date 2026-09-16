@@ -27,7 +27,7 @@ def test_content_bound_table_completes_real_remediation_and_saved_rescan(
     tmp_path, pages
 ):
     """Valid table coverage survives the real writer, not a substituted output."""
-    import fitz
+    import pymupdf as fitz
 
     source = save_fixture(tmp_path / "source", pages=pages)
     source_hash = sha256(source.read_bytes()).hexdigest()

@@ -48,7 +48,7 @@ except ImportError:
     latex_to_mathml = None  # type: ignore[assignment]
 
 try:
-    import fitz  # noqa: F401  # PyMuPDF availability canary (module attrs not used directly)
+    import pymupdf as fitz  # noqa: F401  # PyMuPDF availability canary (module attrs not used directly)
 
     HAS_PYMUPDF = True
 except ImportError:

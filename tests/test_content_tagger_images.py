@@ -8,7 +8,7 @@ it described — a structure tree that reads as tagged but is unreachable to a
 screen reader.
 """
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 import pytest
 

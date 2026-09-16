@@ -23,7 +23,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    import fitz  # PyMuPDF - for reading/analyzing PDFs
+    import pymupdf as fitz  # PyMuPDF - for reading/analyzing PDFs
 
     HAS_PYMUPDF = True
 except ImportError:

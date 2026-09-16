@@ -320,7 +320,7 @@ def build_chemical_structure_pdf_contract(
 ) -> ChemicalStructurePdfContract:
     """Build a durable contract only from a reopened, reverse-verified PDF."""
 
-    import fitz
+    import pymupdf as fitz
 
     from src.education.pdf_checks.image_checker import _displayed_image_occurrences
     from src.education.remediation.content_tagger_v2 import (

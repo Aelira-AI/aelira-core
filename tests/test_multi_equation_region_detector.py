@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from io import BytesIO
 
-import fitz
+import pymupdf as fitz
 import pytest
 from PIL import Image, ImageDraw
 from pydantic import ValidationError

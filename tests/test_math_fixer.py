@@ -5,7 +5,7 @@ def test_math_fixer_converts_latex_to_formula():
     """MathFixer should create Formula elements with MathML from LaTeX."""
     import pikepdf
     from pikepdf import Dictionary, Name
-    import fitz as fitz_mod
+    import pymupdf as fitz_mod
     import tempfile
     import os
 

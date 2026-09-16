@@ -550,7 +550,7 @@ class TestPDFReadingOrderVerification:
 
     def test_visual_text_order_extraction(self, pdf_processor, sample_pdf):
         """Test visual text order extraction helper."""
-        import fitz
+        import pymupdf as fitz
         from src.education.pdf_checks.reading_order import ReadingOrderVerifier
 
         verifier = ReadingOrderVerifier()

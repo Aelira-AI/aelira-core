@@ -4,7 +4,7 @@ from pathlib import Path
 from hashlib import sha256
 from io import BytesIO
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 import pytest
 

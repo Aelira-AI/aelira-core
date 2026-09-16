@@ -4,7 +4,7 @@ import logging
 from .completeness import complete_scan_requested, record_incomplete_check
 from typing import Dict, List
 
-import fitz  # PyMuPDF for text extraction in list checks
+import pymupdf as fitz  # PyMuPDF for text extraction in list checks
 
 try:
     import pikepdf

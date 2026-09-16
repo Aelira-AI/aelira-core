@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 from pikepdf import Array, Name
 

@@ -17,7 +17,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import fitz
+import pymupdf as fitz
 import numpy as np
 import pytesseract
 from PIL import Image

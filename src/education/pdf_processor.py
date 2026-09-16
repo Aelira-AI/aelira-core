@@ -26,7 +26,7 @@ from pypdf import (
 import os
 import gc
 import tempfile
-import fitz  # PyMuPDF for image extraction
+import pymupdf as fitz  # PyMuPDF for image extraction
 import logging
 from sqlalchemy.orm import Session
 import ocrmypdf  # Enhanced PDF OCR with structure preservation

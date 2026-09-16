@@ -41,7 +41,7 @@ from urllib.parse import urlsplit
 from PIL import Image, UnidentifiedImageError
 
 try:
-    import fitz  # PyMuPDF - for reading/analyzing PDFs
+    import pymupdf as fitz  # PyMuPDF - for reading/analyzing PDFs
 
     HAS_PYMUPDF = True
 except ImportError:
