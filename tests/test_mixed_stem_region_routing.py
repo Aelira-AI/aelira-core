@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
-import fitz
+import pymupdf as fitz
 import pytest
 from pydantic import ValidationError
 

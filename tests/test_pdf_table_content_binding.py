@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 import pytest
 from pikepdf import Array, Dictionary, Name, Operator

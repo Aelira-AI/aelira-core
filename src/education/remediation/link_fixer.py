@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 try:
-    import fitz  # PyMuPDF
+    import pymupdf as fitz  # PyMuPDF
 
     HAS_PYMUPDF = True
 except ImportError:

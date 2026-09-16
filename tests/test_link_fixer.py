@@ -59,7 +59,7 @@ def _make_pdf_with_links():
 
 def test_link_fixer_adds_contents():
     """LinkFixer should add /Contents from visible text under link rect."""
-    import fitz as fitz_mod
+    import pymupdf as fitz_mod
     import tempfile
     import os
 

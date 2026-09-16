@@ -47,7 +47,7 @@ def _alt_issue(**metadata):
 
 
 def test_pdf_alt_text_returns_none_when_ai_fails():
-    fitz = pytest.importorskip("fitz")  # PyMuPDF
+    fitz = pytest.importorskip("pymupdf")  # PyMuPDF
     from src.education.remediation.pdf_remediator import PdfRemediator
 
     # A minimal real PDF so the remediator constructs and document context works.

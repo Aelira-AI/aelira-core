@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 from pikepdf import Array, Dictionary, Name, String
 from pydantic import BaseModel

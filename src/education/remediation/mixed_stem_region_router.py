@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-import fitz
+import pymupdf as fitz
 from pydantic import BaseModel
 
 from src.education.canonical_json import canonical_sha256

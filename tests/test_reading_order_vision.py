@@ -179,7 +179,7 @@ class TestVisionFixWithMockedAI:
 
         # Create a test PDF with content
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-            import fitz
+            import pymupdf as fitz
 
             doc = fitz.open()
             page = doc.new_page(width=612, height=792)
@@ -215,7 +215,7 @@ class TestVisionFixWithMockedAI:
         strategy = VisionStrategy(allow_legacy_provider_manager=True)
 
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-            import fitz
+            import pymupdf as fitz
 
             doc = fitz.open()
             page = doc.new_page(width=612, height=792)

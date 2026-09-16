@@ -29,7 +29,7 @@ class TestContentBlockExtraction:
 
     def test_extract_blocks_empty_pdf(self):
         """Empty PDF should return no blocks."""
-        fitz = pytest.importorskip("fitz", reason="PyMuPDF not installed")
+        fitz = pytest.importorskip("pymupdf", reason="PyMuPDF not installed")
 
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
             pdf = pikepdf.new()
@@ -361,7 +361,7 @@ class TestHeuristicStrategyIntegration:
 
     def test_fix_empty_pdf(self):
         """Fix on empty PDF should succeed with no changes."""
-        pytest.importorskip("fitz", reason="PyMuPDF not installed")
+        pytest.importorskip("pymupdf", reason="PyMuPDF not installed")
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
             pdf = pikepdf.new()
             page = pikepdf.Page(

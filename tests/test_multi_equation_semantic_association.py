@@ -6,7 +6,7 @@ import hashlib
 import shutil
 from io import BytesIO
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 import pytest
 from PIL import Image, ImageDraw

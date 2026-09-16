@@ -15,7 +15,7 @@ import re
 import tempfile
 from typing import Dict, List, Optional, Tuple
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 
 from src.education.pdf_checks.models import PDFImageIssue
 from src.utils.async_helpers import run_async_from_sync

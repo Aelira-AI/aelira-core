@@ -23,7 +23,7 @@ except ImportError:
     HAS_PIKEPDF = False
 
 try:
-    import fitz  # PyMuPDF
+    import pymupdf as fitz  # PyMuPDF
 
     HAS_PYMUPDF = True
 except ImportError:

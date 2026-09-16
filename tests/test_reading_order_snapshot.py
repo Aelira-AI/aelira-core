@@ -5,7 +5,7 @@ import hashlib
 import io
 import zlib
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 import pytest
 from pikepdf import Array, Dictionary, Name, String

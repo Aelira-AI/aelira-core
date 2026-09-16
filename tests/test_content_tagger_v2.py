@@ -48,7 +48,7 @@ def test_content_tagger_v2_tags_pages():
     """ContentTagger v2 should inject BDC/EMC markers into content streams."""
     import tempfile
     import os
-    import fitz as fitz_mod
+    import pymupdf as fitz_mod
 
     pdf = _make_tagged_pdf()
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
@@ -84,7 +84,7 @@ def test_content_tagger_v2_builds_parent_tree():
     """ContentTagger v2 should populate the ParentTree with MCID mappings."""
     import tempfile
     import os
-    import fitz as fitz_mod
+    import pymupdf as fitz_mod
 
     pdf = _make_tagged_pdf()
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:

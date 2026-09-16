@@ -9,6 +9,19 @@ class IncompleteScanError(RuntimeError):
     """A numeric accessibility score is unavailable after a required check failed."""
 
 
+INCOMPLETE_SCAN_MESSAGE = (
+    "Required accessibility checks could not be completed. No score is available. "
+    "Review the document manually before relying on its accessibility."
+)
+
+
+def public_scan_failure_message(error: Exception) -> str:
+    """Expose a known refusal without publishing exception text or check details."""
+    if isinstance(error, IncompleteScanError):
+        return INCOMPLETE_SCAN_MESSAGE
+    return "Processing encountered an error. Please try again."
+
+
 _failures: ContextVar[Optional[set[str]]] = ContextVar("scan_failures", default=None)
 
 

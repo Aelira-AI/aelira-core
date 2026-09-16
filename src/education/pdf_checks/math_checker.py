@@ -5,7 +5,7 @@ from .completeness import record_incomplete_check
 import re
 from typing import Dict, List, Optional
 
-import fitz
+import pymupdf as fitz
 
 from src.education.math_contracts import IMAGE_EQUATION_ISSUE_TYPE
 from src.education.pdf_checks.equation_region_detector import (

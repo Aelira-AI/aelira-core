@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 
-import fitz
+import pymupdf as fitz
 import pytest
 from PIL import Image
 from pydantic import ValidationError

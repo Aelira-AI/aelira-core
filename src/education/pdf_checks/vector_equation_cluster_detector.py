@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 from pikepdf import Array, Name
 

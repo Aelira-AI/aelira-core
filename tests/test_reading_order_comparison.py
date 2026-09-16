@@ -1,6 +1,6 @@
 """Reading order compares content sequences, independent of text block slicing."""
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 import pytest
 from pikepdf import Array, Dictionary, Name

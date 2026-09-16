@@ -13,7 +13,7 @@ import math
 import tempfile
 import zlib
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 from pikepdf import Name
 from pdfminer.pdfpage import PDFPage

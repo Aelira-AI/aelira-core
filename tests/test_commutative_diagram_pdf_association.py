@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 from PIL import Image, ImageDraw
 from pikepdf import Array, Dictionary, Name

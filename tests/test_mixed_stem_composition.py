@@ -6,7 +6,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 import pikepdf
 from pydantic import ValidationError

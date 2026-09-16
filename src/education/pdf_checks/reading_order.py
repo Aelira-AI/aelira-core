@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from .completeness import record_incomplete_check
 from typing import Dict, List, Optional
 
-import fitz  # PyMuPDF for visual text extraction
+import pymupdf as fitz  # PyMuPDF for visual text extraction
 
 try:
     import pikepdf

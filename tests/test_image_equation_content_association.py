@@ -7,7 +7,7 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pikepdf
 import pytest
 from pikepdf import Array, Dictionary, Name

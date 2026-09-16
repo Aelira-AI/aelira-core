@@ -4,7 +4,7 @@ import logging
 from .completeness import record_incomplete_check
 from typing import Dict, List, Optional, Tuple
 
-import fitz  # PyMuPDF for fitz-based table extraction fallback
+import pymupdf as fitz  # PyMuPDF for fitz-based table extraction fallback
 import pikepdf
 from pikepdf import Name
 

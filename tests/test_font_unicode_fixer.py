@@ -6,7 +6,7 @@ from pikepdf import Dictionary, Name
 
 def test_font_unicode_fixer_flags_missing_tounicode():
     """FontUnicodeFixer should flag fonts with no /ToUnicode and no /Differences."""
-    import fitz as fitz_mod
+    import pymupdf as fitz_mod
     import tempfile
     import os
 

@@ -41,7 +41,7 @@ from urllib.parse import urlsplit
 from PIL import Image, UnidentifiedImageError
 
 try:
-    import fitz  # PyMuPDF - for reading/analyzing PDFs
+    import pymupdf as fitz  # PyMuPDF - for reading/analyzing PDFs
 
     HAS_PYMUPDF = True
 except ImportError:
@@ -784,10 +784,10 @@ class PdfRemediator(BaseRemediator):
         self._work_dir: Optional[str] = None
         self._working_file_path: Optional[str] = None
         self._ocr_applied: bool = False
-        # Set when the input's own text layer is below the searchable
-        # threshold: the delivered output must then carry at least the
-        # minimum usable text layer or delivery fails closed.
+        # OCR pages need usable recognized text; short direct-text pages
+        # must preserve their source text without inventing extra content.
         self._require_output_text_layer: bool = False
+        self._direct_text_pages: Dict[int, str] = {}
         self._pdf: Optional[Any] = None  # PyMuPDF document for reading
         self._pikepdf_doc: Optional[Any] = None  # pikepdf document for writing
         self._struct_tree: Optional[PDFStructureTree] = None  # Structure tree helper
@@ -1579,9 +1579,8 @@ class PdfRemediator(BaseRemediator):
     # Working-copy staging and OCR preprocessing
     # ------------------------------------------------------------------
 
-    # Below this many extractable characters the input is treated as
-    # image-only and OCR'd (mirrors the scanner's threshold in
-    # PDFProcessor.process_pdf).
+    # Preserve short direct text against its source, rather than requiring
+    # a text-only page to reach the minimum length of an OCR derivative.
     _MIN_SEARCHABLE_TEXT_CHARS = 100
     # Minimum extractable text the OCR derivative (and the delivered
     # output) must carry to count as searchable (mirrors the scanner's
@@ -1725,12 +1724,12 @@ class PdfRemediator(BaseRemediator):
             for i, page_text in enumerate(page_texts)
             if page_has_images[i] and not page_text.strip()
         ]
-        # Any input that has some text but less than a searchable layer
-        # (or needs OCR at all) must deliver a genuinely searchable output.
-        if needy_pages or (
-            total_text and len(total_text) < self._MIN_SEARCHABLE_TEXT_CHARS
-        ):
-            self._require_output_text_layer = True
+        self._direct_text_pages = {
+            i: page_text
+            for i, page_text in enumerate(page_texts)
+            if 0 < len(page_text.strip()) < self._MIN_SEARCHABLE_TEXT_CHARS
+        }
+        self._require_output_text_layer = bool(needy_pages or self._direct_text_pages)
 
         if not needy_pages:
             logger.info(
@@ -1859,8 +1858,23 @@ class PdfRemediator(BaseRemediator):
         so a missing text layer cannot be masked by the verification
         re-scan's on-the-fly OCR.
         """
+        page_texts, _ = self._page_text_profile(output_path)
+        self._validate_output_text_layers(page_texts)
+
+    def _validate_output_text_layers(self, page_texts: List[str]) -> None:
+        """Check source text preservation separately from OCR text quality."""
+        missing_direct_pages = [
+            page_index + 1
+            for page_index, source_text in self._direct_text_pages.items()
+            if page_index >= len(page_texts)
+            or Counter(source_text.split()) - Counter(page_texts[page_index].split())
+        ]
+        if missing_direct_pages:
+            raise RuntimeError(
+                "Remediated output lost the source text layer for page(s) "
+                f"{missing_direct_pages}; refusing to deliver altered source content."
+            )
         if getattr(self, "_ocr_pages", []):
-            page_texts, _ = self._page_text_profile(output_path)
             missing_pages = [
                 page_index + 1
                 for page_index in self._ocr_pages
@@ -1872,14 +1886,6 @@ class PdfRemediator(BaseRemediator):
                     "Remediated output lost the OCR text layer for page(s) "
                     f"{missing_pages}; refusing to deliver an unsearchable file."
                 )
-            return
-
-        text = self._extract_all_text(output_path)
-        if len(text.strip()) < self._MIN_OCR_TEXT_CHARS:
-            raise RuntimeError(
-                "Remediated output lost the OCR text layer; refusing to "
-                "deliver an unsearchable file for an image-only input."
-            )
 
     def _cleanup_working_copy(self) -> None:
         """Close open handles and remove the temp working directory.
@@ -2693,31 +2699,7 @@ class PdfRemediator(BaseRemediator):
                     raise RuntimeError("candidate page tree is inconsistent")
 
             if self._require_output_text_layer:
-                if getattr(self, "_ocr_pages", []):
-                    missing_pages = [
-                        page_index + 1
-                        for page_index in self._ocr_pages
-                        if page_index >= len(candidate_texts)
-                        or len(candidate_texts[page_index].strip())
-                        < self._MIN_OCR_TEXT_CHARS
-                    ]
-                else:
-                    combined_text = "".join(candidate_texts)
-                    missing_pages = (
-                        []
-                        if len(combined_text.strip()) >= self._MIN_OCR_TEXT_CHARS
-                        else [1]
-                    )
-                if missing_pages:
-                    if getattr(self, "_ocr_pages", []):
-                        raise RuntimeError(
-                            "Remediated output lost the OCR text layer for page(s) "
-                            f"{missing_pages}; refusing to deliver an unsearchable file."
-                        )
-                    raise RuntimeError(
-                        "Remediated output lost the OCR text layer; refusing to "
-                        "deliver an unsearchable file for an image-only input."
-                    )
+                self._validate_output_text_layers(candidate_texts)
             if self._bytes_are_identical_to_file(candidate_bytes, self.file_path):
                 raise RuntimeError(
                     "Remediated output is byte-identical to the original input; "

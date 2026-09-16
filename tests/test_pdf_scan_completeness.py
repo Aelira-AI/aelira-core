@@ -2,7 +2,7 @@
 
 import shutil
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 from src.education.pdf_processor import PDFProcessor
