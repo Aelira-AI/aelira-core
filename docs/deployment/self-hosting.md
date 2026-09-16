@@ -52,8 +52,9 @@ Two Dockerfiles matter here:
   ffmpeg, the LaTeXML/TeX Live stack, Pandoc, Playwright's Chromium
   dependencies, and Node.js for Pa11y), copies the venv, runs as a non-root
   `aelira` user, and starts via `entrypoint.sh`. Both the production and
-  development images pin Pa11y 9.0.1, reject Node majors outside 20, 22, and
-  24, and prevent Puppeteer from downloading a second browser. Pa11y uses the
+  development images pin Pa11y 9.0.1 and use the same digest-pinned Node 24
+  runtime. Their smoke gate requires Node 24, and Puppeteer is prevented from
+  downloading a second browser. Pa11y uses the
   Playwright-managed Chromium through `/home/aelira/.local/bin/aelira-chromium`
   and the checked-in `config/pa11y.json` launch settings. Each image build
   runs `scripts/smoke_pa11y_runtime.py` as `aelira` against a local HTML

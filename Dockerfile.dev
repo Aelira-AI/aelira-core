@@ -1,6 +1,15 @@
+# Match the production Pa11y runtime instead of relying on Debian's Node major.
+FROM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS pa11y-node
+
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+RUN npm install -g pa11y@9.0.1 && \
+    npm cache clean --force && \
+    rm -rf /root/.npm \
+        /usr/local/lib/node_modules/pa11y/node_modules/extract-zip
+
 FROM python:3.14-slim AS runtime
 
-# Install system dependencies + LaTeXML stack + Node.js for Pa11y
+# Install system dependencies + LaTeXML stack
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
@@ -43,14 +52,12 @@ RUN apt-get update && apt-get install -y \
     texlive-science \
     # Pandoc for LaTeX to HTML conversion
     pandoc \
-    # Node.js for Pa11y accessibility scanner
-    nodejs \
-    npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Pa11y globally for multi-engine accessibility scanning
-ENV PUPPETEER_SKIP_DOWNLOAD=true
-RUN npm install -g pa11y@9.0.1
+# Copy the same minimal Node 24 and Pa11y runtime as the production image.
+COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node
+COPY --from=pa11y-node /usr/local/lib/node_modules/pa11y /usr/local/lib/node_modules/pa11y
+RUN ln -s ../lib/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
 
 # Set working directory
 WORKDIR /app
