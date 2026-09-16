@@ -316,6 +316,12 @@ jobs:
         run: docker compose -f docker-compose.quickstart.yml up -d --build --wait --wait-timeout 180
       - name: Verify Pa11y in the running quickstart API
         run: docker compose -f docker-compose.quickstart.yml exec -T api python scripts/smoke_pa11y_runtime.py
+      - name: Verify shared upload storage as the runtime users
+        run: |
+          probe_id="$(docker compose -f docker-compose.quickstart.yml exec -T api python -c 'import uuid; print(uuid.uuid4())')"
+          docker compose -f docker-compose.quickstart.yml exec -T api python scripts/smoke_quickstart_storage.py upload --probe-id "$probe_id"
+          docker compose -f docker-compose.quickstart.yml exec -T worker python scripts/smoke_quickstart_storage.py worker --probe-id "$probe_id"
+          docker compose -f docker-compose.quickstart.yml exec -T api python scripts/smoke_quickstart_storage.py verify --probe-id "$probe_id"
       - name: Capture quickstart diagnostics
         if: always()
         run: |

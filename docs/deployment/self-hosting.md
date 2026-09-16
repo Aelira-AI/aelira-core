@@ -98,6 +98,12 @@ must use the same release image, PostgreSQL, Redis, provider configuration, and
 `/app/uploads` volume; decrypted provider credentials never belong in queue
 payloads.
 
+Both API images initialize `/app/uploads` for the non-root `aelira` user
+(UID 1000), so a new Docker named volume inherits writable ownership. Existing
+volumes retain their ownership when an image is rebuilt or replaced. An older
+volume owned by root requires an operator-managed ownership correction; this
+image initialization does not modify existing volume data or permissions.
+
 The container probe runs
 `python -m src.jobs.healthcheck --mode readiness` and verifies the worker's
 database heartbeat, queue progress, leases, and running-job age. A super
