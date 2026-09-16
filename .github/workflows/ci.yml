@@ -296,6 +296,35 @@ jobs:
       - name: Test
         run: npm test
 
+  quickstart:
+    name: Quickstart (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and start the documented quickstart
+        # A fresh runner exercises Dockerfile.dev and its non-root Pa11y gate.
+        # --wait also requires both the API and durable worker to be healthy.
+        run: docker compose -f docker-compose.quickstart.yml up -d --build --wait --wait-timeout 180
+      - name: Verify Pa11y in the running quickstart API
+        run: docker compose -f docker-compose.quickstart.yml exec -T api python scripts/smoke_pa11y_runtime.py
+      - name: Capture quickstart diagnostics
+        if: always()
+        run: |
+          docker compose -f docker-compose.quickstart.yml ps -a
+          docker compose -f docker-compose.quickstart.yml logs --no-color --tail 100
+      - name: Stop the disposable quickstart stack
+        if: always()
+        run: docker compose -f docker-compose.quickstart.yml down --volumes --remove-orphans
+
   docker:
     name: Docker (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
