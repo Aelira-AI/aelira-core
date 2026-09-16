@@ -60,13 +60,15 @@ async function poll<T>(probe: () => Promise<T>, done: (v: T) => boolean): Promis
 }
 await mkdir(output, { recursive: true });
 await request('/api/csrf-token');
+const previousInbox = await (await fetch(new URL('/api/v1/messages', mail))).json();
+const previousMessageIds = new Set((previousInbox.messages || []).map((m: any) => m.ID));
 await request('/auth/magic-link/request', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ email, name: 'Document acceptance', institution: 'Synthetic test institution' }),
 });
 const inbox = await poll(async () => (await fetch(new URL('/api/v1/messages', mail))).json(),
-  (v: any) => v.messages?.some((m: any) => m.To?.some((t: any) => t.Address === email)));
-const message = inbox.messages.find((m: any) => m.To?.some((t: any) => t.Address === email));
+  (v: any) => v.messages?.some((m: any) => !previousMessageIds.has(m.ID) && m.To?.some((t: any) => t.Address === email)));
+const message = inbox.messages.find((m: any) => !previousMessageIds.has(m.ID) && m.To?.some((t: any) => t.Address === email));
 const body = await (await fetch(new URL(`/api/v1/message/${message.ID}`, mail))).json();
 const match = String(body.HTML || body.Text).match(/https?:\/\/[^"<>\s]+\/auth\/verify\?[^"<>\s]+/);
 assert(match, 'Synthetic magic link was delivered');
@@ -79,8 +81,9 @@ await request('/auth/magic-link/verify', {
 async function scanBytes(bytes: Uint8Array, filename: string, kind: string) {
   const form = new FormData();
   form.append('file', new Blob([bytes]), filename);
-  const upload = await request(`/education/${kind}/scan?generate_alt_text=false&validate_alt_text=false`, { method: 'POST', body: form });
-  const result = await poll(() => request(`/education/scans/${upload.scan_id}`), (v: any) => Boolean(v.scan?.result));
+  const upload = await request(`/education/${kind}/scan?generate_alt_text=false&enhance_descriptions=false&validate_alt_text=false`, { method: 'POST', body: form });
+  const result = await poll(() => request(`/education/scans/${upload.scan_id}`),
+    (v: any) => Boolean(v.scan?.result) || v.scan?.status?.toLowerCase() === 'failed');
   return result.scan;
 }
 const cases = [
@@ -89,16 +92,32 @@ const cases = [
   { name: 'course.docx', kind: 'word', publish: false },
   { name: 'metadata.pdf', kind: 'pdf', publish: true },
   { name: 'simple_syllabus.pdf', kind: 'pdf', publish: false },
+  { name: 'test_forms_links.pdf', kind: 'pdf', publish: true },
+  { name: 'academic_paper.pdf', kind: 'pdf', publish: false, incomplete: true },
 ];
 const evidence: object[] = [];
 const failures: string[] = [];
 for (const test of cases) {
   try {
-    const file = test.name === 'simple_syllabus.pdf' ? `tests/fixtures/pdfs/${test.name}` : `tests/fixtures/document_stack/${test.name}`;
+    const file = ['simple_syllabus.pdf', 'test_forms_links.pdf', 'academic_paper.pdf'].includes(test.name)
+      ? `tests/fixtures/pdfs/${test.name}` : `tests/fixtures/document_stack/${test.name}`;
     const bytes = await readFile(file);
     const scan = await scanBytes(bytes, test.name, test.kind);
     const scanId = scan.scan_id || scan.id;
     assert(scanId, 'Scan has a durable identifier');
+    if (test.incomplete) {
+      assert.equal(scan.status.toLowerCase(), 'failed');
+      assert.equal(scan.result, null, 'Incomplete scans must not publish a score or findings');
+      const progress = await request(`/education/scans/${scanId}/progress`);
+      assert.equal(progress.error_message, 'Required accessibility checks could not be completed. No score is available. Review the document manually before relying on its accessibility.');
+      assert.equal(progress.progress_message, progress.error_message);
+      const retry = await request(`/education/scans/${scanId}`);
+      assert.equal(retry.scan.result, null, 'Reload must retain the incomplete outcome');
+      evidence.push({ fixture: test.name, scan_id: scanId, status: scan.status, source_sha256: digest(bytes), error_message: progress.error_message });
+      console.log(`PASS ${test.name}: incomplete scan, actionable refusal, no certified score`);
+      continue;
+    }
+    assert.equal(scan.status.toLowerCase(), 'completed');
     const total = scan.result.issues.length;
     assert(total > 0, `${test.name} must exercise real findings`);
     const queued = await request(`/education/remediate/${scanId}?use_ai=false&verify_fixes=true`, {

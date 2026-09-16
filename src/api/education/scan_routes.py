@@ -11,6 +11,7 @@ import time
 from ...db.database import get_db_dependency
 from ...db.models import APIKey, ScanType
 from ...education.pdf_processor import PDFProcessor
+from ...education.scan_completeness import public_scan_failure_message
 from ...education.pptx_processor import PowerPointProcessor
 from ...education.docx_processor import DocxProcessor
 from ...education.xlsx_processor import XlsxProcessor
@@ -170,8 +171,8 @@ def process_pdf_background(
             scan.status = ScanStatus.FAILED
             # Full traceback already logged above (exc_info=True); these two
             # fields render in the UI, so no internal exception text here.
-            scan.error_message = "Processing encountered an error. Please try again."
-            scan.progress_message = "Processing encountered an error. Please try again."
+            scan.error_message = public_scan_failure_message(e)
+            scan.progress_message = scan.error_message
             db.commit()
     finally:
         try:
@@ -447,8 +448,8 @@ def process_pptx_background(
             scan.status = ScanStatus.FAILED
             # Full traceback already logged above (exc_info=True); these two
             # fields render in the UI, so no internal exception text here.
-            scan.error_message = "Processing encountered an error. Please try again."
-            scan.progress_message = "Processing encountered an error. Please try again."
+            scan.error_message = public_scan_failure_message(e)
+            scan.progress_message = scan.error_message
             db.commit()
     finally:
         try:
@@ -697,8 +698,8 @@ def process_docx_background(
             scan.status = ScanStatus.FAILED
             # Full traceback already logged above (exc_info=True); these two
             # fields render in the UI, so no internal exception text here.
-            scan.error_message = "Processing encountered an error. Please try again."
-            scan.progress_message = "Processing encountered an error. Please try again."
+            scan.error_message = public_scan_failure_message(e)
+            scan.progress_message = scan.error_message
             db.commit()
     finally:
         try:
@@ -961,8 +962,8 @@ def process_xlsx_background(
             scan.status = ScanStatus.FAILED
             # Full traceback already logged above (exc_info=True); these two
             # fields render in the UI, so no internal exception text here.
-            scan.error_message = "Processing encountered an error. Please try again."
-            scan.progress_message = "Processing encountered an error. Please try again."
+            scan.error_message = public_scan_failure_message(e)
+            scan.progress_message = scan.error_message
             db.commit()
     finally:
         try:
@@ -1288,8 +1289,8 @@ def process_latex_background(
             scan.status = ScanStatus.FAILED
             # Full traceback already logged above (exc_info=True); these two
             # fields render in the UI, so no internal exception text here.
-            scan.error_message = "Processing encountered an error. Please try again."
-            scan.progress_message = "Processing encountered an error. Please try again."
+            scan.error_message = public_scan_failure_message(e)
+            scan.progress_message = scan.error_message
             db.commit()
     finally:
         try:
@@ -1473,8 +1474,8 @@ def process_latex_pdf_background(
             scan.status = ScanStatus.FAILED
             # Full traceback already logged above (exc_info=True); these two
             # fields render in the UI, so no internal exception text here.
-            scan.error_message = "Processing encountered an error. Please try again."
-            scan.progress_message = "Processing encountered an error. Please try again."
+            scan.error_message = public_scan_failure_message(e)
+            scan.progress_message = scan.error_message
             db.commit()
     finally:
         try:

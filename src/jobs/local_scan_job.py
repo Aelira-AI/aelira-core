@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from src.db.models import CloudJobQueue, Scan, ScanResult, ScanStatus
 from src.jobs.contracts import JobFailure, JobResult, JobSuccess
+from src.education.scan_completeness import INCOMPLETE_SCAN_MESSAGE
 from src.utils.file_storage import UPLOAD_BASE_DIR
 
 LOCAL_SCAN_KINDS = frozenset(
@@ -436,6 +437,16 @@ def _run_local_processor(
     )
 
 
+def _failed_scan_result(scan: Scan) -> JobFailure:
+    """Recover a bounded refusal from the persisted scan, including replay."""
+    code = (
+        "local_scan_incomplete"
+        if getattr(scan, "error_message", None) == INCOMPLETE_SCAN_MESSAGE
+        else "local_scan_failed"
+    )
+    return JobFailure.deterministic(code)
+
+
 async def handle_local_scan_job(job: CloudJobQueue, db: Session) -> JobResult:
     """Execute one durable local scan with replay and tenant fences."""
     payload = job.payload if type(getattr(job, "payload", None)) is dict else {}
@@ -470,7 +481,7 @@ async def handle_local_scan_job(job: CloudJobQueue, db: Session) -> JobResult:
     if scan.status == ScanStatus.COMPLETED:
         return JobFailure.indeterminate("local_scan_result_unavailable")
     if scan.status == ScanStatus.FAILED:
-        return JobFailure.deterministic("local_scan_failed")
+        return _failed_scan_result(scan)
 
     assert_owned = getattr(job, "_assert_owned", None)
     if assert_owned is not None:
@@ -528,7 +539,7 @@ async def handle_local_scan_job(job: CloudJobQueue, db: Session) -> JobResult:
                 return JobFailure.indeterminate("local_scan_result_unavailable")
             return JobSuccess({"success": True, "scan_id": str(scan_id)})
         if refreshed is not None and refreshed.status == ScanStatus.FAILED:
-            return JobFailure.deterministic("local_scan_failed")
+            return _failed_scan_result(refreshed)
         return JobFailure.retryable("local_scan_execution_failed")
 
     if assert_owned is not None:
@@ -543,5 +554,5 @@ async def handle_local_scan_job(job: CloudJobQueue, db: Session) -> JobResult:
             return JobFailure.indeterminate("local_scan_result_unavailable")
         return JobSuccess({"success": True, "scan_id": scan.id})
     if refreshed is not None and refreshed.status == ScanStatus.FAILED:
-        return JobFailure.deterministic("local_scan_failed")
+        return _failed_scan_result(refreshed)
     return JobFailure.indeterminate("local_scan_terminal_state_unknown")

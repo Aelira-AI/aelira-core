@@ -267,6 +267,60 @@ def _db_for(scan, results: list[object | None]):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["replay", "completion", "response_loss"])
+@pytest.mark.parametrize("incomplete", [True, False])
+async def test_failed_scan_preserves_bounded_reason(
+    tmp_path, monkeypatch, mode, incomplete
+):
+    from src.education.scan_completeness import INCOMPLETE_SCAN_MESSAGE
+    from src.jobs.contracts import public_job_error_code
+
+    storage_root = tmp_path / "uploads"
+    source = storage_root / "dept-a" / "scan-a" / "document.pdf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"verified input")
+    scan = SimpleNamespace(
+        id="scan-a",
+        department_id="dept-a",
+        storage_path=str(source),
+        status=ScanStatus.FAILED if mode == "replay" else ScanStatus.PROCESSING,
+        error_message=INCOMPLETE_SCAN_MESSAGE if incomplete else "unrecognized failure",
+    )
+    db = _db_for(scan, [None, None])
+
+    async def fail(**kwargs):
+        scan.status = ScanStatus.FAILED
+        if mode == "response_loss":
+            raise RuntimeError("child response lost")
+
+    monkeypatch.setattr("src.jobs.local_scan_job.UPLOAD_BASE_DIR", storage_root)
+    child = AsyncMock(side_effect=fail)
+    monkeypatch.setattr(
+        "src.jobs.local_scan_subprocess.run_local_scan_subprocess", child
+    )
+    result = await handle_local_scan_job(
+        _job(
+            {
+                "scan_kind": "local_pdf",
+                "scan_id": scan.id,
+                "options": {"generate_alt_text": False, "enhance_descriptions": False},
+                "input_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }
+        ),
+        db,
+    )
+    code = "local_scan_incomplete" if incomplete else "local_scan_failed"
+    assert result == JobFailure.deterministic(code)
+    if incomplete:
+        assert public_job_error_code(code) == code
+    if mode == "replay":
+        child.assert_not_awaited()
+    else:
+        child.assert_awaited_once()
+    assert source.read_bytes() == b"verified input"
+
+
+@pytest.mark.asyncio
 async def test_completed_scan_replay_short_circuits_without_claiming_committed_queue() -> (
     None
 ):

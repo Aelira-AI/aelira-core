@@ -158,6 +158,7 @@ _PUBLIC_JOB_ERROR_CODES = frozenset(
         "job_execution_timeout",
         "job_handler_exception",
         "job_lease_expired",
+        "local_scan_incomplete",
         "managed_artifact_required",
         "malformed_handler_result",
         "manual_required",
