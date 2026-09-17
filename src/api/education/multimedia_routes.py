@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from ...ai.usage import runtime_ollama_usage
 from ...db.database import get_db_dependency
 from ...db.models import APIKey, ScanType
 from ...middleware.quota import require_feature
@@ -225,6 +226,7 @@ def process_multimedia_background(
 
         # Create ScanResult
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -239,10 +241,6 @@ def process_multimedia_background(
             issues=result.issues,
             structure=structure,
             ocr_used=False,
-            ollama_used=generate_audio_descriptions,
-            ollama_calls=(
-                len(result.audio_descriptions) if result.audio_descriptions else 0
-            ),
         )
 
         db.add(scan_result)

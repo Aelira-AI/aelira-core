@@ -725,8 +725,10 @@ class ScanResult(Base):
 
     # OCR/AI usage flags
     ocr_used = Column(Boolean, default=False)  # Whether Tesseract was used
-    ollama_used = Column(Boolean, default=False)  # Whether Ollama was used
-    ollama_calls = Column(Integer, default=0)  # Number of Ollama API calls
+    # Explicit measurements only; NULL preserves unknown usage for old or
+    # uninstrumented writers. Failed operations/cloud calls do not count.
+    ollama_used = Column(Boolean, nullable=True)
+    ollama_calls = Column(Integer, nullable=True)  # Successful Ollama operations
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())

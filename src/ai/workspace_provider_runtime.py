@@ -9,10 +9,12 @@ returning.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Callable, Mapping
 
 from src.ai.providers.base import LLMResponse
 from src.ai.providers.types import ProviderType
+from src.ai.usage import OllamaUsage
 from src.ai.workspace_provider_config import (
     ProviderFactory,
     create_provider_instance,
@@ -118,6 +120,14 @@ class WorkspaceProviderRuntime:
         self._snapshot_loader = snapshot_loader
         self._decryptor = decryptor
         self._provider_factory = provider_factory
+        self._usage_lock = Lock()
+        self._ollama_successful_calls = 0
+
+    @property
+    def ollama_usage(self) -> OllamaUsage:
+        """Snapshot only this runtime's successful local provider operations."""
+        with self._usage_lock:
+            return OllamaUsage(self._ollama_successful_calls)
 
     @staticmethod
     def _error(code: str, attempted: list[str] | None = None) -> LLMResponse:
@@ -179,6 +189,9 @@ class WorkspaceProviderRuntime:
                 if not isinstance(response, LLMResponse):
                     continue
                 if response.success:
+                    if provider_type is ProviderType.OLLAMA:
+                        with self._usage_lock:
+                            self._ollama_successful_calls += 1
                     response.metadata = dict(response.metadata or {})
                     response.metadata["attempted_providers"] = attempted.copy()
                     return response

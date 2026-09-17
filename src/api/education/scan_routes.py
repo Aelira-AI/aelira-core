@@ -8,6 +8,7 @@ import hashlib
 import os
 import time
 
+from ...ai.usage import runtime_ollama_usage
 from ...db.database import get_db_dependency
 from ...db.models import APIKey, ScanType
 from ...education.pdf_processor import PDFProcessor
@@ -136,6 +137,7 @@ def process_pdf_background(
 
         # Create ScanResult
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -152,9 +154,6 @@ def process_pdf_background(
             structure=result.structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,
-            ollama_used=result.image_issues is not None
-            and len(result.image_issues) > 0,
-            ollama_calls=len(result.image_issues) if result.image_issues else 0,
         )
 
         db.add(scan_result)
@@ -413,6 +412,7 @@ def process_pptx_background(
 
         # Create ScanResult
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -425,8 +425,6 @@ def process_pptx_background(
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
-            ollama_used=generate_alt_text,
-            ollama_calls=result.total_images if generate_alt_text else 0,
         )
 
         db.add(scan_result)
@@ -661,6 +659,7 @@ def process_docx_background(
 
         # Create ScanResult
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -673,8 +672,6 @@ def process_docx_background(
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
-            ollama_used=generate_alt_text,
-            ollama_calls=result.total_images if generate_alt_text else 0,
         )
 
         db.add(scan_result)
@@ -923,6 +920,7 @@ def process_xlsx_background(
 
         # Create ScanResult
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -935,12 +933,6 @@ def process_xlsx_background(
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,
-            ollama_used=generate_alt_text or generate_chart_descriptions,
-            ollama_calls=(
-                (result.total_images + result.total_charts)
-                if (generate_alt_text or generate_chart_descriptions)
-                else 0
-            ),
         )
 
         db.add(scan_result)
@@ -1260,6 +1252,7 @@ def process_latex_background(
 
         # Create ScanResult
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
             compliance_score=compliance_score,
             wcag_level="AA",
@@ -1271,8 +1264,6 @@ def process_latex_background(
             structure=structure,
             html_output=result.html_output,
             ocr_used=False,
-            ollama_used=use_ollama,
-            ollama_calls=result.total_equations if use_ollama else 0,
         )
 
         db.add(scan_result)
@@ -1440,6 +1431,7 @@ def process_latex_pdf_background(
 
         # Create ScanResult
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -1452,8 +1444,6 @@ def process_latex_pdf_background(
             structure=structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,
-            ollama_used=use_ollama,
-            ollama_calls=0,  # Tracked separately by PDFProcessor
         )
 
         db.add(scan_result)
