@@ -428,7 +428,7 @@ export function Login(): React.ReactElement {
         </div>
 
         <div className="mt-6 text-center text-sm text-tertiary">
-          <p>© 2026 Aelira. All rights reserved.</p>
+          <p>© 2026 Aelira AI Pty Ltd. All rights reserved.</p>
         </div>
       </div>
     </main>
