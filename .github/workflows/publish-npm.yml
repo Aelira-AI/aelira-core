@@ -32,7 +32,8 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          TAG_VERSION="${TAG_NAME#v}"
+          node --experimental-strip-types ../scripts/release_channel.ts "$TAG_NAME" > "$RUNNER_TEMP/release-plan.json"
+          TAG_VERSION=$(jq -r .version "$RUNNER_TEMP/release-plan.json")
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
           LOCK_VERSION=$(node -p "require('./package-lock.json').version")
           LOCK_ROOT_VERSION=$(node -p "require('./package-lock.json').packages[''].version")
@@ -62,4 +63,10 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish
-        run: npm publish --access public
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          node --experimental-strip-types ../scripts/release_channel.ts "$TAG_NAME" > "$RUNNER_TEMP/release-plan.json"
+          NPM_TAG=$(jq -r .npmTag "$RUNNER_TEMP/release-plan.json")
+          npm publish --access public --tag "$NPM_TAG"

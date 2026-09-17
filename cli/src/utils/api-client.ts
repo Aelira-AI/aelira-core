@@ -125,9 +125,13 @@ export class ApiClient {
 
   async postForm(path: string, formData: FormData, options?: RequestOptions): Promise<Response> {
     const formHeaders = (formData as any).getHeaders?.() ?? {}
+    // Document commands use form-data with already-buffered files. Native
+    // fetch does not serialize that legacy object as multipart FormData;
+    // send its encoded bytes with its matching boundary header instead.
+    const body = (formData as any).getBuffer?.() ?? formData
     return this.request('POST', path, {
       ...options,
-      body: formData as any,
+      body,
       formHeaders,
       retry: options?.retry ?? false,
     })

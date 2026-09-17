@@ -480,16 +480,25 @@ and must not pre-process proxy headers.
 
 ## Backups
 
-Postgres holds everything that matters — scans, users, departments, the
-WCAG knowledge base. A straightforward logical backup:
+Postgres holds scans, users, departments and the WCAG knowledge base. Uploaded
+documents and generated artifacts also require a file backup. Pause intake and
+stop the API and worker after active jobs have drained, then capture the database
+and files together. A straightforward logical database backup:
 
 ```bash
 docker compose -f docker-compose.prod.yml exec postgres pg_dump -U ${POSTGRES_USER:-aelira} ${POSTGRES_DB:-aelira} > backup.sql
 ```
 
+Restart the matched API and worker after capturing both the database and files,
+unless continuing directly into an upgrade or restore.
+
 Restore with `psql -U <user> -d <db> < backup.sql` against a fresh database.
 Uploaded and remediated files live outside Postgres. Include `/app/uploads`
-and `REMEDIATION_ARTIFACT_DIR` in your backup and restore verification. Managed
+and any separately configured `REMEDIATION_ARTIFACT_DIR` or `REPORT_ARTIFACT_DIR`
+in your backup and restore verification. Preserve matching runtime configuration
+and encryption keys in a protected backup. Use the
+[upgrade and recovery rehearsal](upgrade-recovery-rehearsal.md) to verify restored
+records and exact downloadable bytes against a synthetic baseline. Managed
 remediation output is claimed in Postgres as `staging` before bytes are
 published, so an interrupted worker leaves a database-known row that bounded
 cleanup can recover; do not delete unknown files by scanning this directory.

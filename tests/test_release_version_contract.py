@@ -106,7 +106,7 @@ def test_release_workflow_preflights_and_consumes_exact_checked_in_body():
     body_check = '[ -f "$RELEASE_BODY_PATH" ] && [ -s "$RELEASE_BODY_PATH" ]'
 
     tag_validation = workflow.index(
-        'if ! [[ "$TAG_NAME" =~ ^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]]'
+        'node --experimental-strip-types scripts/release_channel.ts "$TAG_NAME"'
     )
     preflight_assignment = workflow.index(assignment, tag_validation)
     preflight_check = workflow.index(body_check, preflight_assignment)
