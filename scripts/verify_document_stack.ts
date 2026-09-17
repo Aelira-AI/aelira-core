@@ -80,6 +80,54 @@ await request('/auth/magic-link/verify', {
   body: JSON.stringify({ email, token: login.searchParams.get('token') }),
 });
 // Tokens/cookies never enter evidence or stdout.
+const aiHealth = await request('/api/ai/health');
+assert.equal(aiHealth.primary_provider, null, 'Acceptance stack must have no primary AI provider');
+assert.equal(aiHealth.fallback_provider, null, 'Acceptance stack must have no fallback AI provider');
+
+async function approveRecordedFixes(scanId: string) {
+  const before = await request(`/api/reviews/${scanId}`);
+  const pending = before.fixes.filter((fix: any) => fix.review_status === 'pending');
+  assert(pending.length > 0, 'Successful fixtures must exercise an actual pending review');
+  for (const fix of pending) assert.match(fix.review_digest, /^[a-f0-9]{64}$/, 'Each reviewed change has a content digest');
+  const [first, ...rest] = pending;
+  const approved = await request(`/api/reviews/${scanId}/fixes/${first.id}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'approve', notes: 'Synthetic artifact inspected by acceptance gate' }),
+  });
+  assert.equal(approved.review_status, 'approved');
+  if (rest.length) {
+    const batch = await request(`/api/reviews/${scanId}/batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'approve', fix_ids: rest.map((fix: any) => fix.id) }),
+    });
+    assert.equal(batch.affected, rest.length, 'Batch response accounts for every selected fix');
+  }
+  // A fresh read must reconstruct decisions from storage, not the POST response.
+  const after = await request(`/api/reviews/${scanId}`);
+  assert.equal(after.status, 'approved');
+  assert.equal(after.needs_review_count, 0);
+  assert.equal(after.reviewed_count, pending.length);
+  assert.deepEqual(after.fixes.map((f: any) => f.id).sort(), before.fixes.map((f: any) => f.id).sort());
+  for (const original of pending) {
+    const current = after.fixes.find((fix: any) => fix.id === original.id);
+    assert.equal(current.review_status, 'approved');
+    assert.equal(current.fixed_content, original.fixed_content, 'Approval cannot rewrite a recorded change');
+    assert.equal(current.review_digest, original.review_digest);
+    assert.equal(current.approved_review_digest, original.review_digest, 'Approval binds the exact reviewed content');
+  }
+  const audit = await request(`/api/reviews/${scanId}/audit/export?format=json`);
+  assert.equal(audit.summary.is_conformance_determination, false);
+  assert.equal(audit.summary.review_status_counts.approved, pending.length);
+  assert(audit.audit_trail.some((entry: any) => entry.action === 'fix_approve'));
+  if (rest.length) {
+    const batchAudit = audit.audit_trail.find((entry: any) => entry.action === 'batch_approve');
+    assert(batchAudit, 'Batch decisions have durable audit evidence');
+    assert.equal(batchAudit.details.count, rest.length);
+    assert.deepEqual([...batchAudit.details.fix_ids].sort(), rest.map((fix: any) => fix.id).sort());
+  }
+  return { reviewed: pending.length, audit_actions: audit.audit_trail.map((entry: any) => entry.action) };
+}
+
 async function scanBytes(bytes: Uint8Array, filename: string, kind: string) {
   const form = new FormData();
   form.append('file', new Blob([bytes]), filename);
@@ -88,7 +136,7 @@ async function scanBytes(bytes: Uint8Array, filename: string, kind: string) {
     (v: any) => Boolean(v.scan?.result) || v.scan?.status?.toLowerCase() === 'failed');
   return result.scan;
 }
-const cases = [
+const cases: { name: string; kind: string; publish: boolean; incomplete?: boolean; useAI?: boolean; file?: string }[] = [
   { name: 'course.pptx', kind: 'powerpoint', publish: true },
   { name: 'course.xlsx', kind: 'excel', publish: true },
   { name: 'course.docx', kind: 'word', publish: false },
@@ -96,13 +144,15 @@ const cases = [
   { name: 'simple_syllabus.pdf', kind: 'pdf', publish: false },
   { name: 'test_forms_links.pdf', kind: 'pdf', publish: true },
   { name: 'academic_paper.pdf', kind: 'pdf', publish: false, incomplete: true },
+  { name: 'image_heavy.pptx', kind: 'powerpoint', file: 'tests/fixtures/powerpoint/image_heavy.pptx', publish: false, useAI: true },
 ];
 const evidence: object[] = [];
 const failures: string[] = [];
 for (const test of cases) {
+  const scenario = test.useAI ? `${test.name} (AI requested, no provider)` : test.name;
   try {
-    const file = ['simple_syllabus.pdf', 'test_forms_links.pdf', 'academic_paper.pdf'].includes(test.name)
-      ? `tests/fixtures/pdfs/${test.name}` : `tests/fixtures/document_stack/${test.name}`;
+    const file = test.file ?? (['simple_syllabus.pdf', 'test_forms_links.pdf', 'academic_paper.pdf'].includes(test.name)
+      ? `tests/fixtures/pdfs/${test.name}` : `tests/fixtures/document_stack/${test.name}`);
     const bytes = await readFile(file);
     const scan = await scanBytes(bytes, test.name, test.kind);
     const scanId = scan.scan_id || scan.id;
@@ -122,7 +172,11 @@ for (const test of cases) {
     assert.equal(scan.status.toLowerCase(), 'completed');
     const total = scan.result.issues.length;
     assert(total > 0, `${test.name} must exercise real findings`);
-    const queued = await request(`/education/remediate/${scanId}?use_ai=false&verify_fixes=true`, {
+    if (test.useAI) {
+      assert(scan.result.issues.some((issue: any) => /missing alt text/i.test(issue.description)),
+        'Unavailable-AI case must include actual missing image descriptions');
+    }
+    const queued = await request(`/education/remediate/${scanId}?use_ai=${test.useAI === true}&verify_fixes=true`, {
       method: 'POST', headers: { Prefer: 'respond-async', 'Content-Type': 'application/json' }, body: '{}',
     });
     assert(queued.job_id, 'Remediation uses the durable queue');
@@ -130,10 +184,15 @@ for (const test of cases) {
       (v: any) => ['completed', 'failed', 'cancelled', 'dead_letter'].includes(v.status));
     const latest = await request(`/education/scans/${scanId}/remediation/latest`);
     assert.equal(latest.job_id, job.job_id, 'Reload resolves the same authoritative job');
+    for (const key of ['status', 'artifact_id', 'download_available', 'fixed_count', 'remaining_count', 'remediated_score', 'score_verified']) {
+      assert.deepEqual(latest[key], job[key], `Reload preserves ${key}`);
+    }
     assert.equal(job.total_issues, total, 'Job retains all source findings');
     const downloadPath = `/education/remediation/jobs/${queued.job_id}/download`;
     const downloaded = await fetch(new URL(downloadPath, api), { headers: headers(), redirect: 'error' });
+    let reviewEvidence: object | undefined;
     if (!test.publish) {
+      assert.equal(job.status, 'failed', 'Withheld remediation must not report successful completion');
       assert.equal(job.download_available, false);
       assert.equal(job.artifact_id, null);
       assert.equal(downloaded.status, 404, 'Withheld output cannot be downloaded');
@@ -141,6 +200,7 @@ for (const test of cases) {
       assert.equal(job.remediated_score, null);
       assert.equal(job.score_verified, false);
       assert.equal(job.remaining_count, total, 'Withheld changes remain unresolved');
+      if (test.useAI) assert(job.manual_count + job.failed_count > 0, 'Missing descriptions remain unresolved without a provider');
       assert.equal(job.fixed_count + job.manual_count + job.failed_count + job.skipped_count + job.withheld_count + job.outcome_unreported_count, total, 'All dispositions reconcile');
     } else {
       assert.equal(job.status, 'completed');
@@ -158,11 +218,22 @@ for (const test of cases) {
       const savedPath = resolve(output, `saved-${test.name}`);
       await writeFile(savedPath, saved);
       assert.deepEqual(officeContent(savedPath, test.kind), officeContent(file, test.kind), 'Fixture text, values and order survive remediation');
+      reviewEvidence = await approveRecordedFixes(scanId);
+      const reviewedJob = await request(`/education/scans/${scanId}/remediation/latest`);
+      assert.equal(reviewedJob.job_id, job.job_id);
+      assert.equal(reviewedJob.artifact_id, job.artifact_id, 'Review retains the exact managed artifact');
+      assert.deepEqual(reviewedJob.score_measurement, job.score_measurement, 'Approval is not a new scanner measurement');
+      assert.equal(reviewedJob.score_verified, job.score_verified);
+      assert.equal(reviewedJob.fixed_count, job.fixed_count);
+      assert.equal(reviewedJob.remaining_count, job.remaining_count);
+      const afterReview = await fetch(new URL(downloadPath, api), { headers: headers(), redirect: 'error' });
+      assert.equal(afterReview.status, 200);
+      assert.equal(digest(new Uint8Array(await afterReview.arrayBuffer())), digest(saved), 'Post-approval download is byte-identical to inspected output');
     }
-    evidence.push({ fixture: test.name, scan_id: scanId, job_id: queued.job_id, status: job.status, total, remaining: job.remaining_count, source_sha256: digest(bytes), score_measurement: job.score_measurement, download_status: downloaded.status });
-    console.log(`PASS ${test.name}: real scan, queued worker, persisted outcome, download boundary`);
+    evidence.push({ fixture: test.name, scenario, scan_id: scanId, job_id: queued.job_id, status: job.status, total, remaining: job.remaining_count, source_sha256: digest(bytes), score_measurement: job.score_measurement, download_status: downloaded.status, review: reviewEvidence });
+    console.log(`PASS ${scenario}: real scan, queued worker, persisted outcome, download boundary${test.publish ? ', approval persistence and audit' : ''}`);
   } catch (error) {
-    const failure = `${test.name}: ${error instanceof Error ? error.message : 'Unknown failure'}`;
+    const failure = `${scenario}: ${error instanceof Error ? error.message : 'Unknown failure'}`;
     failures.push(failure);
     console.error(`FAIL ${failure}`);
   }
