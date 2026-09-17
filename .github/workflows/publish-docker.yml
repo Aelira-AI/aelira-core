@@ -273,6 +273,12 @@ jobs:
       packages: write
       id-token: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -294,17 +300,18 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          VERSION="${TAG_NAME#v}"
-          MINOR="${VERSION%.*}"
+          node --experimental-strip-types scripts/release_channel.ts "$TAG_NAME" > "$RUNNER_TEMP/release-plan.json"
+          RELEASE_TAGS=()
+          while IFS= read -r tag; do RELEASE_TAGS+=("$tag"); done < <(jq -r '.dockerTags[]' "$RUNNER_TEMP/release-plan.json")
           for image_name in aelira-core-api aelira-core-dashboard; do
             image="ghcr.io/aelira-ai/$image_name"
             amd64=$(jq -r --arg image "$image" 'select(.image == $image and .platform == "linux/amd64") | .digest' receipts/*.json)
             arm64=$(jq -r --arg image "$image" 'select(.image == $image and .platform == "linux/arm64") | .digest' receipts/*.json)
             [ -n "$amd64" ] && [ -n "$arm64" ]
+            TAG_ARGS=()
+            for tag in "${RELEASE_TAGS[@]}"; do TAG_ARGS+=(--tag "$image:$tag"); done
             docker buildx imagetools create \
-              --tag "$image:${VERSION}" \
-              --tag "$image:${MINOR}" \
-              --tag "$image:latest" \
+              "${TAG_ARGS[@]}" \
               "$image@$amd64" "$image@$arm64"
           done
 
@@ -313,13 +320,14 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          VERSION="${TAG_NAME#v}"
-          MINOR="${VERSION%.*}"
+          node --experimental-strip-types scripts/release_channel.ts "$TAG_NAME" > "$RUNNER_TEMP/release-plan.json"
+          RELEASE_TAGS=()
+          while IFS= read -r tag; do RELEASE_TAGS+=("$tag"); done < <(jq -r '.dockerTags[]' "$RUNNER_TEMP/release-plan.json")
           for image_name in aelira-core-api aelira-core-dashboard; do
             image="ghcr.io/aelira-ai/$image_name"
             expected_amd64=$(jq -r --arg image "$image" 'select(.image == $image and .platform == "linux/amd64") | .digest' receipts/*.json)
             expected_arm64=$(jq -r --arg image "$image" 'select(.image == $image and .platform == "linux/arm64") | .digest' receipts/*.json)
-            for tag in "$VERSION" "$MINOR" latest; do
+            for tag in "${RELEASE_TAGS[@]}"; do
               manifest=$(docker buildx imagetools inspect "$image:$tag" --raw)
               jq -e \
                 --arg amd64 "$expected_amd64" \

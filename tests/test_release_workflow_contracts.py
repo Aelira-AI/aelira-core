@@ -188,10 +188,11 @@ def test_github_release_retains_exact_seven_file_check() -> None:
         assert expected_file in verification
 
 
-def test_preflight_requires_stable_semver_matching_package_and_lock() -> None:
+def test_preflight_validates_channel_before_matching_package_and_lock() -> None:
     text = RELEASE.read_text()
 
-    assert "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" in text
+    assert 'scripts/release_channel.ts "$TAG_NAME"' in text
+    assert text.index("scripts/release_channel.ts") < text.index("PACKAGE_VERSION=")
     assert "cli/package.json" in text
     assert "cli/package-lock.json" in text
     assert "scripts/verify_release_safety.py" in text
@@ -206,7 +207,7 @@ def test_preflight_uses_protected_environment_policy_and_cleans_it() -> None:
     validation = next(
         step
         for step in preflight["steps"]
-        if step.get("name") == "Validate stable version and release safety"
+        if step.get("name") == "Validate release version and safety"
     )
     env = validation["env"]
     script = validation["run"]
@@ -301,13 +302,14 @@ def test_exactly_four_receipts_are_verified_before_single_promotion() -> None:
     assert "docker buildx imagetools create" in text
 
 
-def test_promotion_creates_only_full_minor_latest_for_both_images() -> None:
+def test_promotion_and_verification_use_the_same_validated_channels() -> None:
     workflow = load_workflow(DOCKER)
     promote_text = str(workflow["jobs"]["promote-all-images"])
 
-    assert "${VERSION}" in promote_text
-    assert "${MINOR}" in promote_text
-    assert "latest" in promote_text
+    assert promote_text.count(".dockerTags[]") == 2
+    assert '"${TAG_ARGS[@]}"' in promote_text
+    assert '"${RELEASE_TAGS[@]}"' in promote_text
+    assert '"$image:latest"' not in promote_text
     assert "aelira-core-api" in promote_text
     assert "aelira-core-dashboard" in promote_text
     assert "MAJOR" not in promote_text
