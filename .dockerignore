@@ -1,64 +1,105 @@
-# Aelira Backend - Docker Ignore File
-# Exclude files from Docker build context
+# Backend production and development builds both COPY this context.
+# Verify with: python scripts/verify_build_context.py
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
-ENV/
-*.egg-info/
-dist/
-build/
+# The API serves this prebuilt public bundle. Keep this exception before all
+# local-input exclusions so private files inside the bundle remain excluded.
+**/dist
+!dashboard/dist
+!dashboard/dist/**
+dashboard/dist/**/dist
 
-# JavaScript dependency trees are development inputs, never API runtime files.
-**/node_modules/
+# Local environments; retain only explicitly named public templates.
+**/.env
+**/.env.*
+**/*.env
+!**/.env.example
+!**/.env.*.example
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-*.log
+# Credential files and tool authentication state (not source modules such as
+# src/secrets.py or src/credentials.py).
+**/secrets
+**/.secrets
+**/credentials
+**/.credentials
+**/credentials.json
+**/service-account*.json
+**/*.key
+**/*.pem
+**/*.crt
+**/*.cert
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/.aws
+**/.ssh
+**/.docker
+**/.kube
+**/.netrc
+**/.npmrc
+**/.pypirc
 
-# Development
-.env
-.env.local
-.env.development
-.env.production
-*.sqlite
-*.db
+# Local assistant state and release policy inputs are not runtime assets.
+**/.claude
+**/.codex
+**/.agents
+**/.cursor
+**/.gemini
+**/.aider*
+**/AGENTS.md
+**/CLAUDE.md
+**/.release-*
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# Dependency environments and generated files, at every directory depth.
+**/.venv
+**/venv
+**/env
+**/ENV
+**/.Python
+**/__pycache__
+**/*.py[cod]
+**/*$py.class
+**/*.so
+**/*.egg-info
+**/node_modules
+**/build
+**/dist-ssr
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.cache
+**/.coverage*
+**/coverage.xml
+**/coverage
+**/coverage_html
+**/htmlcov
+**/test-results
+**/playwright-report
+**/*.log
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/uploads
+**/logs
+**/tmp
+**/temp
+data/piper-voices
 
-# Git
-.git/
-.gitignore
+# Editor, version-control and operating-system state.
+**/.vscode
+**/.idea
+**/*.swp
+**/*.swo
+**/*~
+**/.git
+**/.gitignore
+**/.DS_Store
+**/Thumbs.db
 
-# Docker
+# Development-only repository inputs.
 Dockerfile.dev
-docker-compose.dev.yml
 docker-compose*.yml
-
-# Documentation
 *.md
-docs/
-
-# Test files
+docs
 test_*.py
-tests/
-
-# Uploads (temporary files)
-uploads/
-logs/
-
-# OS
-.DS_Store
-Thumbs.db
+tests

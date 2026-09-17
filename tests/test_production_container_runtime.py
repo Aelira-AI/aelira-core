@@ -1,12 +1,18 @@
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_api_build_context_excludes_javascript_dependency_trees():
-    dockerignore = (ROOT / ".dockerignore").read_text()
+@pytest.mark.parametrize("context", [".", "dashboard"])
+def test_build_context_excludes_javascript_dependency_trees(context):
+    dockerignore = (ROOT / context / ".dockerignore").read_text()
+    # Docker ignores trailing slashes in patterns. Actual exclusion, including
+    # nested dependency trees, is exercised by verify_build_context.py in CI.
+    patterns = {line.strip().rstrip("/") for line in dockerignore.splitlines()}
 
-    assert "**/node_modules/" in dockerignore
+    assert "**/node_modules" in patterns
 
 
 def test_fresh_upload_volume_inherits_non_root_ownership():

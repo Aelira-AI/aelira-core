@@ -11,8 +11,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
-# Skip browser/E2E/integration tests in CI environments (industry best practice - testing pyramid)
-# These tests require external services and are better suited for staging/nightly runs
+# Collection does not skip tests based on browser/E2E/integration markers or CI.
+# Only individually named KNOWN_BROKEN entries are quarantined by this hook.
 # Tests that fail today, each named with what is wrong. They were invisible
 # while every integration test was skipped in CI; naming them is how they
 # get fixed instead of forgotten. Delete an entry the moment its test

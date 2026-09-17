@@ -17,6 +17,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  configuration-smoke:
+    name: Shipped configuration smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Verify Docker context exclusions and required inputs
+        run: python scripts/verify_build_context.py
+      - name: Verify API proxy routes against a disposable upstream
+        run: python scripts/verify_nginx_api.py
+      - name: Verify dashboard assets and proxy routing
+        run: python scripts/verify_nginx_dashboard.py
+
   dev-setup-tests:
     name: Development setup orchestration
     runs-on: ubuntu-latest
@@ -344,6 +361,8 @@ jobs:
         run: docker compose -f docker-compose.quickstart.yml up -d --build --wait --wait-timeout 180
       - name: Verify Pa11y in the running quickstart API
         run: docker compose -f docker-compose.quickstart.yml exec -T api python scripts/smoke_pa11y_runtime.py
+      - name: Verify Piper using the baked quickstart voice
+        run: docker compose -f docker-compose.quickstart.yml exec -T api python scripts/smoke_piper_runtime.py
       - name: Verify shared upload storage as the runtime users
         run: |
           probe_id="$(docker compose -f docker-compose.quickstart.yml exec -T api python -c 'import uuid; print(uuid.uuid4())')"
@@ -380,9 +399,13 @@ jobs:
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - name: Build and verify reproducible API image
         run: scripts/verify_reproducible_image.sh . Dockerfile ${{ matrix.platform }}
-      - name: Load API image for kernel worker-isolation gate
-        if: matrix.platform == 'linux/amd64'
+      - name: Load API image for runtime checks
         run: docker buildx build --load --tag aelira-worker-isolation:test --file Dockerfile .
+      - name: Verify production package state and baked Piper synthesis
+        run: |
+          docker run --rm --network none --entrypoint /usr/local/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py global
+          docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/verify_final_python_packages.py venv
+          docker run --rm --network none --entrypoint /opt/venv/bin/python aelira-worker-isolation:test /app/scripts/smoke_piper_runtime.py
       - name: Enforce 0.75-CPU worker isolation under representative saturation
         if: matrix.platform == 'linux/amd64'
         run: python3 scripts/verify_worker_cpu_isolation.py --image aelira-worker-isolation:test

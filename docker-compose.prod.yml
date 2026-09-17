@@ -3,9 +3,20 @@
 #   cp .env.example .env    # set the REQUIRED FOR PRODUCTION COMPOSE section
 #   docker compose -f docker-compose.prod.yml up -d
 #
-# With fully local AI (documents never leave this host):
+# Optional local AI: pull all default models into this stack's Ollama service,
+# then explicitly enable generation and embeddings (the profile alone does not):
+#   docker compose -f docker-compose.prod.yml --profile ollama up -d ollama
+#   docker compose -f docker-compose.prod.yml --profile ollama exec -T ollama ollama pull gemma3:4b
+#   docker compose -f docker-compose.prod.yml --profile ollama exec -T ollama ollama pull qwen2.5-coder:7b
+#   docker compose -f docker-compose.prod.yml --profile ollama exec -T ollama ollama pull qwen2.5vl:3b
+#   docker compose -f docker-compose.prod.yml --profile ollama exec -T ollama ollama pull nomic-embed-text:latest
 #   LLM_PROVIDER=ollama EMBEDDING_PROVIDER=ollama docker compose -f docker-compose.prod.yml --profile ollama up -d
-#   docker exec aelira-ollama ollama pull qwen2.5vl:3b && ollama pull gemma3:4b && ollama pull qwen2.5-coder:7b && ollama pull nomic-embed-text
+#
+# Persist provider choices in .env for subsequent Compose starts.
+# If overriding OLLAMA_*_MODEL, pull those exact tags instead of the defaults above.
+# These commands target the bundled Ollama service; an external OLLAMA_HOST needs
+# its models provisioned on that server. See docs/deployment/local-ai-models.md
+# for model configuration, measured hardware evidence, and limitations.
 #
 # What this file deliberately does NOT do:
 #   - TLS termination. Put your reverse proxy (nginx, Traefik, Caddy) in

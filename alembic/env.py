@@ -20,7 +20,9 @@ config = context.config
 # Override sqlalchemy.url from environment variable if set
 database_url = os.getenv("DATABASE_URL")
 if database_url:
-    config.set_main_option("sqlalchemy.url", database_url)
+    # ConfigParser treats '%' as interpolation syntax; escape it so encoded
+    # credentials survive both get_main_option() and get_section() unchanged.
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

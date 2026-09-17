@@ -444,18 +444,37 @@ OpenAI, Anthropic, or xAI explicitly and supply that provider's API key.
 
 ## Reverse proxy / TLS
 
-The repo ships two nginx configs you can use as a starting point (adapt the
-`server_name` and certificate paths — both currently use `.example.com`
-placeholders, not real hosts):
+The repo ships two nginx configs you can use as a starting point. Adapt the
+root template's `api.example.com` server name and certificate paths to your
+deployment:
 
 - **`nginx.conf`** (repo root) — reverse proxy in front of the API:
   HTTP→HTTPS redirect, an ACME challenge location for Let's Encrypt,
   rate-limiting zones (`api_limit` at 10r/s, a stricter `upload_limit` at
-  2r/s on the scan endpoints), and response caching for `/docs` and
-  `/openapi.json`.
+  2r/s on multipart upload endpoints), and a 100 MiB request-body ceiling.
+  The HTTPS catch-all forwards the original URI to `api:8000`: direct routes
+  such as `/education/...` and `/auth/...` and native `/api/...` routes all keep
+  their paths. `/health`, `/api/health`, `/live`, and `/ready` bypass proxy rate
+  limiting; readiness failures retain their upstream status. Document, image,
+  source-code, LaTeX, and multimedia upload routes receive the stricter upload
+  rate limit and 600-second send/read timeouts. Other routes use 300 seconds.
+  Proxy caching is disabled for every response, including authenticated data,
+  mutable status routes, `/docs`, and `/openapi.json`.
 - **`dashboard/nginx.conf`** — serves the built dashboard as a static SPA
   (falls back to `index.html` for client-side routes), with cache headers
   for hashed assets and a `/health` endpoint.
+
+The root template assumes nginx shares a Docker network with the `api` service.
+For nginx running on the host, change the upstream to the API's localhost-bound
+published port. Set the real API hostname and mount its TLS certificate and key;
+the dashboard's static-server configuration does not terminate TLS itself.
+
+Verify the checked-in API template with `python scripts/verify_nginx_api.py`.
+This requires Docker and OpenSSL and runs `nginx -t` plus HTTP/HTTPS requests
+against a disposable fixture upstream on an isolated Docker network. It creates
+its own short-lived certificate and never starts the application or connects to
+its database. The default image uses the dashboard Dockerfile's pinned nginx
+digest; use `--image` to select another image or digest.
 
 Any TLS-terminating reverse proxy works the same way (Caddy and Traefik are
 common choices) — the requirement is just that it forwards to the API
