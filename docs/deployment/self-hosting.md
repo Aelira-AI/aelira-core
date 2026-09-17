@@ -317,6 +317,21 @@ addresses cannot create accounts unless an administrator invites them, an LMS
 launch or domain-matched SSO provisions them, or the operator deliberately sets
 `OPEN_SIGNUP=true`.
 
+To create the first administrator on a fresh installation:
+
+1. Configure SMTP and set `PUBLIC_DASHBOARD_URL` to the dashboard address
+   that the administrator will use.
+2. Open the dashboard's `/login` page, enter the administrator's email
+   address, and select **Send Magic Link**.
+3. Open the delivered email, follow **Log In to Aelira**, and select
+   **Verify & Sign In** on the confirmation page.
+4. Confirm that the dashboard opens with **Admin** in the navigation. Use
+   **Settings** to complete the institution's regulatory profile and **Admin**
+   to invite additional users.
+
+First-run bootstrap uses the normal email verification and signup protections;
+it does not require enabling `OPEN_SIGNUP` or anonymous department creation.
+
 Creating another department is a separate operation. `POST /auth/departments`
 accepts a normal `ADMIN` or `SUPER_ADMIN` session, or an API key owned by one of
 those users. LTI launch sessions remain scoped to their existing department and

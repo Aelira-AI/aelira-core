@@ -59,7 +59,9 @@ async function poll<T>(probe: () => Promise<T>, done: (v: T) => boolean): Promis
   throw new Error('Real-stack operation did not reach the expected state within 120 seconds');
 }
 await mkdir(output, { recursive: true });
-await request('/api/csrf-token');
+const csrf = await request('/api/csrf-token');
+assert(csrf.csrf_token && csrf.csrf_token === cookies.get('csrf_token'),
+  'The first CSRF response must match the cookie without a retry');
 const previousInbox = await (await fetch(new URL('/api/v1/messages', mail))).json();
 const previousMessageIds = new Set((previousInbox.messages || []).map((m: any) => m.ID));
 await request('/auth/magic-link/request', {

@@ -271,6 +271,11 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
         # Skip for safe methods
         if request.method in self.SAFE_METHODS:
+            # Share one token with the endpoint and the outgoing cookie on the
+            # first request, before the browser has a cookie to return.
+            request.state.csrf_token = (
+                request.cookies.get(self.cookie_name) or self._generate_token()
+            )
             response = await call_next(request)
             # Ensure CSRF token cookie exists for subsequent requests
             self._ensure_csrf_cookie(request, response)
@@ -325,7 +330,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if token and not self.cookie_domain:
             return
         if not token:
-            token = self._generate_token()
+            token = getattr(request.state, "csrf_token", None) or self._generate_token()
 
         response.set_cookie(
             key=self.cookie_name,
@@ -344,7 +349,10 @@ def get_csrf_token(request: Request) -> str:
 
     Use this in endpoints that need to provide a CSRF token to the client.
     """
-    token = request.cookies.get("csrf_token")
+    token = getattr(request.state, "csrf_token", None) or request.cookies.get(
+        "csrf_token"
+    )
     if not token:
         token = secrets.token_urlsafe(32)
+    request.state.csrf_token = token
     return token
