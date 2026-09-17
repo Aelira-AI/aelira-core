@@ -11,6 +11,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
+pytest_plugins = ["scripts.pytest_ci_evidence"]
+
 # Collection does not skip tests based on browser/E2E/integration markers or CI.
 # Only individually named KNOWN_BROKEN entries are quarantined by this hook.
 # Tests that fail today, each named with what is wrong. They were invisible

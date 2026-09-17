@@ -102,6 +102,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      artifact-metadata: write
     services:
       postgres:
         image: postgres:16
@@ -155,12 +158,26 @@ jobs:
       - name: Install pinned equation-verifier browser
         run: python -m playwright install --with-deps chromium
       - name: Run tests
+        id: main-tests
         env:
           DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-for-ci
           ENV: test
-        run: pytest tests/ -v --tb=short
+        run: >-
+          pytest tests/ -v --tb=short
+          --cov-report=json:test-results/coverage.json
+          --test-evidence=test-results/main-suite.json
+          --test-evidence-profile=main
+      - name: Enforce coverage and main-suite skip policy
+        if: always() && steps.main-tests.outcome != 'skipped'
+        run: >-
+          python scripts/verify_test_evidence.py
+          --report test-results/main-suite.json
+          --coverage test-results/coverage.json
+          --policy tests/ci_skip_policy.json --profile main
+          --revision "${{ github.sha }}"
+          --output test-results/main-summary.json
       - name: Required PDF remediation acceptance corpus
         env:
           DATABASE_URL: postgresql://aelira:aelira@localhost:5432/aelira_test
@@ -172,6 +189,7 @@ jobs:
           PGPASSWORD: aelira
         run: createdb --host=localhost --username=aelira worker_isolation_test
       - name: Run PostgreSQL worker-isolation tests
+        id: worker-tests
         env:
           DATABASE_URL: postgresql://aelira:aelira@localhost:5432/worker_isolation_test
           TEST_MIGRATION_DATABASE_URL: postgresql://aelira:aelira@localhost:5432/worker_isolation_test
@@ -180,7 +198,26 @@ jobs:
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-for-ci
           ENV: test
-        run: pytest tests/test_durable_job_processor_postgres.py -v --tb=short --no-cov
+        run: >-
+          pytest tests/test_durable_job_processor_postgres.py -v --tb=short --no-cov
+          --test-evidence=test-results/worker-postgres.json
+          --test-evidence-profile=worker-postgres
+      - name: Require PostgreSQL worker checks to execute
+        if: always() && steps.worker-tests.outcome != 'skipped'
+        run: >-
+          python scripts/verify_test_evidence.py
+          --report test-results/worker-postgres.json
+          --policy tests/ci_skip_policy.json --profile worker-postgres
+          --revision "${{ github.sha }}"
+          --output test-results/worker-summary.json
+      - name: Retain revision-bound test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: test-results/*.json
+          if-no-files-found: warn
+          retention-days: 14
 
   document-stack:
     name: Real document queue and artifact acceptance

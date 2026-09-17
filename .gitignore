@@ -31,6 +31,8 @@ uploads/
 .coverage
 htmlcov/
 coverage.xml
+coverage_html/
+test-results/
 *.cover
 
 # Environment variables (CRITICAL - DO NOT COMMIT)

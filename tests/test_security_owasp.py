@@ -157,21 +157,34 @@ class TestCryptographicFailures:
         except ImportError:
             pytest.skip("User model not available")
 
-    def test_encryption_key_required(self):
-        """Test that token encryption key is required."""
+    @pytest.mark.parametrize("environment", ["production", "staging"])
+    def test_encryption_key_required(self, monkeypatch, environment):
+        """Require a persistent token encryption key outside development."""
+        from cryptography.fernet import Fernet
 
-        # In production, TOKEN_ENCRYPTION_KEY should be set
-        # For test, we verify the config requires it
-        try:
-            from src.config.settings import Settings
+        from src.integrations.oauth_token_manager import (
+            OAuthTokenManager,
+            TokenEncryptionError,
+        )
 
-            settings = Settings()
-            # Settings should have token_encryption_key
-            assert hasattr(settings, "token_encryption_key") or hasattr(
-                settings, "TOKEN_ENCRYPTION_KEY"
-            ), "Token encryption key configuration missing"
-        except Exception:
-            pytest.skip("Settings not available for crypto test")
+        monkeypatch.setenv("ENV", environment)
+        monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
+
+        with pytest.raises(
+            TokenEncryptionError,
+            match="TOKEN_ENCRYPTION_KEY must be set in production/staging",
+        ):
+            OAuthTokenManager()
+
+        key = Fernet.generate_key()
+        monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", key.decode())
+        manager = OAuthTokenManager()
+        token = "synthetic-oauth-token"
+        encrypted_token = manager.encrypt_token(token)
+
+        assert encrypted_token != token
+        assert Fernet(key).decrypt(encrypted_token.encode()).decode() == token
+        assert manager.decrypt_token(encrypted_token) == token
 
 
 # ==============================================================================
