@@ -11,6 +11,7 @@ from datetime import datetime
 import hashlib
 import logging
 
+from ..ai.usage import OllamaUsage, ollama_usage_fields
 from .models import Department, Scan, ScanResult, ScanType, ScanStatus
 from ..education.pdf_processor import PDFProcessingResult
 from ..education.pptx_processor import PowerPointProcessingResult
@@ -127,6 +128,8 @@ class ScanService:
         user_id: str,
         department_id: str,
         file_content: bytes,
+        *,
+        usage: OllamaUsage | None = None,
     ) -> Scan:
         """
         Store PDF scan results in database
@@ -163,11 +166,9 @@ class ScanService:
         # Normalize issues for dashboard compatibility
         normalized_issues = normalize_issues(result.issues)
 
-        # Check if any issue has 'how_to_fix' field (indicates Ollama was used)
-        ollama_used = any("how_to_fix" in issue for issue in normalized_issues)
-
         # Create ScanResult record
         scan_result = ScanResult(
+            **ollama_usage_fields(usage),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -188,7 +189,6 @@ class ScanService:
             structure=result.structure,
             html_output=result.html_output,
             ocr_used=result.ocr_used,
-            ollama_used=ollama_used,  # True if Ollama was used for fix descriptions
         )
         db.add(scan_result)
         db.commit()
@@ -206,6 +206,8 @@ class ScanService:
         user_id: str,
         department_id: str,
         file_content: bytes,
+        *,
+        usage: OllamaUsage | None = None,
     ) -> Scan:
         """
         Store PowerPoint scan results in database
@@ -272,6 +274,7 @@ class ScanService:
 
         # Create ScanResult record
         scan_result = ScanResult(
+            **ollama_usage_fields(usage),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -284,7 +287,6 @@ class ScanService:
             structure=structure,
             suggestions=result.remediation_suggestions,
             ocr_used=False,  # PowerPoint doesn't use OCR
-            ollama_used=False,  # PowerPoint doesn't use Ollama yet
         )
         db.add(scan_result)
         db.commit()
@@ -303,6 +305,8 @@ class ScanService:
         department_id: str,
         file_content: bytes,
         ollama_used: bool = False,
+        *,
+        usage: OllamaUsage | None = None,
     ) -> Scan:
         """
         Store LaTeX conversion results in database
@@ -313,7 +317,8 @@ class ScanService:
             user_id: User who initiated the scan
             department_id: Department the scan belongs to
             file_content: Raw file bytes for hash calculation
-            ollama_used: Whether Ollama was used for ARIA labels
+            ollama_used: Deprecated request hint; not evidence of provider use.
+            usage: Explicit operation measurement; omitted measurements remain unknown.
 
         Returns:
             Created Scan object
@@ -394,6 +399,7 @@ class ScanService:
 
         # Create ScanResult record
         scan_result = ScanResult(
+            **ollama_usage_fields(usage),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -405,8 +411,6 @@ class ScanService:
             structure=structure,
             html_output=result.html_output,
             ocr_used=False,  # LaTeX doesn't use OCR
-            ollama_used=ollama_used,
-            ollama_calls=result.total_equations if ollama_used else 0,
         )
         db.add(scan_result)
         db.commit()
@@ -547,6 +551,8 @@ class ScanService:
         user_id: str,
         department_id: str,
         file_content: bytes,
+        *,
+        usage: OllamaUsage | None = None,
     ) -> Scan:
         """
         Store Word document scan results in database
@@ -595,6 +601,7 @@ class ScanService:
 
         # Create ScanResult record
         scan_result = ScanResult(
+            **ollama_usage_fields(usage),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -613,7 +620,6 @@ class ScanService:
             },
             html_output=result.html_output,
             ocr_used=False,
-            ollama_used=any(i.suggested_alt_text for i in result.image_issues),
         )
         db.add(scan_result)
         db.commit()
@@ -631,6 +637,8 @@ class ScanService:
         user_id: str,
         department_id: str,
         file_content: bytes,
+        *,
+        usage: OllamaUsage | None = None,
     ) -> Scan:
         """
         Store Excel scan results in database
@@ -679,6 +687,7 @@ class ScanService:
 
         # Create ScanResult record
         scan_result = ScanResult(
+            **ollama_usage_fields(usage),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -709,9 +718,6 @@ class ScanService:
             },
             html_output=None,  # Excel doesn't generate HTML
             ocr_used=False,
-            ollama_used=any(
-                any(i.suggested_alt_text for i in s.image_issues) for s in result.sheets
-            ),
         )
         db.add(scan_result)
         db.commit()

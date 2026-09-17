@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ...ai.usage import runtime_ollama_usage
 from ...db.database import get_db_dependency
 from ...db.models import APIKey, Scan, ScanType
 from ...education.code_scanner import CodeScanner, CodeScanResult
@@ -718,6 +719,7 @@ def process_web_scan_background(
 
         # Store scan result with multi-engine data
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
             compliance_score=result.overall_compliance_score,
             wcag_level="AA",
@@ -960,6 +962,7 @@ def process_batch_web_scan_background(
 
         # Store result in database
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=batch_scan_id,
             result_data=batch_result,
             compliance_score=overall_compliance_score,
@@ -1195,6 +1198,7 @@ def process_sitemap_scan_background(
 
         # Store result in database
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=sitemap_scan_id,
             result_data=sitemap_result,
             compliance_score=overall_compliance_score,
@@ -1343,6 +1347,7 @@ def process_code_background(
 
         # Create ScanResult
         scan_result = ScanResult(
+            **runtime_ollama_usage(provider_runtime),
             scan_id=scan.id,
             compliance_score=result.compliance_score,
             wcag_level="AA",
@@ -1360,8 +1365,6 @@ def process_code_background(
             },
             suggestions=result.recommendations,
             ocr_used=False,
-            ollama_used=generate_fixes,
-            ollama_calls=len(result.issues) if generate_fixes else 0,
         )
 
         db.add(scan_result)

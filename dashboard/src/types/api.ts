@@ -158,7 +158,7 @@ export interface ScanDetailResult {
   structure?: Record<string, unknown>;
   suggestions?: unknown[];
   ocr_used?: boolean;
-  ollama_used?: boolean;
+  ollama_used?: boolean | null;
   [key: string]: unknown;
 }
 

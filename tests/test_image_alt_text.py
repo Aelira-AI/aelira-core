@@ -621,10 +621,12 @@ async def test_suffixless_or_type_mismatched_image_fails_before_ai(
     client.analyze_image_sync.assert_not_called()
 
 
-def test_validate_image_checks_size_before_pillow_open(generator, tmp_path):
+def test_validate_image_checks_size_before_pillow_open(
+    generator, tmp_path, monkeypatch
+):
     path = tmp_path / "oversized.png"
     path.write_bytes(b"x" * 101)
-    generator.settings.max_file_size_image = 100
+    monkeypatch.setattr(generator.settings, "max_file_size_image", 100)
 
     with patch("src.education.image_alt_text.Image.open") as image_open:
         result = generator._validate_image(str(path))
@@ -634,12 +636,14 @@ def test_validate_image_checks_size_before_pillow_open(generator, tmp_path):
     image_open.assert_not_called()
 
 
-def test_validate_image_rejects_decompression_pixel_bound(generator, tmp_path):
+def test_validate_image_rejects_decompression_pixel_bound(
+    generator, tmp_path, monkeypatch
+):
     from PIL import Image
 
     path = tmp_path / "large.png"
     Image.new("RGB", (11, 10), "blue").save(path)
-    generator.settings.max_image_pixels = 100
+    monkeypatch.setattr(generator.settings, "max_image_pixels", 100)
 
     result = generator._validate_image(str(path))
 
