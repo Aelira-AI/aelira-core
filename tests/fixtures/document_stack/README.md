@@ -4,6 +4,11 @@ These documents contain no customer data. They exercise the actual HTTP upload,
 durable queue, worker, saved artifact, and download/rescan boundaries in
 `scripts/verify_document_stack.ts`.
 
+The gate also approves pending changes, reloads review decisions and checks
+that the post-approval download retains the same bytes and scanner receipt.
+See [the document journey guide](../../../docs/testing/document-review-journey.md)
+for the coverage matrix, local stack and browser walkthrough.
+
 - `course.pptx`: a title slide, "Course overview", with grey text on white.
   Expected deterministic contrast remediation: scanner score 92 to 100.
 - `course.xlsx`: Course/Credits headings and one History/3 row. Expected

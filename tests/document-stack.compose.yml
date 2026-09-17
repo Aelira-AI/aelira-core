@@ -27,13 +27,14 @@ services:
     ports: ['127.0.0.1:18300:8000']
     networks: [default, browser]
     environment: &environment
-      ENV: development
+      ENV: production
       DEBUG: 'false'
       ALLOW_MOCK_AUTH: 'false'
       DATABASE_URL: postgresql://aelira@postgres:5432/document_acceptance
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${STACK_JWT_SECRET:?Generate a disposable test secret}
       TOKEN_ENCRYPTION_KEY: ${STACK_ENCRYPTION_KEY:?Generate a disposable test key}
+      SESSION_REPLAY_ENCRYPTION_KEY: ${STACK_REPLAY_KEY:?Generate a disposable replay key}
       LLM_PROVIDER: none
       LLM_FALLBACK_PROVIDER: none
       EMBEDDING_PROVIDER: none
