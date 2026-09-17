@@ -558,9 +558,11 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
         if getattr(fix, "source_locator", None) is not None
         else None
     )
-    raw_confidence = float(getattr(fix, "confidence", math.nan))
-    if not math.isfinite(raw_confidence) or not 0.0 <= raw_confidence <= 1.0:
-        raise ValueError("fix confidence is invalid")
+    raw_confidence = getattr(fix, "confidence", None)
+    if raw_confidence is not None:
+        raw_confidence = float(raw_confidence)
+        if not math.isfinite(raw_confidence) or not 0.0 <= raw_confidence <= 1.0:
+            raise ValueError("fix confidence is invalid")
     evidence = (
         _evidence_dict(getattr(fix, "verification_evidence", None))
         if getattr(fix, "verification_evidence", None) is not None
@@ -621,7 +623,7 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
         ) or source_locator != contract_model.locator.model_dump(mode="json"):
             raise ValueError("visual contract locator does not match source locator")
         fix_method = "ai_vision"
-        confidence = min(raw_confidence, 0.55)
+        confidence = min(raw_confidence, 0.55) if raw_confidence is not None else None
         needs_review = True
         review_status = "pending"
     else:
@@ -634,7 +636,7 @@ def build_scan_fix(scan_id: str, fix: FixedIssue) -> ScanFix:
             raise ValueError("verification evidence requires a supported source kind")
         fix_method = fix.fix_method
         confidence = raw_confidence
-        needs_review = bool(fix.needs_review)
+        needs_review = raw_confidence is None or bool(fix.needs_review)
         review_status = "pending" if needs_review else "auto_approved"
 
     occurrence_key = _occurrence_key(fix)
@@ -785,9 +787,14 @@ def _review_gated_visual_blockers(
     if any(
         getattr(fix, "fix_method", None) != "ai_vision"
         or not bool(getattr(fix, "needs_review", False))
-        or not isinstance(getattr(fix, "confidence", None), (int, float))
-        or not math.isfinite(float(getattr(fix, "confidence", math.nan)))
-        or not 0.0 <= float(getattr(fix, "confidence", math.nan)) <= 0.55
+        or (
+            getattr(fix, "confidence", None) is not None
+            and (
+                not isinstance(fix.confidence, (int, float))
+                or not math.isfinite(float(fix.confidence))
+                or not 0.0 <= float(fix.confidence) <= 0.55
+            )
+        )
         or not getattr(fix, "provider_used", None)
         or not getattr(fix, "model_used", None)
         or not _valid_image_contract_binding(fix)

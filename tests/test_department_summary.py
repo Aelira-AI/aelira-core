@@ -129,8 +129,8 @@ def _cleanup(app):
 class TestDepartmentSummaryEndpoint:
     """Integration tests for GET /reviews/department-summary."""
 
-    def test_empty_department_returns_zeros(self):
-        """Department with no scans should return all zeros."""
+    def test_empty_department_returns_zero_counts_and_unknown_confidence(self):
+        """Empty counts are zero; absent confidence is not a measured zero."""
         mock_db = MagicMock()
         # scalar() called twice: first for total_documents, then for avg_confidence
         mock_db.query.return_value.join.return_value.filter.return_value.scalar.side_effect = [
@@ -152,7 +152,7 @@ class TestDepartmentSummaryEndpoint:
             assert data["approved_count"] == 0
             assert data["pending_count"] == 0
             assert data["rejected_count"] == 0
-            assert data["avg_confidence"] == 0.0
+            assert data["avg_confidence"] is None
         finally:
             _cleanup(app)
 
@@ -313,8 +313,8 @@ class TestDepartmentSummaryEndpoint:
         finally:
             _cleanup(app)
 
-    def test_avg_confidence_none_defaults_to_zero(self):
-        """When no fixes exist, avg confidence should default to 0.0."""
+    def test_avg_confidence_none_remains_unknown(self):
+        """When no scores exist, average confidence remains unknown."""
         mock_db = MagicMock()
         query_mock = MagicMock()
         mock_db.query.return_value = query_mock
@@ -333,7 +333,7 @@ class TestDepartmentSummaryEndpoint:
             response = client.get("/api/reviews/department-summary")
             assert response.status_code == 200
             data = response.json()
-            assert data["avg_confidence"] == 0.0
+            assert data["avg_confidence"] is None
         finally:
             _cleanup(app)
 

@@ -33,7 +33,7 @@ def review_queue_db():
         Column("id", String, primary_key=True),
         Column("scan_id", String, nullable=False),
         Column("review_status", String, nullable=False),
-        Column("confidence", Float, nullable=False),
+        Column("confidence", Float, nullable=True),
     )
     engine = create_engine("sqlite:///:memory:")
     metadata.create_all(engine)
@@ -201,3 +201,36 @@ def test_queue_stats_use_the_same_status_vocabulary(review_queue_db):
         "total": 7,
         "by_type": {"pdf": 4},
     }
+
+
+def test_queue_keeps_unknown_and_zero_distinct_and_sorts_unknown_first(review_queue_db):
+    from sqlalchemy import text
+
+    review_queue_db.execute(
+        text("UPDATE scan_fixes SET confidence = NULL WHERE id = 'a1'")
+    )
+    review_queue_db.execute(
+        text("UPDATE scan_fixes SET confidence = 0 WHERE id = 'p1'")
+    )
+    response = _queue(review_queue_db)
+    assert response.items[0].scan_id == "scan-approved"
+    assert response.items[0].lowest_confidence is None
+    assert response.items[1].scan_id == "scan-pending"
+    assert response.items[1].lowest_confidence == 0.0
+
+
+def test_department_average_uses_reported_scores_only(review_queue_db):
+    from sqlalchemy import text
+    from src.api.review_routes import get_department_summary
+
+    review_queue_db.execute(text("UPDATE scan_fixes SET confidence = NULL"))
+    summary = get_department_summary(db=review_queue_db, auth_result=SESSION_PRINCIPAL)
+    assert summary.avg_confidence is None
+    review_queue_db.execute(
+        text("UPDATE scan_fixes SET confidence = 0 WHERE id = 'p1'")
+    )
+    review_queue_db.execute(
+        text("UPDATE scan_fixes SET confidence = 0.8 WHERE id = 'p2'")
+    )
+    summary = get_department_summary(db=review_queue_db, auth_result=SESSION_PRINCIPAL)
+    assert summary.avg_confidence == 0.4

@@ -20,7 +20,7 @@ export interface Fix {
   category: string;
   severity: string;
   description: string;
-  confidence: number;
+  confidence: number | null;
   fix_method: string;
   needs_review: boolean;
   review_status: string;

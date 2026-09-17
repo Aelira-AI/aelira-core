@@ -1163,7 +1163,7 @@ def test_durable_evidence_and_per_fix_audit_survive_session_restart():
         }
 
 
-def test_generic_fixes_keep_existing_auto_approval_behavior():
+def test_explicitly_scored_generic_fixes_keep_auto_approval_behavior():
     from src.services.scan_fix_service import (
         build_scan_fix,
         image_equation_review_blockers,
@@ -1176,6 +1176,7 @@ def test_generic_fixes_keep_existing_auto_approval_behavior():
         description="Missing language",
         fixed_content="en-AU",
         fix_method="rule",
+        confidence=1.0,
     )
     row = build_scan_fix("scan-1", generic)
 

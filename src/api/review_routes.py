@@ -281,7 +281,7 @@ class FixSummary(BaseModel):
     category: str
     severity: str
     description: str
-    confidence: float
+    confidence: Optional[float]
     fix_method: str
     needs_review: bool
     review_status: str
@@ -339,7 +339,7 @@ class QueueItem(BaseModel):
     scan_type: Optional[str] = None
     total_fixes: int
     needs_review_count: int
-    lowest_confidence: float
+    lowest_confidence: Optional[float]
     status: Literal["pending", "approved", "rejected"]
     created_at: datetime
 
@@ -405,7 +405,9 @@ class DeferralAction(BaseModel):
 
 class BatchAction(BaseModel):
     action: Literal["approve", "reject"]
-    min_confidence: Optional[float] = None
+    min_confidence: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, allow_inf_nan=False
+    )
     category: Optional[str] = None
     fix_ids: Optional[list[str]] = None
     notes: Optional[str] = None
@@ -442,7 +444,7 @@ class DepartmentSummary(BaseModel):
     approved_count: int
     pending_count: int
     rejected_count: int
-    avg_confidence: float
+    avg_confidence: Optional[float]
     by_type: Optional[dict[str, int]] = None
 
 
@@ -679,6 +681,11 @@ def get_review_queue(
     """Get paginated review queue sorted by lowest confidence."""
     _check_review_department(department_id, auth_result)
 
+    # A mixed document cannot report a known minimum when a fix is unscored.
+    lowest_confidence = case(
+        (func.count(ScanFix.confidence) < func.count(ScanFix.id), None),
+        else_=func.min(ScanFix.confidence),
+    )
     query = (
         db.query(
             Scan.id.label("scan_id"),
@@ -692,7 +699,7 @@ def get_review_queue(
             func.sum(case((ScanFix.review_status == "rejected", 1), else_=0)).label(
                 "rejected_count"
             ),
-            func.min(ScanFix.confidence).label("lowest_confidence"),
+            lowest_confidence.label("lowest_confidence"),
             Scan.created_at,
         )
         .join(ScanFix, ScanFix.scan_id == Scan.id)
@@ -725,7 +732,7 @@ def get_review_queue(
 
     total = query.count()
     rows = (
-        query.order_by(func.min(ScanFix.confidence).asc())
+        query.order_by(lowest_confidence.asc().nulls_first(), Scan.id.asc())
         .offset(offset)
         .limit(limit)
         .all()
@@ -747,7 +754,7 @@ def get_review_queue(
                 scan_type=_scan_type_display(row.scan_type) if row.scan_type else None,
                 total_fixes=row.total_fixes,
                 needs_review_count=pending_count,
-                lowest_confidence=row.lowest_confidence or 1.0,
+                lowest_confidence=row.lowest_confidence,
                 status=doc_status,
                 created_at=row.created_at,
             )
@@ -844,7 +851,7 @@ def get_department_summary(
     else:
         reviewed_percent = 0.0
 
-    # 4. Average confidence across all fixes for this department
+    # 4. Average reported scores only; SQL AVG excludes unknown (NULL) scores.
     avg_conf = (
         db.query(func.avg(ScanFix.confidence))
         .join(Scan, Scan.id == ScanFix.scan_id)
@@ -871,7 +878,7 @@ def get_department_summary(
         approved_count=approved_count,
         pending_count=pending_count,
         rejected_count=rejected_count,
-        avg_confidence=round(avg_conf, 4) if avg_conf is not None else 0.0,
+        avg_confidence=round(avg_conf, 4) if avg_conf is not None else None,
         by_type=by_type if by_type else None,
     )
 
@@ -893,7 +900,7 @@ def get_document_review(
     fixes = (
         db.query(ScanFix)
         .filter(ScanFix.scan_id == scan_id)
-        .order_by(ScanFix.confidence.asc())
+        .order_by(ScanFix.confidence.asc().nulls_first(), ScanFix.id.asc())
         .all()
     )
 
@@ -1139,7 +1146,11 @@ def batch_review(
         selected_ids = set(body.fix_ids)
         fixes = [fix for fix in fixes if fix.id in selected_ids]
     if body.min_confidence is not None:
-        fixes = [fix for fix in fixes if fix.confidence >= body.min_confidence]
+        fixes = [
+            fix
+            for fix in fixes
+            if fix.confidence is not None and fix.confidence >= body.min_confidence
+        ]
     if body.category:
         fixes = [fix for fix in fixes if fix.category == body.category]
     now = datetime.now(timezone.utc)
@@ -1189,7 +1200,7 @@ def _audit_export_inputs(db: Session, scan: Scan) -> tuple[list, list, list, obj
     fixes = (
         db.query(ScanFix)
         .filter(ScanFix.scan_id == scan.id)
-        .order_by(ScanFix.confidence.asc())
+        .order_by(ScanFix.confidence.asc().nulls_first(), ScanFix.id.asc())
         .all()
     )
 
