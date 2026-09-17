@@ -1,4 +1,13 @@
 import React from 'react';
+import type { ConfigureProviderOptions } from '../../api/llmProviders';
+import {
+  MODEL_FIELDS,
+  canSaveOllama,
+  isWorkspaceAIDisabled,
+  modelDraftFromProvider,
+  modelIdentifierError,
+  ollamaConfigurationOptions,
+} from '../../utils/llmProviderSettings';
 import {
   CheckCircle,
   XCircle,
@@ -44,10 +53,12 @@ interface AIProvidersCardProps {
   testingProvider: ProviderKey | null;
   configuringProvider: ProviderKey | null;
   providerMutationPending: boolean;
+  modelDraftVersion: number;
   onTestProvider: (key: ProviderKey) => Promise<void>;
   onSetPrimary: (key: ProviderKey) => Promise<void>;
   onSetFallback: (key: ProviderKey | null) => Promise<void>;
-  onConfigureProvider: (key: ProviderKey, apiKey?: string) => Promise<void>;
+  onConfigureProvider: (key: ProviderKey, options: ConfigureProviderOptions) => Promise<boolean>;
+  onDisableAI: () => Promise<void>;
   onRetry: () => Promise<void>;
 }
 
@@ -90,35 +101,35 @@ const XAIIcon = ({ className }: IconProps): React.ReactElement => (
 const PROVIDER_INFO: Record<ProviderKey, ProviderInfo> = {
   ollama: {
     name: 'Ollama',
-    description: 'Local models: Llama 3.2, Qwen 2.5, Mistral (free, private)',
+    description: 'Models hosted on your Ollama service',
     icon: OllamaIcon,
     requiresKey: false,
     isLocal: true,
   },
   gemini: {
     name: 'Google Gemini',
-    description: 'Gemini 3 Flash/Pro (fast, affordable, multimodal)',
+    description: 'Google-hosted AI models',
     icon: GeminiIcon,
     requiresKey: true,
     isLocal: false,
   },
   openai: {
     name: 'OpenAI',
-    description: 'GPT-4.1, o3, GPT-5.2 reasoning models',
+    description: 'OpenAI-hosted AI models',
     icon: OpenAIIcon,
     requiresKey: true,
     isLocal: false,
   },
   anthropic: {
     name: 'Anthropic',
-    description: 'Claude Opus 4.5, Sonnet 4.5, Haiku 4.5',
+    description: 'Anthropic-hosted Claude models',
     icon: AnthropicIcon,
     requiresKey: true,
     isLocal: false,
   },
   xai: {
     name: 'xAI (Grok)',
-    description: 'Grok 4.1, Grok 4.1 Thinking',
+    description: 'xAI-hosted Grok models',
     icon: XAIIcon,
     requiresKey: true,
     isLocal: false,
@@ -171,6 +182,75 @@ function CloudAIInfoCard(): React.ReactElement {
 // AI Provider Settings Card (for self-hosted users)
 // ============================================================================
 
+function OllamaModelEditor({
+  provider,
+  pending,
+  saving,
+  onSave,
+}: {
+  provider?: Provider;
+  pending: boolean;
+  saving: boolean;
+  onSave: (options: ConfigureProviderOptions) => Promise<boolean>;
+}): React.ReactElement {
+  const [draft, setDraft] = React.useState(() => modelDraftFromProvider(provider));
+  const canSave = canSaveOllama(draft, pending);
+
+  return (
+    <form
+      className="mt-4 space-y-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (canSave) void onSave(ollamaConfigurationOptions(draft));
+      }}
+    >
+      <fieldset disabled={pending} aria-describedby="ollama-model-help">
+        <legend className="text-sm font-medium text-primary">Ollama model identifiers</legend>
+        <p id="ollama-model-help" className="text-xs text-tertiary mt-1 mb-3">
+          Enter all three identifiers exactly as installed on your Ollama service (maximum 128 characters).
+          Saving stores these identifiers; it does not download models or run a test.
+          Select a primary provider to use workspace AI. A fallback is used only if the primary fails.
+        </p>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+          {MODEL_FIELDS.map(({ key, label }) => {
+            const error = modelIdentifierError(draft[key]);
+            const id = `ollama-${key}`;
+            return (
+              <div key={key} className="min-w-0">
+                <label htmlFor={id} className="text-sm font-medium text-secondary">{label}</label>
+                <input
+                  id={id}
+                  type="text"
+                  className="input w-full mt-1"
+                  value={draft[key]}
+                  onChange={(event) => setDraft(current => ({ ...current, [key]: event.target.value }))}
+                  maxLength={128}
+                  required
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? `${id}-error` : 'ollama-model-help'}
+                />
+                {error && <p id={`${id}-error`} className="text-xs mt-1 text-secondary">{error}</p>}
+              </div>
+            );
+          })}
+        </div>
+      </fieldset>
+      <button
+        type="submit"
+        id="provider-ollama-configure"
+        disabled={!canSave}
+        aria-busy={saving}
+        className="btn-secondary px-3 py-1.5 text-sm"
+      >
+        {saving ? 'Saving Ollama models…' : 'Save Ollama models'}
+      </button>
+    </form>
+  );
+}
+
 function ProviderSettingsCard({
   providers,
   primaryProvider,
@@ -181,22 +261,26 @@ function ProviderSettingsCard({
   testingProvider,
   configuringProvider,
   providerMutationPending,
+  modelDraftVersion,
   onTestProvider,
   onSetPrimary,
   onSetFallback,
   onConfigureProvider,
+  onDisableAI,
   onRetry,
 }: Omit<AIProvidersCardProps, 'showAIProviderSettings'>): React.ReactElement {
   const [apiKeys, setApiKeys] = React.useState<Partial<Record<ProviderKey, string>>>({});
+  const workspaceDisabled = isWorkspaceAIDisabled(primaryProvider, fallbackProvider);
 
   const configureProvider = async (key: ProviderKey): Promise<void> => {
     const apiKey = apiKeys[key]?.trim();
-    await onConfigureProvider(key, apiKey || undefined);
-    setApiKeys(current => ({ ...current, [key]: '' }));
+    if (await onConfigureProvider(key, { apiKey: apiKey || undefined })) {
+      setApiKeys(current => ({ ...current, [key]: '' }));
+    }
   };
 
   return (
-    <div className="card mb-6">
+    <div id="ai-provider-settings" tabIndex={-1} className="card mb-6">
       <div className="px-6 py-4 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
         <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
           <Zap className="w-5 h-5" />
@@ -242,7 +326,14 @@ function ProviderSettingsCard({
                 borderColor: 'var(--border-primary)',
               }}
             >
-              <div className="flex items-center gap-4 text-sm">
+              <p className="text-sm font-medium text-primary mb-2" role="status">
+                {workspaceDisabled
+                  ? 'Workspace AI is disabled'
+                  : primaryProvider
+                    ? 'Workspace AI has a selected primary provider'
+                    : 'A fallback is saved; select a primary to use workspace AI.'}
+              </p>
+              <div className="flex flex-wrap items-center gap-4 text-sm">
                 <div>
                   <span className="text-tertiary">Primary:</span>{' '}
                   <span className="font-medium text-primary">
@@ -257,6 +348,18 @@ function ProviderSettingsCard({
                   </span>
                 </div>
               </div>
+              <p className="text-xs text-tertiary mt-3">
+                Disabling clears both provider selections for new workspace AI requests. Saved models and credentials are retained.
+                In-flight work, embeddings and separate LMS AI policies are unchanged.
+              </p>
+              <button
+                type="button"
+                onClick={() => void onDisableAI()}
+                disabled={providerMutationPending || workspaceDisabled}
+                className="btn-secondary px-3 py-1.5 text-sm mt-3"
+              >
+                Disable workspace AI
+              </button>
             </div>
 
             <div className="space-y-3">
@@ -335,6 +438,7 @@ function ProviderSettingsCard({
                             )}
                           </div>
                           <p className="text-sm text-tertiary mt-0.5">{info.description}</p>
+                          <p className="text-xs text-secondary mt-1">{isAvailable ? 'Configured' : 'Not configured'}</p>
                         </div>
                       </div>
 
@@ -345,15 +449,15 @@ function ProviderSettingsCard({
                               onClick={() => onTestProvider(key)}
                               disabled={testingProvider === key || providerMutationPending}
                               aria-label={testingProvider === key
-                                ? `Testing ${info.name} provider`
-                                : `Test ${info.name} provider`}
+                                ? `Testing ${info.name} text model`
+                                : `Test ${info.name} text model`}
                               aria-busy={testingProvider === key}
                               className="btn-secondary px-3 py-1.5 text-sm"
                             >
                               {testingProvider === key ? (
                                 <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                               ) : (
-                                'Test'
+                                'Test text model'
                               )}
                             </button>
                             {!isPrimary && (
@@ -383,47 +487,68 @@ function ProviderSettingsCard({
                         )}
                       </div>
                     </div>
-                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
-                      {info.requiresKey && (
-                        <input
-                          type="password"
-                          value={apiKeys[key] || ''}
-                          onChange={(event) => setApiKeys(current => ({
-                            ...current,
-                            [key]: event.target.value,
-                          }))}
-                          className="input w-full sm:max-w-xs"
-                          aria-label={`${info.name} API key`}
-                          id={`provider-${key}-api-key`}
-                          placeholder={isAvailable ? 'Enter a replacement API key' : 'Enter API key'}
-                          autoComplete="new-password"
-                          autoCapitalize="none"
-                          spellCheck={false}
-                        />
-                      )}
-                      <button
-                        onClick={() => void configureProvider(key)}
-                        id={`provider-${key}-configure`}
-                        disabled={
-                          configuringProvider === key
-                          || providerMutationPending
-                          || (info.requiresKey && !(apiKeys[key] || '').trim())
-                        }
-                        aria-label={configuringProvider === key
-                          ? `Saving ${info.name} provider configuration`
-                          : `${isAvailable ? 'Update' : 'Configure'} ${info.name} provider`}
-                        aria-busy={configuringProvider === key}
-                        className="btn-secondary px-3 py-1.5 text-sm whitespace-nowrap"
-                      >
-                        {configuringProvider === key ? (
-                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-                        ) : isAvailable ? (
-                          info.requiresKey ? 'Replace Key' : 'Save Ollama'
-                        ) : (
-                          info.requiresKey ? 'Configure' : 'Enable Ollama'
+                    {isAvailable && (
+                      <dl className="mt-3 grid grid-cols-1 gap-2 text-sm lg:grid-cols-3" aria-label={`${info.name} saved models`}>
+                        {MODEL_FIELDS.map(({ key: modelKey, label }) => (
+                          <div key={modelKey} className="min-w-0">
+                            <dt className="text-tertiary">Saved {label.toLowerCase()}</dt>
+                            <dd className="font-mono text-primary break-all">{modelDraftFromProvider(provider)[modelKey] || 'Not configured'}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                    {key === 'ollama' ? (
+                      <OllamaModelEditor
+                        key={modelDraftVersion}
+                        provider={provider}
+                        pending={providerMutationPending}
+                        saving={configuringProvider === key}
+                        onSave={(options) => onConfigureProvider(key, options)}
+                      />
+                    ) : (
+                      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                        {info.requiresKey && (
+                          <input
+                            type="password"
+                            value={apiKeys[key] || ''}
+                            onChange={(event) => setApiKeys(current => ({
+                              ...current,
+                              [key]: event.target.value,
+                            }))}
+                            className="input w-full sm:max-w-xs"
+                            aria-label={`${info.name} API key`}
+                            id={`provider-${key}-api-key`}
+                            placeholder={isAvailable ? 'Enter a replacement API key' : 'Enter API key'}
+                            autoComplete="new-password"
+                            autoCapitalize="none"
+                            spellCheck={false}
+                            disabled={providerMutationPending}
+                          />
                         )}
-                      </button>
-                    </div>
+                        <button
+                          onClick={() => void configureProvider(key)}
+                          id={`provider-${key}-configure`}
+                          disabled={
+                            configuringProvider === key
+                            || providerMutationPending
+                            || (info.requiresKey && !(apiKeys[key] || '').trim())
+                          }
+                          aria-label={configuringProvider === key
+                            ? `Saving ${info.name} provider configuration`
+                            : `${isAvailable ? 'Update' : 'Configure'} ${info.name} provider`}
+                          aria-busy={configuringProvider === key}
+                          className="btn-secondary px-3 py-1.5 text-sm whitespace-nowrap"
+                        >
+                          {configuringProvider === key ? (
+                            <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                          ) : isAvailable ? (
+                            'Replace Key'
+                          ) : (
+                            'Configure'
+                          )}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}

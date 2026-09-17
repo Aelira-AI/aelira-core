@@ -3,8 +3,9 @@ import { useAuth } from '../context/auth-context';
 import { useToast } from '../context/toast-context';
 import { useFeatureAccess } from '../hooks/useFeatureAccess';
 import { llmProvidersApi } from '../api/llmProviders';
-import type { LLMProvidersListResponse } from '../api/llmProviders';
+import type { ConfigureProviderOptions, LLMProvidersListResponse } from '../api/llmProviders';
 import { normalizeProviderRevisionConflict } from '../utils/llmProviderContract';
+import { ollamaTestFailure } from '../utils/llmProviderSettings';
 import { accountApi } from '../api/account';
 import type { DeletionStatusResponse } from '../api/account';
 import { AccountDeletionModal } from '../components/AccountDeletionModal';
@@ -125,6 +126,8 @@ export default function Settings(): React.ReactElement {
   const [testingProvider, setTestingProvider] = useState<ProviderKey | null>(null);
   const [configuringProvider, setConfiguringProvider] = useState<ProviderKey | null>(null);
   const [providerMutationPending, setProviderMutationPending] = useState<boolean>(false);
+  // Reset model drafts only after an authoritative save or conflict, not unrelated renders.
+  const [modelDraftVersion, setModelDraftVersion] = useState(0);
   const canManageAIProviders = showAIProviderSettings
     && authMethod !== 'lti'
     && (user?.role === 'admin' || user?.role === 'super_admin');
@@ -271,7 +274,8 @@ export default function Settings(): React.ReactElement {
       return false;
     }
     applyProviderState(current);
-    showToast('Provider settings changed elsewhere. The latest settings are now shown.', 'warning');
+    setModelDraftVersion(version => version + 1);
+    showToast('Provider settings changed elsewhere. The latest settings are now shown; unsaved model edits were reset. Review before saving again.', 'warning');
     window.requestAnimationFrame(() => document.getElementById(focusId)?.focus());
     return true;
   }, [applyProviderState, showToast]);
@@ -310,6 +314,7 @@ export default function Settings(): React.ReactElement {
   }, [canManageAIProviders, fetchProviders]);
 
   const handleSetPrimary = async (providerKey: ProviderKey): Promise<void> => {
+    if (!canManageAIProviders || loadingProviders || providerMutationPending || testingProvider) return;
     if (providerConfigRevision === null) {
       showToast('Load provider settings before changing them', 'error');
       return;
@@ -337,11 +342,12 @@ export default function Settings(): React.ReactElement {
 
   const handleConfigureProvider = async (
     providerKey: ProviderKey,
-    apiKey?: string,
-  ): Promise<void> => {
+    options: ConfigureProviderOptions,
+  ): Promise<boolean> => {
+    if (!canManageAIProviders || loadingProviders || providerMutationPending || testingProvider) return false;
     if (providerConfigRevision === null) {
       showToast('Load provider settings before changing them', 'error');
-      return;
+      return false;
     }
     try {
       setProviderMutationPending(true);
@@ -349,10 +355,12 @@ export default function Settings(): React.ReactElement {
       const result = await llmProvidersApi.configureProvider(
         providerKey,
         providerConfigRevision,
-        apiKey ? { apiKey } : {},
+        options,
       );
       applyProviderState(result);
+      if (providerKey === 'ollama') setModelDraftVersion(version => version + 1);
       showToast(`${providerKey} configuration saved`, 'success');
+      return true;
     } catch (error) {
       const focusId = providerKey === 'ollama'
         ? `provider-${providerKey}-row`
@@ -360,6 +368,7 @@ export default function Settings(): React.ReactElement {
       if (!recoverProviderConflict(error, focusId)) {
         showToast(providerErrorMessage(error, 'Failed to configure provider'), 'error');
       }
+      return false;
     } finally {
       setConfiguringProvider(null);
       setProviderMutationPending(false);
@@ -367,6 +376,7 @@ export default function Settings(): React.ReactElement {
   };
 
   const handleSetFallback = async (providerKey: ProviderKey | null): Promise<void> => {
+    if (!canManageAIProviders || loadingProviders || providerMutationPending || testingProvider) return;
     if (providerConfigRevision === null) {
       showToast('Load provider settings before changing them', 'error');
       return;
@@ -394,18 +404,44 @@ export default function Settings(): React.ReactElement {
     }
   };
 
+  const handleDisableAI = async (): Promise<void> => {
+    if (!canManageAIProviders || loadingProviders || providerMutationPending || testingProvider) return;
+    if (providerConfigRevision === null) {
+      showToast('Load provider settings before changing them', 'error');
+      return;
+    }
+    try {
+      setProviderMutationPending(true);
+      const result = await llmProvidersApi.updateSelection(providerConfigRevision, null, null);
+      applyProviderState(result);
+      showToast('Workspace AI disabled. Provider configurations are retained.', 'success');
+    } catch (error) {
+      if (!recoverProviderConflict(error, 'ai-provider-settings')) {
+        showToast(providerErrorMessage(error, 'Failed to disable workspace AI'), 'error');
+      }
+    } finally {
+      setProviderMutationPending(false);
+    }
+  };
+
   const handleTestProvider = async (providerKey: ProviderKey): Promise<void> => {
+    if (!canManageAIProviders || loadingProviders || providerConfigRevision === null
+      || providerMutationPending || testingProvider) return;
     try {
       setTestingProvider(providerKey);
       const result = await llmProvidersApi.testProvider(providerKey);
       if (result.success) {
-        showToast(`${providerKey} is working (${(result.response_time_ms / 1000).toFixed(2)}s)`, 'success');
+        showToast(`${providerKey} text model ${result.model} test passed (${(result.response_time_ms / 1000).toFixed(2)}s). Code and vision models were not tested.`, 'success');
       } else {
-        showToast(`Test failed: ${result.error || 'Unknown error'}`, 'error');
+        showToast(providerKey === 'ollama'
+          ? ollamaTestFailure(result.model || providers.ollama?.text_model)
+          : `Text model test failed: ${result.error || 'Unknown error'}`, 'error');
       }
     } catch (error) {
       console.error('Failed to test provider:', error);
-      showToast(`Test failed: ${providerErrorMessage(error, 'Provider test failed')}`, 'error');
+      showToast(providerKey === 'ollama'
+        ? ollamaTestFailure(providers.ollama?.text_model)
+        : `Text model test failed: ${providerErrorMessage(error, 'Provider test failed')}`, 'error');
     } finally {
       setTestingProvider(null);
     }
@@ -733,11 +769,13 @@ export default function Settings(): React.ReactElement {
           providerLoadError={providerLoadError}
           testingProvider={testingProvider}
           configuringProvider={configuringProvider}
-          providerMutationPending={providerMutationPending}
+          providerMutationPending={providerMutationPending || testingProvider !== null}
+          modelDraftVersion={modelDraftVersion}
           onTestProvider={handleTestProvider}
           onSetPrimary={handleSetPrimary}
           onSetFallback={handleSetFallback}
           onConfigureProvider={handleConfigureProvider}
+          onDisableAI={handleDisableAI}
           onRetry={fetchProviders}
         />
 
