@@ -1,5 +1,7 @@
 # Aelira CLI examples
 
+**Version:** v0.9.11 · **CLI Version:** v0.9.11
+
 Use these scenarios with your own files, URLs, department, and course IDs. See the [command reference](COMMANDS.md) for command definitions and the [troubleshooting guide](TROUBLESHOOTING.md) for prerequisites and failures. Run `aelira --help` or a command's `--help` for the installed version's options.
 
 ## Configure a deployment
