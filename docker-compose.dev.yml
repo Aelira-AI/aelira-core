@@ -126,7 +126,7 @@ services:
       XAI_CODE_MODEL: ${XAI_CODE_MODEL:-grok-2}
       XAI_VISION_MODEL: ${XAI_VISION_MODEL:-grok-2-vision}
       # OAuth Token Encryption (loaded from .env - never commit!)
-      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
       # Google/Microsoft OAuth credentials (loaded from .env)
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}

@@ -162,22 +162,126 @@ API and docs land on `http://localhost:8000/docs`.
 
 ### 2. Full dev stack (`docker-compose.dev.yml`)
 
+Install Docker with the Compose plugin (`docker compose`, including JSON config
+and `up --wait --wait-timeout` support) and `jq`. No host Python or Bun is needed
+for setup. With Docker running:
+
 ```bash
-cp .env.example .env
-# edit .env — select any supported LLM_PROVIDER and supply its key/endpoint,
-# or choose ollama and use --profile ollama for local inference
-docker compose -f docker-compose.dev.yml up -d --build
-docker compose -f docker-compose.dev.yml exec api alembic upgrade head
-docker compose -f docker-compose.dev.yml exec api pytest
+./setup-dev.sh
 ```
 
-This starts Postgres (`pgvector/pgvector:0.8.1-pg16`, with the pgvector
-extension available even though the WCAG knowledge base doesn't currently
-use it — see above), Redis (`redis:7.4-alpine`), the API
-(built from `Dockerfile.dev`, hot-reloading `./src`, `./tests`, and
-`./alembic` into the container), and optionally Ollama and veraPDF via
-`--profile ollama` / `--profile verapdf`. The dashboard is **not** part of
-this compose file — run it separately:
+The script builds `Dockerfile.dev` from current sources, waits for Postgres and
+Redis health, stops any existing API/worker, runs `alembic upgrade head`, then
+starts and waits for both application services. API health uses `/ready`
+(Postgres and Redis); worker health uses `python -m src.jobs.healthcheck --mode
+readiness`. Each startup phase has a 180-second deadline; use
+`--wait-timeout 300` for a slower machine. Any failed build, model pull,
+migration or readiness check exits nonzero without a completion banner.
+Reruns briefly interrupt API/worker service for migration; a failed migration
+leaves them stopped so you can investigate before retrying. Model downloads and
+image builds can take longer than the readiness deadline.
+
+No `.env` is required for basic **local development**. Compose supplies local-only
+Postgres credentials and an insecure development JWT secret. The script never
+creates, sources, rewrites or prints `.env`; Compose resolves the repository's
+`.env` plus exported environment values (shell values take precedence). Running
+the script by absolute path from another directory uses the same repository
+configuration, not that directory's `.env`. Review any `COMPOSE_ENV_FILES`
+override you have explicitly exported, since Compose honors it too.
+
+If you choose to create `.env`, copy `.env.example` only when there is no existing
+file and edit its placeholders first. `TOKEN_ENCRYPTION_KEY` can be empty for
+basic dev, but a nonempty value must be a real Fernet key. For OAuth/BYOK token
+storage, generate a key with `Fernet.generate_key()` using the documented command
+in `.env.example`, store it privately and retain it across runs. Do not replace an
+existing key: stored credentials depend on it. Set your own `JWT_SECRET` for
+anything reachable beyond your machine; these defaults are not production setup.
+
+AI remains disabled unless you choose a provider. To opt into bundled Ollama:
+
+```bash
+LLM_PROVIDER=ollama ./setup-dev.sh
+# Optional semantic WCAG retrieval, selected independently:
+LLM_PROVIDER=ollama EMBEDDING_PROVIDER=ollama ./setup-dev.sh
+```
+
+The script respects configured cloud providers and their credentials. These
+variables configure deployment defaults; they do not rewrite saved workspace AI
+provider choices. Selecting Ollama as primary, fallback (`LLM_FALLBACK_PROVIDER=ollama`), or embedding provider
+automatically enables its Compose profile. It pulls exactly the resolved text,
+code and vision models for inference, and the embedding model only when
+`EMBEDDING_PROVIDER=ollama`; repeated identifiers are downloaded once. Defaults
+are `gemma3:4b`, `qwen2.5-coder:7b`, `qwen2.5vl:3b` and
+`nomic-embed-text:latest`. Configure `OLLAMA_TEXT_MODEL`, `OLLAMA_CODE_MODEL`,
+`OLLAMA_VISION_MODEL` and `OLLAMA_EMBEDDING_MODEL` in `.env` or your shell to
+change these. See [local AI models](../deployment/local-ai-models.md) for hardware
+requirements. This helper provisions the bundled `http://ollama:11434` endpoint;
+for external Ollama, provision its models and start Compose manually.
+
+For GPU resources or isolated ports, pass repeatable override files:
+
+```bash
+COMPOSE_PROJECT_NAME=aelira-test ./setup-dev.sh \
+  --compose-override ./dev-isolated.yml --compose-override ./dev-gpu.yml
+```
+
+Override paths are relative to the caller's directory, applied in order after
+the repository's `docker-compose.dev.yml`. Compose service paths remain relative
+to the repository. `COMPOSE_PROJECT_NAME` is preserved. The base file has fixed
+container names and published ports: to run alongside another dev stack, override
+both (the project name alone is insufficient). For example, with a recent Compose
+plugin supporting `!reset` and `!override`:
+
+```yaml
+# dev-isolated.yml
+services:
+  postgres:
+    container_name: !reset null
+    ports: !override ["15432:5432"]
+  redis:
+    container_name: !reset null
+    ports: !override ["16379:6379"]
+  api:
+    container_name: !reset null
+    ports: !override ["18000:8000"]
+  ollama:
+    container_name: !reset null
+    ports: !override ["21434:11434"]
+```
+
+A separate `dev-gpu.yml` can set `services.ollama.gpus: all` on a host configured
+for Docker GPU access. Preserve service health checks in overrides: setup relies
+on them. Use `--no-build` only when you have deliberately prepared current dev
+images. This skips building; migrations and readiness checks still run.
+
+The stack hot-reloads `./src`, `./tests` and `./alembic`. Basic verification and
+an authenticated AI smoke test (with a bearer API key or access token from your
+dev account) are separate from infrastructure readiness:
+
+```bash
+curl --fail http://localhost:8000/ready
+curl --fail http://localhost:8000/api/ai/health
+docker compose -f docker-compose.dev.yml exec -T api pytest
+curl --fail -H "Authorization: Bearer $AELIRA_API_TOKEN" http://localhost:8000/api/test-ai
+```
+
+The dev Compose file enables mock auth for local convenience. To exercise real
+authentication, override `ALLOW_MOCK_AUTH` to `"false"` for API and worker and use
+a valid account token; do not rely on a bare unauthenticated test request. AI
+health reports configured providers; successful container readiness does not
+prove an inference call succeeded. Use your overridden host port when applicable.
+
+For logs and shutdown, reuse the same project name, `-f` override files and
+`--profile ollama` selection that setup used:
+
+```bash
+docker compose -f docker-compose.dev.yml logs -f api worker
+docker compose -f docker-compose.dev.yml --profile ollama down
+```
+
+`down` preserves named data volumes; avoid `--volumes` unless you intend to delete
+them. Optional veraPDF starts separately with the `verapdf` profile. The dashboard
+is **not** included in this stack — run it separately:
 
 ```bash
 cd dashboard && npm install && npm run dev

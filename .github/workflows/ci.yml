@@ -17,6 +17,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dev-setup-tests:
+    name: Development setup orchestration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Check setup script and executable orchestration tests
+        run: |
+          bash -n setup-dev.sh
+          jq --version
+          node --experimental-strip-types --test scripts/dev_setup.test.ts
+
   dependency-security:
     name: Shipped dependency security
     runs-on: ubuntu-latest
