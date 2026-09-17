@@ -12,7 +12,7 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 
 - **Python 3.14** — Backend API (`.python-version`, `Dockerfile`, `Dockerfile.dev`, and CI all pin this)
 - **Node.js 22+** — Dashboard frontend (`dashboard/Dockerfile`, CI)
-- **Docker** — For running services locally
+- **Docker with the Compose plugin** (`docker compose`, not legacy `docker-compose`) and **jq** — For the development setup script
 - **PostgreSQL 16** — Database (or use Docker)
 - **Redis** — Cache and session store (or use Docker)
 
@@ -23,12 +23,8 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 git clone https://github.com/Aelira-AI/aelira-core.git
 cd aelira-core
 
-# Copy environment file
-cp .env.example .env
-# Edit .env with your configuration
-
-# Option 1: Docker (recommended)
-docker compose -f docker-compose.dev.yml up -d
+# Option 1: Docker (recommended; no .env required for basic local development)
+./setup-dev.sh
 
 # Option 2: Local Python
 python3 -m venv venv
@@ -36,11 +32,20 @@ source venv/bin/activate
 pip install -r requirements-dev.txt
 ```
 
+The script builds current sources, starts dependencies, applies migrations, then
+waits for API and worker readiness. AI stays disabled unless selected in your
+existing `.env` or shell: `LLM_PROVIDER=ollama ./setup-dev.sh`. Add
+`EMBEDDING_PROVIDER=ollama` only to enable semantic retrieval. No configuration
+files or encryption keys are generated or overwritten. If creating `.env` from
+`.env.example`, replace its credential placeholders first; see the
+[development setup guide](docs/development/onboarding.md#2-full-dev-stack-docker-composedevyml)
+for credentials, custom model selection, overrides and authenticated tests.
+
 ### Running the API
 
 ```bash
-# With Docker
-docker compose -f docker-compose.dev.yml up -d
+# With Docker (also safe to rerun; briefly stops API/worker for migrations)
+./setup-dev.sh
 
 # Without Docker
 source venv/bin/activate

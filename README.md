@@ -171,11 +171,15 @@ The full annotated dependency inventory — every major dependency and what it d
 ## Development
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d --build
-docker compose -f docker-compose.dev.yml exec api alembic upgrade head
+./setup-dev.sh  # Docker Compose plugin + jq; builds, migrates, and waits for readiness
 docker compose -f docker-compose.dev.yml exec api pytest
 ```
 
+AI is disabled by default. To choose local inference, run
+`LLM_PROVIDER=ollama ./setup-dev.sh`; add `EMBEDDING_PROVIDER=ollama` only
+when semantic retrieval is wanted. Existing `.env` values are preserved.
+Read the [development setup guide](docs/development/onboarding.md#2-full-dev-stack-docker-composedevyml)
+for credentials, custom models, Compose overrides, and authenticated smoke tests.
 The dashboard runs separately with `cd dashboard && npm install && npm run dev`.
 
 ## Command line
