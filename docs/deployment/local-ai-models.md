@@ -26,6 +26,26 @@ suggestions, never different scores.
 Speech is always local and does not use Ollama: `faster-whisper` transcribes
 audio/video for captions, `piper-tts` generates audio. They run on CPU.
 
+## Workspace settings
+
+A workspace administrator can open **Settings → AI Provider Settings** to
+inspect the saved text, code and vision model names and edit the Ollama model
+identifiers. Use exact identifiers available on the configured Ollama server.
+Saving a model choice does not download a model or select Ollama as primary;
+provider selection is a separate action. Select a primary provider to use
+workspace AI; a saved fallback is used only if the primary fails.
+The connection test exercises the
+saved text model only, so a successful test does not validate code or vision
+quality. If it fails, check that the service is running and the saved model is
+installed, then retry.
+
+Disabling workspace AI clears both primary and fallback selections while
+retaining provider configuration for later use. This controls subsequent
+workspace provider requests; it does not cancel work already in progress or
+change the separately configured embeddings, speech or LMS authorization
+settings. A concurrent administrator edit reloads the current server settings
+instead of silently overwriting them; review those values before saving again.
+
 ## Evaluated defaults
 
 AI remains disabled until an operator explicitly selects a provider. The model

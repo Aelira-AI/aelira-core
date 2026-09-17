@@ -1,4 +1,5 @@
 import { apiClient } from './client';
+import { providerConfigurationRequest, providerSelectionRequest } from '../utils/llmProviderSettings';
 import {
   normalizeProviderListResponse,
   normalizeProviderSelectionResponse,
@@ -88,13 +89,10 @@ export const llmProvidersApi = {
     expectedRevision: number,
     options: ConfigureProviderOptions = {},
   ): Promise<LLMProvidersListResponse> => {
-    const response = await apiClient.put<LLMProviderListWireResponse>(`/llm/providers/${provider}`, {
-      expected_revision: expectedRevision,
-      api_key: options.apiKey,
-      text_model: options.textModel,
-      code_model: options.codeModel,
-      vision_model: options.visionModel,
-    });
+    const response = await apiClient.put<LLMProviderListWireResponse>(
+      `/llm/providers/${provider}`,
+      providerConfigurationRequest(expectedRevision, options),
+    );
     return normalizeProviderListResponse(response.data);
   },
 
@@ -104,11 +102,10 @@ export const llmProvidersApi = {
     primary: LLMProviderName | null,
     fallback: LLMProviderName | null,
   ): Promise<LLMProvidersListResponse> => {
-    const response = await apiClient.put<LLMProviderListWireResponse>('/llm/providers/selection', {
-      expected_revision: expectedRevision,
-      primary,
-      fallback,
-    });
+    const response = await apiClient.put<LLMProviderListWireResponse>(
+      '/llm/providers/selection',
+      providerSelectionRequest(expectedRevision, primary, fallback),
+    );
     return normalizeProviderListResponse(response.data);
   },
 

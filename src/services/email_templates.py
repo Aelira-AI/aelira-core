@@ -164,7 +164,7 @@ def get_email_wrapper(
                                 {unsubscribe_link}<a href="{public_website_url}" style="color: #9ca3af; text-decoration: underline;">Project home</a>{support_link}
                             </p>
                             <p style="margin: 0; font-size: 11px; color: #6b7280;">
-                                © 2026 {brand_name}. All rights reserved.
+                                © 2026 Aelira AI Pty Ltd. All rights reserved.
                             </p>
                         </td>
                     </tr>
@@ -204,7 +204,7 @@ def get_email_footer(unsubscribe_url: Optional[str] = None) -> str:
             <a href="https://example.com/privacy" style="color: #9ca3af; text-decoration: underline;">Privacy Policy</a>
         </p>
         <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 8px 0 0 0;">
-            © 2026 Aelira. All rights reserved.
+            © 2026 Aelira AI Pty Ltd. All rights reserved.
         </p>
     """
 

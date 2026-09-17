@@ -1222,7 +1222,7 @@ Institutions covered by the DOJ ADA Title II rule need WCAG 2.1 AA by April 26, 
 
 ## License
 
-MIT © Aelira. This licence covers the code under `cli/`; the root of this repository is licensed separately — see the [root README](../README.md#licence-and-branding).
+MIT © Aelira AI Pty Ltd. This licence covers the code under `cli/`; the root of this repository is licensed separately — see the [root README](../README.md#licence-and-branding).
 
 ---
 
