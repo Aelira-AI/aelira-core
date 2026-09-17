@@ -108,6 +108,11 @@ python scripts/seed_wcag_guidelines.py
 python scripts/generate_wcag_embeddings.py
 ```
 
+Export `DATABASE_URL` before running these repair commands. The embedding
+repair uses `OLLAMA_HOST` and `OLLAMA_EMBEDDING_MODEL`; it preserves existing
+vectors and returns nonzero if rows fail or are busy. Downloading a missing
+model requires an explicit `--pull` option.
+
 ## Self-hosting
 
 Aelira Core is designed to run entirely on your own infrastructure. It needs PostgreSQL, Redis, and optionally Ollama for local inference.

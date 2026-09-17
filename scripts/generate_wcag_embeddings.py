@@ -1,59 +1,73 @@
 #!/usr/bin/env python3
-"""
-Generate embeddings for all WCAG guidelines in the database.
+"""Fill missing WCAG embeddings using the configured Ollama model.
 
-This script:
-1. Fetches all WCAG guidelines without embeddings
-2. Generates embeddings using Ollama (nomic-embed-text)
-3. Updates the database with the embeddings
+From the repository root, with DATABASE_URL exported:
+    python scripts/generate_wcag_embeddings.py
 
-Usage:
-    cd backend
-    ./venv/bin/python scripts/generate_wcag_embeddings.py
+To explicitly allow downloading a missing model, add --pull. Existing vectors
+are preserved, including those filled concurrently by API startup.
 """
 
+import argparse
 import asyncio
+import json
+import os
+import sys
+
 import asyncpg
 import httpx
-import os
-import json
-import sys
-from typing import List, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.ai.wcag_bootstrap import create_embedding_text  # noqa: E402
-
-# Configuration
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql://aelira:localdev123@localhost:5432/aelira_dev"
+from src.ai.wcag_bootstrap import (  # noqa: E402
+    _EMBEDDING_IS_MISSING,
+    _EMBEDDING_LOCK_NAMESPACE,
+    _MISSING_EMBEDDINGS,
+    _STORE_EMBEDDING,
+    _model_is_available,
+    create_embedding_text,
+    validate_embedding,
 )
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text:latest")
 
 
 async def check_ollama_model(client: httpx.AsyncClient) -> bool:
-    """Check if embedding model is available."""
+    """Tagless Ollama requests mean :latest, not an arbitrary installed tag."""
     try:
-        response = await client.get(f"{OLLAMA_HOST}/api/tags")
-        if response.status_code == 200:
-            data = response.json()
-            models = [m["name"] for m in data.get("models", [])]
-            if any(EMBEDDING_MODEL in m for m in models):
-                return True
-            print(f"Model {EMBEDDING_MODEL} not found. Available: {models}")
-            print(f"Run: ollama pull {EMBEDDING_MODEL}")
-            return False
+        response = await client.get(f"{OLLAMA_HOST}/api/tags", timeout=30.0)
+        response.raise_for_status()
+        models = [m["name"] for m in response.json().get("models", [])]
+        configured = (
+            EMBEDDING_MODEL if ":" in EMBEDDING_MODEL else f"{EMBEDDING_MODEL}:latest"
+        )
+        return _model_is_available(configured, models)
+    except Exception:
         return False
-    except Exception as e:
-        print(f"Failed to connect to Ollama: {e}")
+
+
+async def pull_model(client: httpx.AsyncClient) -> bool:
+    try:
+        response = await client.post(
+            f"{OLLAMA_HOST}/api/pull",
+            json={"name": EMBEDDING_MODEL, "stream": False},
+            timeout=300.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("error") or payload.get("status") != "success":
+            return False
+        # A success response alone does not prove the configured tag is usable.
+        return await check_ollama_model(client)
+    except Exception:
         return False
 
 
 async def generate_embedding(
     client: httpx.AsyncClient, text: str
-) -> Optional[List[float]]:
-    """Generate embedding for text using Ollama."""
+) -> list[float] | None:
     try:
         response = await client.post(
             f"{OLLAMA_HOST}/api/embeddings",
@@ -61,130 +75,86 @@ async def generate_embedding(
             timeout=30.0,
         )
         response.raise_for_status()
-        data = response.json()
-        return data["embedding"]
-    except Exception as e:
-        print(f"Failed to generate embedding: {e}")
+        return validate_embedding(response.json().get("embedding"))
+    except Exception:
+        print("Embedding generation failed.", file=sys.stderr)
         return None
 
 
-async def main():
-    """Generate embeddings for all WCAG guidelines."""
-    print("=" * 60)
-    print("WCAG Guideline Embedding Generator")
-    print("=" * 60)
-    print(
-        f"Database: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else DATABASE_URL}"
-    )
-    print(f"Ollama: {OLLAMA_HOST}")
-    print(f"Model: {EMBEDDING_MODEL}")
-    print()
-
-    # Create HTTP client
-    async with httpx.AsyncClient() as client:
-        # Check Ollama model
-        print("Checking Ollama model...")
-        if not await check_ollama_model(client):
-            print("\nPulling embedding model...")
-            # Try to pull the model
-            try:
-                await client.post(
-                    f"{OLLAMA_HOST}/api/pull",
-                    json={"name": EMBEDDING_MODEL},
-                    timeout=300.0,
-                )
-                print("Model pulled successfully!")
-            except Exception as e:
-                print(f"Failed to pull model: {e}")
-                print(f"Please run: ollama pull {EMBEDDING_MODEL}")
-                return 1
-
-        print("Ollama model ready!\n")
-
-        # Connect to database
-        print("Connecting to database...")
+async def repair_embeddings(conn, client: httpx.AsyncClient) -> int:
+    rows = await conn.fetch(_MISSING_EMBEDDINGS)
+    generated = failed = deferred = 0
+    for row in rows:
+        locked = await conn.fetchval(
+            "SELECT pg_try_advisory_lock($1, $2)", _EMBEDDING_LOCK_NAMESPACE, row["id"]
+        )
+        if not locked:
+            deferred += 1
+            continue
         try:
-            conn = await asyncpg.connect(DATABASE_URL)
-            print("Connected!\n")
-        except Exception as e:
-            print(f"Failed to connect to database: {e}")
-            return 1
-
-        try:
-            # Get all guidelines without embeddings
-            rows = await conn.fetch("""
-                SELECT id, rule_id, wcag_criterion, wcag_level, title,
-                       description, principle, guideline, severity_criteria, tags
-                FROM wcag_guidelines
-                WHERE embedding IS NULL
-                ORDER BY id
-            """)
-
-            total = len(rows)
-            print(f"Found {total} guidelines to process\n")
-
-            if total == 0:
-                print("All guidelines already have embeddings!")
-                return 0
-
-            # Process each guideline
-            success = 0
-            failed = 0
-
-            for i, row in enumerate(rows, 1):
-                rule_id = row["rule_id"]
-                print(f"[{i}/{total}] Processing: {rule_id}...", end=" ")
-
-                # Create embedding text
-                text = create_embedding_text(dict(row))
-
-                # Generate embedding
-                embedding = await generate_embedding(client, text)
-
-                if embedding:
-                    # Stored as JSONB, not pgvector: the corpus is ~112 rows,
-                    # so an index buys nothing and plain Postgres is enough for
-                    # anyone self-hosting the open-source core.
-                    embedding_str = json.dumps(embedding)
-
-                    # Update database
-                    await conn.execute(
-                        """
-                        UPDATE wcag_guidelines
-                        SET embedding = $1::jsonb, updated_at = NOW()
-                        WHERE id = $2
-                    """,
-                        embedding_str,
-                        row["id"],
-                    )
-
-                    print(f"OK (dim={len(embedding)})")
-                    success += 1
-                else:
-                    print("FAILED")
-                    failed += 1
-
-                # Small delay to avoid overwhelming Ollama
-                await asyncio.sleep(0.1)
-
-            print()
-            print("=" * 60)
-            print(f"COMPLETE: {success}/{total} embeddings generated")
-            if failed > 0:
-                print(f"FAILED: {failed} guidelines")
-            print("=" * 60)
-
-            # Verify
-            count = await conn.fetchval("""
-                SELECT COUNT(*) FROM wcag_guidelines WHERE embedding IS NOT NULL
-            """)
-            print(f"\nTotal guidelines with embeddings: {count}")
-
-            return 0 if failed == 0 else 1
-
+            if not await conn.fetchval(_EMBEDDING_IS_MISSING, row["id"]):
+                continue
+            vector = await generate_embedding(client, create_embedding_text(dict(row)))
+            if vector is None:
+                failed += 1
+                continue
+            # The conditional write also protects against writers that do not
+            # participate in the advisory lock protocol.
+            result = await conn.execute(_STORE_EMBEDDING, json.dumps(vector), row["id"])
+            generated += result == "UPDATE 1"
         finally:
-            await conn.close()
+            await conn.fetchval(
+                "SELECT pg_advisory_unlock($1, $2)",
+                _EMBEDDING_LOCK_NAMESPACE,
+                row["id"],
+            )
+    print(f"Generated: {generated}; failed: {failed}; busy: {deferred}")
+    if deferred:
+        print("Another process is filling some rows; rerun after it finishes.")
+    return 1 if failed or deferred else 0
+
+
+async def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--pull", action="store_true", help="allow downloading a missing model"
+    )
+    args = parser.parse_args(argv)
+    if not DATABASE_URL:
+        print("DATABASE_URL must be exported.", file=sys.stderr)
+        return 1
+    try:
+        async with httpx.AsyncClient() as client:
+            if not await check_ollama_model(client):
+                if not args.pull:
+                    print(
+                        "Configured embedding model unavailable. Install it or rerun with --pull.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if not await pull_model(client):
+                    print(
+                        "Embedding model pull failed or model remains unavailable.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print("Model pulled successfully!")
+            conn = await asyncpg.connect(
+                DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+            )
+            try:
+                return await repair_embeddings(conn, client)
+            finally:
+                await conn.close()
+    except Exception:
+        # HTTP/driver exceptions can contain credentials; keep failure output
+        # independent of exception text and connection-string representation.
+        print(
+            "Embedding repair failed; check database and Ollama configuration.",
+            file=sys.stderr,
+        )
+        return 1
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    raise SystemExit(asyncio.run(main()))

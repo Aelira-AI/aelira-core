@@ -102,6 +102,14 @@ No CPU-only host, 8 GB machine, discrete GPU, concurrent worker load, or
 department-scale batch was measured. Run the same harness on the intended
 host before treating it as supported:
 
+Run from a full Git checkout with the Python dependencies installed and the
+tracked `tests/fixtures/local_models/` corpus available. The published API image
+does not include the evaluator's fixture or Git inputs. Ollama may run directly
+on the host or in a container exposing its API on loopback; the host `ollama`
+executable is optional. The report's `ollama_version` records host CLI output,
+or `unavailable` when it cannot be obtained; it does not attest a container's
+server version.
+
 ```bash
 python scripts/evaluate_local_models.py --output local-model-results.json
 ```

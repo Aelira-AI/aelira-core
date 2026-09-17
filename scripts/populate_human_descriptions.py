@@ -6,7 +6,7 @@ This script updates existing wcag_guidelines records with human_issue and
 human_fixed descriptions from the wcag_human_descriptions module.
 
 Usage:
-    # From backend directory
+    # From the repository root with DATABASE_URL exported
     python scripts/populate_human_descriptions.py
 
     # With custom database URL
@@ -36,7 +36,9 @@ async def populate_human_descriptions(database_url: str) -> dict:
     Returns:
         Dictionary with update statistics
     """
-    conn = await asyncpg.connect(database_url)
+    conn = await asyncpg.connect(
+        database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    )
 
     try:
         # Get all existing rules
@@ -98,21 +100,27 @@ async def main():
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         print("ERROR: DATABASE_URL environment variable not set")
-        print("Example: DATABASE_URL='postgresql://user:pass@localhost/aelira'")
-        sys.exit(1)
+        return 1
 
     print("=" * 60)
     print("WCAG Human-Friendly Descriptions Populator")
     print("=" * 60)
     print()
-    print(f"Database: {database_url[:50]}...")
     print(f"WCAG criteria mappings: {len(WCAG_HUMAN_DESCRIPTIONS)}")
     print(f"Rule ID mappings: {len(RULE_HUMAN_DESCRIPTIONS)}")
     print()
     print("Updating records...")
     print()
 
-    stats = await populate_human_descriptions(database_url)
+    try:
+        stats = await populate_human_descriptions(database_url)
+    except Exception:
+        # Driver errors can echo connection strings; never print their text.
+        print(
+            "Description update failed; check database configuration and availability.",
+            file=sys.stderr,
+        )
+        return 1
 
     print()
     print("=" * 60)
@@ -134,7 +142,8 @@ async def main():
 
     print()
     print("Done!")
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

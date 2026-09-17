@@ -32,7 +32,10 @@ npm install
 # Start the dev server (default: http://localhost:5173)
 npm run dev
 
-# Type-check + build for production
+# Type-check separately (build does not run TypeScript checks)
+npx tsc --noEmit
+
+# Build for production (vite build)
 npm run build
 
 # Preview the production build locally
@@ -62,9 +65,8 @@ Copy [`.env.example`](.env.example) to `.env` and fill in real values. Everythin
 | `VITE_UMAMI_WEBSITE_ID` | No | Umami (privacy-focused, open-source analytics) website ID. Only loads when the user consents to analytics cookies via the cookie banner. |
 | `VITE_UMAMI_URL` | No | Umami instance URL, paired with the ID above. |
 
-### `VITE_DEV_MODE`
-
-`VITE_DEV_MODE=true` (not part of `.env.example`, set it yourself if you need it) toggles a warning banner on the Settings page next to the API key display — nothing more. **It is not an authentication bypass.** Authentication is always validated against the backend regardless of this flag; `tests/auth.spec.ts` (see the `'VITE_DEV_MODE does not bypass authentication'` test) asserts this directly, and `.env.example` states it explicitly. Do not rely on this flag for anything security-relevant.
+`VITE_DEV_MODE` is not read by the dashboard source and does not enable a
+Settings banner or bypass backend authentication.
 
 ## Design System
 
@@ -170,13 +172,21 @@ export const apiClient: AxiosInstance = axios.create({
 });
 ```
 
-Representative scan endpoints (see `src/api/education/scan_routes.py` and `web_scan_routes.py` on the backend):
+The following paths are relative to the **direct backend** base URL (for example,
+`VITE_API_URL=http://localhost:8000`). The Vite dev server does not proxy `/api`.
+For the bundled nginx deployment, `VITE_API_URL=/api` selects its same-origin
+proxy: a browser request to `/api/education/pdf/scan` becomes
+`/education/pdf/scan` upstream. The `/api` prefix belongs to that proxy, not to
+the backend education router.
 
-- `POST /api/education/pdf/scan` — scan a PDF
-- `POST /api/education/web/scan` — scan a website
-- `GET /api/education/scans` — scan history
-- `GET /api/education/scans/{id}` — scan detail
-- `GET /api/education/scans/{id}/progress` — poll scan progress
+Representative direct backend endpoints (see `src/api/education/scan_routes.py`
+and `web_scan_routes.py` on the backend):
+
+- `POST /education/pdf/scan` — scan a PDF
+- `POST /education/web/scan` — scan a website
+- `GET /education/scans` — scan history
+- `GET /education/scans/{id}` — scan detail
+- `GET /education/scans/{id}/progress` — poll scan progress
 
 ## Contributing
 

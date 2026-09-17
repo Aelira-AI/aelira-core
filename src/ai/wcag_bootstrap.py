@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
@@ -171,10 +172,16 @@ async def _generate_embedding(
         json={"model": kb.embedding_model, "prompt": create_embedding_text(row)},
     )
     response.raise_for_status()
-    embedding = response.json().get("embedding")
+    return validate_embedding(response.json().get("embedding"))
+
+
+def validate_embedding(embedding: Any) -> list[float]:
+    """Accept only a non-empty vector of finite numeric values."""
     if not isinstance(embedding, list) or not embedding:
         raise ValueError("embedding response did not contain a non-empty vector")
-    if not all(isinstance(value, (int, float)) for value in embedding):
+    if not all(
+        type(value) in (int, float) and math.isfinite(value) for value in embedding
+    ):
         raise ValueError("embedding response contained a non-numeric vector")
     return [float(value) for value in embedding]
 

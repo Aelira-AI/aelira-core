@@ -78,6 +78,8 @@ describe('config command', () => {
     try {
       const { stdout } = await runCommand(['config', 'validate'])
       expect(stdout).to.contain('Could not connect')
+      expect(stdout).to.contain('From the repository root: docker compose -f docker-compose.quickstart.yml up -d')
+      expect(stdout).not.to.contain('cd backend')
     } finally {
       globalThis.fetch = originalFetch
     }

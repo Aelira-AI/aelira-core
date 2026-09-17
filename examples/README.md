@@ -25,16 +25,21 @@ prints the compliance score and each issue:
 ```console
 $ DATABASE_URL=postgresql://localhost/unused JWT_SECRET=dev-only \
       python examples/scan_pdf_direct.py
-File:             tests/fixtures/pdfs/academic_paper.pdf
-Compliance score: 41.0
-Issues found:     5
-  [critical] missing_content_marking (page 1): Structure tree exists but content streams have no marked content (BDC/EMC)
-  [critical] empty_parent_tree (page 1): Structure tree has no ParentTree mapping (empty /Nums)
+File:             /path/to/aelira-core/tests/fixtures/pdfs/simple_syllabus.pdf
+Compliance score: 47.4
+Issues found:     8
+  [medium] accessibility_issue (page 1): Document should start with H1 heading
+  [high] missing_language (page 1): PDF document language not set
   ...
 ```
 
 (The settings module requires `DATABASE_URL` and `JWT_SECRET` at import time
 even though this example never touches the database.)
+
+The score describes completed automated checks, not accessibility conformance.
+If a required check cannot complete, the example prints `Scan incomplete:` to
+stderr, exits with status 1 and does not print a score. For example,
+`tests/fixtures/pdfs/academic_paper.pdf` currently exercises that outcome.
 
 The same pattern works for the other processors — `docx_processor`,
 `pptx_processor`, `xlsx_processor`, `latex_processor` — which share the
