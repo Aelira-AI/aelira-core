@@ -69,11 +69,8 @@ COPY requirements.txt requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements-dev.txt
 
 # Download Piper voice model for TTS
-RUN mkdir -p /app/data/piper-voices && \
-    curl -L -o /app/data/piper-voices/en_US-lessac-medium.onnx \
-    "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx?download=true" && \
-    curl -L -o /app/data/piper-voices/en_US-lessac-medium.onnx.json \
-    "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json?download=true"
+COPY scripts/download_piper_voice.py scripts/download_piper_voice.py
+RUN python scripts/download_piper_voice.py
 
 # Copy source code
 COPY . .

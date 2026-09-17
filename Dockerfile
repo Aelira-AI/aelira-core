@@ -25,8 +25,7 @@ COPY requirements.txt .
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir --upgrade pip && \
     python -m pip uninstall --yes setuptools && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir piper-tts==1.6.0
+    pip install --no-cache-dir -r requirements.txt
 
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
 # toolchain into the final image. Build the pinned Pa11y runtime separately and
@@ -122,13 +121,7 @@ COPY . .
 # Dashboard should be pre-built: cd dashboard && npm run build
 
 # Download Piper voice model for TTS accessibility (as root, before user switch)
-RUN mkdir -p /app/data/piper-voices && \
-    curl -fL -o /app/data/piper-voices/en_US-lessac-medium.onnx \
-    "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx?download=true" && \
-    echo '5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f  /app/data/piper-voices/en_US-lessac-medium.onnx' | sha256sum -c - && \
-    curl -fL -o /app/data/piper-voices/en_US-lessac-medium.onnx.json \
-    "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json?download=true" && \
-    echo 'efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0  /app/data/piper-voices/en_US-lessac-medium.onnx.json' | sha256sum -c -
+RUN python scripts/download_piper_voice.py
 
 # Create non-root user for security
 RUN useradd -m -u 1000 aelira && \

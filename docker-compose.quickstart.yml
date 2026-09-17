@@ -1,22 +1,24 @@
 # Aelira Core — Zero-Config Quickstart
 #
-# Get running in under 2 minutes with no .env file needed:
-#
+# Start the stack with no .env file needed (first build may take several minutes):
 #   docker compose -f docker-compose.quickstart.yml up -d
 #
-# Then visit:
-#   API:       http://localhost:8000/docs
+# Then visit the API: http://localhost:8000/docs
 #
-# To add AI remediation (optional, requires 8GB+ RAM):
-#   docker compose -f docker-compose.quickstart.yml --profile ollama up -d
-#   docker exec aelira-ollama ollama pull gemma3:4b
-#   docker exec aelira-ollama ollama pull nomic-embed-text
+# Optional local AI: pull all default models into this stack's Ollama service,
+# then explicitly enable generation and embeddings (the profile alone does not):
+#   docker compose -f docker-compose.quickstart.yml --profile ollama up -d ollama
+#   docker compose -f docker-compose.quickstart.yml --profile ollama exec -T ollama ollama pull gemma3:4b
+#   docker compose -f docker-compose.quickstart.yml --profile ollama exec -T ollama ollama pull qwen2.5-coder:7b
+#   docker compose -f docker-compose.quickstart.yml --profile ollama exec -T ollama ollama pull qwen2.5vl:3b
+#   docker compose -f docker-compose.quickstart.yml --profile ollama exec -T ollama ollama pull nomic-embed-text:latest
+#   LLM_PROVIDER=ollama EMBEDDING_PROVIDER=ollama docker compose -f docker-compose.quickstart.yml --profile ollama up -d
 #
-# nomic-embed-text powers the WCAG knowledge-base retrieval that grounds
-# issue explanations with correct criteria citations. API startup seeds the
-# bundled corpus and embeds it when this model is available. Severity scoring
-# is deterministic and needs no model; without the embedding model the API
-# logs one actionable warning and explanations fall back to ungrounded text.
+# Keep provider choices in your shell or .env for subsequent Compose starts.
+# If overriding OLLAMA_*_MODEL, pull those exact tags instead of the defaults above.
+# Embeddings add semantic WCAG retrieval; exact rule grounding and deterministic
+# severity scoring do not require them. See docs/deployment/local-ai-models.md
+# for model configuration, measured hardware evidence, and limitations.
 #
 # WARNING: This config uses insecure defaults. Do NOT use in production.
 # For production, use docker-compose.prod.yml with a configured .env file.

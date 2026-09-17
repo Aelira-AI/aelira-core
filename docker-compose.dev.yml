@@ -1,10 +1,17 @@
+# Aelira Core — local development
+#
+# Start with ./setup-dev.sh (AI is disabled by default).
+# To opt in to local generation and embeddings:
+#   LLM_PROVIDER=ollama EMBEDDING_PROVIDER=ollama ./setup-dev.sh
+# The script resolves configured models, pulls them into this stack's Ollama
+# service, and waits for startup. It respects .env and --compose-override FILE.
+# Keep provider choices in your shell or .env for subsequent starts; set the
+# OLLAMA_*_MODEL variables to override model tags. See docs/deployment/local-ai-models.md
+# for model configuration, measured hardware evidence, and limitations.
+
 services:
   # Ollama - AI models for accessibility analysis
-  # Optional: only starts with --profile ollama
-  # Recommended models (pull after starting):
-  #   32GB+ RAM: ollama pull qwen3-coder:30b && ollama pull qwen2.5vl:3b
-  #   16GB RAM:  ollama pull qwen2.5-coder:7b && ollama pull gemma3:4b
-  #   8GB RAM:   ollama pull gemma3:4b (single model for text + vision)
+  # Optional: --profile ollama starts the service but does not select a provider.
   ollama:
     image: ollama/ollama:latest
     container_name: aelira-ollama-dev

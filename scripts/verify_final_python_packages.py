@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import re
 import sys
 import sysconfig
 from collections.abc import Callable
@@ -18,6 +19,23 @@ FORBIDDEN_METADATA = {
     "msgpack": "1.1.2",
     "setuptools": "70.3.0",
 }
+REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements.txt"
+
+
+def required_piper_version(requirements: Path = REQUIREMENTS) -> str:
+    """Read the single canonical Piper pin without importing runtime dependencies."""
+    entries = [
+        line.split("#", 1)[0].strip()
+        for line in requirements.read_text().splitlines()
+        if re.match(r"^piper[-_.]tts\b", line.strip(), re.IGNORECASE)
+    ]
+    if len(entries) != 1 or not re.fullmatch(
+        r"piper[-_.]tts==[0-9]+(?:\.[0-9]+)+", entries[0], re.IGNORECASE
+    ):
+        raise ValueError(
+            "requirements.txt must contain exactly one exact piper-tts pin"
+        )
+    return entries[0].split("==", 1)[1]
 
 
 def validate(
@@ -26,10 +44,16 @@ def validate(
     version: Callable[[str], str] = importlib.metadata.version,
     package_not_found: type[Exception] = importlib.metadata.PackageNotFoundError,
     purelib: Path | None = None,
+    requirements: Path = REQUIREMENTS,
 ) -> list[str]:
     """Return every package-state violation for one Python installation."""
     errors: list[str] = []
-    expected = EXPECTED[scope]
+    expected = EXPECTED[scope].copy()
+    if scope == "venv":
+        try:
+            expected["piper-tts"] = required_piper_version(requirements)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{scope}: unable to determine required Piper version: {exc}")
 
     for package, expected_version in expected.items():
         try:

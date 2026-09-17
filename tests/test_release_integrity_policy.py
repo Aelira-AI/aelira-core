@@ -6,6 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from scripts.download_piper_voice import VOICE_ASSETS
+
 ROOT = Path(__file__).parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -63,19 +65,20 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
         "ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4"
     )
     assert api.count(f"FROM {python_base}") == 2
-    assert "pip install --no-cache-dir piper-tts==1.6.0" in api
+    assert "pip install --no-cache-dir piper-tts" not in api
     assert "npm install -g pa11y@9.0.1" in api
-    assert api.count("curl -fL") == 2
-    assert (
-        "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f  "
-        "/app/data/piper-voices/en_US-lessac-medium.onnx"
-    ) in api
-    assert (
-        "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0  "
-        "/app/data/piper-voices/en_US-lessac-medium.onnx.json"
-    ) in api
-    assert api.count("sha256sum -c -") == 2
-    assert api.index("sha256sum -c -") < api.index("USER aelira")
+    assert {name: digest for name, _, digest in VOICE_ASSETS} == {
+        "en_US-lessac-medium.onnx": (
+            "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f"
+        ),
+        "en_US-lessac-medium.onnx.json": (
+            "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0"
+        ),
+    }
+    voice_download = "RUN python scripts/download_piper_voice.py"
+    for dockerfile in (api, (ROOT / "Dockerfile.dev").read_text()):
+        assert dockerfile.count(voice_download) == 1
+        assert dockerfile.index(voice_download) < dockerfile.index("USER aelira")
 
     assert (
         "FROM node:22-alpine@sha256:"
