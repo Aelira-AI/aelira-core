@@ -80,6 +80,7 @@ COPY . .
 
 # Match the production runtime user and prove Pa11y can launch its browser.
 RUN useradd -m -u 1000 aelira && \
+    mkdir -p /app/uploads && \
     chown -R aelira:aelira /app && \
     mkdir -p /home/aelira/.cache && \
     chown -R aelira:aelira /home/aelira
