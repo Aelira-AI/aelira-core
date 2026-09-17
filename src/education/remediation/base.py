@@ -432,7 +432,10 @@ class FixedIssue(BaseModel):
     original_content: Optional[str] = None
     fixed_content: str
     fix_method: str  # "rule", "heuristic", "ai_text", "ai_vision"
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0, allow_inf_nan=False)
+    # A missing score is unknown; successful application is not confidence evidence.
+    confidence: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, allow_inf_nan=False
+    )
     needs_review: bool = False
     provider_used: Optional[str] = Field(default=None, min_length=1, max_length=64)
     model_used: Optional[str] = Field(default=None, min_length=1, max_length=50)
@@ -453,6 +456,8 @@ class FixedIssue(BaseModel):
 
     @model_validator(mode="after")
     def _region_locator_requires_image_equation_source(self) -> "FixedIssue":
+        if self.confidence is None:
+            self.needs_review = True
         if self.source_locator is not None and self.source_kind not in {
             "image_equation",
             "chemical_structure",
@@ -1392,7 +1397,7 @@ class BaseRemediator(ABC):
         issue: RemediationIssue,
         fixed_content: str,
         fix_method: str,
-        confidence: float = 1.0,
+        confidence: Optional[float] = None,
         notes: Optional[str] = None,
         needs_review: bool = False,
         provider_used: Optional[str] = None,

@@ -5,6 +5,7 @@ import { scansApi } from '../api/scans';
 import type { DepartmentReviewSummary } from '../api/scans';
 import { unwrapResponse } from '../utils/apiUnwrap';
 import { TrendGraph } from '../components/TrendGraph';
+import { ConfidenceBadge } from '../components/review/ConfidenceBadge';
 
 import { AnalyticsDashboard } from '../components/AnalyticsDashboard';
 import { EvidenceReportAction } from '../components/EvidenceReportAction';
@@ -600,22 +601,13 @@ export function Dashboard(): React.ReactElement {
                 </div>
 
                 {/* Average confidence */}
-                {reviewSummary.avg_confidence > 0 && (
-                  <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-secondary">Average AI Confidence</span>
-                      <span className={`font-semibold ${
-                        reviewSummary.avg_confidence >= 0.9
-                          ? 'text-[var(--feature-success-content)]'
-                          : reviewSummary.avg_confidence >= 0.7
-                            ? 'text-[var(--feature-warning-content)]'
-                            : 'text-[var(--feature-danger-content)]'
-                      }`}>
-                        {Math.round(reviewSummary.avg_confidence * 100)}%
-                      </span>
-                    </div>
+                <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-secondary">Average reported confidence</span>
+                    <ConfidenceBadge confidence={reviewSummary.avg_confidence} size="sm" />
                   </div>
-                )}
+                  <p className="mt-1 text-xs text-tertiary">Fixes without reported confidence are excluded.</p>
+                </div>
               </div>
             )}
 

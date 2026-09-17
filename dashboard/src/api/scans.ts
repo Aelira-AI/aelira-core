@@ -248,7 +248,7 @@ export interface DepartmentReviewSummary {
   approved_count: number;
   pending_count: number;
   rejected_count: number;
-  avg_confidence: number;
+  avg_confidence: number | null;
 }
 
 // ============================================================================

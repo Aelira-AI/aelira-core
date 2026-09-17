@@ -27,7 +27,7 @@ interface QueueItem {
   scan_type: string | null;
   total_fixes: number;
   needs_review_count: number;
-  lowest_confidence: number;
+  lowest_confidence: number | null;
   status: ReviewQueueStatus;
   created_at: string;
 }

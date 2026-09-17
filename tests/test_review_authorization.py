@@ -232,12 +232,8 @@ def test_unknown_course_has_empty_aggregates(aggregate_db):
     }
     assert client.get("/api/reviews/queue/stats").json()["total"] == 0
     summary = client.get("/api/reviews/department-summary").json()
-    assert (
-        summary["total_documents"]
-        == summary["avg_confidence"]
-        == summary["reviewed_percent"]
-        == 0
-    )
+    assert summary["total_documents"] == summary["reviewed_percent"] == 0
+    assert summary["avg_confidence"] is None
 
 
 @pytest.mark.parametrize("platform", ["blackboard", "brightspace"])
@@ -263,7 +259,7 @@ def test_non_canvas_course_id_collision_does_not_expose_canvas_aggregates(
         "approved_count": 0,
         "pending_count": 0,
         "rejected_count": 0,
-        "avg_confidence": 0.0,
+        "avg_confidence": None,
         "by_type": None,
     }
 

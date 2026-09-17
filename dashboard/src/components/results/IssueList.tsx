@@ -268,13 +268,12 @@ const SEVERITY_CONFIG: Record<SeverityLevel, SeverityConfig> = {
 
 export function IssueList({
   issues,
-  scanType = 'document',
 }: IssueListProps): React.ReactElement {
   if (!issues || issues.length === 0) {
-    const contentType = scanType === 'website' ? 'website' : 'document';
     return (
       <div className="card text-center py-8">
-        <p className="text-secondary">No issues found! Your {contentType} is fully accessible.</p>
+        <p className="text-secondary">No issues detected by this scan.</p>
+        <p className="mt-2 text-sm text-tertiary">An automated scan does not establish accessibility conformance. Manual review is still required.</p>
       </div>
     );
   }

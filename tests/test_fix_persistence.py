@@ -112,5 +112,5 @@ def test_fixed_issue_optional_fields_default_none():
     assert d["model_used"] is None
     assert d["wcag_criteria"] is None
     assert d["page_number"] is None
-    assert d["confidence"] == 1.0
-    assert d["needs_review"] is False
+    assert d["confidence"] is None
+    assert d["needs_review"] is True

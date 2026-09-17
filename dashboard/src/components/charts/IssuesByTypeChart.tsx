@@ -97,7 +97,8 @@ export function IssuesByTypeChart({ issues }: IssuesByTypeChartProps): React.Rea
       <div className="card">
         <h3 className="text-lg font-semibold text-primary mb-4">Issues by Severity</h3>
         <div className="text-center py-8 text-secondary">
-          No issues found - your content is fully accessible!
+          <p>No issues detected by this scan.</p>
+          <p className="mt-2 text-sm">An automated scan does not establish accessibility conformance. Manual review is still required.</p>
         </div>
       </div>
     );

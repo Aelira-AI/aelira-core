@@ -930,7 +930,7 @@ class ScanFix(Base):
     visual_semantic_contract = Column(SCAN_FIX_JSON, nullable=True)
     review_digest = Column(String(64), nullable=True)
     approved_review_digest = Column(String(64), nullable=True)
-    confidence = Column(Float, nullable=False, default=1.0, server_default="1.0")
+    confidence = Column(Float, nullable=True)
     needs_review = Column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
