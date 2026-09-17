@@ -132,9 +132,12 @@ def test_build_and_audit_consumers_use_the_correct_dependency_set() -> None:
 
 def test_contributor_docs_name_runtime_and_development_install_paths() -> None:
     contributing = (ROOT / "CONTRIBUTING.md").read_text()
+    onboarding = (ROOT / "docs/development/onboarding.md").read_text()
     dependencies = (ROOT / "docs/DEPENDENCIES.md").read_text()
 
-    assert "pip install -r requirements-dev.txt" in contributing
+    assert "docs/development/onboarding.md#3-bare-metal-python" in contributing
+    assert "### 3. Bare-metal Python" in onboarding
+    assert "pip install -r requirements-dev.txt" in onboarding
     assert "Runtime dependencies" in dependencies
     assert "Development and test dependencies" in dependencies
     assert "requirements-dev.txt" in dependencies

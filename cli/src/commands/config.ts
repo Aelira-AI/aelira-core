@@ -282,7 +282,7 @@ static flags = {
       } else {
         s.stop(pc.yellow('⚠ ') + result.message)
         this.log('\n💡 Tip: Make sure the Aelira backend is running')
-        this.log('   Run: cd backend && ./run_api.sh')
+        this.log('   From the repository root: docker compose -f docker-compose.quickstart.yml up -d')
       }
     }
 
@@ -443,7 +443,7 @@ static flags = {
 
       this.log('\n💡 Troubleshooting tips:')
       this.log('   1. Make sure the Aelira backend is running:')
-      this.log('      cd backend && ./run_api.sh')
+      this.log('      From the repository root: docker compose -f docker-compose.quickstart.yml up -d')
       this.log('   2. Check the API URL is correct:')
       this.log('      aelira config show')
       this.log('   3. Verify network connectivity')

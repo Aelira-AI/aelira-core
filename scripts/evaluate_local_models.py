@@ -625,7 +625,7 @@ def _host_evidence() -> dict[str, Any]:
             )
             hardware = json.loads(completed.stdout)["SPHardwareDataType"][0]
             chip = str(hardware.get("chip_type") or chip)
-        except (KeyError, ValueError, subprocess.SubprocessError):
+        except (KeyError, ValueError, OSError, subprocess.SubprocessError):
             pass
     try:
         version = subprocess.run(
@@ -635,7 +635,7 @@ def _host_evidence() -> dict[str, Any]:
             text=True,
             timeout=10,
         ).stdout.strip()
-    except subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         version = "unavailable"
     return {
         "platform": platform.platform(),

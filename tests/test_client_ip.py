@@ -206,15 +206,21 @@ def test_every_shipped_uvicorn_launch_disables_framework_proxy_rewriting():
         ROOT / "docker-compose.dev.yml",
         ROOT / "docker-compose.quickstart.yml",
         ROOT / "docs/development/onboarding.md",
-        ROOT / "CONTRIBUTING.md",
     ]
-    for path in launch_files:
+    contributing = ROOT / "CONTRIBUTING.md"
+    assert (
+        "docs/development/onboarding.md#3-bare-metal-python" in contributing.read_text()
+    )
+    for path in [*launch_files, contributing]:
         uvicorn_lines = [
             line
             for line in path.read_text().splitlines()
             if "uvicorn" in line and "src.api.main:app" in line
         ]
-        assert uvicorn_lines, path
+        # The contributor entry point links to the canonical host recipe. If a
+        # launch is added there again, it must retain the same proxy boundary.
+        if path in launch_files:
+            assert uvicorn_lines, path
         assert all("--no-proxy-headers" in line for line in uvicorn_lines), path
 
     main = (ROOT / "src/api/main.py").read_text()

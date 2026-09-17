@@ -104,21 +104,26 @@ over the URL in `VITE_API_URL` (see `dashboard/.env.example`).
 
 ## Life of a scan
 
-Tracing the actual code path for a single PDF, since that's the clearest
-example (`src/api/education/scan_routes.py`):
+Tracing a PDF scan through `src/api/education/scan_routes.py`. Paths here are
+relative to the direct backend (`http://localhost:8000`). With the dashboard's
+nginx proxy, prefix them with `/api`: nginx strips that prefix before forwarding.
+The Vite dev server has no equivalent proxy; use the direct backend base URL.
 
-1. **Upload** — `POST /api/education/pdf/scan` (`scan_pdf()` in
+1. **Upload** — `POST /education/pdf/scan` (`scan_pdf()` in
    `scan_routes.py`) validates the file, checks quota
    (`check_scan_quota()`), creates a `Scan` row with `status=PROCESSING`,
    saves the file (`save_uploaded_file()`), and returns `scan_id`
-   immediately — processing happens in a background task
-   (`process_pdf_background()`), not inline.
-2. **Scan** — the background task instantiates `PDFProcessor` (from
-   `src/education/pdf_processor.py`) and calls `process_pdf()`, which
+   after `enqueue_local_scan_job()` persists a `local_pdf` job in
+   `cloud_job_queue` and the transaction commits.
+2. **Scan** — the separate `python -m src.jobs.worker` process claims the
+   durable job. `handle_local_scan_job()` verifies the stored input and launches
+   a scan subprocess; its dispatcher calls `process_pdf_background()`. Despite
+   that function's name, the API does not schedule a FastAPI background task.
+   The processor calls `PDFProcessor.process_pdf()`, which
    detects accessibility issues (missing tags, reading order, alt text,
    contrast, tables) and reports progress back through a callback that
    updates `Scan.progress` in the database, so the client can poll
-   `GET /api/education/scans/{scan_id}/progress`.
+   `GET /education/scans/{scan_id}/progress`.
 3. **Issues with computed severity** — each detected issue carries a
    `severity` field. For PDF/DOCX/XLSX this comes from
    `src/ai/severity_rules.py` as described above; for axe-core-based web/code
@@ -126,15 +131,15 @@ example (`src/api/education/scan_routes.py`):
    `SEVERITY_BY_IMPACT` mapping. The result is written to a `ScanResult` row
    (`compliance_score`, `critical_issues`/`high_issues`/`medium_issues`/`low_issues`,
    the raw `issues` list, `structure`, `html_output`).
-4. **Remediation** — `POST /api/education/remediate/{scan_id}`
-   (`remediate_scan()` in `remediation_routes.py`) loads the stored issues
-   and file, and routes to the matching remediator
-   (`PdfRemediator`/`DocxRemediator`/`PptxRemediator`/`XlsxRemediator`/etc.
-   via `AutoRemediator`) to fix as many issues automatically as possible,
-   producing a remediated file plus a list of what still needs a human.
-5. **Report** — `GET /api/education/scans/{scan_id}/report` and
-   `GET /api/education/scans/{scan_id}/html` return the scan's findings;
-   `GET /api/education/compliance/{department_id}/report/pdf`
+4. **Remediation** — `POST /education/remediate/{scan_id}`
+   (`enqueue_remediate_scan()` in `remediation_routes.py`) authorizes access and
+   enqueues another durable job. The worker runs the matching format remediator,
+   producing a managed artifact and recording issues that still need a human.
+   `Prefer: respond-async` returns the job contract immediately; otherwise the
+   route may wait briefly for a result before returning HTTP 202.
+5. **Report** — `GET /education/scans/{scan_id}/report` and
+   `GET /education/scans/{scan_id}/html` return the scan's findings;
+   `GET /education/compliance/{department_id}/report/pdf`
    (`compliance_routes.py`) produces a PDF compliance report.
 
 Other file types (PPTX, DOCX, XLSX, LaTeX, web pages, code) go through the
@@ -190,11 +195,12 @@ configuration, not that directory's `.env`. Review any `COMPOSE_ENV_FILES`
 override you have explicitly exported, since Compose honors it too.
 
 If you choose to create `.env`, copy `.env.example` only when there is no existing
-file and edit its placeholders first. `TOKEN_ENCRYPTION_KEY` can be empty for
-basic dev, but a nonempty value must be a real Fernet key. For OAuth/BYOK token
-storage, generate a key with `Fernet.generate_key()` using the documented command
-in `.env.example`, store it privately and retain it across runs. Do not replace an
-existing key: stored credentials depend on it. Set your own `JWT_SECRET` for
+file and edit its placeholders first. Local document scanning can omit
+`TOKEN_ENCRYPTION_KEY`. For cloud OAuth/BYOK credential storage, export a valid
+Fernet key or provide it in `.env` for both API and worker. Generate it using the
+command in `.env.example`, store it privately and retain it across runs. Do not
+replace an existing key: stored credentials depend on it. Infrastructure readiness
+does not prove a document-processing or cloud integration workflow succeeds. Set your own `JWT_SECRET` for
 anything reachable beyond your machine; these defaults are not production setup.
 
 AI remains disabled unless you choose a provider. To opt into bundled Ollama:
@@ -289,19 +295,117 @@ cd dashboard && npm install && npm run dev
 
 ### 3. Bare-metal Python
 
+Run these commands from the repository root using **Python 3.14** (the version
+in `.python-version` and both Dockerfiles). This path runs the API and worker on
+host Python; PostgreSQL 16 and Redis 7.4 must be running separately. For local
+services with the dev Compose credentials and host ports 5432/6379:
+
 ```bash
-python3 -m venv venv
+docker compose -f docker-compose.dev.yml up -d --wait postgres redis
+python3.14 -m venv venv
 source venv/bin/activate
-pip install -r requirements-dev.txt
-uvicorn src.api.main:app --reload --port 8000 --no-proxy-headers
+python -m pip install -r requirements-dev.txt
 ```
 
-You'll still need Postgres and Redis reachable at whatever `DATABASE_URL`
-and `REDIS_URL` you set — either point at the Dockerized ones from option 2
-or run them yourself.
+Alternatively provision your own local database/user and Redis, then adjust the
+URLs below. Stop any Compose API/worker using that database before applying
+migrations; do not run this alongside the full dev stack on the same ports.
 
-The runtime is **Python 3.14** (`.python-version`, both Dockerfiles, and the
-CI workflow all pin 3.14).
+Python packages do not install all document-processing tools. Match the native
+packages in [`Dockerfile.dev`](../../Dockerfile.dev) for the features you use:
+
+| Feature | Host requirements beyond pip |
+|---|---|
+| Python builds/rendering | C/C++ build tools, pkg-config, Cairo development libraries |
+| PDF/OCR | Tesseract with English language data, Poppler utilities |
+| Multimedia | FFmpeg (including ffprobe) |
+| Web/code scanning | Node 24, Pa11y 9.0.1 on PATH, Playwright Chromium and its system libraries |
+| LaTeX/document conversion | LaTeXML, libxml2/libxslt, ImageMagick, Ghostscript, TeX Live packages and Pandoc listed in the Dockerfile |
+| Piper TTS | The `.onnx` voice and matching `.onnx.json` under `data/piper-voices/`, as downloaded in the Dockerfile |
+
+For web/code scanning, install Chromium with `python -m playwright install chromium`
+(on supported Linux hosts, `python -m playwright install --with-deps chromium`
+also installs OS dependencies). Install Pa11y 9.0.1 using your Node package
+manager. Set `PA11Y_CONFIG_PATH` to a local JSON configuration whose
+`chromeLaunchConfig.executablePath` points at that installed Chromium. The
+repository's `config/pa11y.json` targets a container-only path; installing the
+Python requirements alone does not make Pa11y usable. Native package names and
+browser paths vary by OS; the Docker path provides the maintained complete
+runtime when matching these dependencies is impractical.
+
+Export the following in **every** API, worker, migration and probe shell, with
+that shell in the same repository root and the venv activated. These database
+credentials are local dev Compose defaults. A production deployment needs its
+own credentials. For a new installation, generate the secrets **once** in your
+first configured shell (reuse existing values instead if already configured):
+
+```bash
+export JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+# Optional for local scans; required for cloud OAuth/BYOK credential storage.
+export TOKEN_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+```
+
+Retain these values privately and export the **same values** in subsequent
+shells; do not rerun the generation commands on restart. You can omit the Fernet
+export for local document scanning. Cloud jobs initialize the token manager when
+they access credentials and need the same valid key as the API.
+Then export the rest of the shared configuration:
+
+```bash
+export ENV=development
+export DATABASE_URL=postgresql://aelira:localdev123@localhost:5432/aelira_dev
+export REDIS_URL=redis://localhost:6379/0
+export ALLOW_MOCK_AUTH=true
+export LLM_PROVIDER=none
+export LLM_FALLBACK_PROVIDER=none
+export EMBEDDING_PROVIDER=none
+export UPLOAD_DIR="$PWD/uploads"
+export REMEDIATION_ARTIFACT_DIR="$UPLOAD_DIR/remediation-artifacts"
+export REPORT_ARTIFACT_DIR="$UPLOAD_DIR/report-artifacts"
+mkdir -p "$UPLOAD_DIR" "$REMEDIATION_ARTIFACT_DIR" "$REPORT_ARTIFACT_DIR"
+```
+
+Keep these exports in your own untracked shell configuration if needed. Inspect
+any existing `.env` without overwriting it; replace template placeholders before
+use. `Settings` reads `.env`, but database, storage and other modules also read
+`os.environ` directly: exporting the values ensures all entry points agree.
+API and worker need the **same absolute writable storage roots** and database;
+their default artifact directories are under `/app/uploads`, which is intended
+for containers. Keep any configured encryption key stable for OAuth/BYOK
+credentials. Mock auth is for isolated local development.
+
+Apply migrations **before** starting either application process:
+
+```bash
+python -m alembic upgrade head
+```
+
+Start the API in one terminal and the worker in another, both with the environment
+above (including the same JWT secret and, if configured, Fernet key):
+
+```bash
+# Terminal 1
+python -m uvicorn src.api.main:app --host 127.0.0.1 --reload --port 8000 --no-proxy-headers
+
+# Terminal 2
+python -m src.jobs.worker
+```
+
+From a third configured terminal, check both services:
+
+```bash
+curl --fail http://localhost:8000/ready
+python -m src.jobs.healthcheck --mode readiness --json
+```
+
+`/health` only proves API liveness. `/ready` checks database/Redis connectivity;
+the worker probe checks heartbeat and queue readiness. A successful upload can
+remain `PROCESSING` if the worker is absent. Readiness does not prove document
+processing or AI inference: upload a small local fixture through the dashboard
+or authenticated API and poll its returned scan ID to a terminal state to verify
+that workflow. Run the dashboard separately with `VITE_API_URL=http://localhost:8000`
+(see its [README](../../dashboard/README.md)). Stop API and worker with Ctrl-C;
+keep them stopped while applying subsequent migrations.
 
 ### Environment variables that matter
 
@@ -321,8 +425,9 @@ hit immediately:
 - `JWT_SECRET` — needed for auth; generate one with
   `python3 -c "import secrets; print(secrets.token_urlsafe(64))"` (from the
   comment in `.env.example`).
-- `TOKEN_ENCRYPTION_KEY` — needed if you're touching any OAuth cloud
-  integration (Google/Microsoft/Canvas); generate with
+- `TOKEN_ENCRYPTION_KEY` — required for cloud OAuth/BYOK credential storage;
+  local document scans can omit it. Generate once, retain privately, and share
+  the same value across API and worker; generate with
   `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
 - `ALLOW_MOCK_AUTH=true` — dev-only convenience so you don't need a full auth
   flow locally. `Settings` refuses to start with this set in `staging` or

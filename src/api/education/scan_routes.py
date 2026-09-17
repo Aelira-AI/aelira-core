@@ -286,7 +286,7 @@ async def scan_pdf(
         "success": True,
         "scan_id": scan.id,
         "status": "PROCESSING",  # Uppercase to match ScanStatus enum
-        "message": "PDF processing started. Poll /api/education/scans/{scan_id}/progress for updates.",
+        "message": "PDF processing started. Poll /education/scans/{scan_id}/progress for updates.",
         "progress": 0,
         "progress_message": "Starting PDF processing...",
     }
@@ -550,7 +550,7 @@ async def scan_powerpoint(
         "success": True,
         "scan_id": scan.id,
         "status": "PROCESSING",
-        "message": "PowerPoint processing started. Poll /api/education/scans/{scan_id}/progress for updates.",
+        "message": "PowerPoint processing started. Poll /education/scans/{scan_id}/progress for updates.",
         "progress": 0,
         "progress_message": "Starting PowerPoint processing...",
     }
@@ -803,7 +803,7 @@ async def scan_word_document(
         "success": True,
         "scan_id": scan.id,
         "status": "PROCESSING",
-        "message": "Word document processing started. Poll /api/education/scans/{scan_id}/progress for updates.",
+        "message": "Word document processing started. Poll /education/scans/{scan_id}/progress for updates.",
         "progress": 0,
         "progress_message": "Starting Word document processing...",
     }
@@ -1065,7 +1065,7 @@ async def scan_excel_spreadsheet(
         "success": True,
         "scan_id": scan.id,
         "status": "PROCESSING",
-        "message": "Excel spreadsheet processing started. Poll /api/education/scans/{scan_id}/progress for updates.",
+        "message": "Excel spreadsheet processing started. Poll /education/scans/{scan_id}/progress for updates.",
         "progress": 0,
         "progress_message": "Starting Excel spreadsheet processing...",
     }
@@ -1594,7 +1594,7 @@ async def convert_latex_document(
         "success": True,
         "scan_id": scan.id,
         "status": "PROCESSING",
-        "message": "LaTeX processing started. Poll /api/education/scans/{scan_id}/progress for updates.",
+        "message": "LaTeX processing started. Poll /education/scans/{scan_id}/progress for updates.",
         "progress": 0,
         "progress_message": "Starting LaTeX processing...",
     }

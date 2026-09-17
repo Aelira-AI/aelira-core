@@ -247,7 +247,7 @@ async def get_scan_progress(
     REQUIRES API KEY IN PRODUCTION
 
     Returns:
-        - status: scan status (pending, processing, completed, failed)
+        - status: scan status (PENDING, PROCESSING, COMPLETED, FAILED)
         - progress: percentage complete (0-100)
         - progress_message: current operation description
     """

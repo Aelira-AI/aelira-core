@@ -18,39 +18,23 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 
 ### Development Setup
 
+Clone the repository, then follow the canonical [developer onboarding guide](docs/development/onboarding.md#dev-environment):
+
 ```bash
-# Clone the repo
 git clone https://github.com/Aelira-AI/aelira-core.git
 cd aelira-core
-
-# Option 1: Docker (recommended; no .env required for basic local development)
 ./setup-dev.sh
-
-# Option 2: Local Python
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements-dev.txt
 ```
 
-The script builds current sources, starts dependencies, applies migrations, then
-waits for API and worker readiness. AI stays disabled unless selected in your
-existing `.env` or shell: `LLM_PROVIDER=ollama ./setup-dev.sh`. Add
-`EMBEDDING_PROVIDER=ollama` only to enable semantic retrieval. No configuration
-files or encryption keys are generated or overwritten. If creating `.env` from
-`.env.example`, replace its credential placeholders first; see the
-[development setup guide](docs/development/onboarding.md#2-full-dev-stack-docker-composedevyml)
-for credentials, custom model selection, overrides and authenticated tests.
+The Docker setup builds current sources, starts dependencies, applies migrations,
+and waits for API and worker readiness. Basic local development needs no `.env`;
+AI remains disabled unless explicitly configured. See the guide for credentials,
+provider configuration, overrides and authenticated verification.
 
-### Running the API
-
-```bash
-# With Docker (also safe to rerun; briefly stops API/worker for migrations)
-./setup-dev.sh
-
-# Without Docker
-source venv/bin/activate
-uvicorn src.api.main:app --reload --port 8000 --no-proxy-headers
-```
+For a host Python installation, follow the complete [bare-metal setup](docs/development/onboarding.md#3-bare-metal-python):
+it covers external tools, exported environment, shared storage, migrations,
+the API **and** dedicated worker, and separate readiness checks. Installing Python
+packages and starting Uvicorn alone does not produce a working scan service.
 
 ### Running the Dashboard
 

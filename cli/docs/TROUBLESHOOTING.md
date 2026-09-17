@@ -1,907 +1,159 @@
-# Aelira CLI Troubleshooting Guide
+# Aelira CLI troubleshooting
 
-**Version:** v0.9.11
-**Last Updated:** September 9, 2026
+**Version:** v0.9.11 · **CLI Version:** v0.9.11
 
-Common issues and their solutions.
+Check the installed command's help before adding flags: `aelira scan pdf --help`, for example. See the [command reference](COMMANDS.md) and [tested example syntax](EXAMPLES.md).
 
----
+## Installation and command discovery
 
-## Table of Contents
+The CLI requires Node.js 22 or newer. Install or update it with your package manager:
 
-- [Installation Issues](#installation-issues)
-- [Connection Issues](#connection-issues)
-- [Authentication Issues](#authentication-issues)
-- [Scanning Issues](#scanning-issues)
-- [Export Issues](#export-issues)
-- [File Watcher Issues](#file-watcher-issues)
-- [Progress and Retry](#progress-and-retry)
-- [Performance Issues](#performance-issues)
-- [Error Messages](#error-messages)
-- [Platform-Specific Issues](#platform-specific-issues)
-- [CI Environments](#ci-environments)
-
----
-
-## Installation Issues
-
-### npm install fails
-
-**Problem:** `npm install -g @aelira/cli` fails with permission errors
-
-**Solution:**
 ```bash
-# Option 1: Use sudo (not recommended)
-sudo npm install -g @aelira/cli
-
-# Option 2: Fix npm permissions (recommended)
-mkdir ~/.npm-global
-npm config set prefix '~/.npm-global'
-export PATH=~/.npm-global/bin:$PATH
-echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
-
-# Then install without sudo
 npm install -g @aelira/cli
-```
-
----
-
-### Command not found after installation
-
-**Problem:** `aelira: command not found`
-
-**Solution:**
-```bash
-# Check if CLI is installed
 npm list -g @aelira/cli
-
-# Check PATH
-echo $PATH
-
-# Add npm bin to PATH
-export PATH=$(npm bin -g):$PATH
-
-# Make permanent
-echo 'export PATH=$(npm bin -g):$PATH' >> ~/.bashrc
-source ~/.bashrc
+node --version
 ```
 
----
+If your shell cannot find `aelira`, confirm the global installation succeeded and that your package manager's executable directory is in `PATH`. On macOS/Linux, npm's global executables are under `$(npm prefix -g)/bin`. With a Node version manager, use the same Node installation for installing and running the CLI. Open a new shell after changing your shell configuration.
 
-## Connection Issues
+If browser-based scans report missing Chromium, install the browser matching the CLI's Playwright dependency. For a repository checkout, run from `cli/` after installing its dependencies:
 
-### Cannot connect to backend
-
-**Problem:** `Error: connect ECONNREFUSED 127.0.0.1:8000`
-
-**Symptoms:**
-```
-❌ Error: Cannot connect to backend API at http://localhost:8000
-```
-
-**Solutions:**
-
-**1. Check if backend is running:**
 ```bash
-# Check Docker containers
-docker ps | grep aelira
-
-# If not running, start backend
-cd backend
-docker-compose -f docker-compose.dev.yml up -d
+./node_modules/.bin/playwright install chromium
 ```
 
-**2. Verify backend health:**
-```bash
-curl http://localhost:8000/api/scan/health
+On supported Linux distributions, Playwright's `install --with-deps chromium` can also provision browser system dependencies. These are browser prerequisites for local web scans, not for CLI argument/help inspection.
 
-# Expected output:
-# {"status":"healthy","version":"v0.18.0"}
-```
+## Backend connection refused or unhealthy
 
-**3. Use custom API URL:**
-```bash
-aelira scan https://example.com --api-url http://localhost:8000
+Document/media processing and API-backed commands need a reachable server. Confirm the selected endpoint:
 
-# Or set in config
-echo '{"apiUrl":"http://localhost:8000"}' > ~/.aelirarc.json
-```
-
-**4. Skip AI analysis (local only):**
-```bash
-aelira scan https://example.com --local
-```
-
----
-
-### SSL certificate errors
-
-**Problem:** `Error: unable to verify the first certificate`
-
-**Solution:**
-```bash
-# Temporary (not recommended for production)
-export NODE_TLS_REJECT_UNAUTHORIZED=0
-
-# Better: Use HTTP for local development
-aelira scan https://example.com --api-url http://localhost:8000
-
-# Best: Fix SSL certificate or use --insecure flag
-aelira scan https://example.com --insecure
-```
-
----
-
-## Authentication Issues
-
-### auth login hangs
-
-**Problem:** `aelira auth login` sends no email or appears to hang
-
-**Cause:** The magic link method requires an institutional email address (`.edu`, `.ac.uk`, and similar). Non-institutional email addresses are rejected by the backend before any email is sent.
-
-**Solution:** Use your university-issued email address:
-```bash
-aelira auth login --email yourname@university.edu
-```
-
----
-
-### Invalid or expired token
-
-**Problem:** Clicking the magic link returns "Invalid or expired token"
-
-**Cause:** Magic link tokens expire after 15 minutes.
-
-**Solution:** Request a new link:
-```bash
-aelira auth login --email yourname@university.edu
-```
-
----
-
-### API key not working
-
-**Problem:** Requests fail with `401 Unauthorized` even though a key is configured
-
-**Solutions:**
-
-**1. Verify your current key:**
-```bash
-aelira config validate
-```
-
-**2. Check which key is active:**
 ```bash
 aelira config show
+aelira config set api-url http://localhost:8000
+aelira config validate
+curl --fail http://localhost:8000/health
+curl --fail http://localhost:8000/api/health
 ```
 
-**3. Keys may have been revoked from the dashboard.** Generate a new key from your dashboard (`http://localhost:3000` for a local instance) and reconfigure:
+The server exposes `/health` and `/api/health`. A successful health response is not proof that a particular model, provider, job worker, or authenticated endpoint is available. Use the actual host configured for your deployment when checking a remote server.
+
+For a local development checkout, run Compose from the **repository root**, where the Compose files live:
+
 ```bash
-aelira config set apiKey <new-key>
+docker compose -f docker-compose.quickstart.yml up -d
+docker compose -f docker-compose.quickstart.yml ps
+docker compose -f docker-compose.quickstart.yml logs --tail 100 api
 ```
 
----
+The [quickstart Compose configuration](../../docker-compose.quickstart.yml) is for local development. Follow the [repository setup instructions](../../README.md) for provider setup and deployment choices. If you started a different Compose configuration, use that same file when inspecting its services.
 
-### Rate limited on login
+The API URL resolves from `--api-url`, then `AELIRA_API_URL`, then the active profile, then the localhost default. An environment override can therefore explain why changing a profile did not change the selected endpoint.
 
-**Problem:** Login returns `429 Too Many Requests`
+For a local-only HTML check:
 
-**Cause:** Too many login attempts in a short period trigger the rate limiter.
-
-**Solution:** Wait a few minutes before trying again:
 ```bash
-# Wait, then retry
-aelira auth login --email yourname@university.edu
+aelira scan ./dist/index.html --local
 ```
 
----
+## TLS certificate errors
 
-## Scanning Issues
+Check that the configured URL uses the correct hostname and that the server presents a valid certificate chain. For an organization-managed certificate authority, configure Node's trusted certificates according to your organization's setup. Fix the certificate/trust configuration before retrying API commands.
 
-### Scan hangs or times out
+## Authentication and configuration
 
-**Problem:** Scan never completes, just shows "Processing..."
-
-**Symptoms:**
-```
-🔍 Scanning: https://example.com
-⏳ Processing...
-(hangs forever)
-```
-
-**Solutions:**
-
-**1. Increase timeout:**
 ```bash
-aelira scan https://example.com --timeout 60000  # 60 seconds
+aelira auth login
+aelira config show
+aelira config profile list
 ```
 
-**2. Check if page loads:**
+`auth login` prompts for the method and email/key; it has no email flag. If a magic link fails or expires, request a new link through the prompt. If login is rate-limited, follow the server's retry guidance before trying again.
+
+For API authorization failures, verify the active profile and any `AELIRA_API_KEY` override. `config validate` checks backend health only. A revoked key or a key for another department can still fail protected requests even when health succeeds. Replace the stored key interactively with `auth login`, or set an issued key from an environment variable:
+
 ```bash
-# Test with curl
-curl -I https://example.com
-
-# Test with Playwright directly
-npx playwright open https://example.com
+aelira config set api-key "$AELIRA_API_KEY"
 ```
 
-**3. Use verbose mode to see where it hangs:**
+Configuration lives at `~/.aelira/config.json`, or `$AELIRA_CONFIG_DIR/config.json` when overridden. Use `config show` rather than posting the raw file in a bug report. Reconfigure with the positional `init` action:
+
 ```bash
-aelira scan https://example.com --verbose
+aelira config init
 ```
 
-**4. Try local file instead:**
+## Unknown command, flag, or output format
+
+Use a scanner-specific command for documents and media. Plain `scan` accepts URLs and HTML; it does not select a document scanner based on a PDF or PowerPoint extension.
+
 ```bash
-# Download HTML first
-curl https://example.com > page.html
-
-# Scan local file
-aelira scan ./page.html --local
+aelira scan pdf document.pdf
+aelira scan ppt presentation.pptx
+aelira scan pdf ./documents/ --format json --output pdf-results.json
 ```
 
----
+Directory processing is built into the document scanners. The PDF scanner's OCR control is `--skip-ocr`. PowerPoint scanning returns findings; remediation uses a previous scan ID with `aelira remediate`. See command help for the exact flags and accepted formats for each scanner.
 
-### PDF scanning fails
+For structured files, choose an implemented output path such as `--format json --output results.json`. Do not infer that an accepted format creates every possible artifact: video output is JSON, and a PDF input scan does not accept the web scanner's PDF-report option.
 
-**Problem:** PDF scan produces errors or incorrect results
+## Web scan times out
 
-**Symptoms:**
-```
-❌ Error: Failed to process PDF: Invalid PDF structure
-```
+Confirm the target page loads in your browser, then adjust the web scanner's page-load timeout or settling delay:
 
-**Solutions:**
-
-**1. Verify PDF is valid:**
 ```bash
-# Check if PDF opens
-open document.pdf  # macOS
-xdg-open document.pdf  # Linux
+aelira scan https://example.com --timeout 60000 --load-delay 5000
 ```
 
-**2. Check file size:**
+These flags apply to web page loading. Document scanners do not expose a timeout flag. For backend document timeouts, inspect server/worker logs and the scan's status in the dashboard before resubmitting. `aelira history` reads local history and cannot determine whether a server job is still running.
+
+## PDF or PowerPoint processing fails
+
+Confirm the file exists, opens in its native application, and is a supported format. For encrypted or corrupted documents, obtain an accessible, readable copy from the document owner or resave the original. Check backend/worker logs for the actual rejection rather than assuming a fixed file-size limit or a particular AI model.
+
+Start with one file and save its results:
+
 ```bash
-# PDFs > 10MB may cause issues
-ls -lh document.pdf
-
-# If too large, try splitting
-pdftk document.pdf cat 1-10 output part1.pdf
-aelira scan pdf part1.pdf
+aelira scan pdf document.pdf --format json --output pdf-results.json
+aelira scan ppt presentation.pptx --format json --output ppt-results.json
 ```
 
-**3. Check PDF permissions:**
-```bash
-# Some PDFs are password-protected or restricted
-qpdf --decrypt --password=yourpassword input.pdf output.pdf
-aelira scan pdf output.pdf
-```
+AI-dependent results depend on the deployment's configured providers. Consult the server setup documentation when logs report missing models or credentials.
 
-**4. Re-save PDF:**
-```bash
-# Open in Preview/Acrobat and "Save As" new PDF
-# This often fixes corrupted PDFs
-```
+## Export errors or missing records
 
----
+CSV export requires a destination; JSON can also be written to a file:
 
-### PowerPoint scanning fails
-
-**Problem:** PPTX scan produces errors or incorrect results
-
-**Symptoms:**
-```
-❌ Error: Failed to process PPTX: Unsupported file format
-```
-
-**Solutions:**
-
-**1. Verify the file extension is supported:**
-```bash
-aelira scan presentation.pptx
-```
-
-**2. If the file is corrupted, re-save it from PowerPoint or LibreOffice.**
-
-**3. Convert to PDF as a fallback:**
-```bash
-libreoffice --headless --convert-to pdf presentation.pptx
-aelira scan presentation.pdf
-```
-
----
-
-## Export Issues
-
-### CSV export requires --output flag
-
-**Problem:** `aelira export --format csv` fails or outputs garbled text to the terminal
-
-**Cause:** CSV output must be written to a file. JSON can be printed to stdout, but CSV requires the `--output` flag.
-
-**Solution:**
 ```bash
 aelira export --format csv --output scans.csv
+aelira export --format json --limit 20 --output scans.json
 ```
 
----
+`export` uses the backend history visible to your credentials. It includes scans with reported issues and successfully fetched details. Zero-issue scans and failed detail fetches are omitted. If records are missing, check the active key/department and backend results. Lowering `--limit` reduces detail requests for large histories.
 
-### No scans found
+## Watcher does not detect files
 
-**Problem:** Export returns an empty result set
-
-**Cause:** The API key you have configured determines which department's scans are returned. If the key belongs to a different department, no scans will be visible.
-
-**Solution:** Verify the active key and its associated department:
-```bash
-aelira config show
-```
-
-If the wrong key is active, update it:
-```bash
-aelira config set apiKey <correct-key>
-```
-
----
-
-### Export is slow
-
-**Problem:** `aelira export` takes a long time for large result sets
-
-**Cause:** The export command fetches full details for each scan individually. Large scan histories amplify this.
-
-**Solution:** Use `--limit` to reduce the number of scans fetched:
-```bash
-aelira export --limit 50 --output scans.csv
-```
-
----
-
-## File Watcher Issues
-
-### Recursive watching not supported on Linux
-
-**Problem:** The `aelira watch` command only detects changes in the top-level directory on Linux, not subdirectories
-
-**Cause:** Node.js `fs.watch` recursive mode is only supported on macOS and Windows. On Linux, only the top-level directory is monitored.
-
-**Solution:** On Linux, either watch subdirectories explicitly or use a tool like `inotifywait`:
-```bash
-# Watch a flat directory
-aelira watch ./uploads/
-
-# Or use inotifywait as a wrapper on Linux
-inotifywait -m -r -e close_write ./uploads/ | while read dir event file; do
-  aelira scan "$dir$file"
-done
-```
-
----
-
-### Watch command exits immediately
-
-**Problem:** `aelira watch` starts and exits with no output
-
-**Cause:** The watcher performs a `/health` check against the backend on startup. If the backend is unreachable, the watcher exits.
-
-**Solution:** Ensure the backend is running and reachable:
-```bash
-curl http://localhost:8000/health
-
-# Or against a custom API URL
-curl "$AELIRA_API_URL/health"
-```
-
----
-
-### Files not being detected
-
-**Problem:** Files added to the watched directory are not picked up
-
-**Cause:** The `--extensions` filter may not include the file type you are adding. The default set is `.pdf,.docx,.pptx,.xlsx,.html,.htm,.tex,.css,.js`.
-
-**Solution:** Explicitly include the extensions you need:
-```bash
-aelira watch ./uploads/ --extensions .pdf,.docx,.odt
-```
-
----
-
-## Progress and Retry
-
-### Scan timed out
-
-**Problem:** A scan fails with a timeout error for large documents
-
-**Cause:** Large documents can exceed the backend's processing time. The CLI automatically retries on transient errors (3 retries with exponential backoff), but persistent timeouts indicate the document needs more time than the retry budget allows.
-
-**Solution:** Check the scan status after the fact, as processing may continue server-side:
-```bash
-aelira history
-```
-
-For large documents, increasing the timeout may also help:
-```bash
-aelira scan document.pdf --timeout 120000
-```
-
----
-
-### Request timed out after Xs
-
-**Problem:** The CLI prints `Request timed out after Xs` and exits
-
-**Cause:** Backend processing took longer than the configured request timeout.
-
-**Solution:** Check whether the scan completed asynchronously:
-```bash
-aelira history
-```
-
-If the scan is still missing, resubmit with a higher timeout:
-```bash
-aelira scan document.pdf --timeout 120000
-```
-
----
-
-## Performance Issues
-
-### Slow image processing
-
-**Problem:** PDF with many images takes 30+ minutes
-
-**Symptoms:**
-```
-📄 Scanning PDF: document.pdf (18 images)
-[1/18] Analyzing image... (taking 2-3 minutes each)
-```
-
-**Solutions:**
-
-**1. Check if Moondream2 model is being used:**
-```bash
-# Verify in backend logs
-docker logs aelira-ollama | grep moondream
-
-# Should see: "Model: moondream" (1.7 GB)
-# NOT: "Model: llama3.2-vision" (7.8 GB)
-```
-
-**2. Reduce image count:**
-```bash
-# Skip alt text generation for testing
-aelira scan pdf document.pdf
-
-# Or process smaller batches
-pdftk input.pdf cat 1-5 output small.pdf
-aelira scan pdf small.pdf --generate-alt-text
-```
-
-**3. Check system resources:**
-```bash
-# Monitor CPU/memory
-top
-htop
-
-# Check Docker resources
-docker stats
-
-# Increase Docker memory if needed
-# Docker Desktop → Preferences → Resources → Memory: 8GB
-```
-
-**4. Use parallel processing:**
-```bash
-# Split PDF and process in parallel
-pdftk input.pdf burst
-ls pg_*.pdf | parallel -j 4 aelira scan pdf {}
-```
-
----
-
-### High memory usage
-
-**Problem:** CLI or backend consuming too much RAM
-
-**Solutions:**
-
-**1. Check Docker memory:**
-```bash
-docker stats
-
-# If high, restart containers
-docker-compose -f docker-compose.dev.yml restart
-```
-
-**2. Process files in smaller batches:**
-```bash
-# Instead of --batch on 1000 files
-find ./pdfs/ -name "*.pdf" | head -50 | xargs -I {} aelira scan pdf {}
-```
-
-**3. Increase available memory:**
-```bash
-# Docker Desktop → Settings → Resources → Memory: 8GB
-# Or use docker-compose resource limits
-```
-
----
-
-## Error Messages
-
-### `Error: EMFILE: too many open files`
-
-**Problem:** Batch processing too many files at once
-
-**Solution:**
-```bash
-# Increase file descriptor limit (macOS/Linux)
-ulimit -n 10000
-
-# Make permanent (macOS)
-sudo launchctl limit maxfiles 10000 unlimited
-
-# Process in smaller batches
-find ./files/ -name "*.pdf" | xargs -n 10 -I {} aelira scan pdf {}
-```
-
----
-
-### `Error: Playwright browser not installed`
-
-**Problem:** Missing Playwright dependencies
-
-**Solution:**
-```bash
-# Install Playwright browsers
-npx playwright install
-
-# Or install with dependencies
-npx playwright install --with-deps
-```
-
----
-
-### `Error: Command failed with exit code 1`
-
-**Problem:** Generic error, need more details
-
-**Solution:**
-```bash
-# Run with verbose logging
-aelira scan https://example.com --verbose
-
-# Check logs
-cat ~/.aelira/logs/latest.log
-
-# Enable debug mode
-DEBUG=* aelira scan https://example.com
-```
-
----
-
-### `Error: Timeout of 30000ms exceeded`
-
-**Problem:** Page takes too long to load
-
-**Solutions:**
-
-**1. Increase timeout:**
-```bash
-aelira scan https://example.com --timeout 60000
-```
-
-**2. Add load delay for SPAs:**
-```bash
-aelira scan https://example.com --load-delay 5000
-```
-
-**3. Check if site is accessible:**
-```bash
-curl -I https://example.com
-ping example.com
-```
-
----
-
-## Platform-Specific Issues
-
-### macOS Issues
-
-**Problem:** Gatekeeper blocks CLI execution
-
-**Solution:**
-```bash
-# Allow CLI to run
-xattr -d com.apple.quarantine $(which aelira)
-
-# Or allow in System Preferences
-# System Preferences → Security & Privacy → Allow
-```
-
-**Problem:** Docker not running
-
-**Solution:**
-```bash
-# Start Docker Desktop
-open -a Docker
-
-# Wait for Docker to start
-until docker info > /dev/null 2>&1; do sleep 1; done
-echo "Docker is ready"
-```
-
----
-
-### Windows Issues
-
-**Problem:** Path with spaces causes errors
-
-**Solution:**
-```bash
-# Use quotes for paths with spaces
-aelira scan pdf "C:\Users\Name\Documents\My Files\document.pdf"
-
-# Or use short path
-aelira scan pdf "C:\Users\Name\DOCUME~1\MYFILE~1\document.pdf"
-```
-
-**Problem:** Docker commands not working
-
-**Solution:**
-```bash
-# Use PowerShell or WSL2
-# Install WSL2 first:
-wsl --install
-
-# Then run commands in WSL2
-wsl
-cd /mnt/c/Users/Name/Projects/Aelira
-aelira scan https://example.com
-```
-
----
-
-### Linux Issues
-
-**Problem:** Permission denied for Docker
-
-**Solution:**
-```bash
-# Add user to docker group
-sudo usermod -aG docker $USER
-
-# Log out and back in, then verify
-docker ps
-```
-
-**Problem:** Missing dependencies
-
-**Solution:**
-```bash
-# Ubuntu/Debian
-sudo apt-get update
-sudo apt-get install -y \
-  libnss3 \
-  libnspr4 \
-  libatk1.0-0 \
-  libatk-bridge2.0-0 \
-  libcups2 \
-  libdrm2 \
-  libxkbcommon0 \
-  libxcomposite1 \
-  libxdamage1 \
-  libxfixes3 \
-  libxrandr2 \
-  libgbm1 \
-  libasound2
-
-# Then reinstall Playwright
-npx playwright install --with-deps
-```
-
----
-
-## CI Environments
-
-### Config directory pollution in CI
-
-**Problem:** The CLI writes config files to `~/.aelira/`, which can pollute the home directory of a shared CI runner or cause permission conflicts.
-
-**Solution:** Set the `AELIRA_CONFIG_DIR` environment variable to a temporary directory so each CI run gets an isolated config location:
+The command is `aelira scan watch`. Ensure the directory exists, the backend health check succeeds, and the extension filter includes the files you change:
 
 ```bash
-export AELIRA_CONFIG_DIR=$(mktemp -d)
-aelira config set apiKey "$AELIRA_API_KEY"
-aelira scan document.pdf
+aelira scan watch ./uploads --extensions .pdf,.docx,.pptx --debounce 1000
+aelira scan watch ./uploads/subfolder --no-recursive
 ```
 
-This is especially important for GitHub Actions, GitLab CI, and other shared runners where multiple jobs may run concurrently as the same OS user.
+The current watcher disables recursive mode on Linux, so watch needed subdirectories separately. It scans changes after startup, not every pre-existing file. Supported dispatch extensions are `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.html`, `.htm`, `.tex`, `.css`, and `.js`; adding an unsupported extension to the filter does not add a scanner. Stop with Ctrl+C.
 
----
+## CI configuration
 
-## Debug Mode
-
-### Enable verbose logging
+Set `AELIRA_CONFIG_DIR` to an isolated directory when a CI job writes configuration, and provide credentials through the runner's secret environment:
 
 ```bash
-# CLI verbose mode
-aelira scan https://example.com --verbose
-
-# Environment variable
-DEBUG=* aelira scan https://example.com
-
-# Log to file
-aelira scan https://example.com --verbose > scan.log 2>&1
+export AELIRA_CONFIG_DIR="$(mktemp -d)"
+aelira config set api-url https://api.example.edu
 ```
 
-### Check configuration
+Local web CI scans need Chromium and the built target files. API-backed scans additionally need network access, credentials, and the relevant server components. See [CI examples](EXAMPLES.md#gate-a-build-in-ci).
 
-```bash
-# Show current config
-cat ~/.aelirarc.json
+## Report a problem
 
-# Validate config
-aelira config --validate
+Include the CLI version (from `npm list -g @aelira/cli` for a global install), Node version, operating system, exact command, and error message. For a checkout, include its revision. Review shared output for credentials, private URLs, and document contents; `config show` masks the configured key but still displays endpoint and department information.
 
-# Reset to defaults
-rm ~/.aelirarc.json
-aelira config --init
-```
-
-### Test backend connection
-
-```bash
-# Health check
-curl http://localhost:8000/api/scan/health
-
-# Test PDF endpoint
-curl -X POST http://localhost:8000/api/scan/pdf \
-  -F "file=@test.pdf" \
-  -F "generate_alt_text=false"
-
-# Check logs
-docker-compose -f docker-compose.dev.yml logs api --tail 100
-```
-
----
-
-## Getting Help
-
-### Collect diagnostic information
-
-```bash
-#!/bin/bash
-# diagnostic.sh - Collect system information
-
-echo "=== Aelira CLI Diagnostics ==="
-echo
-
-echo "CLI Version:"
-aelira --version
-
-echo -e "\nNode Version:"
-node --version
-
-echo -e "\nnpm Version:"
-npm --version
-
-echo -e "\nDocker Status:"
-docker ps | grep aelira || echo "No Aelira containers running"
-
-echo -e "\nBackend Health:"
-curl -s http://localhost:8000/api/scan/health || echo "Backend not accessible"
-
-echo -e "\nSystem Info:"
-uname -a
-
-echo -e "\nAvailable Memory:"
-free -h || vm_stat | grep "Pages free"
-
-echo -e "\nConfig File:"
-cat ~/.aelirarc.json 2>/dev/null || echo "No config file found"
-
-echo -e "\nRecent Logs:"
-tail -20 ~/.aelira/logs/latest.log 2>/dev/null || echo "No logs found"
-```
-
-Run diagnostic:
-```bash
-chmod +x diagnostic.sh
-./diagnostic.sh > diagnostic-report.txt
-
-# Share diagnostic-report.txt when asking for help
-```
-
----
-
-### Submit a bug report
-
-**Include in your report:**
-1. CLI version (`aelira --version`)
-2. Operating system (macOS/Windows/Linux)
-3. Node version (`node --version`)
-4. Docker version (`docker --version`)
-5. Command that failed
-6. Full error message
-7. Diagnostic report (see above)
-
-**Where to report:**
-- **GitHub Issues:** https://github.com/Aelira-AI/aelira-core/issues
-- **Discord:** https://discord.gg/aelira (if available)
-
----
-
-## FAQ
-
-### Q: Why is the CLI so slow?
-
-**A:** Most likely causes:
-1. Using LLaMA Vision instead of Moondream2 (check backend logs)
-2. Processing many images at once
-3. Insufficient Docker memory (<4GB)
-4. Slow internet connection (for website scans)
-
----
-
-### Q: Can I use the CLI without the backend?
-
-**A:** Yes, for website scanning only:
-```bash
-aelira scan https://example.com --local
-```
-
-For PDF/PPT/LaTeX/video processing, backend is required.
-
----
-
-### Q: How do I update the CLI?
-
-**A:**
-```bash
-# Update to latest version
-npm update -g @aelira/cli
-
-# Or reinstall
-npm uninstall -g @aelira/cli
-npm install -g @aelira/cli
-
-# Verify version
-aelira --version
-```
-
----
-
-### Q: Can I run multiple scans in parallel?
-
-**A:** Yes:
-```bash
-# GNU Parallel (recommended)
-find ./pdfs/ -name "*.pdf" | parallel -j 4 aelira scan pdf {}
-
-# xargs (alternative)
-find ./pdfs/ -name "*.pdf" | xargs -P 4 -I {} aelira scan pdf {}
-
-# Background jobs
-aelira scan pdf file1.pdf & \
-aelira scan pdf file2.pdf & \
-aelira scan pdf file3.pdf & \
-wait
-```
-
----
-
-## Still Need Help?
-
-1. **Check documentation:** https://github.com/Aelira-AI/aelira-core/tree/main/cli/docs
-2. **Search existing issues:** https://github.com/Aelira-AI/aelira-core/issues
-3. **Ask on Discord:** https://discord.gg/aelira
-4. **Open a new issue:** https://github.com/Aelira-AI/aelira-core/issues/new
-
----
-
-**Last Updated:** September 9, 2026
-**CLI Version:** v0.9.11
-
-**Made with 💜 by the Aelira team**
+Report reproducible issues in the [Aelira issue tracker](https://github.com/Aelira-AI/aelira-core/issues). Include relevant server/worker log excerpts for API processing failures.

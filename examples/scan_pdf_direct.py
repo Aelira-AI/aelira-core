@@ -22,9 +22,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.education.pdf_processor import PDFProcessor
+from src.education.scan_completeness import (
+    IncompleteScanError,
+    public_scan_failure_message,
+)
 
 
-def main() -> None:
+def main() -> int:
     pdf_path = (
         sys.argv[1]
         if len(sys.argv) > 1
@@ -33,7 +37,7 @@ def main() -> None:
             / "tests"
             / "fixtures"
             / "pdfs"
-            / "academic_paper.pdf"
+            / "simple_syllabus.pdf"
         )
     )
 
@@ -41,7 +45,11 @@ def main() -> None:
     # an AI provider is configured (see docs/DEPENDENCIES.md) to draft alt
     # text for images while scanning.
     processor = PDFProcessor(generate_alt_text=False, enhance_descriptions=False)
-    result = processor.process_pdf(pdf_path)
+    try:
+        result = processor.process_pdf(pdf_path)
+    except IncompleteScanError as error:
+        print(f"Scan incomplete: {public_scan_failure_message(error)}", file=sys.stderr)
+        return 1
 
     print(f"File:             {pdf_path}")
     print(f"Compliance score: {result.compliance_score}")
@@ -49,11 +57,18 @@ def main() -> None:
     for issue in result.issues:
         page = issue.get("page_number")
         location = f" (page {page})" if page else ""
+        identifier = (
+            issue.get("issue_type")
+            or issue.get("type")
+            or issue.get("rule_id")
+            or "accessibility_issue"
+        )
         print(
-            f"  [{issue.get('severity')}] {issue.get('issue_type')}{location}: "
+            f"  [{issue.get('severity')}] {identifier}{location}: "
             f"{issue.get('message')}"
         )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

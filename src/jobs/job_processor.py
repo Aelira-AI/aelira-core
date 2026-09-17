@@ -112,6 +112,24 @@ class ClaimedJob:
     max_retries: int
 
 
+class _LazyTokenManager:
+    """Resolve the worker's strict OAuth configuration only on token use.
+
+    Keep this adapter truthy: some handlers select a fallback manager with
+    ``token_manager or OAuthTokenManager()``.
+    """
+
+    def __init__(self, resolve: Callable[[], OAuthTokenManager]) -> None:
+        self._resolve = resolve
+
+    async def refresh_if_expired(
+        self, credential: Any, db: Session, lock_timeout: int = 30
+    ) -> str:
+        return await self._resolve().refresh_if_expired(
+            credential, db, lock_timeout=lock_timeout
+        )
+
+
 class JobProcessor:
     """Multi-worker-safe durable queue processor with lease fencing."""
 
@@ -174,6 +192,7 @@ class JobProcessor:
         self.registry = registry or JobRegistry()
         self._legacy_handlers: dict[str, Callable[..., Any]] = {}
         self._token_manager: OAuthTokenManager | None = None
+        self._lazy_token_manager = _LazyTokenManager(self._get_token_manager)
         self._running = False
         self._draining = False
         self._stop_event = asyncio.Event()
@@ -202,7 +221,7 @@ class JobProcessor:
             handler = self._legacy_handlers.get(job.job_type)
             if handler is None:
                 raise ValueError("unregistered_job_type")
-            result = await handler(job, db, self._get_token_manager())
+            result = await handler(job, db, self._lazy_token_manager)
             if getattr(result, "handler_committed", False) is True:
                 return
             if not isinstance(result, dict) or result.get("success") is False:
@@ -916,7 +935,7 @@ class JobProcessor:
                 try:
                     with self.session_factory() as db:
                         handler_task = asyncio.ensure_future(
-                            handler(context, db, self._get_token_manager())
+                            handler(context, db, self._lazy_token_manager)
                         )
                         lost_task = asyncio.create_task(ownership_lost.wait())
                         try:
