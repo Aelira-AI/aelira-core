@@ -1430,6 +1430,7 @@
         "tests/test_review_reading_order.py::test_verified_source_and_pending_saved_artifact_are_previewable",
         "tests/test_security_owasp.py::TestCryptographicFailures::test_encryption_key_required[production]",
         "tests/test_security_owasp.py::TestCryptographicFailures::test_encryption_key_required[staging]",
+        "tests/test_task17b_blockers.py::test_google_webhook_creation_persists_exact_watched_identity",
         "tests/test_task17b_handlers.py::test_cloud_sync_partial_folder_failure_is_typed_retryable",
         "tests/test_task17b_handlers.py::test_handler_entrypoints_read_payload_and_never_terminalize_queue",
         "tests/test_task17b_handlers.py::test_registry_has_real_handler_for_every_enqueueable_type",
