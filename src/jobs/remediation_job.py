@@ -1089,7 +1089,6 @@ async def process_remediation_job(
                 "error": "remediation_failed",
                 "scan_id": scan_id,
                 **pdf_validation_fields(remediation_result),
-                **account_outcomes(remediation_result, published=False),
             }
         if not hasattr(remediation_result, "total_issues"):
             remediation_result.total_issues = sum(

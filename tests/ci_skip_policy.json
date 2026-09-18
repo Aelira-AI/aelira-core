@@ -875,6 +875,8 @@
         "tests/test_latex_validation_routes.py::test_direct_helper_refusal_and_supported_tex_delivery[formats1]",
         "tests/test_latex_validation_routes.py::test_queued_process_persists_receipt_and_only_delivers_supported_tex[formats0]",
         "tests/test_latex_validation_routes.py::test_queued_process_persists_receipt_and_only_delivers_supported_tex[formats1]",
+        "tests/test_lms_remediation_execution_policy.py::test_process_false_remediator_result_is_fatal_before_side_effects[False]",
+        "tests/test_lms_remediation_execution_policy.py::test_process_false_remediator_result_is_fatal_before_side_effects[True]",
         "tests/test_local_scan_job.py::test_child_response_loss_reloads_and_preserves_committed_scan_result",
         "tests/test_local_scan_job.py::test_completed_scan_replay_short_circuits_without_claiming_committed_queue",
         "tests/test_local_scan_job.py::test_enqueue_local_scan_job_uses_scan_tenant_and_deterministic_dedupe",
