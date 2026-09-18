@@ -396,13 +396,16 @@ class SessionService:
         logger.info(f"Revoked {len(sessions)} session(s) for user {user_id}")
         return True
 
-    def revoke_all_sessions(self, db: DBSession, user_id: str) -> int:
+    def revoke_all_sessions(
+        self, db: DBSession, user_id: str, *, commit: bool = True
+    ) -> int:
         """
         Revoke all sessions for a user (security event, password change, etc.)
 
         Args:
             db: Database session
             user_id: User ID
+            commit: False keeps revocation in the caller's transaction
 
         Returns:
             Number of sessions revoked
@@ -417,7 +420,10 @@ class SessionService:
         for session in sessions:
             session.revoked_at = datetime.now(timezone.utc)
 
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         logger.info(f"Revoked all {len(sessions)} sessions for user {user_id}")
         return len(sessions)
 

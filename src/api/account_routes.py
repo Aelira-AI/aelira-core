@@ -12,12 +12,17 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Tuple
+from contextlib import contextmanager
 import logging
 
 from ..db.database import get_db_dependency
 from ..db.models import APIKey, User
 from ..auth.dependencies import get_required_api_key
-from ..services.account_deletion_service import get_account_deletion_service
+from ..services.account_deletion_service import (
+    AccountDeliveryError,
+    AccountLifecycleError,
+    get_account_deletion_service,
+)
 from ..security.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -57,6 +62,31 @@ def _get_client_ip(request: Request) -> str:
     return get_client_ip(request)
 
 
+@contextmanager
+def _account_operation(db: Session):
+    """Preserve public domain errors and bound unexpected dependency failures."""
+    try:
+        yield
+    except HTTPException:
+        raise
+    except AccountLifecycleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except AccountDeliveryError:
+        db.rollback()
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to deliver confirmation code. Please request a new code.",
+        ) from None
+    except Exception as exc:
+        db.rollback()
+        logger.error("Account operation failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to complete account operation. Please try again.",
+        ) from None
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
@@ -71,7 +101,7 @@ async def deactivate_account(
     Deactivate account (soft delete). Revokes all sessions and API keys.
     Blocks re-registration for 90 days.
 
-    For free-tier users. Paid users must cancel their subscription first.
+    Available to all users of the free self-hosted edition.
     """
     _, user_id, _ = api_key_info
 
@@ -81,10 +111,9 @@ async def deactivate_account(
             detail="You must confirm account deactivation.",
         )
 
-    user = _get_user(db, user_id)
-    service = get_account_deletion_service()
-
-    try:
+    with _account_operation(db):
+        user = _get_user(db, user_id)
+        service = get_account_deletion_service()
         result = service.deactivate_account(
             db=db,
             user=user,
@@ -93,11 +122,6 @@ async def deactivate_account(
             user_agent=request.headers.get("user-agent", "")[:512],
         )
         return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
 
 
 @router.post("/deletion/request")
@@ -111,22 +135,16 @@ async def request_deletion(
     Code expires in 15 minutes.
     """
     _, user_id, _ = api_key_info
-    user = _get_user(db, user_id)
-    service = get_account_deletion_service()
-
-    try:
-        result = service.request_deletion_code(
+    with _account_operation(db):
+        user = _get_user(db, user_id)
+        service = get_account_deletion_service()
+        result = await service.request_deletion_code(
             db=db,
             user=user,
             ip_address=_get_client_ip(request),
             user_agent=request.headers.get("user-agent", "")[:512],
         )
         return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
 
 
 @router.post("/deletion/confirm")
@@ -142,11 +160,10 @@ async def confirm_deletion(
     Account is deactivated immediately.
     """
     _, user_id, _ = api_key_info
-    user = _get_user(db, user_id)
-    service = get_account_deletion_service()
-
-    try:
-        result = service.confirm_deletion(
+    with _account_operation(db):
+        user = _get_user(db, user_id)
+        service = get_account_deletion_service()
+        result = await service.confirm_deletion(
             db=db,
             user=user,
             code=body.code,
@@ -155,11 +172,6 @@ async def confirm_deletion(
             user_agent=request.headers.get("user-agent", "")[:512],
         )
         return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
 
 
 @router.post("/deletion/cancel")
@@ -173,10 +185,9 @@ async def cancel_deletion(
     Reactivates the account.
     """
     _, user_id, _ = api_key_info
-    user = _get_user(db, user_id)
-    service = get_account_deletion_service()
-
-    try:
+    with _account_operation(db):
+        user = _get_user(db, user_id)
+        service = get_account_deletion_service()
         result = service.cancel_pending_deletion(
             db=db,
             user=user,
@@ -184,11 +195,6 @@ async def cancel_deletion(
             user_agent=request.headers.get("user-agent", "")[:512],
         )
         return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
 
 
 @router.get("/deletion/status")
@@ -198,9 +204,10 @@ async def get_deletion_status(
 ):
     """Check if account deletion is pending and get details."""
     _, user_id, _ = api_key_info
-    user = _get_user(db, user_id)
-    service = get_account_deletion_service()
-    return service.get_deletion_status(db, user)
+    with _account_operation(db):
+        user = _get_user(db, user_id)
+        service = get_account_deletion_service()
+        return service.get_deletion_status(db, user)
 
 
 @router.get("/export")
@@ -213,6 +220,7 @@ async def export_data(
     Export all user data as JSON (GDPR Article 20 - Right to Data Portability).
     """
     _, user_id, _ = api_key_info
-    user = _get_user(db, user_id)
-    service = get_account_deletion_service()
-    return service.export_user_data(db, user)
+    with _account_operation(db):
+        user = _get_user(db, user_id)
+        service = get_account_deletion_service()
+        return service.export_user_data(db, user)
