@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from ..integrations.cloud_base import (
+    CloudIntegrationError,
     CloudNotFoundError,
     CloudAuthError,
     CloudRateLimitError,
@@ -300,11 +301,15 @@ def microsoft_errors(handler):
             if db is not None:
                 db.rollback()
             logger.warning("Microsoft operation failed (%s)", type(exc).__name__)
-            code = 503 if isinstance(exc, SQLAlchemyError) else 502
+            code = 503 if isinstance(exc, SQLAlchemyError) else 500
             if isinstance(exc, CloudNotFoundError):
                 code = 404
             elif isinstance(exc, (CloudAuthError, CloudRateLimitError)):
                 code = 503
+            elif isinstance(exc, httpx.RequestError):
+                code = 503
+            elif isinstance(exc, CloudIntegrationError):
+                code = 502
             elif isinstance(exc, httpx.HTTPStatusError):
                 code = 404 if exc.response.status_code == 404 else 503
             raise HTTPException(code, "Microsoft operation unavailable") from None

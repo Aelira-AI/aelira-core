@@ -840,3 +840,39 @@ async def test_sharepoint_scan_hands_persisted_file_to_worker_handler(
     assert result == {"success": True, "scan_id": row.last_scan_id}
     assert seen == [(row.id, f.credential.id, f.db)]
     assert not f.requests
+
+
+@pytest.mark.parametrize("path", ["/jobs", "/jobs/missing"])
+def test_unexpected_job_query_failure_is_bounded_500(
+    microsoft_route, monkeypatch, path
+):
+    def fail_query(*args, **kwargs):
+        raise RuntimeError("private database diagnostic")
+
+    monkeypatch.setattr(microsoft_route.db, "query", fail_query)
+    response = microsoft_route.client.get("/microsoft" + path)
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Microsoft operation unavailable"}
+
+
+@pytest.mark.parametrize(
+    "failure,expected", [("provider", 502), ("connection", 503), ("timeout", 503)]
+)
+def test_typed_provider_failures_keep_provider_status(
+    microsoft_route, monkeypatch, failure, expected
+):
+    from src.integrations.cloud_base import CloudIntegrationError
+
+    failures = {
+        "provider": CloudIntegrationError,
+        "connection": httpx.ConnectError,
+        "timeout": httpx.ReadTimeout,
+    }
+
+    async def fail_integration(*args, **kwargs):
+        raise failures[failure]("private provider diagnostic")
+
+    monkeypatch.setattr(routes, "get_microsoft_integration", fail_integration)
+    response = microsoft_route.client.get("/microsoft/onedrive/files")
+    assert response.status_code == expected
+    assert response.json() == {"detail": "Microsoft operation unavailable"}
