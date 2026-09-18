@@ -32,6 +32,10 @@ These are HTTP + PostgreSQL contracts with controlled, signature-checked mail an
 
 ## Failure and queue evidence
 
+### Current queue routes and required races
+
+[`test_job_queue.py`](../../tests/test_job_queue.py) now checks exact persisted provider job status/list responses, department metrics and durable priority ordering. The obsolete generic REST and worker-mock assertions are retired. [Queue contract mappings](queue-contracts.md) enumerate their replacements and separate HTTP serialization from worker execution. CI additionally requires the two PostgreSQL enqueue/session races in a dedicated disposable database, alongside the unchanged 41-case worker profile.
+
 ### Alert settings and delivery
 
 [`test_alert_settings_routes.py`](../../tests/test_alert_settings_routes.py) covers GET/PUT `/api/alerts/settings`, GET/POST `/emails`, POST `/emails/add` and `/emails/remove`, DELETE `/emails/{email}`, and POST `/pause` and `/resume`. Exact HTTP assertions check saved preferences and recipient lists, both aliases, duplicate handling, missing recipients, schedule/email validation, missing authentication and ordinary department separation. PostgreSQL reloads verify stored values. The per-test connection uses an outer transaction with savepoints; these tests do not establish cross-connection commit visibility or concurrent updates. Failure cases establish success before injecting a query/commit exception; test cleanup explicitly rolls back the fixture session.
@@ -70,7 +74,6 @@ These bounded areas remain part of the coverage backlog; they are not implicitly
 | [Microsoft 365 #427](https://github.com/Aelira-AI/aelira-core/issues/427) | `test_microsoft_integration.py` OAuth transport contracts and shared provider DTO tests. | OneDrive/SharePoint browse → queue → status, upload and subscription persistence; replace permissive success/auth/not-found alternatives. |
 | [Analytics #425](https://github.com/Aelira-AI/aelira-core/issues/425) | `test_analytics_tenant_scope.py` authorization matrix, SQLite issue/audit mutations and evidence reports. | Exact allowed HTTP snapshot/trend/projection/export behavior, invalid inputs and service failures; retain existing denial and report coverage. |
 | [Shared integration/webhook contracts #429](https://github.com/Aelira-AI/aelira-core/issues/429) | Current provider transport and specialized webhook tests. | Replace six obsolete status mocks and 28 gated webhook harness cases with exact route fixtures. |
-| [Legacy queue contracts and PostgreSQL races #430](https://github.com/Aelira-AI/aelira-core/issues/430) | Required durable worker lane and current provider-specific job APIs. | Retire unsupported generic-REST and mock-self-test assertions, and execute the separately gated refresh/enqueue races in a disposable CI lane. |
 
 ## Maintaining the evidence
 

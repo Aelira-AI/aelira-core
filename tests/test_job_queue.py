@@ -1,455 +1,249 @@
-"""
-Tests for background job queue system.
+"""Current provider job routes, persisted queue metadata and claim ordering.
 
-Tests cover:
-- Job enqueueing
-- Job status tracking
-- Job progress updates
-- Job workers (sync, scan, remediate, upload)
-- Job prioritization
-- Job retry logic
-- Job cancellation
+HTTP tests exercise production routers with a trusted identity fixture and real
+PostgreSQL queries. They seed job states rather than claiming worker execution.
+Worker completion, cancellation and retries are covered by the required worker
+lane; no generic job mutation REST surface is part of this contract.
 """
 
-import pytest
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from uuid import uuid4
+
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import patch, AsyncMock
-import uuid
-from datetime import datetime, timezone
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
-# Import app for testing
-from src.api.main import app
+from conftest import require_disposable_postgres_url
+from src.api import google_routes, integration_routes, microsoft_routes
+from src.api.auth_routes import SessionAccessIdentity, get_current_api_key
+from src.config.settings import get_settings
+from src.db.database import get_db_dependency
+from src.db.models import CloudJobQueue, Department
+from src.jobs.job_processor import build_claim_query
+from src.services.job_enqueue_service import JobEnqueueError, enqueue_cloud_job
 
-# Skip all tests: Jobs REST API router not yet implemented
-pytestmark = pytest.mark.skip(reason="Jobs REST API router not yet implemented")
-
-
-@pytest.fixture
-def client():
-    """Create a test client."""
-    return TestClient(app)
-
-
-@pytest.fixture
-def mock_redis():
-    """Mock Redis client for job queue."""
-    with patch("redis.asyncio.Redis") as mock:
-        mock_client = AsyncMock()
-        mock_client.lpush = AsyncMock(return_value=1)
-        mock_client.rpop = AsyncMock(return_value=None)
-        mock_client.hset = AsyncMock(return_value=1)
-        mock_client.hget = AsyncMock(return_value=None)
-        mock_client.hgetall = AsyncMock(return_value={})
-        mock_client.delete = AsyncMock(return_value=1)
-        mock.return_value = mock_client
-        yield mock_client
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def sample_job_data():
-    """Sample job data for testing."""
-    return {
-        "id": str(uuid.uuid4()),
-        "type": "cloud_sync",
-        "department_id": str(uuid.uuid4()),
-        "cloud_file_id": str(uuid.uuid4()),
-        "provider": "google",
-        "status": "pending",
-        "priority": 5,
-        "progress": 0,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-class TestJobEnqueueing:
-    """Tests for job enqueueing."""
-
-    def test_enqueue_sync_job(self, client):
-        """Test enqueueing a cloud sync job."""
-        response = client.post(
-            "/api/jobs/enqueue",
-            json={
-                "job_type": "cloud_sync",
-                "provider": "google",
-                "folder_id": "folder-123",
-            },
+def queue_routes():
+    url = require_disposable_postgres_url(
+        get_settings().database_url, destructive=False
+    )
+    engine = create_engine(url)
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        db = Session(bind=connection, join_transaction_mode="create_savepoint")
+        own, other = str(uuid4()), str(uuid4())
+        db.add_all(
+            Department(
+                id=identity,
+                name="Queue route fixture",
+                institution="Example University",
+                contact_email="queue@example.edu",
+            )
+            for identity in (own, other)
         )
-
-        assert response.status_code in [200, 201, 202, 401, 422]
-        if response.status_code in [200, 201, 202]:
-            data = response.json()
-            assert "job_id" in data or "id" in data
-
-    def test_enqueue_scan_job(self, client):
-        """Test enqueueing a document scan job."""
-        response = client.post(
-            "/api/jobs/enqueue",
-            json={
-                "job_type": "scan",
-                "cloud_file_id": str(uuid.uuid4()),
-                "provider": "microsoft",
-                "file_type": "docx",
-            },
+        db.commit()
+        app = FastAPI()
+        for router in (
+            google_routes.router,
+            microsoft_routes.router,
+            integration_routes.router,
+        ):
+            app.include_router(router)
+        app.dependency_overrides[get_db_dependency] = lambda: db
+        app.dependency_overrides[get_current_api_key] = lambda: SessionAccessIdentity(
+            id="synthetic-session", user_id="queue-user", department_id=own
         )
+        try:
+            with TestClient(app, raise_server_exceptions=False) as client:
+                yield SimpleNamespace(
+                    client=client, app=app, db=db, own=own, other=other
+                )
+        finally:
+            db.close()
+            transaction.rollback()
+    engine.dispose()
 
-        assert response.status_code in [200, 201, 202, 401, 422]
 
-    def test_enqueue_remediate_job(self, client):
-        """Test enqueueing a remediation job."""
-        response = client.post(
-            "/api/jobs/enqueue",
-            json={
-                "job_type": "remediate",
-                "scan_id": str(uuid.uuid4()),
-                "issues_to_fix": ["missing_alt_text", "low_contrast"],
-            },
+def _job(case, *, provider="google", state="pending", department=None, age=0):
+    now = datetime.now(timezone.utc) - timedelta(minutes=age)
+    job = CloudJobQueue(
+        id=str(uuid4()),
+        department_id=department or case.own,
+        provider=provider,
+        job_type="scan",
+        payload={},
+        dedupe_key=str(uuid4()),
+        status=state,
+        progress=45 if state == "processing" else (100 if state == "completed" else 0),
+        progress_message="Scanning document" if state == "processing" else None,
+        result_data={"files_processed": 1} if state == "completed" else None,
+        error_message="scan_failed" if state == "failed" else None,
+        created_at=now,
+        completed_at=now if state in {"completed", "failed"} else None,
+        claim_token=str(uuid4()) if state == "processing" else None,
+        worker_id="fixture-worker" if state == "processing" else None,
+        claimed_at=now if state == "processing" else None,
+        heartbeat_at=now if state == "processing" else None,
+        lease_expires_at=now + timedelta(minutes=5) if state == "processing" else None,
+    )
+    case.db.add(job)
+    case.db.commit()
+    return job
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+@pytest.mark.parametrize("state", ["pending", "processing", "completed", "failed"])
+def test_provider_job_status_returns_persisted_progress_and_result(
+    queue_routes, provider, state
+):
+    case = queue_routes
+    job = _job(case, provider=provider, state=state)
+    response = case.client.get(f"/{provider}/jobs/{job.id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_id"] == job.id
+    assert body["status"] == state
+    assert body["progress"] == job.progress
+    assert body["progress_message"] == job.progress_message
+    assert body["result_data"] == job.result_data
+    assert body["error_message"] == job.error_message
+    assert datetime.fromisoformat(body["created_at"]) == job.created_at
+    assert bool(body["completed_at"]) == (state in {"completed", "failed"})
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+def test_provider_job_list_filters_department_provider_status_and_limit(
+    queue_routes, provider
+):
+    case = queue_routes
+    older = _job(case, provider=provider, age=2)
+    newer = _job(case, provider=provider, age=1)
+    completed = _job(case, provider=provider, state="completed")
+    _job(case, provider=provider, department=case.other)
+    _job(case, provider="microsoft" if provider == "google" else "google")
+    response = case.client.get(f"/{provider}/jobs")
+    assert response.status_code == 200
+    assert [item["job_id"] for item in response.json()] == [
+        completed.id,
+        newer.id,
+        older.id,
+    ]
+    response = case.client.get(
+        f"/{provider}/jobs", params={"status": "pending", "limit": 1}
+    )
+    assert response.status_code == 200
+    assert [item["job_id"] for item in response.json()] == [newer.id]
+    assert (
+        case.client.get(f"/{provider}/jobs", params={"status": "failed"}).json() == []
+    )
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+@pytest.mark.parametrize("missing", [False, True], ids=["other-department", "missing"])
+def test_provider_job_status_hides_unavailable_record(queue_routes, provider, missing):
+    case = queue_routes
+    job_id = (
+        str(uuid4())
+        if missing
+        else _job(case, provider=provider, department=case.other).id
+    )
+    response = case.client.get(f"/{provider}/jobs/{job_id}")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Job not found"}
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+@pytest.mark.parametrize("limit", [0, 101, "unknown"])
+def test_provider_job_list_validates_limit(queue_routes, provider, limit):
+    response = queue_routes.client.get(f"/{provider}/jobs", params={"limit": limit})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "limit"]
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+@pytest.mark.parametrize("suffix", ["", "/missing"])
+def test_provider_job_routes_require_authentication(queue_routes, provider, suffix):
+    queue_routes.app.dependency_overrides.pop(get_current_api_key)
+    response = queue_routes.client.get(f"/{provider}/jobs{suffix}")
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+@pytest.mark.parametrize("suffix", ["", "/missing"])
+def test_provider_job_query_failure_is_not_a_success(
+    queue_routes, monkeypatch, provider, suffix
+):
+    def unavailable(*args):
+        raise RuntimeError("synthetic queue query unavailable")
+
+    monkeypatch.setattr(queue_routes.db, "query", unavailable)
+    response = queue_routes.client.get(f"/{provider}/jobs{suffix}")
+    assert response.status_code == 500
+    assert "synthetic" not in response.text
+
+
+def test_integration_metrics_count_only_authenticated_department_jobs(queue_routes):
+    case = queue_routes
+    for state in ("pending", "processing", "completed", "failed"):
+        _job(case, state=state)
+        _job(case, state=state, department=case.other)
+    response = case.client.get("/integrations/metrics")
+    assert response.status_code == 200
+    data = response.json()
+    assert {
+        key: data[key]
+        for key in ("total_jobs", "pending_jobs", "completed_jobs", "failed_jobs")
+    } == {"total_jobs": 4, "pending_jobs": 1, "completed_jobs": 1, "failed_jobs": 1}
+
+
+def test_enqueue_priority_and_claim_query_follow_durable_contract(queue_routes):
+    case = queue_routes
+    jobs = []
+    for name, options in (
+        ("default", {}),
+        ("urgent", {"priority": 1}),
+        ("later", {"priority": 10}),
+    ):
+        job = enqueue_cloud_job(
+            case.db,
+            department_id=case.own,
+            job_type="scan",
+            payload={},
+            dedupe_key=name,
+            **options,
         )
+        jobs.append(job)
+    case.db.commit()
+    assert [job.priority for job in jobs] == [5, 1, 10]
+    query = build_claim_query({"scan"}, limit=3).where(
+        CloudJobQueue.department_id == case.own
+    )
+    assert [job.id for job in case.db.scalars(query)] == [
+        jobs[1].id,
+        jobs[0].id,
+        jobs[2].id,
+    ]
+    # This executes the real selection SQL; claim ownership and worker execution
+    # are separately exercised by the required PostgreSQL worker profile.
 
-        assert response.status_code in [200, 201, 202, 401, 422]
 
-    def test_enqueue_upload_job(self, client):
-        """Test enqueueing an upload job."""
-        response = client.post(
-            "/api/jobs/enqueue",
-            json={
-                "job_type": "upload",
-                "cloud_file_id": str(uuid.uuid4()),
-                "provider": "google",
-                "remediated_file_path": "/tmp/fixed_doc.docx",
-            },
+@pytest.mark.parametrize("priority", [-1, 101, True, "urgent"])
+def test_enqueue_rejects_invalid_priority_without_storing_work(queue_routes, priority):
+    case = queue_routes
+    with pytest.raises(JobEnqueueError, match="priority_invalid"):
+        enqueue_cloud_job(
+            case.db,
+            department_id=case.own,
+            job_type="scan",
+            payload={},
+            dedupe_key="invalid",
+            priority=priority,
         )
-
-        assert response.status_code in [200, 201, 202, 401, 422]
-
-    def test_enqueue_with_priority(self, client):
-        """Test enqueueing a job with custom priority."""
-        response = client.post(
-            "/api/jobs/enqueue",
-            json={
-                "job_type": "scan",
-                "cloud_file_id": str(uuid.uuid4()),
-                "provider": "google",
-                "priority": 10,  # High priority
-            },
-        )
-
-        assert response.status_code in [200, 201, 202, 401, 422]
-
-    def test_enqueue_invalid_job_type(self, client):
-        """Test enqueueing with invalid job type."""
-        response = client.post(
-            "/api/jobs/enqueue",
-            json={
-                "job_type": "invalid_type",
-                "provider": "google",
-            },
-        )
-
-        assert response.status_code in [400, 422]
-
-
-class TestJobStatus:
-    """Tests for job status tracking."""
-
-    def test_get_job_status(self, client, sample_job_data):
-        """Test getting job status by ID."""
-        job_id = sample_job_data["id"]
-
-        response = client.get(f"/api/jobs/{job_id}")
-
-        assert response.status_code in [200, 401, 404]
-        if response.status_code == 200:
-            data = response.json()
-            assert "status" in data
-
-    def test_get_job_status_with_progress(self, client):
-        """Test getting job status includes progress information."""
-        job_id = str(uuid.uuid4())
-
-        response = client.get(f"/api/jobs/{job_id}")
-
-        if response.status_code == 200:
-            data = response.json()
-            assert "progress" in data or "status" in data
-
-    def test_list_department_jobs(self, client):
-        """Test listing all jobs for a department."""
-        response = client.get("/api/jobs")
-
-        assert response.status_code in [200, 401]
-        if response.status_code == 200:
-            data = response.json()
-            assert "jobs" in data or isinstance(data, list)
-
-    def test_list_jobs_filtered_by_status(self, client):
-        """Test listing jobs filtered by status."""
-        response = client.get("/api/jobs", params={"status": "pending"})
-
-        assert response.status_code in [200, 401]
-
-    def test_list_jobs_filtered_by_type(self, client):
-        """Test listing jobs filtered by job type."""
-        response = client.get("/api/jobs", params={"job_type": "scan"})
-
-        assert response.status_code in [200, 401]
-
-
-class TestJobProgress:
-    """Tests for job progress updates."""
-
-    def test_update_job_progress(self, client, sample_job_data):
-        """Test updating job progress."""
-        job_id = sample_job_data["id"]
-
-        response = client.patch(
-            f"/api/jobs/{job_id}/progress",
-            json={
-                "progress": 50,
-                "current_step": "Processing file",
-            },
-        )
-
-        assert response.status_code in [200, 401, 404]
-
-    def test_job_progress_validation(self, client):
-        """Test that progress values are validated."""
-        job_id = str(uuid.uuid4())
-
-        # Progress should be 0-100
-        response = client.patch(
-            f"/api/jobs/{job_id}/progress",
-            json={"progress": 150},  # Invalid
-        )
-
-        assert response.status_code in [400, 422, 404]
-
-    def test_mark_job_complete(self, client, sample_job_data):
-        """Test marking a job as complete."""
-        job_id = sample_job_data["id"]
-
-        response = client.patch(
-            f"/api/jobs/{job_id}/complete",
-            json={
-                "result": {"files_processed": 10, "issues_found": 5},
-            },
-        )
-
-        assert response.status_code in [200, 401, 404]
-
-    def test_mark_job_failed(self, client, sample_job_data):
-        """Test marking a job as failed."""
-        job_id = sample_job_data["id"]
-
-        response = client.patch(
-            f"/api/jobs/{job_id}/fail",
-            json={
-                "error_message": "Failed to connect to Google Drive",
-            },
-        )
-
-        assert response.status_code in [200, 401, 404]
-
-
-class TestJobCancellation:
-    """Tests for job cancellation."""
-
-    def test_cancel_pending_job(self, client, sample_job_data):
-        """Test cancelling a pending job."""
-        job_id = sample_job_data["id"]
-
-        response = client.delete(f"/api/jobs/{job_id}")
-
-        assert response.status_code in [200, 204, 401, 404]
-
-    def test_cancel_in_progress_job(self, client):
-        """Test cancelling an in-progress job."""
-        job_id = str(uuid.uuid4())
-
-        response = client.delete(f"/api/jobs/{job_id}")
-
-        # Should either cancel or reject (depending on job state)
-        assert response.status_code in [200, 204, 400, 401, 404]
-
-    def test_cannot_cancel_completed_job(self, client):
-        """Test that completed jobs cannot be cancelled."""
-        job_id = str(uuid.uuid4())
-
-        # This would depend on job state validation
-        response = client.delete(f"/api/jobs/{job_id}")
-
-        assert response.status_code in [200, 204, 400, 401, 404]
-
-
-class TestJobRetry:
-    """Tests for job retry logic."""
-
-    def test_retry_failed_job(self, client, sample_job_data):
-        """Test retrying a failed job."""
-        job_id = sample_job_data["id"]
-
-        response = client.post(f"/api/jobs/{job_id}/retry")
-
-        assert response.status_code in [200, 201, 401, 404]
-
-    def test_retry_with_max_attempts(self, client):
-        """Test that jobs have maximum retry attempts."""
-        job_id = str(uuid.uuid4())
-
-        # Multiple retry attempts
-        for _ in range(5):
-            response = client.post(f"/api/jobs/{job_id}/retry")
-            if response.status_code == 400:
-                # Max retries reached
-                break
-
-        # Final response should indicate max retries or success
-        assert response.status_code in [200, 201, 400, 401, 404]
-
-
-class TestJobWorkers:
-    """Tests for job worker functions."""
-
-    @pytest.mark.asyncio
-    async def test_cloud_sync_worker(self, mock_redis):
-        """Test cloud sync worker processes jobs."""
-        with patch("src.jobs.cloud_sync_job.process_sync_job") as mock_process:
-            mock_process.return_value = {"files_synced": 10}
-
-            # Simulate worker picking up job
-            job_data = {
-                "id": str(uuid.uuid4()),
-                "type": "cloud_sync",
-                "provider": "google",
-                "folder_id": "folder-123",
-            }
-
-            result = await mock_process(job_data)
-            assert result["files_synced"] == 10
-
-    @pytest.mark.asyncio
-    async def test_scan_worker(self, mock_redis):
-        """Test scan worker processes jobs."""
-        with patch("src.jobs.cloud_scan_job.process_scan_job") as mock_process:
-            mock_process.return_value = {
-                "issues_found": 5,
-                "compliance_score": 0.85,
-            }
-
-            job_data = {
-                "id": str(uuid.uuid4()),
-                "type": "scan",
-                "file_id": "file-123",
-                "file_type": "pdf",
-            }
-
-            result = await mock_process(job_data)
-            assert "issues_found" in result
-
-    @pytest.mark.asyncio
-    async def test_remediate_worker(self, mock_redis):
-        """Test remediation worker processes jobs."""
-        with patch("src.jobs.remediation_job.process_remediation_job") as mock_process:
-            mock_process.return_value = {
-                "issues_fixed": 5,
-                "output_file": "/tmp/fixed_doc.docx",
-            }
-
-            job_data = {
-                "id": str(uuid.uuid4()),
-                "type": "remediate",
-                "scan_id": str(uuid.uuid4()),
-            }
-
-            result = await mock_process(job_data)
-            assert "issues_fixed" in result
-
-    @pytest.mark.asyncio
-    async def test_upload_worker(self, mock_redis):
-        """Test upload worker processes jobs."""
-        with patch("src.jobs.upload_job.process_upload_job") as mock_process:
-            mock_process.return_value = {
-                "uploaded": True,
-                "new_file_id": "new-file-123",
-            }
-
-            job_data = {
-                "id": str(uuid.uuid4()),
-                "type": "upload",
-                "file_path": "/tmp/fixed_doc.docx",
-                "provider": "google",
-            }
-
-            result = await mock_process(job_data)
-            assert result["uploaded"] is True
-
-
-class TestJobPrioritization:
-    """Tests for job prioritization."""
-
-    def test_high_priority_job_processed_first(self, client):
-        """Test that high priority jobs are processed before low priority."""
-        # Enqueue low priority job
-        response1 = client.post(
-            "/api/jobs/enqueue",
-            json={
-                "job_type": "scan",
-                "cloud_file_id": str(uuid.uuid4()),
-                "priority": 1,  # Low priority
-            },
-        )
-
-        # Enqueue high priority job
-        response2 = client.post(
-            "/api/jobs/enqueue",
-            json={
-                "job_type": "scan",
-                "cloud_file_id": str(uuid.uuid4()),
-                "priority": 10,  # High priority
-            },
-        )
-
-        # Both should be accepted
-        assert response1.status_code in [200, 201, 202, 401, 422]
-        assert response2.status_code in [200, 201, 202, 401, 422]
-
-    def test_default_priority(self, client):
-        """Test that jobs without priority get default priority."""
-        response = client.post(
-            "/api/jobs/enqueue",
-            json={
-                "job_type": "scan",
-                "cloud_file_id": str(uuid.uuid4()),
-                # No priority specified
-            },
-        )
-
-        assert response.status_code in [200, 201, 202, 401, 422]
-
-
-class TestJobQueueStats:
-    """Tests for job queue statistics."""
-
-    def test_get_queue_stats(self, client):
-        """Test getting job queue statistics."""
-        response = client.get("/api/jobs/stats")
-
-        assert response.status_code in [200, 401]
-        if response.status_code == 200:
-            data = response.json()
-            # Should have queue statistics
-            assert "pending" in data or "total" in data or "stats" in data
-
-    def test_get_queue_stats_by_type(self, client):
-        """Test getting queue stats grouped by job type."""
-        response = client.get("/api/jobs/stats", params={"group_by": "type"})
-
-        assert response.status_code in [200, 401]
-
-    def test_get_queue_depth(self, client):
-        """Test getting current queue depth."""
-        response = client.get("/api/jobs/depth")
-
-        assert response.status_code in [200, 401, 404]
-        if response.status_code == 200:
-            data = response.json()
-            assert "depth" in data or "count" in data or isinstance(data, int)
+    assert case.db.query(CloudJobQueue).filter_by(department_id=case.own).count() == 0

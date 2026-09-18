@@ -469,6 +469,9 @@
         "tests/test_canvas_remediate_endpoint.py::test_remediate_endpoint_rollback_failure_keeps_sanitized_response",
         "tests/test_canvas_remediate_endpoint.py::test_remediate_endpoint_sanitizes_enqueue_failure_and_rolls_back",
         "tests/test_canvas_remediate_endpoint.py::test_remediation_dependency_is_persisted_before_endpoint_acknowledges",
+        "tests/test_ci_evidence_workflow.py::test_ci_retains_and_validates_each_profile_at_the_tested_revision",
+        "tests/test_ci_evidence_workflow.py::test_full_suite_coverage_floor_matches_policy_without_new_omissions",
+        "tests/test_ci_evidence_workflow.py::test_queue_races_use_a_separate_disposable_required_database",
         "tests/test_department_provisioning_postgres.py::test_audit_insert_failure_rolls_back_department",
         "tests/test_department_provisioning_postgres.py::test_blocked_email_rejects_existing_department_retry",
         "tests/test_department_provisioning_postgres.py::test_concurrent_differing_duplicate_payload_fails_without_extra_artifacts",
@@ -566,6 +569,40 @@
         "tests/test_first_admin_bootstrap_postgres.py::test_open_signup_user_insert_failure_rolls_back_individual_department",
         "tests/test_first_admin_bootstrap_postgres.py::test_populated_closed_deployment_rejects_unknown_user_without_inserts",
         "tests/test_first_admin_bootstrap_postgres.py::test_populated_open_signup_still_creates_faculty_workspace",
+        "tests/test_job_queue.py::test_enqueue_priority_and_claim_query_follow_durable_contract",
+        "tests/test_job_queue.py::test_enqueue_rejects_invalid_priority_without_storing_work[-1]",
+        "tests/test_job_queue.py::test_enqueue_rejects_invalid_priority_without_storing_work[101]",
+        "tests/test_job_queue.py::test_enqueue_rejects_invalid_priority_without_storing_work[True]",
+        "tests/test_job_queue.py::test_enqueue_rejects_invalid_priority_without_storing_work[urgent]",
+        "tests/test_job_queue.py::test_integration_metrics_count_only_authenticated_department_jobs",
+        "tests/test_job_queue.py::test_provider_job_list_filters_department_provider_status_and_limit[google]",
+        "tests/test_job_queue.py::test_provider_job_list_filters_department_provider_status_and_limit[microsoft]",
+        "tests/test_job_queue.py::test_provider_job_list_validates_limit[0-google]",
+        "tests/test_job_queue.py::test_provider_job_list_validates_limit[0-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_list_validates_limit[101-google]",
+        "tests/test_job_queue.py::test_provider_job_list_validates_limit[101-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_list_validates_limit[unknown-google]",
+        "tests/test_job_queue.py::test_provider_job_list_validates_limit[unknown-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_query_failure_is_not_a_success[-google]",
+        "tests/test_job_queue.py::test_provider_job_query_failure_is_not_a_success[-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_query_failure_is_not_a_success[/missing-google]",
+        "tests/test_job_queue.py::test_provider_job_query_failure_is_not_a_success[/missing-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_routes_require_authentication[-google]",
+        "tests/test_job_queue.py::test_provider_job_routes_require_authentication[-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_routes_require_authentication[/missing-google]",
+        "tests/test_job_queue.py::test_provider_job_routes_require_authentication[/missing-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_status_hides_unavailable_record[missing-google]",
+        "tests/test_job_queue.py::test_provider_job_status_hides_unavailable_record[missing-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_status_hides_unavailable_record[other-department-google]",
+        "tests/test_job_queue.py::test_provider_job_status_hides_unavailable_record[other-department-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_status_returns_persisted_progress_and_result[completed-google]",
+        "tests/test_job_queue.py::test_provider_job_status_returns_persisted_progress_and_result[completed-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_status_returns_persisted_progress_and_result[failed-google]",
+        "tests/test_job_queue.py::test_provider_job_status_returns_persisted_progress_and_result[failed-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_status_returns_persisted_progress_and_result[pending-google]",
+        "tests/test_job_queue.py::test_provider_job_status_returns_persisted_progress_and_result[pending-microsoft]",
+        "tests/test_job_queue.py::test_provider_job_status_returns_persisted_progress_and_result[processing-google]",
+        "tests/test_job_queue.py::test_provider_job_status_returns_persisted_progress_and_result[processing-microsoft]",
         "tests/test_local_scan_job.py::test_child_response_loss_reloads_and_preserves_committed_scan_result",
         "tests/test_local_scan_job.py::test_completed_scan_replay_short_circuits_without_claiming_committed_queue",
         "tests/test_local_scan_job.py::test_enqueue_local_scan_job_uses_scan_tenant_and_deterministic_dedupe",
@@ -765,6 +802,22 @@
         "tests/test_profile_session_routes.py::test_session_revocation_requires_valid_session[/auth/sessions]",
         "tests/test_profile_session_routes.py::test_session_service_failure_is_unsuccessful[/auth/sessions/missing]",
         "tests/test_profile_session_routes.py::test_session_service_failure_is_unsuccessful[/auth/sessions]",
+        "tests/test_queue_race_guards.py::test_available_race_database_returns_connected_engine[TEST_DATABASE_URL]",
+        "tests/test_queue_race_guards.py::test_available_race_database_returns_connected_engine[TEST_MIGRATION_DATABASE_URL]",
+        "tests/test_queue_race_guards.py::test_optional_race_without_explicit_database_has_visible_skip[TEST_DATABASE_URL]",
+        "tests/test_queue_race_guards.py::test_optional_race_without_explicit_database_has_visible_skip[TEST_MIGRATION_DATABASE_URL]",
+        "tests/test_queue_race_guards.py::test_race_refuses_unsafe_database_before_connecting[TEST_DATABASE_URL-postgresql://localhost/app]",
+        "tests/test_queue_race_guards.py::test_race_refuses_unsafe_database_before_connecting[TEST_DATABASE_URL-postgresql://localhost/production_test]",
+        "tests/test_queue_race_guards.py::test_race_refuses_unsafe_database_before_connecting[TEST_DATABASE_URL-sqlite:///:memory:]",
+        "tests/test_queue_race_guards.py::test_race_refuses_unsafe_database_before_connecting[TEST_MIGRATION_DATABASE_URL-postgresql://localhost/app]",
+        "tests/test_queue_race_guards.py::test_race_refuses_unsafe_database_before_connecting[TEST_MIGRATION_DATABASE_URL-postgresql://localhost/production_test]",
+        "tests/test_queue_race_guards.py::test_race_refuses_unsafe_database_before_connecting[TEST_MIGRATION_DATABASE_URL-sqlite:///:memory:]",
+        "tests/test_queue_race_guards.py::test_race_requires_explicit_destructive_opt_in[TEST_DATABASE_URL]",
+        "tests/test_queue_race_guards.py::test_race_requires_explicit_destructive_opt_in[TEST_MIGRATION_DATABASE_URL]",
+        "tests/test_queue_race_guards.py::test_required_race_connection_failure_is_not_skipped[TEST_DATABASE_URL]",
+        "tests/test_queue_race_guards.py::test_required_race_connection_failure_is_not_skipped[TEST_MIGRATION_DATABASE_URL]",
+        "tests/test_queue_race_guards.py::test_required_race_without_explicit_database_fails[TEST_DATABASE_URL]",
+        "tests/test_queue_race_guards.py::test_required_race_without_explicit_database_fails[TEST_MIGRATION_DATABASE_URL]",
         "tests/test_remediation_artifact_db_first.py::test_approval_retry_requires_the_exact_current_accepted_fix_set",
         "tests/test_remediation_artifact_db_first.py::test_approve_matching_retry_after_expiry_fails_without_mutation",
         "tests/test_remediation_artifact_db_first.py::test_approve_retry_different_actor_or_checksum_conflicts",
@@ -1208,6 +1261,10 @@
         "tests/test_review_reading_order.py::test_verified_source_and_pending_saved_artifact_are_previewable",
         "tests/test_security_owasp.py::TestCryptographicFailures::test_encryption_key_required[production]",
         "tests/test_security_owasp.py::TestCryptographicFailures::test_encryption_key_required[staging]",
+        "tests/test_task17b_handlers.py::test_cloud_sync_partial_folder_failure_is_typed_retryable",
+        "tests/test_task17b_handlers.py::test_handler_entrypoints_read_payload_and_never_terminalize_queue",
+        "tests/test_task17b_handlers.py::test_registry_has_real_handler_for_every_enqueueable_type",
+        "tests/test_task17b_handlers.py::test_upload_rejects_paths_and_requires_managed_artifact_id",
         "tests/test_user_management_security.py::test_admin_removal_clears_lti_reauthorization_marker"
       ],
       "allowed_skips": [
@@ -1527,63 +1584,6 @@
           ]
         },
         {
-          "id": "generic-jobs-rest-contract",
-          "classification": "intentionally-unsupported",
-          "owner": "Worker and queue maintainers",
-          "reason": "Legacy generic job CRUD/enqueue/progress/retry/stats endpoints targeted by these tests are not exposed. Current /api/jobs router exposes worker-status only; provider job routes are separate. This records the currently unsupported generic surface, not absence of a working durable queue or a promise to add it.",
-          "issue": "https://github.com/Aelira-AI/aelira-core/issues/430",
-          "nodeids": [
-            "tests/test_job_queue.py::TestJobCancellation::test_cancel_in_progress_job",
-            "tests/test_job_queue.py::TestJobCancellation::test_cancel_pending_job",
-            "tests/test_job_queue.py::TestJobCancellation::test_cannot_cancel_completed_job",
-            "tests/test_job_queue.py::TestJobEnqueueing::test_enqueue_invalid_job_type",
-            "tests/test_job_queue.py::TestJobEnqueueing::test_enqueue_remediate_job",
-            "tests/test_job_queue.py::TestJobEnqueueing::test_enqueue_scan_job",
-            "tests/test_job_queue.py::TestJobEnqueueing::test_enqueue_sync_job",
-            "tests/test_job_queue.py::TestJobEnqueueing::test_enqueue_upload_job",
-            "tests/test_job_queue.py::TestJobEnqueueing::test_enqueue_with_priority",
-            "tests/test_job_queue.py::TestJobPrioritization::test_default_priority",
-            "tests/test_job_queue.py::TestJobPrioritization::test_high_priority_job_processed_first",
-            "tests/test_job_queue.py::TestJobProgress::test_job_progress_validation",
-            "tests/test_job_queue.py::TestJobProgress::test_mark_job_complete",
-            "tests/test_job_queue.py::TestJobProgress::test_mark_job_failed",
-            "tests/test_job_queue.py::TestJobProgress::test_update_job_progress",
-            "tests/test_job_queue.py::TestJobQueueStats::test_get_queue_depth",
-            "tests/test_job_queue.py::TestJobQueueStats::test_get_queue_stats",
-            "tests/test_job_queue.py::TestJobQueueStats::test_get_queue_stats_by_type",
-            "tests/test_job_queue.py::TestJobRetry::test_retry_failed_job",
-            "tests/test_job_queue.py::TestJobRetry::test_retry_with_max_attempts",
-            "tests/test_job_queue.py::TestJobStatus::test_get_job_status",
-            "tests/test_job_queue.py::TestJobStatus::test_get_job_status_with_progress",
-            "tests/test_job_queue.py::TestJobStatus::test_list_department_jobs",
-            "tests/test_job_queue.py::TestJobStatus::test_list_jobs_filtered_by_status",
-            "tests/test_job_queue.py::TestJobStatus::test_list_jobs_filtered_by_type"
-          ],
-          "evidence": [
-            "tests/test_job_queue.py",
-            "src/api/job_worker_routes.py",
-            "src/api/main.py",
-            "src/api/google_routes.py"
-          ]
-        },
-        {
-          "id": "legacy-worker-mock-self-tests",
-          "classification": "obsolete",
-          "owner": "Worker and queue maintainers",
-          "reason": "Module-level missing-REST-router skip also hides four worker tests that only await the patched mock itself. They never invoke production worker code and belong to the old Redis-style harness; replace/remove with evidence from current durable-worker tests.",
-          "issue": "https://github.com/Aelira-AI/aelira-core/issues/430",
-          "nodeids": [
-            "tests/test_job_queue.py::TestJobWorkers::test_cloud_sync_worker",
-            "tests/test_job_queue.py::TestJobWorkers::test_remediate_worker",
-            "tests/test_job_queue.py::TestJobWorkers::test_scan_worker",
-            "tests/test_job_queue.py::TestJobWorkers::test_upload_worker"
-          ],
-          "evidence": [
-            "tests/test_job_queue.py",
-            "tests/test_durable_job_processor_postgres.py"
-          ]
-        },
-        {
           "id": "latex-pdf-toolchain",
           "classification": "environment-gated",
           "owner": "Document remediation maintainers",
@@ -1771,13 +1771,15 @@
           "id": "refresh-postgres-lock-race",
           "classification": "environment-gated",
           "owner": "Security and authentication maintainers",
-          "reason": "Concurrent refresh row-lock verification requires explicit TEST_DATABASE_URL and a real PostgreSQL service. This is separate from the deterministic session-rotation tests that execute in the ordinary suite.",
+          "reason": "Ordinary main profile omits the explicit disposable race database. This exact PostgreSQL concurrency case must pass without a skip in the queue-races-postgres CI profile, with REQUIRE_QUEUE_POSTGRES_TESTS=1 and database safety guards.",
           "issue": "https://github.com/Aelira-AI/aelira-core/issues/430",
           "nodeids": [
             "tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair"
           ],
           "evidence": [
-            "tests/test_session_refresh_rotation.py"
+            "tests/test_session_refresh_rotation.py",
+            ".github/workflows/ci.yml",
+            "tests/test_queue_race_guards.py"
           ]
         },
         {
@@ -1810,13 +1812,15 @@
           "id": "task17b-postgres-enqueue-race",
           "classification": "environment-gated",
           "owner": "Worker and queue maintainers",
-          "reason": "Real concurrent enqueue unique-constraint race requires explicit TEST_MIGRATION_DATABASE_URL and disposable/destructive guard; missing/unavailable PostgreSQL is skipped by its fixture.",
+          "reason": "Ordinary main profile omits the explicit disposable race database. This exact PostgreSQL concurrency case must pass without a skip in the queue-races-postgres CI profile, with REQUIRE_QUEUE_POSTGRES_TESTS=1 and database safety guards.",
           "issue": "https://github.com/Aelira-AI/aelira-core/issues/430",
           "nodeids": [
             "tests/test_task17b_postgres.py::test_concurrent_enqueue_unique_race_returns_the_single_winner"
           ],
           "evidence": [
-            "tests/test_task17b_postgres.py"
+            "tests/test_task17b_postgres.py",
+            ".github/workflows/ci.yml",
+            "tests/test_queue_race_guards.py"
           ]
         },
         {
@@ -1934,20 +1938,6 @@
             "tests/test_webhooks.py",
             "src/api/webhook_routes.py"
           ]
-        },
-        {
-          "id": "superseded-sqlite-cancellation-race",
-          "classification": "obsolete",
-          "owner": "Worker and queue maintainers",
-          "reason": "Unconditional skip retires a SQLite concurrency attempt explicitly superseded by real PostgreSQL child-reap/cancellation matrix. PostgreSQL replacement must execute in its required lane; counting this dead test as coverage would be false.",
-          "issue": "https://github.com/Aelira-AI/aelira-core/issues/430",
-          "nodeids": [
-            "tests/test_worker_isolation.py::test_real_cancellation_waits_for_child_reap_before_terminal_state"
-          ],
-          "evidence": [
-            "tests/test_worker_isolation.py",
-            "tests/test_durable_job_processor_postgres.py"
-          ]
         }
       ]
     },
@@ -1994,6 +1984,13 @@
         "tests/test_durable_job_processor_postgres.py::test_upload_success_confirms_effect_and_completes_once",
         "tests/test_durable_job_processor_postgres.py::test_upload_timeout_after_checkpoint_is_terminal_without_retry",
         "tests/test_durable_job_processor_postgres.py::test_worker_cleanly_transitions_running_draining_stopped"
+      ],
+      "allowed_skips": []
+    },
+    "queue-races-postgres": {
+      "required_tests": [
+        "tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair",
+        "tests/test_task17b_postgres.py::test_concurrent_enqueue_unique_race_returns_the_single_winner"
       ],
       "allowed_skips": []
     }

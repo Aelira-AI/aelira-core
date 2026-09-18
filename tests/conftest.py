@@ -123,6 +123,27 @@ def _require_test_database_url(database_url: str) -> str:
     return require_disposable_postgres_url(database_url, destructive=False)
 
 
+def queue_race_engine(variable: str):
+    """Require explicit disposable PostgreSQL for the queue/session race lane."""
+    required = _enabled(os.environ, "REQUIRE_QUEUE_POSTGRES_TESTS")
+    url = os.getenv(variable)
+    if not url:
+        if required:
+            pytest.fail(f"required PostgreSQL race variable {variable} is missing")
+        pytest.skip(f"requires {variable}")
+    require_disposable_postgres_url(url, destructive=True)
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql("SELECT 1")
+    except Exception as exc:
+        engine.dispose()
+        if required:
+            pytest.fail(f"required race PostgreSQL unavailable: {type(exc).__name__}")
+        pytest.skip("PostgreSQL race database unavailable")
+    return engine
+
+
 def _select_suite_database_url(environment) -> str:
     explicit = environment.get("TEST_DATABASE_URL")
     if explicit:

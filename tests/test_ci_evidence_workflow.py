@@ -48,6 +48,7 @@ def test_ci_retains_and_validates_each_profile_at_the_tested_revision():
     for profile, step_id in (
         ("main", "main-tests"),
         ("worker-postgres", "worker-tests"),
+        ("queue-races-postgres", "race-tests"),
     ):
         suite = next(step for step in steps if step.get("id") == step_id)
         assert argument(suite["run"], "--test-evidence-profile") == profile
@@ -77,3 +78,45 @@ def test_ci_retains_and_validates_each_profile_at_the_tested_revision():
     assert upload["if"] == "always()"
     assert upload["with"]["path"] == "test-results/*.json"
     assert job["permissions"] == {"contents": "read", "artifact-metadata": "write"}
+
+
+def test_queue_races_use_a_separate_disposable_required_database():
+    from conftest import require_disposable_postgres_url
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["test"]["steps"]
+    suite = next(step for step in steps if step.get("id") == "race-tests")
+    env = suite["env"]
+    assert env["REQUIRE_QUEUE_POSTGRES_TESTS"] == "1"
+    assert env["ALLOW_DESTRUCTIVE_MIGRATION_TESTS"] == "1"
+    assert (
+        env["DATABASE_URL"]
+        == env["TEST_DATABASE_URL"]
+        == env["TEST_MIGRATION_DATABASE_URL"]
+    )
+    url = require_disposable_postgres_url(
+        env["TEST_DATABASE_URL"], destructive=True, environment=env
+    )
+    assert url.endswith("/queue_races_test")
+    for step_id in ("main-tests", "worker-tests"):
+        other = next(step for step in steps if step.get("id") == step_id)
+        assert other["env"]["DATABASE_URL"] != url
+    create = next(
+        step for step in steps if step.get("run", "").endswith(" queue_races_test")
+    )
+    assert steps.index(create) < steps.index(suite)
+    policy = json.loads((ROOT / "tests/ci_skip_policy.json").read_text())
+    _, required, allowed = policy_for(policy, "queue-races-postgres")
+    assert required == {
+        "tests/test_task17b_postgres.py::test_concurrent_enqueue_unique_race_returns_the_single_winner",
+        "tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair",
+    }
+    assert not allowed
+    assert "tests/test_task17b_postgres.py" in shlex.split(suite["run"])
+    assert (
+        "tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair"
+        in shlex.split(suite["run"])
+    )
+    _, worker_required, worker_allowed = policy_for(policy, "worker-postgres")
+    assert len(worker_required) == 41
+    assert not worker_allowed
