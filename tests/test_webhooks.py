@@ -1,488 +1,267 @@
-"""
-Tests for webhook handlers.
+"""Current webhook contracts using PostgreSQL and no live provider traffic.
 
-Tests cover:
-- Google Drive push notifications
-- Microsoft Graph change notifications
-- Webhook validation and security
-- Automatic job enqueueing on file changes
-- Subscription management
+Management placeholders are asserted as such. Callback jobs remain pending;
+provider identity validation and worker execution are separate evidence.
 """
 
-import os
+from datetime import datetime, timezone
+from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import patch
-import uuid
+from sqlalchemy.exc import SQLAlchemyError
 
-# Import app for testing
-from src.api.main import app
+import integration_route_fixtures as fixtures
+from src.api import webhook_routes as routes
+from src.db.models import CloudJobQueue, CloudWebhookSubscription
 
-# Webhook tests require a running database with CloudWebhookSubscription
-# table populated. The webhook routes (/webhooks/google, /webhooks/microsoft)
-# use `with get_db() as db:` context manager (not Depends), so dependency
-# overrides cannot intercept DB access. Several tests also hit routes that
-# don't exist yet (/webhooks, /webhooks/stats, /webhooks/activity,
-# /webhooks/errors, /webhooks/renew/*, /webhooks/auto-renew).
-pytestmark = pytest.mark.skipif(
-    not os.getenv("RUN_E2E_TESTS"),
-    reason="Webhook tests require running database and cloud provider infrastructure",
-)
+pytestmark = pytest.mark.integration
+integration_route = fixtures.integration_route
 
 
-@pytest.fixture
-def client():
-    """Create a test client."""
-    return TestClient(app)
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+def test_subscribe_returns_placeholder_without_persistence(integration_route, provider):
+    case = integration_route
+    before = case.db.query(CloudWebhookSubscription).count()
+    response = case.client.post(
+        f"/webhooks/{provider}/subscribe",
+        params={"notification_url": "https://example.test/notifications"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "not_implemented",
+        "message": f"Use /{provider}/connect flow to set up subscriptions",
+    }
+    case.db.expire_all()
+    assert case.db.query(CloudWebhookSubscription).count() == before
 
 
-@pytest.fixture
-def google_webhook_headers():
-    """Sample Google webhook headers."""
-    return {
-        "X-Goog-Channel-ID": "channel-123",
-        "X-Goog-Channel-Token": "token-456",
-        "X-Goog-Resource-State": "update",
-        "X-Goog-Resource-ID": "resource-789",
-        "X-Goog-Resource-URI": "https://www.googleapis.com/drive/v3/files/file-123",
-        "X-Goog-Message-Number": "1",
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+def test_subscribe_requires_notification_url_query(integration_route, provider):
+    response = integration_route.client.post(f"/webhooks/{provider}/subscribe")
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "notification_url"]
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+def test_delete_subscription_persists_local_deactivation_and_retry(
+    integration_route, provider
+):
+    """Local mutation does not claim provider revocation."""
+    case = integration_route
+    row = fixtures.subscription(case, fixtures.credential(case, provider))
+    other = fixtures.subscription(case, fixtures.credential(case, provider, other=True))
+    sibling = fixtures.subscription(
+        case,
+        fixtures.credential(case, "microsoft" if provider == "google" else "google"),
+    )
+    case.db.commit()
+    for _ in range(2):
+        response = case.client.delete(f"/webhooks/subscriptions/{row.id}")
+        assert response.status_code == 200
+        assert response.json() == {
+            "success": True,
+            "message": "Subscription deactivated",
+        }
+    case.db.expire_all()
+    assert case.db.get(CloudWebhookSubscription, row.id).is_active is False
+    assert case.db.get(CloudWebhookSubscription, other.id).is_active is True
+    assert case.db.get(CloudWebhookSubscription, sibling.id).is_active is True
+
+
+@pytest.mark.parametrize("target", ["missing", "other_department"])
+def test_delete_subscription_requires_department_row(integration_route, target):
+    case = integration_route
+    row = fixtures.subscription(case, fixtures.credential(case, "google", other=True))
+    case.db.commit()
+    row_id = row.id if target == "other_department" else str(uuid4())
+    response = case.client.delete(f"/webhooks/subscriptions/{row_id}")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Subscription not found"}
+    case.db.expire_all()
+    assert case.db.get(CloudWebhookSubscription, row.id).is_active is True
+
+
+def test_delete_subscription_commit_failure_preserves_active_row(integration_route):
+    case = integration_route
+    row = fixtures.subscription(case, fixtures.credential(case, "google"))
+    case.db.commit()
+    with patch.object(
+        case.db, "commit", side_effect=SQLAlchemyError("fixture-only commit failure")
+    ):
+        response = case.client.delete(f"/webhooks/subscriptions/{row.id}")
+    assert response.status_code == 500
+    assert response.text == "Internal Server Error"
+    case.db.expire_all()
+    assert case.db.get(CloudWebhookSubscription, row.id).is_active is True
+
+
+def test_delete_subscription_requires_identity(integration_route):
+    case = integration_route
+    case.application.dependency_overrides.pop(routes.get_api_key_or_mock)
+    response = case.client.delete(f"/webhooks/subscriptions/{uuid4()}")
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "Authentication required. Provide 'Authorization: Bearer ***' header or login via dashboard."
     }
 
 
-@pytest.fixture
-def microsoft_webhook_payload():
-    """Sample Microsoft Graph webhook payload."""
-    return {
-        "value": [
-            {
-                "subscriptionId": "subscription-123",
-                "clientState": "client-state-456",
-                "changeType": "updated",
-                "resource": "Users/user-123/drive/root",
-                "resourceData": {
-                    "@odata.type": "#Microsoft.Graph.DriveItem",
-                    "@odata.id": "Users/user-123/drive/items/item-789",
-                    "id": "item-789",
-                },
-                "subscriptionExpirationDateTime": "2025-01-09T12:00:00.0000000Z",
-                "tenantId": "tenant-123",
-            }
-        ]
+def test_webhook_health_reports_global_active_counts(integration_route):
+    """Health includes both fixture departments; it is not a tenant dashboard."""
+    case = integration_route
+    expected = {
+        provider: case.db.query(CloudWebhookSubscription)
+        .filter_by(provider=provider, is_active=True)
+        .count()
+        for provider in ("google", "microsoft")
+    }
+    for provider in ("google", "microsoft"):
+        fixtures.subscription(case, fixtures.credential(case, provider))
+        fixtures.subscription(case, fixtures.credential(case, provider, other=True))
+        fixtures.subscription(case, fixtures.credential(case, provider), active=False)
+        expected[provider] += 2
+    case.db.commit()
+    response = case.client.get("/webhooks/health")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "healthy",
+        "service": "cloud-webhooks",
+        "active_subscriptions": expected,
     }
 
 
-class TestGoogleWebhooks:
-    """Tests for Google Drive webhook handlers."""
-
-    def test_google_webhook_sync_verification(self, client, google_webhook_headers):
-        """Test Google webhook sync verification."""
-        sync_headers = google_webhook_headers.copy()
-        sync_headers["X-Goog-Resource-State"] = "sync"
-
-        response = client.post(
-            "/webhooks/google",
-            headers=sync_headers,
-        )
-
-        # Sync messages should be acknowledged
-        assert response.status_code == 200
-
-    def test_google_webhook_file_update(self, client, google_webhook_headers):
-        """Test handling Google Drive file update notification."""
-        with patch("src.jobs.cloud_scan_job.CloudScanJob.enqueue") as mock_enqueue:
-            mock_enqueue.return_value = str(uuid.uuid4())
-
-            response = client.post(
-                "/webhooks/google",
-                headers=google_webhook_headers,
-            )
-
-            # Should accept and queue job
-            assert response.status_code in [200, 202]
-
-    def test_google_webhook_file_creation(self, client, google_webhook_headers):
-        """Test handling Google Drive file creation notification."""
-        create_headers = google_webhook_headers.copy()
-        create_headers["X-Goog-Resource-State"] = "add"
-
-        response = client.post(
-            "/webhooks/google",
-            headers=create_headers,
-        )
-
-        assert response.status_code in [200, 202]
-
-    def test_google_webhook_file_deletion(self, client, google_webhook_headers):
-        """Test handling Google Drive file deletion notification."""
-        delete_headers = google_webhook_headers.copy()
-        delete_headers["X-Goog-Resource-State"] = "trash"
-
-        response = client.post(
-            "/webhooks/google",
-            headers=delete_headers,
-        )
-
-        # Deletion should be acknowledged
-        assert response.status_code in [200, 204]
-
-    def test_google_webhook_missing_headers(self, client):
-        """Test Google webhook with missing required headers."""
-        response = client.post(
-            "/webhooks/google",
-            headers={"X-Goog-Channel-ID": "channel-123"},  # Missing other headers
-        )
-
-        assert response.status_code in [200, 400]
-
-    def test_google_webhook_invalid_channel(self, client, google_webhook_headers):
-        """Test Google webhook with invalid channel ID."""
-        invalid_headers = google_webhook_headers.copy()
-        invalid_headers["X-Goog-Channel-ID"] = "invalid-channel-999"
-
-        response = client.post(
-            "/webhooks/google",
-            headers=invalid_headers,
-        )
-
-        # Should reject or acknowledge gracefully
-        assert response.status_code in [200, 400, 404]
-
-    def test_google_webhook_enqueues_scan_job(self, client, google_webhook_headers):
-        """Test that file update enqueues a scan job."""
-        with patch("src.jobs.cloud_scan_job.CloudScanJob.enqueue") as mock_enqueue:
-            mock_enqueue.return_value = "job-123"
-
-            response = client.post(
-                "/webhooks/google",
-                headers=google_webhook_headers,
-            )
-
-            if response.status_code in [200, 202]:
-                # Job should have been enqueued
-                # (mock_enqueue.called would verify this in real test)
-                pass
+def test_webhook_health_query_failure_after_success(integration_route):
+    case = integration_route
+    assert case.client.get("/webhooks/health").status_code == 200
+    with patch.object(
+        case.db, "query", side_effect=SQLAlchemyError("fixture-only query failure")
+    ):
+        response = case.client.get("/webhooks/health")
+    assert response.status_code == 500
+    assert response.text == "Internal Server Error"
+    assert case.client.get("/webhooks/health").status_code == 200
 
 
-class TestMicrosoftWebhooks:
-    """Tests for Microsoft Graph webhook handlers."""
-
-    def test_microsoft_webhook_validation(self, client):
-        """Test Microsoft Graph webhook validation request."""
-        response = client.post(
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_microsoft_validation_echoes_plain_text_without_database(
+    integration_route, method
+):
+    case = integration_route
+    with patch.object(
+        case.db,
+        "query",
+        side_effect=AssertionError("validation must not query subscriptions"),
+    ):
+        response = case.client.request(
+            method,
             "/webhooks/microsoft",
-            params={"validationToken": "validation-token-123"},
+            params={"validationToken": "fixture validation + token"},
         )
-
-        # Should echo back validation token
-        assert response.status_code == 200
-        assert response.text == "validation-token-123"
-
-    def test_microsoft_webhook_file_update(self, client, microsoft_webhook_payload):
-        """Test handling Microsoft Graph file update notification."""
-        with patch("src.jobs.cloud_scan_job.CloudScanJob.enqueue") as mock_enqueue:
-            mock_enqueue.return_value = str(uuid.uuid4())
-
-            response = client.post(
-                "/webhooks/microsoft",
-                json=microsoft_webhook_payload,
-            )
-
-            # Should accept notification
-            assert response.status_code in [200, 202]
-
-    def test_microsoft_webhook_file_creation(self, client):
-        """Test handling Microsoft Graph file creation notification."""
-        payload = {
-            "value": [
-                {
-                    "subscriptionId": "subscription-123",
-                    "changeType": "created",
-                    "resource": "Users/user-123/drive/items/new-item-123",
-                    "resourceData": {
-                        "@odata.type": "#Microsoft.Graph.DriveItem",
-                        "id": "new-item-123",
-                    },
-                }
-            ]
-        }
-
-        response = client.post(
-            "/webhooks/microsoft",
-            json=payload,
-        )
-
-        assert response.status_code in [200, 202]
-
-    def test_microsoft_webhook_file_deletion(self, client):
-        """Test handling Microsoft Graph file deletion notification."""
-        payload = {
-            "value": [
-                {
-                    "subscriptionId": "subscription-123",
-                    "changeType": "deleted",
-                    "resource": "Users/user-123/drive/items/deleted-item-123",
-                    "resourceData": {
-                        "@odata.type": "#Microsoft.Graph.DriveItem",
-                        "id": "deleted-item-123",
-                    },
-                }
-            ]
-        }
-
-        response = client.post(
-            "/webhooks/microsoft",
-            json=payload,
-        )
-
-        assert response.status_code in [200, 202, 204]
-
-    def test_microsoft_webhook_client_state_validation(self, client):
-        """Test that Microsoft webhooks validate client state."""
-        payload = {
-            "value": [
-                {
-                    "subscriptionId": "subscription-123",
-                    "clientState": "invalid-client-state",
-                    "changeType": "updated",
-                    "resource": "Users/user-123/drive/items/item-123",
-                }
-            ]
-        }
-
-        response = client.post(
-            "/webhooks/microsoft",
-            json=payload,
-        )
-
-        # Should accept or reject based on client state validation
-        assert response.status_code in [200, 202, 400, 401]
-
-    def test_microsoft_webhook_expired_subscription(self, client):
-        """Test handling notification with expired subscription."""
-        payload = {
-            "value": [
-                {
-                    "subscriptionId": "expired-subscription-123",
-                    "changeType": "updated",
-                    "resource": "Users/user-123/drive/items/item-123",
-                    "lifecycleEvent": "subscriptionRemoved",
-                }
-            ]
-        }
-
-        response = client.post(
-            "/webhooks/microsoft",
-            json=payload,
-        )
-
-        # Should handle gracefully
-        assert response.status_code in [200, 202]
-
-    def test_microsoft_webhook_batch_notifications(self, client):
-        """Test handling batch of notifications."""
-        payload = {
-            "value": [
-                {
-                    "subscriptionId": "subscription-123",
-                    "changeType": "updated",
-                    "resource": "Users/user-123/drive/items/item-1",
-                    "resourceData": {"id": "item-1"},
-                },
-                {
-                    "subscriptionId": "subscription-123",
-                    "changeType": "updated",
-                    "resource": "Users/user-123/drive/items/item-2",
-                    "resourceData": {"id": "item-2"},
-                },
-            ]
-        }
-
-        with patch("src.jobs.cloud_scan_job.CloudScanJob.enqueue") as mock_enqueue:
-            mock_enqueue.return_value = str(uuid.uuid4())
-
-            response = client.post(
-                "/webhooks/microsoft",
-                json=payload,
-            )
-
-            assert response.status_code in [200, 202]
+    assert response.status_code == 200
+    assert response.text == "fixture validation + token"
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
 
 
-class TestWebhookSecurity:
-    """Tests for webhook security and validation."""
+def test_microsoft_get_validation_requires_token(integration_route):
+    response = integration_route.client.get("/webhooks/microsoft")
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "validationToken"]
 
-    def test_google_webhook_token_validation(self, client):
-        """Test that Google webhooks validate channel tokens."""
-        response = client.post(
+
+@pytest.mark.parametrize("payload", [[], {"value": "invalid"}])
+def test_microsoft_rejects_invalid_notification_envelope(integration_route, payload):
+    case = integration_route
+    response = case.client.post("/webhooks/microsoft", json=payload)
+    assert response.status_code == 400
+    assert response.content == b""
+    assert (
+        case.db.query(CloudJobQueue).filter_by(department_id=case.department.id).count()
+        == 0
+    )
+
+
+def callback(case, provider, row):
+    if provider == "google":
+        return case.client.post(
             "/webhooks/google",
             headers={
-                "X-Goog-Channel-ID": "channel-123",
-                "X-Goog-Channel-Token": "invalid-token",
+                "X-Goog-Channel-ID": row.subscription_id,
                 "X-Goog-Resource-State": "update",
+                "X-Goog-Resource-ID": "fixture-resource",
+                "X-Goog-Message-Number": "1",
             },
         )
-
-        # Should validate or accept gracefully
-        assert response.status_code in [200, 202, 400, 401]
-
-    def test_microsoft_webhook_signature_validation(self, client):
-        """Test Microsoft webhook signature validation (if implemented)."""
-        # Microsoft Graph doesn't require HMAC signatures by default,
-        # but clientState provides validation
-        payload = {
+    return case.client.post(
+        "/webhooks/microsoft",
+        json={
             "value": [
                 {
-                    "subscriptionId": "subscription-123",
-                    "clientState": "expected-client-state",
+                    "subscriptionId": row.subscription_id,
+                    "clientState": row.department_id,
                     "changeType": "updated",
-                    "resource": "Users/user-123/drive/items/item-123",
+                    "resource": "drive/root/fixture-item",
                 }
             ]
+        },
+    )
+
+
+@pytest.mark.parametrize("provider,status", [("google", 200), ("microsoft", 202)])
+def test_supported_callback_persists_one_pending_reconciliation_job(
+    integration_route, provider, status
+):
+    case = integration_route
+    row = fixtures.subscription(case, fixtures.credential(case, provider))
+    case.db.commit()
+    before = datetime.now(timezone.utc)
+    for _ in range(2):
+        response = callback(case, provider, row)
+        assert response.status_code == status
+        assert response.content == b""
+    case.db.expire_all()
+    persisted = case.db.get(CloudWebhookSubscription, row.id)
+    assert before <= persisted.last_notification_at <= datetime.now(timezone.utc)
+    job = case.db.query(CloudJobQueue).filter_by(department_id=case.department.id).one()
+    assert job.provider == provider and job.credential_id == row.credential_id
+    assert job.job_type == "sync" and job.status == "pending" and job.priority == 3
+    expected = {
+        "credential_id": row.credential_id,
+        "provider": provider,
+        "subscription_id": row.id,
+    }
+    expected.update(
+        {
+            "resource_id": "fixture-resource",
+            "resource_state": "update",
+            "message_number": "1",
         }
-
-        response = client.post(
-            "/webhooks/microsoft",
-            json=payload,
-        )
-
-        assert response.status_code in [200, 202, 400, 401]
-
-    def test_webhook_rate_limiting(self, client, google_webhook_headers):
-        """Test that webhooks have rate limiting."""
-        # Send multiple rapid webhook notifications
-        responses = []
-        for _ in range(100):
-            response = client.post(
-                "/webhooks/google",
-                headers=google_webhook_headers,
-            )
-            responses.append(response.status_code)
-
-        # All should succeed (or some may be rate limited)
-        assert all(status in [200, 202, 429] for status in responses)
-
-    def test_webhook_malformed_payload(self, client):
-        """Test handling malformed webhook payload."""
-        response = client.post(
-            "/webhooks/microsoft",
-            data="malformed-json{{{",
-            headers={"Content-Type": "application/json"},
-        )
-
-        assert response.status_code in [400, 422]
+        if provider == "google"
+        else {"resource": "drive/root/fixture-item", "change_type": "updated"}
+    )
+    assert job.payload == expected
 
 
-class TestWebhookJobEnqueueing:
-    """Tests for automatic job enqueueing from webhooks."""
-
-    def test_webhook_creates_scan_job(self, client, google_webhook_headers):
-        """Test that webhook automatically creates a scan job."""
-        with patch("src.jobs.cloud_scan_job.CloudScanJob.enqueue") as mock_enqueue:
-            job_id = str(uuid.uuid4())
-            mock_enqueue.return_value = job_id
-
-            response = client.post(
-                "/webhooks/google",
-                headers=google_webhook_headers,
-            )
-
-            if response.status_code in [200, 202]:
-                # Verify job was enqueued (in real test, check mock_enqueue.called)
-                pass
-
-    def test_webhook_respects_file_type_filters(self, client, google_webhook_headers):
-        """Test that webhooks only scan configured file types."""
-        # This would depend on configuration
-        with patch("src.jobs.cloud_scan_job.CloudScanJob.enqueue"):
-            response = client.post(
-                "/webhooks/google",
-                headers=google_webhook_headers,
-            )
-
-            # Job enqueueing depends on file type
-            assert response.status_code in [200, 202]
-
-    def test_webhook_deduplicates_rapid_updates(self, client, google_webhook_headers):
-        """Test that rapid updates to same file are deduplicated."""
-        with patch("src.jobs.cloud_scan_job.CloudScanJob.enqueue") as mock_enqueue:
-            mock_enqueue.return_value = str(uuid.uuid4())
-
-            # Send same notification multiple times rapidly
-            for _ in range(5):
-                response = client.post(
-                    "/webhooks/google",
-                    headers=google_webhook_headers,
-                )
-                assert response.status_code in [200, 202]
-
-            # Should have some deduplication logic (implementation dependent)
-
-
-class TestWebhookSubscriptionManagement:
-    """Tests for webhook subscription lifecycle."""
-
-    def test_list_active_webhooks(self, client):
-        """Test listing active webhook subscriptions."""
-        response = client.get("/webhooks")
-
-        assert response.status_code in [200, 401]
-        if response.status_code == 200:
-            data = response.json()
-            assert "subscriptions" in data or isinstance(data, list)
-
-    def test_renew_webhook_subscription(self, client):
-        """Test renewing an expiring webhook subscription."""
-        response = client.post(
-            "/webhooks/renew/subscription-123",
-            json={"hours": 24},
-        )
-
-        assert response.status_code in [200, 401, 404]
-
-    def test_delete_webhook_subscription(self, client):
-        """Test deleting a webhook subscription."""
-        response = client.delete("/webhooks/subscription-123")
-
-        assert response.status_code in [200, 204, 401, 404]
-
-    def test_webhook_auto_renewal(self, client):
-        """Test automatic renewal of expiring subscriptions."""
-        # This would be a background task test
-        with patch(
-            "src.integrations.webhooks.webhook_manager.renew_subscription"
-        ) as mock_renew:
-            mock_renew.return_value = {"expirationDateTime": "2025-01-10T12:00:00Z"}
-
-            # Trigger auto-renewal (implementation dependent)
-            response = client.post("/webhooks/auto-renew")
-
-            assert response.status_code in [200, 204, 401, 404]
-
-
-class TestWebhookMetrics:
-    """Tests for webhook metrics and monitoring."""
-
-    def test_get_webhook_stats(self, client):
-        """Test getting webhook statistics."""
-        response = client.get("/webhooks/stats")
-
-        assert response.status_code in [200, 401]
-        if response.status_code == 200:
-            data = response.json()
-            assert "total_received" in data or "stats" in data or isinstance(data, dict)
-
-    def test_get_webhook_recent_activity(self, client):
-        """Test getting recent webhook activity."""
-        response = client.get("/webhooks/activity")
-
-        assert response.status_code in [200, 401]
-
-    def test_webhook_error_tracking(self, client):
-        """Test that webhook errors are tracked."""
-        response = client.get("/webhooks/errors")
-
-        assert response.status_code in [200, 401]
-        if response.status_code == 200:
-            data = response.json()
-            assert "errors" in data or isinstance(data, list)
+@pytest.mark.parametrize("provider,status", [("google", 500), ("microsoft", 503)])
+def test_callback_enqueue_failure_rolls_back_notification_time(
+    integration_route, provider, status
+):
+    """Only enqueue failure is substituted; these are supported local callbacks."""
+    case = integration_route
+    row = fixtures.subscription(case, fixtures.credential(case, provider))
+    case.db.commit()
+    with patch.object(
+        routes,
+        "enqueue_cloud_job",
+        side_effect=SQLAlchemyError("fixture-only enqueue failure"),
+    ):
+        response = callback(case, provider, row)
+    assert response.status_code == status
+    assert response.content == (
+        b"Internal Server Error" if provider == "google" else b""
+    )
+    case.db.expire_all()
+    assert case.db.get(CloudWebhookSubscription, row.id).last_notification_at is None
+    assert (
+        case.db.query(CloudJobQueue).filter_by(department_id=case.department.id).count()
+        == 0
+    )
