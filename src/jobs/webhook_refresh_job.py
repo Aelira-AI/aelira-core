@@ -108,7 +108,7 @@ async def handle_webhook_refresh_job(
         and prior_result.get("correlation_id") == correlation
     ):
         return _success_result(subscription, provider, replay=True)
-    if provider == "google" and subscription.renewal_status in {
+    if subscription.renewal_status in {
         "requesting",
         "indeterminate",
     }:

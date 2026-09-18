@@ -88,7 +88,6 @@ These bounded areas remain part of the coverage backlog; they are not implicitly
 
 | Area | Existing useful evidence | Follow-up boundary |
 | --- | --- | --- |
-| [Microsoft 365 #427](https://github.com/Aelira-AI/aelira-core/issues/427) | `test_microsoft_integration.py` OAuth transport contracts and shared provider DTO tests. | OneDrive/SharePoint browse → queue → status, upload and subscription persistence; replace permissive success/auth/not-found alternatives. |
 | [Analytics #425](https://github.com/Aelira-AI/aelira-core/issues/425) | `test_analytics_tenant_scope.py` authorization matrix, SQLite issue/audit mutations and evidence reports. | Exact allowed HTTP snapshot/trend/projection/export behavior, invalid inputs and service failures; retain existing denial and report coverage. |
 | [Shared integration/webhook contracts #429](https://github.com/Aelira-AI/aelira-core/issues/429) | PostgreSQL status/metrics/disconnect and webhook contracts described above; existing provider and specialized renewal tests retained. | Live provider availability, remote revocation, subscription-management placeholders and worker/browser journeys remain outside these contracts. |
 
@@ -97,3 +96,7 @@ These bounded areas remain part of the coverage backlog; they are not implicitly
 Use the disposable database and service setup in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml). Critical cases belong in [`tests/ci_skip_policy.json`](../../tests/ci_skip_policy.json) as exact required node IDs. They must execute; an environment skip or broad status-code alternative cannot satisfy their contract. Preserve the full-suite coverage floor and exclusions.
 
 When adding a row, name a test that reaches its successful path and the relevant denial/input/failure cases. State every substituted boundary. Report pass/skip counts from the tested revision separately from this source inventory, and retain remaining conditions rather than treating a coverage percentage as endpoint completeness.
+
+## Microsoft file and subscription contracts
+
+[Issue #427](https://github.com/Aelira-AI/aelira-core/issues/427) now has a [route matrix and evidence limits](microsoft-route-contracts.md): authenticated OneDrive/SharePoint browsing and binary download, durable scan/remediation IDs, scoped job reads, explicit unsupported local-path uploads, persisted subscription CRUD and bounded failure contracts. The provider HTTP transport and validated identity are controlled seams; PostgreSQL persistence and adapters execute.
