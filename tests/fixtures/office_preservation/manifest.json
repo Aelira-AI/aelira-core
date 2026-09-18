@@ -1,0 +1,11 @@
+{
+  "schema_version": "office-preservation-v1",
+  "origin": "repository-authored synthetic content",
+  "redistribution": "CC0-1.0",
+  "required_cases": ["docx-repair", "docx-control", "pptx-repair", "pptx-control", "xlsx-repair", "xlsx-control"],
+  "unavailable_evidence": [
+    {"scope": "rendered appearance and application playback", "status": "not_run", "owner": "repository maintainers", "reason": "Requires independent Office application rendering and inspection"},
+    {"scope": "semantic quality and assistive technology", "status": "not_run", "owner": "repository maintainers", "reason": "Requires representative human and AT review under issue #374"},
+    {"scope": "multiple authoring tools, expanded PDF and LaTeX", "status": "not_run", "owner": "repository maintainers", "reason": "Follow-up corpus increments under issue #374"}
+  ]
+}

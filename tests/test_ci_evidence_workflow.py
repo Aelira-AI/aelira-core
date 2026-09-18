@@ -74,7 +74,12 @@ def test_ci_retains_and_validates_each_profile_at_the_tested_revision():
             assert argument(gate["run"], "--coverage") == "test-results/coverage.json"
         else:
             assert "--no-cov" in shlex.split(suite["run"])
-    upload = next(step for step in steps if "upload-artifact@" in step.get("uses", ""))
+    upload = next(
+        step
+        for step in steps
+        if step.get("name") == "Retain revision-bound test evidence"
+    )
+    assert "upload-artifact@" in upload["uses"]
     assert upload["if"] == "always()"
     assert upload["with"]["path"] == "test-results/*.json"
     assert job["permissions"] == {"contents": "read", "artifact-metadata": "write"}
