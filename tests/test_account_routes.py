@@ -131,6 +131,9 @@ def test_account_unexpected_value_error_is_bounded(
 
 @pytest.mark.parametrize("failure", ["false", "unconfigured", "exception", "factory"])
 def test_code_delivery_failure_never_claims_sent(account_route, monkeypatch, failure):
+    monkeypatch.setattr(
+        service_module.secrets, "randbelow", Mock(side_effect=[123456, 654321])
+    )
     if failure == "false":
         account_route.mail.send_email.return_value = {
             "success": False,
@@ -154,6 +157,41 @@ def test_code_delivery_failure_never_claims_sent(account_route, monkeypatch, fai
     account_route.db.expire_all()
     assert account_route.user.is_active is True
     assert account_route.user.deletion_scheduled_for is None
+
+    retained_hash = account_route.user.deletion_confirmation_code_hash
+    retained_expiry = account_route.user.deletion_confirmation_expires_at
+    assert bcrypt.checkpw(b"123456", retained_hash.encode())
+    assert (
+        timedelta(minutes=14)
+        < retained_expiry - datetime.now(timezone.utc)
+        <= timedelta(minutes=15)
+    )
+    assert account_route.other.deletion_confirmation_code_hash is None
+
+    # A retry replaces the stored code only after the caller requests a new one.
+    monkeypatch.setattr(service_module, "get_email_service", lambda: account_route.mail)
+    account_route.mail.is_configured.return_value = True
+    account_route.mail.send_email.side_effect = None
+    account_route.mail.send_email.return_value = {"success": True}
+    account_route.mail.send_email.reset_mock()
+    retry = request(account_route, ROUTES[1])
+    assert retry.status_code == 200
+    assert retry.json()["message"] == "Confirmation code sent to your email."
+    account_route.mail.send_email.assert_awaited_once()
+    assert "654321" in account_route.mail.send_email.call_args.kwargs["text_content"]
+    account_route.db.expire_all()
+    assert account_route.user.deletion_confirmation_code_hash != retained_hash
+    assert bcrypt.checkpw(
+        b"654321", account_route.user.deletion_confirmation_code_hash.encode()
+    )
+    assert not bcrypt.checkpw(
+        b"123456", account_route.user.deletion_confirmation_code_hash.encode()
+    )
+    assert account_route.user.deletion_confirmation_expires_at > retained_expiry
+    assert (
+        account_route.user.deletion_confirmation_expires_at.isoformat()
+        == retry.json()["code_expires_at"]
+    )
 
 
 def test_code_request_sends_matching_code_without_exposing_hash(
@@ -483,12 +521,36 @@ def test_export_is_principal_scoped_and_omits_credentials(account_route):
     )
 
 
+def _assert_lifecycle_rollback(fixture, original_hash, original_expiry):
+    fixture.db.expire_all()
+    assert fixture.user.is_active and fixture.keys[0].is_active
+    assert fixture.sessions[0].revoked_at is None
+    assert fixture.user.deactivated_at is None
+    assert fixture.user.deletion_requested_at is None
+    assert fixture.user.deletion_scheduled_for is None
+    assert fixture.user.deletion_confirmation_code_hash == original_hash
+    assert fixture.user.deletion_confirmation_expires_at == original_expiry
+    assert (
+        fixture.db.query(DeletedEmail)
+        .filter_by(
+            email_hash=service_module.AccountDeletionService.hash_email(
+                fixture.user.email
+            )
+        )
+        .count()
+        == 0
+    )
+    assert fixture.db.query(AuditLog).filter_by(user_id=fixture.user.id).count() == 0
+
+
 @pytest.mark.parametrize("route", [ROUTES[0], ROUTES[2]])
 def test_lifecycle_commit_failure_rolls_back_credentials_and_state(
     account_route, monkeypatch, route
 ):
     if route == ROUTES[2]:
         code(account_route)
+    original_hash = account_route.user.deletion_confirmation_code_hash
+    original_expiry = account_route.user.deletion_confirmation_expires_at
     monkeypatch.setattr(
         account_route.db,
         "commit",
@@ -499,10 +561,7 @@ def test_lifecycle_commit_failure_rolls_back_credentials_and_state(
     assert response.json() == {
         "detail": "Unable to complete account operation. Please try again."
     }
-    account_route.db.expire_all()
-    assert account_route.user.is_active and account_route.keys[0].is_active
-    assert account_route.sessions[0].revoked_at is None
-    assert account_route.user.deletion_scheduled_for is None
+    _assert_lifecycle_rollback(account_route, original_hash, original_expiry)
 
 
 @pytest.mark.parametrize("route", [ROUTES[0], ROUTES[2]])
@@ -511,6 +570,8 @@ def test_lifecycle_audit_failure_rolls_back_before_commit(
 ):
     if route == ROUTES[2]:
         code(account_route)
+    original_hash = account_route.user.deletion_confirmation_code_hash
+    original_expiry = account_route.user.deletion_confirmation_expires_at
     monkeypatch.setattr(
         service_module.AuditService,
         "log_action",
@@ -518,10 +579,7 @@ def test_lifecycle_audit_failure_rolls_back_before_commit(
     )
     response = request(account_route, route)
     assert response.status_code == 500
-    account_route.db.expire_all()
-    assert account_route.user.is_active and account_route.keys[0].is_active
-    assert account_route.sessions[0].revoked_at is None
-    assert account_route.user.deletion_scheduled_for is None
+    _assert_lifecycle_rollback(account_route, original_hash, original_expiry)
 
 
 @pytest.mark.parametrize("route", ROUTES)
