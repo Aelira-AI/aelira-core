@@ -20,7 +20,14 @@ from sqlalchemy.orm import Session
 from src.api import google_routes as routes
 from src.config.settings import get_settings
 from src.db.database import get_db_dependency
-from src.db.models import APIKey, CloudFile, CloudOAuthCredentials, Department, User
+from src.db.models import (
+    APIKey,
+    CloudFile,
+    CloudJobQueue,
+    CloudOAuthCredentials,
+    Department,
+    User,
+)
 from src.integrations.cloud_base import (
     CloudExportResult,
     CloudFileInfo,
@@ -41,6 +48,16 @@ def google_route(monkeypatch):
     connection = engine.connect()
     transaction = connection.begin()
     db = Session(bind=connection, join_transaction_mode="create_savepoint")
+    # Other modules can leave committed rows in the shared suite database.
+    # Exclude only those IDs, so unexpected new rows in any tenant still count.
+    existing_ids = {
+        model: tuple(row.id for row in db.query(model.id))
+        for model in (CloudFile, CloudJobQueue)
+    }
+
+    def rows(model):
+        return db.query(model).filter(model.id.not_in(existing_ids[model]))
+
     departments = [
         Department(
             id=str(uuid4()),
@@ -142,6 +159,7 @@ def google_route(monkeypatch):
     client = TestClient(app, raise_server_exceptions=False)
     fixture = SimpleNamespace(
         db=db,
+        rows=rows,
         client=client,
         app=app,
         key=key,

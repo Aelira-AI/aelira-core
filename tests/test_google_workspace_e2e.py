@@ -75,7 +75,7 @@ def test_browse_persists_actual_dto_and_pagination(google_route):
     assert response.status_code == 200
     data = response.json()
     row = (
-        google_route.db.query(CloudFile)
+        google_route.rows(CloudFile)
         .filter_by(
             department_id=google_route.key.department_id, provider_file_id="listed-doc"
         )
@@ -125,7 +125,7 @@ def test_browse_updates_version_without_duplicate_or_foreign_mutation(google_rou
     )
     assert google_route.other_file.provider_version == "v1"
     assert (
-        google_route.db.query(CloudFile)
+        google_route.rows(CloudFile)
         .filter_by(department_id=google_route.key.department_id)
         .count()
         == 1
@@ -307,7 +307,7 @@ def test_unsupported_upload_does_not_read_path_or_invent_success(
     }
     google_route.adapter.upload_file.assert_not_called()
     probe.assert_not_called()
-    assert google_route.db.query(CloudJobQueue).count() == 0
+    assert google_route.rows(CloudJobQueue).count() == 0
 
 
 def test_file_scan_returns_stored_job_and_status_with_deduplication(google_route):
@@ -315,7 +315,7 @@ def test_file_scan_returns_stored_job_and_status_with_deduplication(google_route
     assert first.status_code == 200
     data = first.json()
     job = (
-        google_route.db.query(CloudJobQueue)
+        google_route.rows(CloudJobQueue)
         .filter_by(cloud_file_id=google_route.file.id)
         .one()
     )
@@ -378,9 +378,7 @@ def test_folder_scan_honors_recursion_and_returns_stored_jobs(google_route, recu
         and data["message"] == "Created 2 scan jobs for folder"
     )
     jobs = (
-        google_route.db.query(CloudJobQueue)
-        .order_by(CloudJobQueue.provider_file_id)
-        .all()
+        google_route.rows(CloudJobQueue).order_by(CloudJobQueue.provider_file_id).all()
     )
     assert data["job_ids"] == [job.id for job in jobs]
     assert [job.provider_file_id for job in jobs] == ["doc-1", "doc-2"]
@@ -427,7 +425,7 @@ def test_file_scope_refuses_before_enqueue(google_route, path, kind):
     response = google_route.client.post(path, json={"file_id": identifier})
     assert response.status_code == 404
     assert response.json() == {"detail": "File not found"}
-    assert google_route.db.query(CloudJobQueue).count() == 0
+    assert google_route.rows(CloudJobQueue).count() == 0
 
 
 def test_remediation_enqueues_matching_scan_identity(google_route):
@@ -448,7 +446,7 @@ def test_remediation_enqueues_matching_scan_identity(google_route):
         json={"file_id": google_route.file.id, "upload_as_new": True},
     )
     assert response.status_code == 200
-    job = google_route.db.query(CloudJobQueue).one()
+    job = google_route.rows(CloudJobQueue).one()
     assert response.json() == {
         "success": True,
         "job_id": job.id,
@@ -468,7 +466,7 @@ def test_remediation_without_scan_is_harmless(google_route):
     assert response.json() == {
         "detail": "File has not been scanned yet. Scan first before remediation."
     }
-    assert google_route.db.query(CloudJobQueue).count() == 0
+    assert google_route.rows(CloudJobQueue).count() == 0
 
 
 @pytest.mark.parametrize("kind", ["foreign", "other_provider", "missing"])
@@ -529,7 +527,7 @@ def test_invalid_query_inputs_are_rejected(google_route, path, params):
 def test_invalid_payload_is_rejected(google_route, path, payload):
     response = google_route.client.post(path, json=payload)
     assert response.status_code == 422
-    assert google_route.db.query(CloudJobQueue).count() == 0
+    assert google_route.rows(CloudJobQueue).count() == 0
 
 
 @pytest.mark.parametrize(
@@ -608,8 +606,8 @@ def test_commit_failure_rolls_back_files_jobs_and_sync(google_route, monkeypatch
         "detail": "Unable to complete Google file operation. Please try again."
     }
     google_route.db.expire_all()
-    assert google_route.db.query(CloudJobQueue).count() == 0
-    assert google_route.db.query(CloudFile).count() == 2
+    assert google_route.rows(CloudJobQueue).count() == 0
+    assert google_route.rows(CloudFile).count() == 2
     assert google_route.credential.last_sync_at is None
 
 
@@ -637,8 +635,8 @@ def test_folder_second_enqueue_failure_rolls_back_first(google_route, monkeypatc
     }
     assert count == 2
     google_route.db.expire_all()
-    assert google_route.db.query(CloudJobQueue).count() == 0
-    assert google_route.db.query(CloudFile).count() == 2
+    assert google_route.rows(CloudJobQueue).count() == 0
+    assert google_route.rows(CloudFile).count() == 2
 
 
 @pytest.mark.parametrize(
@@ -778,7 +776,7 @@ def test_folder_empty_result_creates_no_jobs(google_route):
         "job_ids": [],
         "message": "Created 0 scan jobs for folder",
     }
-    assert google_route.db.query(CloudJobQueue).count() == 0
+    assert google_route.rows(CloudJobQueue).count() == 0
 
 
 @pytest.mark.parametrize("outcome", ["success", "provider_failure", "close_failure"])
