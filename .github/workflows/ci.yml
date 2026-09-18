@@ -184,6 +184,21 @@ jobs:
           JWT_SECRET: test-secret-for-ci
           ENV: test
         run: python scripts/pdf_acceptance_corpus.py --manifest tests/fixtures/pdf_acceptance/manifest.json
+      - name: Required Office saved-package preservation corpus
+        env:
+          ENV: test
+        run: >-
+          python scripts/office_preservation_corpus.py
+          --workdir test-results/office-preservation
+          --revision "${{ github.sha }}"
+      - name: Retain Office source and candidate evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: office-preservation-${{ github.sha }}-${{ github.run_attempt }}
+          path: test-results/office-preservation/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Create isolated worker test database
         env:
           PGPASSWORD: aelira

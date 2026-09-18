@@ -15,3 +15,5 @@ The metadata case runs scan, rule-based remediation, isolated artifact publicati
 Results are machine observations only, not proof of WCAG, PDF/UA, or legal conformance. A score or validator result must not be presented as a conformance decision.
 
 Generated source PDFs live only in the runner's temporary source directory. Remediated artifacts live in a distinct output directory, and the runner verifies that original source hashes remain unchanged and output hashes differ.
+
+The complementary [Office saved-package corpus](office-preservation-corpus.md) exercises deterministic DOCX/PPTX/XLSX repair and control cases. It does not replace PDF semantics or human review.
