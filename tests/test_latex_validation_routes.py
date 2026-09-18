@@ -56,8 +56,33 @@ async def test_direct_helper_refusal_and_supported_tex_delivery(
 
     class Converter:
         def convert_all_formats(
-            self, path, formats, output_dir, *, validation_receipts
+            self,
+            path,
+            formats,
+            output_dir,
+            *,
+            validation_receipts,
+            conversion_receipts=None,
         ):
+            from src.education.latex_diagnostics import (
+                ConversionDiagnostics,
+                ConversionStage,
+                diagnostic,
+                sha,
+            )
+
+            conversion_receipts["pdf"] = ConversionDiagnostics(
+                source_sha256=sha(Path(path).read_bytes()),
+                status="refused",
+                stages=[
+                    ConversionStage(
+                        tool="latexmlpost",
+                        phase="postprocess",
+                        input_sha256=sha(b"synthetic semantic XML"),
+                        diagnostics=[diagnostic("missing_asset")],
+                    )
+                ],
+            )
             validation_receipts["pdf"] = receipt
             # A leftover PDF diagnostic must not become a download.
             Path(path).with_suffix(".pdf").write_bytes(b"%PDF-1.7 diagnostic only")
@@ -80,6 +105,9 @@ async def test_direct_helper_refusal_and_supported_tex_delivery(
     )
     if "pdf" in formats:
         assert body["latex_pdf_validation"] == receipt.model_dump(mode="json")
+        diagnostic = body["latex_evidence"]["pdf"]["conversion_diagnostics"]
+        assert diagnostic["stages"][0]["diagnostics"][0]["code"] == "missing_asset"
+        assert body["latex_evidence"]["pdf"]["conversion"]["status"] == "failed"
         assert body["latex_evidence"]["pdf"]["source_check"]["status"] == "not_assessed"
     assert body["latex_evidence"]["tex"]["accessibility_status"] == "not_verified"
     assert body["human_review_required"] is True
@@ -151,6 +179,11 @@ async def test_queued_process_persists_receipt_and_only_delivers_supported_tex(
     if "pdf" in formats:
         assert result["latex_pdf_validation"]["status"] == "unavailable", result
         assert result["latex_pdf_validation"]["reason"] == "no_converter", result
+        assert (
+            result["latex_evidence"]["pdf"]["conversion_diagnostics"]["status"]
+            == "refused"
+        )
+        assert result["latex_evidence"]["pdf"]["conversion"]["status"] == "unavailable"
     assert result["latex_evidence"]["tex"]["accessibility_status"] == "not_verified"
     # Commit the worker outcome, then reload it through the mounted job API.
     # Dispatcher/lease completion itself is exercised by the existing worker suite.

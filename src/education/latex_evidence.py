@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from .latex_diagnostics import ConversionDiagnostics
+
 Representation = Literal["tex", "mathml", "html", "pdf", "docx"]
 
 
@@ -41,6 +43,7 @@ class LatexRepresentationEvidence(BaseModel):
     fidelity: LatexCheck = Field(default_factory=LatexCheck)
     human_review: LatexCheck = Field(default_factory=LatexCheck)
     assistive_technology: LatexCheck = Field(default_factory=LatexCheck)
+    conversion_diagnostics: ConversionDiagnostics | None = None
     accessibility_status: Literal["not_verified"] = "not_verified"
     human_review_required: Literal[True] = True
 

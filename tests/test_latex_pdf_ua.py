@@ -42,6 +42,7 @@ def sample_latex_with_metadata():
 }
 \documentclass{article}
 \usepackage[english]{babel}
+\usepackage{unicode-math}
 \title{Test Document}
 \author{Test Author}
 \begin{document}

@@ -12,6 +12,20 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
+from types import SimpleNamespace
+
+from ..latex_diagnostics import (
+    ConversionDiagnostics,
+    ConversionStage,
+    classify,
+    conversion_session,
+    diagnostic,
+    has_loss,
+    inspect_candidate,
+    inspect_source,
+    record,
+    sha,
+)
 
 from .latex_pdf_validation import (
     LatexPDFValidation,
@@ -107,6 +121,100 @@ class LaTeXConverter:
             logger.warning(
                 "LuaLaTeX/LaTeXML not available - falling back to pandoc/pdflatex"
             )
+
+    def _run_stage(
+        self,
+        args,
+        *,
+        source,
+        candidate,
+        phase,
+        pass_number=1,
+        final_pass=True,
+        **kwargs,
+    ):
+        """Keep bounded structured evidence on every exit, including zero."""
+        tool = args[0]
+        input_hash = sha(source.read_bytes())
+        version = "unknown"
+        version_args = [tool, "--version"]
+        if tool in {"lualatex", "pdflatex"}:
+            # Keep the explicit shell policy on every TeX invocation.
+            version_args.append("-no-shell-escape")
+        try:
+            probe = subprocess.run(
+                version_args,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=kwargs.get("cwd"),
+            )
+            match = re.search(
+                r"\b([0-9]{1,4}(?:\.[0-9]{1,4}){1,3})\b",
+                (probe.stdout or "")[:4096] + (probe.stderr or "")[:4096],
+            )
+            if match:
+                version = match[1]
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            result = subprocess.run(args, **kwargs)
+            findings = classify(
+                result.stdout,
+                result.stderr,
+                exit_code=result.returncode,
+                final_pass=final_pass,
+            )
+        except subprocess.TimeoutExpired:
+            result = SimpleNamespace(returncode=1)
+            findings = [diagnostic("timeout")]
+        except OSError:
+            result = SimpleNamespace(returncode=1)
+            findings = [diagnostic("tool_unavailable")]
+        try:
+            candidate_hash = (
+                sha(candidate.read_bytes()) if candidate.is_file() else None
+            )
+        except OSError:
+            candidate_hash = None
+        if not candidate_hash and not findings:
+            findings.append(diagnostic("candidate_missing"))
+        stage = record(
+            ConversionStage(
+                tool=tool,
+                version=version,
+                phase=phase,
+                pass_number=pass_number,
+                input_sha256=input_hash,
+                candidate_sha256=candidate_hash,
+                exit_code=result.returncode,
+                diagnostics=findings,
+            )
+        )
+        audit = candidate.parent / f"{tool}-{phase}-{pass_number}.diagnostics.json"
+        audit.write_text(stage.model_dump_json(indent=2), encoding="utf-8")
+        audit.chmod(0o600)
+        # Callers cannot accidentally accept known loss on an exit-zero candidate.
+        return SimpleNamespace(
+            returncode=1 if stage.blocked else result.returncode, stdout="", stderr=""
+        )
+
+    def _finish_diagnostics(self, tex_path, candidate, stages, receipts, kind):
+        try:
+            report = ConversionDiagnostics(
+                source_sha256=sha(Path(tex_path).read_bytes()),
+                candidate_sha256=(
+                    sha(Path(candidate).read_bytes()) if candidate else None
+                ),
+                status=(
+                    "accepted" if candidate and stages and not has_loss() else "refused"
+                ),
+                stages=stages,
+            )
+            if receipts is not None:
+                receipts[kind] = report
+        except OSError:
+            return
 
     def _check_command(self, cmd: str) -> bool:
         """Check if a command is available in PATH."""
@@ -280,40 +388,44 @@ class LaTeXConverter:
 
             # Step 1: LaTeX → XML with MathML
             logger.info(f"Converting {tex_file.name} to XML with LaTeXML...")
-            result = subprocess.run(
+            result = self._run_stage(
                 [
                     "latexml",
                     "--dest=" + str(xml_path),
-                    "--quiet",
+                    "--log=" + str(output_dir / "parse.log"),
                     str(processed_tex),
                 ],
+                source=processed_tex,
+                candidate=xml_path,
+                phase="parse",
                 capture_output=True,
                 text=True,
                 timeout=120,
                 cwd=str(output_dir),
             )
 
-            # Clean up temp file
-            if processed_tex.exists():
-                processed_tex.unlink()
-
-            if result.returncode != 0:
-                logger.warning(f"LaTeXML warning: {result.stderr[:500]}")
-                # LaTeXML often returns non-zero but still produces output
-                if not xml_path.exists():
-                    logger.error("LaTeXML failed to produce XML output")
-                    return None
+            processed_tex.chmod(0o600)
+            if xml_path.exists():
+                xml_path.chmod(0o600)
+            if result.returncode != 0 or not xml_path.exists():
+                return None
+            if inspect_candidate(processed_tex, xml_path, xml=True).blocked:
+                return None
 
             # Step 2: XML → HTML5 with MathML
             # Note: LaTeXML 0.8.x automatically generates MathML with --format=html5
             logger.info("Converting XML to accessible HTML5...")
-            result = subprocess.run(
+            result = self._run_stage(
                 [
                     "latexmlpost",
                     "--dest=" + str(html_path),
                     "--format=html5",
+                    "--log=" + str(output_dir / "postprocess.log"),
                     str(xml_path),
                 ],
+                source=xml_path,
+                candidate=html_path,
+                phase="postprocess",
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -321,17 +433,11 @@ class LaTeXConverter:
             )
 
             if result.returncode != 0:
-                logger.warning(f"latexmlpost warning: {result.stderr[:500]}")
-
-            # Clean up intermediate XML
-            if xml_path.exists():
-                xml_path.unlink()
-
+                return None
             if html_path.exists():
-                # Enhance HTML with accessibility features
                 self._enhance_html_accessibility(html_path)
-                logger.info(f"Generated accessible HTML: {html_path}")
-                return str(html_path)
+                if not inspect_candidate(tex_file, html_path).blocked:
+                    return str(html_path)
 
             return None
 
@@ -357,7 +463,7 @@ class LaTeXConverter:
                 content = content.replace("<body>", f"<body>\n{skip_link}")
 
             # Wrap main content with landmark
-            if "<main" not in content and "<article" not in content:
+            if "<main" not in content:
                 # Find body content and wrap in main
                 body_start = content.find("<body")
                 body_end = content.find(">", body_start)
@@ -516,6 +622,18 @@ class LaTeXConverter:
         return self.convert_to_pdf_with_validation(tex_path, output_dir)[0]
 
     def convert_to_pdf_with_validation(
+        self, tex_path, output_dir=None, *, conversion_receipts=None
+    ):
+        with conversion_session() as stages:
+            candidate, validation = self._convert_to_pdf_with_validation(
+                tex_path, output_dir
+            )
+            self._finish_diagnostics(
+                tex_path, candidate, stages, conversion_receipts, "pdf"
+            )
+            return candidate, validation
+
+    def _convert_to_pdf_with_validation(
         self, tex_path: str, output_dir: Optional[str] = None
     ) -> tuple[Optional[str], LatexPDFValidation]:
         """All exporters share one gate; each attempt owns a fresh directory.
@@ -532,6 +650,8 @@ class LaTeXConverter:
             if not tex_file.is_file():
                 return None, failure
             out_dir.mkdir(parents=True, exist_ok=True)
+            if inspect_source(tex_file).blocked:
+                return None, failure
             available = False
             for exporter, enabled in (
                 ("lualatex", self.lualatex_available),
@@ -545,15 +665,32 @@ class LaTeXConverter:
                 if exporter == "latexml":
                     html = self._convert_with_latexml(str(tex_file), attempt)
                     pdf = attempt / (tex_file.stem + ".pdf")
-                    candidate = (
-                        str(pdf)
-                        if html and self._html_to_pdf_playwright_sync(html, str(pdf))
-                        else None
+                    rendered = bool(
+                        html and self._html_to_pdf_playwright_sync(html, str(pdf))
                     )
+                    if html:
+                        record(
+                            ConversionStage(
+                                tool="html-renderer",
+                                phase="render",
+                                input_sha256=sha(Path(html).read_bytes()),
+                                candidate_sha256=(
+                                    sha(pdf.read_bytes()) if pdf.is_file() else None
+                                ),
+                                diagnostics=(
+                                    []
+                                    if rendered and pdf.is_file()
+                                    else [diagnostic("process_failed")]
+                                ),
+                            )
+                        )
+                    candidate = str(pdf) if rendered and pdf.is_file() else None
                 else:
                     candidate = getattr(self, f"_convert_with_{exporter}")(
                         str(tex_file), attempt
                     )
+                if has_loss():
+                    return None, failure
                 if candidate:
                     receipt = validate_pdf_candidate(candidate)
                     # A failed validation is terminal, not an invitation to try
@@ -574,8 +711,8 @@ class LaTeXConverter:
 
         try:
             # Run pdflatex twice for references
-            for _ in range(2):
-                result = subprocess.run(
+            for run in range(2):
+                result = self._run_stage(
                     [
                         "pdflatex",
                         "-interaction=nonstopmode",
@@ -584,6 +721,11 @@ class LaTeXConverter:
                         str(output_dir),
                         str(tex_file),
                     ],
+                    source=tex_file,
+                    candidate=pdf_path,
+                    phase="compile",
+                    pass_number=run + 1,
+                    final_pass=run == 1,
                     capture_output=True,
                     text=True,
                     timeout=120,
@@ -616,7 +758,7 @@ class LaTeXConverter:
             # tagpdf's tagging works without shell escape.
             # Two passes for references and structure finalization
             for run in range(2):
-                result = subprocess.run(
+                result = self._run_stage(
                     [
                         "lualatex",
                         "-interaction=nonstopmode",
@@ -624,6 +766,11 @@ class LaTeXConverter:
                         f"-output-directory={output_dir}",
                         str(tex_file),
                     ],
+                    source=tex_file,
+                    candidate=pdf_path,
+                    phase="compile",
+                    pass_number=run + 1,
+                    final_pass=run == 1,
                     capture_output=True,
                     text=True,
                     timeout=180,  # LuaLaTeX can be slower than pdflatex
@@ -654,7 +801,15 @@ class LaTeXConverter:
         except OSError:
             return False
 
-    def convert_to_html(
+    def convert_to_html(self, tex_path, output_dir=None, *, conversion_receipts=None):
+        with conversion_session() as stages:
+            candidate = self._convert_to_html(tex_path, output_dir)
+            self._finish_diagnostics(
+                tex_path, candidate, stages, conversion_receipts, "html"
+            )
+            return candidate
+
+    def _convert_to_html(
         self, tex_path: str, output_dir: Optional[str] = None
     ) -> Optional[str]:
         """
@@ -691,16 +846,23 @@ class LaTeXConverter:
 
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        if inspect_source(tex_file).blocked:
+            return None
+
         # Primary: LaTeXML (best MathML support)
         if self.latexml_available:
-            html_path = self._convert_with_latexml(tex_path, out_dir)
+            attempt = Path(tempfile.mkdtemp(prefix="html-latexml-", dir=out_dir))
+            html_path = self._convert_with_latexml(tex_path, attempt)
+            if has_loss():
+                return None
             if html_path:
                 return html_path
 
         # Fallback: pandoc with MathML
         if self.pandoc_available:
             logger.warning("Using pandoc fallback for HTML")
-            return self._convert_with_pandoc(tex_path, out_dir)
+            attempt = Path(tempfile.mkdtemp(prefix="html-pandoc-", dir=out_dir))
+            return self._convert_with_pandoc(tex_path, attempt)
 
         logger.error("No HTML conversion tools available")
         return None
@@ -711,7 +873,7 @@ class LaTeXConverter:
         html_path = output_dir / (tex_file.stem + ".html")
 
         try:
-            result = subprocess.run(
+            result = self._run_stage(
                 [
                     "pandoc",
                     str(tex_file),
@@ -724,6 +886,9 @@ class LaTeXConverter:
                     "--toc",
                     "--section-divs",
                 ],
+                source=tex_file,
+                candidate=html_path,
+                phase="parse",
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -736,8 +901,8 @@ class LaTeXConverter:
 
             if html_path.exists():
                 self._enhance_html_accessibility(html_path)
-                logger.info(f"Generated HTML (pandoc): {html_path}")
-                return str(html_path)
+                if not inspect_candidate(tex_file, html_path).blocked:
+                    return str(html_path)
 
             return None
 
@@ -752,6 +917,7 @@ class LaTeXConverter:
         output_dir: Optional[str] = None,
         *,
         validation_receipts: Optional[dict[str, LatexPDFValidation]] = None,
+        conversion_receipts: Optional[dict[str, ConversionDiagnostics]] = None,
     ) -> dict[str, Optional[str]]:
         """
         Convert LaTeX to multiple accessible formats.
@@ -773,12 +939,14 @@ class LaTeXConverter:
                 results["tex"] = tex_path
             elif fmt_lower == "pdf":
                 results["pdf"], receipt = self.convert_to_pdf_with_validation(
-                    tex_path, output_dir
+                    tex_path, output_dir, conversion_receipts=conversion_receipts
                 )
                 if validation_receipts is not None:
                     validation_receipts["pdf"] = receipt
             elif fmt_lower == "html":
-                results["html"] = self.convert_to_html(tex_path, output_dir)
+                results["html"] = self.convert_to_html(
+                    tex_path, output_dir, conversion_receipts=conversion_receipts
+                )
             else:
                 logger.warning(f"Unknown format: {fmt}")
                 results[fmt_lower] = None

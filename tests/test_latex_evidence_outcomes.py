@@ -188,7 +188,13 @@ def test_passing_pdf_machine_checks_still_require_fidelity_and_reader_review(
 
     class Converter:
         def convert_all_formats(
-            self, path, formats, output_dir, *, validation_receipts
+            self,
+            path,
+            formats,
+            output_dir,
+            *,
+            validation_receipts,
+            conversion_receipts=None,
         ):
             pdf = Path(path).with_suffix(".pdf")
             pdf.write_bytes(candidate)

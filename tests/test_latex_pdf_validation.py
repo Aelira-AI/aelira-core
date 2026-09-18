@@ -153,9 +153,13 @@ def test_each_exporter_has_same_gate(candidate, monkeypatch, exporter, valid):
 
     monkeypatch.setattr(converter, "_convert_with_lualatex", generate)
     monkeypatch.setattr(converter, "_convert_with_pdflatex", generate)
-    monkeypatch.setattr(
-        converter, "_convert_with_latexml", lambda *args: "fixture.html"
-    )
+
+    def generate_html(tex, output):
+        html = output / "fixture.html"
+        html.write_text("<html><body>Fixture</body></html>")
+        return str(html)
+
+    monkeypatch.setattr(converter, "_convert_with_latexml", generate_html)
 
     def browser_double(html, path):
         generate(str(source), Path(path).parent)
@@ -262,7 +266,13 @@ def test_failed_pdf_is_not_silently_replaced_by_successful_tex(
 
     class Converter:
         def convert_all_formats(
-            self, path, formats, output_dir, *, validation_receipts
+            self,
+            path,
+            formats,
+            output_dir,
+            *,
+            validation_receipts,
+            conversion_receipts=None,
         ):
             validation_receipts["pdf"] = receipt
             return {"pdf": None}
