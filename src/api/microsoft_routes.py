@@ -9,14 +9,26 @@ Provides endpoints for:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 import logging
 import os
 import uuid
+import re
+from functools import wraps
+from pathlib import Path
+from urllib.parse import urlparse
+import httpx
+from sqlalchemy.exc import SQLAlchemyError
+from ..integrations.cloud_base import (
+    CloudIntegrationError,
+    CloudNotFoundError,
+    CloudAuthError,
+    CloudRateLimitError,
+)
 
 from ..db.database import get_db_dependency
 from ..db.models import (
@@ -26,13 +38,13 @@ from ..db.models import (
     CloudJobQueue,
     CloudProvider,
     CloudJobType,
+    CloudWebhookSubscription,
 )
 from ..api.auth_routes import get_current_api_key
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..middleware.quota import require_feature
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
 from ..integrations.microsoft_365.microsoft_oauth import MicrosoftOAuthService
-from ..integrations.microsoft_365.microsoft_graph import GraphClient
 from ..config.settings import get_settings
 from ..services.remediation_artifact_service import (
     ArtifactAuthorizationError,
@@ -132,13 +144,20 @@ class MicrosoftFileListResponse(BaseModel):
 class ScanFileRequest(BaseModel):
     """Request to scan a specific file."""
 
-    file_id: str = Field(..., description="Cloud file ID (not provider file ID)")
+    file_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="Cloud file ID (not provider file ID)",
+    )
 
 
 class ScanFolderRequest(BaseModel):
     """Request to scan all files in a folder."""
 
-    folder_id: str = Field(..., description="OneDrive/SharePoint folder ID")
+    folder_id: str = Field(
+        ..., min_length=1, max_length=255, description="OneDrive/SharePoint folder ID"
+    )
     drive_id: Optional[str] = Field(None, description="Specific drive ID (optional)")
     site_id: Optional[str] = Field(None, description="SharePoint site ID (optional)")
 
@@ -146,7 +165,7 @@ class ScanFolderRequest(BaseModel):
 class RemediateFileRequest(BaseModel):
     """Request to remediate and re-upload a file."""
 
-    file_id: str = Field(..., description="Cloud file ID")
+    file_id: str = Field(..., min_length=1, max_length=255, description="Cloud file ID")
     upload_as_new: bool = Field(
         default=False, description="Upload as new file instead of replacing"
     )
@@ -156,6 +175,7 @@ class ScanResultResponse(BaseModel):
     """Response with scan results."""
 
     file_id: str
+    job_id: Optional[str] = None
     scan_id: Optional[str]
     compliance_score: Optional[float]
     issues_found: int
@@ -265,6 +285,49 @@ async def get_microsoft_integration(
         drive_id=drive_id,
         site_id=site_id,
     )
+
+
+def microsoft_errors(handler):
+    """Bound provider/database failures and roll back incomplete local writes."""
+
+    @wraps(handler)
+    async def guarded(*args, **kwargs):
+        try:
+            return await handler(*args, **kwargs)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            db = kwargs.get("db")
+            if db is not None:
+                db.rollback()
+            logger.warning("Microsoft operation failed (%s)", type(exc).__name__)
+            code = 503 if isinstance(exc, SQLAlchemyError) else 500
+            if isinstance(exc, CloudNotFoundError):
+                code = 404
+            elif isinstance(exc, (CloudAuthError, CloudRateLimitError)):
+                code = 503
+            elif isinstance(exc, httpx.RequestError):
+                code = 503
+            elif isinstance(exc, CloudIntegrationError):
+                code = 502
+            elif isinstance(exc, httpx.HTTPStatusError):
+                code = 404 if exc.response.status_code == 404 else 503
+            raise HTTPException(code, "Microsoft operation unavailable") from None
+
+    return guarded
+
+
+async def microsoft_graph_get(api_key, db, endpoint):
+    """Use the existing async Graph transport and always release its storage."""
+    credential = await get_microsoft_credential(api_key, db)
+    integration = await get_microsoft_integration(credential)
+    try:
+        client = await integration._get_client()
+        response = await client.get(f"{integration.GRAPH_API_BASE}{endpoint}")
+        response.raise_for_status()
+        return response.json()
+    finally:
+        await integration.close()
 
 
 # ==================== OAuth Connection Endpoints ====================
@@ -575,6 +638,7 @@ async def microsoft_status(
 
 
 @router.get("/drives", response_model=List[DriveResponse])
+@microsoft_errors
 async def list_drives(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
@@ -608,6 +672,7 @@ async def list_drives(
 
 
 @router.get("/sites", response_model=List[SiteResponse])
+@microsoft_errors
 async def list_sites(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
@@ -637,6 +702,7 @@ async def list_sites(
 
 
 @router.get("/onedrive/files", response_model=MicrosoftFileListResponse)
+@microsoft_errors
 async def list_onedrive_files(
     folder_id: Optional[str] = Query(None, description="Folder ID (None for root)"),
     drive_id: Optional[str] = Query(None, description="Specific drive ID"),
@@ -666,6 +732,8 @@ async def list_onedrive_files(
         # Sync files to our database
         response_files = []
         for file_info in file_infos:
+            if file_info.is_folder:
+                continue
             # Check if file already tracked
             cloud_file = (
                 db.query(CloudFile)
@@ -725,9 +793,6 @@ async def list_onedrive_files(
                 )
             )
 
-        db.commit()
-
-        # Update last sync time
         credential.last_sync_at = datetime.now(timezone.utc)
         db.commit()
 
@@ -737,17 +802,12 @@ async def list_onedrive_files(
             total_count=len(response_files),
         )
 
-    except Exception as e:
-        logger.error(f"Failed to list OneDrive files: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list files: {str(e)}",
-        )
     finally:
         await integration.close()
 
 
 @router.get("/onedrive/folders")
+@microsoft_errors
 async def list_onedrive_folders(
     parent_id: Optional[str] = Query(
         None, description="Parent folder ID (None for root)"
@@ -761,35 +821,9 @@ async def list_onedrive_folders(
     Used for folder selection UI to choose which folders to sync.
     Returns folder hierarchy for privacy-conscious syncing.
     """
-    integration = None
+    credential = await get_microsoft_credential(api_key, db)
+    integration = await get_microsoft_integration(credential)
     try:
-        # Get OAuth credential
-        credential = (
-            db.query(CloudOAuthCredentials)
-            .filter(
-                CloudOAuthCredentials.department_id == api_key.department_id,
-                CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-                CloudOAuthCredentials.is_active,
-            )
-            .first()
-        )
-
-        if not credential:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Microsoft 365 not connected",
-            )
-
-        # Decrypt token
-        token_manager = get_token_manager()
-        access_token = token_manager.decrypt_token(credential.access_token)
-
-        # Initialize OneDrive integration
-        integration = OneDriveIntegration(
-            access_token=access_token,
-            department_id=credential.department_id,
-        )
-
         # List folders
         folders = await integration.list_folders(parent_folder_id=parent_id)
 
@@ -806,23 +840,15 @@ async def list_onedrive_folders(
             ]
         }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to list OneDrive folders: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list folders: {str(e)}",
-        )
     finally:
-        if integration:
-            await integration.close()
+        await integration.close()
 
 
 # ==================== Scanning Endpoints ====================
 
 
 @router.post("/scan/file", response_model=ScanResultResponse)
+@microsoft_errors
 async def scan_file(
     request: ScanFileRequest,
     api_key: APIKey = Depends(get_current_api_key),
@@ -839,6 +865,7 @@ async def scan_file(
         db.query(CloudFile)
         .filter(
             CloudFile.id == request.file_id,
+            CloudFile.provider == CloudProvider.MICROSOFT.value,
             CloudFile.department_id == api_key.department_id,
         )
         .first()
@@ -873,6 +900,7 @@ async def scan_file(
 
     return ScanResultResponse(
         file_id=cloud_file.id,
+        job_id=job.id,
         scan_id=None,
         compliance_score=None,
         issues_found=0,
@@ -882,6 +910,7 @@ async def scan_file(
 
 
 @router.post("/scan/folder", response_model=Dict[str, Any])
+@microsoft_errors
 async def scan_folder(
     request: ScanFolderRequest,
     api_key: APIKey = Depends(get_current_api_key),
@@ -908,7 +937,7 @@ async def scan_folder(
                 page_token=page_token,
                 page_size=100,
             )
-            all_files.extend(file_infos)
+            all_files.extend(info for info in file_infos if not info.is_folder)
 
             if not next_token:
                 break
@@ -916,6 +945,7 @@ async def scan_folder(
 
         # Create jobs for each file
         jobs_created = 0
+        job_ids = []
         for file_info in all_files:
             # Get or create cloud file record
             cloud_file = (
@@ -949,7 +979,7 @@ async def scan_folder(
                 db.flush()
 
             # Create scan job
-            enqueue_cloud_job(
+            job = enqueue_cloud_job(
                 db,
                 department_id=api_key.department_id,
                 job_type=CloudJobType.SCAN.value,
@@ -967,6 +997,7 @@ async def scan_folder(
                 priority=5,
             )
             jobs_created += 1
+            job_ids.append(job.id)
 
         db.commit()
 
@@ -975,15 +1006,10 @@ async def scan_folder(
             "folder_id": request.folder_id,
             "files_found": len(all_files),
             "jobs_created": jobs_created,
+            "job_ids": job_ids,
             "message": f"Created {jobs_created} scan jobs for folder",
         }
 
-    except Exception as e:
-        logger.error(f"Failed to scan folder: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to scan folder: {str(e)}",
-        )
     finally:
         await integration.close()
 
@@ -992,6 +1018,7 @@ async def scan_folder(
 
 
 @router.post("/remediate", response_model=Dict[str, Any])
+@microsoft_errors
 async def remediate_file(
     request: RemediateFileRequest,
     api_key: APIKey = Depends(get_current_api_key),
@@ -1008,6 +1035,7 @@ async def remediate_file(
         db.query(CloudFile)
         .filter(
             CloudFile.id == request.file_id,
+            CloudFile.provider == CloudProvider.MICROSOFT.value,
             CloudFile.department_id == api_key.department_id,
         )
         .first()
@@ -1064,6 +1092,7 @@ async def remediate_file(
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
+@microsoft_errors
 async def get_job_status(
     job_id: str,
     api_key: APIKey = Depends(get_current_api_key),
@@ -1076,6 +1105,7 @@ async def get_job_status(
         db.query(CloudJobQueue)
         .filter(
             CloudJobQueue.id == job_id,
+            CloudJobQueue.provider == CloudProvider.MICROSOFT.value,
             CloudJobQueue.department_id == api_key.department_id,
         )
         .first()
@@ -1099,6 +1129,7 @@ async def get_job_status(
 
 
 @router.get("/jobs", response_model=List[JobStatusResponse])
+@microsoft_errors
 async def list_jobs(
     status: Optional[str] = Query(None, description="Filter by status"),
     limit: int = Query(20, ge=1, le=100),
@@ -1137,6 +1168,7 @@ async def list_jobs(
 
 
 @router.get("/account")
+@microsoft_errors
 async def get_microsoft_account(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
@@ -1165,763 +1197,427 @@ async def get_microsoft_account(
 
 
 @router.get("/onedrive/folders/{folder_id}/children")
+@microsoft_errors
 async def list_folder_children(
     folder_id: str,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    List contents of an OneDrive folder.
-
-    Args:
-        folder_id: Folder ID or "root" for root folder
-
-    Returns:
-        List of files and folders in the folder.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
+    endpoint = (
+        "/me/drive/root/children"
+        if folder_id == "root"
+        else f"/me/drive/items/{folder_id}/children"
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Get folder children using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
-    try:
-        endpoint = (
-            f"/me/drive/items/{folder_id}/children"
-            if folder_id != "root"
-            else "/me/drive/root/children"
-        )
-        response = graph_client.get(endpoint)
-        return {"items": response.get("value", []), "folder_id": folder_id}
-    except Exception as e:
-        logger.error(f"Error listing folder children: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list folder children: {str(e)}",
-        )
+    data = await microsoft_graph_get(api_key, db, endpoint)
+    return {"items": data.get("value", []), "folder_id": folder_id}
 
 
 @router.get("/onedrive/files/{file_id}")
+@microsoft_errors
 async def get_onedrive_file_metadata(
     file_id: str,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Get file metadata from OneDrive.
-
-    Args:
-        file_id: OneDrive file ID
-
-    Returns:
-        File metadata including name, type, size, and sharing info.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
-    )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Get file metadata using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
-    try:
-        file_info = graph_client.get(f"/me/drive/items/{file_id}")
-        return file_info
-    except Exception as e:
-        logger.error(f"Error getting file metadata: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get file metadata: {str(e)}",
-        )
+    return await microsoft_graph_get(api_key, db, f"/me/drive/items/{file_id}")
 
 
 @router.get("/onedrive/files/{file_id}/content")
+@microsoft_errors
 async def download_onedrive_file(
     file_id: str,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Download file content from OneDrive.
-
-    Args:
-        file_id: OneDrive file ID
-
-    Returns:
-        File content as bytes.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
-    )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Download file using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
+    credential = await get_microsoft_credential(api_key, db)
+    integration = await get_microsoft_integration(credential)
     try:
-        file_content = graph_client.get(f"/me/drive/items/{file_id}/content")
-        return {"content": file_content, "file_id": file_id}
-    except Exception as e:
-        logger.error(f"Error downloading file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to download file: {str(e)}",
-        )
-
-
-class UploadOneDriveRequest(BaseModel):
-    """Request to upload file to OneDrive."""
-
-    file_path: str = Field(..., description="Local file path to upload")
-    parent_folder_id: Optional[str] = Field(
-        None, description="Parent folder ID (root if not specified)"
-    )
-    file_id: Optional[str] = Field(None, description="File ID to replace (update)")
-
-
-@router.post("/onedrive/upload")
-async def upload_to_onedrive(
-    request: UploadOneDriveRequest,
-    api_key: APIKey = Depends(get_current_api_key),
-    db: Session = Depends(get_db_dependency),
-):
-    """
-    Upload file to OneDrive.
-
-    Args:
-        request: Upload request with file path and optional parent folder
-
-    Returns:
-        Upload status and new file ID.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
-    )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Check if file exists
-    if not os.path.exists(request.file_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File not found: {request.file_path}",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Upload file using OneDrive integration
-    integration = OneDriveIntegration(
-        access_token=access_token,
-        department_id=credential.department_id,
-    )
-
-    try:
-        # Placeholder - would use upload_file method
-        new_file_id = request.file_id or f"onedrive-file-{uuid.uuid4()}"
-
-        return {
-            "success": True,
-            "file_id": new_file_id,
-            "file_path": request.file_path,
-            "message": "File upload queued (implementation in progress)",
-        }
-
-    except Exception as e:
-        logger.error(f"Error uploading file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload file: {str(e)}",
+        local_path = str(Path(integration._temp_dir) / "download")
+        result = await integration.download_file(file_id, local_path)
+        if not result.success:
+            raise HTTPException(502, "Microsoft download unavailable")
+        return Response(
+            content=Path(local_path).read_bytes(),
+            media_type=result.mime_type or "application/octet-stream",
         )
     finally:
         await integration.close()
 
 
-# ==================== SharePoint Operations ====================
+class UploadOneDriveRequest(BaseModel):
+    """Legacy local-path upload shape; managed artifact publication is supported separately."""
+
+    file_path: str = Field(..., min_length=1)
+    parent_folder_id: Optional[str] = None
+    file_id: Optional[str] = None
+
+
+@router.post("/onedrive/upload")
+@microsoft_errors
+async def upload_to_onedrive(
+    request: UploadOneDriveRequest,
+    api_key: APIKey = Depends(get_current_api_key),
+    db: Session = Depends(get_db_dependency),
+):
+    await get_microsoft_credential(api_key, db)
+    raise HTTPException(
+        501,
+        "Local-path uploads are not supported; publish an approved managed artifact",
+    )
 
 
 @router.get("/sharepoint/sites/{site_id}/drives")
+@microsoft_errors
 async def get_sharepoint_drives(
     site_id: str,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Get document libraries for a SharePoint site.
-
-    Args:
-        site_id: SharePoint site ID
-
-    Returns:
-        List of document libraries (drives) in the site.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
-    )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Get drives using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
-    try:
-        response = graph_client.get(f"/sites/{site_id}/drives")
-        return {"drives": response.get("value", []), "site_id": site_id}
-    except Exception as e:
-        logger.error(f"Error getting SharePoint drives: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get SharePoint drives: {str(e)}",
-        )
+    data = await microsoft_graph_get(api_key, db, f"/sites/{site_id}/drives")
+    return {"drives": data.get("value", []), "site_id": site_id}
 
 
 @router.get("/sharepoint/drives/{drive_id}/items")
+@microsoft_errors
 async def list_sharepoint_drive_items(
     drive_id: str,
-    folder_path: Optional[str] = Query(
-        None, description="Folder path (root if not specified)"
-    ),
+    folder_path: Optional[str] = Query(None),
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    List items in a SharePoint document library.
-
-    Args:
-        drive_id: SharePoint drive ID
-        folder_path: Optional folder path
-
-    Returns:
-        List of files and folders in the library.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
+    endpoint = (
+        f"/drives/{drive_id}/root/children"
+        if not folder_path
+        else f"/drives/{drive_id}/root:/{folder_path}:/children"
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Get drive items using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
-    try:
-        endpoint = f"/drives/{drive_id}/root/children"
-        if folder_path:
-            endpoint = f"/drives/{drive_id}/root:/{folder_path}:/children"
-
-        response = graph_client.get(endpoint)
-        return {"items": response.get("value", []), "drive_id": drive_id}
-    except Exception as e:
-        logger.error(f"Error listing SharePoint drive items: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list drive items: {str(e)}",
-        )
+    data = await microsoft_graph_get(api_key, db, endpoint)
+    return {"items": data.get("value", []), "drive_id": drive_id}
 
 
 @router.get("/sharepoint/search")
+@microsoft_errors
 async def search_sharepoint(
-    query: str = Query(..., description="Search query"),
+    query: str = Query(..., min_length=1, max_length=255),
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Search for files in SharePoint.
-
-    Args:
-        query: Search query string
-
-    Returns:
-        List of matching files.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
+    data = await microsoft_graph_get(
+        api_key, db, f"/me/drive/search(q='{query.replace(chr(39), chr(39) * 2)}')"
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Search using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
-    try:
-        response = graph_client.get(f"/me/drive/search(q='{query}')")
-        return {"results": response.get("value", []), "query": query}
-    except Exception as e:
-        logger.error(f"Error searching SharePoint: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to search SharePoint: {str(e)}",
-        )
+    return {"results": data.get("value", []), "query": query}
 
 
 @router.post("/scan/sharepoint/file/{file_id}")
+@microsoft_errors
 async def scan_sharepoint_file(
     file_id: str,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Scan a SharePoint file for accessibility issues.
-
-    Args:
-        file_id: SharePoint file ID
-
-    Returns:
-        Scan job information.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
+    credential = await get_microsoft_credential(api_key, db)
+    cloud_file = (
+        db.query(CloudFile)
         .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
+            CloudFile.department_id == api_key.department_id,
+            CloudFile.provider == CloudProvider.MICROSOFT.value,
+            CloudFile.credential_id == credential.id,
+            CloudFile.provider_file_id == file_id,
         )
         .first()
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Create a scan job (similar to OneDrive scan)
+    if cloud_file is None:
+        raise HTTPException(404, "File not found; list files before requesting a scan")
     new_job = enqueue_cloud_job(
         db,
         department_id=api_key.department_id,
         job_type=CloudJobType.SCAN.value,
         payload={
+            "cloud_file_id": cloud_file.id,
             "credential_id": credential.id,
-            "provider": CloudProvider.MICROSOFT.value,
+            "provider": "microsoft",
             "provider_file_id": file_id,
         },
-        dedupe_key=f"scan:microsoft:sharepoint:{file_id}:current",
+        dedupe_key=f"scan:microsoft:{cloud_file.id}:{cloud_file.provider_version or 'current'}",
+        cloud_file_id=cloud_file.id,
         credential_id=credential.id,
-        provider=CloudProvider.MICROSOFT.value,
+        provider="microsoft",
         provider_file_id=file_id,
     )
     db.commit()
-
     return {
         "job_id": new_job.id,
         "file_id": file_id,
-        "status": "pending",
+        "status": new_job.status,
         "message": "SharePoint file scan queued",
     }
 
 
 class UploadSharePointRequest(BaseModel):
-    """Request to upload file to SharePoint."""
-
-    file_path: str = Field(..., description="Local file path to upload")
-    site_id: str = Field(..., description="SharePoint site ID")
-    drive_id: str = Field(..., description="Document library (drive) ID")
-    folder_path: Optional[str] = Field(None, description="Folder path within library")
+    file_path: str = Field(..., min_length=1)
+    site_id: str = Field(..., min_length=1)
+    drive_id: str = Field(..., min_length=1)
+    folder_path: Optional[str] = None
 
 
 @router.post("/sharepoint/upload")
+@microsoft_errors
 async def upload_to_sharepoint(
     request: UploadSharePointRequest,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Upload file to SharePoint document library.
-
-    Args:
-        request: Upload request with file path, site ID, drive ID, and folder path
-
-    Returns:
-        Upload status and new file ID.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
+    await get_microsoft_credential(api_key, db)
+    raise HTTPException(
+        501,
+        "Local-path uploads are not supported; publish an approved managed artifact",
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Check if file exists
-    if not os.path.exists(request.file_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File not found: {request.file_path}",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    token_manager.decrypt_token(credential.access_token)
-
-    try:
-        # Placeholder - would use Graph API upload
-        new_file_id = f"sharepoint-file-{uuid.uuid4()}"
-
-        return {
-            "success": True,
-            "file_id": new_file_id,
-            "file_path": request.file_path,
-            "site_id": request.site_id,
-            "drive_id": request.drive_id,
-            "message": "SharePoint file upload queued (implementation in progress)",
-        }
-
-    except Exception as e:
-        logger.error(f"Error uploading to SharePoint: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload to SharePoint: {str(e)}",
-        )
-
-
-# ==================== Webhook Management ====================
 
 
 class CreateSubscriptionRequest(BaseModel):
-    """Request to create a webhook subscription."""
+    """Drive-root notifications supported by the existing OneDrive adapter."""
 
-    resource: str = Field(..., description="Resource to watch (e.g., /me/drive/root)")
-    change_types: List[str] = Field(
-        default=["updated", "created", "deleted"], description="Change types to watch"
+    resource: str = Field(..., max_length=1024)
+    change_types: List[str] = Field(default_factory=lambda: ["updated"])
+    notification_url: str = Field(..., max_length=1024)
+
+    @field_validator("resource")
+    @classmethod
+    def supported_resource(cls, value):
+        if not re.fullmatch(
+            r"/me/drive/root|/drives/[^/?#]+/root|/sites/[^/?#]+/drive/root", value
+        ):
+            raise ValueError("unsupported drive-root resource")
+        return value
+
+    @field_validator("change_types")
+    @classmethod
+    def supported_changes(cls, value):
+        if value != ["updated"]:
+            raise ValueError("drive-root subscriptions support updated notifications")
+        return value
+
+    @field_validator("notification_url")
+    @classmethod
+    def https_callback(cls, value):
+        parsed = urlparse(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "notification URL must use HTTPS without credentials or fragment"
+            )
+        return value
+
+
+def scoped_subscription(db, department_id, subscription_id):
+    row = (
+        db.query(CloudWebhookSubscription)
+        .filter(
+            CloudWebhookSubscription.department_id == department_id,
+            CloudWebhookSubscription.provider == "microsoft",
+            CloudWebhookSubscription.subscription_id == subscription_id,
+            CloudWebhookSubscription.is_active,
+        )
+        .with_for_update()
+        .populate_existing()
+        .first()
     )
-    notification_url: str = Field(..., description="Webhook notification URL")
+    if row is None:
+        raise HTTPException(404, "Subscription not found")
+    return row
 
 
 @router.post("/subscriptions")
+@microsoft_errors
 async def create_webhook_subscription(
     request: CreateSubscriptionRequest,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Create a webhook subscription for Microsoft Graph changes.
-
-    Args:
-        request: Subscription request with resource, change types, and notification URL
-
-    Returns:
-        Subscription ID and details.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
+    credential = await get_microsoft_credential(api_key, db)
+    # Serialize initial intent creation within one credential.
+    db.query(CloudOAuthCredentials).filter(
+        CloudOAuthCredentials.id == credential.id
+    ).with_for_update().one()
+    existing = (
+        db.query(CloudWebhookSubscription)
         .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
+            CloudWebhookSubscription.department_id == api_key.department_id,
+            CloudWebhookSubscription.credential_id == credential.id,
+            CloudWebhookSubscription.provider == "microsoft",
+            CloudWebhookSubscription.resource_uri == request.resource,
+            CloudWebhookSubscription.notification_url == request.notification_url,
+            CloudWebhookSubscription.renewal_status.in_(
+                ["requesting", "indeterminate", "created", "renewed"]
+            ),
         )
         .first()
     )
-
-    if not credential:
+    if existing:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
+            409, "Subscription already exists or requires reconciliation"
         )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Create subscription using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
+    intent_id = str(uuid.uuid4())
+    row = CloudWebhookSubscription(
+        id=intent_id,
+        department_id=api_key.department_id,
+        credential_id=credential.id,
+        provider="microsoft",
+        subscription_id=intent_id,
+        provider_resource_id=request.resource,
+        resource_uri=request.resource,
+        notification_url=request.notification_url,
+        expiration_time=datetime.now(timezone.utc),
+        is_active=False,
+        renewal_status="requesting",
+        pending_renewal_channel_id=intent_id,
+        pending_renewal_started_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    db.commit()  # Persist intent before a remote side effect; failures cannot imply remote rollback.
+    drive_id = (
+        request.resource.split("/")[2]
+        if request.resource.startswith("/drives/")
+        else None
+    )
+    site_id = (
+        request.resource.split("/")[2]
+        if request.resource.startswith("/sites/")
+        else None
+    )
+    integration = await get_microsoft_integration(credential, drive_id, site_id)
     try:
-        subscription_data = {
-            "changeType": ",".join(request.change_types),
-            "notificationUrl": request.notification_url,
-            "resource": request.resource,
-            "expirationDateTime": "2026-12-31T00:00:00.0000000Z",  # 1 year from now
-            "clientState": api_key.department_id,
-        }
+        result = await integration.create_webhook(request.notification_url)
+        row.subscription_id = result["subscription_id"]
+        row.expiration_time = result["expiration_time"]
+        row.is_active = True
+        row.renewal_status = "created"
+        row.pending_renewal_channel_id = None
+        row.pending_renewal_started_at = None
+        db.commit()
+    except Exception:
+        db.rollback()
+        # The committed intent remains requesting: automatic retries are blocked.
+        raise
+    finally:
+        await integration.close()
+    return {
+        "subscription_id": row.subscription_id,
+        "resource": row.resource_uri,
+        "expiration": row.expiration_time,
+        "status": "active",
+    }
 
-        response = graph_client.post("/subscriptions", json_data=subscription_data)
 
-        return {
-            "subscription_id": response.get("id"),
-            "resource": request.resource,
-            "expiration": response.get("expirationDateTime"),
-            "status": "active",
-        }
+def begin_subscription_mutation(db, row, operation):
+    """Keep a durable manual-reconciliation boundary around provider mutations."""
+    if row.renewal_status in {"requesting", "indeterminate"}:
+        raise HTTPException(409, "Subscription requires reconciliation")
+    row.renewal_status = "requesting"
+    row.pending_renewal_channel_id = str(uuid.uuid4())
+    row.pending_renewal_started_at = datetime.now(timezone.utc)
+    row.renewal_result = {
+        "provider": "microsoft",
+        "operation": operation,
+        "status": "requesting",
+    }
+    db.commit()
 
-    except Exception as e:
-        logger.error(f"Error creating webhook subscription: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create subscription: {str(e)}",
-        )
+
+def complete_subscription_mutation(row, outcome):
+    row.renewal_status = outcome
+    row.pending_renewal_channel_id = None
+    row.pending_renewal_started_at = None
+    row.renewal_result = {"provider": "microsoft", "status": outcome}
 
 
 @router.patch("/subscriptions/{subscription_id}")
+@microsoft_errors
 async def renew_webhook_subscription(
     subscription_id: str,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Renew a webhook subscription.
-
-    Args:
-        subscription_id: Subscription ID to renew
-
-    Returns:
-        Updated subscription details.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
-    )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Renew subscription using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
+    # Refresh may commit: resolve credentials before taking the subscription lock.
+    credential = await get_microsoft_credential(api_key, db)
+    row = scoped_subscription(db, api_key.department_id, subscription_id)
+    if credential.id != row.credential_id:
+        raise HTTPException(409, "Subscription credential has changed")
+    begin_subscription_mutation(db, row, "renew")
+    integration = await get_microsoft_integration(credential)
     try:
-        renewal_data = {
-            "expirationDateTime": "2026-12-31T00:00:00.0000000Z",
-        }
-
-        response = graph_client.patch(
-            f"/subscriptions/{subscription_id}", json_data=renewal_data
-        )
-
+        result = await integration.renew_webhook(subscription_id)
+        row.expiration_time = result["expiration_time"]
+        row.last_renewed_at = datetime.now(timezone.utc)
+        complete_subscription_mutation(row, "renewed")
+        db.commit()
         return {
             "subscription_id": subscription_id,
-            "expiration": response.get("expirationDateTime"),
+            "expiration": row.expiration_time,
             "status": "renewed",
         }
-
-    except Exception as e:
-        logger.error(f"Error renewing webhook subscription: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to renew subscription: {str(e)}",
-        )
+    finally:
+        await integration.close()
 
 
 @router.delete("/subscriptions/{subscription_id}")
+@microsoft_errors
 async def delete_webhook_subscription(
     subscription_id: str,
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Delete a webhook subscription.
-
-    Args:
-        subscription_id: Subscription ID to delete
-
-    Returns:
-        Deletion confirmation.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
-    )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Delete subscription using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
+    # Refresh may commit: resolve credentials before taking the subscription lock.
+    credential = await get_microsoft_credential(api_key, db)
+    row = scoped_subscription(db, api_key.department_id, subscription_id)
+    if credential.id != row.credential_id:
+        raise HTTPException(409, "Subscription credential has changed")
+    begin_subscription_mutation(db, row, "delete")
+    integration = await get_microsoft_integration(credential)
     try:
-        graph_client.delete(f"/subscriptions/{subscription_id}")
-
+        if not await integration.delete_webhook(subscription_id):
+            raise HTTPException(502, "Microsoft subscription deletion unavailable")
+        row.is_active = False
+        complete_subscription_mutation(row, "deleted")
+        db.commit()
         return {
             "subscription_id": subscription_id,
             "status": "deleted",
             "message": "Webhook subscription deleted successfully",
         }
-
-    except Exception as e:
-        logger.error(f"Error deleting webhook subscription: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete subscription: {str(e)}",
-        )
+    finally:
+        await integration.close()
 
 
 @router.get("/subscriptions")
+@microsoft_errors
 async def list_webhook_subscriptions(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    List all webhook subscriptions.
-
-    Returns:
-        List of active subscriptions.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
+    await get_microsoft_credential(api_key, db)
+    rows = (
+        db.query(CloudWebhookSubscription)
         .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.MICROSOFT.value,
-            CloudOAuthCredentials.is_active,
+            CloudWebhookSubscription.department_id == api_key.department_id,
+            CloudWebhookSubscription.provider == "microsoft",
+            CloudWebhookSubscription.is_active,
         )
-        .first()
+        .all()
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microsoft 365 not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # List subscriptions using Graph API
-    graph_client = GraphClient(access_token=access_token)
-
-    try:
-        response = graph_client.get("/subscriptions")
-
-        return {
-            "subscriptions": response.get("value", []),
-            "count": len(response.get("value", [])),
+    subscriptions = [
+        {
+            "id": row.subscription_id,
+            "resource": row.resource_uri,
+            "expirationDateTime": row.expiration_time,
         }
-
-    except Exception as e:
-        logger.error(f"Error listing webhook subscriptions: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list subscriptions: {str(e)}",
-        )
+        for row in rows
+    ]
+    return {"subscriptions": subscriptions, "count": len(subscriptions)}
 
 
 # ==================== Health Check ====================

@@ -153,78 +153,40 @@ class OneDriveIntegration(BaseCloudIntegration):
         return response.json()
 
     async def get_drives(self) -> List[MicrosoftDriveInfo]:
-        """
-        List available drives (OneDrive and SharePoint libraries).
-
-        Returns:
-            List of accessible drives
-        """
+        """List drives without turning provider failures into empty success."""
         client = await self._get_client()
-        drives = []
-
-        # Get user's OneDrive
-        try:
-            response = await client.get(f"{self.GRAPH_API_BASE}/me/drive")
-            if response.status_code == 200:
-                data = response.json()
-                drives.append(
-                    MicrosoftDriveInfo(
-                        id=data["id"],
-                        name=data.get("name", "OneDrive"),
-                        driveType=data.get("driveType"),
-                        webUrl=data.get("webUrl"),
-                    )
-                )
-        except Exception as e:
-            logger.warning(f"Could not get user OneDrive: {e}")
-
-        # Get shared drives / SharePoint libraries
-        try:
-            response = await client.get(f"{self.GRAPH_API_BASE}/me/drives")
-            if response.status_code == 200:
-                data = response.json()
-                for drive in data.get("value", []):
-                    drives.append(
-                        MicrosoftDriveInfo(
-                            id=drive["id"],
-                            name=drive.get("name", "Unnamed Drive"),
-                            driveType=drive.get("driveType"),
-                            webUrl=drive.get("webUrl"),
-                        )
-                    )
-        except Exception as e:
-            logger.warning(f"Could not list drives: {e}")
-
-        return drives
+        response = await client.get(f"{self.GRAPH_API_BASE}/me/drive")
+        response.raise_for_status()
+        own_drive = response.json()
+        response = await client.get(f"{self.GRAPH_API_BASE}/me/drives")
+        response.raise_for_status()
+        drives = {
+            item["id"]: item for item in [own_drive, *response.json().get("value", [])]
+        }
+        return [
+            MicrosoftDriveInfo(
+                id=item["id"],
+                name=item.get("name", "OneDrive"),
+                driveType=item.get("driveType"),
+                webUrl=item.get("webUrl"),
+            )
+            for item in drives.values()
+        ]
 
     async def get_sites(self) -> List[MicrosoftSiteInfo]:
-        """
-        List accessible SharePoint sites.
-
-        Returns:
-            List of SharePoint sites the user can access
-        """
+        """List followed sites; a Graph failure is not an empty site list."""
         client = await self._get_client()
-        sites = []
-
-        try:
-            # Get sites followed by user
-            response = await client.get(f"{self.GRAPH_API_BASE}/me/followedSites")
-            if response.status_code == 200:
-                data = response.json()
-                for site in data.get("value", []):
-                    sites.append(
-                        MicrosoftSiteInfo(
-                            id=site["id"],
-                            name=site.get("name", ""),
-                            displayName=site.get("displayName"),
-                            webUrl=site.get("webUrl"),
-                        )
-                    )
-        except Exception as e:
-            logger.warning(f"Could not list SharePoint sites: {e}")
-
-        return sites
+        response = await client.get(f"{self.GRAPH_API_BASE}/me/followedSites")
+        response.raise_for_status()
+        return [
+            MicrosoftSiteInfo(
+                id=item["id"],
+                name=item.get("name", ""),
+                displayName=item.get("displayName"),
+                webUrl=item.get("webUrl"),
+            )
+            for item in response.json().get("value", [])
+        ]
 
     async def list_files(
         self,
