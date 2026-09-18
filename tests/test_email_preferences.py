@@ -12,9 +12,11 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock, AsyncMock
 import uuid
+import alert_route_fixtures as alert_fixtures
 
 # Import app for testing
 from src.api.main import app
+from src.db.models import User
 from src.services.alert_service import (
     AlertService,
     ALERT_SCAN_COMPLETE,
@@ -22,8 +24,9 @@ from src.services.alert_service import (
     ALERT_WEEKLY_SUMMARY,
 )
 
-# Mark all tests in this module as integration (skipped in CI)
+# Integration markers do not skip execution in CI.
 pytestmark = pytest.mark.integration
+alert_route = alert_fixtures.alert_route
 
 
 @pytest.fixture
@@ -304,44 +307,28 @@ class TestEmailFilteringByPreference:
 
         assert result is False
 
-    @pytest.mark.skip(
-        reason="mock filter cannot match SQLAlchemy condition objects to email strings"
-    )
-    def test_filter_emails_by_preference_mixed(
-        self, mock_db_session, mock_user, mock_user_disabled_prefs
-    ):
-        """Test filtering a mixed list of users."""
-
-        # Set up mock to return different users for different emails
-        def mock_query_filter(email_condition):
-            mock_result = MagicMock()
-            # Simulate checking email condition
-            if "testuser@university.edu" in str(email_condition):
-                mock_result.first.return_value = mock_user
-            elif "noalerts@university.edu" in str(email_condition):
-                mock_result.first.return_value = mock_user_disabled_prefs
-            else:
-                mock_result.first.return_value = None
-            return mock_result
-
-        mock_db_session.query.return_value.filter = mock_query_filter
-
-        alert_service = AlertService()
-        emails = [
-            mock_user.email,
-            mock_user_disabled_prefs.email,
-            "unknown@example.com",
-        ]
-
-        # The filter method is available in alert_service
-        filtered = alert_service.filter_emails_by_preference(
-            emails, ALERT_SCAN_COMPLETE, mock_db_session
+    def test_filter_emails_by_preference_mixed(self, alert_route):
+        """Real stored preferences select only the enabled known recipient."""
+        case = alert_route
+        enabled = User(
+            id=str(uuid.uuid4()),
+            department_id=case.department.id,
+            email=f"{uuid.uuid4()}@example.edu",
+            email_scan_complete=True,
         )
-
-        # Only the user with enabled prefs should be included
-        assert mock_user.email in filtered
-        assert mock_user_disabled_prefs.email not in filtered
-        assert "unknown@example.com" not in filtered
+        disabled = User(
+            id=str(uuid.uuid4()),
+            department_id=case.department.id,
+            email=f"{uuid.uuid4()}@example.edu",
+            email_scan_complete=False,
+        )
+        case.db.add_all([enabled, disabled])
+        case.db.commit()
+        emails = [enabled.email, disabled.email, "unknown@example.edu"]
+        case.db.expire_all()
+        assert AlertService().filter_emails_by_preference(
+            emails, ALERT_SCAN_COMPLETE, case.db
+        ) == [enabled.email]
 
 
 class TestPreferenceDefaults:

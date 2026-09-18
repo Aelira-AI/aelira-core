@@ -28,11 +28,11 @@ The separate worker results overlap tests skipped by the main profile. Do not ad
 | --- | ---: | ---: |
 | Environment-gated | 145 | 145 |
 | Obsolete test contract | 155 | 155 |
-| Test defect | 59 | 36 |
+| Test defect | 59 | 35 |
 | Intentionally unsupported API contract | 25 | 25 |
-| Total | 384 | 361 |
+| Total | 384 | 360 |
 
-One defective encryption-key test caught its own assertion failure and skipped. It now checks the real token manager in production and staging, including a configured-key success path; both cases are required to execute. The 22 stale LTI registration skips have also been replaced with 34 required PostgreSQL route cases. The continuing-policy count is an allowance, not a claim that the final revision has already run in CI.
+One defective encryption-key test caught its own assertion failure and skipped. It now checks the real token manager in production and staging, including a configured-key success path; both cases are required to execute. The 22 stale LTI registration skips have also been replaced with 34 required PostgreSQL route cases. The mixed email-preference filter now queries real PostgreSQL records instead of matching stringified SQLAlchemy expressions. Its obsolete skip allowance is removed. The continuing-policy count is an allowance, not a claim that the final revision has already run in CI.
 
 Several old mocked Canvas, Blackboard, Moodle, Google and Microsoft suites are obsolete rather than waiting for credentials. Local LaTeX and scanner checks also have unnecessary blanket gates. These remain explicit defects or obsolete contracts under #374, #375, #426 or #427; listing them never counts them as passes. The 25 unsupported cases expect a generic jobs REST surface that is not the current provider-specific job API. The [route matrix](critical-route-coverage.md) records the restored LTI contracts and secondary route follow-ups.
 
@@ -42,7 +42,7 @@ Environment-gated cases include the browser matrix, optional model/tooling and s
 
 The opt-in `scripts.pytest_ci_evidence` pytest plugin records collected and deselected node IDs, setup/call/teardown outcomes, collection skips/errors, exit status, profile and revision. It omits stdout, tracebacks, exception messages and environment values. It does not change outcomes or skip decisions.
 
-The main profile requires 954 exact critical cases spanning auth, first-admin setup, local scan and remediation queues, LTI registration, Review, managed artifact delivery/write-back, Canvas routes and the server-side journey, PDF corpus and report contracts, plus the repaired key checks. The separate worker profile requires 41 cases. Each required case must be present and passed; missing, deselected, skipped or expected-failure outcomes cannot satisfy it. These lists define the protected scope, not universal endpoint coverage.
+The main profile requires 1,037 exact critical cases spanning auth, first-admin setup, local scan and remediation queues, LTI registration, Review, managed artifact delivery/write-back, Canvas routes and the server-side journey, alert settings/delivery and preference filtering, PDF corpus and report contracts, plus the repaired key checks. The separate worker profile requires 41 cases. Each required case must be present and passed; missing, deselected, skipped or expected-failure outcomes cannot satisfy it. These lists define the protected scope, not universal endpoint coverage.
 
 `scripts/verify_test_evidence.py` rejects unknown skips, unexpected failures, malformed/incomplete evidence, wrong revision/profile, absent required tests and coverage below the floor. Module collection skips are recorded too, so a missing import cannot silently erase a required test module. An allowed test that starts passing is reported as progress, ready for policy cleanup. New skips require source review and an explicit disposition; adding an allowance simply to hide a regression is not a repair.
 

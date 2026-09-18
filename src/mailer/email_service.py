@@ -444,10 +444,10 @@ class EmailService:
         *,
         scans_this_week: Optional[int] = None,
         score_change: str = "",
-        critical_count: int = 0,
-        serious_count: int = 0,
-        moderate_count: int = 0,
-        minor_count: int = 0,
+        critical_count: Optional[int] = None,
+        serious_count: Optional[int] = None,
+        moderate_count: Optional[int] = None,
+        minor_count: Optional[int] = None,
         week_start: str = "",
         week_end: str = "",
         days_until_deadline: Optional[int] = None,
@@ -470,10 +470,20 @@ class EmailService:
             issues_fixed if issues_fixed is not None else "Not available"
         )
 
-        severity_total = critical_count + serious_count + moderate_count + minor_count
+        severity_counts = (critical_count, serious_count, moderate_count, minor_count)
+        severity_total = (
+            sum(severity_counts) if all(c is not None for c in severity_counts) else 0
+        )
 
-        def percent(count: int) -> int:
-            return round((count / severity_total) * 100) if severity_total else 0
+        def percent(count: Optional[int]) -> int:
+            return (
+                round((count / severity_total) * 100)
+                if count is not None and severity_total
+                else 0
+            )
+
+        def measured_count(count: Optional[int]) -> int | str:
+            return count if count is not None else "Not available"
 
         deadline_guidance = _deadline_guidance_html(
             _deadline_for_email(department, deadline)
@@ -490,10 +500,10 @@ class EmailService:
                 "total_issues": total_issues,
                 "issues_fixed": issues_fixed_display,
                 "score_change": score_change,
-                "critical_count": critical_count,
-                "serious_count": serious_count,
-                "moderate_count": moderate_count,
-                "minor_count": minor_count,
+                "critical_count": measured_count(critical_count),
+                "serious_count": measured_count(serious_count),
+                "moderate_count": measured_count(moderate_count),
+                "minor_count": measured_count(minor_count),
                 "critical_percent": percent(critical_count),
                 "serious_percent": percent(serious_count),
                 "moderate_percent": percent(moderate_count),
