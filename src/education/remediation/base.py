@@ -32,6 +32,8 @@ from pydantic import (
     model_validator,
 )
 
+from src.education.remediation.latex_pdf_validation import LatexPDFValidation
+
 from src.education.equation_region_contract import PageRasterRegionLocator
 from src.education.visual_semantic_contract import (
     ChemicalStructurePdfContract,
@@ -836,6 +838,7 @@ class RemediationResult(BaseModel):
     # Verification (post-remediation re-scan)
     verification_passed: bool = False
     verification_result: Optional[VerificationResult] = None
+    latex_pdf_validation: Optional[LatexPDFValidation] = None
 
     # Status
     success: bool = True

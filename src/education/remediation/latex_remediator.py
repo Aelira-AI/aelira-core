@@ -152,9 +152,15 @@ class LatexRemediator(BaseRemediator):
 
         if len(format_values) > 1 or "tex" not in format_values:
             converter = get_latex_converter()
+            receipts = {}
             results = converter.convert_all_formats(
-                output_path, format_values, str(output_dir)
+                output_path,
+                format_values,
+                str(output_dir),
+                validation_receipts=receipts,
             )
+            self.result.latex_pdf_validation = receipts.get("pdf")
+            self._requested_formats = format_values
             self._output_files.update(results)
 
             # Log conversion results
@@ -168,6 +174,9 @@ class LatexRemediator(BaseRemediator):
             return self._output_files["pdf"]
         elif "html" in self._output_files and self._output_files["html"]:
             return self._output_files["html"]
+        if "tex" not in format_values:
+            self.result.success = False
+            self.result.error_message = "requested_export_unavailable"
         return output_path
 
     def get_output_files(self) -> Dict[str, Optional[str]]:
@@ -766,6 +775,11 @@ Provide ONLY the fix content, no explanation."""
         if Path(output_path).suffix.lower() != ".tex":
             self.result.warnings.append(
                 "PDF/HTML exports require their own accessibility verifier; source checks are not comparable."
+            )
+            return super()._verify_fixes(output_path)
+        if "tex" not in getattr(self, "_requested_formats", ["tex"]):
+            self.result.warnings.append(
+                "The requested export was unavailable; TEX is retained for review."
             )
             return super()._verify_fixes(output_path)
         # Read the output file
