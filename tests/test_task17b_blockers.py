@@ -9,7 +9,7 @@ import inspect
 import logging
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import httpx
 import pytest
@@ -476,10 +476,11 @@ async def test_google_webhook_creation_persists_exact_watched_identity(monkeypat
             "expiration": str(int(expiration.timestamp() * 1000)),
         }
 
-    integration = SimpleNamespace(
-        create_webhook=AsyncMock(side_effect=create_webhook),
-        close=AsyncMock(),
+    integration = create_autospec(
+        google_routes.GoogleDriveIntegration, instance=True, spec_set=True
     )
+    integration.create_webhook.side_effect = create_webhook
+    integration.close.return_value = None
     credential = SimpleNamespace(
         id="cred-1",
         department_id="dept-1",
@@ -534,6 +535,8 @@ async def test_google_webhook_creation_persists_exact_watched_identity(monkeypat
     assert row.expiration_time == expiration
     assert result["subscription_id"] == row.id
     assert db.commit.call_count == 2
+    integration.close.assert_awaited_once_with()
+    integration.cleanup.assert_called_once_with()
 
 
 @pytest.mark.asyncio
