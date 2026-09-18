@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "tracking_issue": 375,
+  "journeys": [
+    {
+      "id": "document",
+      "evidence": [
+        {
+          "id": "document-real-stack",
+          "level": "api_integration",
+          "sources": ["scripts/verify_document_stack.ts", "tests/document-stack.compose.yml"],
+          "mocked": [],
+          "ci": {"job": "document-stack", "step": "Verify real API, durable worker and downloaded files", "run_contains": "node --experimental-strip-types scripts/verify_document_stack.ts"},
+          "limitations": "Real API, PostgreSQL, Redis, worker and saved files. Exercises upload, findings, remediation, approval, fresh reads and exact downloads, including unavailable AI and withheld output. No dashboard interaction or semantic conformance proof."
+        },
+        {
+          "id": "document-artifact-contracts",
+          "level": "api_integration",
+          "sources": ["tests/test_managed_artifact_routes.py", "tests/test_review_failure_routes.py"],
+          "mocked": ["authenticated principal", "injected database failures in review failure cases"],
+          "ci": {"job": "test", "step": "Run tests", "run_contains": "pytest tests/"},
+          "limitations": "Route-level success, pending review, expired/superseded candidates and department/course isolation. Does not exercise browser controls or a live provider."
+        },
+        {
+          "id": "document-validator-failures",
+          "level": "unit",
+          "sources": ["tests/test_queued_pdf_output_claim.py", "tests/test_remediation_score_provenance.py"],
+          "mocked": ["database and validator outcomes"],
+          "ci": {"job": "test", "step": "Run tests", "run_contains": "pytest tests/"},
+          "limitations": "Injected failures and invalid score receipts, not an observed live validator outage."
+        },
+        {
+          "id": "document-browser-procedure",
+          "level": "manual",
+          "sources": ["docs/testing/document-review-journey.md"],
+          "mocked": [],
+          "ci": null,
+          "limitations": "Walkthrough instructions only; no execution or screenshot receipt is supplied by this inventory."
+        }
+      ],
+      "missing": [
+        "Revision-bound dashboard upload, queue, review/edit, approval, reload and exact-download journey against the real local services.",
+        "Browser-visible failed verification, pending review, unavailable AI and expired/superseded artifact paths."
+      ]
+    },
+    {
+      "id": "canvas",
+      "evidence": [
+        {
+          "id": "canvas-server-journey",
+          "level": "api_integration",
+          "sources": ["tests/test_canvas_journey.py", "tests/test_canvas_content_routes.py"],
+          "mocked": ["Canvas provider", "axe browser results", "authenticated principal"],
+          "ci": {"job": "test", "step": "Run tests", "run_contains": "pytest tests/"},
+          "limitations": "Real database and server transitions with stubbed edges. The journey fixture is a course page, not a real LMS course-file replacement."
+        },
+        {
+          "id": "canvas-browser-smoke",
+          "level": "browser_simulated",
+          "sources": ["dashboard/tests/e2e/canvas-journey.spec.ts", "dashboard/tests/e2e/canvas-testbed.mjs", "dashboard/playwright.release.config.ts"],
+          "mocked": ["API and Canvas state in local testbed", "scan and remediation results"],
+          "ci": {"job": "e2e-release", "step": "Run release smoke", "run_contains": "npm run test:e2e:release"},
+          "limitations": "Actual dashboard controls against a deterministic simulated service. It does not prove live provider or real worker behavior."
+        }
+      ],
+      "missing": [
+        "Scoped course file through real services, review and approved LMS publish-back with separately reported environment-bound evidence.",
+        "Changed provider source version, denied permission, interrupted work and retry must preserve the source and avoid stale or duplicate replacements."
+      ]
+    },
+    {
+      "id": "web",
+      "evidence": [
+        {
+          "id": "web-scanner-components",
+          "level": "component_integration",
+          "sources": ["tests/test_web_scanner_e2e.py"],
+          "mocked": [],
+          "ci": null,
+          "limitations": "Environment-gated scanner cases use generated file URLs; RUN_E2E_TESTS is required. No execution is asserted here, and no reviewed code change or rendered application journey is covered."
+        }
+      ],
+      "missing": [
+        "Controlled local HTTP site with sourced findings, proposed code changes, review and rendered-result validation.",
+        "Authorized success and unavailable AI/failed verification behavior through the application; no third-party target is needed."
+      ]
+    },
+    {
+      "id": "media",
+      "evidence": [
+        {
+          "id": "media-processor-units",
+          "level": "unit",
+          "sources": ["tests/test_multimedia_processor_e2e.py"],
+          "mocked": ["Whisper transcription", "ffmpeg and ffprobe subprocesses"],
+          "ci": {"job": "test", "step": "Run tests", "run_contains": "pytest tests/"},
+          "limitations": "Mocked processor behavior and caption serialization. The filename does not establish real transcription, media encoding or an application download journey."
+        }
+      ],
+      "missing": [
+        "Synthetic teaching clip through real transcription/caption output, supported review and downloadable output.",
+        "Record unsupported audio-description branches explicitly; verify unavailable providers and output failures remain unresolved."
+      ]
+    }
+  ]
+}
