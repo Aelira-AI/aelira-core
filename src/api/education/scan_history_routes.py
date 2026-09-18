@@ -1,5 +1,6 @@
 """Scan history, progress, and report endpoints."""
 
+from ...education.latex_evidence import public_scan_structure
 import json as _json
 import logging
 import traceback
@@ -222,7 +223,9 @@ async def get_scan_details(
                             + scan.result.low_issues
                         ),
                     },
-                    "structure": scan.result.structure,
+                    "structure": public_scan_structure(
+                        scan.result.structure, scan.scan_type
+                    ),
                     "suggestions": scan.result.suggestions,
                     "ocr_used": scan.result.ocr_used,
                     "ollama_used": scan.result.ollama_used,

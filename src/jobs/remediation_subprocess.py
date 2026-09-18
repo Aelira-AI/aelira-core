@@ -17,8 +17,9 @@ from types import SimpleNamespace
 from typing import Any
 
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
+from src.education.latex_evidence import public_latex_evidence
 from src.education.remediation.latex_pdf_validation import (
-    pdf_validation_fields,
+    latex_result_fields,
     public_pdf_validation,
 )
 
@@ -30,9 +31,10 @@ _MAX_ISSUES = 10_000
 class RemediationSubprocessError(RuntimeError):
     """A child failure with an optional bounded validation receipt."""
 
-    def __init__(self, code, *, latex_pdf_validation=None):
+    def __init__(self, code, *, latex_pdf_validation=None, latex_evidence=None):
         super().__init__(code)
         self.latex_pdf_validation = public_pdf_validation(latex_pdf_validation)
+        self.latex_evidence = public_latex_evidence(latex_evidence)
 
 
 class RemediationSubprocessTimeout(RemediationSubprocessError):
@@ -288,7 +290,7 @@ def _run_child(request: dict[str, Any]) -> dict[str, Any]:
     result = _build_remediator(request, source, work_dir).remediate()
     try:
         return {
-            **pdf_validation_fields(result),
+            **latex_result_fields(result),
             "success": bool(result.success),
             "output_file": result.output_file,
             "total_issues": getattr(result, "total_issues", 0),
@@ -306,7 +308,7 @@ def _run_child(request: dict[str, Any]) -> dict[str, Any]:
             "compliance_improvement": result.improvement,
             "duration_seconds": result.duration_seconds,
             "verification_passed": getattr(result, "verification_passed", False),
-            "human_review_required": bool(pdf_validation_fields(result))
+            "human_review_required": bool(latex_result_fields(result))
             or not getattr(result, "verification_passed", False)
             or bool(
                 getattr(
@@ -753,6 +755,7 @@ async def run_remediation_subprocess(
             raise RemediationSubprocessError(
                 code if isinstance(code, str) else "remediation_failed",
                 latex_pdf_validation=response.get("latex_pdf_validation"),
+                latex_evidence=response.get("latex_evidence"),
             )
         output_claim = _claim_output(
             response.pop("output_file", None),

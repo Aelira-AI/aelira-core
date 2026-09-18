@@ -15,3 +15,8 @@ intentional negative controls.
 The PDFs produced directly from these sources are untagged. Successful compilation
 must not make them accepted accessible PDFs. See
 [validation scope and reproduction](../../../docs/testing/latex-pdf-validation.md).
+
+The #446 tests also replay these sources through the real equation processor,
+with AI disabled, to verify conservative evidence reporting and preserved source
+hashes. They do not grade mathematical meaning. See
+[evidence outcomes](../../../docs/testing/latex-evidence-outcomes.md).

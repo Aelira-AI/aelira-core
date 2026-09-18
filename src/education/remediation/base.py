@@ -33,6 +33,7 @@ from pydantic import (
 )
 
 from src.education.remediation.latex_pdf_validation import LatexPDFValidation
+from src.education.latex_evidence import LatexRepresentationEvidence
 
 from src.education.equation_region_contract import PageRasterRegionLocator
 from src.education.visual_semantic_contract import (
@@ -839,6 +840,7 @@ class RemediationResult(BaseModel):
     verification_passed: bool = False
     verification_result: Optional[VerificationResult] = None
     latex_pdf_validation: Optional[LatexPDFValidation] = None
+    latex_evidence: Dict[str, LatexRepresentationEvidence] = Field(default_factory=dict)
 
     # Status
     success: bool = True

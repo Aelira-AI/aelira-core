@@ -69,7 +69,8 @@ from ._shared import (
 )
 from ._scope import authorize_scan_access
 
-from ...education.remediation.latex_pdf_validation import pdf_validation_fields
+from ...education.remediation.latex_pdf_validation import latex_result_fields
+from ...education.latex_evidence import latex_evidence_fields
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1259,6 +1260,7 @@ def _legacy_completed_result(
             "scan_id": scan_id,
             "job_id": job_id,
             "error_code": snapshot.get("last_error_code") or "remediation_failed",
+            **latex_evidence_fields(result),
             **(
                 {"latex_pdf_validation": result["latex_pdf_validation"]}
                 if "latex_pdf_validation" in result
@@ -1415,6 +1417,7 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         "status_url": _status_url(str(job.id)),
         "progress": min(100, max(0, progress)),
         "progress_message": _PUBLIC_PROGRESS_MESSAGES.get(str(job.status)),
+        **latex_evidence_fields(result),
         **(
             {"latex_pdf_validation": result["latex_pdf_validation"]}
             if "latex_pdf_validation" in result
@@ -1445,7 +1448,10 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         "score_provenance": scores["score_provenance"],
         "score_measurement": scores["score_measurement"],
         "score_verification_reason": scores["score_verification_reason"],
-        "human_review_required": "latex_pdf_validation" in result
+        "human_review_required": getattr(source_scan, "scan_type", None)
+        == ScanType.LATEX
+        or bool(latex_evidence_fields(result))
+        or "latex_pdf_validation" in result
         or not scores["score_verified"]
         or result.get("human_review_required", True)
         or remaining_count is None
@@ -2458,7 +2464,7 @@ async def remediate_scan(
                 "success": False,
                 "scan_id": scan_id,
                 "error": "remediation_artifact_unavailable",
-                **pdf_validation_fields(result),
+                **latex_result_fields(result),
                 "fixed_count": 0,
                 "manual_count": result.fixed_count,
                 "failed_count": result.failed_count,
@@ -2502,7 +2508,7 @@ async def remediate_scan(
                     "success": False,
                     "scan_id": scan_id,
                     "error": "remediation_artifact_unavailable",
-                    **pdf_validation_fields(result),
+                    **latex_result_fields(result),
                     "fixed_count": 0,
                     "manual_count": result.fixed_count,
                     "failed_count": result.failed_count,
@@ -2527,7 +2533,7 @@ async def remediate_scan(
                 "scan_type": scan.scan_type,
                 "provider_result": {
                     "verification_passed": True,
-                    **pdf_validation_fields(result),
+                    **latex_result_fields(result),
                 },
                 "commit": False,
             }
@@ -2699,13 +2705,13 @@ async def remediate_scan(
             "score_provenance": scores["score_provenance"],
             "score_measurement": scores["score_measurement"],
             "score_verification_reason": scores["score_verification_reason"],
-            "human_review_required": bool(pdf_validation_fields(result))
+            "human_review_required": bool(latex_result_fields(result))
             or not scores["score_verified"]
             or not getattr(result, "verification_passed", False)
             or result.manual_count > 0
             or result.failed_count > 0
             or any(fix.needs_review for fix in result.fixed_issues),
-            **pdf_validation_fields(result),
+            **latex_result_fields(result),
             "duration_seconds": result.duration_seconds,
             "fixed_issues": [
                 {

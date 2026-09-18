@@ -192,7 +192,16 @@ def validate_pdf_candidate(path, *, independent=None):
         )
 
 
-def pdf_validation_fields(result):
+def latex_result_fields(result):
     """Optional API fields for a remediator result, preserving older shapes."""
     receipt = public_pdf_validation(getattr(result, "latex_pdf_validation", None))
-    return {"latex_pdf_validation": receipt} if receipt is not None else {}
+    from ..latex_evidence import latex_evidence_fields
+
+    return {
+        **({"latex_pdf_validation": receipt} if receipt is not None else {}),
+        **latex_evidence_fields(result),
+    }
+
+
+# Retain the previous helper for Python integrations.
+pdf_validation_fields = latex_result_fields

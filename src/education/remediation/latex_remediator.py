@@ -26,6 +26,13 @@ from .base import (
     RemediationResult,
 )
 from .latex_converter import get_latex_converter
+from ..latex_evidence import (
+    LatexCheck,
+    LatexRepresentationEvidence,
+    conversion_evidence,
+    digest,
+)
+from .score_measurement import valid_measurement
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +175,8 @@ class LatexRemediator(BaseRemediator):
                 if path and fmt != "tex":
                     self._modifications.append(f"Converted to {fmt.upper()}: {path}")
                     logger.info(f"Generated {fmt.upper()}: {path}")
+
+        self._record_evidence()
 
         # Return primary output (prefer PDF if available, then HTML, then TEX)
         if "pdf" in self._output_files and self._output_files["pdf"]:
@@ -768,7 +777,85 @@ Provide ONLY the fix content, no explanation."""
 
         return None
 
+    def _record_evidence(self, *, source_checked=False):
+        """Bind each observation to its own representation; never transfer scores."""
+        try:
+            source = Path(self.file_path).read_bytes()
+        except OSError:
+            self.result.latex_evidence = {}
+            return
+        evidence = {}
+        for kind, path in getattr(self, "_output_files", {}).items():
+            if kind not in {"tex", "html", "pdf", "docx"}:
+                continue
+            try:
+                candidate = Path(path).read_bytes() if path else None
+            except OSError:
+                candidate = None
+            receipt = conversion_evidence(source, candidate, kind)
+            if kind == "tex":
+                fields = receipt.model_dump()
+                fields["conversion"] = LatexCheck().model_dump()
+                fields["source_check"] = LatexCheck(
+                    status="unavailable" if source_checked else "not_assessed",
+                    method="latex-source-v1" if source_checked else "none",
+                ).model_dump()
+                measured = valid_measurement(self.result.score_measurement)
+                verified = self.result.verification_result
+                if (
+                    measured
+                    and verified
+                    and candidate is not None
+                    and measured["method_version"] == "latex-source-v1"
+                    and measured["source_sha256"] == digest(source)
+                    and measured["output_sha256"] == digest(candidate)
+                ):
+                    fields["source_check"] = LatexCheck(
+                        status="completed",
+                        method="latex-source-v1",
+                        findings_count=verified.issues_after,
+                    ).model_dump()
+                receipt = LatexRepresentationEvidence.model_validate(fields)
+            evidence[kind] = receipt
+        pdf = self.result.latex_pdf_validation
+        if pdf is not None:
+            # A refused candidate may be retained only as a digest-bound observation.
+            evidence["pdf"] = LatexRepresentationEvidence(
+                representation="pdf",
+                source_sha256=digest(source),
+                candidate_sha256=pdf.candidate_sha256,
+                conversion=LatexCheck(
+                    status=(
+                        "completed"
+                        if pdf.candidate_sha256
+                        else (
+                            "failed"
+                            if pdf.reason == "conversion_failed"
+                            else "unavailable"
+                        )
+                    ),
+                    method="latex-export-v1",
+                ),
+                structural_validation=LatexCheck(
+                    status=(
+                        "not_assessed"
+                        if pdf.reason in {"conversion_failed", "no_converter"}
+                        else pdf.status if pdf.candidate_sha256 else "unavailable"
+                    ),
+                    method="pikepdf+veraPDF/ua1",
+                ),
+            )
+        self.result.latex_evidence = evidence
+
     def _verify_fixes(self, output_path: str):
+        kind = Path(output_path).suffix.lower().lstrip(".")
+        self._output_files = {**getattr(self, "_output_files", {}), kind: output_path}
+        try:
+            return self._verify_source_fixes(output_path)
+        finally:
+            self._record_evidence(source_checked=True)
+
+    def _verify_source_fixes(self, output_path: str):
         """Check syntax and rescan source findings on saved TEX output."""
         from .source_verification import scan_latex_source, verify_source_output
 

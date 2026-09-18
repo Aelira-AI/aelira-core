@@ -42,7 +42,7 @@ def latex_http(artifact_http, tmp_path):  # noqa: F811
     return case
 
 
-@pytest.mark.parametrize("formats", [["pdf"], ["tex", "pdf"]])
+@pytest.mark.parametrize("formats", [["pdf"], ["tex", "pdf"], ["tex"]])
 async def test_direct_helper_refusal_and_supported_tex_delivery(
     latex_http, monkeypatch, formats
 ):
@@ -78,7 +78,10 @@ async def test_direct_helper_refusal_and_supported_tex_delivery(
         db=case.db,
         principal=case.app.dependency_overrides[get_authenticated_principal](),
     )
-    assert body["latex_pdf_validation"] == receipt.model_dump(mode="json")
+    if "pdf" in formats:
+        assert body["latex_pdf_validation"] == receipt.model_dump(mode="json")
+        assert body["latex_evidence"]["pdf"]["source_check"]["status"] == "not_assessed"
+    assert body["latex_evidence"]["tex"]["accessibility_status"] == "not_verified"
     assert body["human_review_required"] is True
     assert case.source.read_bytes() == data
     assert not case.client.get(
@@ -96,6 +99,10 @@ async def test_direct_helper_refusal_and_supported_tex_delivery(
         assert download.headers["content-type"].startswith("text/plain")
         assert b"\\title{" in download.content
         assert not download.content.startswith(b"%PDF")
+        tex = body["latex_evidence"]["tex"]
+        assert tex["candidate_sha256"] == hashlib.sha256(download.content).hexdigest()
+        assert tex["source_check"]["status"] == "completed"
+        assert tex["human_review_required"] is True
     else:
         assert body["success"] is False
         assert body["artifact_id"] is None
@@ -103,7 +110,7 @@ async def test_direct_helper_refusal_and_supported_tex_delivery(
         assert body["fixed_count"] == 0
 
 
-@pytest.mark.parametrize("formats", [["pdf"], ["tex", "pdf"]])
+@pytest.mark.parametrize("formats", [["pdf"], ["tex", "pdf"], ["tex"]])
 async def test_queued_process_persists_receipt_and_only_delivers_supported_tex(
     latex_http, monkeypatch, formats
 ):
@@ -141,8 +148,10 @@ async def test_queued_process_persists_receipt_and_only_delivers_supported_tex(
         case.db,
         assert_owned=owned,
     )
-    assert result["latex_pdf_validation"]["status"] == "unavailable", result
-    assert result["latex_pdf_validation"]["reason"] == "no_converter", result
+    if "pdf" in formats:
+        assert result["latex_pdf_validation"]["status"] == "unavailable", result
+        assert result["latex_pdf_validation"]["reason"] == "no_converter", result
+    assert result["latex_evidence"]["tex"]["accessibility_status"] == "not_verified"
     # Commit the worker outcome, then reload it through the mounted job API.
     # Dispatcher/lease completion itself is exercised by the existing worker suite.
     job.status = "completed" if result["success"] else "failed"
@@ -156,7 +165,9 @@ async def test_queued_process_persists_receipt_and_only_delivers_supported_tex(
     status = case.client.get(response.json()["status_url"])
     assert status.status_code == 200
     body = status.json()
-    assert body["latex_pdf_validation"] == result["latex_pdf_validation"]
+    if "pdf" in formats:
+        assert body["latex_pdf_validation"] == result["latex_pdf_validation"]
+    assert body["latex_evidence"] == result["latex_evidence"]
     assert body["human_review_required"] is True
     formats_response = case.client.get(
         f"/education/scans/{case.scan.id}/remediated/formats"
@@ -175,9 +186,45 @@ async def test_queued_process_persists_receipt_and_only_delivers_supported_tex(
             body["artifact_id"],
         )
         assert hashlib.sha256(download.content).hexdigest() == artifact.sha256
+        tex = body["latex_evidence"]["tex"]
+        assert tex["candidate_sha256"] == artifact.sha256
+        assert tex["source_check"]["status"] == "completed"
+        assert tex["human_review_required"] is True
+        # Legacy source-verified jobs also require reader review, even without receipts.
+        job.result_data = {
+            k: v
+            for k, v in result.items()
+            if k not in {"latex_evidence", "latex_pdf_validation"}
+        }
+        job.result_data = {**job.result_data, "human_review_required": False}
+        case.db.commit()
+        legacy = case.client.get(response.json()["status_url"])
+        assert legacy.status_code == 200
+        assert legacy.json()["human_review_required"] is True
     else:
         assert result["success"] is False
         assert body["download_available"] is False
         assert formats_response["available_formats"] == []
         assert download.status_code == 404
         assert body["score_verified"] is False
+
+
+def test_historical_latex_claim_is_downgraded_on_authorized_scan_reload(latex_http):
+    from src.api.education import scan_history_routes
+
+    case = latex_http
+    case.app.include_router(scan_history_routes.router, prefix="/education")
+    case.scan.result.structure = {
+        "equations": [
+            {"equation_id": 1, "wcag_compliant": True, "conversion_success": True}
+        ]
+    }
+    case.db.commit()
+    response = case.client.get(f"/education/scans/{case.scan.id}")
+    assert response.status_code == 200, response.text
+    structure = response.json()["scan"]["result"]["structure"]
+    assert structure["equations"][0]["wcag_compliant"] is False
+    assert structure["accessibility_status"] == "not_verified"
+    assert structure["human_review_required"] is True
+    case.db.refresh(case.scan.result)
+    assert case.scan.result.structure["equations"][0]["wcag_compliant"] is True
