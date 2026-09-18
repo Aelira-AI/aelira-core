@@ -226,8 +226,8 @@ async def get_integration_status(
 
     moodle_status = {
         "connected": moodle_credential is not None,
-        "email": moodle_credential.provider_user_email if moodle_credential else None,
-        "fullname": moodle_credential.provider_user_name if moodle_credential else None,
+        "email": moodle_credential.provider_email if moodle_credential else None,
+        "fullname": moodle_credential.provider_name if moodle_credential else None,
         "last_sync_at": (
             moodle_credential.last_sync_at.isoformat()
             if moodle_credential and moodle_credential.last_sync_at
@@ -571,12 +571,13 @@ async def get_integration_specific_metrics(
             detail=f"{integration} integration not connected",
         )
 
-    # Count jobs for this provider's files
-    # Note: Would need to join with CloudFile to filter by provider
-    # For now, return department-wide metrics
+    # Durable queue records carry provider identity independently of file rows.
     total_jobs = (
         db.query(CloudJobQueue)
-        .filter(CloudJobQueue.department_id == department_id)
+        .filter(
+            CloudJobQueue.department_id == department_id,
+            CloudJobQueue.provider == provider,
+        )
         .count()
     )
 
@@ -584,6 +585,7 @@ async def get_integration_specific_metrics(
         db.query(CloudJobQueue)
         .filter(
             CloudJobQueue.department_id == department_id,
+            CloudJobQueue.provider == provider,
             CloudJobQueue.status == CloudJobStatus.COMPLETED.value,
         )
         .count()
@@ -593,6 +595,7 @@ async def get_integration_specific_metrics(
         db.query(CloudJobQueue)
         .filter(
             CloudJobQueue.department_id == department_id,
+            CloudJobQueue.provider == provider,
             CloudJobQueue.status == CloudJobStatus.FAILED.value,
         )
         .count()
@@ -602,6 +605,7 @@ async def get_integration_specific_metrics(
         db.query(CloudJobQueue)
         .filter(
             CloudJobQueue.department_id == department_id,
+            CloudJobQueue.provider == provider,
             CloudJobQueue.status == CloudJobStatus.PENDING.value,
         )
         .count()
