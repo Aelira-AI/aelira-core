@@ -4,12 +4,24 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
+
+
+def _integration(*, create_webhook, close):
+    """Retain provider side effects behind the real adapter's method signatures."""
+    from src.integrations.google_workspace.google_drive import GoogleDriveIntegration
+
+    integration = create_autospec(GoogleDriveIntegration, instance=True, spec_set=True)
+    integration.create_webhook.side_effect = create_webhook.side_effect
+    integration.create_webhook.return_value = create_webhook.return_value
+    integration.close.side_effect = close.side_effect
+    integration.close.return_value = None
+    return integration
 
 
 def _request():
@@ -89,7 +101,7 @@ async def test_initial_google_accepted_timeout_persists_indeterminate_intent(
         )
         raise google_routes.IndeterminateProviderOutcome()
 
-    integration = SimpleNamespace(
+    integration = _integration(
         create_webhook=AsyncMock(side_effect=accepted_then_timeout), close=AsyncMock()
     )
     monkeypatch.setattr(
@@ -243,7 +255,7 @@ async def test_initial_google_new_identity_uses_real_expired_credential_path(
         ),
         encrypt_token=MagicMock(side_effect=lambda value: f"encrypted-{value}"),
     )
-    integration = SimpleNamespace(
+    integration = _integration(
         create_webhook=AsyncMock(
             side_effect=lambda **kwargs: _provider_success(kwargs["channel_id"])
         ),
@@ -366,7 +378,7 @@ async def test_initial_google_success_commits_intent_before_post_and_finalizes(
         assert kwargs["channel_id"] == row.pending_renewal_channel_id
         return _provider_success(kwargs["channel_id"])
 
-    integration = SimpleNamespace(
+    integration = _integration(
         create_webhook=AsyncMock(side_effect=succeed), close=AsyncMock()
     )
     monkeypatch.setattr(
@@ -402,7 +414,7 @@ async def test_initial_google_success_response_lost_replays_committed_identity(
     from src.api import google_routes
 
     db = _db()
-    integration = SimpleNamespace(create_webhook=AsyncMock(), close=AsyncMock())
+    integration = _integration(create_webhook=AsyncMock(), close=AsyncMock())
 
     async def succeed(**kwargs):
         return _provider_success(kwargs["channel_id"])
@@ -512,7 +524,7 @@ async def test_initial_google_revoked_identity_allows_explicit_new_creation(
 
     db = _db()
     db.query.return_value.filter.return_value.first.side_effect = [None, None]
-    integration = SimpleNamespace(
+    integration = _integration(
         create_webhook=AsyncMock(
             side_effect=lambda **kwargs: _provider_success(kwargs["channel_id"])
         ),
@@ -546,7 +558,7 @@ async def test_initial_google_post_provider_commit_failure_is_manual_and_not_rep
     async def succeed(**kwargs):
         return _provider_success(kwargs["channel_id"])
 
-    integration = SimpleNamespace(
+    integration = _integration(
         create_webhook=AsyncMock(side_effect=succeed), close=AsyncMock()
     )
     factory = AsyncMock(return_value=integration)
@@ -675,3 +687,47 @@ def test_initial_google_index_rejects_direct_duplicate_created_identity():
         connection.execute(insert, {**values, "id": "created-1"})
         with pytest.raises(IntegrityError):
             connection.execute(insert, {**values, "id": "created-2"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "provider_failure", "close_failure"])
+async def test_initial_google_webhook_cleans_adapter_on_every_exit(
+    monkeypatch, outcome
+):
+    from src.api import google_routes
+
+    async def provider(**kwargs):
+        if outcome == "provider_failure":
+            raise RuntimeError("controlled provider failure")
+        return _provider_success(kwargs["channel_id"])
+
+    integration = _integration(
+        create_webhook=AsyncMock(side_effect=provider), close=AsyncMock()
+    )
+    if outcome == "close_failure":
+        integration.close.side_effect = RuntimeError("controlled close failure")
+    monkeypatch.setattr(
+        google_routes, "get_google_credential", AsyncMock(return_value=_credential())
+    )
+    monkeypatch.setattr(
+        google_routes, "get_google_integration", AsyncMock(return_value=integration)
+    )
+    if outcome == "success":
+        response = await google_routes.create_google_webhook_subscription(
+            _request(), SimpleNamespace(department_id="dept-1"), _db()
+        )
+        assert response["success"] is True
+    elif outcome == "provider_failure":
+        with pytest.raises(HTTPException) as exc:
+            await google_routes.create_google_webhook_subscription(
+                _request(), SimpleNamespace(department_id="dept-1"), _db()
+            )
+        assert exc.value.status_code == 502
+        assert exc.value.detail == "Google webhook creation failed"
+    else:
+        with pytest.raises(RuntimeError, match="controlled close failure"):
+            await google_routes.create_google_webhook_subscription(
+                _request(), SimpleNamespace(department_id="dept-1"), _db()
+            )
+    integration.close.assert_awaited_once()
+    integration.cleanup.assert_called_once_with()

@@ -9,11 +9,16 @@ Provides endpoints for:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
+from starlette.concurrency import run_in_threadpool
+from google.oauth2.credentials import Credentials
+from contextlib import contextmanager, asynccontextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field, field_validator, StringConstraints
+from typing import List, Optional, Dict, Any, Literal, Annotated
 from datetime import datetime, timezone
 import logging
 import os
@@ -44,6 +49,12 @@ from ..services.remediation_artifact_service import (
     RemediationArtifactService,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
+from ..integrations.cloud_base import (
+    CloudFileInfo,
+    CloudIntegrationError,
+    CloudNotFoundError,
+    CloudRateLimitError,
+)
 
 # Aliases for test compatibility
 get_db = get_db_dependency
@@ -56,6 +67,10 @@ settings = get_settings()
 
 
 # ==================== Request/Response Models ====================
+
+NonBlankIdentifier = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+]
 
 
 class GoogleConnectRequest(BaseModel):
@@ -121,20 +136,22 @@ class GoogleFileListResponse(BaseModel):
 class ScanFileRequest(BaseModel):
     """Request to scan a specific file."""
 
-    file_id: str = Field(..., description="Cloud file ID (not provider file ID)")
+    file_id: NonBlankIdentifier = Field(
+        ..., description="Cloud file ID (not provider file ID)"
+    )
 
 
 class ScanFolderRequest(BaseModel):
     """Request to scan all files in a folder."""
 
-    folder_id: str = Field(..., description="Google Drive folder ID")
+    folder_id: NonBlankIdentifier = Field(..., description="Google Drive folder ID")
     recursive: bool = Field(default=True, description="Scan subfolders recursively")
 
 
 class RemediateFileRequest(BaseModel):
     """Request to remediate and re-upload a file."""
 
-    file_id: str = Field(..., description="Cloud file ID")
+    file_id: NonBlankIdentifier = Field(..., description="Cloud file ID")
     upload_as_new: bool = Field(
         default=False, description="Upload as new file instead of replacing"
     )
@@ -144,6 +161,7 @@ class ScanResultResponse(BaseModel):
     """Response with scan results."""
 
     file_id: str
+    job_id: str
     scan_id: Optional[str]
     compliance_score: Optional[float]
     issues_found: int
@@ -241,7 +259,7 @@ async def get_google_credential(
         except Exception as e:
             logger.error("Failed to refresh Google token: %s", type(e).__name__)
             credential.is_active = False
-            credential.last_error = f"Token refresh failed: {str(e)}"
+            credential.last_error = "Token refresh failed"
             db.commit()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -514,7 +532,10 @@ async def create_google_webhook_subscription(
             detail="Google webhook creation failed",
         )
     finally:
-        await integration.close()
+        try:
+            await integration.close()
+        finally:
+            integration.cleanup()
 
 
 # ==================== Helper Functions ====================
@@ -848,238 +869,119 @@ async def google_status(
     )
 
 
-# ==================== File Listing Endpoints ====================
+# ==================== File Workflow Helpers ====================
 
 
-@router.get("/drive/files", response_model=GoogleFileListResponse)
-async def list_drive_files(
-    folder_id: Optional[str] = Query(None, description="Folder ID (None for root)"),
-    page_token: Optional[str] = Query(None, description="Page token for pagination"),
-    page_size: int = Query(50, ge=1, le=100, description="Number of files per page"),
-    api_key: APIKey = Depends(get_current_api_key),
-    db: Session = Depends(get_db_dependency),
-):
-    """
-    List accessible files from Google Drive.
-
-    Returns files that can be scanned (Docs, Slides, Sheets, Office formats, PDFs).
-    Files are automatically tracked in our database for change detection.
-
-    REQUIRES: cloud_integration feature
-    """
-    # Check feature access
-    await require_feature(
-        db, api_key.department_id, "cloud_integration", "Google Workspace Integration"
-    )
-
-    credential = await get_google_credential(api_key, db)
-    integration = await get_google_integration(credential)
-
+@contextmanager
+def _google_file_operation(db: Session):
+    """Keep provider/database failures bounded and roll back route mutations."""
     try:
-        # List files from Google Drive
-        file_infos, next_token = await integration.list_files(
-            folder_id=folder_id,
-            page_token=page_token,
-            page_size=page_size,
-        )
-
-        # Sync files to our database
-        response_files = []
-        for file_info in file_infos:
-            # Check if file already tracked
-            cloud_file = (
-                db.query(CloudFile)
-                .filter(
-                    CloudFile.department_id == api_key.department_id,
-                    CloudFile.provider == CloudProvider.GOOGLE.value,
-                    CloudFile.provider_file_id == file_info.id,
-                )
-                .first()
-            )
-
-            if not cloud_file:
-                # Create new tracking record
-                cloud_file = CloudFile(
-                    id=str(uuid.uuid4()),
-                    department_id=api_key.department_id,
-                    credential_id=credential.id,
-                    provider=CloudProvider.GOOGLE.value,
-                    provider_file_id=file_info.id,
-                    provider_parent_id=file_info.parent_id,
-                    file_name=file_info.name,
-                    file_type=(
-                        file_info.export_extension.lstrip(".")
-                        if file_info.export_extension
-                        else "unknown"
-                    ),
-                    mime_type=file_info.mime_type,
-                    file_size_bytes=file_info.size_bytes,
-                    web_view_link=file_info.web_view_link,
-                    provider_version=file_info.version,
-                    provider_modified_at=file_info.modified_at,
-                    needs_rescan=True,
-                )
-                db.add(cloud_file)
-            else:
-                # Update metadata if changed
-                if file_info.version != cloud_file.provider_version:
-                    cloud_file.file_name = file_info.name
-                    cloud_file.provider_version = file_info.version
-                    cloud_file.provider_modified_at = file_info.modified_at
-                    cloud_file.needs_rescan = True
-
-            response_files.append(
-                GoogleFileResponse(
-                    id=cloud_file.id,
-                    provider_file_id=cloud_file.provider_file_id,
-                    file_name=cloud_file.file_name,
-                    file_type=cloud_file.file_type,
-                    mime_type=cloud_file.mime_type,
-                    file_size_bytes=cloud_file.file_size_bytes,
-                    web_view_link=cloud_file.web_view_link,
-                    last_scanned_at=cloud_file.last_scanned_at,
-                    last_compliance_score=cloud_file.last_compliance_score,
-                    needs_rescan=cloud_file.needs_rescan,
-                )
-            )
-
-        db.commit()
-
-        # Update last sync time
-        credential.last_sync_at = datetime.now(timezone.utc)
-        db.commit()
-
-        return GoogleFileListResponse(
-            files=response_files,
-            next_page_token=next_token,
-            total_count=len(response_files),
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to list Google Drive files: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list files: {str(e)}",
-        )
-
-
-@router.get("/drive/folders")
-async def list_google_drive_folders(
-    parent_id: Optional[str] = Query(
-        None, description="Parent folder ID (None for root)"
-    ),
-    api_key: APIKey = Depends(get_current_api_key),
-    db: Session = Depends(get_db_dependency),
-):
-    """
-    List folders in Google Drive.
-
-    Used for folder selection UI to choose which folders to sync.
-    Returns folder hierarchy for privacy-conscious syncing.
-
-    REQUIRES: cloud_integration feature
-    """
-    # Check feature access
-    await require_feature(
-        db, api_key.department_id, "cloud_integration", "Google Workspace Integration"
-    )
-
-    try:
-        # Get OAuth credential
-        credential = (
-            db.query(CloudOAuthCredentials)
-            .filter(
-                CloudOAuthCredentials.department_id == api_key.department_id,
-                CloudOAuthCredentials.provider == CloudProvider.GOOGLE.value,
-                CloudOAuthCredentials.is_active,
-            )
-            .first()
-        )
-
-        if not credential:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Google Workspace not connected",
-            )
-
-        # Decrypt token
-        token_manager = get_token_manager()
-        access_token = token_manager.decrypt_token(credential.access_token)
-
-        # Initialize Google Drive integration
-        drive = GoogleDriveIntegration(
-            credential_id=credential.id,
-            access_token=access_token,
-        )
-
-        # List folders
-        folders = await drive.list_folders(parent_id=parent_id)
-
-        return {
-            "folders": [
-                {
-                    "id": folder.id,
-                    "name": folder.name,
-                    "parent_id": folder.parent_id,
-                    "web_view_link": folder.web_view_link,
-                }
-                for folder in folders
-            ]
-        }
-
+        yield
     except HTTPException:
+        db.rollback()
         raise
-    except Exception as e:
-        logger.error(f"Failed to list Google Drive folders: {e}")
+    except CloudNotFoundError:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="File not found") from None
+    except CloudRateLimitError:
+        db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list folders: {str(e)}",
-        )
+            status_code=429,
+            detail="Google Drive rate limit exceeded. Please try again.",
+        ) from None
+    except CloudIntegrationError:
+        db.rollback()
+        raise HTTPException(
+            status_code=502, detail="Google Drive request failed."
+        ) from None
+    except Exception as exc:
+        db.rollback()
+        logger.error("Google file operation failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to complete Google file operation. Please try again.",
+        ) from None
 
 
-# ==================== Scanning Endpoints ====================
+@asynccontextmanager
+async def _google_drive(credential: CloudOAuthCredentials):
+    integration = await get_google_integration(credential)
+    try:
+        yield integration
+    finally:
+        try:
+            await integration.close()
+        finally:
+            integration.cleanup()
 
 
-@router.post("/scan/file", response_model=ScanResultResponse)
-async def scan_file(
-    request: ScanFileRequest,
-    api_key: APIKey = Depends(get_current_api_key),
-    db: Session = Depends(get_db_dependency),
-):
-    """
-    Scan a single file for accessibility issues.
-
-    Downloads the file from Google Drive, scans with our processors,
-    and stores the results. Returns immediately with job status.
-
-    REQUIRES: cloud_integration feature
-    """
-    # Check feature access
-    await require_feature(
-        db, api_key.department_id, "cloud_integration", "Google Workspace Integration"
-    )
-
-    # Get cloud file record
+def _track_google_file(
+    db: Session, credential: CloudOAuthCredentials, info: CloudFileInfo
+) -> CloudFile:
+    """Persist the shared adapter DTO without relying on provider-only fields."""
     cloud_file = (
         db.query(CloudFile)
         .filter(
-            CloudFile.id == request.file_id,
-            CloudFile.department_id == api_key.department_id,
+            CloudFile.department_id == credential.department_id,
+            CloudFile.credential_id == credential.id,
+            CloudFile.provider == CloudProvider.GOOGLE.value,
+            CloudFile.provider_file_id == info.id,
         )
         .first()
     )
-
-    if not cloud_file:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="File not found"
+    file_type = {
+        "application/vnd.google-apps.document": "docx",
+        "application/vnd.google-apps.presentation": "pptx",
+        "application/vnd.google-apps.spreadsheet": "xlsx",
+    }.get(info.mime_type, info.file_type.value if info.file_type else "unknown")
+    if cloud_file is None:
+        cloud_file = CloudFile(
+            id=str(uuid.uuid4()),
+            department_id=credential.department_id,
+            credential_id=credential.id,
+            provider=CloudProvider.GOOGLE.value,
+            provider_file_id=info.id,
+            needs_rescan=True,
         )
+        db.add(cloud_file)
+    elif cloud_file.provider_version != info.version:
+        cloud_file.needs_rescan = True
+    cloud_file.provider_parent_id = info.parent_id
+    cloud_file.file_name = info.name
+    cloud_file.file_type = file_type
+    cloud_file.mime_type = info.mime_type
+    cloud_file.file_size_bytes = info.size_bytes
+    cloud_file.web_view_link = info.web_view_link
+    cloud_file.provider_version = info.version
+    cloud_file.provider_modified_at = info.modified_at
+    db.flush()
+    return cloud_file
 
-    credential = await get_google_credential(api_key, db)
 
-    # Create scan job
-    job = enqueue_cloud_job(
+def _google_tracked_file(
+    db: Session, credential: CloudOAuthCredentials, file_id: str
+) -> CloudFile:
+    cloud_file = (
+        db.query(CloudFile)
+        .filter(
+            CloudFile.id == file_id,
+            CloudFile.department_id == credential.department_id,
+            CloudFile.credential_id == credential.id,
+            CloudFile.provider == CloudProvider.GOOGLE.value,
+        )
+        .first()
+    )
+    if cloud_file is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return cloud_file
+
+
+def _enqueue_google_scan(
+    db: Session, credential: CloudOAuthCredentials, cloud_file: CloudFile
+) -> CloudJobQueue:
+    return enqueue_cloud_job(
         db,
-        department_id=api_key.department_id,
+        department_id=credential.department_id,
         job_type=CloudJobType.SCAN.value,
         payload={
             "cloud_file_id": cloud_file.id,
@@ -1094,232 +996,9 @@ async def scan_file(
         provider_file_id=cloud_file.provider_file_id,
         priority=5,
     )
-    db.commit()
-
-    return ScanResultResponse(
-        file_id=cloud_file.id,
-        scan_id=None,
-        compliance_score=None,
-        issues_found=0,
-        status="queued",
-        message=f"Scan job {job.id} queued for processing",
-    )
 
 
-@router.post("/scan/folder", response_model=Dict[str, Any])
-async def scan_folder(
-    request: ScanFolderRequest,
-    api_key: APIKey = Depends(get_current_api_key),
-    db: Session = Depends(get_db_dependency),
-):
-    """
-    Scan all accessible files in a Google Drive folder.
-
-    Creates scan jobs for each file found. Returns summary of jobs created.
-
-    REQUIRES: cloud_integration feature
-    """
-    # Check feature access
-    await require_feature(
-        db, api_key.department_id, "cloud_integration", "Google Workspace Integration"
-    )
-
-    credential = await get_google_credential(api_key, db)
-    integration = await get_google_integration(credential)
-
-    try:
-        # List all files in folder
-        all_files = []
-        page_token = None
-
-        while True:
-            file_infos, next_token = await integration.list_files(
-                folder_id=request.folder_id,
-                page_token=page_token,
-                page_size=100,
-            )
-            all_files.extend(file_infos)
-
-            if not next_token:
-                break
-            page_token = next_token
-
-        # Create jobs for each file
-        jobs_created = 0
-        for file_info in all_files:
-            # Get or create cloud file record
-            cloud_file = (
-                db.query(CloudFile)
-                .filter(
-                    CloudFile.department_id == api_key.department_id,
-                    CloudFile.provider == CloudProvider.GOOGLE.value,
-                    CloudFile.provider_file_id == file_info.id,
-                )
-                .first()
-            )
-
-            if not cloud_file:
-                cloud_file = CloudFile(
-                    id=str(uuid.uuid4()),
-                    department_id=api_key.department_id,
-                    credential_id=credential.id,
-                    provider=CloudProvider.GOOGLE.value,
-                    provider_file_id=file_info.id,
-                    file_name=file_info.name,
-                    file_type=(
-                        file_info.export_extension.lstrip(".")
-                        if file_info.export_extension
-                        else "unknown"
-                    ),
-                    mime_type=file_info.mime_type,
-                    needs_rescan=True,
-                )
-                db.add(cloud_file)
-                db.flush()
-
-            # Create scan job
-            enqueue_cloud_job(
-                db,
-                department_id=api_key.department_id,
-                job_type=CloudJobType.SCAN.value,
-                payload={
-                    "cloud_file_id": cloud_file.id,
-                    "credential_id": credential.id,
-                    "provider": CloudProvider.GOOGLE.value,
-                    "provider_file_id": cloud_file.provider_file_id,
-                },
-                dedupe_key=f"scan:google:{cloud_file.id}:{cloud_file.provider_version or 'current'}",
-                cloud_file_id=cloud_file.id,
-                credential_id=credential.id,
-                provider=CloudProvider.GOOGLE.value,
-                provider_file_id=cloud_file.provider_file_id,
-                priority=5,
-            )
-            jobs_created += 1
-
-        db.commit()
-
-        return {
-            "success": True,
-            "folder_id": request.folder_id,
-            "files_found": len(all_files),
-            "jobs_created": jobs_created,
-            "message": f"Created {jobs_created} scan jobs for folder",
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to scan folder: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to scan folder: {str(e)}",
-        )
-
-
-# ==================== Remediation Endpoints ====================
-
-
-@router.post("/remediate", response_model=Dict[str, Any])
-async def remediate_file(
-    request: RemediateFileRequest,
-    api_key: APIKey = Depends(get_current_api_key),
-    db: Session = Depends(get_db_dependency),
-):
-    """
-    Remediate a file and upload the fixed version back to Google Drive.
-
-    Downloads the file, applies accessibility fixes, and either
-    replaces the original or uploads as a new file.
-
-    REQUIRES: cloud_integration feature
-    """
-    # Check feature access
-    await require_feature(
-        db, api_key.department_id, "cloud_integration", "Google Workspace Integration"
-    )
-
-    # Get cloud file record
-    cloud_file = (
-        db.query(CloudFile)
-        .filter(
-            CloudFile.id == request.file_id,
-            CloudFile.department_id == api_key.department_id,
-        )
-        .first()
-    )
-
-    if not cloud_file:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="File not found"
-        )
-
-    if not cloud_file.last_scan_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File has not been scanned yet. Scan first before remediation.",
-        )
-
-    credential = await get_google_credential(api_key, db)
-
-    # Create remediation job
-    job = enqueue_cloud_job(
-        db,
-        department_id=api_key.department_id,
-        job_type=CloudJobType.REMEDIATE.value,
-        payload={
-            "cloud_file_id": cloud_file.id,
-            "credential_id": credential.id,
-            "provider": CloudProvider.GOOGLE.value,
-            "provider_file_id": cloud_file.provider_file_id,
-            "scan_id": cloud_file.last_scan_id,
-            "upload_as_new": request.upload_as_new,
-        },
-        dedupe_key=(
-            f"remediate:google:{cloud_file.id}:{cloud_file.last_scan_id}:"
-            f"upload-new={str(request.upload_as_new).lower()}"
-        ),
-        cloud_file_id=cloud_file.id,
-        credential_id=credential.id,
-        provider=CloudProvider.GOOGLE.value,
-        provider_file_id=cloud_file.provider_file_id,
-        priority=3,  # Higher priority than scans
-    )
-    db.commit()
-
-    return {
-        "success": True,
-        "job_id": job.id,
-        "file_id": cloud_file.id,
-        "status": "queued",
-        "message": f"Remediation job {job.id} queued for processing",
-    }
-
-
-# ==================== Job Status Endpoints ====================
-
-
-@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(
-    job_id: str,
-    api_key: APIKey = Depends(get_current_api_key),
-    db: Session = Depends(get_db_dependency),
-):
-    """
-    Get the status of a cloud job.
-    """
-    job = (
-        db.query(CloudJobQueue)
-        .filter(
-            CloudJobQueue.id == job_id,
-            CloudJobQueue.department_id == api_key.department_id,
-        )
-        .first()
-    )
-
-    if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
-        )
-
+def _google_job_response(job: CloudJobQueue) -> JobStatusResponse:
     return JobStatusResponse(
         job_id=job.id,
         status=job.status,
@@ -1332,39 +1011,253 @@ async def get_job_status(
     )
 
 
+# ==================== File Listing Endpoints ====================
+
+
+@router.get("/drive/files", response_model=GoogleFileListResponse)
+async def list_drive_files(
+    folder_id: Optional[str] = Query(None, description="Folder ID (None for root)"),
+    page_token: Optional[str] = Query(None, description="Page token for pagination"),
+    page_size: int = Query(50, ge=1, le=100),
+    api_key: APIKey = Depends(get_current_api_key),
+    db: Session = Depends(get_db_dependency),
+):
+    """List accessible files and atomically persist their current metadata."""
+    with _google_file_operation(db):
+        await require_feature(
+            db,
+            api_key.department_id,
+            "cloud_integration",
+            "Google Workspace Integration",
+        )
+        credential = await get_google_credential(api_key, db)
+        async with _google_drive(credential) as integration:
+            file_infos, next_token = await integration.list_files(
+                folder_id=folder_id, page_token=page_token, page_size=page_size
+            )
+        files = [_track_google_file(db, credential, info) for info in file_infos]
+        credential.last_sync_at = datetime.now(timezone.utc)
+        db.commit()
+        return GoogleFileListResponse(
+            files=[
+                GoogleFileResponse(
+                    id=file.id,
+                    provider_file_id=file.provider_file_id,
+                    file_name=file.file_name,
+                    file_type=file.file_type,
+                    mime_type=file.mime_type,
+                    file_size_bytes=file.file_size_bytes,
+                    web_view_link=file.web_view_link,
+                    last_scanned_at=file.last_scanned_at,
+                    last_compliance_score=file.last_compliance_score,
+                    needs_rescan=file.needs_rescan,
+                )
+                for file in files
+            ],
+            next_page_token=next_token,
+            total_count=len(files),
+        )
+
+
+@router.get("/drive/folders")
+async def list_google_drive_folders(
+    parent_id: Optional[str] = Query(
+        None, description="Parent folder ID (None for root)"
+    ),
+    api_key: APIKey = Depends(get_current_api_key),
+    db: Session = Depends(get_db_dependency),
+):
+    """List folders using the connected department's refreshed credential."""
+    with _google_file_operation(db):
+        await require_feature(
+            db,
+            api_key.department_id,
+            "cloud_integration",
+            "Google Workspace Integration",
+        )
+        credential = await get_google_credential(api_key, db)
+        async with _google_drive(credential) as integration:
+            folders = await integration.list_folders(parent_id=parent_id)
+        return {
+            "folders": [
+                {
+                    "id": folder.id,
+                    "name": folder.name,
+                    "parent_id": folder.parent_id,
+                    "web_view_link": folder.web_view_link,
+                }
+                for folder in folders
+            ]
+        }
+
+
+# ==================== Scanning Endpoints ====================
+
+
+@router.post("/scan/file", response_model=ScanResultResponse)
+async def scan_file(
+    request: ScanFileRequest,
+    api_key: APIKey = Depends(get_current_api_key),
+    db: Session = Depends(get_db_dependency),
+):
+    """Queue a scan for a file belonging to the active Google connection."""
+    with _google_file_operation(db):
+        await require_feature(
+            db,
+            api_key.department_id,
+            "cloud_integration",
+            "Google Workspace Integration",
+        )
+        credential = await get_google_credential(api_key, db)
+        cloud_file = _google_tracked_file(db, credential, request.file_id)
+        job = _enqueue_google_scan(db, credential, cloud_file)
+        db.commit()
+        return ScanResultResponse(
+            file_id=cloud_file.id,
+            job_id=job.id,
+            scan_id=None,
+            compliance_score=None,
+            issues_found=0,
+            status="queued",
+            message=f"Scan job {job.id} queued for processing",
+        )
+
+
+@router.post("/scan/folder", response_model=Dict[str, Any])
+async def scan_folder(
+    request: ScanFolderRequest,
+    api_key: APIKey = Depends(get_current_api_key),
+    db: Session = Depends(get_db_dependency),
+):
+    """Queue folder scans, honoring recursive traversal through the adapter."""
+    with _google_file_operation(db):
+        await require_feature(
+            db,
+            api_key.department_id,
+            "cloud_integration",
+            "Google Workspace Integration",
+        )
+        credential = await get_google_credential(api_key, db)
+        async with _google_drive(credential) as integration:
+            files = [
+                info
+                async for info in integration.list_all_files(
+                    folder_id=request.folder_id, recursive=request.recursive
+                )
+            ]
+        jobs = [
+            _enqueue_google_scan(
+                db, credential, _track_google_file(db, credential, info)
+            )
+            for info in files
+        ]
+        db.commit()
+        return {
+            "success": True,
+            "folder_id": request.folder_id,
+            "files_found": len(files),
+            "jobs_created": len(jobs),
+            "job_ids": [job.id for job in jobs],
+            "message": f"Created {len(jobs)} scan jobs for folder",
+        }
+
+
+@router.post("/remediate", response_model=Dict[str, Any])
+async def remediate_file(
+    request: RemediateFileRequest,
+    api_key: APIKey = Depends(get_current_api_key),
+    db: Session = Depends(get_db_dependency),
+):
+    """Queue remediation for a scanned file in the active Google connection."""
+    with _google_file_operation(db):
+        await require_feature(
+            db,
+            api_key.department_id,
+            "cloud_integration",
+            "Google Workspace Integration",
+        )
+        credential = await get_google_credential(api_key, db)
+        cloud_file = _google_tracked_file(db, credential, request.file_id)
+        if not cloud_file.last_scan_id:
+            raise HTTPException(
+                status_code=400,
+                detail="File has not been scanned yet. Scan first before remediation.",
+            )
+        job = enqueue_cloud_job(
+            db,
+            department_id=api_key.department_id,
+            job_type=CloudJobType.REMEDIATE.value,
+            payload={
+                "cloud_file_id": cloud_file.id,
+                "credential_id": credential.id,
+                "provider": CloudProvider.GOOGLE.value,
+                "provider_file_id": cloud_file.provider_file_id,
+                "scan_id": cloud_file.last_scan_id,
+                "upload_as_new": request.upload_as_new,
+            },
+            dedupe_key=(
+                f"remediate:google:{cloud_file.id}:{cloud_file.last_scan_id}:upload-new={str(request.upload_as_new).lower()}"
+            ),
+            cloud_file_id=cloud_file.id,
+            credential_id=credential.id,
+            provider=CloudProvider.GOOGLE.value,
+            provider_file_id=cloud_file.provider_file_id,
+            priority=3,
+        )
+        db.commit()
+        return {
+            "success": True,
+            "job_id": job.id,
+            "file_id": cloud_file.id,
+            "status": "queued",
+            "message": f"Remediation job {job.id} queued for processing",
+        }
+
+
+# ==================== Job Status Endpoints ====================
+
+
+@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(
+    job_id: str,
+    api_key: APIKey = Depends(get_current_api_key),
+    db: Session = Depends(get_db_dependency),
+):
+    """Return one Google job in the authenticated department."""
+    with _google_file_operation(db):
+        job = (
+            db.query(CloudJobQueue)
+            .filter(
+                CloudJobQueue.id == job_id,
+                CloudJobQueue.department_id == api_key.department_id,
+                CloudJobQueue.provider == CloudProvider.GOOGLE.value,
+            )
+            .first()
+        )
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return _google_job_response(job)
+
+
 @router.get("/jobs", response_model=List[JobStatusResponse])
 async def list_jobs(
-    status: Optional[str] = Query(None, description="Filter by status"),
+    status: Optional[Literal["pending", "processing", "completed", "failed"]] = Query(
+        None
+    ),
     limit: int = Query(20, ge=1, le=100),
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    List cloud jobs for the department.
-    """
-    query = db.query(CloudJobQueue).filter(
-        CloudJobQueue.department_id == api_key.department_id,
-        CloudJobQueue.provider == CloudProvider.GOOGLE.value,
-    )
-
-    if status:
-        query = query.filter(CloudJobQueue.status == status)
-
-    jobs = query.order_by(CloudJobQueue.created_at.desc()).limit(limit).all()
-
-    return [
-        JobStatusResponse(
-            job_id=job.id,
-            status=job.status,
-            progress=job.progress,
-            progress_message=job.progress_message,
-            result_data=job.result_data,
-            error_message=job.error_message,
-            created_at=job.created_at,
-            completed_at=job.completed_at,
+    """List Google jobs for the department with validated status filtering."""
+    with _google_file_operation(db):
+        query = db.query(CloudJobQueue).filter(
+            CloudJobQueue.department_id == api_key.department_id,
+            CloudJobQueue.provider == CloudProvider.GOOGLE.value,
         )
-        for job in jobs
-    ]
+        if status:
+            query = query.filter(CloudJobQueue.status == status)
+        jobs = query.order_by(CloudJobQueue.created_at.desc()).limit(limit).all()
+        return [_google_job_response(job) for job in jobs]
 
 
 # ==================== Account Management ====================
@@ -1375,23 +1268,13 @@ async def get_google_account(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Get connected Google account information.
-
-    Returns:
-        Account info including email, name, connection time, and last sync time.
-    """
+    """Get connected Google account information."""
     oauth_service = GoogleOAuthService()
     account_info = oauth_service.get_account_info(
         department_id=api_key.department_id, db=db
     )
-
     if not account_info:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Google Workspace not connected",
-        )
-
+        raise HTTPException(status_code=404, detail="Google Workspace not connected")
     return account_info
 
 
@@ -1404,57 +1287,22 @@ async def get_file_metadata(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Get file metadata from Google Drive.
-
-    Args:
-        file_id: Google Drive file ID
-
-    Returns:
-        File metadata including name, type, size, and sharing info.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.GOOGLE.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
-    )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Google Workspace not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Get file metadata using Google Drive integration
-    drive_integration = GoogleDriveIntegration(
-        access_token=access_token, credential_id=credential.id
-    )
-
-    try:
-        file_info = drive_integration.get_file_metadata(file_id)
+    """Get provider metadata using the authenticated department's connection."""
+    with _google_file_operation(db):
+        credential = await get_google_credential(api_key, db)
+        async with _google_drive(credential) as integration:
+            info = await integration.get_file_info(file_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="File not found")
         return {
-            "id": file_info.id,
-            "name": file_info.name,
-            "mime_type": file_info.mime_type,
-            "size": file_info.size_bytes,
-            "created_time": file_info.created_at,
-            "modified_time": file_info.modified_at,
-            "web_view_link": file_info.web_view_link,
+            "id": info.id,
+            "name": info.name,
+            "mime_type": info.mime_type,
+            "size": info.size_bytes,
+            "created_time": info.created_at,
+            "modified_time": info.modified_at,
+            "web_view_link": info.web_view_link,
         }
-    except Exception as e:
-        logger.error(f"Error getting file metadata: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get file metadata: {str(e)}",
-        )
 
 
 @router.get("/drive/files/{file_id}/download")
@@ -1463,48 +1311,24 @@ async def download_file(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Download file content from Google Drive.
-
-    Args:
-        file_id: Google Drive file ID
-
-    Returns:
-        File content as bytes.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.GOOGLE.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
-    )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Google Workspace not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Download file using Google Drive integration
-    drive_integration = GoogleDriveIntegration(
-        access_token=access_token, credential_id=credential.id
-    )
-
-    try:
-        file_content = drive_integration.download_file(file_id)
-        return {"content": file_content, "file_id": file_id}
-    except Exception as e:
-        logger.error(f"Error downloading file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to download file: {str(e)}",
+    """Return downloaded bytes, using and cleaning only a route-owned temp path."""
+    with _google_file_operation(db):
+        credential = await get_google_credential(api_key, db)
+        with TemporaryDirectory(prefix="aelira-google-download-") as directory:
+            owned_path = Path(directory) / "download"
+            async with _google_drive(credential) as integration:
+                result = await integration.download_file(
+                    file_id, local_path=str(owned_path)
+                )
+            if not result.success:
+                raise CloudIntegrationError("download_failed")
+            if result.local_path != str(owned_path) or owned_path.is_symlink():
+                raise RuntimeError("download_path_mismatch")
+            content = owned_path.read_bytes()
+        return Response(
+            content=content,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": 'attachment; filename="download"'},
         )
 
 
@@ -1512,24 +1336,53 @@ async def download_file(
 
 
 class ExportDocRequest(BaseModel):
-    """Request to export Google Doc to DOCX."""
+    """Export a Google Doc as response bytes; server output paths are unsupported."""
 
-    file_id: str = Field(..., description="Google Doc file ID")
-    output_path: Optional[str] = Field(None, description="Local output path")
-
-
-class ExportSlidesRequest(BaseModel):
-    """Request to export Google Slides to PPTX."""
-
-    file_id: str = Field(..., description="Google Slides file ID")
-    output_path: Optional[str] = Field(None, description="Local output path")
+    file_id: NonBlankIdentifier
+    output_path: Optional[str] = Field(
+        None, description="Unsupported legacy field; omit to download response bytes"
+    )
 
 
-class ExportSheetsRequest(BaseModel):
-    """Request to export Google Sheets to XLSX."""
+class ExportSlidesRequest(ExportDocRequest):
+    """Export Google Slides as PPTX response bytes."""
 
-    file_id: str = Field(..., description="Google Sheets file ID")
-    output_path: Optional[str] = Field(None, description="Local output path")
+
+class ExportSheetsRequest(ExportDocRequest):
+    """Export Google Sheets as XLSX response bytes."""
+
+
+async def _export_google_document(
+    request: ExportDocRequest,
+    api_key: APIKey,
+    db: Session,
+    *,
+    service_type,
+    method: str,
+    extension: str,
+    mime_type: str,
+):
+    with _google_file_operation(db):
+        if request.output_path is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="output_path is not supported; download the response content instead.",
+            )
+        credential = await get_google_credential(api_key, db)
+        token = get_token_manager().decrypt_token(credential.access_token)
+        service = service_type(credentials=Credentials(token=token))
+        content = await run_in_threadpool(
+            getattr(service, method), file_id=request.file_id
+        )
+        if not isinstance(content, bytes):
+            raise TypeError("export_bytes_required")
+        return Response(
+            content=content,
+            media_type=mime_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="export.{extension}"'
+            },
+        )
 
 
 @router.post("/docs/export")
@@ -1538,54 +1391,16 @@ async def export_google_doc(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Export Google Doc to DOCX format.
-
-    Args:
-        request: Export request with file ID and optional output path
-
-    Returns:
-        Export status and output file path.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.GOOGLE.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
+    """Download a Google Doc as DOCX bytes."""
+    return await _export_google_document(
+        request,
+        api_key,
+        db,
+        service_type=GoogleDocsService,
+        method="export_to_docx",
+        extension="docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Google Workspace not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Export document using GoogleDocsService
-    docs_service = GoogleDocsService(access_token=access_token)
-
-    try:
-        output_path = docs_service.export_to_docx(
-            file_id=request.file_id, output_path=request.output_path
-        )
-        return {
-            "success": True,
-            "file_id": request.file_id,
-            "output_path": output_path,
-            "format": "docx",
-        }
-    except Exception as e:
-        logger.error(f"Error exporting Google Doc: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to export Google Doc: {str(e)}",
-        )
 
 
 @router.post("/slides/export")
@@ -1594,54 +1409,16 @@ async def export_google_slides(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Export Google Slides to PPTX format.
-
-    Args:
-        request: Export request with file ID and optional output path
-
-    Returns:
-        Export status and output file path.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.GOOGLE.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
+    """Download Google Slides as PPTX bytes."""
+    return await _export_google_document(
+        request,
+        api_key,
+        db,
+        service_type=GoogleSlidesService,
+        method="export_to_pptx",
+        extension="pptx",
+        mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Google Workspace not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Export slides using GoogleSlidesService
-    slides_service = GoogleSlidesService(access_token=access_token)
-
-    try:
-        output_path = slides_service.export_to_pptx(
-            file_id=request.file_id, output_path=request.output_path
-        )
-        return {
-            "success": True,
-            "file_id": request.file_id,
-            "output_path": output_path,
-            "format": "pptx",
-        }
-    except Exception as e:
-        logger.error(f"Error exporting Google Slides: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to export Google Slides: {str(e)}",
-        )
 
 
 @router.post("/sheets/export")
@@ -1650,67 +1427,27 @@ async def export_google_sheets(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Export Google Sheets to XLSX format.
-
-    Args:
-        request: Export request with file ID and optional output path
-
-    Returns:
-        Export status and output file path.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.GOOGLE.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
+    """Download Google Sheets as XLSX bytes."""
+    return await _export_google_document(
+        request,
+        api_key,
+        db,
+        service_type=GoogleSheetsService,
+        method="export_to_xlsx",
+        extension="xlsx",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Google Workspace not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Export sheets using GoogleSheetsService
-    sheets_service = GoogleSheetsService(access_token=access_token)
-
-    try:
-        output_path = sheets_service.export_to_xlsx(
-            file_id=request.file_id, output_path=request.output_path
-        )
-        return {
-            "success": True,
-            "file_id": request.file_id,
-            "output_path": output_path,
-            "format": "xlsx",
-        }
-    except Exception as e:
-        logger.error(f"Error exporting Google Sheets: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to export Google Sheets: {str(e)}",
-        )
 
 
 # ==================== File Upload ====================
 
 
 class UploadFileRequest(BaseModel):
-    """Request to upload file to Google Drive."""
+    """Legacy local-path upload request; this operation is unsupported."""
 
-    file_path: str = Field(..., description="Local file path to upload")
-    parent_folder_id: Optional[str] = Field(
-        None, description="Parent folder ID (root if not specified)"
-    )
-    file_id: Optional[str] = Field(None, description="File ID to replace (update)")
+    file_path: str = Field(..., description="Unsupported server-local path")
+    parent_folder_id: Optional[str] = None
+    file_id: Optional[str] = None
 
 
 @router.post("/upload")
@@ -1719,65 +1456,11 @@ async def upload_file(
     api_key: APIKey = Depends(get_current_api_key),
     db: Session = Depends(get_db_dependency),
 ):
-    """
-    Upload file to Google Drive.
-
-    Args:
-        request: Upload request with file path and optional parent folder
-
-    Returns:
-        Upload status and new file ID.
-    """
-    credential = (
-        db.query(CloudOAuthCredentials)
-        .filter(
-            CloudOAuthCredentials.department_id == api_key.department_id,
-            CloudOAuthCredentials.provider == CloudProvider.GOOGLE.value,
-            CloudOAuthCredentials.is_active,
-        )
-        .first()
+    """Refuse unsupported local-path uploads without reading files or inventing IDs."""
+    raise HTTPException(
+        status_code=501,
+        detail="Local-path upload is not supported. Use the approved remediation artifact workflow.",
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Google Workspace not connected",
-        )
-
-    # Decrypt access token
-    token_manager = OAuthTokenManager()
-    access_token = token_manager.decrypt_token(credential.access_token)
-
-    # Upload file using Google Drive integration
-    GoogleDriveIntegration(access_token=access_token, credential_id=credential.id)
-
-    try:
-        # Check if file exists
-        if not os.path.exists(request.file_path):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {request.file_path}",
-            )
-
-        # Upload file (implementation depends on GoogleDriveIntegration)
-        # For now, return a placeholder response
-        new_file_id = request.file_id or f"google-file-{uuid.uuid4()}"
-
-        return {
-            "success": True,
-            "file_id": new_file_id,
-            "file_path": request.file_path,
-            "message": "File upload queued (implementation in progress)",
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error uploading file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload file: {str(e)}",
-        )
 
 
 # ==================== Health Check ====================
