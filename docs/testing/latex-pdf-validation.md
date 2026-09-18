@@ -51,7 +51,7 @@ Existing publication protections remain authoritative: the managed-artifact
 allowlist accepts **TEX for a LaTeX scan**, not generated PDF or HTML. A successful
 PDF machine check does not provide a comparable LaTeX source/output score, enable
 PDF delivery, or bypass descriptor, hash, tenant or review checks. HTML selection
-and broader per-format result behavior are separate work in #446.
+and per-format evidence are documented in [LaTeX evidence outcomes](latex-evidence-outcomes.md).
 
 ## Evidence and reproduction
 

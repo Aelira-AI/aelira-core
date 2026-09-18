@@ -7,7 +7,7 @@ This module provides functionality to:
 3. Generate ARIA labels for screen readers
 4. Support common STEM packages (amsmath, physics, chemfig)
 5. Batch process documents with multiple equations
-6. Check WCAG 2.1 compliance for mathematical content
+6. Report source-check findings separately from conversion and review evidence
 
 Additional capabilities:
 - ChemFig chemical structure support (text-based descriptions)
@@ -19,6 +19,13 @@ Additional capabilities:
 
 from typing import List, Dict, Optional, Tuple
 from pydantic import BaseModel, Field
+from typing import Literal
+from .latex_evidence import (
+    LatexRepresentationEvidence,
+    conversion_evidence,
+    source_evidence,
+    public_latex_evidence,
+)
 from latex2mathml.converter import convert as latex_to_mathml
 import re
 import os
@@ -253,7 +260,9 @@ class MathMLConversionResult(BaseModel):
     aria_label: Optional[str] = None
     conversion_success: bool
     error_message: Optional[str] = None
-    wcag_compliant: bool
+    # Deprecated: False means not verified, not a confirmed violation.
+    wcag_compliant: Literal[False] = False
+    latex_evidence: Dict[str, LatexRepresentationEvidence] = Field(default_factory=dict)
 
 
 class DocumentConversionResult(BaseModel):
@@ -269,6 +278,7 @@ class DocumentConversionResult(BaseModel):
     compliance_score: float
     conversion_success_rate: float = 0.0
     source_issues: List[Dict] = Field(default_factory=list)
+    latex_evidence: Dict[str, LatexRepresentationEvidence] = Field(default_factory=dict)
 
 
 class LaTeXAccessibilityIssue(BaseModel):
@@ -936,17 +946,22 @@ class LaTeXProcessor:
                 equation.latex_source, equation_context
             )
 
-            # Check WCAG compliance (all conversions are compliant if successful)
-            wcag_compliant = True
-
             return MathMLConversionResult(
                 equation_id=equation.equation_id,
                 latex_source=equation.latex_source,
                 mathml_output=mathml,
                 aria_label=aria_label,
-                conversion_success=True,
-                error_message=None,
-                wcag_compliant=wcag_compliant,
+                conversion_success=bool(mathml.strip()),
+                error_message=None if mathml.strip() else "empty_mathml_output",
+                latex_evidence={
+                    "mathml": conversion_evidence(
+                        equation.latex_source.encode(),
+                        mathml.encode(),
+                        "mathml",
+                        method="latex2mathml",
+                        status="completed" if mathml.strip() else "failed",
+                    )
+                },
             )
 
         except Exception as e:
@@ -957,7 +972,14 @@ class LaTeXProcessor:
                 aria_label=None,
                 conversion_success=False,
                 error_message=str(e),
-                wcag_compliant=False,
+                latex_evidence={
+                    "mathml": conversion_evidence(
+                        equation.latex_source.encode(),
+                        None,
+                        "mathml",
+                        method="latex2mathml",
+                    )
+                },
             )
 
     def _generate_aria_label(self, latex: str, equation_context: Dict = None) -> str:
@@ -1695,7 +1717,7 @@ REQUIREMENTS:
             DocumentConversionResult with all converted equations
         """
         # Read file
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, "r", encoding="utf-8", newline="") as f:
             text = f.read()
 
         if self.progress_callback:
@@ -1761,6 +1783,17 @@ REQUIREMENTS:
             compliance_score=source_scan["compliance_score"],
             conversion_success_rate=conversion_success_rate,
             source_issues=source_scan["issues"],
+            latex_evidence={
+                "tex": source_evidence(
+                    text.encode(), text.encode(), len(source_scan["issues"])
+                ),
+                "html": conversion_evidence(
+                    text.encode(),
+                    html.encode(),
+                    "html",
+                    status="failed" if failed else "completed",
+                ),
+            },
         )
 
     def _generate_html(
@@ -1880,7 +1913,8 @@ REQUIREMENTS:
             {
                 "equations": [...],  # List of equation dicts
                 "metadata": {...},   # Document metadata
-                "compliance": {...}  # Compliance information with all issues
+                "latex_evidence": {...},  # Representation-specific evidence
+                "compliance": {...}  # Source-check score and findings only
             }
         """
         # Detect equations
@@ -1947,6 +1981,9 @@ REQUIREMENTS:
                     "latex": conv.latex_source,
                     "mathml": conv.mathml_output,
                     "aria_label": conv.aria_label or "",
+                    "conversion_success": conv.conversion_success,
+                    "wcag_compliant": False,
+                    "latex_evidence": public_latex_evidence(conv.latex_evidence),
                 }
                 for conv in conversions
             ],
@@ -1957,10 +1994,21 @@ REQUIREMENTS:
                 "conversion_success_rate": (
                     successful / len(conversions) * 100 if conversions else 100.0
                 ),
+                "conversion_scope": "detected_equations_only",
                 "conversion_issues": conversion_issues,
                 "accessibility_issues_found": len(accessibility_issues),
             },
+            "latex_evidence": public_latex_evidence(
+                {
+                    "tex": source_evidence(
+                        latex_content.encode(),
+                        latex_content.encode(),
+                        len(accessibility_issues),
+                    )
+                }
+            ),
             "compliance": {
+                "scope": "latex_source_checks_only",
                 "score": round(compliance_score, 1),
                 "issues": all_issues,
                 "summary": {

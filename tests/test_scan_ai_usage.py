@@ -173,6 +173,19 @@ def test_legacy_storage_requires_measurement_not_suggested_content(kind, count):
     db = MagicMock()
     kwargs = {"usage": OllamaUsage(count)} if count is not None else {}
     if kind == "latex":
+        from src.education.latex_processor import DocumentConversionResult
+
+        result = DocumentConversionResult(
+            file_path="fixture.tex",
+            file_name=result.file_name,
+            total_equations=result.total_equations,
+            successful_conversions=result.successful_conversions,
+            failed_conversions=result.failed_conversions,
+            equations=result.equations,
+            html_output=result.html_output,
+            compliance_score=result.compliance_score,
+            source_issues=result.issues,
+        )
         kwargs["ollama_used"] = True  # Legacy request hint cannot establish use.
     getattr(ScanService, f"store_{kind}_scan")(
         db, result, "user", "workspace", b"fixture", **kwargs

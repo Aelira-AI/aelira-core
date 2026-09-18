@@ -1,5 +1,6 @@
 """Document scanning endpoints — PDF, PPTX, DOCX, XLSX, LaTeX."""
 
+from ...education.latex_evidence import scan_structure
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from typing import Optional, Tuple
 from sqlalchemy.orm import Session
@@ -1155,35 +1156,7 @@ def process_latex_background(
 
         # Source findings grade the input; conversion diagnostics describe output.
         all_issues = []
-        conversion_issues = []
         critical = high = medium = low = 0
-
-        # Add equation conversion issues
-        for eq in result.equations:
-            if not eq.conversion_success:
-                conversion_issues.append(
-                    {
-                        "equation_id": eq.equation_id,
-                        "type": "conversion_failed",
-                        "severity": "high",
-                        "latex": eq.latex_source[:100],
-                        "error": eq.error_message,
-                        "wcag": "1.1.1",
-                        "recommendation": "Check LaTeX syntax for errors.",
-                    }
-                )
-            elif not eq.wcag_compliant:
-                conversion_issues.append(
-                    {
-                        "equation_id": eq.equation_id,
-                        "type": "wcag_noncompliant",
-                        "severity": "medium",
-                        "latex": eq.latex_source[:100],
-                        "reason": "Missing ARIA label or MathML",
-                        "wcag": "1.1.1",
-                        "recommendation": "Ensure equation has proper ARIA labeling.",
-                    }
-                )
 
         # Add accessibility issues (missing alt text, captions, metadata, etc.)
         severity_map = {
@@ -1214,25 +1187,7 @@ def process_latex_background(
             else:
                 low += 1
 
-        # Store equation structure
-        structure = {
-            "total_equations": result.total_equations,
-            "successful_conversions": result.successful_conversions,
-            "failed_conversions": result.failed_conversions,
-            "conversion_success_rate": result.conversion_success_rate,
-            "conversion_issues": conversion_issues,
-            "accessibility_issues_found": len(accessibility_issues),
-            "equations": [
-                {
-                    "equation_id": eq.equation_id,
-                    "latex_source": eq.latex_source[:100],
-                    "conversion_success": eq.conversion_success,
-                    "wcag_compliant": eq.wcag_compliant,
-                    "aria_label": eq.aria_label,
-                }
-                for eq in result.equations
-            ],
-        }
+        structure = scan_structure(result)
 
         compliance_score = result.compliance_score
 

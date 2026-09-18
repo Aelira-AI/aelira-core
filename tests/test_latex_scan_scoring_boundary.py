@@ -52,6 +52,14 @@ def test_persisted_latex_score_is_source_only(
     stored = db.add.call_args.args[0]
     assert stored.compliance_score == expected["compliance_score"]
     assert stored.structure["conversion_issues"]
+    assert stored.structure["equations"][0]["wcag_compliant"] is False
+    assert (
+        stored.structure["latex_evidence"]["html"]["accessibility_status"]
+        == "not_verified"
+    )
+    assert stored.structure["latex_evidence"]["tex"]["source_check"][
+        "findings_count"
+    ] == len(expected["issues"])
     assert all(
         row["type"] not in {"conversion_failed", "wcag_noncompliant"}
         for row in stored.issues

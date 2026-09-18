@@ -120,6 +120,7 @@ _PUBLIC_JOB_RESULT_FIELDS = frozenset(
         "score_provenance",
         "human_review_required",
         "latex_pdf_validation",
+        "latex_evidence",
         "scan_id",
         "skipped_count",
         "status",
@@ -198,6 +199,12 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
         }:
             if type(item) is bool:
                 result[key] = item
+        elif key == "latex_evidence":
+            from ..education.latex_evidence import public_latex_evidence
+
+            evidence = public_latex_evidence(item)
+            if evidence:
+                result[key] = evidence
         elif key == "latex_pdf_validation":
             from ..education.remediation.latex_pdf_validation import (
                 public_pdf_validation,

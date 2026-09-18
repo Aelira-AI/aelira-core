@@ -16,6 +16,7 @@ from .models import Department, Scan, ScanResult, ScanType, ScanStatus
 from ..education.pdf_processor import PDFProcessingResult
 from ..education.pptx_processor import PowerPointProcessingResult
 from ..education.latex_processor import DocumentConversionResult
+from ..education.latex_evidence import scan_structure
 from ..education.docx_processor import DocxProcessingResult
 from ..education.xlsx_processor import XlsxProcessingResult
 from ..education.cvd_metrics import serialize_cvd_analysis
@@ -342,60 +343,17 @@ class ScanService:
         db.add(scan)
         db.flush()
 
-        # Aggregate issues from equations
-        all_issues = []
-        critical = high = medium = low = 0
-
-        for eq in result.equations:
-            if not eq.conversion_success:
-                issue = {
-                    "equation_id": eq.equation_id,
-                    "type": "conversion_failed",
-                    "category": "latex",
-                    "severity": "high",
-                    "title": "LaTeX Conversion Failed",
-                    "description": f"Equation #{eq.equation_id} could not be converted to MathML: {eq.error_message or 'unknown error'}",
-                    "location": f"Equation {eq.equation_id}",
-                    "wcag_criterion": "WCAG 1.1.1",
-                    "suggested_fix": "Check the LaTeX syntax and ensure all packages are supported. Consider providing an alt-text description manually.",
-                    "latex": eq.latex_source[:100],
-                    "error": eq.error_message,
-                }
-                all_issues.append(issue)
-                high += 1
-            elif not eq.wcag_compliant:
-                issue = {
-                    "equation_id": eq.equation_id,
-                    "type": "wcag_noncompliant",
-                    "category": "latex",
-                    "severity": "medium",
-                    "title": "Equation Missing Accessibility Metadata",
-                    "description": f"Equation #{eq.equation_id} is missing an ARIA label or MathML representation needed for screen readers",
-                    "location": f"Equation {eq.equation_id}",
-                    "wcag_criterion": "WCAG 1.1.1",
-                    "suggested_fix": "Add an ARIA label describing the equation's meaning, or ensure MathML output is generated.",
-                    "latex": eq.latex_source[:100],
-                    "reason": "Missing ARIA label or MathML",
-                }
-                all_issues.append(issue)
-                medium += 1
-
-        # Store equation structure
-        structure = {
-            "total_equations": result.total_equations,
-            "successful_conversions": result.successful_conversions,
-            "failed_conversions": result.failed_conversions,
-            "equations": [
-                {
-                    "equation_id": eq.equation_id,
-                    "latex_source": eq.latex_source[:100],
-                    "conversion_success": eq.conversion_success,
-                    "wcag_compliant": eq.wcag_compliant,
-                    "aria_label": eq.aria_label,
-                }
-                for eq in result.equations
-            ],
-        }
+        # Preserve source findings; output diagnostics live in structure only.
+        all_issues = result.source_issues
+        severity_counts = {key: 0 for key in ("critical", "high", "medium", "low")}
+        severity_map = {"serious": "high", "moderate": "medium", "minor": "low"}
+        for issue in all_issues:
+            severity = issue.get("severity", "medium")
+            severity_counts[severity_map.get(severity, severity)] += 1
+        critical, high, medium, low = (
+            severity_counts[k] for k in ("critical", "high", "medium", "low")
+        )
+        structure = scan_structure(result)
 
         # Create ScanResult record
         scan_result = ScanResult(
