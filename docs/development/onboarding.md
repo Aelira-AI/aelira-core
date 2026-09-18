@@ -443,17 +443,19 @@ pytest
 
 (inside the `api` container, or in your venv with the services reachable).
 Config lives in `pytest.ini`: coverage is measured against `src`
-(`--cov=src`), and the gate fails under 25% coverage
-(`--cov-fail-under=25`). Markers worth knowing about (`pytest.ini`,
-enforced in `tests/conftest.py`): `browser`, `e2e`, and `integration` tests
-are automatically skipped when `CI=true` or `GITHUB_ACTIONS=true`, because
-they need a running dashboard, external services, or the full environment —
-run those manually against a real stack when you're touching that code.
+(`--cov=src`), and the full-suite gate fails under 68% coverage
+(`--cov-fail-under=68`). The `browser`, `e2e`, and `integration` markers
+do not themselves skip tests in CI. Individual modules and fixtures can still
+require services, optional tools or explicit opt-in. CI checks every observed
+skip against the exact-node policy and requires critical tests to pass.
+See [coverage and skip evidence](../testing/coverage-and-skips.md) for the
+measured baseline, dispositions and reproducible commands. Do not enable all
+legacy integration suites indiscriminately: some target obsolete contracts.
 
 To run one file:
 
 ```bash
-pytest tests/test_severity_determinism.py -v
+pytest tests/test_severity_determinism.py -v --no-cov
 ```
 
 ### Dashboard
