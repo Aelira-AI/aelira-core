@@ -9,12 +9,14 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional
 from datetime import datetime, timezone
+import html
 import uuid
 
 from ..db.database import get_db_dependency
 from ..db.models import EmailAlertSettings, Department
 from ..api.auth_routes import get_current_api_key
 from ..db.models import APIKey
+from ..config.settings import get_settings
 
 router = APIRouter(prefix="/alerts", tags=["email-alerts"])
 
@@ -157,6 +159,12 @@ def get_or_create_settings(db: Session, department_id: str) -> EmailAlertSetting
     return settings
 
 
+def require_delivery_success(result: dict) -> None:
+    """The mail service reports delivery rejection as a result, not an exception."""
+    if not isinstance(result, dict) or result.get("success") is not True:
+        raise RuntimeError("Email delivery failed")
+
+
 # Routes
 
 
@@ -271,8 +279,7 @@ async def add_email_address(
     emails = settings.email_addresses or []
 
     if email not in [e.lower() for e in emails]:
-        emails.append(request.email)
-        settings.email_addresses = emails
+        settings.email_addresses = [*emails, str(request.email)]
         settings.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(settings)
@@ -352,7 +359,7 @@ async def send_test_email(
 
     Sends to all configured email addresses.
     """
-    from ..email import get_email_service
+    from ..mailer import get_email_service
 
     settings = get_or_create_settings(db, api_key.department_id)
 
@@ -372,39 +379,38 @@ async def send_test_email(
 
     try:
         if request.email_type == "scan_complete":
-            await email_service.send_scan_complete(
+            result = await email_service.send_scan_complete(
                 to_emails=settings.email_addresses,
                 file_name="test_document.pdf",
                 compliance_score=85.5,
                 issues_found=12,
-                action_url="https://dashboard.example.com/scans/test",
-                action_text="View Scan Results",
+                scan_url=f"{get_settings().dashboard_url}/scans/test",
             )
         elif request.email_type == "critical_issues":
-            await email_service.send_critical_issues(
+            result = await email_service.send_critical_issues(
                 to_emails=settings.email_addresses,
                 file_name="test_document.pdf",
                 critical_issues=[
                     {
-                        "rule": "image-alt",
+                        "type": "image-alt",
                         "description": "Images must have alternate text",
                         "wcag": "WCAG 1.1.1 (A)",
                         "count": 5,
                     },
                     {
-                        "rule": "color-contrast",
+                        "type": "color-contrast",
                         "description": "Text must have sufficient color contrast",
                         "wcag": "WCAG 1.4.3 (AA)",
                         "count": 3,
                     },
                 ],
-                action_url="https://dashboard.example.com/scans/test",
+                action_url=f"{get_settings().dashboard_url}/scans/test",
                 action_text="Review Issues",
-                remediate_url="https://dashboard.example.com/remediate/test",
+                remediate_url=f"{get_settings().dashboard_url}/remediate/test",
                 department=department,
             )
         elif request.email_type == "weekly_summary":
-            await email_service.send_weekly_summary(
+            result = await email_service.send_weekly_summary(
                 to_emails=settings.email_addresses,
                 department_name=department_name,
                 total_files=150,
@@ -417,7 +423,7 @@ async def send_test_email(
                 serious_count=45,
                 moderate_count=89,
                 minor_count=178,
-                dashboard_url="https://dashboard.example.com/dashboard",
+                dashboard_url=f"{get_settings().dashboard_url}/dashboard",
                 department=department,
             )
         else:
@@ -426,15 +432,18 @@ async def send_test_email(
                 detail=f"Unknown email type: {request.email_type}. Use 'scan_complete', 'critical_issues', or 'weekly_summary'.",
             )
 
+        require_delivery_success(result)
         return TestEmailResponse(
             success=True,
             message=f"Test {request.email_type} email sent to {len(settings.email_addresses)} recipient(s).",
         )
 
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         return TestEmailResponse(
             success=False,
-            message=f"Failed to send test email: {str(e)}",
+            message="Failed to send test email.",
         )
 
 
@@ -587,7 +596,7 @@ async def trigger_scan_complete(
 
     Sends notification to all configured email addresses if alert_on_scan_complete is enabled.
     """
-    from ..email import get_email_service
+    from ..mailer import get_email_service
 
     settings = get_or_create_settings(db, api_key.department_id)
 
@@ -609,25 +618,25 @@ async def trigger_scan_complete(
     email_service = get_email_service()
 
     try:
-        await email_service.send_scan_complete(
+        result = await email_service.send_scan_complete(
             to_emails=settings.email_addresses,
             file_name=request.file_name,
             compliance_score=request.compliance_score,
             issues_found=request.issues_found,
-            action_url=f"https://dashboard.example.com/scans/{request.scan_id}",
-            action_text="View Scan Results",
+            scan_url=f"{get_settings().dashboard_url}/scans/{request.scan_id}",
         )
 
+        require_delivery_success(result)
         return TriggerResponse(
             success=True,
             message=f"Scan complete alert sent for {request.file_name}",
             recipients_count=len(settings.email_addresses),
         )
 
-    except Exception as e:
+    except Exception:
         return TriggerResponse(
             success=False,
-            message=f"Failed to send scan complete alert: {str(e)}",
+            message="Failed to send scan complete alert.",
             recipients_count=0,
         )
 
@@ -643,7 +652,7 @@ async def trigger_critical_issues(
 
     Sends notification when critical accessibility issues are found.
     """
-    from ..email import get_email_service
+    from ..mailer import get_email_service
 
     settings = get_or_create_settings(db, api_key.department_id)
 
@@ -668,40 +677,27 @@ async def trigger_critical_issues(
     )
 
     try:
-        # Format critical issues for email
-        formatted_issues = []
-        for issue in request.critical_issues:
-            formatted_issues.append(
-                {
-                    "rule": issue.get("type", "unknown"),
-                    "description": issue.get(
-                        "description", "Critical accessibility issue"
-                    ),
-                    "wcag": issue.get("wcag", "WCAG 2.1"),
-                    "count": issue.get("count", 1),
-                }
-            )
-
-        await email_service.send_critical_issues(
+        result = await email_service.send_critical_issues(
             to_emails=settings.email_addresses,
             file_name=request.file_name,
-            critical_issues=formatted_issues,
-            action_url=f"https://dashboard.example.com/scans/{request.scan_id}",
+            critical_issues=request.critical_issues,
+            action_url=f"{get_settings().dashboard_url}/scans/{request.scan_id}",
             action_text="Review Issues",
-            remediate_url=f"https://dashboard.example.com/remediate/{request.scan_id}",
+            remediate_url=f"{get_settings().dashboard_url}/remediate/{request.scan_id}",
             department=department,
         )
 
+        require_delivery_success(result)
         return TriggerResponse(
             success=True,
             message=f"Critical issues alert sent for {request.file_name}",
             recipients_count=len(settings.email_addresses),
         )
 
-    except Exception as e:
+    except Exception:
         return TriggerResponse(
             success=False,
-            message=f"Failed to send critical issues alert: {str(e)}",
+            message="Failed to send critical issues alert.",
             recipients_count=0,
         )
 
@@ -717,7 +713,7 @@ async def trigger_weekly_summary(
 
     Sends a summary of accessibility compliance for the past week.
     """
-    from ..email import get_email_service
+    from ..mailer import get_email_service
 
     settings = get_or_create_settings(db, api_key.department_id)
 
@@ -745,33 +741,31 @@ async def trigger_weekly_summary(
     email_service = get_email_service()
 
     try:
-        await email_service.send_weekly_summary(
+        result = await email_service.send_weekly_summary(
             to_emails=settings.email_addresses,
             department_name=department_name,
             total_files=request.total_scans,
             total_issues=request.total_issues,
             scans_this_week=request.total_scans,
-            issues_fixed=0,  # Would need to track this
             average_score=request.avg_compliance_score * 100,
             score_change="",
-            critical_count=0,
-            serious_count=0,
-            moderate_count=0,
-            minor_count=request.total_issues,
-            dashboard_url="https://dashboard.example.com/dashboard",
+            week_start=request.start_date,
+            week_end=request.end_date,
+            dashboard_url=f"{get_settings().dashboard_url}/dashboard",
             department=department,
         )
 
+        require_delivery_success(result)
         return TriggerResponse(
             success=True,
             message=f"Weekly summary sent for {request.start_date} to {request.end_date}",
             recipients_count=len(settings.email_addresses),
         )
 
-    except Exception as e:
+    except Exception:
         return TriggerResponse(
             success=False,
-            message=f"Failed to send weekly summary: {str(e)}",
+            message="Failed to send weekly summary.",
             recipients_count=0,
         )
 
@@ -785,7 +779,7 @@ async def send_alert_to_recipients(
     """
     Send a custom alert email to specified recipients.
     """
-    from ..email import get_email_service
+    from ..mailer import get_email_service
 
     if not request.recipients:
         raise HTTPException(
@@ -795,14 +789,16 @@ async def send_alert_to_recipients(
 
     email_service = get_email_service()
 
+    delivered_count = 0
     try:
-        # Use a generic send method or construct HTML
         for recipient in request.recipients:
-            await email_service.send_email(
-                to_email=str(recipient),
+            result = await email_service.send_email(
+                to_emails=[str(recipient)],
                 subject=request.subject,
-                html_content=f"<p>{request.body}</p>",
+                html_content=f"<p>{html.escape(request.body)}</p>",
             )
+            require_delivery_success(result)
+            delivered_count += 1
 
         return TriggerResponse(
             success=True,
@@ -810,9 +806,9 @@ async def send_alert_to_recipients(
             recipients_count=len(request.recipients),
         )
 
-    except Exception as e:
+    except Exception:
         return TriggerResponse(
             success=False,
-            message=f"Failed to send alert: {str(e)}",
-            recipients_count=0,
+            message="Failed to send alert.",
+            recipients_count=delivered_count,
         )
