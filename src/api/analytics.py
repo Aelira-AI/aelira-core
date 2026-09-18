@@ -12,11 +12,12 @@ Created: November 30, 2025
 """
 
 from fastapi import APIRouter, HTTPException, Depends, Query, status
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, BeforeValidator
+from typing import Annotated, List, Literal, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime
 import logging
+import math
 
 from ..db.database import get_db_dependency
 from ..db.models import Department, UserRole
@@ -35,6 +36,19 @@ logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+
+def _normalize_filter(value):
+    return value.lower() if isinstance(value, str) else value
+
+
+IssueStatusFilter = Annotated[
+    Literal["open", "in_progress", "resolved", "wont_fix", "false_positive"],
+    BeforeValidator(_normalize_filter),
+]
+IssueSeverityFilter = Annotated[
+    Literal["critical", "high", "medium", "low"], BeforeValidator(_normalize_filter)
+]
 
 
 # Pydantic models for requests/responses
@@ -318,10 +332,10 @@ async def get_deadline_projection(
 @router.get("/issues/{department_id}")
 async def get_department_issues(
     department_id: str,
-    status: Optional[str] = None,
-    severity: Optional[str] = None,
+    status: Optional[IssueStatusFilter] = None,
+    severity: Optional[IssueSeverityFilter] = None,
     assigned_to: Optional[str] = None,
-    limit: int = Query(default=100, le=500),
+    limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db_dependency),
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
@@ -781,7 +795,7 @@ async def export_scans_csv(
             # Get scan result if exists
             result = db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
 
-            compliance_score = result.compliance_score if result else 0
+            compliance_score = result.compliance_score if result else None
             critical = result.critical_issues if result else 0
             high = result.high_issues if result else 0
             medium = result.medium_issues if result else 0
@@ -795,7 +809,11 @@ async def export_scans_csv(
                     scan.file_name or "",
                     scan.scan_type.value if scan.scan_type else "",
                     scan.status.value if scan.status else "",
-                    f"{compliance_score:.1f}",
+                    (
+                        f"{compliance_score:.1f}"
+                        if compliance_score is not None
+                        else "Not assessed"
+                    ),
                     critical,
                     high,
                     medium,
@@ -816,7 +834,7 @@ async def export_scans_csv(
             media_type="text/csv",
             headers={
                 "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": str(len(csv_content)),
+                "Content-Length": str(len(csv_content.encode("utf-8"))),
             },
         )
 
@@ -1220,7 +1238,7 @@ async def export_bulk_zip(
                 result = (
                     db.query(ScanResult).filter(ScanResult.scan_id == scan.id).first()
                 )
-                compliance_score = result.compliance_score if result else 0
+                compliance_score = result.compliance_score if result else None
                 critical = result.critical_issues if result else 0
                 high = result.high_issues if result else 0
                 medium = result.medium_issues if result else 0
@@ -1233,7 +1251,11 @@ async def export_bulk_zip(
                         scan.file_name or "",
                         scan.scan_type.value if scan.scan_type else "",
                         scan.status.value if scan.status else "",
-                        f"{compliance_score:.1f}",
+                        (
+                            f"{compliance_score:.1f}"
+                            if compliance_score is not None
+                            else "Not assessed"
+                        ),
                         critical,
                         high,
                         medium,
@@ -1406,7 +1428,7 @@ async def get_alt_text_quality_metrics(
     - overall_average_score: Department-wide average quality score (0-100)
     - average_grade: A/B/C/D/F based on average
     - grade_distribution: Count of images at each grade level
-    - wcag_compliance_rate: Percentage meeting WCAG 2.1 AA
+    - wcag_compliance_rate: Unavailable; quality scores do not establish conformance
     - common_issues: Most frequently occurring alt text problems
     - trend: Quality score changes over the time period
     - improvement_opportunities: Specific recommendations
@@ -1447,7 +1469,6 @@ async def get_alt_text_quality_metrics(
         total_score = 0
         total_images = 0
         grade_counts = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
-        wcag_pass_count = 0
         all_issues = []
 
         for scan in scans:
@@ -1456,11 +1477,17 @@ async def get_alt_text_quality_metrics(
                 for issue in result.issues:
                     # Look for image-related issues
                     if "image" in str(issue).lower() or "alt" in str(issue).lower():
-                        total_images += 1
-
                         # Extract score if available in issue data
                         if isinstance(issue, dict):
-                            score = issue.get("alt_text_quality_score", 70)
+                            score = issue.get("alt_text_quality_score")
+                            if (
+                                isinstance(score, bool)
+                                or not isinstance(score, (int, float))
+                                or not 0 <= score <= 100
+                                or not math.isfinite(score)
+                            ):
+                                continue
+                            total_images += 1
                             total_score += score
 
                             # Calculate grade
@@ -1470,7 +1497,6 @@ async def get_alt_text_quality_metrics(
                                 grade_counts["B"] += 1
                             elif score >= 70:
                                 grade_counts["C"] += 1
-                                wcag_pass_count += 1
                             elif score >= 60:
                                 grade_counts["D"] += 1
                             else:
@@ -1481,10 +1507,12 @@ async def get_alt_text_quality_metrics(
                                 all_issues.extend(issue.get("alt_text_issues", []))
 
         # Calculate averages
-        avg_score = total_score / total_images if total_images > 0 else 0
+        avg_score = total_score / total_images if total_images > 0 else None
 
         # Determine average grade
-        if avg_score >= 90:
+        if avg_score is None:
+            avg_grade = None
+        elif avg_score >= 90:
             avg_grade = "A"
         elif avg_score >= 80:
             avg_grade = "B"
@@ -1502,19 +1530,18 @@ async def get_alt_text_quality_metrics(
             issue_counts[issue_str] = issue_counts.get(issue_str, 0) + 1
         common_issues = sorted(issue_counts.items(), key=lambda x: -x[1])[:10]
 
-        # Calculate WCAG compliance rate
-        wcag_rate = (wcag_pass_count / total_images * 100) if total_images > 0 else 0
-
         return {
             "success": True,
             "department_id": department_id,
             "period_days": days,
             "total_scans_analyzed": len(scans),
             "total_images_analyzed": total_images,
-            "overall_average_score": round(avg_score, 1),
+            "overall_average_score": (
+                round(avg_score, 1) if avg_score is not None else None
+            ),
             "average_grade": avg_grade,
             "grade_distribution": grade_counts,
-            "wcag_compliance_rate": round(wcag_rate, 1),
+            "wcag_compliance_rate": None,
             "common_issues": [
                 {"issue": issue, "count": count} for issue, count in common_issues
             ],
@@ -1535,7 +1562,7 @@ async def get_alt_text_quality_metrics(
                     "impact": "Better conveys educational content",
                 },
             ],
-            "note": "For detailed per-image scoring, use POST /education/image/score-alt-text",
+            "note": "Only recorded numeric quality scores are aggregated. Quality scores do not establish WCAG conformance. For detailed per-image scoring, use POST /education/image/score-alt-text",
         }
 
     except Exception as e:

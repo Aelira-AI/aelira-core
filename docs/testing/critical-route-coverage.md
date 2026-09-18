@@ -30,6 +30,16 @@ Confirmation-code delivery is awaited. A failed or unavailable mail service retu
 
 These are HTTP + PostgreSQL contracts with controlled, signature-checked mail and substituted authenticated identity; the required-auth adapter remains active. Per-test outer transactions/savepoints establish same-connection persistence and rollback, not concurrent or cross-connection behavior. Cancellation tests supply an identity: confirmation deactivates the account and revokes normal credentials, so these tests do not establish a reachable recovery login or cancellation browser journey. No real email or live account is used.
 
+## Analytics allowed and failure paths
+
+[`test_analytics_route_contracts.py`](../../tests/test_analytics_route_contracts.py) covers POST snapshot capture/capture-all, GET trend/analysis/projection, issue listing/stats, CSV/Excel/bulk exports, deadline prediction and alt-text quality metrics. Individual snapshot capture persists the real rollup and reuses the daily record. Issue queries and exports use two departments' PostgreSQL rows; parsed CSV/workbook/archive contents verify scope, measured zero and unavailable scores. UTF-8 filenames have byte-accurate response lengths. Invalid filters, pagination, date and period bounds have exact refusals; valid case-insensitive issue filters remain supported.
+
+Trend/analysis/projection, capture-all and prediction serialization tests control their service results and assert canonical department arguments. They complement real individual snapshot/export queries, not an all-department scheduler or forecasting-quality evaluation. Unexpected query/service failures have bounded responses. Existing `test_analytics_tenant_scope.py` remains the authority, issue mutation and bounded report evidence matrix.
+
+Alt-text aggregates count only recorded finite numeric quality scores from 0 to 100; absent/invalid scores are unavailable, not a default score. These are scored finding records, not a verified count of unique images. The legacy `wcag_compliance_rate` field is null because quality scores cannot establish conformance. No consumer of this endpoint in the shipped dashboard was found. Export scores without a result are `Not assessed`, consistent across CSV, Excel and ZIP summaries.
+
+Fixtures substitute authenticated identity and use rollback-only PostgreSQL outer transactions/savepoints. Persistence assertions read the same connection; no concurrent/cross-connection commit, browser journey, live data or accessibility conformance claim is made.
+
 ## Failure and queue evidence
 
 ### Google Workspace file workflows
@@ -88,7 +98,6 @@ These bounded areas remain part of the coverage backlog; they are not implicitly
 
 | Area | Existing useful evidence | Follow-up boundary |
 | --- | --- | --- |
-| [Analytics #425](https://github.com/Aelira-AI/aelira-core/issues/425) | `test_analytics_tenant_scope.py` authorization matrix, SQLite issue/audit mutations and evidence reports. | Exact allowed HTTP snapshot/trend/projection/export behavior, invalid inputs and service failures; retain existing denial and report coverage. |
 | [Shared integration/webhook contracts #429](https://github.com/Aelira-AI/aelira-core/issues/429) | PostgreSQL status/metrics/disconnect and webhook contracts described above; existing provider and specialized renewal tests retained. | Live provider availability, remote revocation, subscription-management placeholders and worker/browser journeys remain outside these contracts. |
 
 ## Maintaining the evidence
