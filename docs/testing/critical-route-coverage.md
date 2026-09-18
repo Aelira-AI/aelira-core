@@ -42,6 +42,16 @@ Current limits are explicit: there is no defined application recipient cap (a 20
 
 The artifact suite independently checks a completed scan whose remediation requires manual work: metadata explains the verification blocker and approval is refused without an approval audit. The Canvas route/service contracts use controlled provider responses; the complete worker/provider/browser flow remains #375. Final candidate-wide counts and coverage must still come from the revision's CI run.
 
+### Administrator users and invitations
+
+[`test_admin_user_routes.py`](../../tests/test_admin_user_routes.py) exercises `/admin/users`, user role updates/removal and `/admin/stats` through HTTP and real PostgreSQL queries. It checks active department membership, saved roles/deactivation, transactional role-change audits, nonempty scan statistics, unknown scores, lifecycle/input conflicts and database failure rollback. The real administrator dependency admits supplied session/API-key principals and refuses ordinary faculty and LTI principals. Credential parsing and login are separate evidence.
+
+[`test_admin_invitation_routes.py`](../../tests/test_admin_invitation_routes.py) covers create/list/revoke/resend, exact visible list fields, ordinary foreign-department refusal, missing authentication, invalid input, expired pending rows, duplicate/capacity rules and commit/query failures. Expired invitations are excluded from pending lists/counts and cannot consume capacity or block a replacement invite. Mail uses a signature-checked substitute; success/failure audit records and an awaited result establish the application contract, not live provider acceptance or inbox receipt.
+
+The shared fixture uses per-test PostgreSQL outer transactions and savepoints. Reloads prove database state on that connection; they do not establish cross-connection commit visibility or concurrent user administration. Role changes and their audit records are committed together. Ordinary removal/revoke routes do not gain new audit event types in this change. Existing `/auth` handoff acceptance tests remain complementary evidence.
+
+Invitation rows are saved before delivery. A failed delivery returns HTTP 502 with a plain message instructing the administrator to refresh invitations and retry; a list refresh exposes the saved pending invitation for resend. Resend saves its rotated token and extended expiry before sending, including on delivery failure. Database commit, provider acceptance and audit persistence are not a distributed transaction; this is not a durable mail queue or exactly-once delivery guarantee.
+
 ## Secondary route follow-ups
 
 These bounded areas remain part of the coverage backlog; they are not implicitly completed by the critical tests above.
@@ -52,7 +62,6 @@ These bounded areas remain part of the coverage backlog; they are not implicitly
 | [Microsoft 365 #427](https://github.com/Aelira-AI/aelira-core/issues/427) | `test_microsoft_integration.py` OAuth transport contracts and shared provider DTO tests. | OneDrive/SharePoint browse → queue → status, upload and subscription persistence; replace permissive success/auth/not-found alternatives. |
 | [Account lifecycle #423](https://github.com/Aelira-AI/aelira-core/issues/423) | Related cleanup, invitation and API-key service tests. | `/account` deactivate/deletion/status/export route success, scoped rows, harmless invalid input and dependency failure using disposable records and mocked delivery. |
 | [Analytics #425](https://github.com/Aelira-AI/aelira-core/issues/425) | `test_analytics_tenant_scope.py` authorization matrix, SQLite issue/audit mutations and evidence reports. | Exact allowed HTTP snapshot/trend/projection/export behavior, invalid inputs and service failures; retain existing denial and report coverage. |
-| [User management #428](https://github.com/Aelira-AI/aelira-core/issues/428) | `test_admin_handoff.py` invitation acceptance and admin dependency checks; PostgreSQL concurrent handoff acceptance. | Ordinary `/admin` user/invitation CRUD, role changes, resend/stats, scoped real rows and mail failure. Handoff acceptance does not prove all admin routes. |
 | [Shared integration/webhook contracts #429](https://github.com/Aelira-AI/aelira-core/issues/429) | Current provider transport and specialized webhook tests. | Replace six obsolete status mocks and 28 gated webhook harness cases with exact route fixtures. |
 | [Legacy queue contracts and PostgreSQL races #430](https://github.com/Aelira-AI/aelira-core/issues/430) | Required durable worker lane and current provider-specific job APIs. | Retire unsupported generic-REST and mock-self-test assertions, and execute the separately gated refresh/enqueue races in a disposable CI lane. |
 
