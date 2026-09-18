@@ -44,6 +44,14 @@ GDPR_GRACE_PERIOD_DAYS = 30
 CONFIRMATION_CODE_EXPIRY_MINUTES = 15
 
 
+class AccountLifecycleError(ValueError):
+    """A bounded, expected account-state or confirmation error."""
+
+
+class AccountDeliveryError(RuntimeError):
+    """The required confirmation code could not be delivered."""
+
+
 class AccountDeletionService:
     """Core service for account lifecycle management."""
 
@@ -125,7 +133,7 @@ class AccountDeletionService:
 
         # 2. Revoke all sessions
         session_service = get_session_service()
-        revoked_count = session_service.revoke_all_sessions(db, user.id)
+        revoked_count = session_service.revoke_all_sessions(db, user.id, commit=False)
 
         # 3. Deactivate all API keys
         keys = (
@@ -160,11 +168,10 @@ class AccountDeletionService:
         if department and department.tier.startswith("individual"):
             department.is_active = False
 
-        db.commit()
-
         # 6. Audit log
         audit = AuditService(db)
         audit.log_action(
+            commit=False,
             action=AuditLogAction.ACCOUNT_DEACTIVATE,
             user_id=user.id,
             department_id=user.department_id,
@@ -179,6 +186,8 @@ class AccountDeletionService:
             },
         )
 
+        db.commit()
+
         logger.info(
             "Account deactivated: user=%s, sessions_revoked=%s, keys_deactivated=%s",
             user.id,
@@ -192,7 +201,7 @@ class AccountDeletionService:
             "keys_deactivated": len(keys),
         }
 
-    def request_deletion_code(
+    async def request_deletion_code(
         self,
         db: DBSession,
         user: User,
@@ -220,40 +229,26 @@ class AccountDeletionService:
         )
         db.commit()
 
-        # Send email with code (fire-and-forget async)
         try:
             email_service = get_email_service()
-            if email_service.is_configured():
-                from ..services.email_templates import render_deletion_code_email
-                import asyncio
+            if not email_service.is_configured():
+                raise AccountDeliveryError()
+            from ..services.email_templates import render_deletion_code_email
 
-                subject = "Aelira Account Deletion - Confirmation Code"
-                html_body, text_body = render_deletion_code_email(
-                    name=user.name or "there",
-                    code=code,
-                )
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
-                loop.create_task(
-                    email_service.send_email(
-                        to_emails=[user.email],
-                        subject=subject,
-                        html_content=html_body,
-                        text_content=text_body,
-                    )
-                )
-                logger.info("Deletion confirmation email queued for user %s", user.id)
-        except Exception as e:
-            logger.error(
-                "Failed to send deletion confirmation email for user %s: %s",
-                user.id,
-                type(e).__name__,
+            html_body, text_body = render_deletion_code_email(
+                name=user.name or "there", code=code
             )
-            # Don't fail the request if email fails — code is still stored
+            result = await email_service.send_email(
+                to_emails=[user.email],
+                subject="Aelira Account Deletion - Confirmation Code",
+                html_content=html_body,
+                text_content=text_body,
+            )
+            if not isinstance(result, dict) or result.get("success") is not True:
+                raise AccountDeliveryError()
+        except Exception as exc:
+            logger.error("Deletion code delivery failed: %s", type(exc).__name__)
+            raise AccountDeliveryError() from None
 
         # Audit log
         audit = AuditService(db)
@@ -275,7 +270,7 @@ class AccountDeletionService:
             "code_expires_at": expires_at,
         }
 
-    def confirm_deletion(
+    async def confirm_deletion(
         self,
         db: DBSession,
         user: User,
@@ -293,7 +288,7 @@ class AccountDeletionService:
         """
         # Verify code hash exists
         if not user.deletion_confirmation_code_hash:
-            raise ValueError(
+            raise AccountLifecycleError(
                 "No deletion request pending. Please request a new confirmation code."
             )
 
@@ -306,14 +301,20 @@ class AccountDeletionService:
             user.deletion_confirmation_code_hash = None
             user.deletion_confirmation_expires_at = None
             db.commit()
-            raise ValueError("Confirmation code has expired. Please request a new one.")
+            raise AccountLifecycleError(
+                "Confirmation code has expired. Please request a new one."
+            )
+
+        # Only six ASCII digits are meaningful; bound input before bcrypt.
+        if len(code) != 6 or not code.isascii() or not code.isdigit():
+            raise AccountLifecycleError("Invalid confirmation code.")
 
         # Verify code
         if not bcrypt.checkpw(
             code.encode("utf-8"),
             user.deletion_confirmation_code_hash.encode("utf-8"),
         ):
-            raise ValueError("Invalid confirmation code.")
+            raise AccountLifecycleError("Invalid confirmation code.")
 
         # Schedule deletion
         now = datetime.now(timezone.utc)
@@ -330,7 +331,7 @@ class AccountDeletionService:
 
         # Revoke all sessions
         session_service = get_session_service()
-        session_service.revoke_all_sessions(db, user.id)
+        session_service.revoke_all_sessions(db, user.id, commit=False)
 
         # Deactivate API keys
         db.query(APIKey).filter(
@@ -372,11 +373,10 @@ class AccountDeletionService:
         if department and department.tier.startswith("individual"):
             department.is_active = False
 
-        db.commit()
-
         # Audit log
         audit = AuditService(db)
         audit.log_action(
+            commit=False,
             action=AuditLogAction.ACCOUNT_DELETION_CONFIRMED,
             user_id=user.id,
             department_id=user.department_id,
@@ -390,38 +390,29 @@ class AccountDeletionService:
             },
         )
 
-        # Send scheduled email (fire-and-forget async)
+        db.commit()
+
+        # This notification is optional: scheduling has already committed.
         try:
             email_service = get_email_service()
             if email_service.is_configured():
                 from ..services.email_templates import render_deletion_scheduled_email
-                import asyncio
 
-                subject = "Your Aelira Account Deletion is Scheduled"
                 html_body, text_body = render_deletion_scheduled_email(
                     name=user.name or "there",
                     scheduled_date=scheduled_for.strftime("%B %d, %Y"),
                 )
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
-                loop.create_task(
-                    email_service.send_email(
-                        to_emails=[user.email],
-                        subject=subject,
-                        html_content=html_body,
-                        text_content=text_body,
-                    )
+                result = await email_service.send_email(
+                    to_emails=[user.email],
+                    subject="Your Aelira Account Deletion is Scheduled",
+                    html_content=html_body,
+                    text_content=text_body,
                 )
-                logger.info("Deletion scheduled email queued for user %s", user.id)
-        except Exception as e:
+                if not isinstance(result, dict) or result.get("success") is not True:
+                    logger.warning("Deletion scheduled notification was not delivered")
+        except Exception as exc:
             logger.error(
-                "Failed to send deletion scheduled email for user %s: %s",
-                user.id,
-                type(e).__name__,
+                "Deletion scheduled notification failed: %s", type(exc).__name__
             )
 
         logger.info(
@@ -445,10 +436,10 @@ class AccountDeletionService:
         Reactivates the account.
         """
         if not user.deletion_scheduled_for:
-            raise ValueError("No pending deletion to cancel.")
+            raise AccountLifecycleError("No pending deletion to cancel.")
 
         if datetime.now(timezone.utc) > user.deletion_scheduled_for:
-            raise ValueError(
+            raise AccountLifecycleError(
                 "Deletion grace period has expired and cannot be cancelled."
             )
 
@@ -473,11 +464,10 @@ class AccountDeletionService:
         if department and department.tier.startswith("individual"):
             department.is_active = True
 
-        db.commit()
-
         # Audit log
         audit = AuditService(db)
         audit.log_action(
+            commit=False,
             action=AuditLogAction.ACCOUNT_DELETION_CANCELLED,
             user_id=user.id,
             department_id=user.department_id,
@@ -486,6 +476,8 @@ class AccountDeletionService:
             ip_address=ip_address,
             user_agent=user_agent,
         )
+
+        db.commit()
 
         logger.info(f"Account deletion cancelled for user {user.id}")
         return {
