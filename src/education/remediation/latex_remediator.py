@@ -160,11 +160,13 @@ class LatexRemediator(BaseRemediator):
         if len(format_values) > 1 or "tex" not in format_values:
             converter = get_latex_converter()
             receipts = {}
+            self._conversion_receipts = {}
             results = converter.convert_all_formats(
                 output_path,
                 format_values,
                 str(output_dir),
                 validation_receipts=receipts,
+                conversion_receipts=self._conversion_receipts,
             )
             self.result.latex_pdf_validation = receipts.get("pdf")
             self._requested_formats = format_values
@@ -845,6 +847,15 @@ Provide ONLY the fix content, no explanation."""
                     method="pikepdf+veraPDF/ua1",
                 ),
             )
+        for kind, diagnostics in getattr(self, "_conversion_receipts", {}).items():
+            if kind in evidence:
+                fields = evidence[kind].model_dump()
+                fields["conversion_diagnostics"] = diagnostics.model_dump()
+                if any(stage.blocked for stage in diagnostics.stages):
+                    fields["conversion"] = LatexCheck(
+                        status="failed", method="latex-export-v1"
+                    ).model_dump()
+                evidence[kind] = LatexRepresentationEvidence.model_validate(fields)
         self.result.latex_evidence = evidence
 
     def _verify_fixes(self, output_path: str):

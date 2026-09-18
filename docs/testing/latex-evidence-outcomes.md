@@ -93,3 +93,6 @@ is a fixture boundary; queue ownership/races have their own required suites.
 The positive PDF machine-check receipt is a controlled test double. No live
 veraPDF, semantic certification, human review, or assistive-technology result is
 claimed. The full #444 corpus and reader journey remain open.
+
+Converter-stage loss diagnostics are documented in
+[conversion diagnostics](latex-conversion-diagnostics.md).
