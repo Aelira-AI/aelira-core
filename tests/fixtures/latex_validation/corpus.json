@@ -1,0 +1,72 @@
+{
+  "source": "Issue #444 synthetic research corpus, 2026-09-18",
+  "scope": "Compiler failure and PDF validation controls; no semantic or assistive-technology acceptance claim",
+  "cases": [
+    {
+      "id": "M01",
+      "file": "M01.tex",
+      "sha256": "0bc7e80b1b946cde78fee33eb53e6fa4ba33dce2d275a3d266e5c192968e2208",
+      "compile_expected": "passed"
+    },
+    {
+      "id": "M03",
+      "file": "M03.tex",
+      "sha256": "037faa5bfa6de4810dc29390903889b61e769e2c23a715f26553150ac9250196",
+      "compile_expected": "passed"
+    },
+    {
+      "id": "M04",
+      "file": "M04.tex",
+      "sha256": "93a3f151eb988e25202e869abac8ee3a02873877c98dfc2fcc5169d5e82475c8",
+      "compile_expected": "passed"
+    },
+    {
+      "id": "M06",
+      "file": "M06.tex",
+      "sha256": "fa6ec9971018ccf98598c13b5b382f40c0c30455a4a7f9c716827ea8acc06ae0",
+      "compile_expected": "passed"
+    },
+    {
+      "id": "M10",
+      "file": "M10.tex",
+      "sha256": "39c111d108983714d0fdab4d6c6bd236184aeef72998e57e3d3535e52d04888d",
+      "compile_expected": "passed"
+    },
+    {
+      "id": "M14",
+      "file": "M14.tex",
+      "sha256": "00460571e2ff9ef46585d3b7c288fd12e8fe1a300b2001e96857d1d2411c25a0",
+      "compile_expected": "passed"
+    },
+    {
+      "id": "M16",
+      "file": "M16.tex",
+      "sha256": "d01acce2528e163266cfe27155ceabc802a0b4f80c2b23987b4ef5e8cb3e037c",
+      "compile_expected": "passed"
+    },
+    {
+      "id": "N01",
+      "file": "N01.tex",
+      "sha256": "90641967480824711a6061466a1be956d88944d40dc4fb7d1358290d8ba8642e",
+      "compile_expected": "failed"
+    },
+    {
+      "id": "N02",
+      "file": "N02.tex",
+      "sha256": "928443f4b6ecb7f2a4b81012e8ce444f5fe4759bbaf7f46f2801873116240272",
+      "compile_expected": "failed"
+    },
+    {
+      "id": "N03",
+      "file": "N03.tex",
+      "sha256": "bc46a2294adc26bde5dc5138ca8229f7e1110e5ecac3b3ce5671c915514e4f79",
+      "compile_expected": "failed"
+    },
+    {
+      "id": "N04",
+      "file": "N04.tex",
+      "sha256": "184f6de9b0ac672aafb0eaa5e609afde7f969bce550b0cc8d1f6a10da2d41a9c",
+      "compile_expected": "failed"
+    }
+  ]
+}

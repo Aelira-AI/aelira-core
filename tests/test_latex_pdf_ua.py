@@ -1,18 +1,8 @@
-"""
-Integration tests for LaTeX PDF/UA-1 compliance.
+"""Optional real LuaLaTeX generation and structural checks.
 
-Tests that remediated LaTeX documents produce valid PDF/UA-1 compliant PDFs
-using LuaLaTeX + tagpdf, with proper structure trees that pass external validators.
-
-Key validation points:
-1. LuaLaTeX produces valid PDF/UA structure
-2. Structure elements have proper content references (/K, /Pg)
-3. Internal scanner scores 100%
-4. End-to-end remediation + validation flow
-
-Sources:
-- tagpdf package v0.99x (2026): https://ctan.math.illinois.edu/macros/latex/contrib/tagpdf/tagpdf.pdf
-- PDF/UA-1 Examples by LaTeX Project: https://github.com/latex3/tagging-project/discussions/82
+These checks do not establish PDF/UA conformance. The required validation and
+API refusal controls live in test_latex_pdf_validation.py and
+ test_latex_validation_routes.py; external validator responses there are doubles.
 """
 
 import tempfile
@@ -203,7 +193,9 @@ class TestLuaLaTeXPDFGeneration:
 
     def test_lualatex_produces_pdf(self, latex_converter, sample_latex_with_metadata):
         """Verify LuaLaTeX produces a PDF file."""
-        pdf_path = latex_converter.convert_to_pdf(sample_latex_with_metadata)
+        pdf_path = latex_converter._convert_with_lualatex(
+            sample_latex_with_metadata, Path(sample_latex_with_metadata).parent
+        )
 
         assert pdf_path is not None, "LuaLaTeX should produce PDF"
         assert Path(pdf_path).exists(), f"PDF file should exist at {pdf_path}"
@@ -217,13 +209,15 @@ class TestLuaLaTeXPDFGeneration:
     def test_lualatex_pdf_has_valid_structure(
         self, latex_converter, sample_latex_with_metadata
     ):
-        """Verify LuaLaTeX output has valid PDF/UA structure."""
+        """Verify raw LuaLaTeX output has tagging metadata."""
         try:
             import pikepdf
         except ImportError:
             pytest.skip("pikepdf not available")
 
-        pdf_path = latex_converter.convert_to_pdf(sample_latex_with_metadata)
+        pdf_path = latex_converter._convert_with_lualatex(
+            sample_latex_with_metadata, Path(sample_latex_with_metadata).parent
+        )
         assert pdf_path is not None
 
         with pikepdf.open(pdf_path) as pdf:
@@ -245,7 +239,7 @@ class TestLuaLaTeXPDFGeneration:
             assert "/K" in struct_root, "Structure tree must have children"
             print("  StructTreeRoot: present with children")
 
-        print("\n✓ PDF/UA structure validated")
+        print("\n✓ Tagging metadata present")
 
     def test_lualatex_pdf_has_content_references(
         self, latex_converter, sample_latex_with_metadata
@@ -256,7 +250,9 @@ class TestLuaLaTeXPDFGeneration:
         except ImportError:
             pytest.skip("pikepdf not available")
 
-        pdf_path = latex_converter.convert_to_pdf(sample_latex_with_metadata)
+        pdf_path = latex_converter._convert_with_lualatex(
+            sample_latex_with_metadata, Path(sample_latex_with_metadata).parent
+        )
         assert pdf_path is not None
 
         # Use the converter's validation method
@@ -267,7 +263,7 @@ class TestLuaLaTeXPDFGeneration:
 
 
 class TestEndToEndRemediation:
-    """Test complete remediation → PDF → validation flow."""
+    """Test remediation and explicit PDF machine-validation outcomes."""
 
     @pytest.mark.skipif(
         not get_latex_converter().lualatex_available, reason="LuaLaTeX not available"
@@ -294,29 +290,18 @@ class TestEndToEndRemediation:
         output_files = remediator.get_output_files()
         assert "tex" in output_files, "Should have TEX output"
 
-        # Step 3: Convert to PDF (may already be done by remediator)
+        # Full acceptance also requires the configured independent validator.
         converter = get_latex_converter()
-        if output_files.get("pdf"):
-            pdf_path = output_files["pdf"]
+        pdf_path, receipt = converter.convert_to_pdf_with_validation(
+            output_files["tex"]
+        )
+        assert bool(pdf_path) == receipt.accepted
+        assert receipt.human_review_required is True
+        if pdf_path:
+            with pikepdf.open(pdf_path) as pdf:
+                assert "/StructTreeRoot" in pdf.Root
         else:
-            pdf_path = converter.convert_to_pdf(output_files["tex"])
-
-        if pdf_path is None:
-            pytest.skip("PDF conversion not available")
-
-        # Step 4: Validate structure
-        with pikepdf.open(pdf_path) as pdf:
-            has_lang = "/Lang" in pdf.Root
-            has_mark = "/MarkInfo" in pdf.Root
-            has_struct = "/StructTreeRoot" in pdf.Root
-
-            print(f"\n  Language: {'✓' if has_lang else '✗'}")
-            print(f"  Marked: {'✓' if has_mark else '✗'}")
-            print(f"  Structure: {'✓' if has_struct else '✗'}")
-
-            assert has_struct, "Remediated PDF should have structure tree"
-
-        print("\n✓ End-to-end remediation validated")
+            assert receipt.status in {"failed", "unavailable"}
 
     def test_remediate_function_shortcut(self, sample_latex_without_accessibility):
         """Test the convenience remediate_latex() function."""
@@ -349,7 +334,9 @@ class TestPDFProcessorIntegration:
             pytest.skip(f"Required module not available: {e}")
 
         converter = get_latex_converter()
-        pdf_path = converter.convert_to_pdf(sample_latex_with_metadata)
+        pdf_path = converter._convert_with_lualatex(
+            sample_latex_with_metadata, Path(sample_latex_with_metadata).parent
+        )
 
         if pdf_path is None:
             pytest.skip("PDF conversion not available")
@@ -362,7 +349,7 @@ class TestPDFProcessorIntegration:
         print(f"\n  H1 in structure tree: {'✓' if has_h1 else '✗'}")
 
         # The test passes if we can check - actual H1 presence depends on tagpdf config
-        assert True  # Informational test
+        assert isinstance(has_h1, bool)  # Detection is not conformance.
 
 
 class TestLaTeXMLPreprocessing:

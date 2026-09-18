@@ -119,6 +119,7 @@ _PUBLIC_JOB_RESULT_FIELDS = frozenset(
         "score_verified",
         "score_provenance",
         "human_review_required",
+        "latex_pdf_validation",
         "scan_id",
         "skipped_count",
         "status",
@@ -197,6 +198,14 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
         }:
             if type(item) is bool:
                 result[key] = item
+        elif key == "latex_pdf_validation":
+            from ..education.remediation.latex_pdf_validation import (
+                public_pdf_validation,
+            )
+
+            receipt = public_pdf_validation(item)
+            if receipt is not None:
+                result[key] = receipt
         elif key == "issue_outcomes" and isinstance(item, list):
             outcomes = []
             for record in item[:10_000]:

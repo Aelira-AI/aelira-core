@@ -1,11 +1,6 @@
-"""
-LaTeX Format Converter - Fully Accessible Output
+"""LaTeX exports with explicit, fail-closed PDF machine validation.
 
-Converts remediated LaTeX files to accessible PDF and HTML:
-- HTML: LaTeXML → MathML with ARIA labels
-- PDF: LaTeXML → HTML → Playwright PDF (preserves MathML accessibility)
-
-This is a core differentiator - all output formats are fully accessible.
+A generated file is not an accessibility or PDF/UA conformance certificate.
 """
 
 import asyncio
@@ -14,14 +9,21 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
+
+from .latex_pdf_validation import (
+    LatexPDFValidation,
+    inspect_pdf_structure,
+    validate_pdf_candidate,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class LaTeXConverter:
-    """Convert LaTeX files to fully accessible PDF and HTML formats."""
+    """Convert LaTeX files to PDF and HTML candidates."""
 
     # Allowed base directories for file operations (configurable via env)
     ALLOWED_DIRS = [
@@ -96,7 +98,7 @@ class LaTeXConverter:
         self._playwright_browser = None
 
         if self.lualatex_available:
-            logger.info("LuaLaTeX available - using PDF/UA-1 compliant pipeline")
+            logger.info("LuaLaTeX available - PDF candidates require validation")
         elif self.latexml_available:
             logger.info(
                 "LaTeXML available - using MathML pipeline (PDF less accessible)"
@@ -510,72 +512,60 @@ class LaTeXConverter:
     def convert_to_pdf(
         self, tex_path: str, output_dir: Optional[str] = None
     ) -> Optional[str]:
+        """Return a PDF only when both machine validators pass on its bytes."""
+        return self.convert_to_pdf_with_validation(tex_path, output_dir)[0]
+
+    def convert_to_pdf_with_validation(
+        self, tex_path: str, output_dir: Optional[str] = None
+    ) -> tuple[Optional[str], LatexPDFValidation]:
+        """All exporters share one gate; each attempt owns a fresh directory.
+
+        Failed candidates may remain as diagnostics. They are never returned as
+        output files. Receipts belong to this call, not the shared converter.
         """
-        Convert LaTeX file to accessible PDF.
-
-        Primary: LuaLaTeX + tagpdf for PDF/UA-1 compliance.
-        Fallback 1: LaTeXML → HTML → Playwright PDF (limited PDF/UA).
-        Fallback 2: pdflatex (minimal accessibility).
-
-        Args:
-            tex_path: Path to .tex file
-            output_dir: Output directory (defaults to same as input)
-
-        Returns:
-            Path to generated PDF or None if failed
-        """
-        tex_file = Path(tex_path)
-        if not tex_file.exists():
-            logger.error(f"LaTeX file not found: {tex_file}")
-            return None
-
-        # Validate paths
+        failure = LatexPDFValidation(status="failed", reason="conversion_failed")
         try:
-            tex_file = self._validate_path(tex_file)
-        except ValueError as e:
-            logger.error(f"Path validation failed: {e}")
-            return None
-
-        out_dir = Path(output_dir) if output_dir else tex_file.parent
-        try:
-            out_dir = self._validate_path(out_dir)
-        except ValueError as e:
-            logger.error(f"Output path validation failed: {e}")
-            return None
-
-        out_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path = out_dir / (tex_file.stem + ".pdf")
-
-        # Primary: LuaLaTeX with DocumentMetadata for PDF/UA-1
-        # This creates valid structure tree with proper content references
-        if self.lualatex_available:
-            logger.info("Using LuaLaTeX for PDF/UA-1 compliant PDF...")
-            result = self._convert_with_lualatex(tex_path, out_dir)
-            if result:
-                return result
-            logger.warning("LuaLaTeX failed, trying fallback...")
-
-        # Fallback 1: LaTeXML → HTML → Playwright PDF (limited PDF/UA compliance)
-        if self.latexml_available:
-            logger.warning("Using LaTeXML pipeline (limited PDF/UA compliance)")
-
-            # First generate accessible HTML
-            html_path = self._convert_with_latexml(tex_path, out_dir)
-
-            if html_path:
-                # Convert HTML to PDF with Playwright
-                if self._html_to_pdf_playwright_sync(html_path, str(pdf_path)):
-                    return str(pdf_path)
+            tex_file = self._validate_path(Path(tex_path))
+            out_dir = self._validate_path(
+                Path(output_dir) if output_dir else tex_file.parent
+            )
+            if not tex_file.is_file():
+                return None, failure
+            out_dir.mkdir(parents=True, exist_ok=True)
+            available = False
+            for exporter, enabled in (
+                ("lualatex", self.lualatex_available),
+                ("latexml", self.latexml_available),
+                ("pdflatex", self.pdflatex_available),
+            ):
+                if not enabled:
+                    continue
+                available = True
+                attempt = Path(tempfile.mkdtemp(prefix=f"pdf-{exporter}-", dir=out_dir))
+                if exporter == "latexml":
+                    html = self._convert_with_latexml(str(tex_file), attempt)
+                    pdf = attempt / (tex_file.stem + ".pdf")
+                    candidate = (
+                        str(pdf)
+                        if html and self._html_to_pdf_playwright_sync(html, str(pdf))
+                        else None
+                    )
                 else:
-                    logger.warning("Playwright PDF failed, trying fallback...")
-
-        # Fallback 2: pdflatex (minimal accessibility)
-        if self.pdflatex_available:
-            logger.warning("Using pdflatex fallback - limited accessibility")
-            return self._convert_with_pdflatex(tex_path, out_dir)
-
-        logger.error("No PDF conversion tools available")
-        return None
+                    candidate = getattr(self, f"_convert_with_{exporter}")(
+                        str(tex_file), attempt
+                    )
+                if candidate:
+                    receipt = validate_pdf_candidate(candidate)
+                    # A failed validation is terminal, not an invitation to try
+                    # another exporter whose output might hide the same defect.
+                    return (candidate if receipt.accepted else None), receipt
+            if not available:
+                return None, LatexPDFValidation(
+                    status="unavailable", reason="no_converter"
+                )
+        except (OSError, ValueError):
+            logger.warning("PDF export could not prepare its input or output")
+        return None, failure
 
     def _convert_with_pdflatex(self, tex_path: str, output_dir: Path) -> Optional[str]:
         """Fallback PDF conversion using pdflatex."""
@@ -601,7 +591,8 @@ class LaTeXConverter:
                 )
 
                 if result.returncode != 0:
-                    logger.warning(f"pdflatex warning: {result.stderr[:500]}")
+                    logger.warning("pdflatex compilation failed")
+                    return None
 
             if pdf_path.exists():
                 logger.info(f"Generated PDF (fallback): {pdf_path}")
@@ -614,20 +605,7 @@ class LaTeXConverter:
             return None
 
     def _convert_with_lualatex(self, tex_path: str, output_dir: Path) -> Optional[str]:
-        """
-        Convert LaTeX to PDF/UA-1 compliant PDF using LuaLaTeX.
-
-        Requires \\DocumentMetadata in the .tex file (added by remediator).
-        LuaLaTeX + tagpdf creates proper structure tree with content references
-        (/K and /Pg) that pass external validators like PAC3 and axesCheck.
-
-        Args:
-            tex_path: Path to .tex file
-            output_dir: Output directory
-
-        Returns:
-            Path to PDF file or None if failed
-        """
+        """Generate a PDF candidate; the caller owns machine validation."""
         tex_file = Path(tex_path)
         pdf_path = output_dir / (tex_file.stem + ".pdf")
 
@@ -653,17 +631,10 @@ class LaTeXConverter:
                 )
 
                 if result.returncode != 0:
-                    # Log warning but continue - lualatex often has warnings
-                    logger.warning(
-                        f"LuaLaTeX pass {run+1} warnings: {result.stderr[:500]}"
-                    )
+                    logger.warning("LuaLaTeX compilation failed on pass %s", run + 1)
+                    return None
 
             if pdf_path.exists():
-                # Verify PDF/UA compliance
-                if self._verify_pdf_ua_structure(str(pdf_path)):
-                    logger.info(f"Generated PDF/UA-1 compliant PDF: {pdf_path}")
-                else:
-                    logger.warning(f"PDF may have accessibility issues: {pdf_path}")
                 return str(pdf_path)
 
             logger.error("LuaLaTeX did not produce PDF output")
@@ -677,105 +648,10 @@ class LaTeXConverter:
             return None
 
     def _verify_pdf_ua_structure(self, pdf_path: str) -> bool:
-        """
-        Verify PDF has valid PDF/UA structure (not just presence of elements).
-
-        Checks that structure elements have proper content references,
-        which is the key difference between valid PDF/UA and PDFs with
-        "floating" structure elements that fail external validators.
-
-        Args:
-            pdf_path: Path to PDF file
-
-        Returns:
-            True if PDF has valid PDF/UA structure
-        """
+        """Compatibility predicate for the bounded structural check only."""
         try:
-            import pikepdf
-
-            with pikepdf.open(pdf_path) as pdf:
-                # Required for PDF/UA: document language
-                if "/Lang" not in pdf.Root:
-                    logger.warning("PDF missing /Lang in catalog")
-                    return False
-
-                # Required for PDF/UA: marked content flag
-                if "/MarkInfo" not in pdf.Root:
-                    logger.warning("PDF missing /MarkInfo")
-                    return False
-
-                mark_info = pdf.Root["/MarkInfo"]
-                if not mark_info.get("/Marked"):
-                    logger.warning("PDF not marked as tagged")
-                    return False
-
-                # Required for PDF/UA: structure tree
-                if "/StructTreeRoot" not in pdf.Root:
-                    logger.warning("PDF missing /StructTreeRoot")
-                    return False
-
-                # Check structure tree has proper content references
-                struct_root = pdf.Root["/StructTreeRoot"]
-                if "/K" not in struct_root:
-                    logger.warning("StructTreeRoot has no children")
-                    return False
-
-                # Verify at least one structure element has content reference
-                # Valid structure elements have /K (marked content reference) and/or /Pg (page)
-                def has_content_ref(elem, depth=0) -> bool:
-                    """Recursively check if element or children have content references."""
-                    if depth > 20:  # Prevent infinite recursion
-                        return False
-
-                    if not isinstance(elem, pikepdf.Dictionary):
-                        # Integers are marked content references (valid)
-                        return isinstance(elem, (int, pikepdf.Object))
-
-                    # Check for page reference or marked content reference
-                    if "/Pg" in elem:
-                        return True
-
-                    # Check children
-                    if "/K" in elem:
-                        kids = elem["/K"]
-                        if isinstance(kids, (int, pikepdf.Object)) and not isinstance(
-                            kids, pikepdf.Dictionary
-                        ):
-                            # Direct marked content reference
-                            return True
-                        if isinstance(kids, pikepdf.Array):
-                            for kid in kids:
-                                if has_content_ref(kid, depth + 1):
-                                    return True
-                        elif isinstance(kids, pikepdf.Dictionary):
-                            if has_content_ref(kids, depth + 1):
-                                return True
-
-                    return False
-
-                root_kid = struct_root["/K"]
-                if isinstance(root_kid, pikepdf.Array):
-                    for kid in root_kid:
-                        if isinstance(kid, pikepdf.Dictionary) and has_content_ref(kid):
-                            logger.info(
-                                "PDF/UA structure verified - valid content references found"
-                            )
-                            return True
-                elif isinstance(root_kid, pikepdf.Dictionary):
-                    if has_content_ref(root_kid):
-                        logger.info(
-                            "PDF/UA structure verified - valid content references found"
-                        )
-                        return True
-
-                logger.warning("Structure tree has no valid content references")
-                return False
-
-        except ImportError:
-            logger.warning("pikepdf not available, skipping PDF/UA verification")
-            return True  # Assume valid if we can't check
-        except Exception as e:
-            logger.warning(f"Could not verify PDF/UA structure: {e}")
+            return inspect_pdf_structure(Path(pdf_path).read_bytes()) == "passed"
+        except OSError:
             return False
 
     def convert_to_html(
@@ -874,6 +750,8 @@ class LaTeXConverter:
         tex_path: str,
         formats: list[str],
         output_dir: Optional[str] = None,
+        *,
+        validation_receipts: Optional[dict[str, LatexPDFValidation]] = None,
     ) -> dict[str, Optional[str]]:
         """
         Convert LaTeX to multiple accessible formats.
@@ -894,7 +772,11 @@ class LaTeXConverter:
             if fmt_lower == "tex":
                 results["tex"] = tex_path
             elif fmt_lower == "pdf":
-                results["pdf"] = self.convert_to_pdf(tex_path, output_dir)
+                results["pdf"], receipt = self.convert_to_pdf_with_validation(
+                    tex_path, output_dir
+                )
+                if validation_receipts is not None:
+                    validation_receipts["pdf"] = receipt
             elif fmt_lower == "html":
                 results["html"] = self.convert_to_html(tex_path, output_dir)
             else:

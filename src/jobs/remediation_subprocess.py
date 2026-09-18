@@ -17,6 +17,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
+from src.education.remediation.latex_pdf_validation import (
+    pdf_validation_fields,
+    public_pdf_validation,
+)
 
 _MAX_REQUEST_BYTES = 8 * 1024 * 1024
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -24,7 +28,11 @@ _MAX_ISSUES = 10_000
 
 
 class RemediationSubprocessError(RuntimeError):
-    """A child failure whose message is safe to consume as a stable code."""
+    """A child failure with an optional bounded validation receipt."""
+
+    def __init__(self, code, *, latex_pdf_validation=None):
+        super().__init__(code)
+        self.latex_pdf_validation = public_pdf_validation(latex_pdf_validation)
 
 
 class RemediationSubprocessTimeout(RemediationSubprocessError):
@@ -280,6 +288,7 @@ def _run_child(request: dict[str, Any]) -> dict[str, Any]:
     result = _build_remediator(request, source, work_dir).remediate()
     try:
         return {
+            **pdf_validation_fields(result),
             "success": bool(result.success),
             "output_file": result.output_file,
             "total_issues": getattr(result, "total_issues", 0),
@@ -297,7 +306,8 @@ def _run_child(request: dict[str, Any]) -> dict[str, Any]:
             "compliance_improvement": result.improvement,
             "duration_seconds": result.duration_seconds,
             "verification_passed": getattr(result, "verification_passed", False),
-            "human_review_required": not getattr(result, "verification_passed", False)
+            "human_review_required": bool(pdf_validation_fields(result))
+            or not getattr(result, "verification_passed", False)
             or bool(
                 getattr(
                     getattr(result, "verification_result", None),
@@ -741,7 +751,8 @@ async def run_remediation_subprocess(
         if process.returncode != 0 or response.get("success") is not True:
             code = response.get("error_code")
             raise RemediationSubprocessError(
-                code if isinstance(code, str) else "remediation_failed"
+                code if isinstance(code, str) else "remediation_failed",
+                latex_pdf_validation=response.get("latex_pdf_validation"),
             )
         output_claim = _claim_output(
             response.pop("output_file", None),

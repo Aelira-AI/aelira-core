@@ -59,6 +59,10 @@ from ..services.remediation_artifact_service import (
 )
 from ..services.scan_fix_service import persist_scan_fixes
 from ..education.remediation.score_reporting import score_fields
+from ..education.remediation.latex_pdf_validation import (
+    pdf_validation_fields,
+    public_pdf_validation,
+)
 from ..education.remediation.outcome_accounting import outcome_accounting
 from .contracts import LostJobOwnership
 from .remediation_subprocess import (
@@ -336,6 +340,7 @@ _SAFE_RESULT_FIELDS = {
     "score_measurement",
     "score_verification_reason",
     "human_review_required",
+    "latex_pdf_validation",
     "upload_job_id",
     "scan_id",
     "artifact_id",
@@ -398,6 +403,9 @@ def _safe_failure_result(
         scan_id = str(scan.id)
     if isinstance(scan_id, str):
         safe["scan_id"] = scan_id
+    receipt = public_pdf_validation(source.get("latex_pdf_validation"))
+    if receipt is not None:
+        safe["latex_pdf_validation"] = receipt
     safe["artifact_id"] = None
     safe.update(
         score_fields(
@@ -1034,6 +1042,7 @@ async def process_remediation_job(
                 code = str(exc)
                 return {
                     "success": False,
+                    **pdf_validation_fields(exc),
                     "error": (
                         code
                         if code
@@ -1079,6 +1088,8 @@ async def process_remediation_job(
                 "success": False,
                 "error": "remediation_failed",
                 "scan_id": scan_id,
+                **pdf_validation_fields(remediation_result),
+                **account_outcomes(remediation_result, published=False),
             }
         if not hasattr(remediation_result, "total_issues"):
             remediation_result.total_issues = sum(
@@ -1125,6 +1136,7 @@ async def process_remediation_job(
                 "total_issues": remediation_result.total_issues,
                 "scan_id": scan_id,
                 **account_outcomes(remediation_result, published=False),
+                **pdf_validation_fields(remediation_result),
             }
 
         artifact = None
@@ -1181,6 +1193,7 @@ async def process_remediation_job(
                     "total_issues": remediation_result.total_issues,
                     "scan_id": scan_id,
                     **account_outcomes(remediation_result, published=False),
+                    **pdf_validation_fields(remediation_result),
                 }
 
             artifact_service = RemediationArtifactService.from_settings()
@@ -1205,6 +1218,7 @@ async def process_remediation_job(
                 "scan_type": scan.scan_type,
                 "provider_result": {
                     "verification_passed": True,
+                    **pdf_validation_fields(remediation_result),
                     "requires_approval": requires_approval,
                 },
                 "commit": False,
@@ -1248,6 +1262,7 @@ async def process_remediation_job(
                         "total_issues": remediation_result.total_issues,
                         "scan_id": scan_id,
                         **account_outcomes(remediation_result, published=False),
+                        **pdf_validation_fields(remediation_result),
                     }
                 if is_pdf:
                     pdf_claim_metadata = output_claim_metadata
@@ -1430,6 +1445,7 @@ async def process_remediation_job(
         # notification is intentionally deferred to Task 17.
 
         response = {
+            **pdf_validation_fields(remediation_result),
             "success": True,
             "fixed_count": remediation_result.fixed_count,
             "manual_count": remediation_result.manual_count,
@@ -1479,7 +1495,8 @@ async def process_remediation_job(
             )
         )
         response["human_review_required"] = (
-            not response["score_verified"]
+            bool(pdf_validation_fields(remediation_result))
+            or not response["score_verified"]
             or getattr(remediation_result, "human_review_required", False) is True
             or bool(
                 getattr(
@@ -2231,6 +2248,10 @@ async def handle_remediation_job(
     safe_result = {
         key: value for key, value in result.items() if key in _SAFE_RESULT_FIELDS
     }
+    if "latex_pdf_validation" in safe_result:
+        safe_result["latex_pdf_validation"] = public_pdf_validation(
+            safe_result["latex_pdf_validation"]
+        )
     artifact_publication = getattr(result, "artifact_publication", None)
     approved_fix_snapshot = getattr(result, "approved_fix_snapshot", None)
     applied_fix_ids = getattr(result, "applied_fix_ids", None)
