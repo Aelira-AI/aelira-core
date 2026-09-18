@@ -155,6 +155,11 @@ jobs:
             tesseract-ocr tesseract-ocr-eng unpaper ghostscript poppler-utils ffmpeg
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+      - name: Validate release journey inventory
+        run: >-
+          python scripts/verify_release_journeys.py
+          --revision "${{ github.sha }}"
+          --output test-results/journey-matrix.json
       - name: Install pinned equation-verifier browser
         run: python -m playwright install --with-deps chromium
       - name: Run tests

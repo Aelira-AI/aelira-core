@@ -1,5 +1,7 @@
 # Document review and saved-output acceptance
 
+See the [four-pillar release journey inventory](release-journey-matrix.md) for evidence classes and remaining application-journey gaps.
+
 The `Real document queue and artifact acceptance` CI job runs
 `scripts/verify_document_stack.ts` against a real API, PostgreSQL, Redis,
 durable worker and Mailpit. It uses synthetic documents and an administrator
