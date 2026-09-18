@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-import os
 import threading
 import uuid
 
 import pytest
-from sqlalchemy import create_engine, delete
+from sqlalchemy import delete
 from sqlalchemy.orm import sessionmaker
-from conftest import require_disposable_postgres_url
+from conftest import queue_race_engine
 
 from src.db.models import CloudJobQueue, Department
 from src.services.job_enqueue_service import enqueue_cloud_job
@@ -20,17 +19,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def pg_enqueue_scope():
-    database_url = os.getenv("TEST_MIGRATION_DATABASE_URL")
-    if not database_url:
-        pytest.skip("requires TEST_MIGRATION_DATABASE_URL")
-    require_disposable_postgres_url(database_url, destructive=True)
-    engine = create_engine(database_url)
-    try:
-        with engine.connect() as connection:
-            connection.exec_driver_sql("SELECT 1")
-    except Exception:
-        engine.dispose()
-        pytest.skip("PostgreSQL unavailable")
+    engine = queue_race_engine("TEST_MIGRATION_DATABASE_URL")
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     department_id = str(uuid.uuid4())
     with factory() as db:

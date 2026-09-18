@@ -18,9 +18,7 @@ import pytest
 from src.auth.dependencies import AuthenticatedPrincipal
 from src.db.models import (
     CloudFile,
-    CloudJobQueue,
     CloudProvider,
-    Scan,
     ScanStatus,
     UserRole,
 )
@@ -1900,126 +1898,6 @@ async def test_pending_only_scan_cancellation_cleans_up_without_worker_ack() -> 
     assert pending.status == "failed"
     assert pending.last_error_code == "scan_cancelled"
     db.delete.assert_called_once_with(scan)
-
-
-@pytest.mark.asyncio
-async def test_real_cancellation_waits_for_child_reap_before_terminal_state(
-    tmp_path: Path,
-) -> None:
-    pytest.skip("real database race is covered by the PostgreSQL integration matrix")
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
-    from src.db.models import Base, Department, WorkerHeartbeat
-    from src.jobs.contracts import JobSuccess
-    from src.jobs.job_processor import ClaimedJob, JobProcessor
-    from src.jobs.local_scan_subprocess import _run_process
-    from src.jobs.registry import JobRegistry
-
-    database = tmp_path / "cancel-race.sqlite3"
-    engine = create_engine(
-        f"sqlite:///{database}", connect_args={"check_same_thread": False}
-    )
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
-    now = datetime.now(timezone.utc)
-    with factory() as db:
-        db.add(Department(id="dept-1", name="Test", institution="Test"))
-        db.add(
-            Scan(
-                id="scan-1",
-                department_id="dept-1",
-                file_name="large.pdf",
-                status=ScanStatus.PROCESSING,
-            )
-        )
-        db.add(
-            CloudJobQueue(
-                id="job-1",
-                department_id="dept-1",
-                job_type="scan",
-                payload={"scan_id": "scan-1"},
-                dedupe_key="scan-1",
-                status="processing",
-                claim_token="claim-1",
-                worker_id="worker-1",
-                claimed_at=now,
-                heartbeat_at=now,
-                lease_expires_at=now + timedelta(seconds=30),
-                attempt_count=1,
-                max_retries=1,
-            )
-        )
-        db.add(
-            WorkerHeartbeat(
-                worker_id="worker-1",
-                status="running",
-                started_at=now,
-                heartbeat_at=now,
-                metadata_json={},
-            )
-        )
-        db.commit()
-
-    started = tmp_path / "race-started"
-    late = tmp_path / "race-late"
-
-    async def handler(_context, _db, _token_manager):
-        code = (
-            "import pathlib,time;"
-            f"pathlib.Path({str(started)!r}).write_text('started');"
-            "time.sleep(1);"
-            f"pathlib.Path({str(late)!r}).write_text('late')"
-        )
-        await _run_process(
-            (sys.executable, "-c", code),
-            timeout_seconds=None,
-            termination_grace_seconds=0.1,
-        )
-        return JobSuccess({"success": True, "scan_id": "scan-1"})
-
-    registry = JobRegistry()
-    registry.register("scan", handler)
-    processor = JobProcessor(
-        worker_id="worker-1",
-        heartbeat_interval=0.01,
-        lease_seconds=30,
-        max_execution_seconds=5,
-        session_factory=factory,
-        registry=registry,
-    )
-    processor._token_manager = MagicMock()
-    claim = ClaimedJob(
-        "job-1", "scan", {"scan_id": "scan-1"}, "claim-1", "worker-1", 1, 1
-    )
-    task = asyncio.create_task(processor.process_claim(claim))
-    for _ in range(200):
-        if started.exists():
-            break
-        await asyncio.sleep(0.01)
-    assert started.exists()
-
-    with factory() as db:
-        job = db.get(CloudJobQueue, "job-1")
-        job.last_error_code = "scan_cancel_requested"
-        job.error_message = "scan_cancel_requested"
-        db.commit()
-    await asyncio.sleep(0)
-    with factory() as db:
-        still_running = db.get(CloudJobQueue, "job-1")
-        assert still_running.status == "processing"
-        assert still_running.claim_token == "claim-1"
-
-    assert await asyncio.wait_for(task, timeout=3) is True
-    await asyncio.sleep(1.1)
-    assert not late.exists()
-    with factory() as db:
-        terminal = db.get(CloudJobQueue, "job-1")
-        assert terminal.status == "failed"
-        assert terminal.last_error_code == "scan_cancelled"
-        assert terminal.claim_token is None
-        assert db.get(Scan, "scan-1") is None
-    engine.dispose()
 
 
 @pytest.mark.asyncio

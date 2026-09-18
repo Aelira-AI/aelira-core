@@ -27,14 +27,14 @@ The separate worker results overlap tests skipped by the main profile. Do not ad
 | Classification | Baseline skips | Continuing policy |
 | --- | ---: | ---: |
 | Environment-gated | 145 | 145 |
-| Obsolete test contract | 155 | 155 |
+| Obsolete test contract | 155 | 150 |
 | Test defect | 59 | 35 |
-| Intentionally unsupported API contract | 25 | 25 |
-| Total | 384 | 360 |
+| Intentionally unsupported API contract | 25 | 0 |
+| Total | 384 | 330 |
 
 One defective encryption-key test caught its own assertion failure and skipped. It now checks the real token manager in production and staging, including a configured-key success path; both cases are required to execute. The 22 stale LTI registration skips have also been replaced with 34 required PostgreSQL route cases. The mixed email-preference filter now queries real PostgreSQL records instead of matching stringified SQLAlchemy expressions. Its obsolete skip allowance is removed. The continuing-policy count is an allowance, not a claim that the final revision has already run in CI.
 
-Several old mocked Canvas, Blackboard, Moodle, Google and Microsoft suites are obsolete rather than waiting for credentials. Local LaTeX and scanner checks also have unnecessary blanket gates. These remain explicit defects or obsolete contracts under #374, #375, #426 or #427; listing them never counts them as passes. The 25 unsupported cases expect a generic jobs REST surface that is not the current provider-specific job API. The [route matrix](critical-route-coverage.md) records the restored LTI contracts and secondary route follow-ups.
+Several old mocked Canvas, Blackboard, Moodle, Google and Microsoft suites are obsolete rather than waiting for credentials. Local LaTeX and scanner checks also have unnecessary blanket gates. These remain explicit defects or obsolete contracts under #374, #375, #426 or #427; listing them never counts them as passes. The 25 unsupported generic jobs REST cases, four mock-only worker cases and superseded SQLite cancellation case are retired with explicit [queue-contract mappings](queue-contracts.md). Their useful contracts are covered at the actual provider route or worker boundary; deleting an obsolete assertion is not counted as a passing test. The [route matrix](critical-route-coverage.md) records the restored LTI contracts and secondary route follow-ups.
 
 Environment-gated cases include the browser matrix, optional model/tooling and separately provisioned database/migration tests. The worker profile requires all 41 worker cases and permits no skips. Other environment-bound cases remain separately reported limitations with owners and issues; this change does not enable external integrations, run destructive migrations on normal databases, or establish assistive-technology evidence.
 
@@ -42,11 +42,11 @@ Environment-gated cases include the browser matrix, optional model/tooling and s
 
 The opt-in `scripts.pytest_ci_evidence` pytest plugin records collected and deselected node IDs, setup/call/teardown outcomes, collection skips/errors, exit status, profile and revision. It omits stdout, tracebacks, exception messages and environment values. It does not change outcomes or skip decisions.
 
-The main profile requires 1,195 exact critical cases spanning auth, first-admin setup, administrator user/invitation management, local scan and remediation queues, LTI registration, Review, managed artifact delivery/write-back, Canvas routes and the server-side journey, account lifecycle/export, alert settings/delivery and preference filtering, PDF corpus and report contracts, plus the repaired key checks. The separate worker profile requires 41 cases. Each required case must be present and passed; missing, deselected, skipped or expected-failure outcomes cannot satisfy it. These lists define the protected scope, not universal endpoint coverage.
+The main profile requires 1,252 exact critical cases spanning auth, first-admin setup, administrator user/invitation management, local scan and remediation queues, LTI registration, Review, managed artifact delivery/write-back, Canvas routes and the server-side journey, account lifecycle/export, alert settings/delivery and preference filtering, provider job routes and race guards, PDF corpus and report contracts, plus the repaired key checks. The separate worker profile requires 41 cases, and the separate PostgreSQL race profile requires two. Each required case must be present and passed; missing, deselected, skipped or expected-failure outcomes cannot satisfy it. These lists define the protected scope, not universal endpoint coverage.
 
 `scripts/verify_test_evidence.py` rejects unknown skips, unexpected failures, malformed/incomplete evidence, wrong revision/profile, absent required tests and coverage below the floor. Module collection skips are recorded too, so a missing import cannot silently erase a required test module. An allowed test that starts passing is reported as progress, ready for policy cleanup. New skips require source review and an explicit disposition; adding an allowance simply to hide a regression is not a repair.
 
-CI retains `test-evidence-<revision>-<attempt>` for 14 days: main/worker execution reports, coverage JSON and validator summaries. Summaries include exact line counts, test counts, skip classifications and report/policy hashes. Baseline data in the policy is historical; the retained report for the candidate revision is the final measurement. Failed runs also retain available evidence and remain failed.
+CI retains `test-evidence-<revision>-<attempt>` for 14 days: main/worker/race execution reports, coverage JSON and validator summaries. Summaries include exact line counts, test counts, skip classifications and report/policy hashes. Baseline data in the policy is historical; the retained report for the candidate revision is the final measurement. Failed runs also retain available evidence and remain failed.
 
 ## Reproduce the evidence
 
@@ -63,6 +63,6 @@ python scripts/verify_test_evidence.py \
   --output test-results/main-summary.json
 ```
 
-The worker command and explicit destructive-test opt-in remain in `.github/workflows/ci.yml`, using a separate `worker_isolation_test` database. An ordinary developer machine may have additional skips; the CI policy deliberately fails them rather than treating a reduced environment as equivalent evidence.
+The worker command and explicit destructive-test opt-in remain in `.github/workflows/ci.yml`, using a separate `worker_isolation_test` database. The session-refresh and enqueue races execute in `queue_races_test`, with `REQUIRE_QUEUE_POSTGRES_TESTS=1` and both explicit test database variables. These two cases remain allowed skips in the ordinary main profile, but must execute in the race profile. An ordinary developer machine may have additional skips; the CI policy deliberately fails them rather than treating a reduced environment as equivalent evidence.
 
 The gate's own tests run real isolated pytest subprocesses. They prove successful reports pass, a real below-floor pytest-cov run fails, and missing/skipped critical tests, new skips, import skips, collection errors, deselection, xfail/XPASS, bad identity and malformed evidence are rejected. Run them with `pytest tests/test_ci_test_evidence.py --no-cov`.

@@ -4,15 +4,15 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from types import SimpleNamespace
-import os
 import uuid
 
 import bcrypt
 import jwt
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from conftest import queue_race_engine
 
 from src.auth.jwt_service import JWTService
 from src.auth.session_service import SessionService
@@ -351,13 +351,8 @@ def test_encryption_error_rolls_back_without_rotating_row(caplog):
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(
-    not os.getenv("TEST_DATABASE_URL"),
-    reason="TEST_DATABASE_URL is required for real PostgreSQL lock verification",
-)
 def test_concurrent_refreshes_serialize_and_return_identical_pair():
-    database_url = os.environ["TEST_DATABASE_URL"]
-    engine = create_engine(database_url)
+    engine = queue_race_engine("TEST_DATABASE_URL")
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
     service = SessionService()
