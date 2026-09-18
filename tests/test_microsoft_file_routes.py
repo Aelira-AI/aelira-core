@@ -60,6 +60,21 @@ def microsoft_route(monkeypatch):
     connection = engine.connect()
     transaction = connection.begin()
     db = Session(bind=connection, join_transaction_mode="create_savepoint")
+    # Ignore pre-existing suite rows while retaining every new row, even if a
+    # broken route writes it under another department.
+    existing_ids = {
+        model: tuple(row.id for row in db.query(model.id))
+        for model in (
+            CloudFile,
+            CloudJobQueue,
+            CloudOAuthCredentials,
+            CloudWebhookSubscription,
+        )
+    }
+
+    def rows(model):
+        return db.query(model).filter(model.id.not_in(existing_ids[model]))
+
     department = Department(
         id=str(uuid4()),
         name="Microsoft route",
@@ -82,6 +97,7 @@ def microsoft_route(monkeypatch):
     db.commit()
     fixture = SimpleNamespace(
         db=db,
+        rows=rows,
         department=department,
         credential=credential,
         requests=[],
@@ -219,7 +235,7 @@ def test_file_listing_tracks_files_not_folders(microsoft_route):
     response = microsoft_route.client.get("/microsoft/onedrive/files")
     assert response.status_code == 200
     assert [item["provider_file_id"] for item in response.json()["files"]] == ["file-1"]
-    rows = microsoft_route.db.query(CloudFile).all()
+    rows = microsoft_route.rows(CloudFile).all()
     assert len(rows) == 1
     assert rows[0].credential_id == microsoft_route.credential.id
     assert microsoft_route.credential.last_sync_at is not None
@@ -229,7 +245,7 @@ def test_subscription_round_trip_is_persisted_and_scoped(microsoft_route):
     f = microsoft_route
     response = f.client.post("/microsoft/subscriptions", json=SUB)
     assert response.status_code == 200
-    row = f.db.query(CloudWebhookSubscription).one()
+    row = f.rows(CloudWebhookSubscription).one()
     assert row.subscription_id == response.json()["subscription_id"] == "sub-1"
     assert row.department_id == f.department.id
     assert row.credential_id == f.credential.id
@@ -289,7 +305,7 @@ def test_graph_failures_have_bounded_responses(microsoft_route, path):
     response = f.client.get("/microsoft" + path)
     assert response.status_code == 503
     assert response.json() == {"detail": "Microsoft operation unavailable"}
-    assert not f.db.query(CloudFile).all()
+    assert not f.rows(CloudFile).all()
     assert all(not Path(item._temp_dir).exists() for item in f.integrations)
 
 
@@ -378,7 +394,7 @@ def test_file_queue_rejects_unavailable_scope(microsoft_route, action, condition
         f.client.post("/microsoft/" + action, json={"file_id": file_id}).status_code
         == 404
     )
-    assert f.db.query(CloudJobQueue).count() == 0
+    assert f.rows(CloudJobQueue).count() == 0
 
 
 def test_remediation_requires_scan(microsoft_route):
@@ -387,7 +403,7 @@ def test_remediation_requires_scan(microsoft_route):
         "/microsoft/remediate", json={"file_id": row.id}
     )
     assert response.status_code == 400
-    assert microsoft_route.db.query(CloudJobQueue).count() == 0
+    assert microsoft_route.rows(CloudJobQueue).count() == 0
 
 
 @pytest.mark.parametrize(
@@ -414,7 +430,7 @@ def test_queue_failure_rolls_back_and_does_not_return_success(
     )
     assert response.status_code == 503
     assert response.json() == {"detail": "Microsoft operation unavailable"}
-    assert f.db.query(CloudJobQueue).count() == 0
+    assert f.rows(CloudJobQueue).count() == 0
 
 
 @pytest.mark.parametrize(
@@ -541,7 +557,7 @@ def test_subscription_create_failure_leaves_nonactive_intent_and_blocks_retry(
     f.failure = failure
     response = f.client.post("/microsoft/subscriptions", json=SUB)
     assert response.status_code == 503
-    row = f.db.query(CloudWebhookSubscription).one()
+    row = f.rows(CloudWebhookSubscription).one()
     assert not row.is_active
     assert row.renewal_status == "requesting"
     assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 409
@@ -554,7 +570,7 @@ def test_subscription_mutation_failure_preserves_local_state(
 ):
     f = microsoft_route
     assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
-    row = f.db.query(CloudWebhookSubscription).one()
+    row = f.rows(CloudWebhookSubscription).one()
     expiration = row.expiration_time
     f.failure = 500
     assert (
@@ -585,7 +601,7 @@ def test_subscription_commit_failure_is_not_false_success(
     monkeypatch.setattr(f.db, "commit", fail_commit)
     response = f.client.post("/microsoft/subscriptions", json=SUB)
     assert response.status_code == 503
-    rows = f.db.query(CloudWebhookSubscription).all()
+    rows = f.rows(CloudWebhookSubscription).all()
     if after_provider:
         assert len(f.requests) == 1
         assert len(rows) == 1 and not rows[0].is_active
@@ -616,7 +632,7 @@ def test_subscription_post_provider_commit_failure_requires_reconciliation(
     monkeypatch.setattr(f.db, "commit", fail_commit)
     response = f.client.request(method, "/microsoft/subscriptions/sub-1")
     assert response.status_code == 503
-    row = f.db.query(CloudWebhookSubscription).one()
+    row = f.rows(CloudWebhookSubscription).one()
     assert row.is_active and row.renewal_status == "requesting"
     request_count = len(f.requests)
     assert f.client.request(method, "/microsoft/subscriptions/sub-1").status_code == 409
@@ -639,8 +655,8 @@ def test_file_and_folder_commit_failure_is_atomic(microsoft_route, monkeypatch, 
         else f.client.post("/microsoft" + path, json={"folder_id": "folder-1"})
     )
     assert response.status_code == 503
-    assert f.db.query(CloudFile).count() == 0
-    assert f.db.query(CloudJobQueue).count() == 0
+    assert f.rows(CloudFile).count() == 0
+    assert f.rows(CloudJobQueue).count() == 0
     f.db.refresh(f.credential)
     assert f.credential.last_sync_at is None
 
@@ -723,7 +739,7 @@ async def test_worker_does_not_retry_unresolved_route_subscription(microsoft_rou
 
     f = microsoft_route
     assert f.client.post("/microsoft/subscriptions", json=SUB).status_code == 200
-    row = f.db.query(CloudWebhookSubscription).one()
+    row = f.rows(CloudWebhookSubscription).one()
     row.renewal_status = "requesting"
     row.pending_renewal_channel_id = str(uuid4())
     row.pending_renewal_started_at = datetime.now(timezone.utc)
@@ -814,7 +830,7 @@ def test_sharepoint_scan_requires_current_scoped_tracking(microsoft_route, condi
     file_id = "missing" if condition == "missing" else row.provider_file_id
     response = f.client.post("/microsoft/scan/sharepoint/file/" + file_id)
     assert response.status_code == 404
-    assert f.db.query(CloudJobQueue).count() == 0
+    assert f.rows(CloudJobQueue).count() == 0
     assert not f.requests
 
 

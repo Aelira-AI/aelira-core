@@ -21,9 +21,9 @@ def test_browse_enqueue_poll_and_disconnect(microsoft_route):
     assert f.db.get(CloudJobQueue, job_id).cloud_file_id == file_id
     response = f.client.delete("/microsoft/disconnect")
     assert response.status_code == 200
-    assert f.db.query(CloudFile).count() == 0
-    assert f.db.query(CloudJobQueue).count() == 0
-    assert f.db.query(CloudOAuthCredentials).count() == 0
+    assert f.rows(CloudFile).count() == 0
+    assert f.rows(CloudJobQueue).count() == 0
+    assert f.rows(CloudOAuthCredentials).count() == 0
     assert f.client.get("/microsoft/status").status_code == 404
 
 
