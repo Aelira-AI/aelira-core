@@ -1,709 +1,413 @@
-"""
-Tests for LTI Admin CRUD Routes
+"""LTI registration CRUD contracts against isolated PostgreSQL records.
 
-Tests cover:
-- List LTI registrations for a department
-- Create new LTI registration
-- Update LTI registration (enable/disable, rename)
-- Delete LTI registration
-- Error cases (not found, conflict, invalid platform)
+Authentication is replaced only at FastAPI's dependency boundary. These tests
+exercise the production router, serialization and department-scoped SQL queries;
+they do not exercise a live LMS or claim administrator-only authorization.
 """
+
+from datetime import datetime, timezone
+import os
+import uuid
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from unittest.mock import MagicMock, patch
-from datetime import datetime, timezone
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
 
-# Import app for testing
+from conftest import require_disposable_postgres_url
+from src.api.auth_routes import SessionAccessIdentity, get_current_api_key
 from src.api.main import app
-from src.db.models import LTIRegistration, LTIPlatform
+from src.db.database import get_db_dependency
+from src.db.models import APIKey, Base, Department, LTIPlatform, LTIRegistration
 
-# LTI admin CRUD router (lti_admin_routes.py) does not exist yet
-pytestmark = pytest.mark.skip(reason="LTI admin CRUD router not yet implemented")
-
-
-@pytest.fixture
-def client():
-    """Create a test client."""
-    return TestClient(app)
-
-
-@pytest.fixture
-def mock_api_key():
-    """Mock API key for authentication."""
-    api_key = MagicMock()
-    api_key.id = "api-key-123"
-    api_key.user_id = "user-123"
-    api_key.department_id = "dept-123"
-    return api_key
+PATH = "/integrations/lti/registrations"
+DEPARTMENT = "lti-contract-department"
+OTHER_DEPARTMENT = "lti-contract-other-department"
+PAYLOAD = {
+    "platform": "canvas",
+    "platform_name": "Example Canvas",
+    "issuer": "https://canvas.example.edu",
+    "client_id": "example-client",
+    "deployment_id": "example-deployment",
+}
 
 
-@pytest.fixture
-def auth_headers():
-    """Headers with mock authentication."""
-    return {"Authorization": "Bearer test-api-key-12345"}
-
-
-@pytest.fixture
-def mock_lti_registration():
-    """Create a mock LTI registration."""
-    reg = MagicMock(spec=LTIRegistration)
-    reg.id = "reg-123"
-    reg.department_id = "dept-123"
-    reg.platform = LTIPlatform.CANVAS
-    reg.platform_name = "University Canvas"
-    reg.issuer = "https://canvas.university.edu"
-    reg.client_id = "canvas-client-12345"
-    reg.deployment_id = "deployment-1"
-    reg.is_active = True
-    reg.launch_count = 10
-    reg.last_launch_at = datetime.now(timezone.utc)
-    reg.created_at = datetime.now(timezone.utc)
-    return reg
+@pytest.fixture(scope="module")
+def lti_engine():
+    """Use a unique schema, without swallowing unavailable database failures."""
+    database_url = require_disposable_postgres_url(
+        os.environ["DATABASE_URL"], destructive=False
+    )
+    admin_engine = create_engine(database_url)
+    schema = f"lti_contract_{uuid.uuid4().hex}"
+    with admin_engine.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    engine = create_engine(
+        database_url, connect_args={"options": f"-csearch_path={schema}"}
+    )
+    try:
+        Base.metadata.create_all(
+            engine, tables=[Department.__table__, LTIRegistration.__table__]
+        )
+        yield engine
+    finally:
+        engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        admin_engine.dispose()
 
 
 @pytest.fixture
-def mock_lti_registration_blackboard():
-    """Create a mock Blackboard LTI registration."""
-    reg = MagicMock(spec=LTIRegistration)
-    reg.id = "reg-456"
-    reg.department_id = "dept-123"
-    reg.platform = LTIPlatform.BLACKBOARD
-    reg.platform_name = "University Blackboard"
-    reg.issuer = "https://blackboard.university.edu"
-    reg.client_id = "bb-client-67890"
-    reg.deployment_id = None
-    reg.is_active = True
-    reg.launch_count = 5
-    reg.last_launch_at = None
-    reg.created_at = datetime.now(timezone.utc)
-    return reg
+def db(lti_engine):
+    """Allow handler commits while rolling each test back at its boundary."""
+    with lti_engine.connect() as connection:
+        transaction = connection.begin()
+        with Session(
+            bind=connection, join_transaction_mode="create_savepoint"
+        ) as session:
+            session.add_all(
+                Department(
+                    id=department_id,
+                    name="Example Department",
+                    institution="Example University",
+                    contact_email="admin@example.edu",
+                )
+                for department_id in (DEPARTMENT, OTHER_DEPARTMENT)
+            )
+            session.commit()
+            yield session
+        transaction.rollback()
 
 
-# =============================================================================
-# List LTI Registrations Tests
-# =============================================================================
+@pytest.fixture
+def client(db):
+    previous = app.dependency_overrides.copy()
+    app.dependency_overrides[get_db_dependency] = lambda: db
+    # Missing-auth cases deliberately use the real authentication dependency.
+    app.dependency_overrides.pop(get_current_api_key, None)
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous)
+
+
+@pytest.fixture
+def authenticated(client):
+    app.dependency_overrides[get_current_api_key] = lambda: SessionAccessIdentity(
+        id="session_contract", user_id="example-admin", department_id=DEPARTMENT
+    )
+    return client
+
+
+@pytest.fixture
+def registration(db):
+    row = LTIRegistration(
+        id="example-registration",
+        department_id=DEPARTMENT,
+        platform=LTIPlatform.CANVAS,
+        platform_name=PAYLOAD["platform_name"],
+        issuer=PAYLOAD["issuer"],
+        client_id=PAYLOAD["client_id"],
+        deployment_id=PAYLOAD["deployment_id"],
+        is_active=True,
+        launch_count=10,
+        last_launch_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+@pytest.fixture
+def other_registration(db):
+    row = LTIRegistration(
+        id="other-registration",
+        department_id=OTHER_DEPARTMENT,
+        platform=LTIPlatform.BLACKBOARD,
+        platform_name="Other Blackboard",
+        issuer="https://blackboard.example.edu",
+        client_id="other-client",
+        created_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+    )
+    db.add(row)
+    db.commit()
+    return row
 
 
 class TestListLTIRegistrations:
-    """Tests for GET /integrations/lti/registrations."""
-
     def test_list_missing_auth(self, client):
-        """Test that listing registrations requires authentication."""
-        response = client.get("/integrations/lti/registrations")
+        response = client.get(PATH)
         assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_list_empty(self, mock_db, mock_auth, client, mock_api_key, auth_headers):
-        """Test listing when no registrations exist."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = (
-            []
-        )
-        mock_db.return_value = mock_session
-
-        response = client.get(
-            "/integrations/lti/registrations",
-            headers=auth_headers,
-        )
-
+    def test_list_empty(self, authenticated):
+        response = authenticated.get(PATH)
         assert response.status_code == 200
-        data = response.json()
-        assert data["registrations"] == []
-        assert data["total"] == 0
+        assert response.json() == {"registrations": [], "total": 0}
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_list_with_registrations(
-        self,
-        mock_db,
-        mock_auth,
-        client,
-        mock_api_key,
-        mock_lti_registration,
-        mock_lti_registration_blackboard,
-        auth_headers,
-    ):
-        """Test listing multiple registrations."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
-            mock_lti_registration,
-            mock_lti_registration_blackboard,
-        ]
-        mock_db.return_value = mock_session
-
-        response = client.get(
-            "/integrations/lti/registrations",
-            headers=auth_headers,
+    def test_list_with_registrations(self, authenticated, db, registration):
+        newer = LTIRegistration(
+            department_id=DEPARTMENT,
+            platform=LTIPlatform.BLACKBOARD,
+            issuer="https://blackboard.example.edu",
+            client_id="second-client",
+            created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         )
-
+        db.add(newer)
+        db.commit()
+        response = authenticated.get(PATH)
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
-        assert len(data["registrations"]) == 2
-
-        # Check first registration
-        reg1 = data["registrations"][0]
-        assert reg1["id"] == "reg-123"
-        assert reg1["platform"] == "canvas"
-        assert reg1["client_id"] == "canvas-client-12345"
-        assert reg1["is_active"] is True
-        assert reg1["launch_count"] == 10
-
-
-# =============================================================================
-# Create LTI Registration Tests
-# =============================================================================
+        assert [item["id"] for item in data["registrations"]] == [
+            newer.id,
+            registration.id,
+        ]
+        assert data["registrations"][0]["last_launch_at"] is None
+        assert data["registrations"][0]["platform"] == "blackboard"
+        assert data["registrations"][1]["client_id"] == PAYLOAD["client_id"]
 
 
 class TestCreateLTIRegistration:
-    """Tests for POST /integrations/lti/registrations."""
-
     def test_create_missing_auth(self, client):
-        """Test that creating a registration requires authentication."""
-        response = client.post(
-            "/integrations/lti/registrations",
-            json={
-                "platform": "canvas",
-                "issuer": "https://canvas.university.edu",
-                "client_id": "test-client-id",
-            },
-        )
-        assert response.status_code == 401
+        assert client.post(PATH, json=PAYLOAD).status_code == 401
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_create_success(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
-    ):
-        """Test successful LTI registration creation."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        # No existing registration
-        mock_session.query.return_value.filter.return_value.first.return_value = None
-        mock_db.return_value = mock_session
-
-        # Mock the refresh to set created_at
-        def mock_refresh(obj):
-            obj.created_at = datetime.now(timezone.utc)
-
-        mock_session.refresh = mock_refresh
-
-        response = client.post(
-            "/integrations/lti/registrations",
-            json={
-                "platform": "canvas",
-                "platform_name": "Test University Canvas",
-                "issuer": "https://canvas.test.edu",
-                "client_id": "new-client-123",
-                "deployment_id": "deploy-1",
-            },
-            headers=auth_headers,
-        )
-
+    def test_create_success(self, authenticated, db):
+        payload = {
+            **PAYLOAD,
+            "auth_login_url": "https://canvas.example.edu/login",
+            "auth_token_url": "https://canvas.example.edu/token",
+            "jwks_url": "https://canvas.example.edu/keys",
+        }
+        response = authenticated.post(PATH, json=payload)
         assert response.status_code == 200
         data = response.json()
-        assert data["platform"] == "canvas"
-        assert data["platform_name"] == "Test University Canvas"
-        assert data["issuer"] == "https://canvas.test.edu"
-        assert data["client_id"] == "new-client-123"
-        assert data["is_active"] is True
-        assert "id" in data
-        assert "message" in data
+        row = db.get(LTIRegistration, data["id"])
+        assert row is not None
+        assert row.department_id == DEPARTMENT
+        for field in payload:
+            actual = getattr(row, field)
+            assert (
+                actual.value if isinstance(actual, LTIPlatform) else actual
+            ) == payload[field]
+        assert row.is_active is True
+        assert row.launch_count == 0
+        assert data["created_at"] == row.created_at.isoformat()
+        assert data["deployment_id"] == PAYLOAD["deployment_id"]
+        assert data["message"] == "LTI registration created successfully"
 
-        # Verify add and commit were called
-        mock_session.add.assert_called_once()
-        mock_session.commit.assert_called_once()
-
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_create_invalid_platform(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
-    ):
-        """Test creating registration with invalid platform."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_db.return_value = mock_session
-
-        response = client.post(
-            "/integrations/lti/registrations",
-            json={
-                "platform": "invalid_platform",
-                "issuer": "https://invalid.edu",
-                "client_id": "test-client",
-            },
-            headers=auth_headers,
-        )
-
+    def test_create_invalid_platform(self, authenticated, db):
+        response = authenticated.post(PATH, json={**PAYLOAD, "platform": "unknown"})
         assert response.status_code == 400
-        assert "Invalid platform" in response.json()["detail"]
+        assert response.json()["detail"].startswith("Invalid platform: unknown.")
+        assert db.query(LTIRegistration).count() == 0
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_create_duplicate_same_department(
-        self,
-        mock_db,
-        mock_auth,
-        client,
-        mock_api_key,
-        mock_lti_registration,
-        auth_headers,
-    ):
-        """Test creating duplicate registration in same department."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        # Return existing registration with same department
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            mock_lti_registration
-        )
-        mock_db.return_value = mock_session
-
-        response = client.post(
-            "/integrations/lti/registrations",
-            json={
-                "platform": "canvas",
-                "issuer": "https://canvas.university.edu",
-                "client_id": "canvas-client-12345",  # Same as mock
-            },
-            headers=auth_headers,
-        )
-
+    def test_create_duplicate_same_department(self, authenticated, db, registration):
+        response = authenticated.post(PATH, json=PAYLOAD)
         assert response.status_code == 409
-        assert "already exists" in response.json()["detail"]
+        assert (
+            response.json()["detail"]
+            == "LTI registration already exists for this client_id"
+        )
+        assert db.query(LTIRegistration).count() == 1
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
     def test_create_duplicate_different_department(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
+        self, authenticated, db, other_registration
     ):
-        """Test creating duplicate registration from another department."""
-        mock_auth.return_value = mock_api_key
-
-        # Mock existing registration from different department
-        existing_reg = MagicMock(spec=LTIRegistration)
-        existing_reg.department_id = "other-dept-456"  # Different department
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            existing_reg
-        )
-        mock_db.return_value = mock_session
-
-        response = client.post(
-            "/integrations/lti/registrations",
+        response = authenticated.post(
+            PATH,
             json={
-                "platform": "canvas",
-                "issuer": "https://canvas.other.edu",
-                "client_id": "already-registered-client",
+                **PAYLOAD,
+                "issuer": other_registration.issuer,
+                "client_id": other_registration.client_id,
             },
-            headers=auth_headers,
         )
-
         assert response.status_code == 409
-        assert "another department" in response.json()["detail"]
+        assert (
+            response.json()["detail"]
+            == "This LTI client_id is already registered by another department"
+        )
+        assert db.query(LTIRegistration).count() == 1
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_create_all_platforms(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
-    ):
-        """Test creating registrations for all supported platforms."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = None
-        mock_db.return_value = mock_session
-
-        def mock_refresh(obj):
-            obj.created_at = datetime.now(timezone.utc)
-
-        mock_session.refresh = mock_refresh
-
-        platforms = ["canvas", "blackboard", "moodle", "brightspace"]
-
-        for platform in platforms:
-            response = client.post(
-                "/integrations/lti/registrations",
-                json={
-                    "platform": platform,
-                    "issuer": f"https://{platform}.university.edu",
-                    "client_id": f"{platform}-client-123",
-                },
-                headers=auth_headers,
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert data["platform"] == platform
-
-
-# =============================================================================
-# Update LTI Registration Tests
-# =============================================================================
+    @pytest.mark.parametrize(
+        "platform", ["canvas", "blackboard", "moodle", "brightspace"]
+    )
+    def test_create_all_platforms(self, authenticated, db, platform):
+        response = authenticated.post(
+            PATH,
+            json={
+                "platform": platform,
+                "issuer": f"https://{platform}.example.edu",
+                "client_id": "client",
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["platform"] == platform
+        assert data["platform_name"] == f"{platform.title()} LMS"
+        assert data["deployment_id"] is None
+        assert db.get(LTIRegistration, data["id"]).platform == LTIPlatform(platform)
 
 
 class TestUpdateLTIRegistration:
-    """Tests for PATCH /integrations/lti/registrations/{registration_id}."""
-
     def test_update_missing_auth(self, client):
-        """Test that updating a registration requires authentication."""
-        response = client.patch(
-            "/integrations/lti/registrations/reg-123",
-            params={"is_active": False},
-        )
-        assert response.status_code == 401
-
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_update_deactivate(
-        self,
-        mock_db,
-        mock_auth,
-        client,
-        mock_api_key,
-        mock_lti_registration,
-        auth_headers,
-    ):
-        """Test deactivating an LTI registration."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            mock_lti_registration
-        )
-        mock_db.return_value = mock_session
-
-        response = client.patch(
-            "/integrations/lti/registrations/reg-123",
-            params={"is_active": False},
-            headers=auth_headers,
+        assert (
+            client.patch(
+                f"{PATH}/example-registration", params={"is_active": False}
+            ).status_code
+            == 401
         )
 
+    @pytest.mark.parametrize("active", [False, True])
+    def test_update_deactivate(self, authenticated, db, registration, active):
+        registration.is_active = not active
+        db.commit()
+        response = authenticated.patch(
+            f"{PATH}/{registration.id}", params={"is_active": active}
+        )
         assert response.status_code == 200
-        data = response.json()
-        assert data["id"] == "reg-123"
-        assert "message" in data
+        assert response.json()["is_active"] is active
+        db.expire_all()
+        assert db.get(LTIRegistration, registration.id).is_active is active
 
-        # Verify the registration was modified
-        assert mock_lti_registration.is_active is False
-        mock_session.commit.assert_called_once()
-
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_update_rename(
-        self,
-        mock_db,
-        mock_auth,
-        client,
-        mock_api_key,
-        mock_lti_registration,
-        auth_headers,
-    ):
-        """Test renaming an LTI registration."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            mock_lti_registration
+    def test_update_rename(self, authenticated, db, registration):
+        response = authenticated.patch(
+            f"{PATH}/{registration.id}", params={"platform_name": "Renamed Canvas"}
         )
-        mock_db.return_value = mock_session
-
-        response = client.patch(
-            "/integrations/lti/registrations/reg-123",
-            params={"platform_name": "New Platform Name"},
-            headers=auth_headers,
-        )
-
         assert response.status_code == 200
-        data = response.json()
-        assert data["platform_name"] == "New Platform Name"
-
-        mock_session.commit.assert_called_once()
-
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_update_not_found(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
-    ):
-        """Test updating a non-existent registration."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = None
-        mock_db.return_value = mock_session
-
-        response = client.patch(
-            "/integrations/lti/registrations/nonexistent-id",
-            params={"is_active": False},
-            headers=auth_headers,
+        assert response.json()["platform_name"] == "Renamed Canvas"
+        db.expire_all()
+        assert (
+            db.get(LTIRegistration, registration.id).platform_name == "Renamed Canvas"
         )
 
+    def test_update_not_found(self, authenticated):
+        response = authenticated.patch(f"{PATH}/missing", params={"is_active": False})
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"]
+        assert response.json()["detail"] == "LTI registration not found"
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_update_wrong_department(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
-    ):
-        """Test updating a registration owned by another department."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        # The filter should return None because department_id doesn't match
-        mock_session.query.return_value.filter.return_value.first.return_value = None
-        mock_db.return_value = mock_session
-
-        response = client.patch(
-            "/integrations/lti/registrations/other-dept-reg",
-            params={"is_active": False},
-            headers=auth_headers,
+    def test_update_wrong_department(self, authenticated, db, other_registration):
+        response = authenticated.patch(
+            f"{PATH}/{other_registration.id}", params={"is_active": False}
         )
-
         assert response.status_code == 404
+        db.expire_all()
+        assert db.get(LTIRegistration, other_registration.id).is_active is True
 
+    def test_update_invalid_boolean(self, authenticated, db, registration):
+        response = authenticated.patch(
+            f"{PATH}/{registration.id}", params={"is_active": "unknown"}
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["query", "is_active"]
+        db.expire_all()
+        assert db.get(LTIRegistration, registration.id).is_active is True
 
-# =============================================================================
-# Delete LTI Registration Tests
-# =============================================================================
+    def test_update_without_changes(self, authenticated, db, registration):
+        response = authenticated.patch(f"{PATH}/{registration.id}")
+        assert response.status_code == 200
+        assert response.json()["platform_name"] == PAYLOAD["platform_name"]
+        assert response.json()["is_active"] is True
+        db.expire_all()
+        assert (
+            db.get(LTIRegistration, registration.id).platform_name
+            == PAYLOAD["platform_name"]
+        )
 
 
 class TestDeleteLTIRegistration:
-    """Tests for DELETE /integrations/lti/registrations/{registration_id}."""
-
     def test_delete_missing_auth(self, client):
-        """Test that deleting a registration requires authentication."""
-        response = client.delete("/integrations/lti/registrations/reg-123")
-        assert response.status_code == 401
+        assert client.delete(f"{PATH}/example-registration").status_code == 401
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_delete_success(
-        self,
-        mock_db,
-        mock_auth,
-        client,
-        mock_api_key,
-        mock_lti_registration,
-        auth_headers,
-    ):
-        """Test successful LTI registration deletion."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = (
-            mock_lti_registration
-        )
-        mock_db.return_value = mock_session
-
-        response = client.delete(
-            "/integrations/lti/registrations/reg-123",
-            headers=auth_headers,
-        )
-
+    def test_delete_success(self, authenticated, db, registration):
+        registration_id = registration.id
+        response = authenticated.delete(f"{PATH}/{registration_id}")
         assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-        assert data["platform"] == "canvas"
-        assert data["client_id"] == "canvas-client-12345"
+        assert response.json() == {
+            "success": True,
+            "message": "LTI registration deleted successfully",
+            "platform": "canvas",
+            "client_id": PAYLOAD["client_id"],
+        }
+        assert db.get(LTIRegistration, registration_id) is None
 
-        # Verify delete and commit were called
-        mock_session.delete.assert_called_once_with(mock_lti_registration)
-        mock_session.commit.assert_called_once()
-
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_delete_not_found(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
-    ):
-        """Test deleting a non-existent registration."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = None
-        mock_db.return_value = mock_session
-
-        response = client.delete(
-            "/integrations/lti/registrations/nonexistent-id",
-            headers=auth_headers,
-        )
-
+    def test_delete_not_found(self, authenticated):
+        response = authenticated.delete(f"{PATH}/missing")
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"]
+        assert response.json()["detail"] == "LTI registration not found"
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_delete_wrong_department(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
-    ):
-        """Test deleting a registration owned by another department."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        # Filter returns None because department_id doesn't match
-        mock_session.query.return_value.filter.return_value.first.return_value = None
-        mock_db.return_value = mock_session
-
-        response = client.delete(
-            "/integrations/lti/registrations/other-dept-reg",
-            headers=auth_headers,
-        )
-
+    def test_delete_wrong_department(self, authenticated, db, other_registration):
+        response = authenticated.delete(f"{PATH}/{other_registration.id}")
         assert response.status_code == 404
-
-
-# =============================================================================
-# Edge Cases and Security Tests
-# =============================================================================
+        assert db.get(LTIRegistration, other_registration.id) is not None
 
 
 class TestLTIAdminSecurity:
-    """Security-focused tests for LTI admin endpoints."""
-
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
     def test_cannot_access_other_department_registrations(
-        self, mock_db, mock_auth, client, auth_headers
+        self, authenticated, registration, other_registration
     ):
-        """Test that users cannot list registrations from other departments."""
-        # API key for dept-123
-        api_key = MagicMock()
-        api_key.department_id = "dept-123"
-        mock_auth.return_value = api_key
-
-        # Registration from different department
-        other_dept_reg = MagicMock(spec=LTIRegistration)
-        other_dept_reg.department_id = "dept-other"
-
-        mock_session = MagicMock()
-        # Query should filter by department_id
-        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = (
-            []
-        )
-        mock_db.return_value = mock_session
-
-        response = client.get(
-            "/integrations/lti/registrations",
-            headers=auth_headers,
-        )
-
-        # Should return empty list (not the other department's registrations)
+        response = authenticated.get(PATH)
         assert response.status_code == 200
-        assert response.json()["registrations"] == []
-
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_registration_includes_launch_stats(
-        self,
-        mock_db,
-        mock_auth,
-        client,
-        mock_api_key,
-        mock_lti_registration,
-        auth_headers,
-    ):
-        """Test that registration listing includes launch statistics."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
-            mock_lti_registration
+        assert response.json()["total"] == 1
+        assert [row["id"] for row in response.json()["registrations"]] == [
+            registration.id
         ]
-        mock_db.return_value = mock_session
 
-        response = client.get(
-            "/integrations/lti/registrations",
-            headers=auth_headers,
-        )
-
+    def test_registration_includes_launch_stats(self, authenticated, registration):
+        response = authenticated.get(PATH)
         assert response.status_code == 200
-        reg = response.json()["registrations"][0]
-        assert "launch_count" in reg
-        assert "last_launch_at" in reg
-        assert reg["launch_count"] == 10
+        row = response.json()["registrations"][0]
+        assert row["launch_count"] == 10
+        assert row["last_launch_at"] == registration.last_launch_at.isoformat()
+        assert row["created_at"] == registration.created_at.isoformat()
 
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_create_requires_issuer_and_client_id(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
-    ):
-        """Test that issuer and client_id are required for creation."""
-        mock_auth.return_value = mock_api_key
+    @pytest.mark.parametrize("missing", ["issuer", "client_id"])
+    def test_create_requires_issuer_and_client_id(self, authenticated, db, missing):
+        payload = {key: value for key, value in PAYLOAD.items() if key != missing}
+        response = authenticated.post(PATH, json=payload)
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["body", missing]
+        assert db.query(LTIRegistration).count() == 0
 
-        mock_session = MagicMock()
-        mock_db.return_value = mock_session
-
-        # Missing issuer
-        response = client.post(
-            "/integrations/lti/registrations",
-            json={
-                "platform": "canvas",
-                "client_id": "test-client",
-            },
-            headers=auth_headers,
-        )
-        assert response.status_code == 422  # Validation error
-
-        # Missing client_id
-        response = client.post(
-            "/integrations/lti/registrations",
-            json={
-                "platform": "canvas",
-                "issuer": "https://canvas.edu",
-            },
-            headers=auth_headers,
-        )
-        assert response.status_code == 422  # Validation error
-
-    @patch("src.api.integration_routes.get_current_api_key")
-    @patch("src.api.integration_routes.get_db_dependency")
-    def test_platform_is_case_insensitive(
-        self, mock_db, mock_auth, client, mock_api_key, auth_headers
-    ):
-        """Test that platform name is case-insensitive."""
-        mock_auth.return_value = mock_api_key
-
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = None
-        mock_db.return_value = mock_session
-
-        def mock_refresh(obj):
-            obj.created_at = datetime.now(timezone.utc)
-
-        mock_session.refresh = mock_refresh
-
-        # Test uppercase
-        response = client.post(
-            "/integrations/lti/registrations",
-            json={
-                "platform": "CANVAS",
-                "issuer": "https://canvas.university.edu",
-                "client_id": "uppercase-test",
-            },
-            headers=auth_headers,
-        )
-
+    def test_platform_is_case_insensitive(self, authenticated, db):
+        response = authenticated.post(PATH, json={**PAYLOAD, "platform": "CANVAS"})
         assert response.status_code == 200
         assert response.json()["platform"] == "canvas"
-
-        # Test mixed case
-        response = client.post(
-            "/integrations/lti/registrations",
-            json={
-                "platform": "BlackBoard",
-                "issuer": "https://bb.university.edu",
-                "client_id": "mixedcase-test",
-            },
-            headers=auth_headers,
+        assert (
+            db.get(LTIRegistration, response.json()["id"]).platform
+            == LTIPlatform.CANVAS
         )
 
+    def test_api_key_identity_uses_its_department(
+        self, authenticated, registration, other_registration
+    ):
+        app.dependency_overrides[get_current_api_key] = lambda: APIKey(
+            id="other-example-key",
+            user_id="other-example-user",
+            department_id=OTHER_DEPARTMENT,
+        )
+        response = authenticated.get(PATH)
         assert response.status_code == 200
-        assert response.json()["platform"] == "blackboard"
+        assert [row["id"] for row in response.json()["registrations"]] == [
+            other_registration.id
+        ]
+
+    @pytest.mark.parametrize("method", ["get", "post", "patch", "delete"])
+    def test_dependency_failure_is_returned(self, authenticated, db, method):
+        def unavailable():
+            raise HTTPException(
+                status_code=503, detail="Registration storage unavailable"
+            )
+
+        app.dependency_overrides[get_db_dependency] = unavailable
+        path = PATH if method in {"get", "post"} else f"{PATH}/example-registration"
+        response = authenticated.request(
+            method, path, **({"json": PAYLOAD} if method == "post" else {})
+        )
+        assert response.status_code == 503
+        assert response.json() == {"detail": "Registration storage unavailable"}
+        assert db.query(LTIRegistration).count() == 0
