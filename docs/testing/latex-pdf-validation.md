@@ -55,7 +55,14 @@ and broader per-format result behavior are separate work in #446.
 
 ## Evidence and reproduction
 
-The required tests are:
+Before running the focused tests, check collection of the full suite so direct-file
+module loaders are exercised too:
+
+```sh
+python -m pytest tests/ --collect-only --no-cov
+```
+
+The focused validation tests are:
 
 ```sh
 python -m pytest tests/test_latex_pdf_validation.py \

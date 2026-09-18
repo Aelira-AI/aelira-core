@@ -32,7 +32,7 @@ from pydantic import (
     model_validator,
 )
 
-from .latex_pdf_validation import LatexPDFValidation
+from src.education.remediation.latex_pdf_validation import LatexPDFValidation
 
 from src.education.equation_region_contract import PageRasterRegionLocator
 from src.education.visual_semantic_contract import (
