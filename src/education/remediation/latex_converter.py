@@ -137,9 +137,13 @@ class LaTeXConverter:
         tool = args[0]
         input_hash = sha(source.read_bytes())
         version = "unknown"
+        version_args = [tool, "--version"]
+        if tool in {"lualatex", "pdflatex"}:
+            # Keep the explicit shell policy on every TeX invocation.
+            version_args.append("-no-shell-escape")
         try:
             probe = subprocess.run(
-                [tool, "--version"],
+                version_args,
                 capture_output=True,
                 text=True,
                 timeout=5,

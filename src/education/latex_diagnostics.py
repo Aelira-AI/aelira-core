@@ -36,6 +36,7 @@ class Diagnostic(BaseModel):
         "raw_tex",
         "error_node",
         "missing_asset",
+        "missing_mathml",
         "candidate_missing",
         "candidate_unreadable",
         "unclassified_warning",
@@ -155,13 +156,16 @@ def classify(stdout, stderr, *, exit_code, final_pass=True):
         number = int(location[1]) if location else None
         number = number if number and number <= 10000000 else None
         code, severity = None, "error"
-        if re.search(
+        if re.search(r"warning:\s*mathml missing for hash\b", lower):
+            code = "missing_mathml"
+            severity = "error" if final_pass else "warning"
+        elif re.search(
             r"(?:no graphic source|could not find.*(?:image|graphic)|missing.*(?:image|graphic))",
             lower,
         ):
             code = "missing_asset"
         elif re.search(
-            r"(?:cannot|could not|can't|failed to) (?:find|load|read)|not found|no such file|missing.*(?:file|include|input)|(?:error|warning):missing:",
+            r"(?:cannot|could not|can't|failed to) (?:find|load|read)|not found|no such file|missing.*(?:file|include|input)|(?:error|warning):missing:|\bpackage\b.*\bmissing\b",
             lower,
         ):
             code = "missing_dependency"

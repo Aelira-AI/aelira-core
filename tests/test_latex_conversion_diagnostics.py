@@ -100,6 +100,11 @@ def runner(
     [
         (
             "parse",
+            "Package tagpdf Warning: The package unicode-math is missing",
+            "missing_dependency",
+        ),
+        (
+            "parse",
             "Error:missing_file:include Can't find TeX file private.tex line 12",
             "missing_dependency",
         ),
@@ -408,3 +413,16 @@ def test_simultaneous_calls_keep_stage_evidence_separate(
     assert bad_result[0] is None and bad_result[1].status == "refused"
     assert good_result[1].source_sha256 != bad_result[1].source_sha256
     assert all(not s.blocked for s in good_result[1].stages)
+
+
+@pytest.mark.parametrize("final_pass,expected", [(False, "warning"), (True, "error")])
+def test_mathml_generation_warning_must_resolve_on_final_pass(final_pass, expected):
+    findings = classify(
+        "WARNING: mathml missing for hash 6A08588F3199FB9A69F0428FB1D71E8E",
+        "",
+        exit_code=0,
+        final_pass=final_pass,
+    )
+    assert [(item.code, item.severity) for item in findings] == [
+        ("missing_mathml", expected)
+    ]

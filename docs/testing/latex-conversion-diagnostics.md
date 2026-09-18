@@ -42,8 +42,10 @@ accessibility status remains `not_verified`, and fidelity/reader checks remain
   equations/citations, caption-only figures when the source requests graphics,
   missing local image files, unverified external images and missing link targets.
 - Known layout, font substitution, title and deprecation warnings are retained
-  without automatic refusal. First-pass TeX reference warnings can resolve on
-  pass two; unresolved final-pass references remain errors.
+  without automatic refusal. First-pass TeX reference and generated-MathML warnings can resolve on
+  pass two; unresolved final-pass references or MathML remain errors. Missing
+  semantic packages are refused immediately. TeX version probes retain the same
+  explicit disabled-shell-escape option as compilation.
 
 Known loss is terminal for that representation. Another converter cannot hide
 it by returning a file. Separately requested TEX remains eligible for its own
