@@ -39,7 +39,6 @@ from ..mailer.email_service import get_email_service
 from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from ..security.audit_service import get_audit_service
 from ..services.account_deletion_service import AccountDeletionService
-import asyncio
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -87,6 +86,67 @@ def get_admin_api_key(
         principal.user_id,
         principal.department_id,
         principal.user_role,
+    )
+
+
+async def _deliver_invitation(
+    db: Session, invitation: UserInvitation, user_id: str
+) -> None:
+    """Await delivery and audit its outcome; the saved invitation remains retryable."""
+    delivered = False
+    try:
+        department = (
+            db.query(Department)
+            .filter(Department.id == invitation.department_id)
+            .first()
+        )
+        inviter = db.query(User).filter(User.id == user_id).first()
+        result = await get_email_service().send_faculty_invitation(
+            to_email=invitation.email,
+            department_name=department.name if department else "Your department",
+            role=invitation.role.value,
+            inviter_name=(
+                inviter.name if inviter and inviter.name else "Your department admin"
+            ),
+            inviter_email=inviter.email if inviter else "admin@example.com",
+            accept_url=f"{get_settings().dashboard_url}/accept-invitation?token={invitation.token}",
+            expires_date=invitation.expires_at.strftime("%B %d, %Y at %I:%M %p UTC"),
+        )
+        delivered = isinstance(result, dict) and result.get("success") is True
+    except Exception as exc:
+        logger.error("Invitation delivery failed: %s", type(exc).__name__)
+
+    get_audit_service(db).log_action(
+        action=AuditLogAction.USER_INVITE_SENT,
+        status=AuditLogStatus.SUCCESS if delivered else AuditLogStatus.FAILURE,
+        user_id=user_id if user_id != "test-admin-123" else None,
+        department_id=invitation.department_id,
+        resource_type="invitation",
+        resource_id=invitation.id,
+        details={"outcome": "sent" if delivered else "delivery_failed"},
+        commit=False,
+    )
+    db.commit()
+    if not delivered:
+        raise HTTPException(
+            status_code=502,
+            detail="Invitation saved, but email delivery failed. Refresh invitations and retry.",
+        )
+
+
+def _expire_pending_invitations(db: Session, department_id: str) -> int:
+    """Stage expired rows within the caller's transaction and department."""
+    return (
+        db.query(UserInvitation)
+        .filter(
+            UserInvitation.department_id == department_id,
+            UserInvitation.status == InvitationStatus.PENDING,
+            UserInvitation.expires_at < datetime.now(timezone.utc),
+        )
+        .update(
+            {UserInvitation.status: InvitationStatus.EXPIRED},
+            synchronize_session="fetch",
+        )
     )
 
 
@@ -156,7 +216,7 @@ async def list_department_users(
 
     except Exception as e:
         logger.error("Error listing users: %s", type(e).__name__)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to list users")
 
 
 @router.post("/users/invite")
@@ -211,7 +271,8 @@ async def invite_user(
                     detail="User is already a member of another department",
                 )
 
-        # Check for existing pending invitation
+        _expire_pending_invitations(db, department_id)
+        # Check for an unexpired pending invitation.
         existing_invite = (
             db.query(UserInvitation)
             .filter(
@@ -291,53 +352,7 @@ async def invite_user(
         db.commit()
         db.refresh(invitation)
 
-        # Send invitation email
-        try:
-            settings = get_settings()
-            email_service = get_email_service()
-
-            # Get inviter info
-            inviter = (
-                db.query(User).filter(User.id == user_id).first()
-                if user_id != "test-admin-123"
-                else None
-            )
-            inviter_name = (
-                inviter.name if inviter and inviter.name else "Your department admin"
-            )
-            inviter_email = inviter.email if inviter else "admin@example.com"
-
-            # Build accept URL
-            dashboard_url = (
-                settings.dashboard_url
-                if hasattr(settings, "dashboard_url")
-                else "https://dashboard.example.com"
-            )
-            accept_url = f"{dashboard_url}/accept-invitation?token={token}"
-
-            # Format expiration date
-            expires_date = invitation.expires_at.strftime("%B %d, %Y at %I:%M %p UTC")
-
-            # Send email asynchronously
-            asyncio.create_task(
-                email_service.send_faculty_invitation(
-                    to_email=request.email,
-                    department_name=(
-                        department.name if department else "Your department"
-                    ),
-                    role=invite_role.value,
-                    inviter_name=inviter_name,
-                    inviter_email=inviter_email,
-                    accept_url=accept_url,
-                    expires_date=expires_date,
-                )
-            )
-            logger.info("Invitation email queued for invitation %s", invitation.id)
-        except Exception as email_error:
-            # Log email error but don't fail the invitation
-            logger.error(
-                "Failed to send invitation email: %s", type(email_error).__name__
-            )
+        await _deliver_invitation(db, invitation, user_id)
 
         return {
             "success": True,
@@ -353,7 +368,7 @@ async def invite_user(
     except Exception as e:
         db.rollback()
         logger.error("Error inviting user: %s", type(e).__name__)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to invite user")
 
 
 @router.delete("/users/{target_user_id}")
@@ -421,7 +436,7 @@ async def remove_user(
     except Exception as e:
         db.rollback()
         logger.error("Error removing user: %s", type(e).__name__)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to remove user")
 
 
 @router.patch("/users/{target_user_id}/role")
@@ -485,6 +500,18 @@ async def update_user_role(
         # Update role
         old_role = target_user.role
         target_user.role = new_role
+        get_audit_service(db).log_action(
+            action=AuditLogAction.USER_ROLE_CHANGE,
+            user_id=user_id if user_id != "test-admin-123" else None,
+            department_id=department_id,
+            resource_type="user",
+            resource_id=target_user.id,
+            details={
+                "old_role": old_role.value if old_role else None,
+                "new_role": new_role.value,
+            },
+            commit=False,
+        )
         db.commit()
 
         return {
@@ -500,7 +527,7 @@ async def update_user_role(
     except Exception as e:
         db.rollback()
         logger.error("Error updating user role: %s", type(e).__name__)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to update user role")
 
 
 # ==================== Invitation Management Endpoints ====================
@@ -538,14 +565,11 @@ async def list_invitations(
             except ValueError:
                 raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
 
+        # Expire this department's pending rows before applying the requested view.
+        expired_count = _expire_pending_invitations(db, department_id)
+        if expired_count:
+            db.commit()
         invitations = query.order_by(UserInvitation.created_at.desc()).all()
-
-        # Check for expired invitations
-        now = datetime.utcnow()
-        for invite in invitations:
-            if invite.status == InvitationStatus.PENDING and invite.expires_at < now:
-                invite.status = InvitationStatus.EXPIRED
-                db.commit()
 
         # Batch-load inviter names to avoid N+1 queries
         inviter_ids = {inv.invited_by for inv in invitations if inv.invited_by}
@@ -591,8 +615,9 @@ async def list_invitations(
     except HTTPException:
         raise
     except Exception as e:
+        db.rollback()
         logger.error("Error listing invitations: %s", type(e).__name__)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to list invitations")
 
 
 @router.delete("/invitations/{invitation_id}")
@@ -648,7 +673,7 @@ async def revoke_invitation(
     except Exception as e:
         db.rollback()
         logger.error("Error revoking invitation: %s", type(e).__name__)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to revoke invitation")
 
 
 @router.post("/invitations/{invitation_id}/resend")
@@ -699,58 +724,7 @@ async def resend_invitation(
         invitation.token = secrets.token_urlsafe(48)  # New token for security
         db.commit()
 
-        # Resend invitation email
-        try:
-            settings = get_settings()
-            email_service = get_email_service()
-
-            # Get department info
-            department = (
-                db.query(Department).filter(Department.id == department_id).first()
-            )
-
-            # Get inviter info (the admin resending)
-            inviter = (
-                db.query(User).filter(User.id == user_id).first()
-                if user_id != "test-admin-123"
-                else None
-            )
-            inviter_name = (
-                inviter.name if inviter and inviter.name else "Your department admin"
-            )
-            inviter_email = inviter.email if inviter else "admin@example.com"
-
-            # Build accept URL
-            dashboard_url = (
-                settings.dashboard_url
-                if hasattr(settings, "dashboard_url")
-                else "https://dashboard.example.com"
-            )
-            accept_url = f"{dashboard_url}/accept-invitation?token={invitation.token}"
-
-            # Format expiration date
-            expires_date = invitation.expires_at.strftime("%B %d, %Y at %I:%M %p UTC")
-
-            # Send email asynchronously
-            asyncio.create_task(
-                email_service.send_faculty_invitation(
-                    to_email=invitation.email,
-                    department_name=(
-                        department.name if department else "Your department"
-                    ),
-                    role=invitation.role.value if invitation.role else "faculty",
-                    inviter_name=inviter_name,
-                    inviter_email=inviter_email,
-                    accept_url=accept_url,
-                    expires_date=expires_date,
-                )
-            )
-            logger.info("Invitation email resent for invitation %s", invitation.id)
-        except Exception as email_error:
-            # Log email error but don't fail the resend
-            logger.error(
-                "Failed to resend invitation email: %s", type(email_error).__name__
-            )
+        await _deliver_invitation(db, invitation, user_id)
 
         return {
             "success": True,
@@ -763,7 +737,7 @@ async def resend_invitation(
     except Exception as e:
         db.rollback()
         logger.error("Error resending invitation: %s", type(e).__name__)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to resend invitation")
 
 
 # ==================== Department Stats Endpoints ====================
@@ -815,6 +789,7 @@ async def get_department_stats(
             .filter(
                 UserInvitation.department_id == department_id,
                 UserInvitation.status == InvitationStatus.PENDING,
+                UserInvitation.expires_at >= datetime.now(timezone.utc),
             )
             .scalar()
             or 0
@@ -849,7 +824,7 @@ async def get_department_stats(
 
     except Exception as e:
         logger.error("Error getting department stats: %s", type(e).__name__)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to get department stats")
 
 
 # ==================== Accept Invitation Endpoint (Public) ====================
