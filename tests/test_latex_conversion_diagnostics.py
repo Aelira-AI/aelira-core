@@ -28,6 +28,28 @@ def test_cold_font_database_creation_is_not_a_missing_dependency():
     } == {"missing_dependency"}
 
 
+def test_owned_format_initialization_warnings_do_not_hide_failures():
+    notice = "\n".join(
+        [
+            "mktexfmt [INFO]: writing formats under owned scratch",
+            "Beginning to dump on file lualatex.fmt",
+            "warning  (pdf backend): no pages of output.",
+            "* WARNING: you are switching to fmtutil's per-user formats. *",
+            "*         Please read the following warnings!               *",
+        ]
+    )
+    assert classify(notice, "", exit_code=0) == []
+    assert {
+        d.code for d in classify(notice + "\n! Font not found", "", exit_code=1)
+    } == {"process_failed", "missing_dependency"}
+    assert (
+        classify("warning  (pdf backend): no pages of output.", "", exit_code=0)[
+            0
+        ].severity
+        == "error"
+    )
+
+
 @pytest.fixture
 def converter(tmp_path):
     value = LaTeXConverter()
@@ -92,7 +114,7 @@ def runner(
                 None,
             )
             if directory is None:
-                directory = args[args.index("-output-directory") + 1]
+                directory = kwargs["cwd"]
             (Path(directory) / "source.pdf").write_bytes(b"synthetic PDF")
         return SimpleNamespace(
             returncode=exit_code,

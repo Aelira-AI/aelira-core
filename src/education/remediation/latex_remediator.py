@@ -26,6 +26,7 @@ from .base import (
     RemediationResult,
 )
 from .latex_converter import get_latex_converter
+from ..latex_metadata import LANGUAGES, extract_metadata, language_tag
 from ..latex_evidence import (
     LatexCheck,
     LatexRepresentationEvidence,
@@ -212,8 +213,8 @@ class LatexRemediator(BaseRemediator):
                 return "figure" in issue.description.lower() or self.config.use_ai
 
             elif issue.category == IssueCategory.LANGUAGE:
-                # Always can add language settings
-                return True
+                metadata = extract_metadata(self._modified_content)
+                return bool(metadata.language and not metadata.issues)
 
             elif issue.category == IssueCategory.STRUCTURE:
                 # Can add accessibility packages
@@ -234,8 +235,7 @@ class LatexRemediator(BaseRemediator):
                 return self._is_reference_label_issue(issue)
 
             elif issue.category == IssueCategory.TITLE:
-                # Can add missing title/author
-                return True
+                return self._get_rule_based_fix(issue, None) is not None
 
             elif issue.category == IssueCategory.LINK:
                 # Can fix bare URLs
@@ -392,24 +392,32 @@ class LatexRemediator(BaseRemediator):
 
     def _apply_language_fix(self, lang: str) -> bool:
         """Add or fix document language settings."""
-        # Check if babel is already loaded
+        metadata = extract_metadata(self._modified_content)
+        tag = language_tag(lang)
         if (
-            r"\usepackage[" in self._modified_content
-            and "babel}" in self._modified_content
+            not tag
+            or metadata.issues
+            or (metadata.language and metadata.language != tag)
         ):
-            # Update existing babel - use raw string + concatenation to avoid regex escape issues
-            self._modified_content = re.sub(
-                r"\\usepackage\[([^\]]*)\]\{babel\}",
-                r"\\usepackage[" + lang + r"]{babel}",
-                self._modified_content,
-            )
-            self._modifications.append(f"Updated babel language to {lang}")
+            return False
+        babel_name = next(
+            (name for name, value in LANGUAGES.items() if value == tag), None
+        )
+        # Check if babel is already loaded
+        if re.search(
+            r"\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{[^}]*\bbabel\b[^}]*\}",
+            self._modified_content,
+        ):
+            # Existing main/secondary languages and options are authored content.
+            pass
         else:
+            if not babel_name:
+                return False
             # Add babel package after documentclass
             if r"\documentclass" in self._modified_content:
                 self._modified_content = re.sub(
                     r"(\\documentclass[^\n]*\n)",
-                    r"\1\\usepackage[" + lang + r"]{babel}" + "\n",
+                    r"\1\\usepackage[" + babel_name + r"]{babel}" + "\n",
                     self._modified_content,
                     count=1,
                 )
@@ -418,7 +426,7 @@ class LatexRemediator(BaseRemediator):
         # Also add pdfinfo if not present
         if r"\hypersetup" not in self._modified_content:
             # Add hypersetup with language
-            hypersetup = f"\\hypersetup{{pdflang={{{lang}}}}}\n"
+            hypersetup = f"\\hypersetup{{pdflang={{{tag}}}}}\n"
             # Insert before \begin{document}
             if r"\begin{document}" in self._modified_content:
                 # hypersetup belongs to hyperref. A source-only repair must load
@@ -451,18 +459,23 @@ class LatexRemediator(BaseRemediator):
             # Add DocumentMetadata for PDF/UA tagging (replaces obsolete accessibility package)
             if r"\DocumentMetadata" not in self._modified_content:
                 if r"\documentclass" in self._modified_content:
-                    title_match = re.search(
-                        r"\\title\{([^}]+)\}", self._modified_content
+                    metadata = extract_metadata(self._modified_content)
+                    if metadata.issues:
+                        return False
+                    authored = "".join(
+                        f"  {key}={{{value}}},\n"
+                        for key, value in (
+                            ("lang", metadata.language),
+                            ("pdfauthor", metadata.author),
+                            ("pdftitle", metadata.title),
+                        )
+                        if value
                     )
-                    title = title_match.group(1) if title_match else "Untitled Document"
-
                     document_metadata = f"""\\DocumentMetadata{{
-  lang=en,
+{authored}\
   pdfstandard=ua-1,
   pdfversion=1.7,
-  testphase={{phase-III,math,title,table,firstaid}},
-  pdfauthor={{Aelira Accessibility Platform}},
-  pdftitle={{{title}}}
+  testphase={{phase-III,math,title,table,firstaid}}
 }}
 """
                     self._modified_content = document_metadata + self._modified_content
@@ -635,6 +648,8 @@ class LatexRemediator(BaseRemediator):
         )
 
     def _get_manual_reason(self, issue: RemediationIssue) -> str:
+        if issue.category in {IssueCategory.LANGUAGE, IssueCategory.TITLE}:
+            return "Authored document metadata is unknown, ambiguous or unsupported"
         if issue.category == IssueCategory.ARIA and not self._is_reference_label_issue(
             issue
         ):
@@ -642,6 +657,8 @@ class LatexRemediator(BaseRemediator):
         return super()._get_manual_reason(issue)
 
     def _get_manual_recommendation(self, issue: RemediationIssue) -> str:
+        if issue.category in {IssueCategory.LANGUAGE, IssueCategory.TITLE}:
+            return "Confirm the document language, title and author in the source; automated remediation will not infer them."
         if issue.category == IssueCategory.ARIA and not self._is_reference_label_issue(
             issue
         ):
@@ -702,26 +719,21 @@ class LatexRemediator(BaseRemediator):
     ) -> Optional[str]:
         """Get rule-based fixes for LaTeX issues."""
         if issue.category == IssueCategory.LANGUAGE:
-            # Default to English if not specified
-            return "english"
+            metadata = extract_metadata(self._modified_content)
+            return metadata.language if not metadata.issues else None
 
         elif issue.category == IssueCategory.STRUCTURE:
             if "accessibility" in issue.description.lower():
                 return "add accessibility package"
 
         elif issue.category == IssueCategory.TITLE:
+            metadata = extract_metadata(self._modified_content)
+            if metadata.issues:
+                return None
             if "title" in issue.description.lower():
-                # Generate title from filename
-                title = (
-                    Path(self.file_path)
-                    .stem.replace("_", " ")
-                    .replace("-", " ")
-                    .title()
-                )
-                return f"title:{title}"
+                return f"title:{metadata.title}" if metadata.title else None
             elif "author" in issue.description.lower():
-                # Use a generic author that won't be flagged
-                return "author:Document Author"
+                return f"author:{metadata.author}" if metadata.author else None
 
         elif issue.category == IssueCategory.ALT_TEXT:
             # For alt text, we need AI - return None to trigger AI generation
@@ -750,7 +762,6 @@ class LatexRemediator(BaseRemediator):
     def _get_template_fix(self, issue: RemediationIssue) -> Optional[str]:
         """Get template-based fixes for LaTeX issues."""
         templates = {
-            IssueCategory.LANGUAGE: "english",
             IssueCategory.STRUCTURE: "add accessibility package",
         }
         return templates.get(issue.category)
@@ -761,7 +772,11 @@ class LatexRemediator(BaseRemediator):
         """Generate fix using AI."""
 
         # Unverified prose cannot repair math. Reference labels use rules.
-        if issue.category == IssueCategory.ARIA:
+        if issue.category in {
+            IssueCategory.ARIA,
+            IssueCategory.LANGUAGE,
+            IssueCategory.TITLE,
+        }:
             return None
 
         self.result.ai_calls_made += 1
@@ -964,33 +979,11 @@ Provide ONLY the fix content, no explanation."""
 
             fixes_applied = 0
 
-            # 0. Add \DocumentMetadata for PDF/UA tagging (MUST be before \documentclass)
-            # This is required for LuaLaTeX + tagpdf to create proper structure tree
-            # with valid content references (/K, /Pg) that pass external validators.
-            if r"\DocumentMetadata" not in self._modified_content:
-                if r"\documentclass" in self._modified_content:
-                    # Extract title if available for PDF metadata
-                    title_match = re.search(
-                        r"\\title\{([^}]+)\}", self._modified_content
-                    )
-                    title = title_match.group(1) if title_match else "Untitled Document"
-
-                    # DocumentMetadata MUST appear BEFORE \documentclass
-                    document_metadata = f"""\\DocumentMetadata{{
-  lang=en,
-  pdfstandard=ua-1,
-  pdfversion=1.7,
-  testphase={{phase-III,math,title,table,firstaid}},
-  pdfauthor={{Aelira Accessibility Platform}},
-  pdftitle={{{title}}}
-}}
-"""
-                    self._modified_content = document_metadata + self._modified_content
-                    fixes_applied += 1
-                    self._modifications.append(
-                        "Added DocumentMetadata for PDF/UA-1 tagging"
-                    )
-                    logger.info("Added DocumentMetadata for PDF/UA-1 tagging")
+            # Reuse the authored-metadata path; never infer language or identity.
+            before = self._modified_content
+            self._apply_structure_fix("add accessibility package")
+            if self._modified_content != before:
+                fixes_applied += 1
 
             # 1. Remove obsolete accessibility packages (tagpdf replaces them)
             # These packages don't create valid PDF/UA structure with content references
@@ -1030,61 +1023,24 @@ Provide ONLY the fix content, no explanation."""
                     self._modifications.append("Added hyperref package")
                     logger.info("Added hyperref package")
 
-            # 3. Ensure babel (language) is present
-            if "babel}" not in self._modified_content:
-                if r"\documentclass" in self._modified_content:
-                    self._modified_content = re.sub(
-                        r"(\\documentclass[^\n]*\n)",
-                        r"\1\\usepackage[english]{babel}  % Document language" + "\n",
-                        self._modified_content,
-                        count=1,
-                    )
-                    fixes_applied += 1
-                    self._modifications.append(
-                        "Added babel package with English language"
-                    )
-                    logger.info("Added babel package with English language")
-
-            # 4. Add title if missing
-            if r"\title{" not in self._modified_content:
-                if r"\begin{document}" in self._modified_content:
-                    # Extract filename for default title
-                    default_title = Path(self.file_path).stem.replace("_", " ").title()
-                    self._modified_content = self._modified_content.replace(
-                        r"\begin{document}",
-                        f"\\title{{{default_title}}}  % ACCESSIBILITY: Added document title\n"
-                        + r"\begin{document}"
-                        + "\n\\maketitle\n",
-                    )
-                    fixes_applied += 1
-                    self._modifications.append(f"Added document title: {default_title}")
-                    logger.info(f"Added document title: {default_title}")
-
-            # 5. Add author if missing (use generic author, not placeholder)
-            if r"\author{" not in self._modified_content:
-                if r"\title{" in self._modified_content:
-                    # Add after title - use real author name, not placeholder brackets
-                    # Use string concat to get actual newline (raw string \n is literal)
-                    self._modified_content = re.sub(
-                        r"(\\title\{[^}]+\})",
-                        r"\1" + "\n" + r"\\author{Document Author}",
-                        self._modified_content,
-                        count=1,
-                    )
-                    fixes_applied += 1
-                    self._modifications.append("Added document author")
-                    logger.info("Added document author")
+            # Missing language/title/author require an explicit authored value.
+            metadata = extract_metadata(self._modified_content)
+            if not metadata.language or not metadata.title or not metadata.author:
+                self.result.warnings.append(
+                    "Unknown document metadata requires author review."
+                )
 
             # 6. Add PDF metadata if title exists but no hypersetup
             # Note: With DocumentMetadata, much of this is handled automatically,
             # but we add hypersetup for fallback pipelines and explicit metadata
-            title_match = re.search(r"\\title\{([^}]+)\}", self._modified_content)
-            if title_match and r"\hypersetup" not in self._modified_content:
-                title = title_match.group(1)
+            if (
+                metadata.title
+                and not metadata.issues
+                and r"\hypersetup" not in self._modified_content
+            ):
+                title = metadata.title
                 # Note: pdfaccessible is NOT a valid hyperref option - removed
-                hypersetup = (
-                    "\\hypersetup{\n  pdftitle={" + title + "},\n  pdflang={en}\n}\n"
-                )
+                hypersetup = "\\hypersetup{pdftitle={" + title + "}}\n"
                 if r"\begin{document}" in self._modified_content:
                     self._modified_content = self._modified_content.replace(
                         r"\begin{document}", hypersetup + r"\begin{document}"

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { withReviewedLanguage } from './latex_corpus_contract.ts';
 
 const root = resolve('tests/fixtures/latex_validation');
 const output = resolve(process.env.STACK_EVIDENCE_DIR || 'test-results/document-stack');
@@ -16,16 +17,22 @@ assert.equal(queue.failures.length, 0, 'Compile only outputs from a successful q
 const sha = (data: Uint8Array) => createHash('sha256').update(data).digest('hex');
 const cases: object[] = [];
 const failures: string[] = [];
-for (const fixture of manifest.cases) {
+for (const originalFixture of manifest.cases) for (const reviewed of [false, true]) {
+  const fixture = { ...originalFixture, id: reviewed ? `${originalFixture.id}-reviewed` : originalFixture.id,
+    file: reviewed ? `reviewed-${originalFixture.file}` : originalFixture.file };
+  const baseline = await readFile(resolve(root, originalFixture.file));
+  assert.equal(sha(baseline), originalFixture.sha256);
+  const source = reviewed ? Buffer.from(withReviewedLanguage(baseline.toString('utf8'))) : baseline;
+  fixture.sha256 = sha(source);
   const receipt = queue.evidence.find((row: any) => row.kind === 'latex' && row.fixture === fixture.id);
   assert(receipt, `Missing queue evidence for ${fixture.id}`);
   for (const kind of ['source', 'saved']) {
-    if (kind === 'saved' && fixture.id === 'N04') {
+    if (kind === 'saved' && (!reviewed || originalFixture.id === 'N04')) {
       assert.equal(receipt.status, 'refused');
       cases.push({ fixture: fixture.id, kind, status: 'not_run', reason: 'output_withheld' });
       continue;
     }
-    const file = kind === 'source' ? resolve(root, fixture.file) : resolve(output, `saved-${fixture.file}`);
+    const file = kind === 'source' ? resolve(output, `input-${fixture.file}`) : resolve(output, `saved-${fixture.file}`);
     const bytes = await readFile(file);
     assert.equal(sha(bytes), kind === 'source' ? fixture.sha256 : receipt.output_sha256);
     const directory = resolve(output, 'compiler', fixture.id, kind);
@@ -46,4 +53,4 @@ await writeFile(resolve(output, 'compilation.json'), JSON.stringify({ compiler: 
   queue_report_sha256: sha(await readFile(resolve(output, 'report.json'))),
   scope: 'Compilation only; no PDF/UA, mathematical fidelity or assistive-technology claim', cases, failures }, null, 2));
 assert.equal(failures.length, 0, failures.join('\n'));
-console.log('PASS LaTeX compilation: 11 sources, 10 exact queue downloads, one withheld output');
+console.log('PASS LaTeX compilation: 11 originals, 11 explicitly authored language variants, 10 queue downloads');

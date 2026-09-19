@@ -8,16 +8,24 @@ in #378. It is API integration coverage, not a browser or conformance claim.
 
 ## Predeclared expectations
 
-Every case requests **TEX only**, with AI disabled. Ten cases must exercise source
+Every case requests **TEX only**, with AI disabled. The eleven unchanged originals
+omit language and must require author review, with no fabricated English repair
+or downloadable artifact. The runner also creates eleven labelled `-reviewed`
+variants with an explicit synthetic `pdflang=en` declaration. This declaration
+is authored by the test fixture builder, never by remediation. Both inputs and
+their hashes are retained; original fixture hashes remain unchanged.
+
+Ten reviewed variants must exercise source
 findings and at least one verified source repair, publish a TeX candidate, retain
 its artifact identity after reload, and deliver identical bytes on repeat download.
 Uploading those downloaded bytes as a new scan must reproduce the job's source
 score and remaining findings. Only TEX may appear in the available-format list.
-N04's unbalanced expression prevents complete source comparison: the gate requires
+N04's original and reviewed variant have an unbalanced expression that prevents
+complete source comparison: the gate requires
 a persisted `manual_required` refusal, zero published fixes, no verified score,
 no available formats and HTTP 404 from the download route, including after reload.
 
-The saved document body must match the input byte for byte after UTF-8 decoding,
+Each published variant's saved document body must match its input byte for byte after UTF-8 decoding,
 including whitespace, equation source, labels, references, captions and missing
 inputs. All original preamble lines must remain in their original order. Preamble
 additions are allowed; this check does **not** validate the meaning or rendering of
@@ -73,6 +81,8 @@ The compiler step requires `pdflatex` (CI installs `texlive-latex-recommended` a
 `texlive-science`), or `STACK_TEX_COMPILER=lualatex` with the fixture packages
 installed. It writes `compilation.json` bound to the queue report digest, compiler
 version, per-input hashes and exit codes, plus isolated logs under `compiler/`.
+Compilation covers all eleven originals, eleven declared-language inputs and ten
+exact queue downloads. Withheld outputs are recorded explicitly rather than compiled.
 These processes use `-no-shell-escape` and a timeout and only accept the repository's
 synthetic fixture paths and hash-bound downloads, not arbitrary uploaded content.
 

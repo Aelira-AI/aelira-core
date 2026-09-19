@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { assertPreservedTex, assertUnverified } from './latex_corpus_contract.ts';
+import { assertPreservedTex, assertUnverified, withReviewedLanguage } from './latex_corpus_contract.ts';
 
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -19,11 +19,16 @@ export async function verifyLatexCorpus(context: {
   const root = 'tests/fixtures/latex_validation';
   const manifest = JSON.parse(await readFile(`${root}/corpus.json`, 'utf8'));
   assert.equal(manifest.cases.length, 11, 'Review scope and expectations when expanding the corpus');
-  for (const fixture of manifest.cases) {
+  for (const originalFixture of manifest.cases) for (const reviewed of [false, true]) {
+    const fixture = { ...originalFixture, id: reviewed ? `${originalFixture.id}-reviewed` : originalFixture.id,
+      file: reviewed ? `reviewed-${originalFixture.file}` : originalFixture.file };
     try {
-      const path = `${root}/${fixture.file}`;
-      const source = await readFile(path);
-      assert.equal(digest(source), fixture.sha256, 'Fixture must match its pinned source hash');
+      const path = `${root}/${originalFixture.file}`;
+      const baseline = await readFile(path);
+      assert.equal(digest(baseline), originalFixture.sha256, 'Fixture must match its pinned source hash');
+      const source = reviewed ? Buffer.from(withReviewedLanguage(baseline.toString('utf8'))) : baseline;
+      fixture.sha256 = digest(source);
+      await writeFile(resolve(output, `input-${fixture.file}`), source);
       const upload = async (bytes: Uint8Array, name: string) => {
         const form = new FormData();
         form.append('file', new Blob([bytes]), name);
@@ -42,7 +47,7 @@ export async function verifyLatexCorpus(context: {
       assert(queued.job_id, 'A real durable remediation job is required');
       const job = await poll(() => request(`/education/remediation/jobs/${queued.job_id}`),
         (value: any) => ['completed', 'failed', 'cancelled', 'dead_letter'].includes(value.status));
-      if (fixture.id === 'N04') {
+      if (!reviewed || originalFixture.id === 'N04') {
         assert.equal(job.status, 'failed');
         assert.equal(job.error_code, 'manual_required');
         assert.equal(job.download_available, false);
@@ -54,7 +59,7 @@ export async function verifyLatexCorpus(context: {
         assert.equal(job.human_review_required, true);
         assertUnverified(job.latex_evidence.tex);
         assert.equal(job.latex_evidence.tex.source_sha256, fixture.sha256);
-        assert.equal(job.latex_evidence.tex.source_check.status, 'unavailable');
+        assert.equal(job.latex_evidence.tex.source_check.status, originalFixture.id === 'N04' ? 'unavailable' : 'completed');
         const refused = await download(`/education/remediation/jobs/${queued.job_id}/download`);
         assert.equal(refused.status, 404);
         const reloaded = await request(`/education/scans/${original.id}/remediation/latest`);
@@ -63,12 +68,12 @@ export async function verifyLatexCorpus(context: {
         }
         const formats = await request(`/education/scans/${original.id}/remediated/formats`);
         assert.deepEqual(formats.available_formats, []);
-        assert.equal(digest(await readFile(path)), fixture.sha256);
+        assert.equal(digest(await readFile(path)), originalFixture.sha256);
         evidence.push({ fixture: fixture.id, kind: 'latex', scan_id: original.id, job_id: job.job_id,
           status: 'refused', source_sha256: fixture.sha256, download_status: refused.status,
           latex_evidence: job.latex_evidence, expected_source_compilation: fixture.compile_expected,
           compilation: 'not_run', semantic_fidelity: 'not_assessed', assistive_technology: 'not_assessed' });
-        console.log(`PASS ${fixture.id}: incomplete source comparison, durable refusal and no download`);
+        console.log(`PASS ${fixture.id}: author review required, durable refusal and no download`);
         continue;
       }
       assert.equal(job.status, 'completed', `${fixture.id}: supported TEX repairs must produce a candidate`);
@@ -83,7 +88,7 @@ export async function verifyLatexCorpus(context: {
       assert(response.headers.get('content-type')?.startsWith('text/plain'));
       const saved = new Uint8Array(await response.arrayBuffer());
       assertPreservedTex(source.toString('utf8'), Buffer.from(saved).toString('utf8'));
-      assert.equal(digest(await readFile(path)), fixture.sha256);
+      assert.equal(digest(await readFile(path)), originalFixture.sha256);
       const receipt = job.latex_evidence.tex;
       assertUnverified(receipt);
       assert.deepEqual(Object.keys(job.latex_evidence), ['tex']);

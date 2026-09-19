@@ -140,7 +140,9 @@ def test_each_exporter_has_same_gate(candidate, monkeypatch, exporter, valid):
     for name in ("lualatex", "latexml", "pdflatex"):
         setattr(converter, f"{name}_available", name == exporter)
     source = candidate.with_suffix(".tex")
-    source.write_text(r"\documentclass{article}\begin{document}x\end{document}")
+    source.write_text(
+        r"\documentclass{article}\usepackage[english]{babel}\begin{document}x\end{document}"
+    )
     data = candidate.read_bytes() if valid else b"not a PDF"
     attempts = []
 

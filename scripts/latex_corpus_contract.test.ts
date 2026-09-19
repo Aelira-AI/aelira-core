@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { assertPreservedTex, assertUnverified } from './latex_corpus_contract.ts';
+import { assertPreservedTex, assertUnverified, withReviewedLanguage } from './latex_corpus_contract.ts';
 
 const root = 'tests/fixtures/latex_validation';
 const manifest = JSON.parse(readFileSync(`${root}/corpus.json`, 'utf8'));
 for (const fixture of manifest.cases) {
   const source = readFileSync(`${root}/${fixture.file}`, 'utf8');
+  test(`${fixture.id}: reviewed-language variant preserves authored content`, () => {
+    const reviewed = withReviewedLanguage(source);
+    assertPreservedTex(source, reviewed);
+    assert(reviewed.includes('\\hypersetup{pdflang={en}}'));
+    assert.equal(readFileSync(`${root}/${fixture.file}`, 'utf8'), source);
+  });
   test(`${fixture.id}: unchanged source and preamble additions pass`, () => {
     assertPreservedTex(source, source);
     assertPreservedTex(source, source.replace('\\begin{document}', '\\usepackage{hyperref}\n\\begin{document}'));
