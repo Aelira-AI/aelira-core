@@ -1,4 +1,5 @@
-import Ajv from 'ajv'
+import {Ajv} from 'ajv'
+import {fullFormats} from 'ajv-formats/dist/formats.js'
 import {expect} from 'chai'
 import {readFile} from 'node:fs/promises'
 
@@ -11,6 +12,15 @@ import {
 
 const IMAGE_HTML = '<img id="hero" src="hero.png">'
 const BUTTON_HTML = '<button id="save"></button>'
+
+async function sarifValidator() {
+  const schema = JSON.parse(
+    await readFile(new URL('../fixtures/sarif-schema-2.1.0.json', import.meta.url), 'utf8'),
+  )
+  // The official SARIF schema has a language pattern with an unescaped closing
+  // bracket. Retain AJV 6's non-Unicode pattern semantics without changing it.
+  return new Ajv({allErrors: true, formats: fullFormats, unicodeRegExp: false}).compile(schema)
+}
 
 function violation(overrides: Partial<AxeViolation> = {}): AxeViolation {
   return {
@@ -143,10 +153,7 @@ describe('SARIF projection', () => {
   })
 
   it('validates complete and location-free output against the official OASIS schema', async () => {
-    const schema = JSON.parse(
-      await readFile(new URL('../fixtures/sarif-schema-2.1.0.json', import.meta.url), 'utf8'),
-    )
-    const validate = new Ajv({allErrors: true, schemaId: 'auto'}).compile(schema)
+    const validate = await sarifValidator()
     const local = buildSarifLog({
       axeResults: {violations: [violation()]},
       source: {text: IMAGE_HTML, uri: 'page.html'},
@@ -161,6 +168,83 @@ describe('SARIF projection', () => {
 
     expect(validate(local), JSON.stringify(validate.errors)).to.equal(true)
     expect(validate(remote), JSON.stringify(validate.errors)).to.equal(true)
+  })
+
+  for (const uri of ['not a URI', 'https://example.com/bad path']) {
+    it(`rejects malformed rule URI ${JSON.stringify(uri)}`, async () => {
+      const validate = await sarifValidator()
+      const log = buildSarifLog({
+        axeResults: {violations: [violation()]},
+        target: 'page.html',
+        toolVersion: '0.9.7',
+      })
+      expect(validate(log), JSON.stringify(validate.errors)).to.equal(true)
+
+      log.runs[0].tool.driver.rules[0].helpUri = uri
+
+      expect(validate(log)).to.equal(false)
+      expect(validate.errors?.some((error) => error.instancePath === '/runs/0/tool/driver/rules/0/helpUri'
+        && error.keyword === 'format' && error.params.format === 'uri')).to.equal(true)
+    })
+  }
+
+  it('accepts encoded relative URI references and rejects unescaped spaces', async () => {
+    const validate = await sarifValidator()
+    const log = buildSarifLog({
+      axeResults: {violations: [violation()]},
+      source: {text: IMAGE_HTML, uri: 'fixtures/page #1.html'},
+      target: 'page.html',
+      toolVersion: '0.9.7',
+    })
+    expect(validate(log), JSON.stringify(validate.errors)).to.equal(true)
+
+    log.runs[0].results[0].locations![0].physicalLocation.artifactLocation.uri = 'bad path.html'
+
+    expect(validate(log)).to.equal(false)
+    expect(validate.errors?.some((error) => error.keyword === 'format'
+      && error.params.format === 'uri-reference')).to.equal(true)
+  })
+
+  for (const timestamp of ['not a date', '2026-02-30T12:00:00Z', '2026-09-19T12:00:00']) {
+    it(`rejects malformed invocation timestamp ${JSON.stringify(timestamp)}`, async () => {
+      const validate = await sarifValidator()
+      const generated = buildSarifLog({
+        axeResults: {violations: [violation()]},
+        target: 'page.html',
+        toolVersion: '0.9.7',
+      })
+      const log = {
+        ...generated,
+        runs: [{...generated.runs[0], invocations: [{
+          executionSuccessful: true,
+          startTimeUtc: '2026-09-19T12:00:00Z',
+        }]}],
+      }
+      expect(validate(log), JSON.stringify(validate.errors)).to.equal(true)
+
+      log.runs[0].invocations[0].startTimeUtc = timestamp
+
+      expect(validate(log)).to.equal(false)
+      expect(validate.errors?.some((error) => error.keyword === 'format'
+        && error.params.format === 'date-time')).to.equal(true)
+    })
+  }
+
+  it('still rejects values that fail the official language pattern', async () => {
+    const validate = await sarifValidator()
+    const generated = buildSarifLog({
+      axeResults: {violations: [violation()]},
+      target: 'page.html',
+      toolVersion: '0.9.7',
+    })
+    const log = {...generated, runs: [{...generated.runs[0], language: 'en-US'}]}
+    expect(validate(log), JSON.stringify(validate.errors)).to.equal(true)
+
+    log.runs[0].language = '123'
+
+    expect(validate(log)).to.equal(false)
+    expect(validate.errors?.some((error) => error.instancePath === '/runs/0/language'
+      && error.keyword === 'pattern')).to.equal(true)
   })
 
   it('keeps threshold and fail-on decisions independent of output format', () => {
