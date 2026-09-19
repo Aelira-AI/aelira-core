@@ -265,7 +265,7 @@ def test_ci_reproducibility_jobs_use_an_oci_capable_buildx_driver() -> None:
     docker_job = workflow.split("  docker:\n", 1)[1]
     setup = (
         "uses: docker/setup-buildx-action@"
-        "37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0"
+        "f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1"
     )
 
     assert setup in docker_job

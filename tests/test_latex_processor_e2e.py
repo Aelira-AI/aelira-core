@@ -32,7 +32,7 @@ AMSMATH_EQUATIONS = FIXTURES_DIR / "equations_amsmath.tex"
 @pytest.fixture
 def latex_processor():
     """Create LaTeX processor instance."""
-    return LaTeXProcessor()
+    return LaTeXProcessor(use_ai=False)
 
 
 @pytest.mark.asyncio
@@ -305,10 +305,10 @@ c & d
 
 @pytest.mark.asyncio
 class TestLaTeXARIALabels:
-    """Test ARIA label generation for equations."""
+    """Legacy label fields must not promote unverified mathematical prose."""
 
     async def test_aria_label_generation(self, latex_processor):
-        """Test that ARIA labels are generated."""
+        """Keep the legacy field empty and expose review requirements."""
         latex = r"$E = mc^2$"
 
         result = await latex_processor.process_latex(latex)
@@ -317,15 +317,15 @@ class TestLaTeXARIALabels:
         assert len(equations) >= 1
         eq = equations[0]
 
-        # Should have ARIA label
+        # Keep the compatibility field without an unverified interpretation.
         assert "aria_label" in eq, "ARIA label missing"
         aria = eq["aria_label"]
 
-        assert len(aria) > 0, "ARIA label is empty"
-        assert len(aria) >= 10, f"ARIA label too short: '{aria}'"
+        assert not aria
+        assert eq["latex_evidence"]["mathml"]["description"]["human_review_required"]
 
     async def test_aria_label_quality(self, latex_processor):
-        """Test quality of generated ARIA labels."""
+        """Retain fraction structure without replacing it with prose."""
         latex = r"$\frac{a}{b}$"
 
         result = await latex_processor.process_latex(latex)
@@ -334,15 +334,15 @@ class TestLaTeXARIALabels:
         eq = equations[0]
         aria = eq["aria_label"].lower()
 
-        # ARIA label should describe the fraction
-        # May contain words like "fraction", "divided", "over", etc.
-        descriptive_words = ["fraction", "divided", "over", "a", "b"]
-        has_description = any(word in aria for word in descriptive_words)
-
-        assert has_description, f"ARIA label not descriptive enough: '{aria}'"
+        assert not aria
+        assert "<mfrac>" in eq["mathml"]
+        assert (
+            eq["latex_evidence"]["mathml"]["description"]["semantic_equivalence"]
+            == "not_assessed"
+        )
 
     async def test_complex_equation_aria(self, latex_processor):
-        """Test ARIA label for complex equation."""
+        """Complex equations retain structured math and explicit review status."""
         latex = r"$$\int_{0}^{\infty} e^{-x^2} dx = \frac{\sqrt{\pi}}{2}$$"
 
         result = await latex_processor.process_latex(latex)
@@ -351,8 +351,11 @@ class TestLaTeXARIALabels:
         eq = equations[0]
         aria = eq["aria_label"]
 
-        # Should be longer for complex equation
-        assert len(aria) >= 20, f"ARIA label for complex equation too short: '{aria}'"
+        assert not aria
+        assert eq["mathml"]
+        assert (
+            eq["latex_evidence"]["mathml"]["description"]["reason"] == "not_requested"
+        )
 
 
 @pytest.mark.asyncio
@@ -388,7 +391,7 @@ class TestLaTeXCompliance:
                 ), "Missing MathML should be flagged"
 
     async def test_missing_aria_detection(self, latex_processor):
-        """Test detection of equations without ARIA labels."""
+        """Missing generated prose is review work, not an invented source finding."""
         latex = r"$E = mc^2$"
 
         result = await latex_processor.process_latex(latex)
@@ -396,12 +399,13 @@ class TestLaTeXCompliance:
 
         for eq in equations:
             if not eq.get("aria_label"):
-                # Should be flagged in compliance issues
-                compliance = result["compliance"]
-                issues = compliance["issues"]
-                assert any(
-                    "aria" in issue.get("description", "").lower() for issue in issues
-                ), "Missing ARIA label should be flagged"
+                assert eq["latex_evidence"]["mathml"]["description"][
+                    "human_review_required"
+                ]
+                assert not any(
+                    "aria" in issue.get("description", "").lower()
+                    for issue in result["compliance"]["issues"]
+                )
 
 
 @pytest.mark.asyncio
@@ -593,16 +597,17 @@ class TestLaTeXHTMLExport:
         ), "HTML export should contain MathML"
 
     async def test_html_export_with_aria(self, latex_processor):
-        """Test HTML export includes ARIA labels."""
+        """HTML exports structured math and source without unverified labels."""
         latex = r"$\frac{a}{b}$"
 
         result = await latex_processor.process_latex(latex)
         html = await latex_processor.export_to_html(result)
 
-        # Should have ARIA labels
-        assert (
-            "aria-label=" in html or "aria-describedby=" in html
-        ), "HTML export should include ARIA labels"
+        assert "aria-label=" not in html
+        assert "aria-describedby=" not in html
+        assert "<math" in html
+        assert r"\frac{a}{b}" in html
+        assert "human review" in html
 
     async def test_html_export_structure(self, latex_processor):
         """Test HTML export has proper document structure."""

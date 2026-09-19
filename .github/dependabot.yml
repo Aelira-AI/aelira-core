@@ -7,6 +7,12 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 10
+    # These transitive pins must follow their parent package's metadata.
+    # See docs/DEPENDENCIES.md before changing either compatible pair.
+    ignore:
+      - dependency-name: "pydantic-core"
+      - dependency-name: "mpmath"
+        versions: [">=1.4"]
     groups:
       pip-minor-patch:
         applies-to: version-updates
@@ -48,6 +54,11 @@ updates:
       interval: "monthly"
     labels:
       - "dependencies"
+    # Pa11y's runtime contract uses Node 24 LTS. Review major migrations
+    # explicitly while continuing patch and digest updates within that line.
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     groups:
       docker-minor-patch:
         applies-to: version-updates
