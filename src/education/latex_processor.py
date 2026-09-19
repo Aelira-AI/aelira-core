@@ -33,6 +33,7 @@ import logging
 from html import escape
 
 from .latex_descriptions import description_evidence, generate_description_draft
+from .latex_semantics import extract_semantics
 from enum import Enum
 
 # Import LLM provider manager for optional description drafts.
@@ -315,7 +316,7 @@ LATEX_ACCESSIBILITY_RULES = {
         "wcag": "1.1.1",
         "severity": "critical",
         "description": "Image included without alternative text description",
-        "recommendation": "Add alt text using: \\includegraphics[alt={description}]{image.png} or provide a \\caption{} in the figure environment.",
+        "recommendation": "Provide an authored alternative using \\includegraphics[alt={description}]{image.png}, or declare an intentional artifact. Captions do not replace alternatives; exported structure still requires verification.",
     },
     "missing_figure_caption": {
         "wcag": "1.1.1",
@@ -333,7 +334,7 @@ LATEX_ACCESSIBILITY_RULES = {
         "wcag": "1.3.1",
         "severity": "serious",
         "description": "Table appears to lack proper header row identification",
-        "recommendation": "Use \\hline after the first row and consider using booktabs package with \\toprule, \\midrule, \\bottomrule for clear header separation.",
+        "recommendation": "Confirm row and column header relationships with the author and declare them explicitly, for example with \\tagpdfsetup{table/header-rows={1}} immediately before a supported tabular. Visual rules do not identify headers; verify the export independently.",
     },
     "equation_no_label": {
         "wcag": "1.3.1",
@@ -451,7 +452,7 @@ class LaTeXProcessor:
 
         Checks for:
         - Missing document metadata (title, author)
-        - Images without alt text or captions
+        - Images without supported authored alternatives or artifact declarations
         - Tables without captions or headers
         - Equations without labels
         - Color-only emphasis
@@ -466,7 +467,16 @@ class LaTeXProcessor:
             List of LaTeXAccessibilityIssue objects
         """
         issues = []
-        lines = latex_content.split("\n")
+        # Comments cannot supply declarations. Preserve offsets and line numbers.
+        source = latex_content
+        latex_content = re.sub(
+            r"(?<!\\)%[^\n]*", lambda match: " " * len(match[0]), source
+        )
+        lines = source.split("\n")
+        semantics = extract_semantics(source)
+        supported = "semantics_unsupported" not in semantics.issues
+        graphics = {graphic.start: graphic for graphic in semantics.graphics}
+        tables = {table.start: table for table in semantics.tables}
 
         # Track document structure
         has_title = bool(re.search(r"\\title\s*\{[^}]+\}", latex_content))
@@ -531,51 +541,59 @@ class LaTeXProcessor:
                 )
             )
 
-        # Find all \includegraphics commands
-        for i, line in enumerate(lines, 1):
-            # Check for images without alt text
-            img_matches = re.finditer(
-                r"\\includegraphics(\[[^\]]*\])?\{([^}]+)\}", line
+        # Only the declaration on this graphic supplies source intent. Never
+        # infer an alternative from a nearby caption, comment, or filename.
+        for match in re.finditer(r"\\includegraphics\b", latex_content):
+            graphic = graphics.get(match.start())
+            declared = (
+                supported
+                and graphic is not None
+                and (
+                    (bool(graphic.alternative) and not graphic.decorative)
+                    or (graphic.alternative is None and graphic.decorative)
+                )
             )
-            for match in img_matches:
-                options = match.group(1) or ""
-                filename = match.group(2)
-
-                # Check if alt text is provided in options
-                has_alt = "alt=" in options or "alt =" in options
-
-                # Check if this image is inside a figure with caption
-                # Look backwards and forwards for figure environment and caption
-                context_start = max(0, i - 10)
-                context_end = min(len(lines), i + 10)
-                context = "\n".join(lines[context_start:context_end])
-
-                in_figure = "\\begin{figure}" in context and "\\end{figure}" in context
-                has_caption = "\\caption{" in context and in_figure
-
-                if not has_alt and not has_caption:
-                    issues.append(
-                        LaTeXAccessibilityIssue(
-                            issue_type="missing_alt_text",
-                            severity=LATEX_ACCESSIBILITY_RULES["missing_alt_text"][
-                                "severity"
-                            ],
-                            wcag_criterion=LATEX_ACCESSIBILITY_RULES[
-                                "missing_alt_text"
-                            ]["wcag"],
-                            description=f"Image '{filename}' included without alternative text description",
-                            line_number=i,
-                            latex_snippet=line.strip(),
-                            recommendation=LATEX_ACCESSIBILITY_RULES[
-                                "missing_alt_text"
-                            ]["recommendation"],
-                        )
-                    )
+            if declared:
+                continue
+            line_number = latex_content[: match.start()].count("\n") + 1
+            filename = graphic.asset if graphic else "unsupported source image"
+            issues.append(
+                LaTeXAccessibilityIssue(
+                    issue_type="missing_alt_text",
+                    severity=LATEX_ACCESSIBILITY_RULES["missing_alt_text"]["severity"],
+                    wcag_criterion=LATEX_ACCESSIBILITY_RULES["missing_alt_text"][
+                        "wcag"
+                    ],
+                    description=f"Image '{filename}' has no supported authored alternative or artifact declaration; author review required",
+                    line_number=line_number,
+                    latex_snippet=lines[line_number - 1].strip(),
+                    recommendation=LATEX_ACCESSIBILITY_RULES["missing_alt_text"][
+                        "recommendation"
+                    ],
+                )
+            )
 
         # Check for figure environments without captions
-        figure_pattern = r"\\begin\{figure\}(.*?)\\end\{figure\}"
+        figure_pattern = r"\\begin\{(figure\*?)\}(.*?)\\end\{\1\}"
         for match in re.finditer(figure_pattern, latex_content, re.DOTALL):
-            figure_content = match.group(1)
+            figure_content = match.group(2)
+            if not re.search(r"\\includegraphics\b", figure_content):
+                issues.append(
+                    LaTeXAccessibilityIssue(
+                        issue_type="missing_alt_text",
+                        severity=LATEX_ACCESSIBILITY_RULES["missing_alt_text"][
+                            "severity"
+                        ],
+                        wcag_criterion=LATEX_ACCESSIBILITY_RULES["missing_alt_text"][
+                            "wcag"
+                        ],
+                        description="Figure content has no supported authored alternative or artifact declaration; author review required",
+                        line_number=latex_content[: match.start()].count("\n") + 1,
+                        recommendation=LATEX_ACCESSIBILITY_RULES["missing_alt_text"][
+                            "recommendation"
+                        ],
+                    )
+                )
             if (
                 "\\caption{" not in figure_content
                 and "\\caption [" not in figure_content
@@ -632,16 +650,19 @@ class LaTeXProcessor:
                 )
 
         # Check for tabular without clear header structure
-        tabular_pattern = r"\\begin\{tabular\}(.*?)\\end\{tabular\}"
+        tabular_pattern = (
+            r"\\begin\{(tabular\*?|tabularx|tabulary|longtable)\}(.*?)\\end\{\1\}"
+        )
         for match in re.finditer(tabular_pattern, latex_content, re.DOTALL):
-            tabular_content = match.group(1)
-            # Check for header separation (hline after first row, or booktabs)
-            has_header_sep = (
-                "\\hline" in tabular_content
-                or "\\toprule" in tabular_content
-                or "\\midrule" in tabular_content
+            # Source intent requires explicit authored relationships. A rule
+            # or caption is visual presentation, not header identification.
+            table = tables.get(match.start())
+            has_authored_headers = (
+                supported
+                and table is not None
+                and bool(table.header_rows or table.header_columns)
             )
-            if not has_header_sep and "&" in tabular_content:  # Has columns
+            if not has_authored_headers:
                 line_num = latex_content[: match.start()].count("\n") + 1
                 issues.append(
                     LaTeXAccessibilityIssue(

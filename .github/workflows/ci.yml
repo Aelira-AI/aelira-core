@@ -529,5 +529,19 @@ jobs:
           path: test-results/latex-metadata/
           if-no-files-found: warn
           retention-days: 14
+      - name: Verify authored LaTeX figure and table relationships
+        run: |
+          mkdir -p test-results/latex-semantics
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,mode=1777 \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
+            /app/scripts/smoke_latex_semantics.py > test-results/latex-semantics/report.json
+      - name: Retain authored LaTeX relationship evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latex-semantics-${{ matrix.runner }}
+          path: test-results/latex-semantics/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Build and verify reproducible dashboard image
         run: scripts/verify_reproducible_image.sh dashboard dashboard/Dockerfile ${{ matrix.platform }}

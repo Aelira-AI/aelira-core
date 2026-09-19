@@ -15,13 +15,13 @@ variants with an explicit synthetic `pdflang=en` declaration. This declaration
 is authored by the test fixture builder, never by remediation. Both inputs and
 their hashes are retained; original fixture hashes remain unchanged.
 
-Ten reviewed variants must exercise source
+Nine reviewed variants must exercise source
 findings and at least one verified source repair, publish a TeX candidate, retain
 its artifact identity after reload, and deliver identical bytes on repeat download.
 Uploading those downloaded bytes as a new scan must reproduce the job's source
 score and remaining findings. Only TEX may appear in the available-format list.
-N04's original and reviewed variant have an unbalanced expression that prevents
-complete source comparison: the gate requires
+N03's missing alternative requires author review; N04's unbalanced expression
+prevents complete source comparison. Both variants stay withheld. The gate requires
 a persisted `manual_required` refusal, zero published fixes, no verified score,
 no available formats and HTTP 404 from the download route, including after reload.
 
@@ -29,7 +29,7 @@ Each published variant's saved document body must match its input byte for byte 
 including whitespace, equation source, labels, references, captions and missing
 inputs. All original preamble lines must remain in their original order. Preamble
 additions are allowed; this check does **not** validate the meaning or rendering of
-added metadata and packages. Authored-language/metadata work remains under #451.
+added metadata and packages. See the separate [authored metadata checks](latex-authored-metadata.md).
 
 | Cases | Content that the comparison protects |
 | --- | --- |
@@ -41,15 +41,22 @@ added metadata and packages. Authored-language/metadata work remains under #451.
 | M16 | Complete long expression, including the final sentinel |
 | N01–N04 | Undefined macro, missing include, missing figure and malformed math |
 
-N01–N04 are **compiler-negative** fixtures. N01–N03 can deliver their TeX source;
+N01–N04 are **compiler-negative** fixtures. N01–N02's declared-language variants can deliver their TeX source;
 it must never be reported as successful compilation or accessible output. Every
 receipt must retain `not_verified`, human review required, and unassessed fidelity,
 structural validation and assistive-technology checks. The application receipts
 record no compilation claim. A separate acceptance step compiles all eleven
-originals and the ten downloaded candidates, using their recorded hashes. Seven
+originals and the nine downloaded candidates, using their recorded hashes. Seven
 positive sources and outputs must compile; the four original negative controls
-and three delivered negative candidates must fail. A missing or killed compiler
-cannot satisfy a negative expectation. N04 has no output to compile.
+and two delivered negative candidates must fail. A missing or killed compiler
+cannot satisfy a negative expectation. N03 and N04 have no output to compile.
+
+N03's caption does not supply an image alternative. Both its original and its
+declared-language variant retain `missing_alt_text`. The worker withholds the
+entire result when manual findings remain; a language fix cannot publish a partial
+artifact or earn published repair credit. The
+[authored relationship checks](latex-authored-relationships.md) independently
+exercise saved HTML figure/table semantics and PDF refusal.
 
 This gate caught #473: language remediation added `\hypersetup` without loading
 `hyperref`. M01 compiled before remediation and failed after download. The fix
@@ -81,7 +88,7 @@ The compiler step requires `pdflatex` (CI installs `texlive-latex-recommended` a
 `texlive-science`), or `STACK_TEX_COMPILER=lualatex` with the fixture packages
 installed. It writes `compilation.json` bound to the queue report digest, compiler
 version, per-input hashes and exit codes, plus isolated logs under `compiler/`.
-Compilation covers all eleven originals, eleven declared-language inputs and ten
+Compilation covers all eleven originals, eleven declared-language inputs and nine
 exact queue downloads. Withheld outputs are recorded explicitly rather than compiled.
 These processes use `-no-shell-escape` and a timeout and only accept the repository's
 synthetic fixture paths and hash-bound downloads, not arbitrary uploaded content.

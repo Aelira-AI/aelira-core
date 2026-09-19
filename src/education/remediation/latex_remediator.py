@@ -1,15 +1,9 @@
-r"""
-LaTeX Auto-Remediator for Aelira Accessibility Platform.
+r"""LaTeX source remediation with manual review for unsupported semantics.
 
-This module provides automatic remediation for LaTeX documents, focusing on:
-1. Accessibility package injection (\usepackage{accessibility})
-2. Document language settings
-3. Figure alt text / descriptions
-4. Heading structure improvements
-5. Table accessibility improvements
-6. MathML fallback text generation
-
-LaTeX remediation is CRITICAL for STEM departments where most content is in LaTeX.
+Authored metadata and source reference labels can be preserved or repaired.
+Figure alternatives and table header relationships require author context and
+independent exported-structure checks; generated captions or rules cannot repair
+these semantics.
 """
 
 import logging
@@ -39,21 +33,10 @@ logger = logging.getLogger(__name__)
 
 
 class LatexRemediator(BaseRemediator):
-    """
-    Auto-remediator for LaTeX (.tex) documents.
+    """Auto-remediate supported LaTeX source findings.
 
-    Fixes accessibility issues including:
-    - Missing accessibility packages
-    - Document language not set
-    - Figures without alt text
-    - Tables without proper structure
-    - Heading hierarchy issues
-    - Missing document title/author
-    - Equations without labels
-    - Color-only emphasis
-    - Bare URLs
-
-    STEM-critical: Math/science departments rely heavily on LaTeX.
+    Figures without alternatives and tables without authored header relationships
+    remain manual review findings.
     """
 
     DOCUMENT_TYPE = "latex"
@@ -209,8 +192,8 @@ class LatexRemediator(BaseRemediator):
         if issue.category in self.AUTO_FIXABLE_CATEGORIES:
             # Check specific issue types
             if issue.category == IssueCategory.ALT_TEXT:
-                # Can fix figures with missing alt text using AI
-                return "figure" in issue.description.lower() or self.config.use_ai
+                # Source text alone cannot supply trustworthy visual meaning.
+                return False
 
             elif issue.category == IssueCategory.LANGUAGE:
                 metadata = extract_metadata(self._modified_content)
@@ -228,8 +211,8 @@ class LatexRemediator(BaseRemediator):
                 return True
 
             elif issue.category == IssueCategory.TABLE:
-                # Can improve table accessibility
-                return True
+                # Header relationships and captions require author context.
+                return False
 
             elif issue.category == IssueCategory.ARIA:
                 return self._is_reference_label_issue(issue)
@@ -502,85 +485,7 @@ class LatexRemediator(BaseRemediator):
         return True
 
     def _apply_alt_text_fix(self, issue: RemediationIssue, alt_text: str) -> bool:
-        """Add or fix alt text for figures."""
-        # If we have a figure environment, add alt text using pdfcomment or caption
-        if (
-            "figure" in issue.description.lower()
-            or "caption" in issue.description.lower()
-        ):
-            # Find figures - match \begin{figure} with optional parameters like [h]
-            figure_pattern = r"(\\begin\{figure\}[^\n]*\n)(.*?)(\\end\{figure\})"
-            figures = list(
-                re.finditer(figure_pattern, self._modified_content, re.DOTALL)
-            )
-
-            for i, match in enumerate(figures):
-                figure_begin = match.group(1)
-                figure_content = match.group(2)
-                figure_end = match.group(3)
-
-                # Check if this figure needs fixes
-                # Use regex to find actual \caption{ commands, not comments mentioning caption
-                has_caption = bool(re.search(r"\\caption\s*\{", figure_content))
-                has_alt_comment = (
-                    "% Alt text:" in figure_content or r"\pdftooltip" in figure_content
-                )
-
-                if has_caption and has_alt_comment:
-                    continue  # Already has both, skip
-
-                # Generate alt text from image filename if not provided
-                if not alt_text or alt_text == "auto":
-                    img_match = re.search(
-                        r"\\includegraphics[^{]*\{([^}]+)\}", figure_content
-                    )
-                    if img_match:
-                        img_name = (
-                            Path(img_match.group(1))
-                            .stem.replace("_", " ")
-                            .replace("-", " ")
-                            .title()
-                        )
-                        alt_text = f"Figure showing {img_name}"
-                    else:
-                        alt_text = f"Figure {i+1}"
-
-                new_content = figure_content
-
-                # Add caption if missing
-                if not has_caption:
-                    # Insert caption before \end{figure}
-                    new_content = (
-                        new_content.rstrip() + f"\n    \\caption{{{alt_text}}}\n"
-                    )
-                    self._modifications.append(
-                        f"Added caption to figure {i+1}: {alt_text}"
-                    )
-
-                # Add alt text comment if missing (for screen reader context)
-                if not has_alt_comment:
-                    # Add alt text comment after \includegraphics line
-                    img_pattern = r"(\\includegraphics[^\n]*\n)"
-                    if re.search(img_pattern, new_content):
-                        new_content = re.sub(
-                            img_pattern,
-                            r"\1" + f"    % Alt text: {alt_text}\n",
-                            new_content,
-                            count=1,
-                        )
-                        self._modifications.append(f"Added alt text to figure {i+1}")
-
-                # Replace the figure content
-                if new_content != figure_content:
-                    self._modified_content = (
-                        self._modified_content[: match.start()]
-                        + figure_begin
-                        + new_content
-                        + figure_end
-                        + self._modified_content[match.end() :]
-                    )
-                    return True
-
+        """Leave visual meaning to author review; comments/captions are not alt text."""
         return False
 
     def _apply_heading_fix(self, issue: RemediationIssue, fix_content: str) -> bool:
@@ -599,44 +504,7 @@ class LatexRemediator(BaseRemediator):
         return False
 
     def _apply_table_fix(self, issue: RemediationIssue, fix_content: str) -> bool:
-        """Improve table accessibility."""
-        if fix_content.startswith("table_caption:"):
-            caption = fix_content[14:]
-            # Find table environments without captions
-            table_pattern = r"(\\begin\{table\})(.*?)(\\end\{table\})"
-            match = re.search(table_pattern, self._modified_content, re.DOTALL)
-            if match and r"\caption{" not in match.group(2):
-                new_content = match.group(2).rstrip() + f"\n\\caption{{{caption}}}\n"
-                self._modified_content = self._modified_content.replace(
-                    match.group(0), match.group(1) + new_content + match.group(3)
-                )
-                self._modifications.append(f"Added table caption: {caption}")
-                return True
-
-        elif fix_content.startswith("table_header:"):
-            # Add \hline after first row in tabular environments
-            tabular_pattern = r"(\\begin\{tabular\}\{[^}]+\})(.*?)(\\end\{tabular\})"
-            match = re.search(tabular_pattern, self._modified_content, re.DOTALL)
-            if match:
-                tabular_content = match.group(2)
-                if (
-                    r"\hline" not in tabular_content
-                    and r"\toprule" not in tabular_content
-                ):
-                    # Find first row and add \hline
-                    first_row_match = re.search(r"([^\n]*\\\\)", tabular_content)
-                    if first_row_match:
-                        first_row = first_row_match.group(1)
-                        new_tabular = tabular_content.replace(
-                            first_row, first_row + " \\hline", 1
-                        )
-                        self._modified_content = self._modified_content.replace(
-                            match.group(0),
-                            match.group(1) + new_tabular + match.group(3),
-                        )
-                        self._modifications.append("Added header separation to table")
-                        return True
-
+        """Never infer table headers or manufacture a caption from source layout."""
         return False
 
     @staticmethod
@@ -648,6 +516,10 @@ class LatexRemediator(BaseRemediator):
         )
 
     def _get_manual_reason(self, issue: RemediationIssue) -> str:
+        if issue.category == IssueCategory.ALT_TEXT:
+            return "Figure alternatives and decorative intent require author review"
+        if issue.category == IssueCategory.TABLE:
+            return "Table meaning and header relationships require author review"
         if issue.category in {IssueCategory.LANGUAGE, IssueCategory.TITLE}:
             return "Authored document metadata is unknown, ambiguous or unsupported"
         if issue.category == IssueCategory.ARIA and not self._is_reference_label_issue(
@@ -657,6 +529,10 @@ class LatexRemediator(BaseRemediator):
         return super()._get_manual_reason(issue)
 
     def _get_manual_recommendation(self, issue: RemediationIssue) -> str:
+        if issue.category == IssueCategory.ALT_TEXT:
+            return "Provide an authored alternative or intentional artifact declaration for each image, then verify the exported structure; a caption or source comment does not establish equivalence."
+        if issue.category == IssueCategory.TABLE:
+            return "Confirm table purpose and explicit row/column header relationships with the author, then verify them in the export; visual rules do not identify headers."
         if issue.category in {IssueCategory.LANGUAGE, IssueCategory.TITLE}:
             return "Confirm the document language, title and author in the source; automated remediation will not infer them."
         if issue.category == IssueCategory.ARIA and not self._is_reference_label_issue(
@@ -735,15 +611,8 @@ class LatexRemediator(BaseRemediator):
             elif "author" in issue.description.lower():
                 return f"author:{metadata.author}" if metadata.author else None
 
-        elif issue.category == IssueCategory.ALT_TEXT:
-            # For alt text, we need AI - return None to trigger AI generation
+        elif issue.category in {IssueCategory.ALT_TEXT, IssueCategory.TABLE}:
             return None
-
-        elif issue.category == IssueCategory.TABLE:
-            if "caption" in issue.description.lower():
-                return "table_caption:Data table"
-            elif "header" in issue.description.lower():
-                return "table_header:add_structure"
 
         elif issue.category == IssueCategory.ARIA:
             if self._is_reference_label_issue(issue):
@@ -771,8 +640,10 @@ class LatexRemediator(BaseRemediator):
     ) -> Optional[str]:
         """Generate fix using AI."""
 
-        # Unverified prose cannot repair math. Reference labels use rules.
+        # Unverified prose cannot establish visual, tabular or math semantics.
         if issue.category in {
+            IssueCategory.ALT_TEXT,
+            IssueCategory.TABLE,
             IssueCategory.ARIA,
             IssueCategory.LANGUAGE,
             IssueCategory.TITLE,
@@ -786,21 +657,7 @@ class LatexRemediator(BaseRemediator):
 
             safe_desc = sanitize_for_prompt(issue.description or "", max_length=300)
             safe_loc = sanitize_for_prompt(issue.location or "Unknown", max_length=100)
-            safe_content = sanitize_for_prompt(
-                issue.original_content or "", max_length=300
-            )
-
-            # Build context-aware prompt
-            if issue.category == IssueCategory.ALT_TEXT:
-                prompt = f"""Generate a brief, descriptive alt text for a LaTeX figure.
-Issue: {safe_desc}
-Location: {safe_loc}
-Original content: {safe_content or 'Not available'}
-
-Provide ONLY the alt text, no explanation. Keep it under 100 characters."""
-
-            else:
-                prompt = f"""Suggest a fix for this LaTeX accessibility issue:
+            prompt = f"""Suggest a fix for this LaTeX accessibility issue:
 Issue: {safe_desc}
 Category: {issue.category.value}
 Location: {safe_loc}
@@ -965,10 +822,10 @@ Provide ONLY the fix content, no explanation."""
         1. DocumentMetadata for PDF/UA tagging (LuaLaTeX + tagpdf)
         2. Missing document language
         3. Missing document title/author
-        4. Figures without captions
-        5. Missing PDF metadata
-        6. Tables without header structure
-        7. Equations without labels
+        4. Missing PDF metadata
+        5. Equations without labels
+
+        Figure alternatives and table header relationships remain manual findings.
 
         Returns:
             True if any fixes were applied
@@ -1051,34 +908,35 @@ Provide ONLY the fix content, no explanation."""
                     )
                     logger.info(f"Added PDF metadata with title: {title}")
 
-            # 7. Add captions to figures without them
-            figure_pattern = r"(\\begin\{figure\}.*?)(\\end\{figure\})"
-            fig_count = 0
-            for match in re.finditer(figure_pattern, self._modified_content, re.DOTALL):
-                figure_content = match.group(1)
-                if r"\caption{" not in figure_content:
-                    fig_count += 1
-                    # Try to extract image filename for a better caption
-                    img_match = re.search(
-                        r"\\includegraphics[^{]*\{([^}]+)\}", figure_content
-                    )
-                    if img_match:
-                        img_name = (
-                            Path(img_match.group(1))
-                            .stem.replace("_", " ")
-                            .replace("-", " ")
-                            .title()
-                        )
-                        caption = f"Figure showing {img_name}"
-                    else:
-                        caption = f"Figure {fig_count}"
-                    new_content = figure_content + f"\\caption{{{caption}}}\n"
-                    self._modified_content = self._modified_content.replace(
-                        match.group(0), new_content + match.group(2)
-                    )
-                    fixes_applied += 1
-                    self._modifications.append(f"Added caption to figure: {caption}")
-                    logger.info(f"Added caption to figure: {caption}")
+            # Keep unsupported figure/table findings unresolved, including the
+            # no-pre-scanned-issues entry point. Never guess from filenames or rules.
+            from ..latex_processor import LaTeXProcessor
+
+            source_findings = LaTeXProcessor(
+                use_ai=False, llm_client=False
+            ).detect_accessibility_issues(self._original_content)
+            semantic_findings = [
+                {
+                    "id": f"latex-semantic-{index}",
+                    "category": self.ISSUE_TYPE_TO_CATEGORY[finding.issue_type].value,
+                    "severity": finding.severity,
+                    "description": finding.description,
+                    "location": str(finding.line_number),
+                    "wcag_criteria": finding.wcag_criterion,
+                }
+                for index, finding in enumerate(source_findings)
+                if self.ISSUE_TYPE_TO_CATEGORY.get(finding.issue_type)
+                in {IssueCategory.ALT_TEXT, IssueCategory.TABLE}
+            ]
+            for issue in self._normalize_issues(semantic_findings):
+                self._add_manual_issue(
+                    issue,
+                    reason=self._get_manual_reason(issue),
+                    recommendation=self._get_manual_recommendation(issue),
+                )
+            self.result.total_issues = max(
+                self.result.total_issues, self.result.manual_count
+            )
 
             # 8. Add labels to equations without them
             equation_pattern = r"(\\begin\{equation\})(.*?)(\\end\{equation\})"
@@ -1097,53 +955,6 @@ Provide ONLY the fix content, no explanation."""
                     )
                     fixes_applied += 1
                     self._modifications.append(f"Added label to equation {eq_count}")
-
-            # 9. Add table captions and improve header structure
-            # First, check for table environments without captions
-            table_env_pattern = r"(\\begin\{table\})(.*?)(\\end\{table\})"
-            table_count = 0
-            for match in re.finditer(
-                table_env_pattern, self._modified_content, re.DOTALL
-            ):
-                table_content = match.group(2)
-                if r"\caption{" not in table_content:
-                    table_count += 1
-                    # Add caption before \end{table}
-                    new_content = (
-                        table_content.rstrip() + f"\n\\caption{{Table {table_count}}}\n"
-                    )
-                    self._modified_content = self._modified_content.replace(
-                        match.group(0), match.group(1) + new_content + match.group(3)
-                    )
-                    fixes_applied += 1
-                    self._modifications.append(f"Added caption to table {table_count}")
-
-            # Add \hline after first row in tabular environments without header separation
-            tabular_pattern = r"(\\begin\{tabular\}\{[^}]+\})(.*?)(\\end\{tabular\})"
-            for match in re.finditer(
-                tabular_pattern, self._modified_content, re.DOTALL
-            ):
-                tabular_content = match.group(2)
-                # Check if it has header separation already
-                if (
-                    r"\hline" not in tabular_content
-                    and r"\toprule" not in tabular_content
-                ):
-                    # Find first row (ends with \\) and add \hline after it
-                    first_row_match = re.search(r"([^\n]*\\\\)", tabular_content)
-                    if first_row_match:
-                        first_row = first_row_match.group(1)
-                        new_tabular = tabular_content.replace(
-                            first_row, first_row + " \\hline", 1
-                        )
-                        self._modified_content = self._modified_content.replace(
-                            match.group(0),
-                            match.group(1) + new_tabular + match.group(3),
-                        )
-                        fixes_applied += 1
-                        self._modifications.append(
-                            "Added header separation (\\hline) to table"
-                        )
 
             # Save if any fixes were applied
             if fixes_applied > 0:
