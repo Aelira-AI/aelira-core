@@ -54,6 +54,11 @@ updates:
       interval: "monthly"
     labels:
       - "dependencies"
+    # Pa11y's runtime contract uses Node 24 LTS. Review major migrations
+    # explicitly while continuing patch and digest updates within that line.
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     groups:
       docker-minor-patch:
         applies-to: version-updates
