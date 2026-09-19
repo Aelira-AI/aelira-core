@@ -323,11 +323,14 @@ jobs:
       - name: Install document runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev pkg-config tesseract-ocr ghostscript poppler-utils unzip
+          sudo apt-get install -y libcairo2-dev pkg-config tesseract-ocr ghostscript poppler-utils unzip texlive-latex-recommended texlive-science
           pip install -r requirements-dev.txt
       - name: Verify real API, durable worker and downloaded files
         run: |
           set -euo pipefail
+          node --experimental-strip-types --test scripts/latex_corpus_contract.test.ts
+          mkdir -p test-results/document-stack
+          python -c 'import json, sys; from importlib.metadata import version; print(json.dumps({"python": sys.version, "packages": {name: version(name) for name in ["pydantic", "pydantic-core", "sympy", "mpmath", "latex2mathml"]}}, indent=2))' > test-results/document-stack/runtime.json
           export JWT_SECRET="$(openssl rand -hex 48)"
           export TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)"
           export SESSION_REPLAY_ENCRYPTION_KEY="$(openssl rand -base64 32)"
@@ -345,6 +348,7 @@ jobs:
           done
           test "$ready" = true
           node --experimental-strip-types scripts/verify_document_stack.ts
+          node --experimental-strip-types scripts/verify_latex_corpus_compilation.ts
       - name: Retain document journey evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

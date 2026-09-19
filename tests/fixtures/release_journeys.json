@@ -8,10 +8,10 @@
         {
           "id": "document-real-stack",
           "level": "api_integration",
-          "sources": ["scripts/verify_document_stack.ts", "tests/document-stack.compose.yml"],
+          "sources": ["scripts/verify_document_stack.ts", "scripts/verify_latex_corpus_stack.ts", "scripts/verify_latex_corpus_compilation.ts", "tests/document-stack.compose.yml"],
           "mocked": [],
           "ci": {"job": "document-stack", "step": "Verify real API, durable worker and downloaded files", "run_contains": "node --experimental-strip-types scripts/verify_document_stack.ts"},
-          "limitations": "Real API, PostgreSQL, Redis, worker and saved files. Exercises upload, findings, remediation, approval, fresh reads and exact downloads, including unavailable AI and withheld output. No dashboard interaction or semantic conformance proof."
+          "limitations": "Real API, PostgreSQL, Redis, worker and saved files. Exercises upload, findings, remediation, approval, fresh reads and exact downloads, including unavailable AI and withheld output. Eleven LaTeX cases cover ten preserved TEX downloads and one refusal; original and downloaded compilation is checked separately. No dashboard interaction or semantic conformance proof."
         },
         {
           "id": "document-artifact-contracts",

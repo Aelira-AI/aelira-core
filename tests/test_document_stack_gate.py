@@ -19,6 +19,9 @@ def test_document_gate_uses_real_services_and_cannot_be_skipped():
     assert "uvicorn src.api.main:app" in run
     assert "python -m src.jobs.worker" in run
     assert "scripts/verify_document_stack.ts" in run
+    assert "scripts/verify_latex_corpus_compilation.ts" in run
+    assert "--test scripts/latex_corpus_contract.test.ts" in run
+    assert "texlive-science" in run
     assert "canvas-testbed" not in run
     assert all(not step.get("continue-on-error") for step in job["steps"])
 

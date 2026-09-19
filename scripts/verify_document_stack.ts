@@ -5,6 +5,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { execFileSync } from 'node:child_process';
+import { verifyLatexCorpus } from './verify_latex_corpus_stack.ts';
 
 const api = new URL(process.env.STACK_API_URL || 'http://localhost:18300');
 const mail = new URL(process.env.STACK_MAIL_URL || 'http://localhost:18325');
@@ -238,5 +239,18 @@ for (const test of cases) {
     console.error(`FAIL ${failure}`);
   }
 }
-await writeFile(resolve(output, 'report.json'), JSON.stringify({ evidence, failures }, null, 2));
+await verifyLatexCorpus({ request, poll, output, evidence, failures,
+  download: (path) => fetch(new URL(path, api), { headers: headers(), redirect: 'error', signal: AbortSignal.timeout(30000) }),
+});
+const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const trackedDiff = execFileSync('git', ['diff', 'HEAD', '--binary']);
+const harnessHashes = Object.fromEntries(await Promise.all([
+  'scripts/verify_document_stack.ts', 'scripts/verify_latex_corpus_stack.ts',
+  'scripts/latex_corpus_contract.ts', 'tests/fixtures/latex_validation/corpus.json',
+].map(async (file) => [file, digest(await readFile(file))])));
+await writeFile(resolve(output, 'report.json'), JSON.stringify({
+  revision, tracked_diff_sha256: digest(trackedDiff), harness_sha256: harnessHashes,
+  node_version: process.version, configuration: { ai: false, latex_formats: ['tex'] },
+  evidence, failures,
+}, null, 2));
 assert.equal(failures.length, 0, 'Real document stack gate failed; see report.json');
