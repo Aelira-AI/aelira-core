@@ -38,6 +38,15 @@ from .latex_pdf_validation import (
 
 logger = logging.getLogger(__name__)
 
+# Import through LaTeXML's local XML catalog, independent of its install path.
+# Override only generated branding; authored footer/navigation content is retained.
+LATEXML_HTML_STYLESHEET = """<?xml version="1.0" encoding="UTF-8"?>
+<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:import href="urn:x-LaTeXML:XSLT:LaTeXML-html5.xsl"/>
+  <xsl:template match="/" mode="footer-generator-identifier"/>
+</xsl:stylesheet>
+"""
+
 
 class LaTeXConverter:
     """Convert LaTeX files to PDF and HTML candidates."""
@@ -490,12 +499,17 @@ class LaTeXConverter:
 
             # Step 2: XML → HTML5 with MathML
             # Note: LaTeXML 0.8.x automatically generates MathML with --format=html5
+            # Its default footer adds a mascot image absent from the source.
+            # Suppress that template before conversion, not images at validation.
+            stylesheet = output_dir / "aelira-html5.xsl"
+            stylesheet.write_text(LATEXML_HTML_STYLESHEET, encoding="utf-8")
             logger.info("Converting XML to accessible HTML5...")
             result = self._run_stage(
                 [
                     "latexmlpost",
                     "--dest=" + str(html_path),
                     "--format=html5",
+                    "--stylesheet=" + str(stylesheet),
                     "--log=" + str(output_dir / "postprocess.log"),
                     str(xml_path),
                 ],

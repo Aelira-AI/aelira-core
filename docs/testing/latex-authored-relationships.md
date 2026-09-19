@@ -36,6 +36,11 @@ than authored text. Original source bytes and authored declarations are unchange
 The TEX delivery path remains available for supported source repairs; a downloaded
 TEX file is not evidence that its figure/table semantics were exported correctly.
 
+For text/math HTML, LaTeXML uses its standard HTML5 stylesheet with only the
+generated-branding template disabled. Its mascot therefore cannot add an image
+absent from the source. Authored footer content and graphics remain subject to the
+same checks as the rest of the document; no image is exempted by its CSS class.
+
 ## Refusal boundaries
 
 Macro-expanded or conditional declarations, custom drawing environments, alternate

@@ -156,6 +156,22 @@ def test_pdf_semantics_cannot_be_credited_from_structure_alone(document):
     assert ALT not in stages[-1].model_dump_json()
 
 
+@pytest.mark.parametrize("authored_image", [False, True])
+def test_extra_footer_image_is_never_exempted(document, authored_image):
+    source, candidate = document
+    if not authored_image:
+        source.write_text(r"\documentclass{article}\begin{document}Text.\end{document}")
+        candidate.write_text("<html><body>Text.</body></html>")
+    candidate.write_text(
+        candidate.read_text()
+        + '<footer class="ltx_page_footer"><div class="ltx_page_logo">'
+        '<a class="ltx_LaTeXML_logo" href="http://dlmf.nist.gov/LaTeXML/">'
+        '<img alt="Mascot Sammy" src="diagram.png"></a></div></footer>'
+    )
+    assert not save_html_semantics(source, candidate)
+    assert not verify_html_semantics(source, candidate)
+
+
 def test_wrapper_refuses_lost_cells_and_does_not_fallback(document, monkeypatch):
     source, candidate = document
     converter = LaTeXConverter()
