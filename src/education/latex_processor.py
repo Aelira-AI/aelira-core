@@ -1751,7 +1751,7 @@ class LaTeXProcessor:
         Returns:
             HTML with MathML equations embedded
         """
-        html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
+        html = "<!DOCTYPE html>\n<html>\n<head>\n"
         html += '  <meta charset="UTF-8">\n'
         html += (
             '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
@@ -1972,7 +1972,7 @@ class LaTeXProcessor:
         """
         # Build simple HTML document
         html = "<!DOCTYPE html>\n"
-        html += '<html lang="en">\n'
+        html += "<html>\n"
         html += "<head>\n"
         html += '  <meta charset="UTF-8">\n'
         html += (

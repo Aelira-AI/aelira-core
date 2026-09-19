@@ -144,7 +144,7 @@ class TestDocumentMetadataInjection:
 
         # Verify key attributes
         assert "pdfstandard=ua-1" in content, "Should set PDF/UA-1 standard"
-        assert "lang=en" in content, "Should set document language"
+        assert "lang=" not in content, "Unknown source language must remain unknown"
 
         print(f"\n✓ DocumentMetadata correctly injected at position {doc_metadata_pos}")
         print(f"  documentclass at position {documentclass_pos}")

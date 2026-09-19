@@ -1,6 +1,13 @@
 /** Bounded saved-TEX oracle. No compiler, mathematical or accessibility certification. */
 import assert from 'node:assert/strict';
 
+/** An explicitly authored synthetic variant; never applied by remediation. */
+export function withReviewedLanguage(source: string): string {
+  const marker = '\\begin{document}';
+  assert.equal(source.split(marker).length, 2);
+  return source.replace(marker, '\\usepackage{hyperref}\n\\hypersetup{pdflang={en}}\n' + marker);
+}
+
 export function assertPreservedTex(source: string, saved: string) {
   const marker = '\\begin{document}';
   const split = source.indexOf(marker);

@@ -42,6 +42,10 @@ class Diagnostic(BaseModel):
         "unclassified_warning",
         "layout_warning",
         "metadata_warning",
+        "metadata_ambiguous",
+        "metadata_unsupported",
+        "metadata_not_preserved",
+        "language_environment_unavailable",
         "font_warning",
         "rerun_required",
         "deprecation_warning",
@@ -73,6 +77,7 @@ class ConversionStage(BaseModel):
         default="unknown", pattern=r"^(unknown|[0-9]{1,4}(?:\.[0-9]{1,4}){1,3})$"
     )
     phase: Literal["parse", "postprocess", "compile", "inspect", "render"]
+    metadata_profile: Literal["literal-authored-v1"] | None = None
     pass_number: int = Field(default=1, ge=1, le=2)
     input_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     candidate_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
@@ -152,6 +157,17 @@ def classify(stdout, stderr, *, exit_code, final_pass=True):
         found.append(diagnostic("process_failed"))
     for line in text.splitlines():
         lower = line.lower()
+        if "mktexfmt [INFO]:" in text and lower.strip() in {
+            "* warning: you are switching to fmtutil's per-user formats. *",
+            "*         please read the following warnings!               *",
+        }:
+            continue
+        if "Beginning to dump on file" in text and re.fullmatch(
+            r"\s*warning\s+\(pdf backend\): no pages of output\.\s*", lower
+        ):
+            # Format initialization writes a .fmt, not document pages. A failed
+            # process or missing final candidate still blocks publication.
+            continue
         # Normal initialization of an owned cold cache, not a missing font/module.
         if re.fullmatch(
             r"\s*luaotfload\s*\|\s*db\s*:\s*font names database not found, generating new one\.\s*",
@@ -162,7 +178,12 @@ def classify(stdout, stderr, *, exit_code, final_pass=True):
         number = int(location[1]) if location else None
         number = number if number and number <= 10000000 else None
         code, severity = None, "error"
-        if re.search(r"warning:\s*mathml missing for hash\b", lower):
+        if re.search(
+            r"(?:german|english)\.ldf.*not found|babel.*(?:error|unknown option)|unknown option.*(?:german|english)",
+            lower,
+        ):
+            code = "language_environment_unavailable"
+        elif re.search(r"warning:\s*mathml missing for hash\b", lower):
             code = "missing_mathml"
             severity = "error" if final_pass else "warning"
         elif re.search(

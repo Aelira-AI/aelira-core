@@ -22,7 +22,11 @@ pytestmark = pytest.mark.integration
 def latex_http(artifact_http, tmp_path):  # noqa: F811
     case = artifact_http
     source = tmp_path / "source.tex"
-    text = r"\documentclass{article}\begin{document}Text\end{document}"
+    text = (
+        r"\documentclass{article}\usepackage{hyperref}"
+        r"\hypersetup{pdftitle={Authored title}}"
+        r"\begin{document}Text\end{document}"
+    )
     source.write_text(text)
     issue = next(
         row

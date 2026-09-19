@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 from types import SimpleNamespace
 from ..latex_runtime import tex_environment, version_command
+from ..latex_metadata import extract_metadata, save_html_metadata, save_pdf_metadata
 
 from ..latex_diagnostics import (
     ConversionDiagnostics,
@@ -52,7 +53,7 @@ class LaTeXConverter:
 
     # Accessible HTML template with MathML support
     HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -160,6 +161,14 @@ class LaTeXConverter:
         try:
             if tool in {"lualatex", "pdflatex"}:
                 kwargs["env"] = tex_environment(candidate.parent)
+                # Compile in owned scratch. -output-directory leaks into the
+                # format-building child and can leave its .fmt in the wrong
+                # directory on a cold installation. Keep source lookup explicit.
+                kwargs["env"]["TEXINPUTS"] = (
+                    str(source.parent.resolve())
+                    + os.pathsep
+                    + kwargs["env"].get("TEXINPUTS", "")
+                )
             result = subprocess.run(args, **kwargs)
             findings = classify(
                 result.stdout,
@@ -221,6 +230,36 @@ class LaTeXConverter:
     def _check_command(self, cmd: str) -> bool:
         """Check if a command is available in PATH."""
         return shutil.which(cmd) is not None
+
+    def _preserve_metadata(self, source: Path, candidate: Path, kind: str) -> bool:
+        """Bind the saved metadata check to authored source and final bytes."""
+        metadata = extract_metadata(source.read_text(encoding="utf-8"))
+        reasons = sorted(metadata.issues)
+        if kind == "pdf" and metadata.spans:
+            reasons.append("metadata_unsupported")
+        try:
+            saved = not reasons and (
+                save_html_metadata(candidate, metadata)
+                if kind == "html"
+                else save_pdf_metadata(candidate, metadata)
+            )
+        except Exception:
+            saved = False
+        if not saved and not reasons:
+            reasons.append("metadata_not_preserved")
+        record(
+            ConversionStage(
+                tool="inspection",
+                phase="inspect",
+                metadata_profile="literal-authored-v1",
+                input_sha256=sha(source.read_bytes()),
+                candidate_sha256=(
+                    sha(candidate.read_bytes()) if candidate.is_file() else None
+                ),
+                diagnostics=[diagnostic(reason) for reason in reasons],
+            )
+        )
+        return bool(saved)
 
     def _validate_path(self, path: Path) -> Path:
         """
@@ -353,10 +392,14 @@ class LaTeXConverter:
             processed,
         )
 
-        # Remove babel entirely (LaTeXML has compatibility issues)
-        # We add lang="en" to HTML output anyway
+        # LaTeXML's installed Babel binding cannot load current language files.
+        # For a document-only declaration, the source-bound metadata check
+        # restores its language after conversion. Keep span commands intact;
+        # their scope must survive conversion or the export is refused.
         processed = re.sub(
-            r"\\usepackage(\[[^\]]*\])?\{babel\}[^\n]*\n?", "", processed
+            r"\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{babel\}",
+            lambda match: "% " + match[0] + " (retained in source metadata)\n",
+            processed,
         )
 
         logger.info("Preprocessed LaTeX for LaTeXML compatibility")
@@ -438,6 +481,8 @@ class LaTeXConverter:
                 return None
             if html_path.exists():
                 self._enhance_html_accessibility(html_path)
+                if not self._preserve_metadata(tex_file, html_path, "html"):
+                    return None
                 if not inspect_candidate(tex_file, html_path).blocked:
                     return str(html_path)
 
@@ -454,10 +499,6 @@ class LaTeXConverter:
         """Add additional accessibility enhancements to HTML."""
         try:
             content = html_path.read_text(encoding="utf-8")
-
-            # Ensure lang attribute on html element
-            if "<html>" in content:
-                content = content.replace("<html>", '<html lang="en">')
 
             # Add skip link for keyboard navigation
             if "<body>" in content and "skip-link" not in content:
@@ -481,55 +522,6 @@ class LaTeXConverter:
         except Exception as e:
             logger.warning(f"Could not enhance HTML accessibility: {e}")
 
-    def _extract_title_from_html(self, html_path: str) -> str:
-        """Extract title from HTML file."""
-        try:
-            content = Path(html_path).read_text(encoding="utf-8")
-            # Try <title> tag first
-            match = re.search(r"<title>([^<]+)</title>", content)
-            if match:
-                return match.group(1).strip()
-            # Try H1 tag
-            match = re.search(r"<h1[^>]*>([^<]+)</h1>", content)
-            if match:
-                return match.group(1).strip()
-            return "Untitled Document"
-        except Exception:
-            return "Untitled Document"
-
-    def _set_pdf_metadata(self, pdf_path: str, title: str) -> bool:
-        """Set PDF metadata (title, language) for accessibility."""
-        try:
-            import pikepdf
-
-            with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
-                # Set document info
-                with pdf.open_metadata() as meta:
-                    meta["dc:title"] = title
-                    meta["dc:language"] = "en"
-                    meta["pdf:Producer"] = "Aelira Accessibility Platform"
-
-                # Set title in docinfo for broader compatibility
-                pdf.docinfo["/Title"] = title
-
-                # Set language in document catalog (Root) - required for PDF/UA
-                # This is where screen readers look for the document language
-                pdf.Root["/Lang"] = "en"
-
-                # Enable marking for accessibility
-                if "/MarkInfo" not in pdf.Root:
-                    pdf.Root["/MarkInfo"] = pikepdf.Dictionary({"/Marked": True})
-                else:
-                    pdf.Root["/MarkInfo"]["/Marked"] = True
-
-                pdf.save(pdf_path)
-
-            logger.info(f"Set PDF metadata: title='{title}', lang='en' (in Root)")
-            return True
-        except Exception as e:
-            logger.warning(f"Could not set PDF metadata: {e}")
-            return False
-
     # Note: _enhance_pdf_structure() was REMOVED because it creates invalid PDF/UA.
     # Playwright's tagged PDF doesn't expose content stream markers needed to link
     # structure elements to actual content. Adding structure elements without /K
@@ -547,9 +539,6 @@ class LaTeXConverter:
         """
         try:
             from playwright.async_api import async_playwright
-
-            # Extract title from HTML for PDF metadata
-            title = self._extract_title_from_html(html_path)
 
             async with async_playwright() as p:
                 browser = await p.chromium.launch()
@@ -574,8 +563,7 @@ class LaTeXConverter:
 
                 await browser.close()
 
-            # Post-process: Set PDF metadata for accessibility
-            self._set_pdf_metadata(pdf_path, title)
+            # Authored metadata is verified against the source before validation.
 
             # Note: We don't add H1 structure tags here because Playwright's
             # tagged PDF doesn't provide proper content references (/K, /Pg).
@@ -694,6 +682,8 @@ class LaTeXConverter:
                 if has_loss():
                     return None, failure
                 if candidate:
+                    if not self._preserve_metadata(tex_file, Path(candidate), "pdf"):
+                        return None, failure
                     receipt = validate_pdf_candidate(candidate)
                     # A failed validation is terminal, not an invitation to try
                     # another exporter whose output might hide the same defect.
@@ -719,8 +709,6 @@ class LaTeXConverter:
                         "pdflatex",
                         "-interaction=nonstopmode",
                         "-no-shell-escape",  # SECURITY: never enable shell escape (RCE)
-                        "-output-directory",
-                        str(output_dir),
                         str(tex_file),
                     ],
                     source=tex_file,
@@ -731,7 +719,7 @@ class LaTeXConverter:
                     capture_output=True,
                     text=True,
                     timeout=120,
-                    cwd=str(tex_file.parent),
+                    cwd=str(output_dir),
                 )
 
                 if result.returncode != 0:
@@ -765,7 +753,6 @@ class LaTeXConverter:
                         "lualatex",
                         "-interaction=nonstopmode",
                         "-no-shell-escape",  # SECURITY: never enable shell escape
-                        f"-output-directory={output_dir}",
                         str(tex_file),
                     ],
                     source=tex_file,
@@ -776,7 +763,7 @@ class LaTeXConverter:
                     capture_output=True,
                     text=True,
                     timeout=180,  # LuaLaTeX can be slower than pdflatex
-                    cwd=str(tex_file.parent),
+                    cwd=str(output_dir),
                 )
 
                 if result.returncode != 0:
@@ -851,6 +838,15 @@ class LaTeXConverter:
         if inspect_source(tex_file).blocked:
             return None
 
+        # Choose the supported literal language-span route before conversion;
+        # known loss in another converter must never trigger a silent retry.
+        if (
+            extract_metadata(tex_file.read_text(encoding="utf-8")).spans
+            and self.pandoc_available
+        ):
+            attempt = Path(tempfile.mkdtemp(prefix="html-pandoc-", dir=out_dir))
+            return self._convert_with_pandoc(str(tex_file), attempt)
+
         # Primary: LaTeXML (best MathML support)
         if self.latexml_available:
             attempt = Path(tempfile.mkdtemp(prefix="html-latexml-", dir=out_dir))
@@ -883,8 +879,6 @@ class LaTeXConverter:
                     str(html_path),
                     "--standalone",
                     "--mathml",
-                    "--metadata",
-                    "lang=en",
                     "--toc",
                     "--section-divs",
                 ],
@@ -903,6 +897,8 @@ class LaTeXConverter:
 
             if html_path.exists():
                 self._enhance_html_accessibility(html_path)
+                if not self._preserve_metadata(tex_file, html_path, "html"):
+                    return None
                 if not inspect_candidate(tex_file, html_path).blocked:
                     return str(html_path)
 
