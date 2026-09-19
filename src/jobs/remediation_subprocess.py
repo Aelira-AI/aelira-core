@@ -201,6 +201,11 @@ def _purpose_clients(binding: Any) -> tuple[Any, Any]:
 
 
 def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
+    if (
+        str(request.get("scan_type", "")).upper() == "LATEX"
+        and source.suffix.lower() == ".zip"
+    ):
+        raise RemediationSubprocessError("project_source_review_required")
     from src.education.remediation.base import OutputFormat, RemediationConfig
 
     options = request.get("options") if isinstance(request.get("options"), dict) else {}

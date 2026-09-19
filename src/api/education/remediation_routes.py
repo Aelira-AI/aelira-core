@@ -1471,6 +1471,7 @@ def _resolve_remediation_queue_source(
 ) -> tuple[CloudFile | None, CloudOAuthCredentials | None]:
     """Resolve the authorized source identically for eligibility and enqueue."""
     authorized = authorize_scan_access(db, scan, principal)
+    _require_editable_source(scan)
     cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized)
     credential = None
     if cloud_file is not None and cloud_file.credential_id:
@@ -1496,6 +1497,8 @@ def document_remediation_eligibility(
     document batch remediation. The source is rechecked when a job is queued.
     """
     authorize_scan_access(db, scan, principal)
+    if _is_latex_project_source(scan):
+        return {"eligible": False, "reason": "project_source_review_required"}
     if scan.scan_type not in {
         ScanType.PDF,
         ScanType.WORD,
@@ -1528,6 +1531,25 @@ def document_remediation_eligibility(
         ):
             return {"eligible": False, "reason": "source_file_unavailable"}
     return {"eligible": True, "reason": None}
+
+
+def _is_latex_project_source(scan):
+    structure = getattr(scan.result, "structure", None)
+    return getattr(scan.scan_type, "value", scan.scan_type) == "LATEX" and (
+        Path(scan.storage_path or "").suffix.lower() == ".zip"
+        or (isinstance(structure, dict) and "latex_project" in structure)
+    )
+
+
+def _require_editable_source(scan):
+    if _is_latex_project_source(scan):
+        raise HTTPException(
+            400,
+            detail={
+                "code": "project_source_review_required",
+                "message": "Download the original project and edit its source files. Automatic multi-file source edits are not supported.",
+            },
+        )
 
 
 def _enqueue_scan_remediation(
@@ -1708,6 +1730,7 @@ async def remediate_scan(
         raise HTTPException(status_code=404, detail="Scan not found")
 
     authorized_cloud_file = authorize_scan_access(db, scan, principal)
+    _require_editable_source(scan)
     resolved_cloud_file = _resolve_bound_scan_cloud_file(
         db, scan, principal, authorized_cloud_file
     )

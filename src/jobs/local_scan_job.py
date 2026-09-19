@@ -6,7 +6,7 @@ import hashlib
 import shutil
 import tempfile
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator
 
 from sqlalchemy import select
@@ -81,6 +81,25 @@ def normalize_local_scan_options(
     """Validate the closed, bounded option schema for one local scan kind."""
     if scan_kind not in LOCAL_SCAN_KINDS:
         raise LocalScanJobError("local_scan_kind_invalid")
+
+    if (
+        scan_kind == "local_latex"
+        and isinstance(options, dict)
+        and "entry_file" in options
+    ):
+        normalized = _exact(options, frozenset({"use_ollama", "entry_file"}))
+        entry = _string(normalized["entry_file"], maximum=512)
+        path = PurePosixPath(entry)
+        if (
+            path.is_absolute()
+            or "\\" in entry
+            or ":" in entry
+            or any(part in {"", ".", ".."} for part in entry.split("/"))
+            or any(ord(char) < 32 for char in entry)
+            or path.suffix.lower() != ".tex"
+        ):
+            raise LocalScanJobError("local_scan_options_invalid")
+        return {"use_ollama": _bool(normalized["use_ollama"]), "entry_file": entry}
 
     boolean_fields: dict[str, frozenset[str]] = {
         "local_pdf": frozenset({"generate_alt_text", "enhance_descriptions"}),
@@ -227,6 +246,35 @@ def enqueue_local_scan_job(
     )
 
 
+def stored_latex_project_input(db: Session, scan: Scan) -> tuple[str, str]:
+    """Recover the immutable project binding from its server-owned scan job."""
+    job = (
+        db.query(CloudJobQueue)
+        .filter(
+            CloudJobQueue.department_id == scan.department_id,
+            CloudJobQueue.job_type == "scan",
+            CloudJobQueue.payload["scan_id"].as_string() == str(scan.id),
+        )
+        .order_by(CloudJobQueue.created_at.desc(), CloudJobQueue.id.desc())
+        .first()
+    )
+    payload = job.payload if job is not None else None
+    if (
+        type(payload) is not dict
+        or payload.get("scan_kind") != "local_latex"
+        or payload.get("scan_id") != str(scan.id)
+        or not _valid_sha256(payload.get("input_sha256"))
+    ):
+        raise LocalScanJobError("local_scan_input_unavailable")
+    options = normalize_local_scan_options("local_latex", payload.get("options"))
+    if "entry_file" not in options:
+        raise LocalScanJobError("local_scan_input_unavailable")
+    expected = payload["input_sha256"]
+    if scan.file_hash and scan.file_hash != expected:
+        raise LocalScanJobError("local_scan_input_hash_mismatch")
+    return options["entry_file"], expected
+
+
 @contextmanager
 def materialize_verified_scan_input(
     scan: Scan, expected_sha256: str
@@ -345,6 +393,11 @@ def _run_local_processor(
                 options["use_ollama"],
                 scan.user_id,
                 scan.department_id,
+                **(
+                    {"entry_file": options["entry_file"]}
+                    if "entry_file" in options
+                    else {}
+                ),
             )
         else:
             scan_routes.process_latex_pdf_background(
