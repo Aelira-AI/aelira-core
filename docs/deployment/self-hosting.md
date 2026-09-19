@@ -69,6 +69,10 @@ Two Dockerfiles matter here:
   build` (build args `VITE_API_URL`, `VITE_WEBSITE_URL`), then serves the
   static output from `nginx:alpine` using `dashboard/nginx.conf`.
 
+After installing or upgrading, run the [functional LaTeX runtime check](../testing/latex-runtime-readiness.md)
+under the service user. It checks conversion output, fonts, and the declared
+language profile with writable scratch storage and a read-only root filesystem.
+
 Every stable release tag (`vMAJOR.MINOR.PATCH`) publishes both pre-built images
 through the coordinated release workflow:
 

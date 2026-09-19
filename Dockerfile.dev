@@ -50,6 +50,8 @@ RUN apt-get update && apt-get install -y \
     texlive-latex-extra \
     texlive-fonts-recommended \
     texlive-science \
+    texlive-luatex \
+    texlive-lang-german \
     # Pandoc for LaTeX to HTML conversion
     pandoc \
     && rm -rf /var/lib/apt/lists/*

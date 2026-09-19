@@ -17,6 +17,17 @@ from src.education.latex_diagnostics import (
 from src.education.remediation.latex_converter import LaTeXConverter
 
 
+def test_cold_font_database_creation_is_not_a_missing_dependency():
+    cold_cache = "luaotfload | db : Font names database not found, generating new one."
+    assert classify(cold_cache, "", exit_code=0) == []
+    assert {
+        item.code
+        for item in classify(
+            cold_cache + "\nmodule 'luaotfload-main' not found", "", exit_code=0
+        )
+    } == {"missing_dependency"}
+
+
 @pytest.fixture
 def converter(tmp_path):
     value = LaTeXConverter()
@@ -50,7 +61,7 @@ def runner(
     calls = []
 
     def run(args, **kwargs):
-        if args[1] == "--version":
+        if args[1] in {"--version", "--VERSION"}:
             return SimpleNamespace(
                 returncode=0, stdout=f"{args[0]} version 1.2.3", stderr=""
             )
@@ -384,7 +395,7 @@ def test_simultaneous_calls_keep_stage_evidence_separate(
     bad.write_text("broken source")
 
     def run(args, **kwargs):
-        if args[1] == "--version":
+        if args[1] in {"--version", "--VERSION"}:
             return SimpleNamespace(returncode=0, stdout="1.2.3", stderr="")
         target = Path(next(a[7:] for a in args if a.startswith("--dest=")))
         if args[0] == "latexml":

@@ -23,6 +23,7 @@ LEGACY_ENVIRONMENT_ALIASES = {
 }
 
 INTERNAL_ENVIRONMENT_NAMES = {
+    "AELIRA_RUNTIME_IMAGE_ID": "image provenance injected by the LaTeX installation/CI probe, not application configuration",
     "API_KEY_HEADER": "fixed HTTP protocol metadata, not operator configuration",
     "API_KEY_PREFIX": "fixed HTTP protocol metadata, not operator configuration",
     "API_TITLE": "derived application metadata",
