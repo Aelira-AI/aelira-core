@@ -13,6 +13,27 @@ map; the pinned files and JavaScript lockfiles are the truth.
 Runtime dependencies live in `requirements.txt`; the sections below explain
 the production roles that keep each one in the shipped environment.
 
+### Coupled Python pins
+
+Exact transitive pins must satisfy the parent package's published requirements.
+`pydantic==2.13.5` requires `pydantic_core==2.46.5`; `sympy==1.14.0`
+requires `mpmath>=1.1.0,<1.4`, for which the pinned version is `1.3.0`.
+Independent minor updates of these transitive packages can make the entire
+runtime and development installation unsatisfiable.
+
+Dependabot ignores standalone `pydantic-core` updates and `mpmath>=1.4`.
+When updating Pydantic, review its package metadata and update its exact core
+pin in the same change. When updating SymPy, review its mpmath constraint and
+adjust both the pin and the Dependabot exclusion if the supported range changes.
+These exclusions do not establish security status: the shipped dependency audit
+still applies, and any advisory affecting an excluded dependency needs a manual
+compatible-pair update.
+
+Resolve both requirements files in a fresh environment, run the affected
+regressions, and require the security, full-test, AMD64 and ARM64 CI jobs to pass
+before merging. Installing only the changed package or passing lint does not
+verify compatibility of the pinned sets.
+
 ### Web framework and API
 
 | Dependency | Role |
