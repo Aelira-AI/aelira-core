@@ -41,6 +41,10 @@ not a published registry-manifest digest; record that digest separately when
 testing a released image. Both architecture jobs must pass before accepting the
 image change. The existing reproducible-image checks remain required.
 
+`AELIRA_RUNTIME_IMAGE_ID` is optional provenance supplied for this probe invocation.
+It is classified as internal diagnostic metadata in the environment contract;
+it does not configure the application and does not belong in the deployment `.env`.
+
 ## Formats, fonts and diagnostics
 
 The images explicitly install `texlive-luatex` and `texlive-lang-german` alongside
