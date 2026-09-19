@@ -421,6 +421,23 @@ class LatexRemediator(BaseRemediator):
             hypersetup = f"\\hypersetup{{pdflang={{{lang}}}}}\n"
             # Insert before \begin{document}
             if r"\begin{document}" in self._modified_content:
+                # hypersetup belongs to hyperref. A source-only repair must load
+                # it too; an optional later conversion cannot supply this dependency.
+                preamble = self._modified_content.split(r"\begin{document}", 1)[0]
+                preamble = re.sub(r"(?<!\\)%[^\n]*", "", preamble)
+                package_lists = re.findall(
+                    r"\\(?:usepackage|RequirePackage)\s*"
+                    r"(?:\[[^\]]*\]\s*)?\{([^}]+)\}",
+                    preamble,
+                )
+                if not any(
+                    "hyperref" in [name.strip() for name in packages.split(",")]
+                    for packages in package_lists
+                ):
+                    hypersetup = "\\usepackage{hyperref}\n" + hypersetup
+                    self._modifications.append(
+                        "Added hyperref package for PDF language"
+                    )
                 self._modified_content = self._modified_content.replace(
                     r"\begin{document}", f"{hypersetup}\\begin{{document}}"
                 )

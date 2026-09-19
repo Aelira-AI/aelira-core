@@ -20,3 +20,9 @@ The #446 tests also replay these sources through the real equation processor,
 with AI disabled, to verify conservative evidence reporting and preserved source
 hashes. They do not grade mathematical meaning. See
 [evidence outcomes](../../../docs/testing/latex-evidence-outcomes.md).
+
+The required document-stack gate also replays every case through live scan and
+remediation jobs, downloads and independently rescans ten TEX candidates, and
+requires N04's incomplete-comparison refusal. A separate CI step compiles original
+and downloaded bytes against the compiler expectations in the manifest. See
+[queued corpus scope and preservation expectations](../../../docs/testing/latex-corpus-queue.md).

@@ -22,6 +22,7 @@ a full browser journey or accessibility conformance.
 | DOCX and syllabus PDF requiring manual work | No downloadable artifact, no verified remediated score, zero published fixes and reconciled unresolved counts |
 | Image-heavy PPTX with missing alt text, AI requested and no provider configured | Missing descriptions remain unresolved; terminal refusal with no artifact or success-shaped result |
 | Incomplete academic-paper scan | Failed scan with actionable explanation and no score after reload |
+| Eleven LaTeX corpus sources | Ten queued TEX downloads, one withheld malformed source, independent rescans and conservative receipts; saved-output compilation checks; [scope and limits](latex-corpus-queue.md) |
 
 Successful fixtures must contain at least one pending fix, so the review checks
 cannot pass without exercising approval. Approval is bound to each fix's
@@ -47,6 +48,7 @@ export STACK_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 export STACK_REPLAY_KEY="$(openssl rand -base64 32)"
 docker compose -p aelira-document-test -f tests/document-stack.compose.yml up -d --wait
 node --experimental-strip-types scripts/verify_document_stack.ts
+node --experimental-strip-types scripts/verify_latex_corpus_compilation.ts
 docker compose -p aelira-document-test -f tests/document-stack.compose.yml stop
 ```
 
