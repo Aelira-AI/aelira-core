@@ -2,7 +2,7 @@
 -r requirements.txt
 
 # Tests and coverage
-coverage==7.16.0
+coverage==7.16.1
 iniconfig==2.3.0
 pytest==9.1.1
 pytest-asyncio==1.4.0
@@ -13,12 +13,12 @@ black==26.5.1
 mypy_extensions==1.1.0
 pathspec==1.1.1
 pytokens==0.4.1
-ruff==0.16.5
+ruff==0.16.7
 
 # Load testing and its exclusive dependency closure
 bidict==0.24.1
 blinker==1.9.0
-ConfigArgParse==1.7.5
+ConfigArgParse==1.7.7
 Flask==3.1.3
 flask-cors==6.0.5
 Flask-Login==0.6.3
@@ -26,9 +26,9 @@ gevent==25.9.1
 geventhttpclient==2.3.9
 itsdangerous==2.2.0
 Jinja2==3.1.6
-locust==2.46.4
+locust==2.46.5
 python-engineio==4.14.0
-python-socketio==5.16.4
+python-socketio==5.17.0
 pyzmq==27.2.0
 simple-websocket==1.1.0
 websocket-client==1.9.2

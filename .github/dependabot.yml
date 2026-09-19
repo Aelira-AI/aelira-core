@@ -7,6 +7,12 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 10
+    # These transitive pins must follow their parent package's metadata.
+    # See docs/DEPENDENCIES.md before changing either compatible pair.
+    ignore:
+      - dependency-name: "pydantic-core"
+      - dependency-name: "mpmath"
+        versions: [">=1.4"]
     groups:
       pip-minor-patch:
         applies-to: version-updates
