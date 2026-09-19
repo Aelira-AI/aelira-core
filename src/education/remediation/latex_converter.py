@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 from types import SimpleNamespace
+from ..latex_runtime import tex_environment, version_command
 
 from ..latex_diagnostics import (
     ConversionDiagnostics,
@@ -112,10 +113,12 @@ class LaTeXConverter:
         self._playwright_browser = None
 
         if self.lualatex_available:
-            logger.info("LuaLaTeX available - PDF candidates require validation")
+            logger.info(
+                "LuaLaTeX executable found; functional readiness requires the runtime probe"
+            )
         elif self.latexml_available:
             logger.info(
-                "LaTeXML available - using MathML pipeline (PDF less accessible)"
+                "LaTeXML executable found; functional readiness requires the runtime probe"
             )
         else:
             logger.warning(
@@ -137,10 +140,7 @@ class LaTeXConverter:
         tool = args[0]
         input_hash = sha(source.read_bytes())
         version = "unknown"
-        version_args = [tool, "--version"]
-        if tool in {"lualatex", "pdflatex"}:
-            # Keep the explicit shell policy on every TeX invocation.
-            version_args.append("-no-shell-escape")
+        version_args = version_command(tool)
         try:
             probe = subprocess.run(
                 version_args,
@@ -158,6 +158,8 @@ class LaTeXConverter:
         except (OSError, subprocess.SubprocessError):
             pass
         try:
+            if tool in {"lualatex", "pdflatex"}:
+                kwargs["env"] = tex_environment(candidate.parent)
             result = subprocess.run(args, **kwargs)
             findings = classify(
                 result.stdout,

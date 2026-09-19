@@ -88,6 +88,8 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     texlive-latex-extra \
     texlive-fonts-recommended \
     texlive-science \
+    texlive-luatex \
+    texlive-lang-german \
     pandoc \
     && update-language \
     && rm -rf /var/lib/apt/lists/* /var/cache/fontconfig/* /var/log/apt/* \

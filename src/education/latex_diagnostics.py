@@ -152,6 +152,12 @@ def classify(stdout, stderr, *, exit_code, final_pass=True):
         found.append(diagnostic("process_failed"))
     for line in text.splitlines():
         lower = line.lower()
+        # Normal initialization of an owned cold cache, not a missing font/module.
+        if re.fullmatch(
+            r"\s*luaotfload\s*\|\s*db\s*:\s*font names database not found, generating new one\.\s*",
+            lower,
+        ):
+            continue
         location = re.search(r"(?:line\s+|l\.)(\d+)", line)
         number = int(location[1]) if location else None
         number = number if number and number <= 10000000 else None
