@@ -50,6 +50,7 @@ ${pc.dim(`  Version ${version} - Higher Education MVP`)}
 
   private async handleEvidenceReport(): Promise<void> {
     const deptId = await this.promptForInput('Enter department ID (press Enter for default):')
+    if (deptId === undefined) return
 
     const s = spinner()
     s.start('Generating accessibility evidence report...')
@@ -86,7 +87,7 @@ ${pc.dim(`  Version ${version} - Higher Education MVP`)}
     s.start(`Scanning ${docType.toUpperCase()} files...`)
 
     try {
-      await this.config.runCommand('scan', [docType as string, path])
+      await this.config.runCommand('scan', [docType, path])
       s.stop('Scan complete!')
     } catch (error: any) {
       s.stop('Scan failed')
@@ -115,7 +116,7 @@ ${pc.dim(`  Version ${version} - Higher Education MVP`)}
     s.start(`Processing ${mediaType === 'image' ? 'images' : 'videos'}...`)
 
     try {
-      await this.config.runCommand('scan', [mediaType as string, path])
+      await this.config.runCommand('scan', [mediaType, path])
       s.stop('Processing complete!')
     } catch (error: any) {
       s.stop('Processing failed')
@@ -145,6 +146,7 @@ ${pc.dim(`  Version ${version} - Higher Education MVP`)}
           const name = await this.promptForInput('Enter profile name:')
           if (name) {
             const apiUrl = await this.promptForInput('Enter API URL for this profile:')
+            if (apiUrl === undefined) return
             await this.config.runCommand('config', ['profile', 'create', name, '--api-url', apiUrl || 'http://localhost:8000'])
           }
 
@@ -309,7 +311,7 @@ ${pc.dim(`  Version ${version} - Higher Education MVP`)}
       return undefined
     }
 
-    return result as string
+    return result
   }
 
   private async showHelp(): Promise<void> {
