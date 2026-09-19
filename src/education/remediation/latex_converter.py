@@ -15,6 +15,7 @@ from typing import Optional
 from types import SimpleNamespace
 from ..latex_runtime import tex_environment, version_command
 from ..latex_metadata import extract_metadata, save_html_metadata, save_pdf_metadata
+from ..latex_semantics import extract_semantics, save_html_semantics
 
 from ..latex_diagnostics import (
     ConversionDiagnostics,
@@ -36,6 +37,15 @@ from .latex_pdf_validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Import through LaTeXML's local XML catalog, independent of its install path.
+# Override only generated branding; authored footer/navigation content is retained.
+LATEXML_HTML_STYLESHEET = """<?xml version="1.0" encoding="UTF-8"?>
+<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:import href="urn:x-LaTeXML:XSLT:LaTeXML-html5.xsl"/>
+  <xsl:template match="/" mode="footer-generator-identifier"/>
+</xsl:stylesheet>
+"""
 
 
 class LaTeXConverter:
@@ -261,6 +271,36 @@ class LaTeXConverter:
         )
         return bool(saved)
 
+    def _preserve_semantics(self, source: Path, candidate: Path, kind: str) -> bool:
+        """Require source-bound saved relationships; never infer author intent."""
+        reasons = set()
+        try:
+            contract = extract_semantics(source.read_text(encoding="utf-8"))
+            reasons.update(contract.issues)
+            if not reasons:
+                if kind == "html":
+                    if not save_html_semantics(source, candidate):
+                        reasons.add("semantics_not_preserved")
+                elif contract.graphics or contract.tables:
+                    # PDF structure checks alone cannot associate source assets
+                    # and table cells with marked content. Do not credit them.
+                    reasons.add("semantics_unsupported")
+        except (OSError, UnicodeError, ValueError):
+            reasons.add("semantics_not_preserved")
+        record(
+            ConversionStage(
+                tool="inspection",
+                phase="inspect",
+                semantics_profile="literal-relationships-v1",
+                input_sha256=sha(source.read_bytes()),
+                candidate_sha256=(
+                    sha(candidate.read_bytes()) if candidate.is_file() else None
+                ),
+                diagnostics=[diagnostic(reason) for reason in sorted(reasons)],
+            )
+        )
+        return not reasons
+
     def _validate_path(self, path: Path) -> Path:
         """
         Validate path is safe and within allowed directories.
@@ -459,12 +499,17 @@ class LaTeXConverter:
 
             # Step 2: XML → HTML5 with MathML
             # Note: LaTeXML 0.8.x automatically generates MathML with --format=html5
+            # Its default footer adds a mascot image absent from the source.
+            # Suppress that template before conversion, not images at validation.
+            stylesheet = output_dir / "aelira-html5.xsl"
+            stylesheet.write_text(LATEXML_HTML_STYLESHEET, encoding="utf-8")
             logger.info("Converting XML to accessible HTML5...")
             result = self._run_stage(
                 [
                     "latexmlpost",
                     "--dest=" + str(html_path),
                     "--format=html5",
+                    "--stylesheet=" + str(stylesheet),
                     "--log=" + str(output_dir / "postprocess.log"),
                     str(xml_path),
                 ],
@@ -483,7 +528,9 @@ class LaTeXConverter:
                 self._enhance_html_accessibility(html_path)
                 if not self._preserve_metadata(tex_file, html_path, "html"):
                     return None
-                if not inspect_candidate(tex_file, html_path).blocked:
+                preserved = self._preserve_semantics(tex_file, html_path, "html")
+                inspected = inspect_candidate(tex_file, html_path)
+                if preserved and not inspected.blocked:
                     return str(html_path)
 
             return None
@@ -684,6 +731,8 @@ class LaTeXConverter:
                 if candidate:
                     if not self._preserve_metadata(tex_file, Path(candidate), "pdf"):
                         return None, failure
+                    if not self._preserve_semantics(tex_file, Path(candidate), "pdf"):
+                        return None, failure
                     receipt = validate_pdf_candidate(candidate)
                     # A failed validation is terminal, not an invitation to try
                     # another exporter whose output might hide the same defect.
@@ -838,11 +887,13 @@ class LaTeXConverter:
         if inspect_source(tex_file).blocked:
             return None
 
-        # Choose the supported literal language-span route before conversion;
+        # Choose supported authored relationship/language routes before conversion;
         # known loss in another converter must never trigger a silent retry.
-        if (
+        authored = extract_semantics(tex_file.read_text(encoding="utf-8"))
+        if self.pandoc_available and (
             extract_metadata(tex_file.read_text(encoding="utf-8")).spans
-            and self.pandoc_available
+            or authored.graphics
+            or authored.tables
         ):
             attempt = Path(tempfile.mkdtemp(prefix="html-pandoc-", dir=out_dir))
             return self._convert_with_pandoc(str(tex_file), attempt)
@@ -871,6 +922,18 @@ class LaTeXConverter:
         html_path = output_dir / (tex_file.stem + ".html")
 
         try:
+            options = []
+            semantics = extract_semantics(tex_file.read_text(encoding="utf-8"))
+            if semantics.graphics or semantics.tables:
+                # The bounded relationship checker cannot evaluate arbitrary
+                # CSS. Use a minimal template for this route; metadata is copied
+                # from the original source by the separate metadata gate.
+                template = output_dir / "relationships.html.template"
+                template.write_text(
+                    '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>$body$</body></html>',
+                    encoding="utf-8",
+                )
+                options = ["--template", str(template)]
             result = self._run_stage(
                 [
                     "pandoc",
@@ -881,6 +944,7 @@ class LaTeXConverter:
                     "--mathml",
                     "--toc",
                     "--section-divs",
+                    *options,
                 ],
                 source=tex_file,
                 candidate=html_path,
@@ -899,7 +963,9 @@ class LaTeXConverter:
                 self._enhance_html_accessibility(html_path)
                 if not self._preserve_metadata(tex_file, html_path, "html"):
                     return None
-                if not inspect_candidate(tex_file, html_path).blocked:
+                preserved = self._preserve_semantics(tex_file, html_path, "html")
+                inspected = inspect_candidate(tex_file, html_path)
+                if preserved and not inspected.blocked:
                     return str(html_path)
 
             return None

@@ -27,7 +27,7 @@ for (const originalFixture of manifest.cases) for (const reviewed of [false, tru
   const receipt = queue.evidence.find((row: any) => row.kind === 'latex' && row.fixture === fixture.id);
   assert(receipt, `Missing queue evidence for ${fixture.id}`);
   for (const kind of ['source', 'saved']) {
-    if (kind === 'saved' && (!reviewed || originalFixture.id === 'N04')) {
+    if (kind === 'saved' && (!reviewed || ['N03', 'N04'].includes(originalFixture.id))) {
       assert.equal(receipt.status, 'refused');
       cases.push({ fixture: fixture.id, kind, status: 'not_run', reason: 'output_withheld' });
       continue;
@@ -53,4 +53,4 @@ await writeFile(resolve(output, 'compilation.json'), JSON.stringify({ compiler: 
   queue_report_sha256: sha(await readFile(resolve(output, 'report.json'))),
   scope: 'Compilation only; no PDF/UA, mathematical fidelity or assistive-technology claim', cases, failures }, null, 2));
 assert.equal(failures.length, 0, failures.join('\n'));
-console.log('PASS LaTeX compilation: 11 originals, 11 explicitly authored language variants, 10 queue downloads');
+console.log('PASS LaTeX compilation: 11 originals, 11 explicitly authored language variants, 9 queue downloads');

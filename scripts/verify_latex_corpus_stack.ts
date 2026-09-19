@@ -40,6 +40,10 @@ export async function verifyLatexCorpus(context: {
       };
       const original = await upload(source, fixture.file);
       assert(original.scan.result.issues.length > 0, 'Corpus must exercise real findings');
+      if (originalFixture.id === 'N03') {
+        assert(original.scan.result.issues.some((row: any) => row.type === 'missing_alt_text'),
+          'A caption on a missing image cannot supply an authored alternative');
+      }
       const queued = await request(`/education/remediate/${original.id}?use_ai=false&verify_fixes=true`, {
         method: 'POST', headers: { Prefer: 'respond-async', 'Content-Type': 'application/json' },
         body: JSON.stringify({ use_ai: false, generate_alt_text: false, latex_formats: ['tex'] }),
@@ -47,7 +51,7 @@ export async function verifyLatexCorpus(context: {
       assert(queued.job_id, 'A real durable remediation job is required');
       const job = await poll(() => request(`/education/remediation/jobs/${queued.job_id}`),
         (value: any) => ['completed', 'failed', 'cancelled', 'dead_letter'].includes(value.status));
-      if (!reviewed || originalFixture.id === 'N04') {
+      if (!reviewed || ['N03', 'N04'].includes(originalFixture.id)) {
         assert.equal(job.status, 'failed');
         assert.equal(job.error_code, 'manual_required');
         assert.equal(job.download_available, false);

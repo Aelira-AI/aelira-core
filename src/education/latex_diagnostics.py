@@ -46,6 +46,9 @@ class Diagnostic(BaseModel):
         "metadata_unsupported",
         "metadata_not_preserved",
         "language_environment_unavailable",
+        "semantics_unconfirmed",
+        "semantics_unsupported",
+        "semantics_not_preserved",
         "font_warning",
         "rerun_required",
         "deprecation_warning",
@@ -78,6 +81,7 @@ class ConversionStage(BaseModel):
     )
     phase: Literal["parse", "postprocess", "compile", "inspect", "render"]
     metadata_profile: Literal["literal-authored-v1"] | None = None
+    semantics_profile: Literal["literal-relationships-v1"] | None = None
     pass_number: int = Field(default=1, ge=1, le=2)
     input_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     candidate_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
