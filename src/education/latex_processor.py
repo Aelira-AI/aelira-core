@@ -4,7 +4,7 @@ LaTeX to MathML Conversion Module
 This module provides functionality to:
 1. Detect LaTeX equations in text (inline and display mode)
 2. Convert LaTeX to accessible MathML
-3. Generate ARIA labels for screen readers
+3. Generate optional description drafts for human review
 4. Support common STEM packages (amsmath, physics, chemfig)
 5. Batch process documents with multiple equations
 6. Report source-check findings separately from conversion and review evidence
@@ -30,9 +30,12 @@ from latex2mathml.converter import convert as latex_to_mathml
 import re
 import os
 import logging
+from html import escape
+
+from .latex_descriptions import description_evidence, generate_description_draft
 from enum import Enum
 
-# Import LLM provider manager for AI-generated ARIA labels
+# Import LLM provider manager for optional description drafts.
 from src.ai.providers import get_provider_manager
 
 logger = logging.getLogger(__name__)
@@ -257,7 +260,8 @@ class MathMLConversionResult(BaseModel):
     equation_id: int
     latex_source: str
     mathml_output: str
-    aria_label: Optional[str] = None
+    aria_label: Optional[str] = None  # Deprecated; generated prose is never a label.
+    description_draft: Optional[str] = Field(default=None, max_length=2000)
     conversion_success: bool
     error_message: Optional[str] = None
     # Deprecated: False means not verified, not a confirmed violation.
@@ -380,30 +384,32 @@ class LaTeXProcessor:
         Initialize LaTeX processor
 
         Args:
-            use_ai: Whether to use AI for ARIA label generation (default: True)
+            use_ai: Whether to request optional description drafts (default: True)
             progress_callback: Optional callback function(current, total, message) for progress updates
         """
         self.use_ai = use_ai
         self.progress_callback = progress_callback
-        self.llm_client = (
-            (llm_client if llm_client is not None else get_provider_manager())
-            if use_ai
-            else None
-        )
-
+        self.llm_client = None
         if self.use_ai:
-            health = self.llm_client.health_check()
-            if health.get("status") in ["healthy", "degraded"]:
-                logger.info(
-                    f"LLM provider connected for ARIA label generation (primary: {health.get('primary_provider')})"
+            try:
+                self.llm_client = (
+                    llm_client if llm_client is not None else get_provider_manager()
                 )
+                health = self.llm_client.health_check()
+            except Exception:
+                health = {}
+            if isinstance(health, dict) and health.get("status") in {
+                "healthy",
+                "degraded",
+            }:
+                logger.info("LLM provider connected for description drafts")
             else:
                 logger.warning(
-                    f"AI not available: {health.get('error', 'Unknown error')}, falling back to heuristic labels"
+                    "Description provider unavailable; mathematical descriptions require review"
                 )
-                self.use_ai = False
+                self.llm_client = None
         else:
-            logger.info("AI disabled, using heuristic ARIA labels")
+            logger.info("AI description drafts disabled; structured math retained")
 
         # Regex patterns for LaTeX detection
         self.inline_patterns = [
@@ -935,33 +941,43 @@ class LaTeXProcessor:
             equation_context: Optional context about the equation's location and surrounding text
 
         Returns:
-            MathMLConversionResult with MathML output and ARIA label
+            MathMLConversionResult with MathML and optional review draft
         """
         try:
             # Convert LaTeX to MathML using latex2mathml
             mathml = latex_to_mathml(equation.latex_source)
-
-            # Generate ARIA label with context (Gemini AI or heuristic fallback)
-            aria_label = self._generate_aria_label(
-                equation.latex_source, equation_context
+            if mathml.strip():
+                draft, description = generate_description_draft(
+                    equation.latex_source,
+                    equation_context,
+                    enabled=self.use_ai,
+                    client=self.llm_client,
+                )
+            else:
+                draft = None
+                description = description_evidence(
+                    equation.latex_source, reason="mathml_unavailable"
+                )
+            receipt = conversion_evidence(
+                equation.latex_source.encode(),
+                mathml.encode(),
+                "mathml",
+                method="latex2mathml",
+                status="completed" if mathml.strip() else "failed",
+            )
+            receipt = LatexRepresentationEvidence.model_validate(
+                {**receipt.model_dump(), "description": description.model_dump()}
             )
 
             return MathMLConversionResult(
                 equation_id=equation.equation_id,
                 latex_source=equation.latex_source,
                 mathml_output=mathml,
-                aria_label=aria_label,
+                aria_label=None,
+                description_draft=draft,
                 conversion_success=bool(mathml.strip()),
                 error_message=None if mathml.strip() else "empty_mathml_output",
-                latex_evidence={
-                    "mathml": conversion_evidence(
-                        equation.latex_source.encode(),
-                        mathml.encode(),
-                        "mathml",
-                        method="latex2mathml",
-                        status="completed" if mathml.strip() else "failed",
-                    )
-                },
+                latex_evidence={"mathml": receipt},
             )
 
         except Exception as e:
@@ -978,109 +994,32 @@ class LaTeXProcessor:
                         None,
                         "mathml",
                         method="latex2mathml",
+                        description=description_evidence(
+                            equation.latex_source, reason="mathml_unavailable"
+                        ),
                     )
                 },
             )
 
-    def _generate_aria_label(self, latex: str, equation_context: Dict = None) -> str:
-        """
-        Generate ARIA label for screen readers with document context
+    def _generate_aria_label(self, latex: str, equation_context: Dict = None) -> None:
+        """Deprecated: neither generated nor heuristic prose verifies math meaning."""
+        return None
 
-        Uses Gemini AI for natural language descriptions when available,
-        falls back to heuristic pattern matching otherwise.
-
-        Args:
-            latex: LaTeX source code
-            equation_context: Optional context dict containing:
-                - 'surrounding_text': Text before/after the equation
-                - 'section_title': Current section heading
-                - 'document_title': Document title
-                - 'topic': Inferred topic (physics, calculus, etc.)
-
-        Returns:
-            Natural language description for screen readers
-        """
-        # Generate heuristic fallback first
-        heuristic_label = self._generate_heuristic_aria_label(latex)
-
-        # Try Gemini if enabled
-        if self.use_ai and self.llm_client:
-            try:
-                # Build context string for the prompt
-                context_str = ""
-                if equation_context:
-                    context_parts = []
-                    if equation_context.get("document_title"):
-                        context_parts.append(
-                            f"Document: {equation_context['document_title']}"
-                        )
-                    if equation_context.get("section_title"):
-                        context_parts.append(
-                            f"Section: {equation_context['section_title']}"
-                        )
-                    if equation_context.get("topic"):
-                        context_parts.append(f"Subject: {equation_context['topic']}")
-                    if equation_context.get("surrounding_text"):
-                        # Truncate surrounding text to reasonable length
-                        surrounding = equation_context["surrounding_text"][:300]
-                        context_parts.append(f'Context: "{surrounding}..."')
-                    if context_parts:
-                        context_str = "\n\nDOCUMENT CONTEXT:\n" + "\n".join(
-                            context_parts
-                        )
-
-                # Sanitize LaTeX input to mitigate prompt injection
-                from src.utils.security import sanitize_for_prompt
-
-                safe_latex = sanitize_for_prompt(latex, max_length=500)
-
-                prompt = f"""Describe this mathematical expression in clear, accessible language for screen reader users.
-
-LaTeX: {safe_latex}
-{context_str}
-
-REQUIREMENTS:
-1. Provide a concise natural language description (1-2 sentences)
-2. Explain what the math represents in context
-3. Focus on meaning, not just reading symbols
-4. Use the document context to make the description more relevant
-5. Do not include any preamble, just the description"""
-
-                result = self.llm_client.generate_text_sync(
-                    prompt=prompt, max_tokens=150, temperature=0.2
-                )
-
-                if result.get("success"):
-                    ai_label = result["content"].strip()
-                    if ai_label and len(ai_label) > 10:
-                        logger.info(
-                            f"[LaTeX+AI] Generated context-aware ARIA label (provider: {result.get('provider')})"
-                        )
-                        return ai_label
-                    else:
-                        logger.warning(
-                            "[LaTeX+AI] ARIA label too short, using heuristic"
-                        )
-                        return heuristic_label
-                else:
-                    logger.warning(
-                        f"[LaTeX+AI] Generation failed: {result.get('error')}, using heuristic"
-                    )
-                    return heuristic_label
-
-            except Exception as e:
-                logger.warning(
-                    f"[LaTeX+AI] ARIA generation failed: {e}, using heuristic"
-                )
-                return heuristic_label
-        else:
-            return heuristic_label
+    @staticmethod
+    def _equation_review_html(source: str) -> str:
+        """Keep complete authored notation available beside structured math."""
+        return (
+            '<details class="equation-review"><summary>LaTeX source and review status</summary>'
+            "<p>Mathematical descriptions require human review. "
+            "Generated summaries are withheld from this export.</p>"
+            f"<pre>{escape(source)}</pre></details>"
+        )
 
     def _generate_heuristic_aria_label(
         self, latex: str, content_type: LaTeXContentType = None
     ) -> str:
         """
-        Generate ARIA label using pattern matching (fallback method)
+        Legacy pattern summary helper; not used as a mathematical equivalent.
 
         Handles chemistry, physics, and diagram content.
 
@@ -1617,7 +1556,7 @@ REQUIREMENTS:
 
     def _extract_document_context(self, text: str, file_path: str) -> Dict:
         """
-        Extract document-level context for better ARIA label generation.
+        Extract unverified document context for optional description drafts.
         Analyzes document structure, title, sections, and topic.
         """
         context = {
@@ -1684,10 +1623,7 @@ REQUIREMENTS:
         before_text = text[start_pos : equation.position_start].strip()
         after_text = text[equation.position_end : end_pos].strip()
 
-        # Clean up LaTeX commands from context
-        before_text = re.sub(r"\\[a-zA-Z]+(\[[^\]]*\])?(\{[^}]*\})*", "", before_text)
-        after_text = re.sub(r"\\[a-zA-Z]+(\[[^\]]*\])?(\{[^}]*\})*", "", after_text)
-
+        # Keep authored notation in this explicitly partial context excerpt.
         eq_context["surrounding_text"] = f"{before_text} [...] {after_text}".strip()
 
         return eq_context
@@ -1831,7 +1767,7 @@ REQUIREMENTS:
         html += "  </style>\n"
         html += "</head>\n<body>\n"
         html += f"  <h1>{title}</h1>\n"
-        html += "  <p><em>Accessible mathematics generated by Aelira</em></p>\n\n"
+        html += "  <p><em>Converted mathematics; fidelity and reader access require review.</em></p>\n\n"
 
         # Replace LaTeX with MathML in original text
         result_text = original_text
@@ -1843,19 +1779,16 @@ REQUIREMENTS:
 
         for equation, conversion in sorted_equations:
             if conversion.conversion_success:
-                # Wrap MathML with appropriate div and ARIA label
+                # Preserve navigable MathML without a generated prose label.
                 css_class = (
                     "equation-display"
                     if equation.equation_type == "display"
                     else "equation-inline"
                 )
-                aria_label = (
-                    f' aria-label="{conversion.aria_label}"'
-                    if conversion.aria_label
-                    else ""
+                mathml_html = (
+                    f'<div class="{css_class}">{conversion.mathml_output}</div>'
+                    + self._equation_review_html(conversion.latex_source)
                 )
-
-                mathml_html = f'<div class="{css_class}"{aria_label}>{conversion.mathml_output}</div>'
 
                 # Replace LaTeX with MathML
                 result_text = (
@@ -1865,7 +1798,10 @@ REQUIREMENTS:
                 )
             else:
                 # Show error message
-                error_html = f'<span class="error">Error converting equation: {conversion.error_message}</span>'
+                error_html = (
+                    '<span class="error">Equation conversion unavailable; review required.</span>'
+                    + self._equation_review_html(conversion.latex_source)
+                )
                 result_text = (
                     result_text[: equation.position_start]
                     + error_html
@@ -1980,7 +1916,8 @@ REQUIREMENTS:
                 {
                     "latex": conv.latex_source,
                     "mathml": conv.mathml_output,
-                    "aria_label": conv.aria_label or "",
+                    "aria_label": "",
+                    "description_draft": conv.description_draft,
                     "conversion_success": conv.conversion_success,
                     "wcag_compliant": False,
                     "latex_evidence": public_latex_evidence(conv.latex_evidence),
@@ -2048,13 +1985,13 @@ REQUIREMENTS:
 
         # Add each equation
         for i, eq in enumerate(process_result["equations"], 1):
-            aria_label = eq.get("aria_label", "")
             mathml = eq.get("mathml", "")
 
             html += f'  <div class="equation" id="eq-{i}">\n'
-            html += f'    <div aria-label="{aria_label}">\n'
+            html += "    <div>\n"
             html += f"      {mathml}\n"
             html += "    </div>\n"
+            html += self._equation_review_html(eq.get("latex", ""))
             html += "  </div>\n"
 
         html += "</body>\n"

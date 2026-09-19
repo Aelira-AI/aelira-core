@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .latex_diagnostics import ConversionDiagnostics
+from .latex_descriptions import LatexDescriptionEvidence
 
 Representation = Literal["tex", "mathml", "html", "pdf", "docx"]
 
@@ -44,11 +45,17 @@ class LatexRepresentationEvidence(BaseModel):
     human_review: LatexCheck = Field(default_factory=LatexCheck)
     assistive_technology: LatexCheck = Field(default_factory=LatexCheck)
     conversion_diagnostics: ConversionDiagnostics | None = None
+    description: LatexDescriptionEvidence | None = None
     accessibility_status: Literal["not_verified"] = "not_verified"
     human_review_required: Literal[True] = True
 
     @model_validator(mode="after")
     def enforce_evidence_boundaries(self):
+        if self.description is not None and (
+            self.representation != "mathml"
+            or self.description.source_sha256 != self.source_sha256
+        ):
+            raise ValueError("Description evidence must match the equation source")
         for check in (self.fidelity, self.human_review, self.assistive_technology):
             if check != LatexCheck():
                 raise ValueError("No fidelity, human or AT verifier is implemented")
@@ -90,7 +97,13 @@ def digest(data: bytes) -> str:
 
 
 def conversion_evidence(
-    source, candidate, representation, *, method="latex-export-v1", status=None
+    source,
+    candidate,
+    representation,
+    *,
+    method="latex-export-v1",
+    status=None,
+    description=None,
 ):
     """Record generation only; candidate presence says nothing about fidelity."""
     return LatexRepresentationEvidence(
@@ -100,6 +113,7 @@ def conversion_evidence(
         conversion=LatexCheck(
             status=status or ("completed" if candidate else "failed"), method=method
         ),
+        description=description,
     )
 
 
@@ -174,9 +188,11 @@ def scan_structure(result):
             {
                 "equation_id": eq.equation_id,
                 "latex_source": eq.latex_source[:100],
+                "latex_source_is_preview": len(eq.latex_source) > 100,
+                "latex_source_chars": len(eq.latex_source),
                 "conversion_success": eq.conversion_success,
                 "wcag_compliant": False,
-                "aria_label": eq.aria_label,
+                "aria_label": None,
                 **latex_evidence_fields(eq),
             }
             for eq in result.equations
@@ -202,6 +218,10 @@ def public_scan_structure(value, scan_type):
     safe["equations"] = [
         {
             **eq,
+            # Legacy generated descriptions have no semantic verification.
+            "aria_label": None,
+            "description_review_required": True,
+            "latex_source_is_preview": eq.get("latex_source_is_preview", True),
             "wcag_compliant": False,
             "latex_evidence": public_latex_evidence(eq.get("latex_evidence")),
         }

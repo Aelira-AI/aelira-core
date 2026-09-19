@@ -66,7 +66,8 @@ remain separate work in #447.
   `conversion_success_rate`. Existing score displays retain the source score;
   those scores are not conformance certificates. No new UI or reader behavior is
   claimed by this backend change.
-- Generated HTML and the raw HTML-export helper retain their output behavior.
+- Generated HTML and the raw HTML-export helper withhold unverified descriptions
+  and retain full equation source beside MathML. See [description fidelity](latex-description-fidelity.md).
   Conversion evidence does not certify exported HTML. The existing
   `latex_pdf_validation` contract remains available alongside `latex_evidence`.
 

@@ -231,8 +231,7 @@ class LatexRemediator(BaseRemediator):
                 return True
 
             elif issue.category == IssueCategory.ARIA:
-                # Can add ARIA labels/descriptions - equations, labels
-                return True
+                return self._is_reference_label_issue(issue)
 
             elif issue.category == IssueCategory.TITLE:
                 # Can add missing title/author
@@ -610,8 +609,32 @@ class LatexRemediator(BaseRemediator):
 
         return False
 
+    @staticmethod
+    def _is_reference_label_issue(issue: RemediationIssue) -> bool:
+        """A source cross-reference finding is not a mathematical description."""
+        return (
+            issue.category == IssueCategory.ARIA
+            and "without \\label{} for cross-referencing" in issue.description
+        )
+
+    def _get_manual_reason(self, issue: RemediationIssue) -> str:
+        if issue.category == IssueCategory.ARIA and not self._is_reference_label_issue(
+            issue
+        ):
+            return "Mathematical meaning has no independent semantic verification"
+        return super()._get_manual_reason(issue)
+
+    def _get_manual_recommendation(self, issue: RemediationIssue) -> str:
+        if issue.category == IssueCategory.ARIA and not self._is_reference_label_issue(
+            issue
+        ):
+            return "Review the complete source and structured mathematics with author context; a reference label or generated summary is not an equivalent description."
+        return super()._get_manual_recommendation(issue)
+
     def _apply_aria_fix(self, issue: RemediationIssue, aria_label: str) -> bool:
-        """Add ARIA labels for equations or other content."""
+        """Add source reference labels only, never a generated description."""
+        if not self._is_reference_label_issue(issue):
+            return False
         # For LaTeX, we add labels to equations for cross-referencing
         if (
             "equation" in issue.description.lower()
@@ -626,11 +649,7 @@ class LatexRemediator(BaseRemediator):
                 eq_content = match.group(2)
                 if r"\label{" not in eq_content:
                     eq_count += 1
-                    # Generate label based on content or use auto-numbering
-                    if aria_label and aria_label != "auto":
-                        label = aria_label.replace(" ", "_").lower()
-                    else:
-                        label = f"eq:equation{eq_count}"
+                    label = f"eq:equation{eq_count}"
 
                     new_content = eq_content.rstrip() + f"\n\\label{{{label}}}\n"
                     self._modified_content = self._modified_content.replace(
@@ -698,10 +717,7 @@ class LatexRemediator(BaseRemediator):
                 return "table_header:add_structure"
 
         elif issue.category == IssueCategory.ARIA:
-            if (
-                "equation" in issue.description.lower()
-                or "label" in issue.description.lower()
-            ):
+            if self._is_reference_label_issue(issue):
                 return "equation_label:auto"
 
         elif issue.category == IssueCategory.LINK:
@@ -727,6 +743,10 @@ class LatexRemediator(BaseRemediator):
     ) -> Optional[str]:
         """Generate fix using AI."""
 
+        # Unverified prose cannot repair math. Reference labels use rules.
+        if issue.category == IssueCategory.ARIA:
+            return None
+
         self.result.ai_calls_made += 1
 
         try:
@@ -746,14 +766,6 @@ Location: {safe_loc}
 Original content: {safe_content or 'Not available'}
 
 Provide ONLY the alt text, no explanation. Keep it under 100 characters."""
-
-            elif issue.category == IssueCategory.ARIA:
-                prompt = f"""Generate an accessible description for this mathematical content.
-Issue: {safe_desc}
-Content: {safe_content or 'mathematical expression'}
-
-Provide ONLY the ARIA label text that describes what the math represents.
-Keep it under 150 characters. Focus on meaning, not just symbols."""
 
             else:
                 prompt = f"""Suggest a fix for this LaTeX accessibility issue:

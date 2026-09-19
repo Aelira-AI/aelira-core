@@ -249,7 +249,12 @@ def test_historical_latex_claim_is_downgraded_on_authorized_scan_reload(latex_ht
     case.app.include_router(scan_history_routes.router, prefix="/education")
     case.scan.result.structure = {
         "equations": [
-            {"equation_id": 1, "wcag_compliant": True, "conversion_success": True}
+            {
+                "equation_id": 1,
+                "wcag_compliant": True,
+                "conversion_success": True,
+                "aria_label": "An unverified historical interpretation",
+            }
         ]
     }
     case.db.commit()
@@ -257,7 +262,36 @@ def test_historical_latex_claim_is_downgraded_on_authorized_scan_reload(latex_ht
     assert response.status_code == 200, response.text
     structure = response.json()["scan"]["result"]["structure"]
     assert structure["equations"][0]["wcag_compliant"] is False
+    assert structure["equations"][0]["aria_label"] is None
+    assert structure["equations"][0]["description_review_required"] is True
     assert structure["accessibility_status"] == "not_verified"
     assert structure["human_review_required"] is True
     case.db.refresh(case.scan.result)
     assert case.scan.result.structure["equations"][0]["wcag_compliant"] is True
+
+
+def test_description_receipt_survives_persisted_authorized_reload(latex_http):
+    from src.api.education import scan_history_routes
+    from src.education.latex_evidence import scan_structure
+
+    case = latex_http
+    case.app.include_router(scan_history_routes.router, prefix="/education")
+    text = r"$\frac{a_{i}^{2}}{1+\frac{b}{c}}$"
+    case.source.write_text(text)
+    result = LaTeXProcessor(use_ai=False).process_document(str(case.source))
+    case.scan.result.structure = scan_structure(result)
+    case.db.commit()
+    case.db.expire_all()
+    response = case.client.get(f"/education/scans/{case.scan.id}")
+    assert response.status_code == 200, response.text
+    equation = response.json()["scan"]["result"]["structure"]["equations"][0]
+    receipt = equation["latex_evidence"]["mathml"]["description"]
+    assert receipt["reason"] == "not_requested"
+    assert receipt["semantic_equivalence"] == "not_assessed"
+    assert receipt["human_review_required"] is True
+    assert (
+        receipt["source_sha256"]
+        == hashlib.sha256(result.equations[0].latex_source.encode()).hexdigest()
+    )
+    assert equation["aria_label"] is None
+    assert case.source.read_text() == text
