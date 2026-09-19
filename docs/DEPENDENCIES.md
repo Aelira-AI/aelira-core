@@ -147,6 +147,13 @@ oclif on Node 22+. Key runtime deps: `@oclif/core` (command framework),
 `playwright` + `axe-core` (local web scans), `@clack/prompts` (interactive
 prompts), `picocolors` (terminal output).
 
+The SARIF tests use AJV 8 with `ajv-formats` in full validation mode for the
+official OASIS schema's URI, URI-reference and date-time constraints. The schema
+contains a language pattern with an unescaped closing bracket, so this test
+validator retains non-Unicode pattern matching (`unicodeRegExp: false`) as in
+AJV 6. The schema fixture remains unchanged. Regression tests accept valid
+generated logs and reject malformed formats and values that fail that pattern.
+
 ## System-level (not in any lockfile)
 
 Installed by the Docker images / quickstart, or by you when running bare:
