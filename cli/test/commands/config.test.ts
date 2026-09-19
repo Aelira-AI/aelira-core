@@ -22,10 +22,8 @@ describe('config command', () => {
     await cleanTestDir(testDir)
   })
 
-  // NOTE: `config init` is NOT tested via runCommand because it uses
-  // interactive @clack/prompts (text, confirm, select) which hang in
-  // non-TTY test environments. initializeConfig() is tested directly
-  // in the config utility tests instead.
+  // Interactive init/set paths are covered by prompt-cancellation.test.ts,
+  // which scripts the prompt boundary in an isolated subprocess.
 
   it('config show outputs configuration', async () => {
     const { stdout } = await runCommand(['config', 'show'])

@@ -257,13 +257,13 @@ static flags = {
     s.start('Saving configuration...')
 
     await initializeConfig()
-    await setConfigValue('apiUrl', apiUrl as string)
+    await setConfigValue('apiUrl', apiUrl)
     if (apiKey) {
-      await setConfigValue('apiKey', apiKey as string)
+      await setConfigValue('apiKey', apiKey)
     }
 
     if (department) {
-      await setConfigValue('department', department as string)
+      await setConfigValue('department', department)
     }
 
     s.stop('Configuration saved')
@@ -276,7 +276,7 @@ static flags = {
 
     if (!isCancel(shouldTest) && shouldTest) {
       s.start('Testing connection...')
-      const result = await validateConnection(apiUrl as string)
+      const result = await validateConnection(apiUrl)
       if (result.success) {
         s.stop(pc.green('✓ ') + result.message)
       } else {
@@ -309,7 +309,7 @@ static flags = {
         return
       }
 
-      key = choice as string
+      key = choice
     }
 
     // Map CLI keys to config keys
@@ -343,7 +343,7 @@ static flags = {
         return
       }
 
-      value = newValue as string
+      value = newValue
     }
 
     const s = spinner()
