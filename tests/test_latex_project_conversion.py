@@ -9,6 +9,28 @@ from src.education.latex_project import inspect_archive
 from src.education import latex_project_conversion as conversion
 
 
+@pytest.fixture(autouse=True)
+def mocked_pandoc_runtime(monkeypatch):
+    """The fake executor also needs deterministic availability and version probes."""
+    monkeypatch.setattr(
+        conversion.shutil,
+        "which",
+        lambda tool: "/fake/pandoc" if tool == "pandoc" else None,
+    )
+    monkeypatch.setattr(conversion, "_version", lambda: "3.1.11.1")
+
+
+def test_missing_pandoc_refuses_before_executor(tmp_path, monkeypatch):
+    monkeypatch.setattr(conversion.shutil, "which", lambda _: None)
+    monkeypatch.setattr(
+        conversion, "_run_pandoc", lambda *a: pytest.fail("executor called")
+    )
+    result = conversion.convert_project_html(project(), tmp_path)
+    assert result.path is None
+    assert result.provenance["reasons"] == ["package_route_unavailable"]
+    assert "tool_unavailable" in result.provenance["decision"]["reasons"]
+
+
 def project(files=None):
     stream = BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:

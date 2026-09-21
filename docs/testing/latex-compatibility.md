@@ -52,12 +52,13 @@ Bounded, deduplicated warning/error lines and process exits accompany the hashes
 
 ## Running the required smoke
 
-Run the production image with the checkout mounted read-only:
+Run the production image with the two synthetic fixture directories mounted read-only. Production images exclude the test tree; the smoke uses the application and script built into the image.
 
 ```sh
 docker run --rm --network none --read-only \
   --tmpfs /tmp:rw,nosuid,mode=1777 \
-  --volume "$PWD:/app:ro" \
+  --mount type=bind,source="$PWD/tests/fixtures/latex_compatibility",target=/app/tests/fixtures/latex_compatibility,readonly \
+  --mount type=bind,source="$PWD/tests/fixtures/latex_validation",target=/app/tests/fixtures/latex_validation,readonly \
   --entrypoint python "$PRODUCTION_IMAGE" \
   /app/scripts/smoke_latex_compatibility.py > compatibility-receipt.json
 ```
