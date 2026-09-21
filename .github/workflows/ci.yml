@@ -323,12 +323,12 @@ jobs:
       - name: Install document runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev pkg-config tesseract-ocr ghostscript poppler-utils unzip texlive-latex-recommended texlive-science
+          sudo apt-get install -y libcairo2-dev pkg-config tesseract-ocr ghostscript poppler-utils unzip zip pandoc texlive-latex-recommended texlive-science texlive-pictures texlive-lang-german
           pip install -r requirements-dev.txt
       - name: Verify real API, durable worker and downloaded files
         run: |
           set -euo pipefail
-          node --experimental-strip-types --test scripts/latex_corpus_contract.test.ts
+          node --experimental-strip-types --test scripts/latex_corpus_contract.test.ts scripts/latex_compilation_contract.test.ts scripts/document_stack_transport.test.ts
           mkdir -p test-results/document-stack
           python -c 'import json, sys; from importlib.metadata import version; print(json.dumps({"python": sys.version, "packages": {name: version(name) for name in ["pydantic", "pydantic-core", "sympy", "mpmath", "latex2mathml"]}}, indent=2))' > test-results/document-stack/runtime.json
           export JWT_SECRET="$(openssl rand -hex 48)"

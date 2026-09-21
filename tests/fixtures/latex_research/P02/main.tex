@@ -1,0 +1,21 @@
+% Synthetic research fixture. Case P02. No claim of accessibility.
+\documentclass{article}
+\usepackage[margin=25mm]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tikz}
+
+\title{P02: Diagram relationships}
+\author{Synthetic benchmark fixture}
+\date{}
+\begin{document}
+\maketitle
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}
+\node (a) at (0,0) {A};\node (b) at (2,1) {B};\node (c) at (2,-1) {C};
+\draw[->] (a)--(b);\draw[->] (a)--(c);
+\end{tikzpicture}
+\caption{Synthetic branching diagram.}
+\end{figure}
+\end{document}

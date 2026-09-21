@@ -1,104 +1,88 @@
 # Saved LaTeX corpus through the document queue
 
-The required `Real document queue and artifact acceptance` CI job replays all
-eleven hash-pinned sources in `tests/fixtures/latex_validation/corpus.json` through
-the real API, PostgreSQL, durable scan/remediation worker and artifact storage.
-This is a bounded increment of #444 and #375, supporting the dependency checks
-in #378. It is API integration coverage, not a browser or conformance claim.
+The required `Real document queue and artifact acceptance` CI job exercises all
+26 cases and 28 source files in `tests/fixtures/latex_research/corpus.json` through
+the authenticated API, PostgreSQL, durable worker and artifact storage. It runs
+each original plus an explicitly authored language variant. This completes the
+queued-source slice tracked by #480; the wider research work remains in #444.
+It is API integration evidence, not a browser or conformance claim.
 
-## Predeclared expectations
+## Predeclared outcomes
 
-Every case requests **TEX only**, with AI disabled. The eleven unchanged originals
-omit language and must require author review, with no fabricated English repair
-or downloadable artifact. The runner also creates eleven labelled `-reviewed`
-variants with an explicit synthetic `pdflang=en` declaration. This declaration
-is authored by the test fixture builder, never by remediation. Both inputs and
-their hashes are retained; original fixture hashes remain unchanged.
+| Cases | Original | Declared-language variant |
+| --- | --- | --- |
+| M01–M18 | Author-review refusal; no download | TEX candidate, exact source preservation and independent rescan |
+| P01 | Complete project scan and original ZIP retrieval; automatic editing refused | Same project boundary, with only the entrypoint language declaration added |
+| P02, P03 | Diagram/table review required; no download | Review remains required; no invented descriptions or header associations |
+| P04 | Zero source findings; durable no-op, no artifact | Same no-op with an explicit German declaration |
+| N01, N02 | Author-review refusal | TEX source may be delivered, but must fail compilation for its intended undefined-macro/missing-include reason |
+| N03, N04 | Refusal; no download | Refusal remains; missing image alternative or incomplete source comparison |
 
-Nine reviewed variants must exercise source
-findings and at least one verified source repair, publish a TeX candidate, retain
-its artifact identity after reload, and deliver identical bytes on repeat download.
-Uploading those downloaded bytes as a new scan must reproduce the job's source
-score and remaining findings. Only TEX may appear in the available-format list.
-N03's missing alternative requires author review; N04's unbalanced expression
-prevents complete source comparison. Both variants stay withheld. The gate requires
-a persisted `manual_required` refusal, zero published fixes, no verified score,
-no available formats and HTTP 404 from the download route, including after reload.
+Single-file cases request TEX only with AI disabled. Reviewed variants add
+`pdflang=en`, except P04 which uses `de` and retains its authored Babel and
+`selectlanguage` declarations. These are labelled synthetic inputs created by
+the harness, never inferred language repairs. The gate expects 20 TEX downloads,
+28 single-file refusals and two no-ops, plus two project scan/refusal journeys.
 
-Each published variant's saved document body must match its input byte for byte after UTF-8 decoding,
-including whitespace, equation source, labels, references, captions and missing
-inputs. All original preamble lines must remain in their original order. Preamble
-additions are allowed; this check does **not** validate the meaning or rendering of
-added metadata and packages. See the separate [authored metadata checks](latex-authored-metadata.md).
+Every delivered candidate retains the document body exactly, including whitespace,
+equation source, labels, references, captions and missing inputs. Original preamble
+lines remain in order; permitted additions are tested separately by compilation.
+German metadata has targeted positive and conflicting-language controls, including
+escaped comments and unsupported nonliteral assignments. Source preservation does
+not prove rendered mathematical equivalence.
 
-| Cases | Content that the comparison protects |
-| --- | --- |
-| M01 | Fraction numerator and denominator |
-| M03, M04 | Different nested/same-base script structures |
-| M06 | Matrix values and cell order |
-| M10 | Physics macro source and derivative order |
-| M14 | Aligned derivation, labels and cross-references |
-| M16 | Complete long expression, including the final sentinel |
-| N01–N04 | Undefined macro, missing include, missing figure and malformed math |
+Published files require a real artifact ID, matching source/output hashes,
+byte-identical repeated downloads, durable reload and an independent rescan that
+matches the recorded source score/findings. Refusals require the persisted failure,
+zero published fixes, no verified remediated score, no available formats and HTTP 404
+from download. P04's zero findings must not manufacture a repair or artifact.
 
-N01–N04 are **compiler-negative** fixtures. N01–N02's declared-language variants can deliver their TeX source;
-it must never be reported as successful compilation or accessible output. Every
-receipt must retain `not_verified`, human review required, and unassessed fidelity,
-structural validation and assistive-technology checks. The application receipts
-record no compilation claim. A separate acceptance step compiles all eleven
-originals and the nine downloaded candidates, using their recorded hashes. Seven
-positive sources and outputs must compile; the four original negative controls
-and two delivered negative candidates must fail. A missing or killed compiler
-cannot satisfy a negative expectation. N03 and N04 have no output to compile.
+P01 keeps `main.tex`, `macros.tex` and `chapters/one.tex` in their original layout.
+The uploaded ZIP, downloaded original, returned file inventory and conversion
+receipt are bound to the same source hashes. Automatic source editing returns
+`project_source_review_required` before remediation is queued. P01's conversion must
+select an installed Pandoc and retain its measured `unsupported_command` refusal,
+with no HTML candidate or download. Missing tools cannot satisfy that expectation.
+Authenticated artifact URLs are restricted to the disposable API origin.
 
-N03's caption does not supply an image alternative. Both its original and its
-declared-language variant retain `missing_alt_text`. The worker withholds the
-entire result when manual findings remain; a language fix cannot publish a partial
-artifact or earn published repair credit. The
-[authored relationship checks](latex-authored-relationships.md) independently
-exercise saved HTML figure/table semantics and PDF refusal.
+## Compilation evidence
 
-This gate caught #473: language remediation added `\hypersetup` without loading
-`hyperref`. M01 compiled before remediation and failed after download. The fix
-loads the dependency before adding the command, preserving existing package options.
-The separate [PDF validation replay](latex-pdf-validation.md) tests PDF refusal;
-the PDFs compiled here are diagnostic artifacts, never approved accessible outputs.
+The separate compiler gate checks 26 original contexts, 26 declared-language
+contexts and all 20 exact TEX downloads. It preserves project dependencies,
+uses fresh directories and hashes the actual input, output PDF, logs and installed
+package files. Positive cases require two successful passes and no unresolved
+references on the final pass. Negative cases require the intended diagnostic;
+a missing or killed compiler or an unrelated missing package never satisfies them.
+The untagged PDFs are diagnostic artifacts, not approved accessible outputs.
 
-## Running and interpreting evidence
-
-Use the [disposable document stack](document-review-journey.md). Its existing
-runner now includes the corpus automatically. The preservation checker has
-positive and deliberate corruption controls, executable without the services:
+Run the [disposable document stack](document-review-journey.md), then:
 
 ```sh
-node --experimental-strip-types --test scripts/latex_corpus_contract.test.ts
+node --experimental-strip-types --test scripts/latex_corpus_contract.test.ts scripts/latex_compilation_contract.test.ts scripts/document_stack_transport.test.ts
 node --experimental-strip-types scripts/verify_document_stack.ts
 node --experimental-strip-types scripts/verify_latex_corpus_compilation.ts
 ```
 
-`test-results/document-stack/report.json` records the source revision, tracked
-diff digest, harness/manifest hashes, Node version, options, scan/job/artifact IDs,
-source/output digests, exact public receipts and independent rescan IDs. Saved
-`.tex` files sit beside it. CI also retains `runtime.json` with the actual Python
-and relevant package versions. For a manual run, record those versions from the
-API/worker environment, plus the resolved image digest when using a container;
-the runner's host environment does not establish the server's installed versions.
-Retain any local patch with its digest; a dirty tree is not a published revision.
-The compiler step requires `pdflatex` (CI installs `texlive-latex-recommended` and
-`texlive-science`), or `STACK_TEX_COMPILER=lualatex` with the fixture packages
-installed. It writes `compilation.json` bound to the queue report digest, compiler
-version, per-input hashes and exit codes, plus isolated logs under `compiler/`.
-Compilation covers all eleven originals, eleven declared-language inputs and nine
-exact queue downloads. Withheld outputs are recorded explicitly rather than compiled.
-These processes use `-no-shell-escape` and a timeout and only accept the repository's
-synthetic fixture paths and hash-bound downloads, not arbitrary uploaded content.
+Use Node 22 or newer, `zip`, `unzip`, Pandoc and a supported `pdflatex` or `lualatex`
+with the declared packages installed, including TikZ, physics, siunitx and German
+Babel. CI installs the prerequisites explicitly. `STACK_TEX_COMPILER=lualatex`
+selects that engine; an engine change is recorded, not treated as the same runtime.
 
-The oracle tests reject changed scripts, matrix cells, derivative order,
-cross-references, deleted final terms and erased compiler-negative content.
-They also reject false certification receipts. These controls test the gate's
-sensitivity; they do not establish mathematical meaning or reader usability.
+`report.json` records revision, tracked-diff digest, harness/manifest hashes,
+configuration, scan/job/artifact IDs and source/output hashes. It rejects harness
+changes during execution. `compilation.json` binds that exact queue report to engine
+and package identities, every source context and produced PDF. CI also retains
+server Python/package versions in `runtime.json`. Local host execution has no
+container image identity; container-based measurements must record their image
+separately. Keep local evidence and patches together; a dirty tree is not a release.
 
-The remaining research fixtures, project dependencies, HTML/DOCX/PDF conversions,
-domain-expert fidelity review and human/assistive-technology acceptance remain
-open under #444 and its related issues. Real media/model acceptance is also still
-outstanding. This increment cannot close the full corpus or dependency tracker.
+## Remaining boundaries
+
+The earlier eleven selected fixtures remain unchanged in `latex_validation` for
+their PDF-failure and source-evidence regressions. The separate
+[compatibility smoke](latex-compatibility.md) compares raw and preprocessed converter
+outputs for its declared controls. This queue lane neither replaces those results
+nor claims a complete HTML/DOCX/PDF replay of all 26 cases. Domain-human review and
+assistive-technology testing remain unperformed; expected reader answers are
+hypotheses, not certifications. #444, #454 and #455 retain the wider format,
+profile and reader work; #378 retains broader saved-artifact/media acceptance.
