@@ -1,0 +1,17 @@
+% Authored alternative describes the exact synthetic diagram.
+\documentclass{article}
+\usepackage{tikz}
+\title{Authored figure control}
+\author{Synthetic corpus}
+\date{}
+\begin{document}
+\maketitle
+\begin{figure}[h]
+\begin{tikzpicture}[alt={An arrow leads from A to B.}]
+\node (a) at (0,0) {A};
+\node (b) at (2,0) {B};
+\draw[->] (a)--(b);
+\end{tikzpicture}
+\caption{One directed relationship.}
+\end{figure}
+\end{document}
