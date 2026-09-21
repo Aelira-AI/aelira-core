@@ -776,6 +776,16 @@ async def process_remediation_job(
             for field in ("status", "remediation_outcome", "completed_at")
         }
 
+        if (
+            getattr(scan.scan_type, "value", scan.scan_type) == "LATEX"
+            and Path(scan.storage_path or "").suffix.lower() == ".zip"
+        ):
+            return {
+                "success": False,
+                "error": "project_source_review_required",
+                "scan_id": scan_id,
+            }
+
         # 2. Get ScanResult with detailed issues
         scan_result = db.query(ScanResult).filter(ScanResult.scan_id == scan_id).first()
         if not scan_result:

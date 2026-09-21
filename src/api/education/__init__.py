@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from .scan_routes import router as scan_router
+from .latex_project_routes import router as latex_project_router
 from .scan_history_routes import router as scan_history_router
 from .image_routes import router as image_router
 from .web_scan_routes import router as web_scan_router
@@ -15,6 +16,7 @@ from .report_routes import router as report_router
 
 router = APIRouter(prefix="/education", tags=["education"])
 router.include_router(scan_router)
+router.include_router(latex_project_router)
 router.include_router(scan_history_router)
 router.include_router(image_router)
 router.include_router(web_scan_router)

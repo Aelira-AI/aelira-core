@@ -1083,8 +1083,16 @@ def process_latex_background(
     use_ollama: bool,
     user_id: str,
     department_id: str,
+    *,
+    entry_file: str | None = None,
 ):
     """Background task to process LaTeX document asynchronously - TRUE REAL-TIME PROGRESS!"""
+    if entry_file is not None:
+        from .latex_project_routes import process_latex_project_background
+
+        return process_latex_project_background(
+            file_content, entry_file, scan_id, department_id
+        )
     from ...db.database import SessionLocal
     from ...db.models import Scan, ScanStatus, ScanResult
     from sqlalchemy.sql import func

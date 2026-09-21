@@ -543,5 +543,19 @@ jobs:
           path: test-results/latex-semantics/
           if-no-files-found: warn
           retention-days: 14
+      - name: Verify complete authored LaTeX source projects
+        run: |
+          mkdir -p test-results/latex-projects
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,mode=1777 \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
+            /app/scripts/smoke_latex_projects.py > test-results/latex-projects/report.json
+      - name: Retain authored LaTeX source project evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latex-projects-${{ matrix.runner }}
+          path: test-results/latex-projects/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Build and verify reproducible dashboard image
         run: scripts/verify_reproducible_image.sh dashboard dashboard/Dockerfile ${{ matrix.platform }}

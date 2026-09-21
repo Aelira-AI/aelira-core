@@ -163,7 +163,12 @@ def test_public_job_shape_exposes_recorded_total_and_aggregate_remaining(monkeyp
 
 
 def test_local_enqueue_disables_retry_and_uses_scan_option_fingerprint(monkeypatch):
-    scan = SimpleNamespace(id="scan-1", storage_path="/uploads/source.pdf")
+    scan = SimpleNamespace(
+        id="scan-1",
+        storage_path="/uploads/source.pdf",
+        scan_type=ScanType.PDF,
+        result=None,
+    )
     principal = SimpleNamespace(department_id="department-1", user_id="user-1")
     db = MagicMock()
     queued = SimpleNamespace(id="job-1", status="pending")

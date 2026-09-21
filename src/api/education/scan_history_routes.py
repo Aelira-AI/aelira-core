@@ -489,6 +489,15 @@ async def get_scan_html(
 
     authorize_scan_access(db, scan, principal)
 
+    structure = getattr(scan.result, "structure", None)
+    if scan.scan_type == ScanType.LATEX and (
+        str(scan.storage_path or "").lower().endswith(".zip")
+        or (isinstance(structure, dict) and "latex_project" in structure)
+    ):
+        from .latex_project_routes import download_latex_project_html
+
+        return download_latex_project_html(scan_id, db, principal)
+
     if not scan.result or not scan.result.html_output:
         raise HTTPException(status_code=404, detail="HTML output not found")
 
