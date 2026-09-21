@@ -459,3 +459,113 @@ def test_mathml_generation_warning_must_resolve_on_final_pass(final_pass, expect
     assert [(item.code, item.severity) for item in findings] == [
         ("missing_mathml", expected)
     ]
+
+
+@pytest.mark.parametrize("newline", ["\r\n", "\r", "\n"])
+def test_equation_evidence_preserves_original_newline_bytes(
+    converter, source, monkeypatch, newline
+):
+    data = newline.join(
+        [r"\documentclass{article}", r"\begin{document}\[x+1\]\end{document}", ""]
+    ).encode()
+    source.write_bytes(data)
+    runner(monkeypatch)
+    receipts = {}
+    candidate = converter.convert_to_html(str(source), conversion_receipts=receipts)
+    assert candidate
+    report = receipts["html"]
+    assert (
+        report.source_sha256
+        == report.decision.source_sha256
+        == report.source_equations.source_sha256
+        == sha(data)
+    )
+    assert report.equations.candidate_sha256 == sha(Path(candidate).read_bytes())
+    assert report.preprocessing[0].input_sha256 == sha(data)
+    assert source.read_bytes() == data
+
+
+def test_selected_html_route_does_not_retry_after_unexplained_failure(
+    converter, source, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(
+        converter, "_convert_with_latexml", lambda *a: calls.append("latexml")
+    )
+    monkeypatch.setattr(
+        converter, "_convert_with_pandoc", lambda *a: calls.append("pandoc")
+    )
+    receipts = {}
+    assert converter.convert_to_html(str(source), conversion_receipts=receipts) is None
+    assert calls == ["latexml"]
+    assert receipts["html"].decision.fallback_policy == "no_retry_after_selected_route"
+
+
+def test_provenance_must_bind_final_saved_bytes(converter, source, monkeypatch):
+    from pydantic import ValidationError
+
+    runner(monkeypatch)
+    receipts = {}
+    assert converter.convert_to_html(str(source), conversion_receipts=receipts)
+    value = receipts["html"].model_dump()
+    value["equations"]["candidate_sha256"] = "0" * 64
+    with pytest.raises(ValidationError):
+        ConversionDiagnostics.model_validate(value)
+
+
+def test_nested_model_copy_cannot_bypass_public_trace_validation(
+    converter, source, monkeypatch
+):
+    from pydantic import ValidationError
+
+    runner(monkeypatch)
+    receipts = {}
+    assert converter.convert_to_html(str(source), conversion_receipts=receipts)
+    report = receipts["html"]
+    stage = next(s for s in report.stages if s.equations is not None)
+    forged = stage.model_copy(
+        update={
+            "equations": stage.equations.model_copy(
+                update={"issues": ["PRIVATE_RAW_DATA"]}
+            )
+        }
+    )
+    with pytest.raises(ValidationError):
+        ConversionDiagnostics(
+            source_sha256=report.source_sha256, status="refused", stages=[forged]
+        )
+
+
+def test_observation_limit_refuses_without_raising_or_fallback(
+    converter, source, monkeypatch
+):
+    from src.education import latex_equation_provenance as provenance
+
+    monkeypatch.setattr(provenance, "MAX_CANDIDATE_BYTES", 4)
+    calls = runner(monkeypatch)
+    receipts = {}
+    assert converter.convert_to_html(str(source), conversion_receipts=receipts) is None
+    assert calls == ["latexml"]
+    assert receipts["html"].status == "refused"
+    assert any(
+        d.code == "candidate_unreadable"
+        for s in receipts["html"].stages
+        for d in s.diagnostics
+    )
+
+
+def test_final_observation_limit_withholds_html(converter, source, monkeypatch):
+    from src.education import latex_equation_provenance as provenance
+
+    calls = runner(monkeypatch)
+    finish = converter._finish_diagnostics
+
+    def limit_final(*args):
+        monkeypatch.setattr(provenance, "MAX_CANDIDATE_BYTES", 4)
+        return finish(*args)
+
+    monkeypatch.setattr(converter, "_finish_diagnostics", limit_final)
+    receipts = {}
+    assert converter.convert_to_html(str(source), conversion_receipts=receipts) is None
+    assert calls == ["latexml", "latexmlpost"]
+    assert receipts["html"].status == "refused"

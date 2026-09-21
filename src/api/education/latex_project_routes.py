@@ -318,6 +318,25 @@ def _bound_project_provenance(scan, project):
         != hashlib.sha256(project.flattened_source.encode("utf-8")).hexdigest()
     ):
         return None
+    original_sources = {
+        hashlib.sha256(name.encode("utf-8")).hexdigest(): (
+            hashlib.sha256(data).hexdigest(),
+            len(data),
+        )
+        for name, data in project.files.items()
+        if name.lower().endswith(".tex")
+    }
+    if provenance.get("original_equations_complete") and {
+        item["path_sha256"] for item in provenance.get("original_equations", [])
+    } != set(original_sources):
+        return None
+    for original in provenance.get("original_equations", []):
+        equations = original["equations"]
+        if original_sources.get(original["path_sha256"]) != (
+            equations["source_sha256"],
+            equations["source_bytes"],
+        ):
+            return None
     return provenance
 
 

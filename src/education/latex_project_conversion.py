@@ -14,7 +14,14 @@ from typing import Literal, get_args
 
 from bs4 import BeautifulSoup
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from .latex_diagnostics import (
     Diagnostic,
@@ -25,6 +32,13 @@ from .latex_diagnostics import (
 from .latex_metadata import extract_metadata, save_html_metadata
 from .latex_semantics import extract_semantics, save_html_semantics
 from .latex_semantics import _group
+from .latex_compatibility import ConversionDecision, decide_html
+from .latex_equation_provenance import (
+    EquationRepresentationTrace,
+    SourceEquationProvenance,
+    observe_representation,
+    source_provenance,
+)
 
 MAX_OUTPUT = 16 * 1024 * 1024
 MAX_LOG = 65536
@@ -41,7 +55,7 @@ def digest(data: bytes) -> str:
 
 
 class Transformation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", revalidate_instances="always")
     kind: Literal[
         "literal_dependency_expansion",
         "html_conversion",
@@ -51,8 +65,16 @@ class Transformation(BaseModel):
     output_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
+class ProjectSourceEquations(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+    path_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    equations: SourceEquationProvenance
+
+
 class ProjectProvenance(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", revalidate_instances="always")
     schema_version: Literal[1] = 1
     profile: Literal["pandoc-project-html-v1"] = "pandoc-project-html-v1"
     archive_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -67,6 +89,39 @@ class ProjectProvenance(BaseModel):
     reasons: list[str] = Field(default_factory=list, max_length=32)
     accessibility_status: Literal["not_verified"] = "not_verified"
     human_review_required: Literal[True] = True
+    decision: ConversionDecision | None = None
+    source_equations: SourceEquationProvenance | None = None
+    equations: EquationRepresentationTrace | None = None
+    original_equations: list[ProjectSourceEquations] = Field(
+        default_factory=list, max_length=64
+    )
+    original_equations_complete: bool = False
+
+    @model_validator(mode="after")
+    def original_inventory_consistency(self):
+        paths = [item.path_sha256 for item in self.original_equations]
+        if len(paths) != len(set(paths)):
+            raise ValueError("Duplicate original equation source")
+        if self.original_equations_complete and (
+            not paths or any(item.equations.issues for item in self.original_equations)
+        ):
+            raise ValueError("Complete original inventory requires parsed sources")
+        if (
+            sum(item.equations.source_bytes for item in self.original_equations)
+            > 2 * 1024 * 1024
+        ):
+            raise ValueError("Original equation source budget exceeded")
+        if (
+            sum(
+                len(item.equations.expressions)
+                + len(item.equations.relationships)
+                + sum(len(e.rows) for e in item.equations.expressions)
+                for item in self.original_equations
+            )
+            > 128
+        ):
+            raise ValueError("Original equation record budget exceeded")
+        return self
 
     @field_validator("reasons")
     @classmethod
@@ -79,6 +134,21 @@ class ProjectProvenance(BaseModel):
 def public_project_provenance(value):
     try:
         record = ProjectProvenance.model_validate(value)
+        if (
+            record.source_equations is not None
+            and record.source_equations.source_sha256 != record.analysis_sha256
+        ):
+            return None
+        if record.equations is not None and (
+            record.equations.source_sha256 != record.analysis_sha256
+            or record.equations.candidate_sha256 != record.output_sha256
+        ):
+            return None
+        if (
+            record.decision is not None
+            and record.decision.source_sha256 != record.analysis_sha256
+        ):
+            return None
         if record.status == "accepted" and (
             not record.output_sha256 or not record.analysis_sha256 or record.reasons
         ):
@@ -207,12 +277,48 @@ def convert_project_html(project, output_dir: Path) -> ProjectConversion:
     receipt = ProjectProvenance(
         archive_sha256=project.archive_digest, source_sha256=project.source_digest
     )
+    remaining_bytes = 2 * 1024 * 1024
+    remaining_records = 128
+    receipt.original_equations_complete = True
+    for name, data in sorted(project.files.items()):
+        if Path(name).suffix.lower() != ".tex":
+            continue
+        if len(receipt.original_equations) == 64 or len(data) > remaining_bytes:
+            receipt.original_equations_complete = False
+            break
+        try:
+            original = source_provenance(data.decode("utf-8"))
+        except UnicodeError:
+            receipt.original_equations_complete = False
+            continue
+        remaining_bytes -= len(data)
+        size = (
+            len(original.expressions)
+            + len(original.relationships)
+            + sum(len(e.rows) for e in original.expressions)
+        )
+        if size > remaining_records:
+            receipt.original_equations_complete = False
+            break
+        remaining_records -= size
+        if original.issues:
+            receipt.original_equations_complete = False
+        receipt.original_equations.append(
+            ProjectSourceEquations(
+                path_sha256=digest(name.encode("utf-8")), equations=original
+            )
+        )
 
     def result(path=None, reasons=()):
+        if path and Path(path).stat().st_size > MAX_OUTPUT:
+            path, reasons = None, ["project_export_limit"]
         receipt.status = "accepted" if path else "refused"
         receipt.reasons = sorted(set(reasons))[:32]
         if path:
             receipt.output_sha256 = digest(Path(path).read_bytes())
+            receipt.equations = observe_representation(
+                project.flattened_source, Path(path), "html"
+            )
         return ProjectConversion(
             str(path) if path else None,
             receipt.model_dump(mode="json"),
@@ -230,6 +336,16 @@ def convert_project_html(project, output_dir: Path) -> ProjectConversion:
         return result(reasons=["dependencies_unresolved"])
     text = project.flattened_source
     receipt.analysis_sha256 = digest(text.encode("utf-8"))
+    receipt.source_equations = source_provenance(text)
+    receipt.tool_version = _version()
+    receipt.decision = decide_html(
+        text,
+        available={"pandoc"} if shutil.which("pandoc") else set(),
+        versions={"pandoc": receipt.tool_version},
+        project=True,
+    )
+    if receipt.decision.selected_route is None:
+        return result(reasons=["package_route_unavailable"])
     receipt.transformations.append(
         Transformation(
             kind="literal_dependency_expansion",

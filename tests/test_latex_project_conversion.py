@@ -9,6 +9,28 @@ from src.education.latex_project import inspect_archive
 from src.education import latex_project_conversion as conversion
 
 
+@pytest.fixture(autouse=True)
+def mocked_pandoc_runtime(monkeypatch):
+    """The fake executor also needs deterministic availability and version probes."""
+    monkeypatch.setattr(
+        conversion.shutil,
+        "which",
+        lambda tool: "/fake/pandoc" if tool == "pandoc" else None,
+    )
+    monkeypatch.setattr(conversion, "_version", lambda: "3.1.11.1")
+
+
+def test_missing_pandoc_refuses_before_executor(tmp_path, monkeypatch):
+    monkeypatch.setattr(conversion.shutil, "which", lambda _: None)
+    monkeypatch.setattr(
+        conversion, "_run_pandoc", lambda *a: pytest.fail("executor called")
+    )
+    result = conversion.convert_project_html(project(), tmp_path)
+    assert result.path is None
+    assert result.provenance["reasons"] == ["package_route_unavailable"]
+    assert "tool_unavailable" in result.provenance["decision"]["reasons"]
+
+
 def project(files=None):
     stream = BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
@@ -145,3 +167,82 @@ def test_project_subprocess_refuses_automatic_multifile_edits(tmp_path):
             tmp_path / "project.zip",
             tmp_path,
         )
+
+
+def test_project_original_and_analysis_identities_are_distinct(tmp_path, monkeypatch):
+    original = project(
+        {
+            "main.tex": r"\documentclass{article}\begin{document}\input{chapter}\end{document}",
+            "chapter.tex": "Nested $x+1$.\r\n",
+        }
+    )
+
+    def render(source, output, log):
+        output.write_text(
+            '<p>Nested <math><semantics><mrow><mi>x</mi><mo>+</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">x+1</annotation></semantics></math>.</p>'
+        )
+        log.write_text("")
+        return 0, None
+
+    monkeypatch.setattr(conversion, "_run_pandoc", render)
+    result = conversion.convert_project_html(original, tmp_path)
+    assert result.path
+    receipt = conversion.public_project_provenance(result.provenance)
+    source = next(
+        item
+        for item in receipt["original_equations"]
+        if item["path_sha256"] == conversion.digest(b"chapter.tex")
+    )["equations"]
+    assert source["source_sha256"] == conversion.digest(original.files["chapter.tex"])
+    assert receipt["source_equations"]["source_sha256"] == receipt["analysis_sha256"]
+    assert (
+        source["expressions"][0]["content_sha256"]
+        == receipt["source_equations"]["expressions"][0]["content_sha256"]
+    )
+    assert (
+        source["expressions"][0]["expression_id"]
+        != receipt["source_equations"]["expressions"][0]["expression_id"]
+    )
+    assert receipt["equations"]["candidate_sha256"] == receipt["output_sha256"]
+
+
+@pytest.mark.parametrize("kind", ["empty", "unsupported", "duplicate"])
+def test_complete_original_inventory_cannot_be_forged(kind):
+    from src.education.latex_equation_provenance import source_provenance
+
+    value = conversion.ProjectProvenance(
+        archive_sha256="0" * 64, source_sha256="1" * 64
+    ).model_dump()
+    original = {
+        "path_sha256": "2" * 64,
+        "equations": source_provenance(
+            r"\input{missing}" if kind == "unsupported" else "$x$"
+        ).model_dump(),
+    }
+    value["original_equations_complete"] = True
+    value["original_equations"] = (
+        [] if kind == "empty" else [original] * (2 if kind == "duplicate" else 1)
+    )
+    assert conversion.public_project_provenance(value) is None
+
+
+def test_final_project_html_size_limit_is_enforced_after_enrichment(
+    tmp_path, monkeypatch
+):
+    def render(source, output, log):
+        output.write_text("<p>Nested text.</p>")
+        log.write_text("")
+        return 0, None
+
+    preserve = conversion.save_html_metadata
+
+    def enrich(candidate, metadata):
+        saved = preserve(candidate, metadata)
+        monkeypatch.setattr(conversion, "MAX_OUTPUT", 4)
+        return saved
+
+    monkeypatch.setattr(conversion, "_run_pandoc", render)
+    monkeypatch.setattr(conversion, "save_html_metadata", enrich)
+    result = conversion.convert_project_html(project(), tmp_path)
+    assert result.path is None
+    assert result.provenance["reasons"] == ["project_export_limit"]

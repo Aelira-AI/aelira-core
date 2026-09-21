@@ -5,6 +5,7 @@ A generated file is not an accessibility or PDF/UA conformance certificate.
 
 import asyncio
 import logging
+import inspect
 import os
 import re
 import shutil
@@ -16,17 +17,24 @@ from types import SimpleNamespace
 from ..latex_runtime import tex_environment, version_command
 from ..latex_metadata import extract_metadata, save_html_metadata, save_pdf_metadata
 from ..latex_semantics import extract_semantics, save_html_semantics
+from ..latex_compatibility import decide_html, tool_versions
+from ..latex_equation_provenance import observe_representation, source_provenance
 
 from ..latex_diagnostics import (
     ConversionDiagnostics,
     ConversionStage,
+    PreprocessingObservation,
     classify,
     conversion_session,
+    current_decision,
+    current_preprocessing,
     diagnostic,
     has_loss,
     inspect_candidate,
     inspect_source,
     record,
+    record_decision,
+    record_preprocessing,
     sha,
 )
 
@@ -200,6 +208,21 @@ class LaTeXConverter:
             candidate_hash = None
         if not candidate_hash and not findings:
             findings.append(diagnostic("candidate_missing"))
+        equations = None
+        if candidate_hash and source.suffix.lower() == ".tex":
+            kind = {
+                "latexml": "latexml",
+                "pandoc": "html",
+                "lualatex": "pdf",
+                "pdflatex": "pdf",
+            }.get(tool)
+            if kind:
+                equations = observe_representation(
+                    source.read_bytes().decode("utf-8"), candidate, kind
+                )
+                if equations.candidate_sha256 != candidate_hash:
+                    equations = None
+                    findings.append(diagnostic("candidate_unreadable"))
         stage = record(
             ConversionStage(
                 tool=tool,
@@ -210,6 +233,7 @@ class LaTeXConverter:
                 candidate_sha256=candidate_hash,
                 exit_code=result.returncode,
                 diagnostics=findings,
+                equations=equations,
             )
         )
         audit = candidate.parent / f"{tool}-{phase}-{pass_number}.diagnostics.json"
@@ -222,6 +246,25 @@ class LaTeXConverter:
 
     def _finish_diagnostics(self, tex_path, candidate, stages, receipts, kind):
         try:
+            candidate_hash = sha(Path(candidate).read_bytes()) if candidate else None
+            equations = (
+                observe_representation(
+                    Path(tex_path).read_bytes().decode("utf-8"), Path(candidate), kind
+                )
+                if candidate
+                else None
+            )
+            if equations is not None and equations.candidate_sha256 != candidate_hash:
+                equations = None
+                record(
+                    ConversionStage(
+                        tool="inspection",
+                        phase="inspect",
+                        input_sha256=sha(Path(tex_path).read_bytes()),
+                        candidate_sha256=candidate_hash,
+                        diagnostics=[diagnostic("candidate_unreadable")],
+                    )
+                )
             report = ConversionDiagnostics(
                 source_sha256=sha(Path(tex_path).read_bytes()),
                 candidate_sha256=(
@@ -231,6 +274,12 @@ class LaTeXConverter:
                     "accepted" if candidate and stages and not has_loss() else "refused"
                 ),
                 stages=stages,
+                decision=current_decision(),
+                source_equations=source_provenance(
+                    Path(tex_path).read_bytes().decode("utf-8")
+                ),
+                equations=equations,
+                preprocessing=current_preprocessing(),
             )
             if receipts is not None:
                 receipts[kind] = report
@@ -243,7 +292,7 @@ class LaTeXConverter:
 
     def _preserve_metadata(self, source: Path, candidate: Path, kind: str) -> bool:
         """Bind the saved metadata check to authored source and final bytes."""
-        metadata = extract_metadata(source.read_text(encoding="utf-8"))
+        metadata = extract_metadata(source.read_bytes().decode("utf-8"))
         reasons = sorted(metadata.issues)
         if kind == "pdf" and metadata.spans:
             reasons.append("metadata_unsupported")
@@ -275,7 +324,7 @@ class LaTeXConverter:
         """Require source-bound saved relationships; never infer author intent."""
         reasons = set()
         try:
-            contract = extract_semantics(source.read_text(encoding="utf-8"))
+            contract = extract_semantics(source.read_bytes().decode("utf-8"))
             reasons.update(contract.issues)
             if not reasons:
                 if kind == "html":
@@ -464,8 +513,19 @@ class LaTeXConverter:
 
         try:
             # Preprocess the LaTeX for LaTeXML compatibility
-            original_content = tex_file.read_text(encoding="utf-8")
+            original_content = tex_file.read_bytes().decode("utf-8")
             processed_content = self._preprocess_for_latexml(original_content)
+            record_preprocessing(
+                PreprocessingObservation(
+                    input_sha256=sha(original_content.encode("utf-8")),
+                    output_sha256=sha(processed_content.encode("utf-8")),
+                    implementation_sha256=sha(
+                        inspect.getsource(type(self)._preprocess_for_latexml).encode(
+                            "utf-8"
+                        )
+                    ),
+                )
+            )
 
             # Write preprocessed content to temp file
             processed_tex = output_dir / (tex_file.stem + "_latexml.tex")
@@ -845,7 +905,7 @@ class LaTeXConverter:
             self._finish_diagnostics(
                 tex_path, candidate, stages, conversion_receipts, "html"
             )
-            return candidate
+            return candidate if not has_loss() else None
 
     def _convert_to_html(
         self, tex_path: str, output_dir: Optional[str] = None
@@ -889,32 +949,35 @@ class LaTeXConverter:
 
         # Choose supported authored relationship/language routes before conversion;
         # known loss in another converter must never trigger a silent retry.
-        authored = extract_semantics(tex_file.read_text(encoding="utf-8"))
-        if self.pandoc_available and (
-            extract_metadata(tex_file.read_text(encoding="utf-8")).spans
-            or authored.graphics
-            or authored.tables
-        ):
-            attempt = Path(tempfile.mkdtemp(prefix="html-pandoc-", dir=out_dir))
-            return self._convert_with_pandoc(str(tex_file), attempt)
-
-        # Primary: LaTeXML (best MathML support)
-        if self.latexml_available:
-            attempt = Path(tempfile.mkdtemp(prefix="html-latexml-", dir=out_dir))
-            html_path = self._convert_with_latexml(tex_path, attempt)
-            if has_loss():
-                return None
-            if html_path:
-                return html_path
-
-        # Fallback: pandoc with MathML
+        text = tex_file.read_bytes().decode("utf-8")
+        authored = extract_semantics(text)
+        available = set()
+        if self.latexml_available and self.latexmlpost_available:
+            available.add("latexml")
         if self.pandoc_available:
-            logger.warning("Using pandoc fallback for HTML")
-            attempt = Path(tempfile.mkdtemp(prefix="html-pandoc-", dir=out_dir))
-            return self._convert_with_pandoc(tex_path, attempt)
-
-        logger.error("No HTML conversion tools available")
-        return None
+            available.add("pandoc")
+        decision = decide_html(
+            text,
+            available=available,
+            versions=tool_versions(available),
+            prefer_pandoc=bool(
+                extract_metadata(text).spans or authored.graphics or authored.tables
+            ),
+        )
+        record_decision(decision)
+        if decision.selected_route is None:
+            record(
+                ConversionStage(
+                    tool="inspection",
+                    phase="inspect",
+                    input_sha256=sha(tex_file.read_bytes()),
+                    diagnostics=[diagnostic("package_route_unavailable")],
+                )
+            )
+            return None
+        route = decision.selected_route
+        attempt = Path(tempfile.mkdtemp(prefix=f"html-{route}-", dir=out_dir))
+        return getattr(self, f"_convert_with_{route}")(str(tex_file), attempt)
 
     def _convert_with_pandoc(self, tex_path: str, output_dir: Path) -> Optional[str]:
         """Fallback HTML conversion using pandoc."""
@@ -923,7 +986,7 @@ class LaTeXConverter:
 
         try:
             options = []
-            semantics = extract_semantics(tex_file.read_text(encoding="utf-8"))
+            semantics = extract_semantics(tex_file.read_bytes().decode("utf-8"))
             if semantics.graphics or semantics.tables:
                 # The bounded relationship checker cannot evaluate arbitrary
                 # CSS. Use a minimal template for this route; metadata is copied
