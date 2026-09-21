@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { execFileSync } from 'node:child_process';
 import { verifyLatexCorpus } from './verify_latex_corpus_stack.ts';
+import { authenticatedTarget } from './document_stack_transport.ts';
 
 const api = new URL(process.env.STACK_API_URL || 'http://localhost:18300');
 const mail = new URL(process.env.STACK_MAIL_URL || 'http://localhost:18325');
@@ -19,6 +20,17 @@ const email = process.env.STACK_TEST_EMAIL || 'document.acceptance@example.org';
 assert(email.endsWith('@example.org'), 'Use a synthetic example.org identity');
 const cookies = new Map<string, string>();
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+const harnessFiles = [
+  'scripts/verify_document_stack.ts', 'scripts/verify_latex_corpus_stack.ts',
+  'scripts/latex_corpus_contract.ts', 'tests/fixtures/latex_research/corpus.json',
+  'scripts/document_stack_transport.ts',
+];
+async function captureHarness() {
+  return Object.fromEntries(await Promise.all(harnessFiles.map(async (file) => [file, digest(await readFile(file))])));
+}
+const harnessHashes = await captureHarness();
+const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const trackedDiff = execFileSync('git', ['diff', 'HEAD', '--binary']);
 function officeContent(file: string, kind: string): string[] {
   if (kind === 'pdf') {
     const text = execFileSync('pdftotext', [file, '-'], { encoding: 'utf8' }).replace(/\s+/g, ' ').trim();
@@ -39,8 +51,7 @@ function headers(extra?: HeadersInit): Headers {
   return h;
 }
 async function request(path: string, init: RequestInit = {}) {
-  const target = new URL(path, api);
-  assert.equal(target.origin, api.origin, 'Refuse cross-origin authenticated request');
+  const target = authenticatedTarget(path, api);
   const response = await fetch(target, { ...init, headers: headers(init.headers), redirect: 'error', signal: AbortSignal.timeout(30000) });
   for (const line of response.headers.getSetCookie()) {
     const pair = line.split(';')[0];
@@ -240,14 +251,10 @@ for (const test of cases) {
   }
 }
 await verifyLatexCorpus({ request, poll, output, evidence, failures,
-  download: (path) => fetch(new URL(path, api), { headers: headers(), redirect: 'error', signal: AbortSignal.timeout(30000) }),
+  download: (path, init = {}) => fetch(authenticatedTarget(path, api), { ...init, headers: headers(init.headers), redirect: 'error', signal: AbortSignal.timeout(30000) }),
 });
-const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-const trackedDiff = execFileSync('git', ['diff', 'HEAD', '--binary']);
-const harnessHashes = Object.fromEntries(await Promise.all([
-  'scripts/verify_document_stack.ts', 'scripts/verify_latex_corpus_stack.ts',
-  'scripts/latex_corpus_contract.ts', 'tests/fixtures/latex_validation/corpus.json',
-].map(async (file) => [file, digest(await readFile(file))])));
+assert.deepEqual(await captureHarness(), harnessHashes, 'Queue harness changed during execution');
+assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), revision);
 await writeFile(resolve(output, 'report.json'), JSON.stringify({
   revision, tracked_diff_sha256: digest(trackedDiff), harness_sha256: harnessHashes,
   node_version: process.version, configuration: { ai: false, latex_formats: ['tex'] },

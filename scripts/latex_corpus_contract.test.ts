@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { assertPreservedTex, assertUnverified, withReviewedLanguage } from './latex_corpus_contract.ts';
+import { assertGermanMetadata, assertPreservedTex, assertUnverified, withReviewedLanguage } from './latex_corpus_contract.ts';
 
 const root = 'tests/fixtures/latex_validation';
 const manifest = JSON.parse(readFileSync(`${root}/corpus.json`, 'utf8'));
@@ -53,4 +54,57 @@ test('unassessed evidence passes; false certifications fail', () => {
     ...['fidelity', 'human_review', 'assistive_technology', 'structural_validation']
       .map((name) => ({ [name]: { ...check, status: 'passed' } })),
   ]) assert.throws(() => assertUnverified({ ...receipt, ...mutation }));
+});
+
+const researchRoot = 'tests/fixtures/latex_research';
+const research = JSON.parse(readFileSync(`${researchRoot}/corpus.json`, 'utf8'));
+test('complete research inventory retains 26 cases and 28 source identities', () => {
+  assert.deepEqual(research.cases.map((c: any) => c.id), [
+    ...Array.from({ length: 18 }, (_, i) => `M${String(i + 1).padStart(2, '0')}`),
+    'P01', 'P02', 'P03', 'P04', 'N01', 'N02', 'N03', 'N04',
+  ]);
+  assert.equal(research.cases.flatMap((c: any) => c.sources).length, 28);
+  for (const c of research.cases) {
+    assert.equal(c.domain_human_review, 'not_run');
+    assert.equal(c.assistive_technology, 'not_run');
+    for (const source of c.sources) {
+      assert(source.path.startsWith(`${c.id}/`));
+      assert(!source.path.split('/').some((p: string) => !p || p === '.' || p === '..'));
+      const bytes = readFileSync(`${researchRoot}/${source.path}`);
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), source.sha256);
+    }
+  }
+});
+for (const fixture of research.cases) {
+  const source = readFileSync(`${researchRoot}/${fixture.entrypoint}`, 'utf8');
+  test(`${fixture.id}: full research source and declared language remain intact`, () => {
+    const language = fixture.id === 'P04' ? 'de' : 'en';
+    const reviewed = withReviewedLanguage(source, language);
+    assertPreservedTex(source, reviewed);
+    assert(reviewed.includes(`\\hypersetup{pdflang={${language}}}`));
+    if (fixture.id === 'P04') {
+      assert(reviewed.includes('\\selectlanguage{ngerman}'));
+      assert(!reviewed.includes('pdflang={en}'));
+    }
+    assert.throws(() => assertPreservedTex(source, reviewed.replace('\\maketitle', '')));
+  });
+}
+
+const germanSource = readFileSync(`${researchRoot}/P04/main.tex`, 'utf8');
+test('German original and explicitly authored metadata pass', () => {
+  assertGermanMetadata(germanSource);
+  assertGermanMetadata(withReviewedLanguage(germanSource, 'de'));
+});
+for (const override of ['\\hypersetup{pdflang={en}}', '\\DocumentMetadata{lang=en}',
+  '\\selectlanguage{english}', '\\setdefaultlanguage{english}', '\\usepackage[english]{babel}',
+  '\\newcommand{\\percent}{\\%}\\hypersetup{pdflang={en}}',
+  '\\newcommand{\\langoverride}{en}\\hypersetup{pdflang=\\langoverride}']) {
+  test(`added foreign metadata is not source-language preservation: ${override}`, () => {
+    const saved = withReviewedLanguage(germanSource, 'de').replace('\\begin{document}', override + '\n\\begin{document}');
+    assertPreservedTex(germanSource, saved); // The separate body oracle deliberately allows additions.
+    assert.throws(() => assertGermanMetadata(saved));
+  });
+}
+test('a real comment does not invent a conflicting language assignment', () => {
+  assertGermanMetadata(germanSource.replace('\\begin{document}', '% \\hypersetup{pdflang={en}}\n\\begin{document}'));
 });

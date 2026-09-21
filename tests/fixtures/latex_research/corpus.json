@@ -1,0 +1,706 @@
+{
+  "schema_version": 1,
+  "corpus_id": "latex-research-444-v1",
+  "provenance": {
+    "kind": "synthetic-authored-for-research",
+    "source_authored_date": "2026-09-18",
+    "issue": "https://github.com/Aelira-AI/aelira-core/issues/444",
+    "source_bytes": "preserved"
+  },
+  "scope": "Diagnostic synthetic controls; not a prevalence sample, fidelity result, accessibility or conformance certificate.",
+  "compile_expectation_scope": "Source intent with required dependencies installed; measured outcomes are recorded separately.",
+  "case_count": 26,
+  "source_count": 28,
+  "domain_human_review": "not_run",
+  "assistive_technology": "not_run",
+  "cases": [
+    {
+      "id": "M01",
+      "title": "Fraction control",
+      "entrypoint": "M01/main.tex",
+      "sources": [
+        {
+          "path": "M01/main.tex",
+          "sha256": "0bc7e80b1b946cde78fee33eb53e6fa4ba33dce2d275a3d266e5c192968e2208"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "One fraction; numerator a+b; denominator c-d; subtraction stays in denominator."
+      ],
+      "reader_task": "Enter the denominator and identify its operator.",
+      "expected_answer": "c minus d; subtraction.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M02",
+      "title": "Nested fractions",
+      "entrypoint": "M02/main.tex",
+      "sources": [
+        {
+          "path": "M02/main.tex",
+          "sha256": "51fe2fc351e18272df5f0501df5331afa1537425eb73c2afb947fdc65b6fe2fc"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Three fraction nodes. Outer numerator is 1+a/b; outer denominator c+d/e.",
+        "The inner denominator e belongs to d/e, not to the outer fraction."
+      ],
+      "reader_task": "Navigate to the denominator of the fraction inside the outer denominator.",
+      "expected_answer": "e.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M03",
+      "title": "Script inside an exponent",
+      "entrypoint": "M03/main.tex",
+      "sources": [
+        {
+          "path": "M03/main.tex",
+          "sha256": "037faa5bfa6de4810dc29390903889b61e769e2c23a715f26553150ac9250196"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "x has one superscript whose content is a with subscript b.",
+        "b attaches to a; x has no direct subscript."
+      ],
+      "reader_task": "Whose subscript is b?",
+      "expected_answer": "a, inside the exponent of x.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M04",
+      "title": "Scripts on the same base",
+      "entrypoint": "M04/main.tex",
+      "sources": [
+        {
+          "path": "M04/main.tex",
+          "sha256": "93a3f151eb988e25202e869abac8ee3a02873877c98dfc2fcc5169d5e82475c8"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "x has superscript a and subscript b.",
+        "This structure differs from M03."
+      ],
+      "reader_task": "Whose subscript is b?",
+      "expected_answer": "x; a is the superscript of the same x.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M05",
+      "title": "Tensor index placement",
+      "entrypoint": "M05/main.tex",
+      "sources": [
+        {
+          "path": "M05/main.tex",
+          "sha256": "4599d639280d4ed5e03e9d9de1c2c751846e4a8c4c85913818c3db884d4225ff"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Upper index mu; lower indices nu then rho.",
+        "Order and upper/lower position survive; no assumption about a particular metric or tensor meaning."
+      ],
+      "reader_task": "List the upper index and ordered lower indices.",
+      "expected_answer": "Upper mu; lower nu, rho.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M06",
+      "title": "Complex matrix coordinates",
+      "entrypoint": "M06/main.tex",
+      "sources": [
+        {
+          "path": "M06/main.tex",
+          "sha256": "fa6ec9971018ccf98598c13b5b382f40c0c30455a4a7f9c716827ea8acc06ae0"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "2 rows and 3 columns.",
+        "r1c1=1, r1c2=0, r1c3=-i, r2c1=i, r2c2=2, r2c3=3."
+      ],
+      "reader_task": "Visit row 1 column 3, then row 2 column 1.",
+      "expected_answer": "Negative i, then i.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M07",
+      "title": "Integral with limits",
+      "entrypoint": "M07/main.tex",
+      "sources": [
+        {
+          "path": "M07/main.tex",
+          "sha256": "702a686463a83e186f6e84876f88e0bd0f12358d6d16161768a0a0b6b3422ed9"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Lower limit 0; upper limit infinity; variable t.",
+        "The exponent is the negative product alpha times t."
+      ],
+      "reader_task": "Read the integration limits and exponent.",
+      "expected_answer": "0 to infinity; minus alpha times t.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M08",
+      "title": "Greek case and variants",
+      "entrypoint": "M08/main.tex",
+      "sources": [
+        {
+          "path": "M08/main.tex",
+          "sha256": "061ef81acf583b4ee1304566f1f452fd2df5631331f7fe53187d8ee14dbdcfa9"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Six terms in the authored order.",
+        "Upper/lower gamma differ; phi/varphi and epsilon/varepsilon remain distinguishable representations.",
+        "A pronunciation may be equivalent; do not require one universal spoken name for a variant."
+      ],
+      "reader_task": "Identify term positions 1, 2, 3 and 4 and whether 3 and 4 are distinct variants.",
+      "expected_answer": "Capital gamma, lowercase gamma, phi, variant phi; distinct variants.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M09",
+      "title": "Quantum expectation value",
+      "entrypoint": "M09/main.tex",
+      "sources": [
+        {
+          "path": "M09/main.tex",
+          "sha256": "b3832318e26fa28a777dbb1691678adb7dc1e54a707bd53fb2b945a765b2c519"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Left bra psi; middle hatted H; right ket psi.",
+        "The hat on H and both psi operands remain present."
+      ],
+      "reader_task": "Identify the middle operator including its accent.",
+      "expected_answer": "H with a hat.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M10",
+      "title": "Physics package macros",
+      "entrypoint": "M10/main.tex",
+      "sources": [
+        {
+          "path": "M10/main.tex",
+          "sha256": "39c111d108983714d0fdab4d6c6bd236184aeef72998e57e3d3535e52d04888d"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb",
+        "physics"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Bra phi followed by ket psi, plus the second partial derivative of f with respect to x.",
+        "The derivative order is 2, not 1; f and x remain operands."
+      ],
+      "reader_task": "Identify the derivative order and differentiation variable.",
+      "expected_answer": "Second order, with respect to x.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M11",
+      "title": "Vector cross product",
+      "entrypoint": "M11/main.tex",
+      "sources": [
+        {
+          "path": "M11/main.tex",
+          "sha256": "e8ad2e8fd9453332f8f1f330a101de9c6a5adeee66ae21fde993a201490a3964"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "F, v and B use bold mathematical notation; q is scalar notation.",
+        "Operator between v and B is cross product, not ordinary multiplication."
+      ],
+      "reader_task": "Identify the operation joining v and B.",
+      "expected_answer": "Cross product.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M12",
+      "title": "Units and scientific notation",
+      "entrypoint": "M12/main.tex",
+      "sources": [
+        {
+          "path": "M12/main.tex",
+          "sha256": "a74a156ef147636762b3bf760e674e61cf13f77ca86f98ec0ff2b5d8702390c2"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb",
+        "siunitx"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Quantity is 3.00 times 10 to the 8 metres per second.",
+        "No reciprocal-unit or exponent change; retain authored precision in source representation."
+      ],
+      "reader_task": "Read the magnitude and unit.",
+      "expected_answer": "3.00 times 10 to the eighth metres per second.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M13",
+      "title": "Piecewise boundaries",
+      "entrypoint": "M13/main.tex",
+      "sources": [
+        {
+          "path": "M13/main.tex",
+          "sha256": "abd701a67476b1ec30bc131b472a0926774fb16e45f858638c50f9a41153fc01"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Two branches. x squared for x greater than or equal to zero; negative x for x less than zero.",
+        "The value x=0 belongs to the first branch only."
+      ],
+      "reader_task": "Which branch includes x equal to zero?",
+      "expected_answer": "The x squared branch.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M14",
+      "title": "Aligned derivation and cross reference",
+      "entrypoint": "M14/main.tex",
+      "sources": [
+        {
+          "path": "M14/main.tex",
+          "sha256": "00460571e2ff9ef46585d3b7c288fd12e8fe1a300b2001e96857d1d2411c25a0"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Two numbered aligned rows in order; distinct labels energy and mass.",
+        "References resolve to the correct rows, not both to one expression."
+      ],
+      "reader_task": "Follow the mass reference and identify the left side.",
+      "expected_answer": "E divided by c squared.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M15",
+      "title": "Multiple inline equations",
+      "entrypoint": "M15/main.tex",
+      "sources": [
+        {
+          "path": "M15/main.tex",
+          "sha256": "7249df2e5892051cf405761cc3aecf4544f4cf115e64d6cbf7799a4057a69a98"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Three inline expressions in order, with intervening prose intact.",
+        "Final expression is c=a+b, not c=3 substituted by a converter."
+      ],
+      "reader_task": "Read the paragraph continuously, then find the middle expression.",
+      "expected_answer": "b equals 2; all connecting prose remains available.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M16",
+      "title": "Long expression and final sentinel",
+      "entrypoint": "M16/main.tex",
+      "sources": [
+        {
+          "path": "M16/main.tex",
+          "sha256": "d01acce2528e163266cfe27155ceabc802a0b4f80c2b23987b4ef5e8cb3e037c"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Sixteen indexed terms, then the sentinel fraction 97q_end/(1+z^2).",
+        "Source math exceeds 500 characters; final term remains accessible and is not lost by summarization."
+      ],
+      "reader_task": "Locate the last numerator and denominator.",
+      "expected_answer": "Numerator 97 times q with subscript end; denominator 1 plus z squared.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M17",
+      "title": "Authored ordered pair",
+      "entrypoint": "M17/main.tex",
+      "sources": [
+        {
+          "path": "M17/main.tex",
+          "sha256": "f9b4abe3c4294dac7a2970602af7a2d3d1aa6f6ad9aeb0f6ff02c60e746986cf"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Author explicitly defines the notation as an ordered pair with first coordinate a and second coordinate b.",
+        "Do not infer an interval from appearance."
+      ],
+      "reader_task": "What meaning does the surrounding prose assign?",
+      "expected_answer": "An ordered pair; first a, second b.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "M18",
+      "title": "Authored open interval",
+      "entrypoint": "M18/main.tex",
+      "sources": [
+        {
+          "path": "M18/main.tex",
+          "sha256": "e95b9035431c647d3369d7cfc4fd6f29a61ea28f99de82ee08d94588351fe85a"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Author explicitly defines an open interval with endpoints a and b excluded.",
+        "Math glyphs match M17; context differs."
+      ],
+      "reader_task": "Are the endpoints included?",
+      "expected_answer": "Neither endpoint is included.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "P01",
+      "title": "Project dependencies and references",
+      "entrypoint": "P01/main.tex",
+      "sources": [
+        {
+          "path": "P01/main.tex",
+          "sha256": "078f9d1d5ba9a078c9580aab5bbf67ec12cc908118d1e6b0de5aad75e603b6d0"
+        },
+        {
+          "path": "P01/macros.tex",
+          "sha256": "34d9dad37205d0ed6f0b1047046fb29f4be02ccd3786fd42cd33946455159396"
+        },
+        {
+          "path": "P01/chapters/one.tex",
+          "sha256": "773dad66c8509290e2f2473261dd101e70ed895ef2f79c52bd35a2b2f9bf2786"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Both dependency files resolve in project context.",
+        "Exactly one authored expression mc^2=E survives with its equation label.",
+        "Opening prose, included prose, reference and bibliography remain in reading order."
+      ],
+      "reader_task": "Follow the equation reference and identify the expanded macro.",
+      "expected_answer": "m times c squared; equation mc squared equals E.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "P02",
+      "title": "Diagram relationships",
+      "entrypoint": "P02/main.tex",
+      "sources": [
+        {
+          "path": "P02/main.tex",
+          "sha256": "a72eaa0bbea89df6aa321b3a95ac3831ced45ae0c7519414ac5e54be521d0aad"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb",
+        "tikz"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Three labeled nodes A, B and C; directed edges A to B and A to C only.",
+        "Caption is intentionally incomplete as an alternative; counting nodes/arrows is insufficient."
+      ],
+      "reader_task": "Identify each directed edge and determine whether B connects to C.",
+      "expected_answer": "A to B and A to C; no B to C edge.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "P03",
+      "title": "Grouped data table",
+      "entrypoint": "P03/main.tex",
+      "sources": [
+        {
+          "path": "P03/main.tex",
+          "sha256": "b42da21e4f24ac403a593cf5be899f3c3bd227e5a35cd14e7c29bac6073780f2"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "Four data values with associations: Red/A=2, Red/B=5, Blue/A=7, Blue/B=11.",
+        "Trial groups A and B. Source has visual header cues but no explicit accessible header annotations."
+      ],
+      "reader_task": "Find the Blue sample in Trial B and identify its headers.",
+      "expected_answer": "11; row Blue, column B under Trial.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "P04",
+      "title": "German language metadata",
+      "entrypoint": "P04/main.tex",
+      "sources": [
+        {
+          "path": "P04/main.tex",
+          "sha256": "44e06c58146d587e8412b040bdedcddfc9872303226e2e32a302469807a90f77"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb",
+        "babel"
+      ],
+      "compile_expected": "passed",
+      "failure_reason": null,
+      "expected_content": [
+        "German prose retained; v=3.",
+        "Document language should be German, not an unconditional English default."
+      ],
+      "reader_task": "Identify the document language and read the equation.",
+      "expected_answer": "German; v equals 3.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "N01",
+      "title": "Undefined macro negative control",
+      "entrypoint": "N01/main.tex",
+      "sources": [
+        {
+          "path": "N01/main.tex",
+          "sha256": "90641967480824711a6061466a1be956d88944d40dc4fb7d1358290d8ba8642e"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "failed",
+      "failure_reason": "Undefined control sequence benchUnknownMacro.",
+      "expected_content": [
+        "Undefined macro must remain explicitly unresolved, not silently converted into a trustworthy equation."
+      ],
+      "reader_task": "Confirm the diagnostic identifies unsupported source.",
+      "expected_answer": "Unresolved macro; no invented meaning.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "N02",
+      "title": "Missing included chapter",
+      "entrypoint": "N02/main.tex",
+      "sources": [
+        {
+          "path": "N02/main.tex",
+          "sha256": "928443f4b6ecb7f2a4b81012e8ce444f5fe4759bbaf7f46f2801873116240272"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "failed",
+      "failure_reason": "Deliberately absent included file.",
+      "expected_content": [
+        "Missing dependency identified; zero detected equations must not imply full document success."
+      ],
+      "reader_task": "Confirm missing source is visible as a failure.",
+      "expected_answer": "Missing chapters/absent.tex; document incomplete.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "N03",
+      "title": "Missing figure asset",
+      "entrypoint": "N03/main.tex",
+      "sources": [
+        {
+          "path": "N03/main.tex",
+          "sha256": "bc46a2294adc26bde5dc5138ca8229f7e1110e5ecac3b3ce5671c915514e4f79"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb",
+        "graphicx"
+      ],
+      "compile_expected": "failed",
+      "failure_reason": "Deliberately absent image asset.",
+      "expected_content": [
+        "Missing image remains unresolved.",
+        "No filename-derived or invented description receives verified remediation credit."
+      ],
+      "reader_task": "Confirm no description claims to know unseen image content.",
+      "expected_answer": "Source image unavailable; human review required.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    },
+    {
+      "id": "N04",
+      "title": "Unbalanced fraction source",
+      "entrypoint": "N04/main.tex",
+      "sources": [
+        {
+          "path": "N04/main.tex",
+          "sha256": "184f6de9b0ac672aafb0eaa5e609afde7f969bce550b0cc8d1f6a10da2d41a9c"
+        }
+      ],
+      "required_packages": [
+        "geometry",
+        "amsmath",
+        "amssymb"
+      ],
+      "compile_expected": "failed",
+      "failure_reason": "Deliberately unbalanced fraction brace.",
+      "expected_content": [
+        "Malformed math is reported explicitly.",
+        "A partial output file is not a successful fidelity result."
+      ],
+      "reader_task": "Confirm error remains visible and original source is retained.",
+      "expected_answer": "Malformed fraction; unresolved.",
+      "domain_human_review": "not_run",
+      "assistive_technology": "not_run"
+    }
+  ]
+}

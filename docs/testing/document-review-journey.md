@@ -22,7 +22,7 @@ a full browser journey or accessibility conformance.
 | DOCX and syllabus PDF requiring manual work | No downloadable artifact, no verified remediated score, zero published fixes and reconciled unresolved counts |
 | Image-heavy PPTX with missing alt text, AI requested and no provider configured | Missing descriptions remain unresolved; terminal refusal with no artifact or success-shaped result |
 | Incomplete academic-paper scan | Failed scan with actionable explanation and no score after reload |
-| Eleven LaTeX corpus sources and declared-language variants | Originals require author review; nine labelled variants produce TEX downloads, with rescans, conservative receipts and compilation checks; N03/N04 variants remain withheld; [scope and limits](latex-corpus-queue.md) |
+| 26 LaTeX cases and declared-language variants | Saved TEX preservation and independent rescans, explicit refusals and German no-ops; complete project archive retrieval and compiler controls; [scope and limits](latex-corpus-queue.md) |
 
 Successful fixtures must contain at least one pending fix, so the review checks
 cannot pass without exercising approval. Approval is bound to each fix's
