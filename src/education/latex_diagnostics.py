@@ -13,6 +13,12 @@ from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .latex_compatibility import ConversionDecision
+from .latex_equation_provenance import (
+    EquationRepresentationTrace,
+    SourceEquationProvenance,
+)
+
 MAX_LOG = 65536
 MAX_ARTIFACT = 16 * 1024 * 1024
 
@@ -22,7 +28,9 @@ def sha(data: bytes) -> str:
 
 
 class Diagnostic(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
     code: Literal[
         "process_failed",
         "tool_unavailable",
@@ -52,13 +60,16 @@ class Diagnostic(BaseModel):
         "font_warning",
         "rerun_required",
         "deprecation_warning",
+        "package_route_unavailable",
     ]
     severity: Literal["info", "warning", "error"]
     source_line: int | None = Field(default=None, ge=1, le=10000000)
 
 
 class ReferenceObservation(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
     target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     target_exists: bool
     target_identity: Literal["not_assessed"] = "not_assessed"
@@ -66,7 +77,9 @@ class ReferenceObservation(BaseModel):
 
 
 class ConversionStage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
     tool: Literal[
         "latexml",
         "latexmlpost",
@@ -88,10 +101,30 @@ class ConversionStage(BaseModel):
     exit_code: int | None = None
     diagnostics: list[Diagnostic] = Field(default_factory=list, max_length=32)
     references: list[ReferenceObservation] = Field(default_factory=list, max_length=128)
+    equations: EquationRepresentationTrace | None = None
+
+    @model_validator(mode="after")
+    def equation_binding(self):
+        if self.equations is not None and (
+            self.equations.source_sha256 != self.input_sha256
+            or self.equations.candidate_sha256 != self.candidate_sha256
+        ):
+            raise ValueError("Stage equations must bind input and candidate bytes")
+        return self
 
     @property
     def blocked(self):
         return any(d.severity == "error" for d in self.diagnostics)
+
+
+class PreprocessingObservation(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+    method: Literal["latexml-compatibility-v1"] = "latexml-compatibility-v1"
+    input_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    output_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    implementation_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class ConversionDiagnostics(BaseModel):
@@ -105,9 +138,32 @@ class ConversionDiagnostics(BaseModel):
     stages: list[ConversionStage] = Field(default_factory=list, max_length=24)
     coverage: Literal["known-loss-checks-only"] = "known-loss-checks-only"
     fidelity: Literal["not_assessed"] = "not_assessed"
+    decision: ConversionDecision | None = None
+    source_equations: SourceEquationProvenance | None = None
+    equations: EquationRepresentationTrace | None = None
+    preprocessing: list[PreprocessingObservation] = Field(
+        default_factory=list, max_length=3
+    )
 
     @model_validator(mode="after")
     def accepted_requires_observations(self):
+        if (
+            self.source_equations is not None
+            and self.source_equations.source_sha256 != self.source_sha256
+        ):
+            raise ValueError("Source equations must bind the source")
+        if self.equations is not None and (
+            self.equations.source_sha256 != self.source_sha256
+            or self.equations.candidate_sha256 != self.candidate_sha256
+        ):
+            raise ValueError("Equations must bind source and final candidate")
+        if any(p.input_sha256 != self.source_sha256 for p in self.preprocessing):
+            raise ValueError("Preprocessing must bind the original conversion source")
+        if (
+            self.decision is not None
+            and self.decision.source_sha256 != self.source_sha256
+        ):
+            raise ValueError("Conversion decision must bind the source")
         if self.status == "accepted" and (
             not self.candidate_sha256
             or not self.stages
@@ -123,15 +179,45 @@ class ConversionDiagnostics(BaseModel):
 _active: ContextVar[list[ConversionStage] | None] = ContextVar(
     "latex_stages", default=None
 )
+_decision: ContextVar[ConversionDecision | None] = ContextVar(
+    "latex_decision", default=None
+)
+
+
+def record_decision(decision):
+    _decision.set(decision)
+
+
+def current_decision():
+    return _decision.get()
+
+
+_preprocessing: ContextVar[list[PreprocessingObservation] | None] = ContextVar(
+    "latex_preprocessing", default=None
+)
+
+
+def record_preprocessing(observation):
+    active = _preprocessing.get()
+    if active is not None:
+        active.append(observation)
+
+
+def current_preprocessing():
+    return list(_preprocessing.get() or [])
 
 
 @contextmanager
 def conversion_session():
     stages: list[ConversionStage] = []
     token = _active.set(stages)
+    decision_token = _decision.set(None)
+    preprocessing_token = _preprocessing.set([])
     try:
         yield stages
     finally:
+        _preprocessing.reset(preprocessing_token)
+        _decision.reset(decision_token)
         _active.reset(token)
 
 

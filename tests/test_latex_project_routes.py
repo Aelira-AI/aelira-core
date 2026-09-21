@@ -274,3 +274,29 @@ def test_project_router_requires_authentication():
         "/latex/projects/scan/html",
     ):
         assert client.get(endpoint).status_code == 401
+
+
+def test_project_equation_inventory_binds_original_member_bytes(stored_project):
+    from src.education.latex_project import inspect_archive
+    from src.education.latex_project_conversion import (
+        ProjectProvenance,
+        ProjectSourceEquations,
+    )
+    from src.education.latex_equation_provenance import source_provenance
+
+    db, scan, principal, data, _ = stored_project
+    project = inspect_archive(data, "main.tex")
+    original = ProjectSourceEquations(
+        path_sha256=hashlib.sha256(b"main.tex").hexdigest(),
+        equations=source_provenance(project.files["main.tex"].decode()),
+    )
+    receipt = ProjectProvenance(
+        archive_sha256=project.archive_digest,
+        source_sha256=project.source_digest,
+        analysis_sha256=hashlib.sha256(project.flattened_source.encode()).hexdigest(),
+        original_equations=[original],
+    ).model_dump(mode="json")
+    scan.result = SimpleNamespace(structure={"latex_project": {"conversion": receipt}})
+    assert routes._bound_project_provenance(scan, project)
+    receipt["original_equations"][0]["path_sha256"] = "0" * 64
+    assert routes._bound_project_provenance(scan, project) is None
