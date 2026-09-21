@@ -1,6 +1,8 @@
 """Authored metadata survives; missing metadata never becomes plausible fiction."""
 
 from types import SimpleNamespace
+import shutil
+import subprocess
 
 import pikepdf
 import pytest
@@ -94,6 +96,120 @@ def test_existing_multilingual_source_is_not_rewritten(tmp_path):
     assert remediator._apply_language_fix("de")
     assert r"\usepackage[english,main=ngerman]{babel}" in remediator._modified_content
     assert r"\foreignlanguage{english}{Hello}" in remediator._modified_content
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "declarations",
+    [
+        r"\title{Grüße, Welt}\author{Test Author}",
+        r"\RequirePackage{hyperref}\hypersetup{pdftitle={Grüße, Welt},pdfauthor={Test Author}}",
+        r"\usepackage{amsmath,hyperref}\title{Grüße, Welt}\author{Test Author}",
+    ],
+)
+def test_structure_metadata_uses_supported_keys_and_preserves_source(
+    tmp_path, declarations
+):
+    original = source(extra=declarations)
+    path = tmp_path / "source.tex"
+    path.write_text(original)
+    remediator = LatexRemediator(str(path), [], RemediationConfig(use_ai=False))
+    remediator._load_document()
+    assert remediator._apply_structure_fix("accessibility")
+    candidate = remediator._modified_content
+    document_metadata = candidate.split(r"\documentclass", 1)[0]
+    assert "pdfauthor" not in document_metadata
+    assert "pdftitle" not in document_metadata
+    assert "lang={de}" in document_metadata
+    assert "pdfstandard=ua-1" in document_metadata
+    assert "pdfversion=1.7" in document_metadata
+    assert r"\hypersetup{pdfauthor={Test Author},pdftitle={Grüße, Welt}}" in candidate
+    assert extract_metadata(candidate) == extract_metadata(original)
+    assert (
+        candidate.split(r"\begin{document}", 1)[1]
+        == original.split(r"\begin{document}", 1)[1]
+    )
+    assert candidate.count("hyperref}") == 1
+    assert remediator._apply_structure_fix("accessibility")
+    assert remediator._modified_content == candidate
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "declarations",
+    [
+        r"\title{One}\hypersetup{pdftitle={Two}}",
+        r"\author{\unknown}",
+        r"\title[Short]{Long}",
+        r"\DocumentMetadata{lang=de}\title{One}\title{Two}",
+    ],
+)
+def test_structure_metadata_refuses_ambiguous_or_unsupported_sources(
+    tmp_path, declarations
+):
+    original = source(extra=declarations)
+    path = tmp_path / "source.tex"
+    path.write_text(original)
+    remediator = LatexRemediator(str(path), [], RemediationConfig(use_ai=False))
+    remediator._load_document()
+    assert not remediator._apply_structure_fix("accessibility")
+    assert remediator._modified_content == original
+    assert not remediator._modifications
+    assert path.read_text() == original
+
+
+@pytest.mark.skipif(not shutil.which("lualatex"), reason="LuaLaTeX not available")
+@pytest.mark.parametrize(
+    "declarations",
+    [
+        r"\title{Grüße, Welt}\author{Test Author}",
+        r"\RequirePackage{hyperref}\hypersetup{pdftitle={Grüße, Welt},pdfauthor={Test Author}}",
+    ],
+)
+def test_real_structure_candidate_retains_pdf_metadata(tmp_path, declarations):
+    """Compilation and saved metadata are evidence, not PDF/UA conformance."""
+    original = source(extra=declarations)
+    path = tmp_path / "source.tex"
+    path.write_text(original)
+    remediator = LatexRemediator(str(path), [], RemediationConfig(use_ai=False))
+    remediator._load_document()
+    assert remediator._apply_structure_fix("accessibility")
+    candidate = tmp_path / "candidate.tex"
+    candidate.write_text(remediator._modified_content)
+    for _ in range(2):
+        compiled = subprocess.run(
+            [
+                shutil.which("lualatex"),
+                "--no-shell-escape",
+                "--interaction=nonstopmode",
+                "--halt-on-error",
+                candidate.name,
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert compiled.returncode == 0, compiled.stdout + compiled.stderr
+    with pikepdf.open(candidate.with_suffix(".pdf")) as pdf:
+        assert pdf.pdf_version == "1.7"
+        assert pdf.Root.Lang == "de"
+        assert pdf.docinfo.Title == "Grüße, Welt"
+        assert pdf.docinfo.Author == "Test Author"
+    # Exercise the production preservation pass too: older TeX runtimes treat
+    # commas as XMP list separators even when PDF Info retains the full title.
+    assert LaTeXConverter()._preserve_metadata(
+        candidate, candidate.with_suffix(".pdf"), "pdf"
+    )
+    with pikepdf.open(candidate.with_suffix(".pdf")) as pdf:
+        assert pdf.pdf_version == "1.7"
+        assert pdf.Root.Lang == "de"
+        assert pdf.docinfo.Title == "Grüße, Welt"
+        assert pdf.docinfo.Author == "Test Author"
+        with pdf.open_metadata() as xmp:
+            assert xmp["dc:title"] == "Grüße, Welt"
+            assert xmp["dc:creator"] == ["Test Author"]
+            assert xmp["pdfuaid:part"] == "1"
     assert path.read_text() == original
 
 

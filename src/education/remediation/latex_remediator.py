@@ -439,16 +439,23 @@ class LatexRemediator(BaseRemediator):
     def _apply_structure_fix(self, fix_content: str) -> bool:
         """Add accessibility structure improvements."""
         if "accessibility" in fix_content.lower():
+            metadata = extract_metadata(self._modified_content)
+            if metadata.issues:
+                return False
+            pdf_metadata = ""
             # Add DocumentMetadata for PDF/UA tagging (replaces obsolete accessibility package)
             if r"\DocumentMetadata" not in self._modified_content:
                 if r"\documentclass" in self._modified_content:
-                    metadata = extract_metadata(self._modified_content)
-                    if metadata.issues:
-                        return False
-                    authored = "".join(
-                        f"  {key}={{{value}}},\n"
+                    authored = (
+                        f"  lang={{{metadata.language}}},\n"
+                        if metadata.language
+                        else ""
+                    )
+                    # Title and author are hyperref keys, not DocumentMetadata
+                    # keys. Keep their authored values in the supported interface.
+                    pdf_metadata = ",".join(
+                        f"{key}={{{value}}}"
                         for key, value in (
-                            ("lang", metadata.language),
                             ("pdfauthor", metadata.author),
                             ("pdftitle", metadata.title),
                         )
@@ -467,11 +474,14 @@ class LatexRemediator(BaseRemediator):
                     )
 
             # Also ensure hyperref is loaded for PDF metadata
-            # Check for \usepackage{hyperref} or \usepackage[options]{hyperref}
-            hyperref_loaded = (
-                r"\usepackage{hyperref}" in self._modified_content
-                or re.search(
-                    r"\\usepackage\[[^\]]*\]\{hyperref\}", self._modified_content
+            preamble = self._modified_content.split(r"\begin{document}", 1)[0]
+            preamble = re.sub(r"(?<!\\)%[^\n]*", "", preamble)
+            hyperref_loaded = any(
+                "hyperref" in [name.strip() for name in packages.split(",")]
+                for packages in re.findall(
+                    r"\\(?:usepackage|RequirePackage)\s*"
+                    r"(?:\[[^\]]*\]\s*)?\{([^}]+)\}",
+                    preamble,
                 )
             )
             if not hyperref_loaded:
@@ -481,6 +491,14 @@ class LatexRemediator(BaseRemediator):
                         r"\begin{document}", "\\usepackage{hyperref}\n\\begin{document}"
                     )
                     self._modifications.append("Added hyperref package")
+
+            if pdf_metadata and r"\begin{document}" in self._modified_content:
+                self._modified_content = self._modified_content.replace(
+                    r"\begin{document}",
+                    f"\\hypersetup{{{pdf_metadata}}}\n\\begin{{document}}",
+                    1,
+                )
+                self._modifications.append("Preserved authored PDF title and author")
 
         return True
 
@@ -743,7 +761,9 @@ Provide ONLY the fix content, no explanation."""
                     status=(
                         "not_assessed"
                         if pdf.reason in {"conversion_failed", "no_converter"}
-                        else pdf.status if pdf.candidate_sha256 else "unavailable"
+                        else pdf.status
+                        if pdf.candidate_sha256
+                        else "unavailable"
                     ),
                     method="pikepdf+veraPDF/ua1",
                 ),
