@@ -761,9 +761,7 @@ Provide ONLY the fix content, no explanation."""
                     status=(
                         "not_assessed"
                         if pdf.reason in {"conversion_failed", "no_converter"}
-                        else pdf.status
-                        if pdf.candidate_sha256
-                        else "unavailable"
+                        else pdf.status if pdf.candidate_sha256 else "unavailable"
                     ),
                     method="pikepdf+veraPDF/ua1",
                 ),

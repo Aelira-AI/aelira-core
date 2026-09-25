@@ -1,8 +1,6 @@
 """Authored metadata survives; missing metadata never becomes plausible fiction."""
 
 from types import SimpleNamespace
-import shutil
-import subprocess
 
 import pikepdf
 import pytest
@@ -155,61 +153,6 @@ def test_structure_metadata_refuses_ambiguous_or_unsupported_sources(
     assert not remediator._apply_structure_fix("accessibility")
     assert remediator._modified_content == original
     assert not remediator._modifications
-    assert path.read_text() == original
-
-
-@pytest.mark.skipif(not shutil.which("lualatex"), reason="LuaLaTeX not available")
-@pytest.mark.parametrize(
-    "declarations",
-    [
-        r"\title{Grüße, Welt}\author{Test Author}",
-        r"\RequirePackage{hyperref}\hypersetup{pdftitle={Grüße, Welt},pdfauthor={Test Author}}",
-    ],
-)
-def test_real_structure_candidate_retains_pdf_metadata(tmp_path, declarations):
-    """Compilation and saved metadata are evidence, not PDF/UA conformance."""
-    original = source(extra=declarations)
-    path = tmp_path / "source.tex"
-    path.write_text(original)
-    remediator = LatexRemediator(str(path), [], RemediationConfig(use_ai=False))
-    remediator._load_document()
-    assert remediator._apply_structure_fix("accessibility")
-    candidate = tmp_path / "candidate.tex"
-    candidate.write_text(remediator._modified_content)
-    for _ in range(2):
-        compiled = subprocess.run(
-            [
-                shutil.which("lualatex"),
-                "--no-shell-escape",
-                "--interaction=nonstopmode",
-                "--halt-on-error",
-                candidate.name,
-            ],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        assert compiled.returncode == 0, compiled.stdout + compiled.stderr
-    with pikepdf.open(candidate.with_suffix(".pdf")) as pdf:
-        assert pdf.pdf_version == "1.7"
-        assert pdf.Root.Lang == "de"
-        assert pdf.docinfo.Title == "Grüße, Welt"
-        assert pdf.docinfo.Author == "Test Author"
-    # Exercise the production preservation pass too: older TeX runtimes treat
-    # commas as XMP list separators even when PDF Info retains the full title.
-    assert LaTeXConverter()._preserve_metadata(
-        candidate, candidate.with_suffix(".pdf"), "pdf"
-    )
-    with pikepdf.open(candidate.with_suffix(".pdf")) as pdf:
-        assert pdf.pdf_version == "1.7"
-        assert pdf.Root.Lang == "de"
-        assert pdf.docinfo.Title == "Grüße, Welt"
-        assert pdf.docinfo.Author == "Test Author"
-        with pdf.open_metadata() as xmp:
-            assert xmp["dc:title"] == "Grüße, Welt"
-            assert xmp["dc:creator"] == ["Test Author"]
-            assert xmp["pdfuaid:part"] == "1"
     assert path.read_text() == original
 
 

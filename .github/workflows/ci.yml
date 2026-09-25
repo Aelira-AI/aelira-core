@@ -521,6 +521,9 @@ jobs:
           docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,mode=1777 \
             --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
             /app/scripts/smoke_latex_metadata.py > test-results/latex-metadata/report.json
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,mode=1777 \
+            --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
+            /app/scripts/smoke_latex_structure_metadata.py > test-results/latex-metadata/structure-report.json
       - name: Retain authored LaTeX metadata evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
