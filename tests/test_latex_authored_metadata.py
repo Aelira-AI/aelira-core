@@ -97,6 +97,65 @@ def test_existing_multilingual_source_is_not_rewritten(tmp_path):
     assert path.read_text() == original
 
 
+@pytest.mark.parametrize(
+    "declarations",
+    [
+        r"\title{Grüße, Welt}\author{Test Author}",
+        r"\RequirePackage{hyperref}\hypersetup{pdftitle={Grüße, Welt},pdfauthor={Test Author}}",
+        r"\usepackage{amsmath,hyperref}\title{Grüße, Welt}\author{Test Author}",
+    ],
+)
+def test_structure_metadata_uses_supported_keys_and_preserves_source(
+    tmp_path, declarations
+):
+    original = source(extra=declarations)
+    path = tmp_path / "source.tex"
+    path.write_text(original)
+    remediator = LatexRemediator(str(path), [], RemediationConfig(use_ai=False))
+    remediator._load_document()
+    assert remediator._apply_structure_fix("accessibility")
+    candidate = remediator._modified_content
+    document_metadata = candidate.split(r"\documentclass", 1)[0]
+    assert "pdfauthor" not in document_metadata
+    assert "pdftitle" not in document_metadata
+    assert "lang={de}" in document_metadata
+    assert "pdfstandard=ua-1" in document_metadata
+    assert "pdfversion=1.7" in document_metadata
+    assert r"\hypersetup{pdfauthor={Test Author},pdftitle={Grüße, Welt}}" in candidate
+    assert extract_metadata(candidate) == extract_metadata(original)
+    assert (
+        candidate.split(r"\begin{document}", 1)[1]
+        == original.split(r"\begin{document}", 1)[1]
+    )
+    assert candidate.count("hyperref}") == 1
+    assert remediator._apply_structure_fix("accessibility")
+    assert remediator._modified_content == candidate
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "declarations",
+    [
+        r"\title{One}\hypersetup{pdftitle={Two}}",
+        r"\author{\unknown}",
+        r"\title[Short]{Long}",
+        r"\DocumentMetadata{lang=de}\title{One}\title{Two}",
+    ],
+)
+def test_structure_metadata_refuses_ambiguous_or_unsupported_sources(
+    tmp_path, declarations
+):
+    original = source(extra=declarations)
+    path = tmp_path / "source.tex"
+    path.write_text(original)
+    remediator = LatexRemediator(str(path), [], RemediationConfig(use_ai=False))
+    remediator._load_document()
+    assert not remediator._apply_structure_fix("accessibility")
+    assert remediator._modified_content == original
+    assert not remediator._modifications
+    assert path.read_text() == original
+
+
 @pytest.mark.parametrize("language", ["ngerman", "english", None])
 def test_reopened_html_replaces_converter_defaults_with_source(language, tmp_path):
     path = tmp_path / "saved.html"
