@@ -284,9 +284,9 @@ def compile_pdf(image, directory, entrypoint, cache):
                 "status": "failed",
                 "passes": passes,
                 "diagnostics": diagnostics,
-                "partial_pdf_sha256": digest(pdf.read_bytes())
-                if pdf.exists()
-                else None,
+                "partial_pdf_sha256": (
+                    digest(pdf.read_bytes()) if pdf.exists() else None
+                ),
             }
         data = pdf.read_bytes()
         if not data.startswith(b"%PDF-"):
@@ -402,12 +402,14 @@ def main():
             row = {
                 "case": context["id"],
                 "profile": profile,
-                "declared_target": None
-                if profile == "untagged"
-                else ("ua2" if profile == "modern-ua2" else "ua1"),
-                "requested_validator_profile": "ua2"
-                if profile == "modern-ua2"
-                else "ua1",
+                "declared_target": (
+                    None
+                    if profile == "untagged"
+                    else ("ua2" if profile == "modern-ua2" else "ua1")
+                ),
+                "requested_validator_profile": (
+                    "ua2" if profile == "modern-ua2" else "ua1"
+                ),
                 "language": context["language"],
                 "semantic_fidelity": "not_assessed",
                 "human_review": "not_run",

@@ -46,6 +46,10 @@ zero execution or evidence-integrity failures. The
 hashes, source/PDF bindings, independent report hashes and per-case observations.
 The harness was uncommitted during the run; its recorded file hashes identify
 the implementation, separately from the application baseline revision.
+The original harness is retained at commit
+`86243de580e2e701ad0731502e7b74153a8d3fb1`. Its subsequent Black formatting
+correction preserves the Python syntax tree; the recorded run hashes remain
+the original measurements and are not rewritten to match later formatting.
 
 | Profile | Compiled PDFs | Compiler failures | Generation refused | Independent passes / failures |
 |---|---:|---:|---:|---:|
