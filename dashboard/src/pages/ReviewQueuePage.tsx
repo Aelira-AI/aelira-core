@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback, ChangeEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   ClipboardCheck,
-  Filter,
   ChevronRight,
   ChevronLeft,
   CheckCircle2,
@@ -60,7 +59,6 @@ const PAGE_SIZE = 20;
 // ============================================================================
 
 export function ReviewQueuePage(): React.ReactElement {
-  const navigate = useNavigate();
   const toast = useToast();
 
   const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -262,47 +260,50 @@ export function ReviewQueuePage(): React.ReactElement {
 
         {/* Filter */}
         <div className="card mb-6">
-          <div className="flex items-center gap-4">
-            <Filter className="w-4 h-4 text-tertiary" aria-hidden="true" />
-            <label htmlFor="status-filter" className="text-sm font-medium text-secondary">Status:</label>
-            <select
-              id="status-filter"
-              value={statusFilter}
-              onChange={(e: ChangeEvent<HTMLSelectElement>) => {
-                setStatusFilter(e.target.value as StatusFilter);
-                setSelectedIds(new Set());
-                setPage(1);
-              }}
-              className="input py-1.5 text-sm"
-              aria-label="Filter by review status"
-            >
-              <option value="all">All ({stats.total})</option>
-              <option value="pending">Pending ({stats.pending})</option>
-              <option value="approved">Approved ({stats.approved})</option>
-              <option value="rejected">Rejected ({stats.rejected})</option>
-            </select>
-            <label htmlFor="type-filter" className="text-sm font-medium text-secondary ml-4">Type:</label>
-            <select
-              id="type-filter"
-              value={scanTypeFilter}
-              onChange={(e: ChangeEvent<HTMLSelectElement>) => {
-                setScanTypeFilter(e.target.value as ScanTypeFilter);
-                setSelectedIds(new Set());
-                setPage(1);
-              }}
-              className="input py-1.5 text-sm"
-              aria-label="Filter by scan type"
-            >
-              <option value="all">All Types</option>
-              <option value="pdf">PDF</option>
-              <option value="word">Word</option>
-              <option value="excel">Excel</option>
-              <option value="powerpoint">PowerPoint</option>
-              <option value="latex">LaTeX</option>
-              <option value="web">Web</option>
-              <option value="code">Code</option>
-              <option value="multimedia">Multimedia</option>
-            </select>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="min-w-0 space-y-2">
+              <label htmlFor="status-filter" className="text-sm font-medium text-secondary">Status:</label>
+              <select
+                id="status-filter"
+                value={statusFilter}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+                  setStatusFilter(e.target.value as StatusFilter);
+                  setSelectedIds(new Set());
+                  setPage(1);
+                }}
+                className="input w-full py-1.5 text-sm"
+                aria-label="Filter by review status"
+              >
+                <option value="all">All ({stats.total})</option>
+                <option value="pending">Pending ({stats.pending})</option>
+                <option value="approved">Approved ({stats.approved})</option>
+                <option value="rejected">Rejected ({stats.rejected})</option>
+              </select>
+            </div>
+            <div className="min-w-0 space-y-2">
+              <label htmlFor="type-filter" className="text-sm font-medium text-secondary">Type:</label>
+              <select
+                id="type-filter"
+                value={scanTypeFilter}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+                  setScanTypeFilter(e.target.value as ScanTypeFilter);
+                  setSelectedIds(new Set());
+                  setPage(1);
+                }}
+                className="input w-full py-1.5 text-sm"
+                aria-label="Filter by scan type"
+              >
+                <option value="all">All Types</option>
+                <option value="pdf">PDF</option>
+                <option value="word">Word</option>
+                <option value="excel">Excel</option>
+                <option value="powerpoint">PowerPoint</option>
+                <option value="latex">LaTeX</option>
+                <option value="web">Web</option>
+                <option value="code">Code</option>
+                <option value="multimedia">Multimedia</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -318,90 +319,87 @@ export function ReviewQueuePage(): React.ReactElement {
             </p>
           </div>
         ) : (
-          <div className="card overflow-hidden p-0">
-            {/* Table Header */}
-            <div className="flex items-center px-4 py-3 border-b border-[var(--border-primary)] bg-[var(--surface-secondary)]">
-              <div className="w-10">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.size === queue.length && queue.length > 0}
-                  onChange={toggleSelectAll}
-                  className="rounded border-[var(--border-primary)]"
-                  aria-label="Select all documents"
-                />
-              </div>
-              <div className="flex-1 text-xs font-medium text-[var(--content-tertiary)] uppercase">Document</div>
-              <div className="w-28 text-xs font-medium text-[var(--content-tertiary)] uppercase text-center">Fixes</div>
-              <div className="w-28 text-xs font-medium text-[var(--content-tertiary)] uppercase text-center">Review</div>
-              <div className="w-32 text-xs font-medium text-[var(--content-tertiary)] uppercase text-center">Confidence</div>
-              <div className="w-28 text-xs font-medium text-[var(--content-tertiary)] uppercase text-center">Status</div>
-              <div className="w-32 text-xs font-medium text-[var(--content-tertiary)] uppercase text-right">Date</div>
-              <div className="w-8" />
-            </div>
+          <div className="card p-0">
+            <div role="region" aria-label="Documents awaiting review" tabIndex={0} className="overflow-x-auto rounded-xl focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
+              <table className="w-full min-w-[56rem] text-sm">
+              <caption className="sr-only">Documents and their remediation review status</caption>
+              {/* Table Header */}
+              <thead className="border-b border-[var(--border-primary)] bg-[var(--surface-secondary)] text-xs text-[var(--content-tertiary)] uppercase">
+              <tr>
+                <th scope="col" className="p-3">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.size === queue.length && queue.length > 0}
+                    onChange={toggleSelectAll}
+                    className="rounded border-[var(--border-primary)]"
+                    aria-label="Select all documents"
+                  />
+                </th>
+                <th scope="col" className="p-3 text-left">Document</th>
+                <th scope="col" className="p-3">Fixes</th>
+                <th scope="col" className="p-3">Review</th>
+                <th scope="col" className="p-3">Confidence</th>
+                <th scope="col" className="p-3">Status</th>
+                <th scope="col" className="p-3 text-right">Date</th>
+              </tr>
+              </thead>
 
-            {/* Table Rows */}
-            {queue.map((item) => {
-              const statusStyle = getStatusStyle(item.status);
-              return (
-                <div
-                  key={item.scan_id}
-                  className="flex items-center px-4 py-3 border-b border-[var(--border-primary)] last:border-b-0 hover:bg-[var(--surface-secondary)] focus:bg-[var(--surface-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] transition-colors cursor-pointer"
-                  onClick={() => navigate(`/review/${item.scan_id}`)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      navigate(`/review/${item.scan_id}`);
-                    }
-                  }}
-                  tabIndex={0}
-                  role="row"
-                  aria-label={`Review ${item.file_name}`}
-                >
-                  <div className="w-10" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(item.scan_id)}
-                      onChange={() => toggleSelect(item.scan_id)}
-                      className="rounded border-[var(--border-primary)]"
-                      aria-label={`Select ${item.file_name}`}
-                    />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-primary truncate">{item.file_name}</p>
-                    <div className="flex items-center gap-2">
-                      {item.department_id && (
-                        <p className="text-xs text-tertiary truncate">{item.department_id}</p>
+              {/* Table Rows */}
+              <tbody>
+              {queue.map((item) => {
+                const statusStyle = getStatusStyle(item.status);
+                return (
+                  <tr
+                    key={item.scan_id}
+                    className="border-b border-[var(--border-primary)] last:border-b-0 hover:bg-[var(--surface-secondary)] focus-within:bg-[var(--surface-secondary)] transition-colors"
+                  >
+                    <td className="p-3 text-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(item.scan_id)}
+                        onChange={() => toggleSelect(item.scan_id)}
+                        className="rounded border-[var(--border-primary)]"
+                        aria-label={`Select ${item.file_name}`}
+                      />
+                    </td>
+                    <th scope="row" className="p-3 text-left font-normal">
+                      <Link to={`/review/${item.scan_id}`} className="inline-flex max-w-xs items-center gap-2 font-medium text-primary underline break-all focus-visible:outline-2 focus-visible:outline-[var(--accent)]" aria-label={`Review ${item.file_name}`}>
+                        {item.file_name}<ChevronRight className="w-4 h-4 shrink-0" aria-hidden="true" />
+                      </Link>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {item.department_id && (
+                          <p className="text-xs text-tertiary break-all">{item.department_id}</p>
+                        )}
+                        {item.scan_type && (
+                          <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-[var(--surface-tertiary)] text-[var(--content-secondary)]">
+                            {item.scan_type.toUpperCase()}
+                          </span>
+                        )}
+                      </div>
+                    </th>
+                    <td className="p-3 text-center text-secondary">{item.total_fixes}</td>
+                    <td className="p-3 text-center">
+                      {item.needs_review_count > 0 ? (
+                        <span className="text-[var(--feature-warning-content)] font-medium">{item.needs_review_count}</span>
+                      ) : (
+                        <span className="text-[var(--feature-success-content)]">0</span>
                       )}
-                      {item.scan_type && (
-                        <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-[var(--surface-tertiary)] text-[var(--content-secondary)]">
-                          {item.scan_type.toUpperCase()}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="w-28 text-sm text-center text-secondary">{item.total_fixes}</div>
-                  <div className="w-28 text-sm text-center">
-                    {item.needs_review_count > 0 ? (
-                      <span className="text-[var(--feature-warning-content)] font-medium">{item.needs_review_count}</span>
-                    ) : (
-                      <span className="text-[var(--feature-success-content)]">0</span>
-                    )}
-                  </div>
-                  <div className="w-32 flex justify-center">
-                    <ConfidenceBadge confidence={item.lowest_confidence} size="sm" />
-                  </div>
-                  <div className="w-28 text-center">
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded ${statusStyle.bg} ${statusStyle.color}`}>
-                      {statusStyle.label}
-                    </span>
-                  </div>
-                  <div className="w-32 text-xs text-tertiary text-right">{formatDate(item.created_at)}</div>
-                  <div className="w-8 flex justify-center">
-                    <ChevronRight className="w-4 h-4 text-[var(--content-tertiary)]" aria-hidden="true" />
-                  </div>
-                </div>
-              );
-            })}
+                    </td>
+                    <td className="p-3 text-center">
+                      <ConfidenceBadge confidence={item.lowest_confidence} size="sm" />
+                    </td>
+                    <td className="p-3 text-center">
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded ${statusStyle.bg} ${statusStyle.color}`}>
+                        {statusStyle.label}
+                      </span>
+                    </td>
+                    <td className="p-3 text-xs text-tertiary text-right">{formatDate(item.created_at)}</td>
+                  </tr>
+                );
+              })}
+              </tbody>
+              </table>
+            </div>
           </div>
         )}
 

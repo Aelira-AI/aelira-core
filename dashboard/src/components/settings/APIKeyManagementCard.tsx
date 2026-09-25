@@ -92,14 +92,14 @@ export function APIKeyManagementCard(): React.ReactElement {
   return (
     <section className="card mb-6" aria-labelledby="api-key-management-title">
       <div className="px-6 py-4 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
-        <div className="flex items-center justify-between gap-4">
-          <div>
+        <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
             <h2 id="api-key-management-title" className="text-xl font-semibold text-primary flex items-center gap-2">
               <Key className="w-5 h-5" aria-hidden="true" /> API Key Management
             </h2>
             <p className="text-sm text-tertiary mt-1">Create credentials for CLI and programmatic access. Keys are shown in full only once.</p>
           </div>
-          <button type="button" onClick={() => void loadKeys()} disabled={loading} className="btn-secondary px-3 py-2 flex items-center gap-2" aria-label="Refresh keys">
+          <button type="button" onClick={() => void loadKeys()} disabled={loading} className="btn-secondary shrink-0 px-3 py-2 flex items-center gap-2" aria-label="Refresh keys">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" /> Refresh
           </button>
         </div>
