@@ -582,8 +582,12 @@ manually delete artifact rows to force progress.
 
 ## Upgrade procedure
 
-1. Take and verify a PostgreSQL backup before changing the application or
-   schema.
+1. Pause intake and review/remediation writes, drain active jobs, and stop the
+   API and worker. Take a coordinated backup of PostgreSQL, uploads, managed
+   artifacts, and the matching private configuration and encryption keys.
+   Verify recovery into separate storage using the
+   [upgrade and recovery rehearsal](upgrade-recovery-rehearsal.md).
+   Read the target release's migration notes before changing the schema.
 2. `git pull` (or pull the new image tag).
 3. Rebuild if building locally: `docker compose -f docker-compose.prod.yml build api dashboard`, or
    just re-pull if using the published `ghcr.io/aelira-ai/...` images.
@@ -598,6 +602,15 @@ manually delete artifact rows to force progress.
    and `GET /ready` on the API, run the worker readiness command documented
    above, and check `docker compose -f docker-compose.prod.yml logs -f api`
    for migration or startup errors.
+
+The `20260917_unknown_confidence` migration corrects ambiguous historical AI
+scores to unknown and can reopen reviews and invalidate unwritten artifact
+approvals. Inventory affected records using the
+[confidence migration guidance](../document-remediation/confidence.md#historical-correction).
+Older application images may not support nullable scores. Recovery to those
+versions requires restoring the coordinated backup; changing only the image
+does not reverse the migration. A restore discards post-backup activity, and
+external writebacks need separate reconciliation.
 
 ### v0.9.7 upgrade
 
