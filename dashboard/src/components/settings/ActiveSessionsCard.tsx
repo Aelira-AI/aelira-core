@@ -60,7 +60,7 @@ export function ActiveSessionsCard({
   return (
     <div className="card mb-6">
       <div className="px-6 py-4 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
             <Shield className="w-5 h-5" />
             Active Sessions
@@ -99,21 +99,21 @@ export function ActiveSessionsCard({
               return (
                 <div
                   key={session.id}
-                  className="flex items-center justify-between p-4 rounded-lg border"
+                  className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between p-4 rounded-lg border"
                   style={{
                     backgroundColor: session.is_current ? 'var(--surface-success-subtle)' : 'var(--surface-secondary)',
                     borderColor: session.is_current ? 'var(--content-success)' : 'var(--border-primary)',
                   }}
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 max-w-full items-start gap-3">
                     <div
-                      className="p-2 rounded-lg"
+                      className="p-2 rounded-lg shrink-0"
                       style={{ backgroundColor: 'var(--surface-tertiary)' }}
                     >
                       <DeviceIcon className="w-5 h-5 text-secondary" />
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2">
+                    <div className="min-w-0 break-words">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium text-primary">{browser}</span>
                         <span className="text-sm text-tertiary">on {device}</span>
                         {session.is_current && (
@@ -128,7 +128,7 @@ export function ActiveSessionsCard({
                           </span>
                         )}
                       </div>
-                      <div className="flex items-center gap-3 mt-1 text-xs text-tertiary">
+                      <div className="flex flex-wrap items-center gap-3 mt-1 text-xs text-tertiary">
                         {session.ip_address && (
                           <span>IP: {session.ip_address}</span>
                         )}
@@ -146,7 +146,7 @@ export function ActiveSessionsCard({
                     <button
                       onClick={() => onRevokeSession(session.id)}
                       disabled={revokingSession === session.id}
-                      className="btn-secondary px-3 py-1.5 text-sm flex items-center gap-1"
+                      className="btn-secondary shrink-0 px-3 py-1.5 text-sm flex items-center gap-1"
                       title="Sign out this device"
                     >
                       {revokingSession === session.id ? (
