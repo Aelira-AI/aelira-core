@@ -140,7 +140,17 @@ if (mode === 'seed') {
   await writeFile(resolve(output, phase + '.json'), JSON.stringify({passed: true, csrf_matches: csrfMatches, snapshot: snapshotPath}, null, 2));
 } else if (mode === 'verify') {
   const expected = JSON.parse(await readFile(snapshotPath, 'utf8'));
-  assert.deepEqual(stableProfile(await request('/auth/profile')), expected.profile, 'Saved administrator profile survives');
+  const actualProfile = stableProfile(await request('/auth/profile'));
+  const expectedProfile = {...expected.profile};
+  const legacyNotificationCorrection = process.env.STACK_EXPECT_LEGACY_NOTIFICATION_CORRECTION === 'true';
+  if (legacyNotificationCorrection) {
+    // v0.9.11 stored the requested false value but returned true via `or True`.
+    // Enable only after independently checking the backed-up database value.
+    assert.equal(expectedProfile.email_notifications, true, 'Legacy snapshot must show the known false-to-true reporting defect');
+    assert.equal(actualProfile.email_notifications, false, 'Candidate must expose the saved disabled preference');
+    expectedProfile.email_notifications = false;
+  }
+  assert.deepEqual(actualProfile, expectedProfile, 'Saved administrator profile survives');
   for (const record of expected.records) assert.deepEqual(await observe(record.scan_id, record.job_id), record, 'Saved scan, review disposition and bytes survive');
   // A post-backup marker must be absent from the independently restored database.
   if (process.env.STACK_ABSENT_SNAPSHOT) {
@@ -148,7 +158,7 @@ if (mode === 'seed') {
     const response = await fetch(new URL('/education/scans/' + marker.record.scan_id, api), {headers: headers(), redirect: 'error', signal: AbortSignal.timeout(30000)});
     assert.equal(response.status, 404, 'Restoration excludes records created after backup');
   }
-  await writeFile(resolve(output, phase + '.json'), JSON.stringify({passed: true, csrf_matches: csrfMatches, preserved_records: expected.records.length}, null, 2));
+  await writeFile(resolve(output, phase + '.json'), JSON.stringify({passed: true, csrf_matches: csrfMatches, preserved_records: expected.records.length, legacy_notification_correction: legacyNotificationCorrection}, null, 2));
   console.log('PASS ' + phase + ': administrator profile, saved scan results, job dispositions and exact artifact hashes');
 } else {
   const record = await createCase('course.xlsx', 'excel', true);

@@ -49,6 +49,16 @@ The legacy exception applies specifically to v0.9.11's known first-response
 CSRF mismatch: the harness uses the issued cookie and records the mismatch.
 Leave the exception unset when checking a release containing its fix.
 
+v0.9.11 also reports `email_notifications=true` even when the saved
+`email_scan_complete` value is false. The seed deliberately requests false.
+Before accepting this expected API correction during an upgrade, independently
+check that the synthetic user's value is false in both the backup restored into
+fresh storage and the upgraded database. Then use
+`STACK_EXPECT_LEGACY_NOTIFICATION_CORRECTION=true` for the upgraded `verify`
+invocation only. This requires exactly the legacy true-to-false response change;
+all other profile fields, saved scan results and artifact hashes still must match.
+The evidence records the exception. Leave it unset for baseline restoration.
+
 Seeding creates the first administrator, changes notification and timezone
 preferences, and scans/remediates a spreadsheet and Word document. The
 spreadsheet must produce a digest-verified download. The Word document must
