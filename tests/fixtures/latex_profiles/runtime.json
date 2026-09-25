@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "base_index": "sha256:d1704cd87a8059ea1eb4bf06fd5097d0b0249f7e8eafd2d23eb3e50b7476ba20",
+  "base_platforms": {
+    "linux/arm64": "sha256:ef26417e766e95a5120f018fefedb8b33cfe33ed46d8d35496ecc652b7fecf20",
+    "linux/amd64": "sha256:44647e8e09a0b0f85e5f655ebc9455526317697c72de3d945d851fa0072f97a4"
+  },
+  "tex_runtime": {
+    "engine": "This is LuaHBTeX, Version 1.24.0 (TeX Live 2026)",
+    "latex_release": "2026-06-01",
+    "packages": {
+      "amsmath.sty": {
+        "declaration": "\\ProvidesPackage{amsmath}[2026/05/19 v2.18d AMS math features]",
+        "sha256": "8bf35130be39e123cbd0e4f0c09d3806d745d4c08ee391a543a8b9675191e6a7"
+      },
+      "amssymb.sty": {
+        "declaration": "\\ProvidesPackage{amssymb}[2013/01/14 v3.01 AMS font symbols]",
+        "sha256": "70838b061b56569dd3ed9f339b1bdd1c78ba185de49f27ceae331c97f48b5986"
+      },
+      "article.cls": {
+        "declaration": "\\ProvidesClass{article} [2025/01/22 v1.4n Standard LaTeX document class]",
+        "sha256": "c09f5982893f8a092e69435caa151eef0d3cb4d7495abf23f08b640191cf81f6"
+      },
+      "babel.sty": {
+        "declaration": "\\ProvidesPackage{babel}",
+        "sha256": "97d917ba228d60f58fca9489b673fa1a8b7fb779057ac0a49ec363bd4d4b51f6"
+      },
+      "hyperref.sty": {
+        "declaration": "\\ProvidesPackage{hyperref} [2026-06-17 v7.01r % Hypertext links for LaTeX]",
+        "sha256": "da65dca8a44a4946284e6344ed731c9c1c6629bf7bd636b176a0cb2ea50af0cb"
+      },
+      "latex-lab-testphase-math.sty": {
+        "declaration": "\\ProvidesPackage{latex-lab-testphase-math} [2025-03-10 v0.8d code related to the math tagging]",
+        "sha256": "f737460268ba66199a3700946738e893f848720f24ce5987bbd4083a47099c0a"
+      },
+      "latex-lab-testphase-table.sty": {
+        "declaration": "\\ProvidesExplPackage {latex-lab-testphase-table} {\\ltlabtbldate} {\\ltlabtblversion}",
+        "sha256": "d74f17020c78ba30f2a3a12b30007f51578bded6c2f1913cd6ac48d746ab2216"
+      },
+      "latex.ltx": {
+        "declaration": null,
+        "sha256": "19d3b75884681539e1ef7a427af472bfe80d9ff214b84b9ca45e790d3e89c5c4"
+      },
+      "luamml.sty": {
+        "declaration": "\\ProvidesExplPackage {luamml} {2026-06-20} {0.9.2}",
+        "sha256": "8159bf3b1ef55f814defa767f11e4254313f7a8f4ac37a3cb7f8106e7772971c"
+      },
+      "ngerman.ldf": {
+        "declaration": null,
+        "sha256": "2fc95497a6a1ab35d72a811cb0125e82c79ef5f7b31c40eaa3b4682b4fe4ace9"
+      },
+      "physics.sty": {
+        "declaration": "\\ProvidesPackage{physics}",
+        "sha256": "56e7713ae66810ce759a4c2ad0990febe10446fc4c3c87cd37a522c8147087cc"
+      },
+      "siunitx.sty": {
+        "declaration": "\\ProvidesExplPackage {siunitx} {2026-09-18} {3.6.2}",
+        "sha256": "87f19721244d60d776562b4bb74389a39f8436fc72eb2d1c7e404107645c86a6"
+      },
+      "tagpdf.sty": {
+        "declaration": "\\ProvidesExplPackage {tagpdf} {2026-08-21} {1.0e}",
+        "sha256": "6392301f5ef785e468eef9ea5285f8cc2fc1602145690d79e56d5dde65b53b83"
+      },
+      "tikz.sty": {
+        "declaration": null,
+        "sha256": "6e39ff4fdf9f126aff28880a7dd59fccc0e6735409d92ca455cdd2a4f2b4db53"
+      },
+      "titlesec.sty": {
+        "declaration": "\\ProvidesPackage{titlesec}[2025/01/04 v2.17 Sectioning titles]",
+        "sha256": "82a440377f90231b37433ae1ab7d8b16479be7bc47f302064b53e85d70d59a39"
+      },
+      "unicode-math.sty": {
+        "declaration": "\\ProvidesExplPackage{unicode-math} {2023/08/13} {0.8r}",
+        "sha256": "91388a2e1332388bcf8393d79a9fb67f4bd197f982503297dbf971f5f7cec111"
+      }
+    }
+  },
+  "verapdf_version": "1.30.2",
+  "verapdf_installer_url": "https://software.verapdf.org/releases/1.30/verapdf-greenfield-1.30.2-installer.zip",
+  "verapdf_installer_sha256": "6cc6341cb1af644044054b81f00a6590a7918abb18f762243de115258bcad838",
+  "verapdf_cli_sha256": "889075253fb9df4db5482efb8f8208fb3b4f2e00f5f7e1b1e31edf6fb4b69bb6",
+  "corpus_manifest_sha256": "af42677c74f0f321db275c658b1530f1abc44eee233206913aedd39594b32ae0",
+  "controls": {
+    "S01": "0313f0637fe8155c5ab656143701320b882b9f43c07f289eeba048462fb30505",
+    "S02": "f6d91777084723c8d8c6f34107d8166afe918fbb67018994013d23ddca238c1c",
+    "S03": "f3590cd0912df15335f6b5cb8f2904ef75a7abe3d3c65aee87edc5ccf5eefc09",
+    "S04": "dda80c4539d1405216db59e521f9213d1cc99e5e146ae17378cf5d98b47a6f95"
+  }
+}

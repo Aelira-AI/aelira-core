@@ -1,0 +1,14 @@
+% Authored simple header association; not a repair of the grouped P03 table.
+\documentclass{article}
+\title{Authored table control}
+\author{Synthetic corpus}
+\date{}
+\begin{document}
+\maketitle
+\ifdefined\tagpdfsetup\tagpdfsetup{table/header-rows={1}}\fi
+\begin{tabular}{lr}
+Sample & Count\\
+Red & 2\\
+Blue & 7\\
+\end{tabular}
+\end{document}
