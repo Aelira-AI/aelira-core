@@ -13,7 +13,7 @@ black==26.5.1
 mypy_extensions==1.1.0
 pathspec==1.1.1
 pytokens==0.4.1
-ruff==0.16.7
+ruff==0.16.8
 
 # Load testing and its exclusive dependency closure
 bidict==0.24.1
@@ -26,7 +26,7 @@ gevent==25.9.1
 geventhttpclient==2.3.9
 itsdangerous==2.2.0
 Jinja2==3.1.6
-locust==2.46.5
+locust==2.46.6
 python-engineio==4.14.0
 python-socketio==5.17.0
 pyzmq==27.2.0
