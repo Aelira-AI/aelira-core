@@ -1,8 +1,8 @@
 # owner: security-team
-# justification: Issue #160 records that Trivy 0.74.0 still reports msgpack==1.1.2 while Syft 1.51.1 and the final-image gate find only msgpack==1.2.1.
-# expires: 2026-09-30
+# justification: Issue #160; 2026-09-28 Trivy 0.74.0 still reports lower-layer msgpack==1.1.2 while Syft 1.52.0 and the final-image gate find only msgpack==1.2.2.
+# expires: 2026-10-31
 GHSA-6v7p-g79w-8964
 # owner: security-team
-# justification: Issue #160 records that Trivy 0.74.0 still reports setuptools==70.3.0 while Syft 1.51.1 and the final-image gate find only venv setuptools==84.0.0.
-# expires: 2026-09-30
+# justification: Issue #160; 2026-09-28 Trivy 0.74.0 still reports lower-layer setuptools==70.3.0 while Syft 1.52.0 and the final-image gate find only venv setuptools==84.0.0.
+# expires: 2026-10-31
 CVE-2025-47273
