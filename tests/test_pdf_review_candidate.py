@@ -184,6 +184,52 @@ def test_shared_cell_attribute_is_not_modified_for_body_cell(tmp_path):
         assert list(body.K[0].A.BorderColor) == [0, 0, 0]
 
 
+def test_nested_table_inside_data_cell_is_not_a_simple_grid(tmp_path):
+    def nest(pdf):
+        root = pdf.Root.StructTreeRoot
+        outer_cell = root.K[0].K[1].K[0].K[0]
+        inner_table = pdf.make_indirect(
+            Dictionary(Type=Name.StructElem, S=Name.Table, P=outer_cell)
+        )
+        inner_row = pdf.make_indirect(
+            Dictionary(Type=Name.StructElem, S=Name.TR, P=inner_table)
+        )
+        inner_cell = pdf.make_indirect(
+            Dictionary(Type=Name.StructElem, S=Name.TD, P=inner_row, K=1)
+        )
+        inner_row.K = inner_cell
+        inner_table.K = inner_row
+        outer_cell.K = inner_table
+        root.ParentTree.Nums[1][1] = inner_cell
+
+    source = rewrite(table_pdf(tmp_path), nest)
+    outer = next(item for item in targets(source) if item["role"] == "Table")
+    assert not outer["can_set_column_headers"]
+    with pytest.raises(edit.PDFEditRefused, match="unsupported_table_header_edit"):
+        edit.create_pdf_edit_candidate(
+            source,
+            sha(source),
+            {"kind": "table_column_headers", "target_id": outer["target_id"]},
+        )
+
+
+def test_no_page_inheritance_with_root_parent_cycle_is_refused(tmp_path):
+    def cycle(pdf):
+        root = pdf.Root.StructTreeRoot
+        del root.K[0].Pg
+        root.P = root
+
+    source = rewrite(table_pdf(tmp_path), cycle)
+    outer = next(item for item in targets(source) if item["role"] == "Table")
+    assert not outer["can_set_column_headers"]
+    with pytest.raises(edit.PDFEditRefused, match="unsupported_table_header_edit"):
+        edit.create_pdf_edit_candidate(
+            source,
+            sha(source),
+            {"kind": "table_column_headers", "target_id": outer["target_id"]},
+        )
+
+
 @pytest.mark.parametrize(
     "defect",
     [

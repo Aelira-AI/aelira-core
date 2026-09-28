@@ -221,6 +221,7 @@ def _table_header_cells(pdf, nodes, path):
     ):
         return None
     pages = {page.obj.objgen for page in pdf.pages}
+    root_id = nodes[()].objgen
     width, page_id = None, None
     for row_index, row in enumerate(rows):
         cells = [
@@ -274,7 +275,17 @@ def _table_header_cells(pdf, nodes, path):
             # Here every cell must additionally inherit or name one PDF page.
             current = cell
             found = None
+            seen = set()
             while current is not None:
+                if (
+                    not isinstance(current, Dictionary)
+                    or not current.is_indirect
+                    or current.objgen in seen
+                    or len(seen) > MAX_DEPTH
+                    or current.objgen == root_id
+                ):
+                    return None
+                seen.add(current.objgen)
                 if "/Pg" in current:
                     pg = current.Pg
                     if not isinstance(pg, Dictionary) or not pg.is_indirect:
@@ -287,6 +298,8 @@ def _table_header_cells(pdf, nodes, path):
             page_id = found
             kids = cell.get("/K")
             for kid in (list(kids) if isinstance(kids, Array) else [kids]):
+                if type(kid) is int:
+                    continue
                 if isinstance(kid, Dictionary) and kid.get("/Type") == Name.MCR:
                     if (
                         "/Stm" in kid
@@ -294,6 +307,8 @@ def _table_header_cells(pdf, nodes, path):
                         or ("/Pg" in kid and kid.Pg.objgen != found)
                     ):
                         return None
+                else:
+                    return None
     return [nodes[(*path, 0, index)] for index in range(width)]
 
 

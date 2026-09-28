@@ -44,7 +44,9 @@ visits. Unsupported input raises a safe reason without parser details.
 
 Table-header edits require at least two direct TR rows with the same number of
 direct TH/TD cells, at least two columns, one resolved page, and existing
-MCID/ParentTree bindings. Header associations, spans, cell IDs, class-based
+MCID/ParentTree bindings. Each cell contains only direct integer or MCR marked
+content; page inheritance stops at the structure root and rejects parent cycles.
+Header associations, spans, cell IDs, class-based
 attributes, alternate attribute owners, nested and ragged grids, and existing
 row headers are outside this operation. Existing unrelated cell content and
 attributes are retained. A table whose first row already consists entirely of
