@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   classifyRemediationJob,
+  classifyRemediationStartFailure,
   createRemediationStartCoordinator,
   pollRemediationJob,
 } from '../../src/utils/remediationJob.ts';
@@ -80,10 +81,48 @@ describe('classifyRemediationJob', () => {
     assert.equal(classifyRemediationJob(status('failed', 'manual_required')), 'partial');
     assert.equal(classifyRemediationJob(status('failed', 'job_execution_timeout')), 'timed_out');
     assert.equal(classifyRemediationJob(status('failed', 'remediation_failed')), 'failed');
+    assert.equal(classifyRemediationJob(status('failed', 'policy_not_permitted')), 'policy_denied');
+    assert.equal(classifyRemediationJob(status('pending', 'policy_not_permitted')), 'queued');
+    assert.equal(classifyRemediationJob(status('processing', 'policy_not_permitted')), 'running');
+    assert.equal(classifyRemediationJob(status('failed', 'unknown')), 'failed');
+  });
+});
+
+describe('classifyRemediationStartFailure', () => {
+  const denied = (detail) => ({ response: { status: 403, data: { detail } } });
+
+  it('recognizes only exact known policy details or the public structured code', () => {
+    for (const detail of [
+      'LMS AI remediation is not permitted', 'LMS AI alt_text is not permitted',
+      { code: 'policy_not_permitted', message: 'untrusted diagnostic' },
+    ]) assert.equal(classifyRemediationStartFailure(denied(detail)), 'policy_denied');
+    assert.equal(classifyRemediationStartFailure({ response: { status: 403, data: { error_code: 'policy_not_permitted' } } }), 'policy_denied');
+  });
+
+  it('keeps unrelated or malformed 403 details distinct from institutional policy', () => {
+    for (const detail of [undefined, null, [], {}, 42, '<script>diagnostic</script>',
+      'LMS AI remediation is not permitted: extra details', { code: 'forbidden' },
+    ]) assert.equal(classifyRemediationStartFailure(denied(detail)), 'permission_denied');
+  });
+
+  it('preserves ambiguous request reconciliation for network failures and other statuses', () => {
+    for (const error of [undefined, null, new Error('timeout'), { code: 'ECONNABORTED' },
+      ...[401, 409, 500, 503].map(status => ({ response: { status, data: { detail: 'LMS AI remediation is not permitted' } } })),
+    ]) assert.equal(classifyRemediationStartFailure(error), 'request_failed');
   });
 });
 
 describe('pollRemediationJob', () => {
+  it('stops polling when the worker persists a policy denial', async () => {
+    let requests = 0;
+    const result = await pollRemediationJob(async () => {
+      requests += 1;
+      return status('failed', 'policy_not_permitted');
+    });
+    assert.equal(result.state, 'policy_denied');
+    assert.equal(result.outcome, 'terminal');
+    assert.equal(requests, 1);
+  });
   it('polls a long-running job with capped exponential backoff until completion', async () => {
     const responses = [
       status('pending'),

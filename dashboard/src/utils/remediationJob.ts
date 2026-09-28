@@ -10,6 +10,7 @@ export type RemediationJobState =
   | 'running'
   | 'partial'
   | 'timed_out'
+  | 'policy_denied'
   | 'failed'
   | 'completed';
 
@@ -68,6 +69,9 @@ export function classifyRemediationJob(job: RemediationJobLike): RemediationJobS
   if (job.status === 'completed') {
     return 'completed';
   }
+  if (job.error_code === 'policy_not_permitted') {
+    return 'policy_denied';
+  }
   if (job.error_code === 'manual_required') {
     return 'partial';
   }
@@ -75,6 +79,29 @@ export function classifyRemediationJob(job: RemediationJobLike): RemediationJobS
     return 'timed_out';
   }
   return 'failed';
+}
+
+export type RemediationStartFailure = 'policy_denied' | 'permission_denied' | 'request_failed';
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+/** Only a confirmed 403 is a denial; other failures still need queue reconciliation. */
+export function classifyRemediationStartFailure(error: unknown): RemediationStartFailure {
+  const response = record(record(error)?.response);
+  if (response?.status !== 403) return 'request_failed';
+  const data = record(response.data);
+  const detail = data?.detail;
+  if (
+    detail === 'LMS AI remediation is not permitted'
+    || detail === 'LMS AI alt_text is not permitted'
+    || record(detail)?.code === 'policy_not_permitted'
+    || data?.error_code === 'policy_not_permitted'
+  ) return 'policy_denied';
+  return 'permission_denied';
 }
 
 function abortError(): Error {
