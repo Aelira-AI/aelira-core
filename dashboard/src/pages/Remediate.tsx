@@ -19,6 +19,7 @@ import { useToast } from '../context/toast-context';
 import { trackEvent } from '../utils/analytics';
 import {
   classifyRemediationJob,
+  classifyRemediationStartFailure,
   createRemediationStartCoordinator,
   pollRemediationJob,
 } from '../utils/remediationJob';
@@ -49,6 +50,7 @@ type PageState =
   | RemediationJobState
   | 'client_timeout'
   | 'monitoring_error'
+  | 'permission_denied'
   | 'request_failed';
 
 interface StatePresentation {
@@ -110,6 +112,20 @@ const STATE_PRESENTATION: Record<PageState, StatePresentation> = {
     icon: XCircle,
     color: 'text-[var(--feature-danger-content)]',
     surface: 'bg-[var(--feature-danger-surface)]',
+  },
+  policy_denied: {
+    title: 'LMS AI remediation is blocked by policy',
+    description: 'Your institution’s LMS AI policy does not permit this remediation. Ask your institution administrator to review the LMS AI policy for remediation and alt text. You can return to the scan to review its findings.',
+    icon: AlertTriangle,
+    color: 'text-[var(--feature-warning-content)]',
+    surface: 'bg-[var(--feature-warning-surface)]',
+  },
+  permission_denied: {
+    title: 'Remediation permission denied',
+    description: 'The server refused this request. Ask your administrator to check your access to this document and remediation. You can return to the scan to review its findings.',
+    icon: AlertTriangle,
+    color: 'text-[var(--feature-warning-content)]',
+    surface: 'bg-[var(--feature-warning-surface)]',
   },
   client_timeout: {
     title: 'Still running in the background',
@@ -250,6 +266,8 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
         else toast.warning(scores.description, scores.title);
       } else if (outcome.state === 'partial') {
         toast.warning('Manual review is required', 'Remediation stopped');
+      } else if (outcome.state === 'policy_denied') {
+        toast.warning(STATE_PRESENTATION.policy_denied.description, STATE_PRESENTATION.policy_denied.title);
       } else if (outcome.state === 'failed' || outcome.state === 'timed_out') {
         toast.error('Remediation did not complete', 'Remediation stopped');
       }
@@ -337,10 +355,11 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
       if (!startCoordinator.current.isCurrent(attempt)) return;
       setPageState(started.status === 'processing' ? 'running' : 'queued');
       void monitorJob(started.status_url);
-    } catch {
+    } catch (error) {
       if (!startCoordinator.current.isCurrent(attempt)) return;
-      setPageState('request_failed');
-      toast.error('Remediation could not be queued', 'Error');
+      const failure = classifyRemediationStartFailure(error);
+      setPageState(failure);
+      toast.error(STATE_PRESENTATION[failure].description, STATE_PRESENTATION[failure].title);
     } finally {
       if (startCoordinator.current.isCurrent(attempt)) {
         setStarting(false);
@@ -400,8 +419,9 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
     : STATE_PRESENTATION[pageState];
   const StatusIcon = presentation.icon;
   const canStart =
-    ['idle', 'completed', 'partial', 'timed_out', 'failed'].includes(pageState);
+    ['idle', 'completed', 'partial', 'timed_out', 'failed', 'policy_denied', 'permission_denied'].includes(pageState);
   const canResume = ['client_timeout', 'monitoring_error', 'request_failed'].includes(pageState);
+  const isDenied = pageState === 'policy_denied' || pageState === 'permission_denied';
   const canDownload = job?.download_available === true && typeof job.download_url === 'string';
   const displayedProgress = job?.progress ?? (pageState === 'completed' ? 100 : 0);
   const issueRows = pairIssuesWithFixes(scan.issues || [], recordedFixes || [], job || undefined);
@@ -432,7 +452,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
         </div>
 
         <section className="card mb-6" aria-labelledby="remediation-status-heading">
-          <div className="flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-start">
+          <div className={`flex flex-col items-stretch justify-between gap-4 ${isDenied ? '' : 'sm:flex-row sm:items-start'}`}>
             <div className="flex min-w-0 flex-1 items-start gap-3">
               <div className={`rounded-lg p-2 ${presentation.surface}`}>
                 <StatusIcon
@@ -440,7 +460,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
                   aria-hidden="true"
                 />
               </div>
-              <div>
+              <div className="min-w-0" aria-live="polite" aria-atomic="true">
                 <h2 id="remediation-status-heading" className="text-lg font-semibold text-primary">
                   {presentation.title}
                 </h2>
@@ -451,28 +471,40 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
               </div>
             </div>
 
-            {canStart && (
-              <button
-                onClick={startRemediation}
-                className="btn-primary flex items-center justify-center gap-2 sm:shrink-0"
-                disabled={starting}
-              >
-                {starting ? <Loader className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                {pageState === 'idle' ? 'Start Remediation' : 'Run Again'}
-              </button>
-            )}
-            {canResume && (
-              <button
-                onClick={() => job ? void monitorJob(job.status_url) : setStatusRetry((value) => value + 1)}
-                className="btn-secondary flex items-center justify-center gap-2 sm:shrink-0"
-              >
-                <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                Check Status
-              </button>
-            )}
+            <div className="flex flex-wrap gap-3 sm:shrink-0">
+              {canStart && (
+                <button
+                  onClick={startRemediation}
+                  className="btn-primary flex items-center justify-center gap-2 sm:shrink-0"
+                  disabled={starting}
+                >
+                  {starting ? <Loader className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  {pageState === 'policy_denied' ? 'Try again after policy review'
+                    : pageState === 'permission_denied' ? 'Try again after access review'
+                    : pageState === 'idle' ? 'Start Remediation' : 'Run Again'}
+                </button>
+              )}
+              {canResume && (
+                <button
+                  onClick={() => job ? void monitorJob(job.status_url) : setStatusRetry((value) => value + 1)}
+                  className="btn-secondary flex items-center justify-center gap-2 sm:shrink-0"
+                >
+                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                  Check Status
+                </button>
+              )}
+              {isDenied && (
+                <button
+                  onClick={() => navigate(`/scan/${scanId}`)}
+                  className="btn-secondary flex items-center justify-center sm:shrink-0"
+                >
+                  Back to Scan
+                </button>
+              )}
+            </div>
           </div>
 
-          {pageState !== 'idle' && (
+          {pageState !== 'idle' && !isDenied && (
             <div className="mt-5 border-t border-[var(--border-primary)] pt-4">
               <div className="mb-2 flex items-center justify-between text-sm">
                 <span className="text-secondary">Server progress</span>

@@ -9,6 +9,7 @@ const labels = {
   partial: 'Manual review required',
   failed: 'Remediation failed',
   timed_out: 'Remediation timed out',
+  policy_denied: 'LMS AI remediation blocked by policy',
   completed: 'Remediation job completed',
 };
 

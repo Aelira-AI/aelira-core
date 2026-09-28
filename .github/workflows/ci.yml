@@ -404,6 +404,8 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Run release smoke
         run: npm run test:e2e:release
+      - name: Run remediation policy regression
+        run: ./node_modules/.bin/playwright test --config=playwright.remediation-policy.config.ts
 
   cli:
     runs-on: ubuntu-latest
