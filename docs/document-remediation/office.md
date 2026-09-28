@@ -26,7 +26,7 @@ This path supports top-level text/ordinary shapes, pictures, and placeholders, u
 
 ### PPTX non-capabilities
 
-The scan/API and queued review path has no trusted reviewer-order field or reproducible PPTX reading-order finding yet, so ordinary remediation requests remain manual. The direct-library repair's saved-file check establishes package and shape order preservation, not the author's intended meaning or PowerPoint screen-reader behavior. A representative deck still needs a recorded check in PowerPoint with assistive technology, including application/AT versions and limitations. The remediator does not add captions to embedded video/audio or replace images of text. Legacy `.ppt` is not accepted by `POST /education/powerpoint/scan`, even though the CLI's directory finder currently discovers it; use `.pptx`.
+The scan/API and queued review path has no trusted reviewer-order field or reproducible PPTX reading-order finding yet, so ordinary remediation requests remain manual. The direct-library repair's saved-file check establishes package and shape order preservation, not the author's intended meaning or PowerPoint screen-reader behavior. Its overlap check uses shape rectangles; it does not measure rendered text overflow or effects inherited from a theme or layout. Visual preservation therefore still requires review in PowerPoint. A representative deck also needs a recorded check with assistive technology, including application/AT versions and limitations. The remediator does not add captions to embedded video/audio or replace images of text. Legacy `.ppt` is not accepted by `POST /education/powerpoint/scan`, even though the CLI's directory finder currently discovers it; use `.pptx`.
 
 ## XLSX
 

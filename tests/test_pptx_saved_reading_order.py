@@ -117,6 +117,30 @@ def test_direct_reviewer_order_is_verified_after_delivery(tmp_path):
     ] == [ids[1], ids[0], ids[2]]
 
 
+def test_source_replacement_during_repair_preserves_previous_output(
+    tmp_path, monkeypatch
+):
+    from src.education.remediation import pptx_reading_order as module
+
+    source, output = tmp_path / "input.pptx", tmp_path / "output.pptx"
+    ids = _deck(source)
+    output.write_bytes(b"previous verified artifact")
+    original_validate = module.validate_order
+
+    def replace_after_validation(path, expected, targets):
+        result = original_validate(path, expected, targets)
+        changed = Presentation(source)
+        changed.slides[0].shapes[0].text = "Changed after reviewer approval"
+        changed.save(source)
+        return result
+
+    monkeypatch.setattr(module, "validate_order", replace_after_validation)
+    with pytest.raises(UnsupportedReadingOrder, match="Source changed"):
+        repair_saved_order(source, output, source_sha256(source), {0: ids[::-1]})
+    assert output.read_bytes() == b"previous verified artifact"
+    assert not list(tmp_path.glob(".pptx-*.pptx"))
+
+
 def test_unreviewed_and_stale_orders_remain_manual(tmp_path):
     source = tmp_path / "input.pptx"
     ids = _deck(source)

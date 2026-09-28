@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from zipfile import ZipFile
@@ -252,21 +253,32 @@ def repair_saved_order(
         output.exists() and source.samefile(output)
     ):
         raise UnsupportedReadingOrder("Output must differ from source")
-    specs = validate_order(source, expected_sha256, targets)
     output.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_fd, snapshot = tempfile.mkstemp(
+        prefix=".pptx-source-", suffix=".pptx", dir=output.parent
+    )
+    os.close(snapshot_fd)
     descriptor, candidate = tempfile.mkstemp(
         prefix=".pptx-order-", suffix=".pptx", dir=output.parent
     )
     os.close(descriptor)
     try:
-        with ZipFile(source) as original, ZipFile(candidate, "w") as saved:
+        # Bind validation, mutation and preservation checks to the same bytes.
+        # Reopening the caller's path at each stage permits a replaced source
+        # to pass preservation checks against itself after hash validation.
+        shutil.copyfile(source, snapshot)
+        specs = validate_order(snapshot, expected_sha256, targets)
+        with ZipFile(snapshot) as original, ZipFile(candidate, "w") as saved:
             for info in original.infolist():
                 data = original.read(info.filename)
                 if info.filename in specs:
                     data = _reordered_xml(data, specs[info.filename][2])
                 saved.writestr(info, data)
-        _verify_saved(source, candidate, specs)
+        _verify_saved(snapshot, candidate, specs)
+        if source_sha256(source) != expected_sha256:
+            raise UnsupportedReadingOrder("Source changed during repair")
         os.replace(candidate, output)
     finally:
         if os.path.exists(candidate):
             os.unlink(candidate)
+        os.unlink(snapshot)
