@@ -417,13 +417,13 @@ def test_trivy_blocking_ignore_has_exact_bounded_layer_false_positives() -> None
     owners = re.findall(r"(?m)^# owner: (.+)$", allowlist)
     assert owners == ["security-team", "security-team"]
     assert all("@" not in owner for owner in owners)
-    assert allowlist.count("# expires: 2026-09-30") == 2
+    assert allowlist.count("# expires: 2026-10-31") == 2
     justifications = re.findall(r"(?m)^# justification: (.+)$", allowlist)
     assert len(justifications) == 2
     assert all("#160" in justification for justification in justifications)
     assert all(
         "trivy 0.74.0" in justification.lower()
-        and "syft 1.51.1" in justification.lower()
+        and "syft 1.52.0" in justification.lower()
         and "final-image gate" in justification.lower()
         for justification in justifications
     )
@@ -431,10 +431,10 @@ def test_trivy_blocking_ignore_has_exact_bounded_layer_false_positives() -> None
     assert "two active bounded false-positive exemptions" in documentation
     assert "GHSA-6v7p-g79w-8964" in documentation
     assert "CVE-2025-47273" in documentation
-    assert "2026-09-30" in documentation
+    assert "2026-10-31" in documentation
     assert "issue #160" in documentation
     assert "Trivy 0.74.0" in documentation
-    assert "Syft 1.51.1" in documentation
+    assert "Syft 1.52.0" in documentation
     assert "scripts/verify_final_python_packages.py" in documentation
     assert "before SBOM generation" in documentation
     assert "complete unsuppressed inventory" in documentation
