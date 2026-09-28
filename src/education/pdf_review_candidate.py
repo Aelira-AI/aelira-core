@@ -1,0 +1,313 @@
+"""Source-bound edits of existing PDF tags, without publication or approval.
+
+Targets belong to one exact source checksum. This deliberately small primitive
+returns new bytes only after reopening them and checking the complete reachable
+object graph against the explicitly edited graph. It does not infer reading
+order, create missing tags, edit table associations, or certify accessibility.
+"""
+
+from dataclasses import dataclass
+from decimal import Decimal
+import hashlib
+import io
+import json
+import tempfile
+
+import pikepdf
+from pikepdf import Array, Dictionary, Name
+
+from .pdf_checks.completeness import require_complete_pdf_scan
+from .reading_order_snapshot import (
+    MAX_PAGES,
+    MAX_SOURCE_BYTES,
+    _preflight,
+    _semantic_blocks,
+)
+
+MAX_NODES = 2000
+MAX_DEPTH = 40
+MAX_GRAPH_VISITS = 100000
+HEADING_ROLES = {"/P", *(f"/H{level}" for level in range(1, 7))}
+ORDER_ROLES = {"/StructTreeRoot", "/Document", "/Part", "/Sect", "/Div"}
+
+
+class PDFEditRefused(ValueError):
+    """Safe public reason; parser messages and document text are never included."""
+
+
+@dataclass(frozen=True)
+class PDFEditCandidate:
+    content: bytes
+    source_sha256: str
+    sha256: str
+    operation: str
+    needs_review: bool = True
+
+
+def _sha(content):
+    return hashlib.sha256(content).hexdigest()
+
+
+def _check_source(content, expected_sha256):
+    if not isinstance(content, bytes) or not content or len(content) > MAX_SOURCE_BYTES:
+        raise PDFEditRefused("invalid_or_oversized_source")
+    actual = _sha(content)
+    if expected_sha256 != actual:
+        raise PDFEditRefused("source_checksum_mismatch")
+    return actual
+
+
+def _graph_digest(pdf):
+    """Compare semantic object content despite qpdf renumbering/compression.
+
+    Indirect references get traversal-local IDs, preserving alias/cycle identity.
+    Only stream transport keys and trailer transport IDs are excluded. Decoded
+    streams are bounded by the shared preflight before this function is called.
+    """
+    references = {}
+    visits = 0
+
+    def visit(obj, depth=0):
+        nonlocal visits
+        visits += 1
+        if visits > MAX_GRAPH_VISITS or depth > 80:
+            raise PDFEditRefused("graph_limit_exceeded")
+        if obj is None or isinstance(obj, (bool, int)):
+            return obj
+        if isinstance(obj, (float, Decimal)):
+            return ["number", str(obj)]
+        identity = None
+        if isinstance(obj, pikepdf.Object) and obj.is_indirect:
+            if obj.objgen in references:
+                return ["ref", references[obj.objgen]]
+            identity = len(references)
+            references[obj.objgen] = identity
+        if isinstance(obj, pikepdf.Stream):
+            filters = obj.get("/Filter")
+            if isinstance(filters, Array) and len(filters) == 1:
+                filters = filters[0]
+            jpeg = filters == Name.DCTDecode
+            ignored = {"/Length"} if jpeg else {"/Length", "/Filter", "/DecodeParms"}
+            value = [
+                "jpeg" if jpeg else "stream",
+                _sha(obj.read_raw_bytes() if jpeg else obj.read_bytes()),
+                [
+                    [str(key), visit(obj[key], depth + 1)]
+                    for key in sorted(obj.keys())
+                    if str(key) not in ignored
+                ],
+            ]
+        elif isinstance(obj, Dictionary):
+            value = [
+                "dict",
+                [[str(key), visit(obj[key], depth + 1)] for key in sorted(obj.keys())],
+            ]
+        elif isinstance(obj, Array):
+            value = ["array", [visit(child, depth + 1) for child in obj]]
+        elif isinstance(obj, pikepdf.String):
+            value = ["string", bytes(obj).hex()]
+        elif isinstance(obj, pikepdf.Name):
+            value = ["name", str(obj)]
+        else:
+            raise PDFEditRefused("unsupported_object")
+        return ["object", identity, value] if identity is not None else value
+
+    content = [
+        [str(key), visit(pdf.trailer[key])]
+        for key in sorted(pdf.trailer.keys())
+        if str(key) not in {"/ID", "/Size", "/Prev", "/XRefStm"}
+    ]
+    return _sha(json.dumps(content, separators=(",", ":")).encode())
+
+
+def _structure(pdf):
+    root = pdf.Root.get("/StructTreeRoot")
+    if (
+        not isinstance(root, Dictionary)
+        or not root.is_indirect
+        or root.get("/Type") != Name.StructTreeRoot
+    ):
+        raise PDFEditRefused("unsupported_structure")
+    if any(key in root for key in ("/RoleMap", "/Namespaces")):
+        raise PDFEditRefused("custom_structure_roles")
+    nodes, seen = {}, set()
+
+    def walk(node, parent, path, depth):
+        if depth > MAX_DEPTH or len(nodes) >= MAX_NODES:
+            raise PDFEditRefused("structure_limit_exceeded")
+        if (
+            not isinstance(node, Dictionary)
+            or not node.is_indirect
+            or node.objgen in seen
+            or "/NS" in node
+        ):
+            raise PDFEditRefused("ambiguous_structure")
+        if parent is not None and (
+            node.get("/Type") != Name.StructElem
+            or not isinstance(node.get("/S"), pikepdf.Name)
+            or node.get("/P") is None
+            or node.P.objgen != parent.objgen
+        ):
+            raise PDFEditRefused("invalid_structure_parent")
+        seen.add(node.objgen)
+        nodes[path] = node
+        kids = node.get("/K")
+        children = list(kids) if isinstance(kids, Array) else [kids]
+        structural = [
+            child
+            for child in children
+            if isinstance(child, Dictionary) and child.get("/Type") == Name.StructElem
+        ]
+        if structural and len(structural) != len(children):
+            raise PDFEditRefused("mixed_structure_children")
+        if structural and any(key in node for key in ("/ActualText", "/Alt")):
+            raise PDFEditRefused("parent_text_alternative")
+        if not structural:
+            if parent is None or not children:
+                raise PDFEditRefused("unbound_structure")
+            for child in children:
+                mcid = (
+                    child.get("/MCID")
+                    if isinstance(child, Dictionary) and child.get("/Type") == Name.MCR
+                    else child
+                )
+                if type(mcid) is not int or mcid < 0:
+                    raise PDFEditRefused("unbound_structure")
+        for index, child in enumerate(structural):
+            walk(child, node, (*path, index), depth + 1)
+
+    walk(root, None, (), 0)
+    return nodes
+
+
+def _validate_document(pdf, content):
+    if pdf.is_encrypted or any(key in pdf.Root for key in ("/AcroForm", "/Perms")):
+        raise PDFEditRefused("encrypted_signed_or_form_pdf")
+    if not 1 <= len(pdf.pages) <= MAX_PAGES:
+        raise PDFEditRefused("page_limit_exceeded")
+    for obj in pdf.objects:
+        if isinstance(obj, Dictionary) and (
+            obj.get("/Type") == Name.Sig or "/ByteRange" in obj
+        ):
+            raise PDFEditRefused("signed_pdf")
+    _preflight(pdf)
+    nodes = _structure(pdf)
+    # Existing resolver verifies MCID ownership and ParentTree bindings. No
+    # geometric or text-matching fallback can create an editable target.
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as source:
+        source.write(content)
+        source.flush()
+        with require_complete_pdf_scan(False):
+            for index in range(len(pdf.pages)):
+                _semantic_blocks(pdf, source.name, index)
+    return nodes
+
+
+def _target_id(sha256, path):
+    return sha256 + ":" + ("/".join(map(str, path)) if path else "root")
+
+
+def _descriptors(nodes, sha256):
+    result = []
+    for path, node in nodes.items():
+        role = str(node.get("/S", Name.StructTreeRoot))
+        children = [
+            key for key in nodes if len(key) == len(path) + 1 and key[:-1] == path
+        ]
+        result.append(
+            {
+                "target_id": _target_id(sha256, path),
+                "role": role.lstrip("/"),
+                "children": [_target_id(sha256, child) for child in children],
+                "can_set_heading": role in HEADING_ROLES and not children,
+                "can_reorder": role in ORDER_ROLES and len(children) > 1,
+            }
+        )
+    return result
+
+
+def inspect_pdf_edit_targets(content: bytes, expected_sha256: str) -> list[dict]:
+    """List targets for one exact source; unsupported input raises a safe refusal."""
+    sha256 = _check_source(content, expected_sha256)
+    try:
+        with pikepdf.open(io.BytesIO(content), attempt_recovery=False) as pdf:
+            nodes = _validate_document(pdf, content)
+            _graph_digest(pdf)
+            return _descriptors(nodes, sha256)
+    except PDFEditRefused:
+        raise
+    except Exception:
+        raise PDFEditRefused("unsupported_or_invalid_pdf") from None
+
+
+def _serialize(pdf):
+    output = io.BytesIO()
+    pdf.save(output, fix_metadata_version=False)
+    return output.getvalue()
+
+
+def create_pdf_edit_candidate(
+    content: bytes, expected_sha256: str, operation: dict
+) -> PDFEditCandidate:
+    """Apply one explicit bounded edit; callers own authorization/publication.
+
+    Supported operations: ``heading`` with target_id and integer level 1–6;
+    ``order`` with target_id and a complete ordered list of child target IDs.
+    IDs and checksums are not authorization credentials.
+    """
+    sha256 = _check_source(content, expected_sha256)
+    try:
+        with pikepdf.open(io.BytesIO(content), attempt_recovery=False) as pdf:
+            nodes = _validate_document(pdf, content)
+            descriptors = _descriptors(nodes, sha256)
+            by_id = {item["target_id"]: item for item in descriptors}
+            objects = {_target_id(sha256, path): node for path, node in nodes.items()}
+            if not isinstance(operation, dict):
+                raise PDFEditRefused("invalid_operation")
+            target = operation.get("target_id")
+            if not isinstance(target, str) or target not in by_id:
+                raise PDFEditRefused("stale_or_unknown_target")
+            descriptor, node = by_id[target], objects[target]
+            kind = operation.get("kind")
+            if kind == "heading":
+                level = operation.get("level")
+                if (
+                    set(operation) != {"kind", "target_id", "level"}
+                    or not descriptor["can_set_heading"]
+                    or type(level) is not int
+                    or not 1 <= level <= 6
+                ):
+                    raise PDFEditRefused("unsupported_heading_edit")
+                role = Name(f"/H{level}")
+                if node.S == role:
+                    raise PDFEditRefused("no_change")
+                node.S = role
+            elif kind == "order":
+                order = operation.get("children")
+                if (
+                    set(operation) != {"kind", "target_id", "children"}
+                    or not descriptor["can_reorder"]
+                    or not isinstance(order, list)
+                    or any(not isinstance(item, str) for item in order)
+                    or len(order) != len(descriptor["children"])
+                    or set(order) != set(descriptor["children"])
+                ):
+                    raise PDFEditRefused("incomplete_or_unsupported_order")
+                if order == descriptor["children"]:
+                    raise PDFEditRefused("no_change")
+                node.K = Array([objects[item] for item in order])
+            else:
+                raise PDFEditRefused("unsupported_operation")
+            expected_graph = _graph_digest(pdf)
+            candidate = _serialize(pdf)
+        if len(candidate) > MAX_SOURCE_BYTES:
+            raise PDFEditRefused("candidate_too_large")
+        with pikepdf.open(io.BytesIO(candidate), attempt_recovery=False) as saved:
+            _validate_document(saved, candidate)
+            if _graph_digest(saved) != expected_graph:
+                raise PDFEditRefused("saved_content_changed")
+        return PDFEditCandidate(candidate, sha256, _sha(candidate), kind)
+    except PDFEditRefused:
+        raise
+    except Exception:
+        raise PDFEditRefused("unsupported_or_invalid_pdf") from None
