@@ -27,7 +27,11 @@ Regression coverage is in `tests/test_reading_order_snapshot.py`, `tests/test_re
 `src/education/pdf_review_candidate.py` provides a direct-library building block
 for issue #372. It is not connected to the review endpoint or dashboard. Callers
 can inspect checksum-bound structure targets and request one explicit heading
-level change or complete sibling-order permutation. The input is immutable bytes;
+level change, complete sibling-order permutation, or first-row column-header
+designation on a simple tagged table. The table request requires a Table target
+and explicitly asserts that its first row contains column headers; the library
+does not infer that intent from cell text or appearance. It changes those TD
+roles to TH and sets each Table-owned Scope to Column. The input is immutable bytes;
 the result contains separate candidate bytes and their checksum, with human
 review still required. A target identifier is not an authorization credential.
 
@@ -37,6 +41,14 @@ shared structure nodes, mixed content/structure children, and parent alternative
 that could mask a reordered sequence. The existing inspection resource bounds
 apply, with additional limits of 2,000 structure nodes, depth 40 and 100,000 graph
 visits. Unsupported input raises a safe reason without parser details.
+
+Table-header edits require at least two direct TR rows with the same number of
+direct TH/TD cells, at least two columns, one resolved page, and existing
+MCID/ParentTree bindings. Header associations, spans, cell IDs, class-based
+attributes, alternate attribute owners, nested and ragged grids, and existing
+row headers are outside this operation. Existing unrelated cell content and
+attributes are retained. A table whose first row already consists entirely of
+TH cells with Scope Column is a no-op refusal.
 
 Before returning, it saves and reopens the candidate, rechecks source bindings and
 compares the complete reachable object graph with the explicitly edited graph.
@@ -48,9 +60,11 @@ This comparison is not a PDF/UA verdict or a check that the
 reviewer's chosen heading/order conveys the intended meaning. Tests also compare
 text and rendered page pixels for the supported synthetic fixtures.
 
-The design follows [W3C's tag-order guidance](https://www.w3.org/WAI/WCAG21/Techniques/pdf/PDF3)
+The design follows [W3C's tag-order guidance](https://www.w3.org/WAI/WCAG21/Techniques/pdf/PDF3),
+[Adobe's PDF table attribute definitions](https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/pdfreference1.6.pdf),
+[PDF Association's table structure guidance](https://pdfa.org/wp-content/until2016_uploads/2015/12/StructureElementsBestPracticeGuide_2016-01-19.pdf),
 and [pikepdf's save and stream contracts](https://pikepdf.readthedocs.io/en/stable/api/main.html).
-Table-header edits, authenticated transactional publication, stale/concurrent
+Authenticated transactional publication, stale/concurrent
 review handling, approval invalidation, accessible UI controls and the full
 browser/PDF-assistive-technology journey remain in #372. No existing review
 status, artifact or approval is changed by this library.
