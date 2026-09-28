@@ -3,7 +3,7 @@
 Targets belong to one exact source checksum. This deliberately small primitive
 returns new bytes only after reopening them and checking the complete reachable
 object graph against the explicitly edited graph. It does not infer reading
-order, create missing tags, edit table associations, or certify accessibility.
+order or header intent, create missing tags, or certify accessibility.
 """
 
 from dataclasses import dataclass
@@ -207,7 +207,112 @@ def _target_id(sha256, path):
     return sha256 + ":" + ("/".join(map(str, path)) if path else "root")
 
 
-def _descriptors(nodes, sha256):
+def _table_header_cells(pdf, nodes, path):
+    """Return first-row cells only for a simple, page-bound table grid."""
+    table = nodes[path]
+    if table.get("/S") != Name.Table or any(key in table for key in ("/A", "/C")):
+        return None
+    rows = [
+        nodes[key] for key in nodes if len(key) == len(path) + 1 and key[:-1] == path
+    ]
+    if len(rows) < 2 or any(
+        row.get("/S") != Name.TR or any(key in row for key in ("/A", "/C"))
+        for row in rows
+    ):
+        return None
+    pages = {page.obj.objgen for page in pdf.pages}
+    root_id = nodes[()].objgen
+    width, page_id = None, None
+    for row_index, row in enumerate(rows):
+        cells = [
+            nodes[key]
+            for key in nodes
+            if len(key) == len(path) + 2 and key[:-2] == path and key[-2] == row_index
+        ]
+        if width is None:
+            width = len(cells)
+        if width < 2 or len(cells) != width:
+            return None
+        for cell in cells:
+            if cell.get("/S") not in (Name.TD, Name.TH) or any(
+                key in cell
+                for key in (
+                    "/C",
+                    "/ID",
+                    "/Headers",
+                    "/Scope",
+                    "/RowSpan",
+                    "/ColSpan",
+                    "/ActualText",
+                    "/Alt",
+                )
+            ):
+                return None
+            attr = cell.get("/A")
+            if attr is not None and (
+                not isinstance(attr, Dictionary)
+                or attr.get("/O") != Name.Table
+                or any(key in attr for key in ("/Headers", "/RowSpan", "/ColSpan"))
+                or (
+                    "/Scope" in attr
+                    and (
+                        row_index != 0
+                        or cell.get("/S") != Name.TH
+                        or attr.Scope != Name.Column
+                    )
+                )
+            ):
+                return None
+            if row_index and cell.get("/S") != Name.TD:
+                return None
+            if (
+                row_index == 0
+                and cell.get("/S") == Name.TH
+                and (attr is None or attr.get("/Scope") != Name.Column)
+            ):
+                return None
+            # The scanner has already resolved each MCID and ParentTree owner.
+            # Here every cell must additionally inherit or name one PDF page.
+            current = cell
+            found = None
+            seen = set()
+            while current is not None:
+                if (
+                    not isinstance(current, Dictionary)
+                    or not current.is_indirect
+                    or current.objgen in seen
+                    or len(seen) > MAX_DEPTH
+                    or current.objgen == root_id
+                ):
+                    return None
+                seen.add(current.objgen)
+                if "/Pg" in current:
+                    pg = current.Pg
+                    if not isinstance(pg, Dictionary) or not pg.is_indirect:
+                        return None
+                    found = pg.objgen
+                    break
+                current = current.get("/P")
+            if found not in pages or (page_id is not None and found != page_id):
+                return None
+            page_id = found
+            kids = cell.get("/K")
+            for kid in (list(kids) if isinstance(kids, Array) else [kids]):
+                if type(kid) is int:
+                    continue
+                if isinstance(kid, Dictionary) and kid.get("/Type") == Name.MCR:
+                    if (
+                        "/Stm" in kid
+                        or "/StmOwn" in kid
+                        or ("/Pg" in kid and kid.Pg.objgen != found)
+                    ):
+                        return None
+                else:
+                    return None
+    return [nodes[(*path, 0, index)] for index in range(width)]
+
+
+def _descriptors(pdf, nodes, sha256):
     result = []
     for path, node in nodes.items():
         role = str(node.get("/S", Name.StructTreeRoot))
@@ -221,6 +326,11 @@ def _descriptors(nodes, sha256):
                 "children": [_target_id(sha256, child) for child in children],
                 "can_set_heading": role in HEADING_ROLES and not children,
                 "can_reorder": role in ORDER_ROLES and len(children) > 1,
+                "can_set_column_headers": (
+                    _table_header_cells(pdf, nodes, path) is not None
+                    if role == "/Table"
+                    else False
+                ),
             }
         )
     return result
@@ -233,7 +343,7 @@ def inspect_pdf_edit_targets(content: bytes, expected_sha256: str) -> list[dict]
         with pikepdf.open(io.BytesIO(content), attempt_recovery=False) as pdf:
             nodes = _validate_document(pdf, content)
             _graph_digest(pdf)
-            return _descriptors(nodes, sha256)
+            return _descriptors(pdf, nodes, sha256)
     except PDFEditRefused:
         raise
     except Exception:
@@ -252,14 +362,16 @@ def create_pdf_edit_candidate(
     """Apply one explicit bounded edit; callers own authorization/publication.
 
     Supported operations: ``heading`` with target_id and integer level 1–6;
-    ``order`` with target_id and a complete ordered list of child target IDs.
+    ``order`` with target_id and a complete ordered list of child target IDs;
+    ``table_column_headers`` with the target_id of a simple Table whose first
+    row the caller explicitly identifies as column headers.
     IDs and checksums are not authorization credentials.
     """
     sha256 = _check_source(content, expected_sha256)
     try:
         with pikepdf.open(io.BytesIO(content), attempt_recovery=False) as pdf:
             nodes = _validate_document(pdf, content)
-            descriptors = _descriptors(nodes, sha256)
+            descriptors = _descriptors(pdf, nodes, sha256)
             by_id = {item["target_id"]: item for item in descriptors}
             objects = {_target_id(sha256, path): node for path, node in nodes.items()}
             if not isinstance(operation, dict):
@@ -296,6 +408,35 @@ def create_pdf_edit_candidate(
                 if order == descriptor["children"]:
                     raise PDFEditRefused("no_change")
                 node.K = Array([objects[item] for item in order])
+            elif kind == "table_column_headers":
+                if set(operation) != {"kind", "target_id"}:
+                    raise PDFEditRefused("unsupported_table_header_edit")
+                cells = _table_header_cells(
+                    pdf,
+                    nodes,
+                    next(
+                        path
+                        for path, item in nodes.items()
+                        if item.objgen == node.objgen
+                    ),
+                )
+                if cells is None:
+                    raise PDFEditRefused("unsupported_table_header_edit")
+                if all(cell.get("/S") == Name.TH for cell in cells):
+                    raise PDFEditRefused("no_change")
+                for cell in cells:
+                    if cell.get("/S") == Name.TD:
+                        cell.S = Name.TH
+                        attr = cell.get("/A")
+                        # An existing attribute dictionary may be shared with
+                        # a body cell. Copy it before adding this cell's scope.
+                        attr = (
+                            Dictionary(attr)
+                            if attr is not None
+                            else Dictionary(O=Name.Table)
+                        )
+                        attr.Scope = Name.Column
+                        cell.A = attr
             else:
                 raise PDFEditRefused("unsupported_operation")
             expected_graph = _graph_digest(pdf)

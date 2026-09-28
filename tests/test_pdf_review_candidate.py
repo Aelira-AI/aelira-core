@@ -10,6 +10,7 @@ from pikepdf import Array, Dictionary, Name, String
 from PIL import Image
 
 from src.education import pdf_review_candidate as edit
+from test_reading_order_tables import build_table_pdf
 from test_reading_order_snapshot import make_pdf
 
 pytestmark = pytest.mark.unit
@@ -34,6 +35,35 @@ def rewrite(content, change):
 def heading(content, **kwargs):
     target = next(item for item in targets(content) if item["can_set_heading"])
     return {"kind": "heading", "target_id": target["target_id"], "level": 2, **kwargs}
+
+
+def table_pdf(tmp_path):
+    pdf, path = build_table_pdf(tmp_path)
+    root = pdf.Root.StructTreeRoot
+    table = root.K[0].K[1]
+    body = pdf.make_indirect(Dictionary(Type=Name.StructElem, S=Name.TR, P=table))
+    body_cells = []
+    for mcid, x, label in [(4, 35, "West body"), (5, 260, "East body")]:
+        cell = pdf.make_indirect(
+            Dictionary(Type=Name.StructElem, S=Name.TD, P=body, K=mcid)
+        )
+        body_cells.append(cell)
+        root.ParentTree.Nums[1].append(cell)
+        pdf.pages[0].Contents = pdf.make_stream(
+            pdf.pages[0].Contents.read_bytes()
+            + f"\n/P <</MCID {mcid}>> BDC BT /F1 12 Tf {x} 280 Td ({label}) Tj ET EMC".encode()
+        )
+    body.K = Array(body_cells)
+    table.K = Array([table.K, body])
+    table.K[0].K[0].A = Dictionary(O=Name.Table, BorderColor=Array([0, 0, 0]))
+    table.K[1].K[0].Lang = String("en-US")
+    pdf.save(path)
+    return path.read_bytes()
+
+
+def table_operation(content):
+    table = next(item for item in targets(content) if item["role"] == "Table")
+    return {"kind": "table_column_headers", "target_id": table["target_id"]}
 
 
 def page_evidence(content):
@@ -86,6 +116,196 @@ def test_saved_sibling_order_preserves_content_and_parent_tree():
     assert page_evidence(source) == page_evidence(result.content)
     with pikepdf.open(io.BytesIO(result.content)) as saved:
         assert [node.K for node in saved.Root.StructTreeRoot.K] == [0, 1]
+
+
+def test_explicit_first_row_column_headers_are_saved_without_other_changes(tmp_path):
+    source = table_pdf(tmp_path)
+    operation = table_operation(source)
+    assert next(item for item in targets(source) if item["role"] == "Table")[
+        "can_set_column_headers"
+    ]
+    result = edit.create_pdf_edit_candidate(source, sha(source), operation)
+    assert result.operation == "table_column_headers"
+    assert result.source_sha256 == sha(source)
+    assert result.sha256 == sha(result.content) != sha(source)
+    assert result.needs_review
+    assert page_evidence(source)[:3] == page_evidence(result.content)[:3]
+    with pikepdf.open(io.BytesIO(result.content)) as saved:
+        rows = saved.Root.StructTreeRoot.K[0].K[1].K
+        assert all(cell.S == Name.TH for cell in rows[0].K)
+        assert all(
+            cell.A.O == Name.Table and cell.A.Scope == Name.Column for cell in rows[0].K
+        )
+        assert list(rows[0].K[0].A.BorderColor) == [0, 0, 0]
+        assert all(cell.S == Name.TD for cell in rows[1].K)
+        assert rows[1].K[0].Lang == "en-US"
+        assert [cell.K for row in rows for cell in row.K] == [1, 2, 4, 5]
+        assert [owner.S for owner in saved.Root.StructTreeRoot.ParentTree.Nums[1]] == [
+            Name.H1,
+            Name.TH,
+            Name.TH,
+            Name.P,
+            Name.TD,
+            Name.TD,
+        ]
+
+
+def test_table_header_noop_and_stale_source_are_refused(tmp_path):
+    source = table_pdf(tmp_path)
+    operation = table_operation(source)
+    result = edit.create_pdf_edit_candidate(source, sha(source), operation)
+    with pytest.raises(edit.PDFEditRefused, match="no_change"):
+        edit.create_pdf_edit_candidate(
+            result.content, sha(result.content), table_operation(result.content)
+        )
+    with pytest.raises(edit.PDFEditRefused, match="source_checksum_mismatch"):
+        edit.create_pdf_edit_candidate(result.content, sha(source), operation)
+    with pytest.raises(edit.PDFEditRefused, match="stale_or_unknown_target"):
+        edit.create_pdf_edit_candidate(result.content, sha(result.content), operation)
+
+
+def test_shared_cell_attribute_is_not_modified_for_body_cell(tmp_path):
+    def share(pdf):
+        table = pdf.Root.StructTreeRoot.K[0].K[1]
+        shared = pdf.make_indirect(
+            Dictionary(O=Name.Table, BorderColor=Array([0, 0, 0]))
+        )
+        table.K[0].K[0].A = shared
+        table.K[1].K[0].A = shared
+
+    source = rewrite(table_pdf(tmp_path), share)
+    result = edit.create_pdf_edit_candidate(
+        source, sha(source), table_operation(source)
+    )
+    with pikepdf.open(io.BytesIO(result.content)) as saved:
+        first, body = saved.Root.StructTreeRoot.K[0].K[1].K
+        assert first.K[0].A.Scope == Name.Column
+        assert "/Scope" not in body.K[0].A
+        assert list(body.K[0].A.BorderColor) == [0, 0, 0]
+
+
+def test_nested_table_inside_data_cell_is_not_a_simple_grid(tmp_path):
+    def nest(pdf):
+        root = pdf.Root.StructTreeRoot
+        outer_cell = root.K[0].K[1].K[0].K[0]
+        inner_table = pdf.make_indirect(
+            Dictionary(Type=Name.StructElem, S=Name.Table, P=outer_cell)
+        )
+        inner_row = pdf.make_indirect(
+            Dictionary(Type=Name.StructElem, S=Name.TR, P=inner_table)
+        )
+        inner_cell = pdf.make_indirect(
+            Dictionary(Type=Name.StructElem, S=Name.TD, P=inner_row, K=1)
+        )
+        inner_row.K = inner_cell
+        inner_table.K = inner_row
+        outer_cell.K = inner_table
+        root.ParentTree.Nums[1][1] = inner_cell
+
+    source = rewrite(table_pdf(tmp_path), nest)
+    outer = next(item for item in targets(source) if item["role"] == "Table")
+    assert not outer["can_set_column_headers"]
+    with pytest.raises(edit.PDFEditRefused, match="unsupported_table_header_edit"):
+        edit.create_pdf_edit_candidate(
+            source,
+            sha(source),
+            {"kind": "table_column_headers", "target_id": outer["target_id"]},
+        )
+
+
+def test_no_page_inheritance_with_root_parent_cycle_is_refused(tmp_path):
+    def cycle(pdf):
+        root = pdf.Root.StructTreeRoot
+        del root.K[0].Pg
+        root.P = root
+
+    source = rewrite(table_pdf(tmp_path), cycle)
+    outer = next(item for item in targets(source) if item["role"] == "Table")
+    assert not outer["can_set_column_headers"]
+    with pytest.raises(edit.PDFEditRefused, match="unsupported_table_header_edit"):
+        edit.create_pdf_edit_candidate(
+            source,
+            sha(source),
+            {"kind": "table_column_headers", "target_id": outer["target_id"]},
+        )
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "ragged",
+        "nested",
+        "span",
+        "headers",
+        "id",
+        "class",
+        "array_attr",
+        "wrong_owner",
+        "row_header",
+        "scope",
+        "cross_page",
+        "mcr_page",
+        "extra_key",
+    ],
+)
+def test_complex_table_header_edits_are_refused(tmp_path, defect):
+    source = table_pdf(tmp_path)
+    operation = table_operation(source)
+
+    def change(pdf):
+        table = pdf.Root.StructTreeRoot.K[0].K[1]
+        first, body = table.K
+        if defect == "ragged":
+            body.K = Array([body.K[0]])
+        elif defect == "nested":
+            first.K[0].S = Name.Table
+        elif defect == "span":
+            first.K[0].A.RowSpan = 2
+        elif defect == "headers":
+            body.K[0].A = Dictionary(O=Name.Table, Headers=Array([String("h1")]))
+        elif defect == "id":
+            first.K[0].ID = String("h1")
+        elif defect == "class":
+            first.K[0].C = Name.HeaderClass
+            pdf.Root.StructTreeRoot.ClassMap = Dictionary(
+                HeaderClass=Dictionary(O=Name.Table)
+            )
+        elif defect == "array_attr":
+            first.K[0].A = Array([first.K[0].A])
+        elif defect == "wrong_owner":
+            first.K[0].A.O = Name.Layout
+        elif defect == "row_header":
+            body.K[0].S = Name.TH
+        elif defect == "scope":
+            first.K[0].S = Name.TH
+            first.K[0].A.Scope = Name.Row
+        elif defect == "cross_page":
+            page = pdf.add_blank_page(page_size=(500, 500))
+            body.K[0].Pg = page.obj
+        elif defect == "mcr_page":
+            first.K[0].K = Dictionary(Type=Name.MCR, MCID=1, Pg=pdf.Root.Pages)
+
+    if defect == "extra_key":
+        operation["approval"] = True
+    else:
+        source = rewrite(source, change)
+        operation = {"kind": "table_column_headers", "target_id": sha(source) + ":0/1"}
+    with pytest.raises(edit.PDFEditRefused):
+        edit.create_pdf_edit_candidate(source, sha(source), operation)
+
+
+def test_table_header_saved_corruption_is_detected(tmp_path, monkeypatch):
+    source = table_pdf(tmp_path)
+    operation = table_operation(source)
+    serialize = edit._serialize
+
+    def corrupt(pdf):
+        pdf.Root.StructTreeRoot.K[0].K[1].K[1].K[0].Lang = String("fr-FR")
+        return serialize(pdf)
+
+    monkeypatch.setattr(edit, "_serialize", corrupt)
+    with pytest.raises(edit.PDFEditRefused, match="saved_content_changed"):
+        edit.create_pdf_edit_candidate(source, sha(source), operation)
 
 
 def test_nested_structure_targets_and_single_child_are_unambiguous():
