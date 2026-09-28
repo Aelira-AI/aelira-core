@@ -570,6 +570,7 @@ jobs:
             --env AELIRA_RUNTIME_IMAGE_ID="$image_id" \
             --mount type=bind,source="$PWD/tests/fixtures/latex_compatibility",target=/app/tests/fixtures/latex_compatibility,readonly \
             --mount type=bind,source="$PWD/tests/fixtures/latex_validation",target=/app/tests/fixtures/latex_validation,readonly \
+            --mount type=bind,source="$PWD/tests/fixtures/latex_research",target=/app/tests/fixtures/latex_research,readonly \
             --entrypoint /opt/venv/bin/python aelira-worker-isolation:test \
             /app/scripts/smoke_latex_compatibility.py > test-results/latex-compatibility/report.json
       - name: Retain LaTeX compatibility and provenance evidence

@@ -34,7 +34,17 @@ The case oracles inspect generated structures independently of Aelira's acceptan
 
 Each measured row records source, preprocessed converter input, generated HTML, raw intermediate XML and analysis SHA-256 values; absent outputs have null hashes. Analysis is canonical sorted JSON. XMath subtrees have a separate SHA-256 over their UTF-8 ElementTree serialization and contain resolved operator observations. XML and HTML hashes identify the exact bytes of an attempt; temporary search paths and generated metadata can make those hashes differ across attempts. Hashes are evidence identities, not snapshots whose equality substitutes for the structural checks.
 
-Five additional saved-node controls use the existing M03/M04/M06/M14/M16 sources unchanged, with their hashes pinned in the manifest. They exercise real converter methods, real stage traces and a trace read back from the saved HTML:
+Five additional saved-node controls use the imported M03/M04/M06/M14/M16 research sources unchanged, with their hashes pinned in the manifest. They exercise real converter methods, real stage traces and a trace read back from the saved HTML:
+
+CI resolves these five controls and M10/M12/P04 through the imported #444 research
+manifest and checks that its entrypoint bytes, declared source hashes and the older
+compatibility/validation copies agree. The receipt records the research manifest
+hash and corpus ID. A fixture copy drifting from the research source fails the gate.
+The five saved-node controls also mutate the actual generated representation in
+scratch space: script attachment, a matrix coordinate swap, an aligned reference
+target and the final long-expression term. Each targeted structural check must
+reject its damaged candidate. These probes establish sensitivity to those changes;
+they are not domain-human semantic review or reader testing.
 
 | Saved-node control | Converter | Independent structure checked | Delivery observation |
 | --- | --- | --- | --- |
@@ -59,6 +69,7 @@ docker run --rm --network none --read-only \
   --tmpfs /tmp:rw,nosuid,mode=1777 \
   --mount type=bind,source="$PWD/tests/fixtures/latex_compatibility",target=/app/tests/fixtures/latex_compatibility,readonly \
   --mount type=bind,source="$PWD/tests/fixtures/latex_validation",target=/app/tests/fixtures/latex_validation,readonly \
+  --mount type=bind,source="$PWD/tests/fixtures/latex_research",target=/app/tests/fixtures/latex_research,readonly \
   --entrypoint python "$PRODUCTION_IMAGE" \
   /app/scripts/smoke_latex_compatibility.py > compatibility-receipt.json
 ```
