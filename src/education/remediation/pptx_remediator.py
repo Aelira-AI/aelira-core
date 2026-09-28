@@ -8,11 +8,14 @@ Supported auto-fixes:
 - Add/update alt text for images and shapes
 - Fix color contrast issues
 - Add slide titles
-- Fix reading order
+- Apply a source-bound, explicitly accepted reading order for supported slides
 - Add speaker notes for complex visuals
 """
 
 import logging
+import json
+import shutil
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
@@ -77,6 +80,8 @@ class PptxRemediator(BaseRemediator):
             file_path, issues, config, ai_client, alt_text_client=alt_text_client
         )
         self._presentation: Optional[Presentation] = None
+        self._accepted_reading_orders: Dict[int, List[int]] = {}
+        self._reading_source_sha256: Optional[str] = None
 
     def _load_document(self) -> Presentation:
         """Load the PowerPoint presentation for editing."""
@@ -95,7 +100,30 @@ class PptxRemediator(BaseRemediator):
         # Ensure output directory exists
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-        document.save(output_path)
+        if self._accepted_reading_orders:
+            from .pptx_reading_order import repair_saved_order
+
+            try:
+                repair_saved_order(
+                    self.file_path,
+                    output_path,
+                    self._reading_source_sha256,
+                    self._accepted_reading_orders,
+                )
+            except Exception:
+                from .office_verification import unavailable_office_verification
+
+                unavailable_office_verification(
+                    self,
+                    "Saved PPTX reading-order repair failed; source remains unchanged.",
+                )
+                raise
+        elif self.issues and all(
+            item.category == IssueCategory.READING_ORDER for item in self.issues
+        ):
+            shutil.copyfile(self.file_path, output_path)
+        else:
+            document.save(output_path)
         return output_path
 
     def can_auto_fix(self, issue: RemediationIssue) -> bool:
@@ -133,8 +161,27 @@ class PptxRemediator(BaseRemediator):
             )
 
         if issue.category == IssueCategory.READING_ORDER:
-            # Can adjust reading order
-            return bool(issue.metadata.get("slide_index") is not None)
+            # Only a direct caller explicitly supplying a source-bound order
+            # may request this bounded repair. Scanner/AI suggestions are not
+            # evidence of an author's intended reading sequence.
+            if not self.config.use_supplied_fixes or any(
+                item.category != IssueCategory.READING_ORDER for item in self.issues
+            ):
+                return False
+            from .pptx_reading_order import UnsupportedReadingOrder, validate_order
+
+            index = issue.metadata.get("slide_index")
+            target = issue.metadata.get("accepted_shape_ids")
+            try:
+                specs = validate_order(
+                    self.file_path,
+                    issue.metadata.get("source_sha256"),
+                    {index: target},
+                )
+            except (UnsupportedReadingOrder, TypeError, ValueError):
+                return False
+            _, current, _ = next(iter(specs.values()))
+            return current != target and index not in self._accepted_reading_orders
 
         return False
 
@@ -505,77 +552,33 @@ class PptxRemediator(BaseRemediator):
     def _apply_reading_order_fix(
         self, issue: RemediationIssue, document: Presentation, fix_content: str
     ) -> bool:
-        """Apply reading order fix by reordering shapes."""
+        """Stage a source-bound order for atomic saved-package repair."""
         try:
-            slide_index = issue.metadata.get("slide_index")
-            suggested_order = issue.metadata.get("suggested_order", [])
-
-            if slide_index is None or slide_index >= len(document.slides):
+            if not self.can_auto_fix(issue):
                 return False
-
-            if not suggested_order:
-                # Try to determine logical order
-                suggested_order = self._determine_reading_order(
-                    document.slides[slide_index]
-                )
-
-            if not suggested_order:
+            target = issue.metadata["accepted_shape_ids"]
+            if fix_content != json.dumps(target, separators=(",", ":")):
                 return False
-
-            slide = document.slides[slide_index]
-
-            # Reorder shapes by manipulating XML
-            # This is complex in python-pptx, log for now
-            logger.info(f"Reading order fix requested for slide {slide_index + 1}")
-            logger.info(f"Suggested order: {suggested_order[:5]}...")
-
-            # Add to speaker notes as guidance (not a structural fix)
-            self._add_reading_order_note(slide, suggested_order)
-            return False  # Speaker notes don't fix the actual reading order
+            self._accepted_reading_orders[issue.metadata["slide_index"]] = target
+            self._reading_source_sha256 = issue.metadata["source_sha256"]
+            return True
 
         except Exception as e:
             logger.error(f"Error applying reading order fix: {e}")
             return False
 
-    def _determine_reading_order(self, slide) -> List[str]:
-        """Determine logical reading order for shapes on a slide."""
-        shapes_with_pos = []
-
-        for shape in slide.shapes:
-            if hasattr(shape, "left") and hasattr(shape, "top"):
-                shapes_with_pos.append(
-                    {
-                        "name": shape.name,
-                        "left": shape.left,
-                        "top": shape.top,
-                    }
-                )
-
-        # Sort by position: top-to-bottom, left-to-right
-        shapes_with_pos.sort(key=lambda s: (s["top"], s["left"]))
-
-        return [s["name"] for s in shapes_with_pos]
-
-    def _add_reading_order_note(self, slide, order: List[str]):
-        """Add reading order information to speaker notes."""
-        try:
-            notes_slide = slide.notes_slide
-            notes_frame = notes_slide.notes_text_frame
-
-            order_text = "\n\n[Accessibility Note - Reading Order]\n"
-            order_text += "Suggested reading order:\n"
-            for i, name in enumerate(order[:10], 1):
-                order_text += f"{i}. {name}\n"
-
-            notes_frame.text += order_text
-
-        except Exception as e:
-            logger.warning(f"Could not add reading order note: {e}")
-
     def _get_rule_based_fix(
         self, issue: RemediationIssue, document: Any
     ) -> Optional[str]:
         """Get a rule-based fix for an issue."""
+        if issue.category == IssueCategory.READING_ORDER:
+            if self.config.use_supplied_fixes and isinstance(
+                issue.metadata.get("accepted_shape_ids"), list
+            ):
+                return json.dumps(
+                    issue.metadata["accepted_shape_ids"], separators=(",", ":")
+                )
+            return None
         if self.config.use_supplied_fixes:
             return issue.metadata.get("fixed_content")
         if issue.category == IssueCategory.ALT_TEXT:
@@ -788,9 +791,87 @@ class PptxRemediator(BaseRemediator):
         return f"Slide {slide_index + 1}"
 
     def _verify_fixes(self, output_path: str):
-        from .office_verification import verify_office_output
+        from .office_verification import (
+            unavailable_office_verification,
+            verify_office_output,
+            scan_office,
+        )
 
-        return verify_office_output(self, output_path)
+        if not self._accepted_reading_orders:
+            return verify_office_output(self, output_path)
+
+        from .pptx_reading_order import verify_saved_order
+        from .base import VerificationResult
+        from .score_measurement import begin_measurement, finish_measurement
+
+        try:
+            verify_saved_order(
+                self.file_path,
+                output_path,
+                self._reading_source_sha256,
+                self._accepted_reading_orders,
+            )
+            measurement = begin_measurement(self.file_path, output_path)
+            before = scan_office(self.DOCUMENT_TYPE, self.file_path)
+            after = scan_office(self.DOCUMENT_TYPE, output_path)
+            # The PPTX scanner does not yet emit reading-order findings. The
+            # specialized saved-file proof above verifies those fixes; the
+            # ordinary scans supply only a comparable score/regression guard.
+            if before.compliance_score != after.compliance_score:
+                raise ValueError("Reading-order-only repair changed scanner score")
+
+            def signature(scan):
+                return Counter(
+                    (
+                        item.get("category"),
+                        item.get("severity"),
+                        item.get("metadata", {}).get("scanner_issue_type"),
+                    )
+                    for item in scan.issues
+                )
+
+            if signature(before) != signature(after):
+                raise ValueError("Reading-order-only repair changed scanner findings")
+            measurement = finish_measurement(
+                measurement,
+                self.file_path,
+                output_path,
+                float(before.compliance_score),
+                float(after.compliance_score),
+                "office-powerpoint-strict-v1",
+            )
+        except Exception:
+            logger.warning(
+                "PPTX saved reading-order verification failed", exc_info=True
+            )
+            return unavailable_office_verification(
+                self,
+                "Saved PPTX reading-order verification unavailable; manual review required.",
+            )
+
+        for fixed in self.result.fixed_issues:
+            if fixed.category == IssueCategory.READING_ORDER:
+                fixed.verification_passed = True
+                fixed.needs_review = True
+                fixed.notes = "Saved order and package preservation verified; intended meaning and PowerPoint/AT behavior require human review."
+        self.result.original_compliance_score = float(before.compliance_score)
+        self.result.remediated_compliance_score = float(after.compliance_score)
+        self.result.improvement = 0.0
+        self.result.score_provenance = "scanner_rescan"
+        self.result.score_measurement = measurement
+        self.result.score_verification_reason = None
+        self.result.verification_passed = (
+            not self.result.manual_count and not self.result.failed_count
+        )
+        self.result.verification_result = VerificationResult(
+            passed=self.result.verification_passed,
+            issues_before=len(before.issues),
+            issues_after=len(after.issues),
+            issues_fixed=[fixed.issue_id for fixed in self.result.fixed_issues],
+            issues_remaining=[issue.issue_id for issue in self.result.manual_issues],
+            verification_score=100.0 if self.result.verification_passed else 0.0,
+        )
+        return self.result.verification_result
 
     def _calculate_scores(self) -> None:
         from .office_verification import measured_office_scores
