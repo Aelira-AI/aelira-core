@@ -209,7 +209,7 @@ def _preflight(pdf):
     _execution_preflight(pdf, stream_sizes)
 
 
-def _semantic_blocks(pdf, path, target_page):
+def _semantic_blocks(pdf, path, target_page, owner_context=None):
     """Traverse /K, sharing the scanner's verified MCID/ParentTree resolver.
 
     This presentation reader retains replacement strings verbatim and fails closed
@@ -235,6 +235,10 @@ def _semantic_blocks(pdf, path, target_page):
         text_count += len(text)
         _limit(text_count > MAX_TEXT_CHARACTERS)
         return {"text": text, "source": source}
+
+    def record_owner(node, resolved):
+        if owner_context is not None and node.is_indirect:
+            owner_context(node.objgen, target_page, resolved)
 
     def visit(kid, owner=None, inherited=-1, depth=0):
         nonlocal visits
@@ -288,7 +292,9 @@ def _semantic_blocks(pdf, path, target_page):
                 pages.add(page_index)
             if len(pages) != 1:
                 raise _Unavailable("unresolved_structure")
-            return [(pages.pop(), text_block(str(kid.ActualText), "ActualText"))]
+            resolved = [(pages.pop(), text_block(str(kid.ActualText), "ActualText"))]
+            record_owner(kid, resolved)
+            return resolved
         if "/Alt" in kid:
             pages = {number for number, _ in children}
             if page_index >= 0:
@@ -298,9 +304,11 @@ def _semantic_blocks(pdf, path, target_page):
             alt_page = pages.pop()
             if alt_page == target_page:
                 children.insert(0, (alt_page, text_block(str(kid.Alt), "Alt")))
+        record_owner(kid, children)
         return children
 
     ordered = visit(root.K)
+    record_owner(root, ordered)
     if resolver.failed:
         raise _Unavailable("unresolved_structure")
     # A complete sequence cannot omit a decoded marked-content reference.

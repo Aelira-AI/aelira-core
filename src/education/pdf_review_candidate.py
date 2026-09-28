@@ -27,6 +27,10 @@ from .reading_order_snapshot import (
 MAX_NODES = 2000
 MAX_DEPTH = 40
 MAX_GRAPH_VISITS = 100000
+MAX_CONTEXT_PAGES = 16
+MAX_CONTEXT_SEGMENTS = 4
+MAX_CONTEXT_TEXT_CHARACTERS = 240
+MAX_CONTEXT_TOTAL_BYTES = 256 * 1024
 HEADING_ROLES = {"/P", *(f"/H{level}" for level in range(1, 7))}
 ORDER_ROLES = {"/StructTreeRoot", "/Document", "/Part", "/Sect", "/Div"}
 
@@ -180,7 +184,7 @@ def _structure(pdf):
     return nodes
 
 
-def _validate_document(pdf, content):
+def _validate_document(pdf, content, owner_context=None):
     if pdf.is_encrypted or any(key in pdf.Root for key in ("/AcroForm", "/Perms")):
         raise PDFEditRefused("encrypted_signed_or_form_pdf")
     if not 1 <= len(pdf.pages) <= MAX_PAGES:
@@ -199,8 +203,91 @@ def _validate_document(pdf, content):
         source.flush()
         with require_complete_pdf_scan(False):
             for index in range(len(pdf.pages)):
-                _semantic_blocks(pdf, source.name, index)
+                _semantic_blocks(pdf, source.name, index, owner_context=owner_context)
     return nodes
+
+
+class _TargetContextCollector:
+    """Keep bounded semantic excerpts by verified indirect structure owner."""
+
+    def __init__(self):
+        self.entries = {}
+
+    def __call__(self, owner, target_page, resolved):
+        entry = self.entries.setdefault(
+            owner, {"page_numbers": [], "segments": [], "truncated": False}
+        )
+        page_number = target_page + 1
+        for page, block in resolved:
+            if page != target_page:
+                continue
+            if page_number not in entry["page_numbers"]:
+                if len(entry["page_numbers"]) < MAX_CONTEXT_PAGES:
+                    entry["page_numbers"].append(page_number)
+                else:
+                    entry["truncated"] = True
+                    continue
+            if block is None or not block["text"].strip():
+                continue
+            if len(entry["segments"]) >= MAX_CONTEXT_SEGMENTS:
+                entry["truncated"] = True
+                continue
+            used = sum(len(segment["text"]) for segment in entry["segments"])
+            remaining = MAX_CONTEXT_TEXT_CHARACTERS - used
+            if remaining <= 0:
+                entry["truncated"] = True
+                continue
+            excerpt = block["text"][:remaining]
+            entry["segments"].append(
+                {"page_number": page_number, "text": excerpt, "source": block["source"]}
+            )
+            if len(excerpt) < len(block["text"]):
+                entry["truncated"] = True
+
+    def context(self, owner):
+        entry = self.entries.get(owner)
+        if entry is None:
+            return {
+                "status": "unavailable",
+                "page_numbers": [],
+                "segments": [],
+                "truncated": False,
+            }
+        return {
+            "status": "available" if entry["segments"] else "empty",
+            "page_numbers": entry["page_numbers"],
+            "segments": entry["segments"],
+            "truncated": entry["truncated"],
+        }
+
+
+def _attach_context(descriptors, nodes, collector):
+    """Reserve a fallback for every target before spending the response budget."""
+    fallback = {
+        "status": "unavailable",
+        "page_numbers": [],
+        "segments": [],
+        "truncated": True,
+    }
+
+    def size(value):
+        return len(
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+        )
+
+    fallback_size = size(fallback)
+    remaining = MAX_CONTEXT_TOTAL_BYTES - fallback_size * len(descriptors)
+    if remaining < 0:
+        raise PDFEditRefused("context_limit_exceeded")
+    for descriptor, node in zip(descriptors, nodes.values()):
+        context = collector.context(node.objgen)
+        extra = size(context) - fallback_size
+        if extra <= remaining:
+            descriptor["context"] = context
+            remaining -= max(extra, 0)
+        else:
+            descriptor["context"] = dict(fallback, page_numbers=[], segments=[])
+    return descriptors
 
 
 def _target_id(sha256, path):
@@ -341,9 +428,10 @@ def inspect_pdf_edit_targets(content: bytes, expected_sha256: str) -> list[dict]
     sha256 = _check_source(content, expected_sha256)
     try:
         with pikepdf.open(io.BytesIO(content), attempt_recovery=False) as pdf:
-            nodes = _validate_document(pdf, content)
+            collector = _TargetContextCollector()
+            nodes = _validate_document(pdf, content, owner_context=collector)
             _graph_digest(pdf)
-            return _descriptors(pdf, nodes, sha256)
+            return _attach_context(_descriptors(pdf, nodes, sha256), nodes, collector)
     except PDFEditRefused:
         raise
     except Exception:
