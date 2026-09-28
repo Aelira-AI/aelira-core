@@ -25,6 +25,7 @@ from bs4 import BeautifulSoup
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests/fixtures/latex_compatibility"
+RESEARCH = ROOT / "tests/fixtures/latex_research"
 CONVERTER = ROOT / "src/education/remediation/latex_converter.py"
 SPEC = importlib.util.spec_from_file_location(
     "compatibility_runtime", ROOT / "src/education/latex_runtime.py"
@@ -373,7 +374,7 @@ def measure(case, source, mode, engine, directory, preprocess):
     }
 
 
-def integration(root, manifest, focused):
+def integration(root, manifest, focused, sources):
     sys.path.insert(0, str(ROOT))
     if focused:
         # Local lightweight image only. Actual converter and all its dependencies
@@ -387,7 +388,7 @@ def integration(root, manifest, focused):
     converter = LaTeXConverter()
     rows, failures = [], []
     for case in manifest["cases"]:
-        source = ROOT / case["source"]
+        source = sources[case["id"]]
         out = root / ("integrated-" + case["id"])
         receipts = {}
         result = converter.convert_to_html(
@@ -517,9 +518,8 @@ def integration(root, manifest, focused):
         ):
             failures.append(case["id"] + ":integrated_oracle_failed")
         rows.append(row)
-    physics = next(c for c in manifest["cases"] if c["id"] == "M10")
     decision = decide_html(
-        (ROOT / physics["source"]).read_text(),
+        sources["M10"].read_text(),
         available={"pandoc", "latexml"},
         versions=tool_versions({"pandoc", "latexml"}),
         project=True,
@@ -691,7 +691,88 @@ def saved_structure(case, html, xml):
     return {"checks": checks, **details}
 
 
-def saved_node_controls(root, manifest):
+def research_sources(manifest, research):
+    """Bind every measured case to the imported #444 source, not a duplicate path."""
+    selected = [*manifest["cases"], *manifest["saved_node_cases"]]
+    expected = {"M03", "M04", "M06", "M10", "M12", "M14", "M16", "P04"}
+    cases = {case["id"]: case for case in research["cases"]}
+    failures = []
+    if (
+        len(selected) != len(expected)
+        or {case["id"] for case in selected} != expected
+        or len(cases) != research["case_count"]
+        or research["source_count"] != 28
+    ):
+        failures.append("research_case_inventory_mismatch")
+    sources = {}
+    for case in selected:
+        original = cases.get(case["id"])
+        if original is None:
+            failures.append(case["id"] + ":research_case_missing")
+            continue
+        source = RESEARCH / original["entrypoint"]
+        declared = next(
+            (
+                item["sha256"]
+                for item in original["sources"]
+                if item["path"] == original["entrypoint"]
+            ),
+            None,
+        )
+        if (
+            declared != case["sha256"]
+            or digest(source.read_bytes()) != declared
+            or digest((ROOT / case["source"]).read_bytes()) != declared
+        ):
+            failures.append(case["id"] + ":research_source_binding_changed")
+        sources[case["id"]] = source
+    return sources, failures
+
+
+def damaged_structure(case, candidate, intermediate, directory):
+    """A changed saved representation must fail its case-specific oracle."""
+    html = directory / "damaged.html"
+    xml = directory / "damaged.xml"
+    soup = BeautifulSoup(candidate.read_bytes(), "html.parser")
+    tree = ET.parse(intermediate) if intermediate.is_file() else None
+    check = {
+        "M03": "exponent_contains_subscript",
+        "M04": "scripts_share_base",
+        "M06": "matrix_coordinates",
+        "M14": "exact_reference_targets",
+        "M16": "final_term",
+    }[case]
+    if case in ("M03", "M04"):
+        node = soup.find("msub" if case == "M03" else "msubsup")
+        if node is None and case == "M04":
+            node = soup.find("msub") or soup.find("msup")
+        if node is None:
+            raise ValueError("script node absent")
+        node.name = "mrow"  # Same tokens, different attachment.
+    elif case == "M06":
+        rows = soup.find("mtable").find_all("mtr", recursive=False)
+        first = rows[0].find_all("mtd", recursive=False)[2]
+        second = rows[1].find_all("mtd", recursive=False)[0]
+        first.string, second.string = second.get_text(), first.get_text()
+    elif case == "M14":
+        refs = tree.findall(".//{http://dlmf.nist.gov/LaTeXML}ref")
+        if len(refs) != 2:
+            raise ValueError("reference inventory changed")
+        refs[-1].set("labelref", refs[0].get("labelref"))
+    else:
+        term = soup.find("mn", string="97")
+        if term is None:
+            raise ValueError("final term absent")
+        term.string = "96"
+    html.write_text(str(soup), encoding="utf-8")
+    if tree is None:
+        xml.write_bytes(b"")
+    else:
+        tree.write(xml, encoding="utf-8")
+    return check, saved_structure(case, html, xml)["checks"]
+
+
+def saved_node_controls(root, manifest, sources):
     from src.education.remediation.latex_converter import LaTeXConverter
     from src.education.latex_diagnostics import conversion_session
     from src.education.latex_equation_provenance import observe_representation
@@ -699,7 +780,7 @@ def saved_node_controls(root, manifest):
     converter = LaTeXConverter()
     rows, failures = [], []
     for case in manifest["saved_node_cases"]:
-        source = ROOT / case["source"]
+        source = sources[case["id"]]
         original = source.read_bytes()
         directory = root / ("saved-nodes-" + case["id"])
         directory.mkdir()
@@ -719,6 +800,21 @@ def saved_node_controls(root, manifest):
             problems.append("source_hash_mismatch")
         if not all(analysis["checks"].values()):
             problems.append("structural_oracle_failed")
+        try:
+            damaged_check, damaged_checks = damaged_structure(
+                case["id"], candidate, intermediate, directory
+            )
+            if damaged_checks[damaged_check]:
+                problems.append("corruption_escaped_structural_oracle")
+        except (
+            AttributeError,
+            IndexError,
+            TypeError,
+            ValueError,
+            ET.ParseError,
+        ) as exc:
+            damaged_check, damaged_checks = None, None
+            problems.append("corruption_probe_unavailable:" + type(exc).__name__)
         if (
             trace.status != "observed"
             or not trace.nodes
@@ -758,6 +854,10 @@ def saved_node_controls(root, manifest):
                 "output_sha256": digest(candidate.read_bytes()),
                 "analysis_sha256": digest(encoded(analysis)),
                 "analysis": analysis,
+                "corruption_probe": {
+                    "target_check": damaged_check,
+                    "damaged_checks": damaged_checks,
+                },
                 "trace": trace.model_dump(mode="json"),
                 "stages": [stage.model_dump(mode="json") for stage in stages],
             }
@@ -778,6 +878,9 @@ def main():
     )
     args = parser.parse_args()
     manifest = json.loads((FIXTURES / "manifest.json").read_text())
+    research_bytes = (RESEARCH / "corpus.json").read_bytes()
+    research = json.loads(research_bytes)
+    sources, binding_failures = research_sources(manifest, research)
     preprocess, preprocess_hash = preprocessor()
     report = {
         "schema": "aelira-latex-compatibility-v1",
@@ -787,8 +890,10 @@ def main():
         "preprocessor_method_sha256": preprocess_hash,
         "oracle_script_sha256": digest(Path(__file__).read_bytes()),
         "manifest_sha256": digest((FIXTURES / "manifest.json").read_bytes()),
+        "research_corpus_id": research["corpus_id"],
+        "research_manifest_sha256": digest(research_bytes),
         "rows": [],
-        "failures": [],
+        "failures": binding_failures,
     }
     with tempfile.TemporaryDirectory(prefix="aelira-compatibility-") as temp:
         root = Path(temp)
@@ -810,7 +915,7 @@ def main():
             if row["status"] != "supported":
                 report["failures"].append(engine + ":positive_control_failed")
         for case in manifest["cases"]:
-            source = ROOT / case["source"]
+            source = sources[case["id"]]
             if digest(source.read_bytes()) != case["sha256"]:
                 report["failures"].append(case["id"] + ":source_hash_mismatch")
             for mode in ("raw", "preprocessed"):
@@ -880,10 +985,12 @@ def main():
             "focused" if args.focused_imports else "application"
         )
         report["integration"], integration_failures = integration(
-            root, manifest, args.focused_imports
+            root, manifest, args.focused_imports, sources
         )
         report["failures"].extend(integration_failures)
-        report["saved_nodes"], saved_failures = saved_node_controls(root, manifest)
+        report["saved_nodes"], saved_failures = saved_node_controls(
+            root, manifest, sources
+        )
         report["failures"].extend(saved_failures)
         report["passed"] = not report["failures"]
     print(json.dumps(report, indent=2, ensure_ascii=False))
