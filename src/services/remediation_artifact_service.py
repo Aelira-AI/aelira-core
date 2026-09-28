@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import secrets
 import stat
 from typing import Any, BinaryIO, Iterator
@@ -75,6 +76,10 @@ class ArtifactIntegrityError(ArtifactError):
 
 class ArtifactInProgressError(ArtifactError):
     """An idempotent job claim exists but publication is still in progress."""
+
+
+class ArtifactEditConflict(ArtifactAuthorizationError):
+    """A reviewed PDF edit no longer matches its durable predecessor."""
 
 
 @dataclass(frozen=True)
@@ -203,6 +208,8 @@ class PreparedRemediationArtifact:
     expires_at: datetime
     created_at: datetime
     updated_at: datetime
+    edit_precondition: dict[str, Any] | None = None
+    edit_provenance: dict[str, Any] | None = None
 
     def as_model_kwargs(self) -> dict[str, Any]:
         return asdict(self)
@@ -276,6 +283,73 @@ def _sanitize_provider_result(value: dict[str, Any] | None) -> dict[str, Any] | 
             "provider_result must be JSON serializable"
         ) from exc
     return sanitized
+
+
+def _sanitize_edit_metadata(
+    precondition: dict[str, Any] | None, provenance: dict[str, Any] | None
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if precondition is None and provenance is None:
+        return None, None
+    if not isinstance(precondition, dict) or not isinstance(provenance, dict):
+        raise ArtifactValidationError("edit metadata must be paired JSON objects")
+    if set(precondition) != {
+        "version",
+        "source_kind",
+        "source_sha256",
+        "expected_artifact_id",
+        "state_digest",
+        "scope_kind",
+        "course_id",
+        "cloud_file_id",
+    } or set(provenance) != {"source_kind", "source_sha256", "operation"}:
+        raise ArtifactValidationError("edit metadata has unsupported fields")
+    if (
+        type(precondition["version"]) is not int
+        or precondition["version"] != 1
+        or precondition["source_kind"] not in ("original", "saved")
+        or precondition["scope_kind"] not in ("department", "course")
+        or not all(
+            isinstance(precondition[key], str)
+            and re.fullmatch(r"[0-9a-f]{64}", precondition[key])
+            for key in ("source_sha256", "state_digest")
+        )
+        or provenance["source_kind"] != precondition["source_kind"]
+        or provenance["source_sha256"] != precondition["source_sha256"]
+        or not isinstance(provenance["operation"], dict)
+        or provenance["operation"].get("kind")
+        not in ("heading", "order", "table_column_headers")
+        or precondition["scope_kind"] == "course"
+        and (
+            not isinstance(precondition["course_id"], str)
+            or not precondition["course_id"]
+            or precondition["cloud_file_id"] is None
+        )
+        or precondition["scope_kind"] == "department"
+        and precondition["course_id"] is not None
+    ):
+        raise ArtifactValidationError("edit metadata is invalid")
+    for key in ("expected_artifact_id", "cloud_file_id"):
+        if precondition[key] is not None:
+            _canonical_uuid(precondition[key], key)
+    if (
+        precondition["source_kind"] == "saved"
+        and precondition["expected_artifact_id"] is None
+    ):
+        raise ArtifactValidationError("saved edit requires a predecessor")
+    try:
+        encoded = json.dumps(
+            [precondition, provenance],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        if len(encoded.encode()) > 8192:
+            raise ArtifactValidationError("edit metadata is too large")
+        clean_precondition, clean_provenance = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise ArtifactValidationError("edit metadata is not JSON") from exc
+    return clean_precondition, clean_provenance
 
 
 def _normalize_scan_type(scan_type: ScanType | str) -> str:
@@ -888,6 +962,232 @@ class RemediationArtifactService:
         ):
             raise ArtifactAuthorizationError("artifact scan type authority mismatch")
 
+    def _edit_state_locked(
+        self,
+        db: Any,
+        scan: Scan,
+        cloud_file: CloudFile | None,
+        precondition: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Read the predecessor and all fix decisions after parent locks."""
+        if _normalize_scan_type(scan.scan_type) != "PDF":
+            raise ArtifactEditConflict("review source is not PDF")
+        if precondition["scope_kind"] == "course" and (
+            cloud_file is None
+            or cloud_file.provider != "canvas"
+            or cloud_file.provider_parent_id != precondition["course_id"]
+            or cloud_file.last_scan_id != scan.id
+        ):
+            raise ArtifactEditConflict("review course authority changed")
+        if precondition["cloud_file_id"] != (
+            cloud_file.id if cloud_file is not None else None
+        ):
+            raise ArtifactEditConflict("review source authority changed")
+        current_id = (
+            cloud_file.current_remediation_artifact_id
+            if cloud_file is not None
+            else scan.current_remediation_artifact_id
+        )
+        predecessor = None
+        if current_id is not None:
+            predecessor = (
+                db.query(RemediationArtifact)
+                .filter(RemediationArtifact.id == current_id)
+                .with_for_update()
+                .populate_existing()
+                .one_or_none()
+            )
+            if (
+                predecessor is None
+                or predecessor.department_id != scan.department_id
+                or predecessor.scan_id != scan.id
+                or predecessor.cloud_file_id
+                != (cloud_file.id if cloud_file is not None else None)
+                or predecessor.provider
+                != (cloud_file.provider if cloud_file is not None else "local")
+                or predecessor.scan_type != "PDF"
+                or predecessor.lifecycle_status != "available"
+                or predecessor.cleanup_claimed_at is not None
+                or _utc(predecessor.expires_at) <= datetime.now(timezone.utc)
+            ):
+                raise ArtifactEditConflict("review predecessor is unavailable")
+        source_sha = (
+            scan.file_hash
+            if precondition["source_kind"] == "original"
+            else predecessor.sha256 if predecessor is not None else None
+        )
+        if (
+            not isinstance(source_sha, str)
+            or re.fullmatch(r"[0-9a-f]{64}", source_sha) is None
+        ):
+            raise ArtifactEditConflict("review source is unavailable")
+        if precondition["source_kind"] == "saved":
+            assert predecessor is not None
+            try:
+                with self._open_verified(predecessor, allowed_lifecycle={"available"}):
+                    pass
+            except ArtifactError as exc:
+                raise ArtifactEditConflict("review source is unavailable") from exc
+        else:
+            path, size = scan.storage_path, scan.file_size_bytes
+            if (
+                not isinstance(path, str)
+                or not path
+                or type(size) is not int
+                or not 0 <= size <= 50 * 1024 * 1024
+            ):
+                raise ArtifactEditConflict("review source is unavailable")
+            fd = -1
+            try:
+                fd = os.open(path, _FILE_READ_FLAGS)
+                opened = os.fstat(fd)
+                if not stat.S_ISREG(opened.st_mode) or opened.st_size != size:
+                    raise ArtifactEditConflict("review source is unavailable")
+                digest = hashlib.sha256()
+                count = 0
+                while chunk := os.read(fd, _COPY_CHUNK_BYTES):
+                    count += len(chunk)
+                    if count > size:
+                        raise ArtifactEditConflict("review source is unavailable")
+                    digest.update(chunk)
+                if count != size or not hmac.compare_digest(
+                    digest.hexdigest(), source_sha
+                ):
+                    raise ArtifactEditConflict("review source is unavailable")
+            except OSError as exc:
+                raise ArtifactEditConflict("review source is unavailable") from exc
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+        fixes = (
+            db.query(ScanFix)
+            .filter(ScanFix.scan_id == scan.id)
+            .order_by(ScanFix.id)
+            .with_for_update()
+            .populate_existing()
+            .all()
+        )
+        state = {
+            "scan": {
+                "file_hash": scan.file_hash,
+                "file_size_bytes": scan.file_size_bytes,
+                "status": str(scan.status),
+                "remediation_outcome": scan.remediation_outcome,
+            },
+            "cloud": (
+                {
+                    "id": cloud_file.id,
+                    "provider": cloud_file.provider,
+                    "course": cloud_file.provider_parent_id,
+                    "last_scan_id": cloud_file.last_scan_id,
+                    "writeback_status": cloud_file.writeback_status,
+                }
+                if cloud_file is not None
+                else None
+            ),
+            "current_artifact_id": current_id,
+            "predecessor": (
+                {
+                    key: getattr(predecessor, key)
+                    for key in (
+                        "id",
+                        "sha256",
+                        "lifecycle_status",
+                        "review_status",
+                        "approval_checksum",
+                        "approval_review_digest",
+                        "approved_by_id",
+                        "approved_by_ref",
+                        "approved_at",
+                        "rejected_by_id",
+                        "rejected_by_ref",
+                        "rejected_at",
+                        "written_back_at",
+                    )
+                }
+                if predecessor is not None
+                else None
+            ),
+            "fixes": [
+                {
+                    column.key: getattr(fix, column.key)
+                    for column in fix.__mapper__.column_attrs
+                }
+                for fix in fixes
+            ],
+        }
+        try:
+            encoded = json.dumps(
+                state,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+                default=str,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ArtifactEditConflict("review state is invalid") from exc
+        if len(encoded.encode()) > 4 * 1024 * 1024:
+            raise ArtifactEditConflict("review state is too large")
+        return {
+            "source_sha256": source_sha,
+            "expected_artifact_id": current_id,
+            "state_digest": hashlib.sha256(encoded.encode()).hexdigest(),
+        }
+
+    def capture_edit_precondition(
+        self,
+        db: Any,
+        *,
+        department_id: str,
+        scan_id: str,
+        cloud_file_id: str | None,
+        provider: str,
+        source_kind: str,
+        scope_kind: str,
+        course_id: str | None,
+    ) -> dict[str, Any]:
+        if source_kind not in ("original", "saved") or scope_kind not in (
+            "department",
+            "course",
+        ):
+            raise ArtifactValidationError("edit source or scope is invalid")
+        _, scan, cloud_file, _, _ = self._lock_authority_order(
+            db,
+            department_id=department_id,
+            scan_id=scan_id,
+            cloud_file_id=cloud_file_id,
+            remediation_job_id=None,
+            provider=provider,
+        )
+        if _normalize_scan_type(scan.scan_type) != "PDF":
+            raise ArtifactAuthorizationError("review source is not PDF")
+        precondition = {
+            "version": 1,
+            "source_kind": source_kind,
+            "source_sha256": "0" * 64,
+            "expected_artifact_id": None,
+            "state_digest": "0" * 64,
+            "scope_kind": scope_kind,
+            "course_id": course_id,
+            "cloud_file_id": cloud_file_id,
+        }
+        precondition.update(self._edit_state_locked(db, scan, cloud_file, precondition))
+        return precondition
+
+    def _require_edit_precondition(
+        self,
+        db: Any,
+        scan: Scan,
+        cloud_file: CloudFile | None,
+        precondition: dict[str, Any] | None,
+    ) -> None:
+        if precondition is None:
+            return
+        actual = self._edit_state_locked(db, scan, cloud_file, precondition)
+        if any(actual[key] != precondition[key] for key in actual):
+            raise ArtifactEditConflict("review edit state changed")
+
     def _prepare(
         self,
         fd: int,
@@ -901,6 +1201,8 @@ class RemediationArtifactService:
         scan_type: ScanType | str,
         filename: str,
         provider_result: dict[str, Any] | None,
+        edit_precondition: dict[str, Any] | None = None,
+        edit_provenance: dict[str, Any] | None = None,
     ) -> PreparedRemediationArtifact:
         department_id = _canonical_uuid(department_id, "department_id")
         scan_id = _canonical_uuid(scan_id, "scan_id")
@@ -913,6 +1215,13 @@ class RemediationArtifactService:
         if created_by_id is not None:
             created_by_id = _canonical_uuid(created_by_id, "created_by_id")
         scan_type = _normalize_scan_type(scan_type)
+        edit_precondition, edit_provenance = _sanitize_edit_metadata(
+            edit_precondition, edit_provenance
+        )
+        if edit_precondition is not None and (
+            scan_type != "PDF" or edit_precondition["cloud_file_id"] != cloud_file_id
+        ):
+            raise ArtifactValidationError("edit authority does not match output")
         filename, mime_type, size, checksum = self._source_metadata(
             fd, filename=filename, scan_type=scan_type, provider=provider
         )
@@ -954,6 +1263,8 @@ class RemediationArtifactService:
             cleanup_claimed_at=None,
             deleted_at=None,
             provider_result=provider_result,
+            edit_precondition=edit_precondition,
+            edit_provenance=edit_provenance,
             expires_at=now + timedelta(days=self.retention_days),
             created_at=now,
             updated_at=now,
@@ -961,7 +1272,12 @@ class RemediationArtifactService:
 
     def claim(self, db: Any, prepared: PreparedRemediationArtifact) -> ArtifactClaim:
         """Commit a staging row before any destination byte can be published."""
-        _, scan, _, _, existing = self._lock_authority_order(
+        clean_edit = _sanitize_edit_metadata(
+            prepared.edit_precondition, prepared.edit_provenance
+        )
+        if clean_edit != (prepared.edit_precondition, prepared.edit_provenance):
+            raise ArtifactValidationError("edit metadata is not canonical")
+        _, scan, cloud_file, _, existing = self._lock_authority_order(
             db,
             department_id=prepared.department_id,
             scan_id=prepared.scan_id,
@@ -971,6 +1287,9 @@ class RemediationArtifactService:
             artifact_job_id=prepared.remediation_job_id,
         )
         self._validate_locked_scan_type(prepared, scan.scan_type)
+        self._require_edit_precondition(
+            db, scan, cloud_file, prepared.edit_precondition
+        )
         if existing is not None:
             self._validate_artifact_scan_type(existing, scan.scan_type)
             result = self._existing_claim(existing, prepared)
@@ -983,7 +1302,7 @@ class RemediationArtifactService:
             db.commit()
         except IntegrityError:
             db.rollback()
-            _, scan, _, _, existing = self._lock_authority_order(
+            _, scan, cloud_file, _, existing = self._lock_authority_order(
                 db,
                 department_id=prepared.department_id,
                 scan_id=prepared.scan_id,
@@ -993,6 +1312,9 @@ class RemediationArtifactService:
                 artifact_job_id=prepared.remediation_job_id,
             )
             self._validate_locked_scan_type(prepared, scan.scan_type)
+            self._require_edit_precondition(
+                db, scan, cloud_file, prepared.edit_precondition
+            )
             if existing is None:
                 raise
             self._validate_artifact_scan_type(existing, scan.scan_type)
@@ -1017,6 +1339,8 @@ class RemediationArtifactService:
             prepared.remediation_job_id,
             prepared.provider,
             prepared.scan_type,
+            prepared.edit_precondition,
+            prepared.edit_provenance,
         )
         actual = (
             artifact.department_id,
@@ -1025,6 +1349,8 @@ class RemediationArtifactService:
             artifact.remediation_job_id,
             artifact.provider,
             artifact.scan_type,
+            artifact.edit_precondition,
+            artifact.edit_provenance,
         )
         if actual != expected:
             raise ArtifactAuthorizationError(
@@ -1059,6 +1385,8 @@ class RemediationArtifactService:
         scan_type: ScanType | str,
         filename: str,
         provider_result: dict[str, Any] | None = None,
+        edit_precondition: dict[str, Any] | None = None,
+        edit_provenance: dict[str, Any] | None = None,
         commit: bool = True,
         claimed_metadata: tuple[int, str, str, str] | None = None,
     ) -> ArtifactPublicationResult:
@@ -1075,6 +1403,8 @@ class RemediationArtifactService:
             scan_type=scan_type,
             filename=filename,
             provider_result=provider_result,
+            edit_precondition=edit_precondition,
+            edit_provenance=edit_provenance,
         )
         if claimed_metadata is not None and claimed_metadata != (
             prepared.size_bytes,
@@ -1119,6 +1449,15 @@ class RemediationArtifactService:
                 artifact_id=str(artifact.id),
                 publication_token=claim.publication_token,
             )
+        except ArtifactEditConflict:
+            db.rollback()
+            if claim.owned and claim.publication_token is not None:
+                self.abort_staging(
+                    db,
+                    artifact_id=str(claim.artifact.id),
+                    publication_token=claim.publication_token,
+                )
+            raise
         except (OSError, ArtifactIntegrityError, SQLAlchemyError) as exc:
             db.rollback()
             cleanup_complete = False
@@ -1155,6 +1494,8 @@ class RemediationArtifactService:
         scan_type: ScanType | str,
         filename: str,
         provider_result: dict[str, Any] | None = None,
+        edit_precondition: dict[str, Any] | None = None,
+        edit_provenance: dict[str, Any] | None = None,
         commit: bool = True,
     ) -> ArtifactPublicationResult:
         """Publish a trusted path through the common descriptor implementation."""
@@ -1171,6 +1512,8 @@ class RemediationArtifactService:
                 scan_type=scan_type,
                 filename=filename,
                 provider_result=provider_result,
+                edit_precondition=edit_precondition,
+                edit_provenance=edit_provenance,
                 commit=commit,
             )
 
@@ -1192,6 +1535,8 @@ class RemediationArtifactService:
         scan_type: ScanType | str,
         filename: str,
         provider_result: dict[str, Any] | None = None,
+        edit_precondition: dict[str, Any] | None = None,
+        edit_provenance: dict[str, Any] | None = None,
         commit: bool = True,
     ) -> ArtifactPublicationResult:
         """Publish an exact caller-owned output claim without closing its stream."""
@@ -1208,6 +1553,8 @@ class RemediationArtifactService:
                 scan_type=scan_type,
                 filename=filename,
                 provider_result=provider_result,
+                edit_precondition=edit_precondition,
+                edit_provenance=edit_provenance,
                 commit=commit,
                 claimed_metadata=(
                     claimed_size_bytes,
@@ -1423,6 +1770,14 @@ class RemediationArtifactService:
             raise ArtifactExpiredError("staging artifact has expired")
         if artifact.published_at is None:
             raise ArtifactAuthorizationError("artifact is not published")
+        try:
+            precondition, _ = _sanitize_edit_metadata(
+                artifact.edit_precondition, artifact.edit_provenance
+            )
+        except ArtifactValidationError as exc:
+            raise ArtifactEditConflict("edit publication metadata is invalid") from exc
+        if precondition is not None:
+            self._require_edit_precondition(db, scan, cloud_file, precondition)
         with self._open_verified(artifact, allowed_lifecycle={"staging"}):
             pass
         artifact.lifecycle_status = "available"
@@ -1432,6 +1787,8 @@ class RemediationArtifactService:
             cloud_file.current_remediation_artifact_id = artifact.id
             cloud_file.has_remediated_version = True
             cloud_file.remediation_origin = "manual"
+            if precondition is not None:
+                cloud_file.writeback_status = "pending_review"
         else:
             previous_id = scan.current_remediation_artifact_id
             if previous_id and previous_id != artifact.id:

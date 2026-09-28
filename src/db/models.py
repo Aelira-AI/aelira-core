@@ -2080,6 +2080,8 @@ class RemediationArtifact(Base):
     cleanup_owner = Column(String(255), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     provider_result = Column(JSON, nullable=True)
+    edit_precondition = Column(JSON(none_as_null=True), nullable=True)
+    edit_provenance = Column(JSON(none_as_null=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -2134,6 +2136,11 @@ class RemediationArtifact(Base):
             "approval_review_digest IS NULL OR "
             f"({_lower_hex_64_constraint('approval_review_digest')})",
             name="ck_remediation_artifacts_approval_review_digest",
+        ),
+        CheckConstraint(
+            "(edit_precondition IS NULL AND edit_provenance IS NULL) OR "
+            "(edit_precondition IS NOT NULL AND edit_provenance IS NOT NULL)",
+            name="ck_remediation_artifacts_edit_pair",
         ),
         CheckConstraint(
             "lifecycle_status IN "

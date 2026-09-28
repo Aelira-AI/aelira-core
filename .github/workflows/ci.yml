@@ -234,7 +234,7 @@ jobs:
         env:
           PGPASSWORD: aelira
         run: createdb --host=localhost --username=aelira queue_races_test
-      - name: Run PostgreSQL session and enqueue races
+      - name: Run PostgreSQL session, enqueue, and PDF edit races
         id: race-tests
         env:
           DATABASE_URL: postgresql://aelira:aelira@localhost:5432/queue_races_test
@@ -246,6 +246,7 @@ jobs:
           ENV: test
         run: >-
           pytest tests/test_task17b_postgres.py
+          tests/test_pdf_edit_publication_postgres.py
           tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair
           -v --tb=short --no-cov
           --test-evidence=test-results/queue-races-postgres.json
