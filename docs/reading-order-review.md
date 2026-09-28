@@ -25,7 +25,8 @@ Regression coverage is in `tests/test_reading_order_snapshot.py`, `tests/test_re
 ## Candidate editing primitive
 
 `src/education/pdf_review_candidate.py` provides a direct-library building block
-for issue #372. It is not connected to the review endpoint or dashboard. Callers
+for issue #372. The authenticated editing API below uses it; the dashboard
+comparison remains read-only. Callers
 can inspect checksum-bound structure targets and request one explicit heading
 level change, complete sibling-order permutation, or first-row column-header
 designation on a simple tagged table. The table request requires a Table target
@@ -66,9 +67,62 @@ The design follows [W3C's tag-order guidance](https://www.w3.org/WAI/WCAG21/Tech
 [Adobe's PDF table attribute definitions](https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/pdfreference1.6.pdf),
 [PDF Association's table structure guidance](https://pdfa.org/wp-content/until2016_uploads/2015/12/StructureElementsBestPracticeGuide_2016-01-19.pdf),
 and [pikepdf's save and stream contracts](https://pikepdf.readthedocs.io/en/stable/api/main.html).
-Authenticated transactional publication, stale/concurrent
-review handling, approval invalidation, accessible UI controls and the full
-browser/PDF-assistive-technology journey remain in #372. No existing review
-status, artifact or approval is changed by this library.
+Accessible dashboard editing controls and the full browser/PDF-assistive-technology
+journey remain in #372. No existing review status, artifact or approval is changed
+by this library alone.
 
 Saved-candidate regression coverage: `tests/test_pdf_review_candidate.py`.
+
+## Authenticated candidate publication
+
+`GET /api/reviews/{scan_id}/pdf-edit-targets?source_kind=original` returns
+editable structure targets and a `precondition` object for the verified original.
+Use `source_kind=saved` to inspect the exact current artifact instead. For a
+cloud-backed scan, department-scoped callers must supply its `cloud_file_id`;
+course-scoped Canvas callers are bound to their authorized course file. Cloud
+selection uses the CloudFile's current-artifact pointer, which is distinct from
+the local scan pointer.
+
+`POST /api/reviews/{scan_id}/pdf-edit-candidates` accepts the following fields:
+
+| Field | Value |
+|---|---|
+| `source_kind` | `original` or `saved`, matching the inspection |
+| `cloud_file_id` | The inspected cloud file ID, or `null` for a local scan |
+| `expected_artifact_id` | Inspection's `precondition.expected_artifact_id`, including explicit `null` |
+| `expected_source_sha256` | Inspection's `precondition.source_sha256` |
+| `expected_state_digest` | Inspection's `precondition.state_digest` |
+| `operation` | One of the explicit operations below |
+
+Supported operations use the inspection's checksum-bound target IDs:
+
+- Heading: `{"kind":"heading","target_id":"<target>","level":2}`; level is an integer from 1 through 6.
+- Sibling order: `{"kind":"order","target_id":"<parent>","children":["<child-b>","<child-a>"]}`; supply every immediate child exactly once.
+- Column headers: `{"kind":"table_column_headers","target_id":"<table>"}`; explicitly designate the first row of a supported simple table as column headers.
+
+The API rejects extra request fields, client PDF bytes and filesystem paths.
+Target IDs are limited to 256 characters, order lists to 2,000 entries, and the
+encoded operation to 8 KiB; the service also bounds the complete persisted edit
+metadata to 8 KiB. The candidate primitive's document and structure limits still
+apply. These identifiers and digests are concurrency checks, not authorization.
+
+Candidate generation happens outside database locks. The service persists the
+expected source, predecessor and review-state digest in the staging row, then
+checks them again under its authority locks before making the artifact current.
+A concurrent save, changed review decision, changed course binding or unavailable
+predecessor prevents replacement. Stale state returns `409`; refresh inspection
+before preparing another edit. Unsupported edits return `422`. A retryable
+publication failure returns `503` and retains the prior current artifact.
+
+Successful saves return `201` with the new `artifact_id`, checksum,
+`review_status: "pending"` and `needs_review: true`. The artifact records the
+operation and source checksum. It does not inherit approval or write back to an
+LMS; a cloud replacement resets its writeback status to `pending_review`.
+Existing approval gates still apply separately. Both inspection and successful
+save responses carry `Cache-Control: no-store`.
+
+The database migration adds paired `edit_precondition` and `edit_provenance`
+fields; existing ordinary artifacts keep both fields empty. Route coverage lives
+in `tests/test_review_pdf_edit_routes.py`. Real publication, migration, failure
+and concurrency checks live in `tests/test_pdf_edit_publication_postgres.py` and
+are required in CI's disposable PostgreSQL race job.

@@ -12,19 +12,22 @@ Provides endpoints for:
 
 import hashlib
 import hmac
+import json
 import logging
 import mimetypes
 import os
 import re
 import stat
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from collections.abc import Iterable
 from typing import Literal, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 from sqlalchemy import func, case, false
 from sqlalchemy.orm import Session
 
@@ -49,6 +52,11 @@ from ..db.models import (
 )
 from ..education.equation_region_contract import PageRasterRegionLocator
 from ..education.reading_order_snapshot import inspect_pdf_reading_order
+from ..education.pdf_review_candidate import (
+    PDFEditRefused,
+    create_pdf_edit_candidate,
+    inspect_pdf_edit_targets,
+)
 from ..education.visual_semantic_contract import VisualSemanticContract
 from ..education.reports.compliance_report import (
     ACCEPTED_REVIEW_STATUSES,
@@ -62,9 +70,11 @@ from ..education.reports.evidence_package import (
     build_evidence_package,
 )
 from ..services.remediation_artifact_service import (
+    ArtifactEditConflict,
     ArtifactError,
     ArtifactExpiredError,
     ArtifactIntegrityError,
+    ArtifactPublicationRetryable,
     RemediationArtifactService,
 )
 from ..services.scan_fix_service import (
@@ -149,6 +159,47 @@ def _check_review_department(
 
 _MAX_INCLUDED_SOURCE_BYTES = 500 * 1024 * 1024
 _MAX_READING_ORDER_BYTES = 50 * 1024 * 1024
+
+
+_EditTarget = Annotated[str, StringConstraints(min_length=1, max_length=256)]
+
+
+class PDFHeadingOperation(BaseModel):
+    kind: Literal["heading"]
+    target_id: _EditTarget
+    level: int = Field(strict=True, ge=1, le=6)
+
+    model_config = {"extra": "forbid"}
+
+
+class PDFOrderOperation(BaseModel):
+    kind: Literal["order"]
+    target_id: _EditTarget
+    children: list[_EditTarget] = Field(min_length=2, max_length=2000)
+
+    model_config = {"extra": "forbid"}
+
+
+class PDFTableColumnHeaderOperation(BaseModel):
+    kind: Literal["table_column_headers"]
+    target_id: _EditTarget
+
+    model_config = {"extra": "forbid"}
+
+
+class PDFEditSaveRequest(BaseModel):
+    source_kind: Literal["original", "saved"]
+    cloud_file_id: str | None = Field(default=None, max_length=36)
+    expected_artifact_id: str | None = Field(max_length=36)
+    expected_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_state_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operation: Annotated[
+        PDFHeadingOperation | PDFOrderOperation | PDFTableColumnHeaderOperation,
+        Field(discriminator="kind"),
+    ]
+
+    model_config = {"extra": "forbid"}
+
 
 _AUTO_APPROVED_STATUS = "auto_approved"
 _HUMAN_REVIEWED_STATUSES = frozenset({"approved", "edited", "rejected"})
@@ -1419,6 +1470,280 @@ def get_reading_order(
             "artifact_id": artifact_id,
             "source": source,
             "saved": saved,
+        },
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+def _pdf_edit_authority(
+    db: Session,
+    scan_id: str,
+    principal: AuthenticatedPrincipal,
+    cloud_file_id: str | None,
+) -> tuple[Scan, CloudFile | None, str, str, str | None]:
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if scan is None or scan.department_id != principal.department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    course_cloud = authorize_scan_access(db, scan, principal)
+    if principal.auth_method == "lti" and not principal.lti_account_wide:
+        if course_cloud is None:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        linked = (
+            db.query(CloudFile)
+            .filter(
+                CloudFile.last_scan_id == scan.id,
+                CloudFile.department_id == principal.department_id,
+                CloudFile.provider == "canvas",
+                CloudFile.provider_parent_id == principal.lti_course_id,
+            )
+            .all()
+        )
+        if cloud_file_id is None:
+            if len(linked) != 1:
+                raise HTTPException(
+                    status_code=409, detail="Cloud file context required"
+                )
+            cloud_file = linked[0]
+        else:
+            cloud_file = next(
+                (item for item in linked if item.id == cloud_file_id), None
+            )
+            if cloud_file is None:
+                raise HTTPException(status_code=404, detail="Scan not found")
+        scope_kind, course_id = "course", principal.lti_course_id
+    else:
+        scope_kind, course_id = "department", None
+        linked = (
+            db.query(CloudFile)
+            .filter(
+                CloudFile.last_scan_id == scan.id,
+                CloudFile.department_id == principal.department_id,
+            )
+            .all()
+        )
+        if cloud_file_id is None:
+            if linked:
+                raise HTTPException(
+                    status_code=409, detail="Cloud file context required"
+                )
+            cloud_file = None
+        else:
+            cloud_file = next(
+                (item for item in linked if item.id == cloud_file_id), None
+            )
+            if cloud_file is None:
+                raise HTTPException(status_code=404, detail="Scan not found")
+    if getattr(scan.scan_type, "value", scan.scan_type) != "PDF":
+        raise HTTPException(status_code=409, detail="PDF source required")
+    provider = cloud_file.provider if cloud_file is not None else "local"
+    return scan, cloud_file, provider, scope_kind, course_id
+
+
+def _pdf_edit_source(
+    db: Session,
+    service: RemediationArtifactService,
+    scan: Scan,
+    cloud_file: CloudFile | None,
+    precondition: dict,
+) -> bytes:
+    if precondition["source_kind"] == "original":
+        try:
+            content = _read_verified_source(
+                scan, max_bytes=_MAX_READING_ORDER_BYTES
+            ).content
+        except EvidencePackageError:
+            raise HTTPException(
+                status_code=409, detail="PDF source unavailable"
+            ) from None
+    else:
+        artifact_id = precondition["expected_artifact_id"]
+        artifact = (
+            db.query(RemediationArtifact)
+            .filter(
+                RemediationArtifact.id == artifact_id,
+                RemediationArtifact.scan_id == scan.id,
+                RemediationArtifact.department_id == scan.department_id,
+            )
+            .one_or_none()
+        )
+        if (
+            artifact is None
+            or artifact.cloud_file_id
+            != (cloud_file.id if cloud_file is not None else None)
+            or artifact.size_bytes > _MAX_READING_ORDER_BYTES
+        ):
+            raise HTTPException(status_code=409, detail="PDF source unavailable")
+        try:
+            with service.open_verified(
+                db,
+                artifact,
+                department_id=scan.department_id,
+                scan_id=scan.id,
+                cloud_file_id=artifact.cloud_file_id,
+            ) as stream:
+                content = stream.read(_MAX_READING_ORDER_BYTES + 1)
+            if len(content) != artifact.size_bytes:
+                raise ArtifactIntegrityError("saved bytes changed")
+        except ArtifactError:
+            raise HTTPException(
+                status_code=409, detail="PDF source unavailable"
+            ) from None
+    if len(content) > _MAX_READING_ORDER_BYTES or not hmac.compare_digest(
+        hashlib.sha256(content).hexdigest(), precondition["source_sha256"]
+    ):
+        raise HTTPException(status_code=409, detail="PDF source changed")
+    return content
+
+
+def _pdf_edit_context(
+    db: Session,
+    scan_id: str,
+    principal: AuthenticatedPrincipal,
+    cloud_file_id: str | None,
+    source_kind: str,
+) -> tuple[Scan, CloudFile | None, str, dict, bytes, RemediationArtifactService]:
+    scan, cloud_file, provider, scope_kind, course_id = _pdf_edit_authority(
+        db, scan_id, principal, cloud_file_id
+    )
+    service = RemediationArtifactService.from_settings()
+    service.max_bytes = min(service.max_bytes, _MAX_READING_ORDER_BYTES)
+    try:
+        precondition = service.capture_edit_precondition(
+            db,
+            department_id=principal.department_id,
+            scan_id=scan.id,
+            cloud_file_id=cloud_file.id if cloud_file is not None else None,
+            provider=provider,
+            source_kind=source_kind,
+            scope_kind=scope_kind,
+            course_id=course_id,
+        )
+    except ArtifactError:
+        raise HTTPException(
+            status_code=409, detail="PDF review state unavailable"
+        ) from None
+    finally:
+        db.rollback()
+    try:
+        content = _pdf_edit_source(db, service, scan, cloud_file, precondition)
+    finally:
+        db.rollback()
+    return scan, cloud_file, provider, precondition, content, service
+
+
+@router.get("/{scan_id}/pdf-edit-targets")
+def get_pdf_edit_targets(
+    scan_id: str,
+    source_kind: Literal["original", "saved"] = Query("original"),
+    cloud_file_id: str | None = Query(None),
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Inspect only verified, authority-bound PDF structure targets."""
+    _, _, _, precondition, content, _ = _pdf_edit_context(
+        db, scan_id, principal, cloud_file_id, source_kind
+    )
+    try:
+        targets = inspect_pdf_edit_targets(content, precondition["source_sha256"])
+    except PDFEditRefused as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return JSONResponse(
+        content={
+            "precondition": {
+                key: precondition[key]
+                for key in (
+                    "source_kind",
+                    "source_sha256",
+                    "expected_artifact_id",
+                    "state_digest",
+                    "cloud_file_id",
+                )
+            },
+            "targets": targets,
+        },
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.post("/{scan_id}/pdf-edit-candidates")
+def save_pdf_edit_candidate(
+    scan_id: str,
+    request: PDFEditSaveRequest,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Save one reviewed candidate after a durable predecessor recheck."""
+    operation = request.operation.model_dump()
+    if len(json.dumps(operation).encode()) > 8192:
+        raise HTTPException(status_code=422, detail="Unsupported edit operation")
+    scan, cloud_file, provider, precondition, content, service = _pdf_edit_context(
+        db, scan_id, principal, request.cloud_file_id, request.source_kind
+    )
+    if (
+        request.expected_artifact_id != precondition["expected_artifact_id"]
+        or request.expected_source_sha256 != precondition["source_sha256"]
+        or request.expected_state_digest != precondition["state_digest"]
+    ):
+        raise HTTPException(status_code=409, detail="PDF review state changed")
+    try:
+        candidate = create_pdf_edit_candidate(
+            content, precondition["source_sha256"], operation
+        )
+    except PDFEditRefused as exc:
+        code = (
+            409
+            if str(exc)
+            in {"source_checksum_mismatch", "stale_or_unknown_target", "no_change"}
+            else 422
+        )
+        raise HTTPException(status_code=code, detail=str(exc)) from None
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as temporary:
+        temporary.write(candidate.content)
+        temporary.flush()
+        try:
+            with open(temporary.name, "rb") as source_stream:
+                published = service.claim_and_publish_stream(
+                    db,
+                    source_stream=source_stream,
+                    claimed_size_bytes=len(candidate.content),
+                    claimed_sha256=candidate.sha256,
+                    claimed_mime_type="application/pdf",
+                    claimed_filename="review-edit.pdf",
+                    department_id=principal.department_id,
+                    scan_id=scan.id,
+                    cloud_file_id=cloud_file.id if cloud_file is not None else None,
+                    remediation_job_id=None,
+                    created_by_id=principal.user_id,
+                    provider=provider,
+                    scan_type=ScanType.PDF,
+                    filename="review-edit.pdf",
+                    provider_result=None,
+                    edit_precondition=precondition,
+                    edit_provenance={
+                        "source_kind": request.source_kind,
+                        "source_sha256": precondition["source_sha256"],
+                        "operation": operation,
+                    },
+                )
+        except ArtifactEditConflict:
+            raise HTTPException(
+                status_code=409, detail="PDF review state changed"
+            ) from None
+        except ArtifactPublicationRetryable:
+            raise HTTPException(
+                status_code=503, detail="PDF edit save failed"
+            ) from None
+        except ArtifactError:
+            raise HTTPException(
+                status_code=409, detail="PDF edit save unavailable"
+            ) from None
+    return JSONResponse(
+        status_code=201,
+        content={
+            "artifact_id": published.artifact_id,
+            "sha256": candidate.sha256,
+            "review_status": "pending",
+            "needs_review": True,
         },
         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )

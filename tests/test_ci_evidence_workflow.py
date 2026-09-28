@@ -115,9 +115,23 @@ def test_queue_races_use_a_separate_disposable_required_database():
     assert required == {
         "tests/test_task17b_postgres.py::test_concurrent_enqueue_unique_race_returns_the_single_winner",
         "tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair",
+        "tests/test_pdf_edit_publication_postgres.py::test_migration_upgrade_downgrade_upgrade_restores_paired_fields",
+        "tests/test_pdf_edit_publication_postgres.py::test_real_saved_table_candidate_is_pending_and_verified",
+        "tests/test_pdf_edit_publication_postgres.py::test_cloud_replacement_resets_writeback_without_inheriting_approval",
+        "tests/test_pdf_edit_publication_postgres.py::test_course_change_between_claim_and_finalize_preserves_pointer",
+        "tests/test_pdf_edit_publication_postgres.py::test_two_real_publishers_cannot_replace_the_same_predecessor[absent]",
+        "tests/test_pdf_edit_publication_postgres.py::test_two_real_publishers_cannot_replace_the_same_predecessor[existing]",
+        "tests/test_pdf_edit_publication_postgres.py::test_storage_failure_after_claim_keeps_predecessor_and_cleans_claim",
+        "tests/test_pdf_edit_publication_postgres.py::test_finalize_rechecks_persisted_state_after_staging[review]",
+        "tests/test_pdf_edit_publication_postgres.py::test_finalize_rechecks_persisted_state_after_staging[source]",
+        "tests/test_pdf_edit_publication_postgres.py::test_finalize_rechecks_persisted_state_after_staging[json_null]",
+        "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[approval]",
+        "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[cleanup]",
+        "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[expiry]",
     }
     assert not allowed
     assert "tests/test_task17b_postgres.py" in shlex.split(suite["run"])
+    assert "tests/test_pdf_edit_publication_postgres.py" in shlex.split(suite["run"])
     assert (
         "tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair"
         in shlex.split(suite["run"])
