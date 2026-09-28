@@ -77,6 +77,17 @@ Saved-candidate regression coverage: `tests/test_pdf_review_candidate.py`.
 
 `GET /api/reviews/{scan_id}/pdf-edit-targets?source_kind=original` returns
 editable structure targets and a `precondition` object for the verified original.
+Each target also has `context`: `status` (`available`, `empty`, or `unavailable`),
+one-based `page_numbers`, ordered `segments` with `page_number`, `text`, and
+`source` (`MCID`, `ActualText`, or `Alt`), and `truncated`. These excerpts come
+from the target's verified marked-content ownership, including descendants for
+containers; repeated visible text never establishes target identity. An empty
+context means verified structure with no non-whitespace excerpt. Unavailable
+means no safe excerpt can be supplied within the response budget. No visual
+position or reading-order claim is inferred from the excerpts. A target retains
+at most 16 page numbers, four segments, and 240 text characters; additional
+content sets `truncated`. The sum of serialized target context objects is capped
+at 256 KiB, with omitted contexts explicitly unavailable and truncated.
 Use `source_kind=saved` to inspect the exact current artifact instead. For a
 cloud-backed scan, department-scoped callers must supply its `cloud_file_id`;
 course-scoped Canvas callers are bound to their authorized course file. Cloud
