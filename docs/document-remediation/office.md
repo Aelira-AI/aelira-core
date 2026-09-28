@@ -20,11 +20,13 @@ It does not rewrite inaccessible embedded objects or guarantee that SmartArt bec
 
 The [PPTX processor](../../src/education/pptx_processor.py) checks image alt text, text/background contrast, missing/empty/duplicate slide titles, optional images-of-text via OCR, animation timing patterns, and embedded media/caption or transcript signals. Fixture-backed end-to-end tests cover slide processing, contrast, and missing alt text.
 
-The [PPTX remediator](../../src/education/remediation/pptx_remediator.py) may set alt text on a located shape, adjust eligible text color when foreground/background metadata is available, and add a missing title.
+The [PPTX remediator](../../src/education/remediation/pptx_remediator.py) may set alt text on a located shape, adjust eligible text color when foreground/background metadata is available, and add a missing title. Its [bounded reading-order path](../../src/education/remediation/pptx_reading_order.py) changes the saved shape-tree order only when a direct-library caller sets `use_supplied_fixes=True` and provides `metadata.slide_index` (zero-based), `metadata.source_sha256` (the original PPTX SHA-256), and `metadata.accepted_shape_ids` (a complete list of integer shape IDs in accepted reading order). It does not derive that order from positions, names, or AI text. The caller is responsible for obtaining the author's or reviewer's acceptance.
+
+This path supports top-level text/ordinary shapes, pictures, and placeholders, up to 128 shapes on each of at most 64 targeted slides. It refuses groups, unsupported objects, animation on a targeted slide, media-bearing shapes, rotated/flipped or effect-bearing shapes, incomplete/stale orders, shapes outside the slide, and changes that would invert overlapping objects' visual stacking. The writer copies all untargeted PPTX parts byte-for-byte, changes only the targeted slide XML, reopens the delivered file, checks stable IDs and accepted order, and verifies the rest of each targeted slide's XML is unchanged. If no requested slide qualifies, the copied output equals the source byte-for-byte and the request remains manual.
 
 ### PPTX non-capabilities
 
-The current reading-order path determines a suggested position order, writes guidance into speaker notes, and returns `False`; it does **not** structurally reorder shapes. It does not add captions to embedded video/audio or replace images of text. Legacy `.ppt` is not accepted by `POST /education/powerpoint/scan`, even though the CLI's directory finder currently discovers it; use `.pptx`.
+The scan/API and queued review path has no trusted reviewer-order field or reproducible PPTX reading-order finding yet, so ordinary remediation requests remain manual. The direct-library repair's saved-file check establishes package and shape order preservation, not the author's intended meaning or PowerPoint screen-reader behavior. A representative deck still needs a recorded check in PowerPoint with assistive technology, including application/AT versions and limitations. The remediator does not add captions to embedded video/audio or replace images of text. Legacy `.ppt` is not accepted by `POST /education/powerpoint/scan`, even though the CLI's directory finder currently discovers it; use `.pptx`.
 
 ## XLSX
 
@@ -87,6 +89,7 @@ Open the output in the target Office application. Check layout and styles, navig
 - [`tests/test_pptx_processor_e2e.py`](../../tests/test_pptx_processor_e2e.py) — fixture-backed scan workflow.
 - [`tests/test_pptx_animations.py`](../../tests/test_pptx_animations.py) — animation checks.
 - [`tests/test_pptx_embedded_media.py`](../../tests/test_pptx_embedded_media.py) — media checks.
+- [`tests/test_pptx_saved_reading_order.py`](../../tests/test_pptx_saved_reading_order.py) — saved order, package preservation, and refusal boundaries.
 
 ### XLSX evidence
 
