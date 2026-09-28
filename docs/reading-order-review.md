@@ -21,3 +21,38 @@ Parsing uses the application's PDF libraries, without separate process-level iso
 Course-scoped Review access currently supports Canvas file bindings only. Other LMS course launches cannot use matching Canvas course identifiers. Department-wide administrators retain their department scope. The same restrictions apply to Review actions, evidence exports, queue rows and aggregate counts.
 
 Regression coverage is in `tests/test_reading_order_snapshot.py`, `tests/test_review_reading_order.py`, `tests/test_review_authorization.py`, and `dashboard/tests/unit/readingOrderComparison.test.js`.
+
+## Candidate editing primitive
+
+`src/education/pdf_review_candidate.py` provides a direct-library building block
+for issue #372. It is not connected to the review endpoint or dashboard. Callers
+can inspect checksum-bound structure targets and request one explicit heading
+level change or complete sibling-order permutation. The input is immutable bytes;
+the result contains separate candidate bytes and their checksum, with human
+review still required. A target identifier is not an authorization credential.
+
+The primitive accepts existing, unambiguous MCID/ParentTree-bound structure only.
+It refuses encrypted/signed/form PDFs, custom role maps/namespaces, missing or
+shared structure nodes, mixed content/structure children, and parent alternatives
+that could mask a reordered sequence. The existing inspection resource bounds
+apply, with additional limits of 2,000 structure nodes, depth 40 and 100,000 graph
+visits. Unsupported input raises a safe reason without parser details.
+
+Before returning, it saves and reopens the candidate, rechecks source bindings and
+compares the complete reachable object graph with the explicitly edited graph.
+Object numbering, stream compression and trailer transport identifiers can
+change during serialization; decoded stream content and graph relationships
+must remain equal. JPEG image streams retain their exact encoded bytes and
+decoding parameters instead of requiring lossy decoding/re-encoding.
+This comparison is not a PDF/UA verdict or a check that the
+reviewer's chosen heading/order conveys the intended meaning. Tests also compare
+text and rendered page pixels for the supported synthetic fixtures.
+
+The design follows [W3C's tag-order guidance](https://www.w3.org/WAI/WCAG21/Techniques/pdf/PDF3)
+and [pikepdf's save and stream contracts](https://pikepdf.readthedocs.io/en/stable/api/main.html).
+Table-header edits, authenticated transactional publication, stale/concurrent
+review handling, approval invalidation, accessible UI controls and the full
+browser/PDF-assistive-technology journey remain in #372. No existing review
+status, artifact or approval is changed by this library.
+
+Saved-candidate regression coverage: `tests/test_pdf_review_candidate.py`.
