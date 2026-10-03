@@ -47,11 +47,16 @@ test('rejects stale preconditions, forged paths, malformed graph and capabilitie
   ];
   for (const change of mutate) { const data = fixture(); change(data); assert.throws(() => parsePDFEditTargets(data, 'original', null)); }
   assert.throws(() => parsePDFEditTargets(fixture(), 'original', 'wrong-cloud'));
+  const unsolicitedCloud = fixture();
+  unsolicitedCloud.precondition.cloud_file_id = '550e8400-e29b-41d4-a716-446655440000';
+  assert.throws(() => parsePDFEditTargets(unsolicitedCloud, 'original', null));
 });
 
 test('explicit cloud file context never falls back to a local edit', () => {
   assert.deepEqual(parsePDFCloudContext(''), { kind: 'local' });
   assert.deepEqual(parsePDFCloudContext('?cloud_file_id=550e8400-e29b-41d4-a716-446655440000'),
+    { kind: 'cloud', id: '550e8400-e29b-41d4-a716-446655440000' });
+  assert.deepEqual(parsePDFCloudContext('?cloud_file_id=550E8400-E29B-41D4-A716-446655440000'),
     { kind: 'cloud', id: '550e8400-e29b-41d4-a716-446655440000' });
   for (const search of ['?cloud_file_id=', '?cloud_file_id=../local',
     '?cloud_file_id=550e8400-e29b-41d4-a716-446655440000&cloud_file_id=550e8400-e29b-41d4-a716-446655440001']) {

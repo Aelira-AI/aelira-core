@@ -5,7 +5,7 @@ export function parsePDFCloudContext(search: string): PDFCloudContext {
   const ids = new URLSearchParams(search).getAll('cloud_file_id');
   if (ids.length === 0) return { kind: 'local' };
   if (ids.length !== 1 || !/^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(ids[0])) return { kind: 'invalid' };
-  return { kind: 'cloud', id: ids[0] };
+  return { kind: 'cloud', id: ids[0].toLowerCase() };
 }
 export interface PDFEditContext {
   status: 'available' | 'empty' | 'unavailable';
@@ -74,7 +74,7 @@ export function parsePDFEditTargets(value: unknown, sourceKind: PDFSourceKind, r
     typeof pre.state_digest !== 'string' || !HASH.test(pre.state_digest) ||
     (pre.expected_artifact_id !== null && (typeof pre.expected_artifact_id !== 'string' || !pre.expected_artifact_id || pre.expected_artifact_id.length > 36)) ||
     (pre.cloud_file_id !== null && (typeof pre.cloud_file_id !== 'string' || !pre.cloud_file_id || pre.cloud_file_id.length > 36)) ||
-    (requestedCloudFileId !== null && pre.cloud_file_id !== requestedCloudFileId) ||
+    pre.cloud_file_id !== requestedCloudFileId ||
     (sourceKind === 'saved' && pre.expected_artifact_id === null) ||
     !Array.isArray(envelope.targets) || envelope.targets.length < 2 || envelope.targets.length > 2000) return fail();
   const hash = pre.source_sha256 as string;
