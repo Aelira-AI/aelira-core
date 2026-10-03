@@ -93,11 +93,11 @@ pydantic-settings==2.15.0
 pydantic_core==2.46.5
 pyee==13.0.0
 Pygments==2.21.0
-PyJWT==2.14.0
+PyJWT==2.15.0
 PyLTI1p3==2.0.0
 PyMuPDF==1.28.2
 pyparsing==3.3.2
-pypdf==6.18.1
+pypdf==6.19.0
 pypdfium2==5.13.0
 pytesseract==0.3.13
 python-dateutil==2.9.0.post0
