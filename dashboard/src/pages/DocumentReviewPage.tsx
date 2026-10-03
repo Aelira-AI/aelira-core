@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -13,6 +13,7 @@ import { useToast } from '../context/toast-context';
 import { useAbortableRequestOwner } from '../hooks/useAbortableRequestOwner';
 import { FixCard } from '../components/review/FixCard';
 import { ReadingOrderComparison } from '../components/review/ReadingOrderComparison';
+import { PDFStructureEditor } from '../components/review/PDFStructureEditor';
 import { MatterhornResultsBar } from '../components/review/MatterhornResultsBar';
 import {
   VisualAnalysisStatusPanel,
@@ -31,6 +32,7 @@ import {
   evidenceFilename,
 } from '../utils/reviewEvidenceDownload';
 import type { ReviewEvidenceFormat } from '../utils/reviewEvidenceDownload';
+import { parsePDFCloudContext } from '../utils/pdfStructureEditor';
 
 // ============================================================================
 // Types
@@ -82,12 +84,16 @@ const EVIDENCE_FORMATS: { value: ReviewEvidenceFormat; label: string }[] = [
 
 export function DocumentReviewPage(): React.ReactElement {
   const { scanId } = useParams<{ scanId: string }>();
-  return <DocumentReviewContent key={scanId} scanId={scanId} />;
+  const location = useLocation();
+  return <DocumentReviewContent key={`${scanId}:${location.search}`} scanId={scanId} />;
 }
 
 function DocumentReviewContent({ scanId }: { scanId: string | undefined }): React.ReactElement {
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
+  const cloudContext = parsePDFCloudContext(location.search);
+  const cloudFileId = cloudContext.kind === 'cloud' ? cloudContext.id : null;
 
   const [review, setReview] = useState<DocumentReview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -95,14 +101,16 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
   const [fixFilter, setFixFilter] = useState<FixFilter>('all');
   const [approveAllLoading, setApproveAllLoading] = useState(false);
   const [downloadingFormat, setDownloadingFormat] = useState<ReviewEvidenceFormat | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [comparisonRefresh, setComparisonRefresh] = useState(0);
   const reviewOwner = useAbortableRequestOwner(scanId);
 
   // Fetch document review data
-  const fetchReview = useCallback(async (): Promise<void> => {
+  const fetchReview = useCallback(async (initial = false): Promise<void> => {
     if (!scanId) return;
     const attempt = reviewOwner.begin();
     try {
-      setLoading(true);
+      if (initial) setLoading(true);
       const response = await apiClient.get<DocumentReview>(`/api/reviews/${scanId}`, { signal: attempt.controller.signal });
       if (!reviewOwner.isCurrent(attempt)) return;
       if (response.data.scan_id !== scanId) throw new Error('Review response does not match this document.');
@@ -116,16 +124,17 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
         : err instanceof Error
           ? err.message
           : 'An unexpected error occurred';
-      setError(message);
+      if (initial) setError(message);
+      else toast.error('Could not refresh the review. Reload the page to see current decisions.', 'Review Refresh');
     } finally {
       if (reviewOwner.finish(attempt)) setLoading(false);
     }
-  }, [scanId, reviewOwner]);
+  }, [scanId, reviewOwner, toast]);
 
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
-      if (!cancelled) void fetchReview();
+      if (!cancelled) void fetchReview(true);
     });
     return () => {
       cancelled = true;
@@ -162,7 +171,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
 
   // Handle individual fix approve
   const handleApprove = async (fixId: string, editedContent?: string, notes?: string): Promise<void> => {
-    if (!scanId) return;
+    if (!scanId || editSaving) return;
     try {
       const action = editedContent ? 'edit' : 'approve';
       await apiClient.post<ReviewResponse>(`/api/reviews/${scanId}/fixes/${fixId}`, {
@@ -186,7 +195,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
 
   // Handle individual fix reject
   const handleReject = async (fixId: string, notes?: string): Promise<void> => {
-    if (!scanId) return;
+    if (!scanId || editSaving) return;
     try {
       await apiClient.post<ReviewResponse>(`/api/reviews/${scanId}/fixes/${fixId}`, {
         action: 'reject',
@@ -212,7 +221,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
     reason: string,
     expiresAt: string,
   ): Promise<void> => {
-    if (!scanId) return;
+    if (!scanId || editSaving) return;
     try {
       await apiClient.put(`/api/reviews/${scanId}/fixes/${fixId}/deferral`, {
         owner,
@@ -232,7 +241,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
   };
 
   const handleRevokeDeferral = async (fixId: string): Promise<void> => {
-    if (!scanId) return;
+    if (!scanId || editSaving) return;
     try {
       await apiClient.post(`/api/reviews/${scanId}/fixes/${fixId}/deferral/revoke`);
       await fetchReview();
@@ -249,7 +258,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
 
   // Handle approve all
   const handleApproveAll = async (): Promise<void> => {
-    if (!scanId) return;
+    if (!scanId || editSaving) return;
     const pendingFixIds = review?.fixes
       .filter((fix) => isAttentionRequired(fix))
       .map((fix) => fix.id) ?? [];
@@ -379,7 +388,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
             {needsReviewCount > 0 ? (
               <span className="text-[var(--feature-warning-content)] font-medium">{needsReviewCount} need review</span>
             ) : (
-              <span className="text-[var(--feature-success-content)]">All reviewed</span>
+              <span className="text-[var(--feature-success-content)]">{summary.total_fixes === 0 ? 'No findings to review' : 'All findings reviewed'}</span>
             )}
           </div>
         </div>
@@ -405,7 +414,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
           {needsReviewCount > 0 && (
             <button
               onClick={handleApproveAll}
-              disabled={approveAllLoading}
+              disabled={approveAllLoading || editSaving}
               className="btn-primary text-sm py-1.5 px-4 flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
               aria-label={`Approve all ${needsReviewCount} pending fixes`}
             >
@@ -422,7 +431,14 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
 
       {/* Main content */}
       <div className="flex flex-1 flex-col min-w-0">
-        <ReadingOrderComparison key={scanId} scanId={scanId!} />
+        {cloudContext.kind === 'invalid' ?
+          <p className="border-b border-[var(--border-primary)] px-4 py-3 text-sm text-[var(--feature-danger-content)]" role="alert">This Review link has invalid file context. Open a valid file-specific Review link to inspect or edit PDF structure.</p> : <>
+            {cloudFileId ? <p className="border-b border-[var(--border-primary)] px-4 py-3 text-sm text-secondary" role="status">Reading-order comparison for this cloud file is unavailable on this page.</p> :
+              <ReadingOrderComparison key={scanId} scanId={scanId!} refreshToken={comparisonRefresh} />}
+            <PDFStructureEditor key={`${scanId}:${cloudFileId ?? ''}`} scanId={scanId!} cloudFileId={cloudFileId}
+              onSavingChange={setEditSaving}
+              onSaved={() => { setComparisonRefresh(value => value + 1); void fetchReview(); }} />
+          </>}
 
         {/* Fix list */}
         <div className="flex-1 flex flex-col min-w-0">
@@ -462,7 +478,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
           </div>
 
           {/* Fix cards */}
-          <div className="flex-1 p-4 space-y-3">
+          <fieldset className="flex-1 min-w-0 p-4 space-y-3" disabled={editSaving} aria-label="Review fixes">
             {filteredFixes.length === 0 ? (
               <div className="text-center py-12">
                 <CheckCircle2 className="w-10 h-10 mx-auto text-[var(--feature-success-content)] mb-3" aria-hidden="true" />
@@ -486,7 +502,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
                 />
               ))
             )}
-          </div>
+          </fieldset>
         </div>
       </div>
 
