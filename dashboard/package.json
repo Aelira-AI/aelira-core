@@ -24,7 +24,7 @@
     "date-fns": "^4.4.0",
     "diff": "^9.0.0",
     "diff2html": "^3.4.56",
-    "dompurify": "^3.4.15",
+    "dompurify": "^3.4.16",
     "lucide-react": "^1.46.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
