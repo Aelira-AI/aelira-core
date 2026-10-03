@@ -1,11 +1,9 @@
-import type { Browser, Page } from 'playwright'
-
 import { intro, outro, spinner } from '@clack/prompts'
 import { Args, Command, Flags } from '@oclif/core'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import pc from 'picocolors'
-import { chromium } from 'playwright'
+import { type Browser, chromium, type Page } from 'playwright'
 
 interface FocusableElement {
   ariaLabel?: string
