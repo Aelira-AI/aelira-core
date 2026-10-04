@@ -40,14 +40,14 @@ function SnapshotView({ snapshot, label }: { snapshot: ReadingOrderSnapshot; lab
   </div>;
 }
 
-export function ReadingOrderComparison({ scanId }: { scanId: string }): React.ReactElement {
+export function ReadingOrderComparison({ scanId, refreshToken = 0 }: { scanId: string; refreshToken?: number }): React.ReactElement {
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [version, setVersion] = useState<'source' | 'saved'>('source');
   const [retry, setRetry] = useState(0);
   const [result, setResult] = useState<{ key: string; data?: ReadingOrderComparisonData; error?: boolean } | null>(null);
   const panelId = useId();
-  const requestKey = `${scanId}:${page}:${retry}`;
+  const requestKey = `${scanId}:${page}:${retry}:${refreshToken}`;
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
@@ -68,7 +68,7 @@ export function ReadingOrderComparison({ scanId }: { scanId: string }): React.Re
       <button type="button" className="btn-secondary text-sm" aria-expanded={open} aria-controls={panelId} onClick={() => { setOpen(!open); setRetry(value => value + 1); }}>{open ? 'Hide comparison' : 'Show comparison'}</button>
     </div>
     {open && <div id={panelId} className="mt-3 min-w-0 space-y-3">
-      <p className="text-sm text-secondary">Compare the original and current saved PDF. Text follows each file’s actual tags, not a proposed reorder. Table structure editing is not included.</p>
+      <p className="text-sm text-secondary">Compare the original and current saved PDF. Text follows each file’s actual tags, not a proposed reorder. This view does not show table header semantics; the editor below supports column-header designation on eligible simple tables.</p>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-wrap gap-2" role="group" aria-label="PDF version">
           {(['source', 'saved'] as const).map(value => <button key={value} type="button" className={version === value ? 'btn-primary text-sm' : 'btn-secondary text-sm'} aria-pressed={version === value} onClick={() => setVersion(value)}>{value === 'source' ? 'Original PDF' : 'Saved PDF'}</button>)}

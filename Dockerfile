@@ -30,7 +30,7 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
 # toolchain into the final image. Build the pinned Pa11y runtime separately and
 # copy only Node plus Pa11y's production dependency tree into the API image.
-FROM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS pa11y-node
+FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS pa11y-node
 
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 RUN npm install -g pa11y@9.0.1 && \
@@ -42,6 +42,10 @@ RUN npm install -g pa11y@9.0.1 && \
 FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
 
 ARG SOURCE_DATE_EPOCH=0
+
+# The global repair and both final-image checks read the reviewed runtime pin.
+COPY requirements.txt /app/requirements.txt
+COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
 
 # Install runtime dependencies + Playwright system dependencies + LaTeXML stack.
 # TeX format dumps are content-nondeterministic even with a fixed epoch, so
@@ -99,7 +103,7 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     && find /var/lib/texmf -type f -name '*.log' -delete \
     && find /var/lib/texmf/web2c -type f -name '*.fmt' -delete \
     && /usr/local/bin/python -m pip uninstall --yes msgpack \
-    && /usr/local/bin/python -m pip install --no-cache-dir msgpack==1.2.2
+    && /usr/local/bin/python -m pip install --no-cache-dir "msgpack==$(/usr/local/bin/python /app/scripts/verify_final_python_packages.py msgpack-pin)"
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -110,8 +114,8 @@ COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node
 COPY --from=pa11y-node /usr/local/lib/node_modules/pa11y /usr/local/lib/node_modules/pa11y
 RUN ln -s ../lib/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
 
-RUN /usr/local/bin/python -c "import importlib.metadata as m; assert m.version('msgpack') == '1.2.2'" && \
-    /opt/venv/bin/python -c "import importlib.metadata as m; assert m.version('msgpack') == '1.2.2'; assert m.version('setuptools') == '84.0.0'"
+RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py global && \
+    /opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv
 
 # Set working directory
 WORKDIR /app

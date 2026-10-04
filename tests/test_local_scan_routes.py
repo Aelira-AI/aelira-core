@@ -5,6 +5,7 @@ Scan/CloudJobQueue enqueue boundary. Processing and remediation belong to the
 worker suites; a successful acknowledgement here means durable pending work.
 """
 
+from src.database_url import engine_url
 from dataclasses import dataclass
 import hashlib
 import os
@@ -96,12 +97,12 @@ def scan_engine():
     database_url = require_disposable_postgres_url(
         os.environ["DATABASE_URL"], destructive=False
     )
-    admin_engine = create_engine(database_url)
+    admin_engine = create_engine(engine_url(database_url))
     schema = f"scan_contract_{uuid.uuid4().hex}"
     with admin_engine.begin() as connection:
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_engine(
-        database_url, connect_args={"options": f"-csearch_path={schema}"}
+        engine_url(database_url), connect_args={"options": f"-csearch_path={schema}"}
     )
     try:
         # The queue and scans have foreign keys to the wider managed-artifact

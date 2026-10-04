@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from conftest import require_disposable_postgres_url
 
+from src.database_url import engine_url
 from src.db.models import (
     CloudFile,
     CloudJobQueue,
@@ -1058,7 +1059,8 @@ def test_frozen_child_stays_nonterminal_and_hard_dead_child_recovers_without_lat
     code = (
         "import os,pathlib,time;"
         "from sqlalchemy import create_engine,text;"
-        "engine=create_engine(os.environ['TEST_MIGRATION_DATABASE_URL']);"
+        "from src.database_url import engine_url;"
+        "engine=create_engine(engine_url(os.environ['TEST_MIGRATION_DATABASE_URL']));"
         "connection=engine.connect();"
         f"connection.execute(text('SELECT pg_advisory_lock({advisory_key})'));"
         f"pathlib.Path({str(started)!r}).write_text('started');"
@@ -1139,7 +1141,8 @@ def test_expired_live_child_is_not_requeued_until_hard_death(pg_sessions, tmp_pa
     code = (
         "import os,pathlib,time;"
         "from sqlalchemy import create_engine,text;"
-        "engine=create_engine(os.environ['TEST_MIGRATION_DATABASE_URL']);"
+        "from src.database_url import engine_url;"
+        "engine=create_engine(engine_url(os.environ['TEST_MIGRATION_DATABASE_URL']));"
         "connection=engine.connect();"
         f"connection.execute(text('SELECT pg_advisory_lock({advisory_key})'));"
         f"pathlib.Path({str(started)!r}).write_text('started');"
@@ -1269,7 +1272,7 @@ def pg_sessions():
             pytest.fail("required worker PostgreSQL URL is missing")
         pytest.skip("requires TEST_MIGRATION_DATABASE_URL")
     require_disposable_postgres_url(url, destructive=True)
-    engine = create_engine(url)
+    engine = create_engine(engine_url(url))
     try:
         with engine.connect() as connection:
             connection.exec_driver_sql("SELECT 1")

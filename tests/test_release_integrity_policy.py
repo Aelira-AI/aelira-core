@@ -231,12 +231,25 @@ def test_api_builder_removes_bootstrap_setuptools_before_reviewed_requirements()
 def test_api_runtime_replaces_global_msgpack_with_reviewed_version() -> None:
     api = (ROOT / "Dockerfile").read_text()
     runtime = api.split("# Stage 2: Runtime", 1)[1]
+    copy_requirements = "COPY requirements.txt /app/requirements.txt"
+    copy_verifier = (
+        "COPY scripts/verify_final_python_packages.py "
+        "/app/scripts/verify_final_python_packages.py"
+    )
     uninstall = "/usr/local/bin/python -m pip uninstall --yes msgpack"
-    install = "/usr/local/bin/python -m pip install --no-cache-dir msgpack==1.2.2"
+    install = (
+        "/usr/local/bin/python -m pip install --no-cache-dir "
+        '"msgpack==$(/usr/local/bin/python '
+        '/app/scripts/verify_final_python_packages.py msgpack-pin)"'
+    )
     copy_venv = "COPY --from=builder /opt/venv /opt/venv"
 
+    assert runtime.count(copy_requirements) == 1
+    assert runtime.count(copy_verifier) == 1
     assert runtime.count(uninstall) == 1
     assert runtime.count(install) == 1
+    assert runtime.index(copy_requirements) < runtime.index(uninstall)
+    assert runtime.index(copy_verifier) < runtime.index(uninstall)
     assert runtime.index(uninstall) < runtime.index(install) < runtime.index(copy_venv)
 
 
@@ -245,13 +258,10 @@ def test_api_build_asserts_global_and_copied_venv_python_package_versions() -> N
     runtime = api.split("# Stage 2: Runtime", 1)[1]
     copy_venv = "COPY --from=builder /opt/venv /opt/venv"
     global_assertion = (
-        '/usr/local/bin/python -c "import importlib.metadata as m; '
-        "assert m.version('msgpack') == '1.2.2'\""
+        "/usr/local/bin/python /app/scripts/verify_final_python_packages.py global"
     )
     venv_assertion = (
-        '/opt/venv/bin/python -c "import importlib.metadata as m; '
-        "assert m.version('msgpack') == '1.2.2'; "
-        "assert m.version('setuptools') == '84.0.0'\""
+        "/opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv"
     )
 
     assert runtime.count(global_assertion) == 1
@@ -557,8 +567,16 @@ def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
     ]
 
     assert development_lines[0] == "-r requirements.txt"
-    assert len(runtime_requirements) == 140
+    assert len(runtime_requirements) == 148
     assert len(development_requirements) == 30
+    assert (
+        f"**{len(runtime_requirements)}** runtime dependency entries" in documentation
+    )
+    assert f"**{len(development_requirements)}** development-only" in documentation
+    assert (
+        f"All {len(runtime_requirements) + len(development_requirements)} "
+        "application dependencies"
+    ) in documentation
     assert all(
         re.fullmatch(r"[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^=\s]+", line)
         for line in runtime_requirements + development_requirements
@@ -599,8 +617,6 @@ def test_release_integrity_documentation_is_fail_closed_and_truthful() -> None:
         "linux/amd64",
         "linux/arm64",
         "`--pull=false`",
-        "140",
-        "30",
         "no hashes",
         "deferred",
         "Python 3.12, 3.13, and 3.14",

@@ -1,5 +1,6 @@
 """Task16A concurrency, publication lease, and scan-authority contracts."""
 
+from src.database_url import engine_url
 from datetime import datetime, timedelta, timezone
 import inspect
 import os
@@ -256,12 +257,12 @@ def test_postgres_scan_lock_serializes_fix_writer_with_approval_gate():
         pytest.skip("set TEST_TASK8_POSTGRES_URL for PostgreSQL concurrency")
     assert make_url(database_url).get_backend_name() == "postgresql"
     schema = "task8_review_concurrency"
-    admin = create_engine(database_url)
+    admin = create_engine(engine_url(database_url))
     with admin.begin() as connection:
         connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_engine(
-        database_url, connect_args={"options": f"-csearch_path={schema}"}
+        engine_url(database_url), connect_args={"options": f"-csearch_path={schema}"}
     )
     metadata = MetaData()
     Table(

@@ -1,5 +1,6 @@
 """Safety contract for the published Canvas-content migration."""
 
+from src.database_url import engine_url
 import importlib.util
 import inspect
 import os
@@ -266,7 +267,7 @@ def test_postgresql_refused_downgrade_preserves_revision_schema_and_data(
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", MIGRATION_DATABASE_URL)
     assert config.get_main_option("sqlalchemy.url") == MIGRATION_DATABASE_URL
-    engine = create_engine(MIGRATION_DATABASE_URL)
+    engine = create_engine(engine_url(MIGRATION_DATABASE_URL))
 
     try:
         _reset_public_schema(engine, MIGRATION_DATABASE_URL)

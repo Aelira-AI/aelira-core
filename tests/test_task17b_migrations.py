@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.database_url import engine_url
 import os
 from pathlib import Path
 
@@ -80,7 +81,7 @@ def test_task17b_migrations_downgrade_then_upgrade_on_disposable_postgres(monkey
     monkeypatch.setenv("DATABASE_URL", database_url)
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", database_url)
-    engine = create_engine(database_url)
+    engine = create_engine(engine_url(database_url))
     try:
         with engine.begin() as connection:
             connection.exec_driver_sql("DROP SCHEMA public CASCADE")

@@ -159,7 +159,7 @@ tests/           pytest suite
 
 | Layer | Stack |
 |---|---|
-| API | FastAPI, Python 3.14, SQLAlchemy 2.0 |
+| API | FastAPI, Python 3.12+, SQLAlchemy 2.1 |
 | Storage | PostgreSQL 16, Redis |
 | Dashboard | React 19, Vite, TypeScript, Tailwind |
 | CLI | oclif, TypeScript, Node 22+ |

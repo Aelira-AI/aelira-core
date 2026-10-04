@@ -5,6 +5,7 @@ exercise the production router, serialization and department-scoped SQL queries;
 they do not exercise a live LMS or claim administrator-only authorization.
 """
 
+from src.database_url import engine_url
 from datetime import datetime, timezone
 import os
 import uuid
@@ -39,12 +40,12 @@ def lti_engine():
     database_url = require_disposable_postgres_url(
         os.environ["DATABASE_URL"], destructive=False
     )
-    admin_engine = create_engine(database_url)
+    admin_engine = create_engine(engine_url(database_url))
     schema = f"lti_contract_{uuid.uuid4().hex}"
     with admin_engine.begin() as connection:
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_engine(
-        database_url, connect_args={"options": f"-csearch_path={schema}"}
+        engine_url(database_url), connect_args={"options": f"-csearch_path={schema}"}
     )
     try:
         Base.metadata.create_all(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.database_url import engine_url
 import ast
 import asyncio
 import os
@@ -1207,7 +1208,9 @@ def test_ci_runs_kernel_enforced_worker_saturation_gate() -> None:
     assert probe_url.host == "127.0.0.1"
     assert probe_url.port == 9
     assert probe_url.database == "probe_test"
-    engine = create_engine(_PROBE_DATABASE_URL, pool_size=10, max_overflow=20)
+    engine = create_engine(
+        engine_url(_PROBE_DATABASE_URL), pool_size=10, max_overflow=20
+    )
     engine.dispose()
 
 

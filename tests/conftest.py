@@ -34,6 +34,7 @@ def pytest_collection_modifyitems(config, items):
 # Add the backend directory to Python path
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
+from src.database_url import engine_url  # noqa: E402 - backend path is installed above
 
 # Set test environment variables
 os.environ["ENV"] = "test"
@@ -132,7 +133,7 @@ def queue_race_engine(variable: str):
             pytest.fail(f"required PostgreSQL race variable {variable} is missing")
         pytest.skip(f"requires {variable}")
     require_disposable_postgres_url(url, destructive=True)
-    engine = create_engine(url)
+    engine = create_engine(engine_url(url))
     try:
         with engine.connect() as connection:
             connection.exec_driver_sql("SELECT 1")
@@ -172,7 +173,7 @@ def setup_test_database():
     created_department = False
     created_user = False
     try:
-        engine = create_engine(settings.database_url)
+        engine = create_engine(engine_url(settings.database_url))
         engine.connect().close()
     except Exception:
         print("⚠️  Database unavailable — skipping DB setup (unit tests only)")

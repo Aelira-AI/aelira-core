@@ -6,6 +6,7 @@ assertions read PostgreSQL on that connection, not cross-connection visibility.
 Credential parsing, delivery, concurrency, and production wiring are out of scope.
 """
 
+from src.database_url import engine_url
 from types import SimpleNamespace
 from unittest.mock import create_autospec
 from uuid import uuid4
@@ -26,7 +27,7 @@ from src.mailer.email_service import EmailService
 
 @pytest.fixture
 def admin_route(monkeypatch):
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(engine_url(get_settings().database_url))
     assert engine.dialect.name == "postgresql", "Admin contracts require PostgreSQL"
     connection = engine.connect()
     transaction = connection.begin()

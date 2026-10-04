@@ -5,6 +5,7 @@ Route commits release savepoints within a per-test outer transaction. Reloads
 prove persistence on that connection, not concurrent or cross-connection behavior.
 """
 
+from src.database_url import engine_url
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import create_autospec
@@ -30,7 +31,11 @@ from tests.conftest import require_disposable_postgres_url
 @pytest.fixture
 def account_route(monkeypatch):
     engine = create_engine(
-        require_disposable_postgres_url(get_settings().database_url, destructive=False)
+        engine_url(
+            require_disposable_postgres_url(
+                get_settings().database_url, destructive=False
+            )
+        )
     )
     connection = engine.connect()
     transaction = connection.begin()

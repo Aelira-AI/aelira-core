@@ -12,6 +12,7 @@ import os
 from typing import Generator
 
 from src.db.models import Base
+from src.database_url import engine_url
 
 # Database URL from environment - MUST be set via environment variable
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -34,7 +35,7 @@ for pattern in unsafe_patterns:
 # Create engine
 DATABASE_ISOLATION_LEVEL = "READ COMMITTED"
 engine = create_engine(
-    DATABASE_URL,
+    engine_url(DATABASE_URL),
     isolation_level=DATABASE_ISOLATION_LEVEL,
     echo=os.getenv("SQL_ECHO", "false").lower() == "true",  # Log SQL queries in dev
     pool_size=10,  # Connection pool size (per worker process)

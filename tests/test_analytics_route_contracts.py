@@ -5,6 +5,7 @@ exports use real services; capture-all and selected prediction/trend seams are c
 These contracts do not establish browser journeys or accessibility conformance.
 """
 
+from src.database_url import engine_url
 import csv
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
@@ -41,7 +42,7 @@ from src.db.models import (
 
 @pytest.fixture
 def analytics_case():
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(engine_url(get_settings().database_url))
     assert engine.dialect.name == "postgresql"
     connection = engine.connect()
     transaction = connection.begin()

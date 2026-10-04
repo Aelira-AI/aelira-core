@@ -1,5 +1,6 @@
 """Task 14 slice 1: explicit, fail-closed LMS AI policy contracts."""
 
+from src.database_url import engine_url
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, asdict
 from threading import Barrier
@@ -165,7 +166,7 @@ def test_department_policy_model_constraints_enforce_consistency_and_unique_purp
 def test_department_policy_constraints_reject_invalid_rows_in_postgresql():
     from src.config.settings import get_settings
 
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(engine_url(get_settings().database_url))
     try:
         connection = engine.connect()
     except Exception:
@@ -681,7 +682,7 @@ def test_concurrent_policy_updates_serialize_audit_transitions_in_postgresql(
             for provider in PROVIDERS
         },
     )
-    engine = create_engine(POLICY_TEST_DATABASE_URL)
+    engine = create_engine(engine_url(POLICY_TEST_DATABASE_URL))
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
     suffix = uuid.uuid4().hex[:12]
