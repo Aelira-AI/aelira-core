@@ -4,6 +4,7 @@ Only trusted identity validation, entitlement and provider HTTP are supplied sea
 Routes, token decryption, adapter DTOs, files, durable jobs and subscriptions are real.
 """
 
+from src.database_url import engine_url
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,7 +57,7 @@ SUB = {
 
 @pytest.fixture
 def microsoft_route(monkeypatch):
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(engine_url(get_settings().database_url))
     connection = engine.connect()
     transaction = connection.begin()
     db = Session(bind=connection, join_transaction_mode="create_savepoint")

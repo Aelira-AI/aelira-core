@@ -14,6 +14,7 @@ searchable text layer in ``result.output_file``. Only the external OCR engine
 
 import hashlib
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -29,6 +30,13 @@ from src.education.remediation.base import RemediationConfig
 from src.education.remediation.pdf_remediator import PdfRemediator
 
 OCR_MARKER = "OCR LAYER TEXT recovered from scanned page"
+SCANNED_LINES = (
+    "ACCESSIBLE CAMPUS HANDBOOK",
+    "This scanned handout explains accessible course materials.",
+    "Students can request readable documents from the library.",
+    "The teaching team reviews every published course resource.",
+    "Contact the accessibility office for help with this handout.",
+)
 
 
 def _make_image_only_pdf(path: Path) -> None:
@@ -42,6 +50,24 @@ def _make_image_only_pdf(path: Path) -> None:
     doc.close()
     with fitz.open(str(path)) as check:
         assert not check[0].get_text().strip(), "fixture must be image-only"
+
+
+def _make_scanned_text_pdf(path: Path) -> None:
+    """Rasterize generated text so the input has no PDF text layer."""
+    text = fitz.open()
+    page = text.new_page(width=612, height=792)
+    for index, line in enumerate(SCANNED_LINES):
+        page.insert_text((55, 80 + index * 38), line, fontsize=16)
+    raster = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+    scanned = fitz.open()
+    scanned.new_page(width=612, height=792).insert_image(
+        fitz.Rect(0, 0, 612, 792), stream=raster.tobytes("png")
+    )
+    scanned.save(str(path))
+    scanned.close()
+    text.close()
+    with fitz.open(str(path)) as check:
+        assert not check[0].get_text().strip()
 
 
 def _make_text_pdf(path: Path) -> None:
@@ -151,6 +177,37 @@ def test_image_only_pdf_output_preserves_ocr_text_layer(tmp_path, monkeypatch):
         "delivered output lost the OCR text layer — an image-only input must "
         "produce a searchable remediated PDF"
     )
+
+
+def test_real_ocr_engine_preserves_searchable_saved_output(tmp_path):
+    """Exercise OCRmyPDF, Tesseract and pikepdf through the delivered PDF."""
+    if not all(shutil.which(binary) for binary in ("tesseract", "gs")):
+        if os.getenv("CI"):
+            pytest.fail("real OCR acceptance requires Tesseract and Ghostscript")
+        pytest.skip("real OCR requires Tesseract and Ghostscript")
+
+    input_pdf = tmp_path / "scanned_campus_handbook.pdf"
+    _make_scanned_text_pdf(input_pdf)
+    original_sha = _sha256(input_pdf)
+
+    result = PdfRemediator(
+        str(input_pdf), _language_issue(), _config(tmp_path)
+    ).remediate()
+
+    assert result.success, result.error_message
+    assert result.output_file is not None
+    assert _sha256(input_pdf) == original_sha
+    with fitz.open(result.output_file) as delivered:
+        assert len(delivered) == 1
+        assert delivered[0].rect == fitz.Rect(0, 0, 612, 792)
+        delivered_text = re.sub(
+            r"[^a-z0-9]+", " ", delivered[0].get_text().lower()
+        ).strip()
+    for line in SCANNED_LINES:
+        normalized = re.sub(r"[^a-z0-9]+", " ", line.lower()).strip()
+        assert normalized in delivered_text, f"OCR output lost: {line}"
+    with pikepdf.open(result.output_file) as saved:
+        assert len(saved.pages) == 1
 
 
 def _sha256(path) -> str:

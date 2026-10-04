@@ -44,7 +44,7 @@ HIGH/CRITICAL findings that are currently-unfixed remain visible: affected compo
 
 The blocking scan explicitly uses the repository `.trivyignore` and fails on fixed/actionable HIGH/CRITICAL findings that are not exempted there. Findings are not silently exempted: `scripts/verify_trivy_allowlist.py` permits a CVE or GHSA exemption only when it has a nonempty owner and justification plus an ISO-formatted future expiry, and enforces that governance in CI. The checked-in allowlist has exactly two active bounded false-positive exemptions: `GHSA-6v7p-g79w-8964` for the stale lower-layer `msgpack==1.1.2` attribution and `CVE-2025-47273` for the stale lower-layer `setuptools==70.3.0` attribution. The 28 September 2026 reassessment continues the review recorded in public issue #160: Trivy 0.74.0 still reports both vulnerable versions, while Syft 1.52.0 reports only `msgpack==1.2.2` and `setuptools==84.0.0` in both squashed and all-layer scopes. This reassessment used an ARM64 image whose Dockerfile, requirements and final-package verifier match the reviewed main revision; it did not rebuild current main or scan AMD64. JAR files were excluded from the reassessment scan; the release scan remains unchanged. Security Engineering owns both exemptions, which expire on 2026-10-31. They affect only the blocking scan; the separate `.trivyignore.inventory` remains comment-only and preserves complete unsuppressed inventory coverage.
 
-After each immutable API image is built and pushed, the release workflow pulls that exact digest and runs `scripts/verify_final_python_packages.py` with both the global interpreter and the copied virtualenv. The gate requires global and virtualenv `msgpack==1.2.2`, virtualenv `setuptools==84.0.0`, no global setuptools installation, and no metadata names for `msgpack==1.1.2` or `setuptools==70.3.0`. This final-filesystem check runs before SBOM generation, vulnerability scanning, attestation, signing, or receipt creation.
+After each immutable API image is built and pushed, the release workflow pulls that exact digest and runs `scripts/verify_final_python_packages.py` with both the global interpreter and the copied virtualenv. The gate requires global and virtualenv `msgpack` to match its exact pin in `requirements.txt` (currently `1.2.3`), virtualenv `setuptools==84.0.0`, no global setuptools installation, and no metadata names for `msgpack==1.1.2` or `setuptools==70.3.0`. This final-filesystem check runs before SBOM generation, vulnerability scanning, attestation, signing, or receipt creation.
 
 ## Signing, identity, provenance, and tags
 
@@ -64,9 +64,9 @@ CI runs both production Dockerfiles natively on `linux/amd64` and `linux/arm64`.
 
 ## Requirements hash evaluation
 
-`requirements.txt` contains **140** runtime dependency entries.
+`requirements.txt` contains **148** runtime dependency entries.
 `requirements-dev.txt` includes that runtime file and adds **30** development-only
-entries. All 170 application dependencies use exact `==` pins. There are no hashes.
+entries. All 178 application dependencies use exact `==` pins. There are no hashes.
 Hashes are deferred; they must not be fabricated from one
 workstation or one platform. Exact pins plus the strict `pip-audit` gates are
 the current controls, but they are not represented as hash-locked installs.

@@ -43,6 +43,10 @@ FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9
 
 ARG SOURCE_DATE_EPOCH=0
 
+# The global repair and both final-image checks read the reviewed runtime pin.
+COPY requirements.txt /app/requirements.txt
+COPY scripts/verify_final_python_packages.py /app/scripts/verify_final_python_packages.py
+
 # Install runtime dependencies + Playwright system dependencies + LaTeXML stack.
 # TeX format dumps are content-nondeterministic even with a fixed epoch, so
 # omit them; Kpathsea recreates only the requested format in the user's cache.
@@ -99,7 +103,7 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     && find /var/lib/texmf -type f -name '*.log' -delete \
     && find /var/lib/texmf/web2c -type f -name '*.fmt' -delete \
     && /usr/local/bin/python -m pip uninstall --yes msgpack \
-    && /usr/local/bin/python -m pip install --no-cache-dir msgpack==1.2.2
+    && /usr/local/bin/python -m pip install --no-cache-dir "msgpack==$(/usr/local/bin/python /app/scripts/verify_final_python_packages.py msgpack-pin)"
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -110,8 +114,8 @@ COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node
 COPY --from=pa11y-node /usr/local/lib/node_modules/pa11y /usr/local/lib/node_modules/pa11y
 RUN ln -s ../lib/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
 
-RUN /usr/local/bin/python -c "import importlib.metadata as m; assert m.version('msgpack') == '1.2.2'" && \
-    /opt/venv/bin/python -c "import importlib.metadata as m; assert m.version('msgpack') == '1.2.2'; assert m.version('setuptools') == '84.0.0'"
+RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py global && \
+    /opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv
 
 # Set working directory
 WORKDIR /app

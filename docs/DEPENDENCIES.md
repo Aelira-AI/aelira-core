@@ -48,7 +48,7 @@ verify compatibility of the pinned sets.
 
 | Dependency | Role |
 |---|---|
-| `SQLAlchemy` 2.0 | ORM — models in `src/db/models.py` |
+| `SQLAlchemy` 2.1 | ORM — models in `src/db/models.py`; unqualified PostgreSQL URLs retain psycopg2 at engine creation |
 | `alembic` | Database migrations (`alembic/versions/`) |
 | `psycopg2-binary` / `asyncpg` | PostgreSQL drivers (sync and async) |
 | `redis` | Rate limiting, job coordination, caching |
@@ -200,6 +200,7 @@ the resolver's latest-version choice.
 | cryptography / bcrypt | `cffi`, `pycparser` |
 | oletools (malware screening) | `olefile`, `pcodedmp`, `colorclass`, `easygui`, `chardet`, `encutils` |
 | ocrmypdf | `pi_heif`, `deprecation`, `packaging`, `pathvalidate`, `pypdfium2`, `rich`, `typer`, `typer-slim`, `markdown-it-py`, `mdurl`, `Pygments`, `img2pdf` |
+| ocrmypdf / pikepdf PDF/A support | `fpdf2`, `uharfbuzz`, `fonttools`, `jsonschema`, `jsonschema-specifications`, `referencing`, `rpds-py`, `attrs` |
 | reportlab (PDF reports) | `freetype-py`, `pycairo`, `rlPyCairo`, `tinycss2`, `webencodings` |
 | faster-whisper / onnxruntime | `huggingface_hub`, `tokenizers`, `hf-xet`, `fsspec`, `filelock`, `tqdm`, `flatbuffers`, `sympy`, `mpmath` |
 | locust (load tests) | `Flask`, `flask-cors`, `Flask-Login`, `Werkzeug`, `Jinja2`, `itsdangerous`, `blinker`, `gevent`, `geventhttpclient`, `zope.event`, `zope.interface`, `msgpack`, `pyzmq`, `ConfigArgParse`, `bidict`, `python-engineio`, `python-socketio`, `simple-websocket`, `websocket-client`, `wsproto` |

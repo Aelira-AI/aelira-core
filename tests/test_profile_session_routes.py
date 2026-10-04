@@ -4,6 +4,7 @@ Identity validation is a fixture boundary; routes, queries and commits are real.
 No email service or external identity provider is contacted.
 """
 
+from src.database_url import engine_url
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -25,7 +26,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def profile_route(monkeypatch):
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(engine_url(get_settings().database_url))
     connection = engine.connect()
     transaction = connection.begin()
     db = Session(bind=connection, join_transaction_mode="create_savepoint")

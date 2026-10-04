@@ -11,6 +11,7 @@ stubbed: the browser that runs axe-core, and Canvas itself. Everything
 between them is the code a user drives.
 """
 
+from src.database_url import engine_url
 import hashlib
 import uuid
 from datetime import datetime, timezone
@@ -71,7 +72,7 @@ def db():
 
     from src.config.settings import get_settings
 
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(engine_url(get_settings().database_url))
     try:
         engine.connect().close()
     except Exception:

@@ -5,6 +5,7 @@ real. Route commits release savepoints inside a rollback-only outer transaction.
 No live Google transport, workers or browser are exercised.
 """
 
+from src.database_url import engine_url
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,7 +44,11 @@ from tests.conftest import require_disposable_postgres_url
 @pytest.fixture
 def google_route(monkeypatch):
     engine = create_engine(
-        require_disposable_postgres_url(get_settings().database_url, destructive=False)
+        engine_url(
+            require_disposable_postgres_url(
+                get_settings().database_url, destructive=False
+            )
+        )
     )
     connection = engine.connect()
     transaction = connection.begin()

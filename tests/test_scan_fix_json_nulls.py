@@ -1,10 +1,10 @@
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import psycopg2
 
 from src.db.models import ScanFix
 
 
 def test_absent_scan_fix_evidence_binds_as_sql_null_for_postgres():
-    dialect = postgresql.dialect()
+    dialect = psycopg2.dialect()
 
     for column_name in (
         "source_locator",

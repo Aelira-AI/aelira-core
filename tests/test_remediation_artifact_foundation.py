@@ -1,5 +1,6 @@
 """Task16A managed remediation artifact model, migration, and settings contracts."""
 
+from src.database_url import engine_url
 import importlib.util
 from pathlib import Path
 
@@ -439,7 +440,7 @@ def test_postgresql_migration_upgrade_and_model_query_optional():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, "head")
-    engine = create_engine(database_url)
+    engine = create_engine(engine_url(database_url))
     inspector = inspect(engine)
     artifact_fks = {
         tuple(foreign_key["constrained_columns"]): foreign_key
@@ -510,7 +511,7 @@ def test_postgresql_parent_delete_requires_service_cleanup_optional(tmp_path):
     payload = b"managed artifact bytes"
     artifact_path.write_bytes(payload)
 
-    engine = create_engine(database_url)
+    engine = create_engine(engine_url(database_url))
     with Session(engine) as session:
         department = models.Department(
             id=ids["department"],

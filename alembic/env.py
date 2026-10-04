@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 # Import models for autogenerate support
 from src.db.models import Base
+from src.database_url import engine_url
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -54,9 +55,9 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = config.get_main_option("sqlalchemy.url")
+    url = engine_url(config.get_main_option("sqlalchemy.url"))
     context.configure(
-        url=url,
+        url=url.render_as_string(hide_password=False),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -73,8 +74,10 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    section = config.get_section(config.config_ini_section, {}).copy()
+    section["sqlalchemy.url"] = engine_url(section["sqlalchemy.url"])
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.database_url import engine_url
 import importlib.util
 import os
 from pathlib import Path
@@ -111,7 +112,7 @@ def test_v095_fresh_upgrade_downgrade_reupgrade_preserves_schema_and_data(monkey
     monkeypatch.setenv("DATABASE_URL", database_url)
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", database_url)
-    engine = create_engine(database_url)
+    engine = create_engine(engine_url(database_url))
     try:
         with engine.begin() as connection:
             connection.execute(text("DROP SCHEMA public CASCADE"))

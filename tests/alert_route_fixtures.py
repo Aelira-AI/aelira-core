@@ -6,6 +6,7 @@ same connection. These contracts do not prove cross-connection commit visibility
 or concurrent behavior. Individual failure tests inject named database failures.
 """
 
+from src.database_url import engine_url
 from types import SimpleNamespace
 from unittest.mock import create_autospec
 from uuid import uuid4
@@ -25,7 +26,7 @@ from src.db.models import Department
 
 @pytest.fixture
 def alert_route(monkeypatch):
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(engine_url(get_settings().database_url))
     assert engine.dialect.name == "postgresql", "Alert contracts require PostgreSQL"
     connection = engine.connect()
     transaction = connection.begin()

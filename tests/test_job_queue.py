@@ -6,6 +6,7 @@ Worker completion, cancellation and retries are covered by the required worker
 lane; no generic job mutation REST surface is part of this contract.
 """
 
+from src.database_url import engine_url
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -33,7 +34,7 @@ def queue_routes():
     url = require_disposable_postgres_url(
         get_settings().database_url, destructive=False
     )
-    engine = create_engine(url)
+    engine = create_engine(engine_url(url))
     with engine.connect() as connection:
         transaction = connection.begin()
         db = Session(bind=connection, join_transaction_mode="create_savepoint")
