@@ -136,7 +136,7 @@ _MIME_BY_SCAN_TYPE = {
     "EXCEL": {
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     },
-    "LATEX": {".tex": "text/plain"},
+    "LATEX": {".tex": "text/plain", ".html": "text/html"},
     "CANVAS_CONTENT": {".html": "text/html", ".htm": "text/html"},
     "WEBSITE": {".html": "text/html", ".htm": "text/html"},
     "IMAGE": {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"},

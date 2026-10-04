@@ -55,10 +55,45 @@ references on the final pass. Negative cases require the intended diagnostic;
 a missing or killed compiler or an unrelated missing package never satisfies them.
 The untagged PDFs are diagnostic artifacts, not approved accessible outputs.
 
+## Saved HTML export evidence
+
+The same CI document-stack job has a separate HTML-only queue lane for all 26
+manifest case IDs. P01 links the existing intact-project archive and safe
+conversion refusal; the other 25 cases use explicitly reviewed language inputs.
+The original fixture bytes and complete authored document bodies are checked
+against their manifest hashes. The lane requests no AI and only `html`, then
+reloads the durable job, checks available formats, and downloads the managed
+artifact twice. Every delivered file must match its receipt and an independently
+declared saved-HTML content oracle. M01 must actually download the fraction
+`(a+b)/(c-d)`; a refusal cannot count as its success. P02/P03 and N01–N04 must
+not publish an artifact, and P04 may be a recorded zero-finding no-op.
+
+The LaTeXML HTML5 stylesheet selects its own unaligned equation templates, so
+display equations render as non-table wrappers while MathML, labels and equation
+rows remain. This prevents equation-layout tables from being mistaken for
+authored data tables; real, hidden or counterfeit table markup still reaches
+the unchanged saved-semantics refusal gate. The narrow saved-HTML language
+observer can credit only an explicit, unambiguous authored language found on
+the final HTML root, after accepted conversion and exact source/output hash
+binding. Other unresolved source findings remain manual. The managed artifact
+service accepts `.html` bytes for a LaTeX scan only when MIME inspection confirms
+HTML. No PDF, DOCX or unrelated extension is added to that path.
+
+The report `latex-html-report.json` records every case ID, queue outcome,
+source/output hashes, implementation and harness hashes, conversion decision,
+exact tool versions and diagnostic stages. Environmental failures and truncated
+diagnostics fail the gate. A downloaded HTML artifact keeps
+`human_review_required=true`, `accessibility_status=not_verified`, no verified
+score, and fidelity, human review and assistive-technology checks marked
+`not_assessed`. The bounded math oracles check declared expression structure;
+they are not a proof of rendering, spoken math or accessibility. LaTeXML output
+also links relative stylesheets rather than packaging them into this artifact,
+so presentation fidelity remains unassessed.
+
 Run the [disposable document stack](document-review-journey.md), then:
 
 ```sh
-node --experimental-strip-types --test scripts/latex_corpus_contract.test.ts scripts/latex_compilation_contract.test.ts scripts/document_stack_transport.test.ts
+node --experimental-strip-types --test scripts/latex_corpus_contract.test.ts scripts/latex_html_corpus_contract.test.ts scripts/latex_compilation_contract.test.ts scripts/document_stack_transport.test.ts
 node --experimental-strip-types scripts/verify_document_stack.ts
 node --experimental-strip-types scripts/verify_latex_corpus_compilation.ts
 ```
@@ -81,8 +116,9 @@ separately. Keep local evidence and patches together; a dirty tree is not a rele
 The earlier eleven selected fixtures remain unchanged in `latex_validation` for
 their PDF-failure and source-evidence regressions. The separate
 [compatibility smoke](latex-compatibility.md) compares raw and preprocessed converter
-outputs for its declared controls. This queue lane neither replaces those results
-nor claims a complete HTML/DOCX/PDF replay of all 26 cases. Domain-human review and
+outputs for its declared controls. The HTML lane adds a bounded saved-export
+replay; it does not claim DOCX/PDF support or a full-format fidelity study.
+Domain-human review and
 assistive-technology testing remain unperformed; expected reader answers are
 hypotheses, not certifications. #444, #454 and #455 retain the wider format,
 profile and reader work; #378 retains broader saved-artifact/media acceptance.

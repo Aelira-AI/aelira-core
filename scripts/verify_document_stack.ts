@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { execFileSync } from 'node:child_process';
 import { verifyLatexCorpus } from './verify_latex_corpus_stack.ts';
+import { verifyLatexHtmlCorpus } from './verify_latex_html_corpus_stack.ts';
 import { authenticatedTarget } from './document_stack_transport.ts';
 
 const api = new URL(process.env.STACK_API_URL || 'http://localhost:18300');
@@ -23,6 +24,12 @@ const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest(
 const harnessFiles = [
   'scripts/verify_document_stack.ts', 'scripts/verify_latex_corpus_stack.ts',
   'scripts/latex_corpus_contract.ts', 'tests/fixtures/latex_research/corpus.json',
+  'scripts/verify_latex_html_corpus_stack.ts', 'scripts/latex_html_corpus_contract.ts',
+  'src/education/remediation/latex_converter.py',
+  'src/education/remediation/latex_remediator.py',
+  'src/education/remediation/latex_html_language_verification.py',
+  'src/education/latex_metadata.py', 'src/education/latex_semantics.py',
+  'src/services/remediation_artifact_service.py',
   'scripts/document_stack_transport.ts',
 ];
 async function captureHarness() {
@@ -251,6 +258,10 @@ for (const test of cases) {
   }
 }
 await verifyLatexCorpus({ request, poll, output, evidence, failures,
+  download: (path, init = {}) => fetch(authenticatedTarget(path, api), { ...init, headers: headers(init.headers), redirect: 'error', signal: AbortSignal.timeout(30000) }),
+});
+await verifyLatexHtmlCorpus({ request, poll, output, priorEvidence: evidence, revision,
+  harnessHashes, trackedDiffHash: digest(trackedDiff),
   download: (path, init = {}) => fetch(authenticatedTarget(path, api), { ...init, headers: headers(init.headers), redirect: 'error', signal: AbortSignal.timeout(30000) }),
 });
 assert.deepEqual(await captureHarness(), harnessHashes, 'Queue harness changed during execution');

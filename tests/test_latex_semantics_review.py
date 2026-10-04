@@ -72,6 +72,24 @@ def test_saved_verifier_rechecks_structure_and_accessible_content(table_files, m
 
 
 @pytest.mark.parametrize(
+    "html",
+    [
+        '<table class="ltx_eqn_table"><tr><td><math><mi>x</mi></math></td></tr></table>',
+        '<div hidden><table class="ltx_eqn_table"><tr><td>x</td></tr></table></div>',
+        "<table><tr><td>Counterfeit data</td></tr></table>",
+    ],
+)
+def test_math_or_counterfeit_tables_cannot_bypass_the_authored_table_gate(
+    tmp_path, html
+):
+    source, candidate = tmp_path / "main.tex", tmp_path / "saved.html"
+    source.write_text(r"\documentclass{article}\begin{document}\[x\]\end{document}")
+    candidate.write_text("<html><body>" + html + "</body></html>")
+    assert not save_html_semantics(source, candidate)
+    assert not verify_html_semantics(source, candidate)
+
+
+@pytest.mark.parametrize(
     "source",
     [
         r"\verb|\includegraphics[alt={Cat}]{cat.png}|",
