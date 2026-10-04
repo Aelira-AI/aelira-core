@@ -23,8 +23,8 @@ const matterhornSource = readFileSync(
   'utf8',
 );
 
-test('review data stays bound to its route and aborts superseded requests', () => {
-  assert.match(documentSource, /<DocumentReviewContent key=\{scanId\} scanId=\{scanId\}/);
+test('review data stays bound to its route and file context, and aborts superseded requests', () => {
+  assert.match(documentSource, /<DocumentReviewContent key=\{`\$\{scanId\}:\$\{location\.search\}`\} scanId=\{scanId\}/);
   assert.match(documentSource, /useAbortableRequestOwner\(scanId\)/);
   assert.match(documentSource, /signal: attempt\.controller\.signal/);
   assert.match(documentSource, /if \(!reviewOwner\.isCurrent\(attempt\)\) return/);

@@ -1,12 +1,16 @@
 # Reading-order review
 
-On a document's Review page, choose **Show comparison** to inspect the original PDF or the current saved PDF. The panel is read-only and can be collapsed without hiding the review filters.
+On a document's Review page, choose **Show comparison** to inspect the original PDF or the current saved PDF. The comparison can be collapsed without hiding the review filters. Choose **Edit PDF structure** to prepare one bounded candidate edit from verified PDF structure targets.
 
 Each version is read independently from checksum-verified bytes. The page image is rendered from those same bytes. The ordered list follows the PDF structure tree, including supported MCID/ParentTree links and text alternatives; it does not use visual extraction order or a remediation proposal as evidence of saved order. Alternatives are identified because assistive technologies may announce them differently. This view is not an accessibility conformance verdict.
 
 Numbered highlights are provided only for uniquely matched complete painted lines. Repeated text, multiline content, and replacement or alternative text may have no unambiguous visual location. Their sourced text remains in the ordered list without a guessed highlight.
 
-Choose a page and switch between **Original PDF** and **Saved PDF**. Use **Refresh comparison** to re-read the current artifact. Missing originals and missing, expired, superseded or invalid saved artifacts are reported independently. Untagged or unresolved structures do not receive a fabricated fallback order. The viewer does not edit PDF tags or provide a save action.
+Choose a page and switch between **Original PDF** and **Saved PDF**. Use **Refresh comparison** to re-read the current artifact. Missing originals and missing, expired, superseded or invalid saved artifacts are reported independently. Untagged or unresolved structures do not receive a fabricated fallback order. After a confirmed edit save, the comparison reloads current evidence without replacing the editor.
+
+The editor's source selection is explicit. Editing **Original PDF** starts from original bytes and omits changes already present in the current saved artifact. Editing **Current saved PDF** starts from the current artifact. Select a target by its role, page and verified tagged-text excerpt. Targets without usable context are excluded. For a supported leaf P or H1–H6, choose a new H1–H6 level; conversion back to P is not supported. For a supported container, use the Up and Down buttons to arrange every immediate child. For a supported simple Table, explicitly designate its first row as column headers. Cancel discards the draft. Each successful save stores a separate immutable candidate artifact in pending review; it does not approve that candidate or write it back to the cloud source. A stale-state conflict requires **Reload targets** before another save. A failed save retains the previous candidate.
+
+The Review page's reading-order comparison currently follows the scan's local current-artifact pointer. When an explicit `cloud_file_id` selects a cloud file's separate current artifact, the page suppresses that comparison rather than presenting the local artifact as cloud evidence. Cloud-backed Review links need that explicit file context for editing.
 
 ## Supported evidence and limits
 
@@ -67,9 +71,8 @@ The design follows [W3C's tag-order guidance](https://www.w3.org/WAI/WCAG21/Tech
 [Adobe's PDF table attribute definitions](https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/pdfreference1.6.pdf),
 [PDF Association's table structure guidance](https://pdfa.org/wp-content/until2016_uploads/2015/12/StructureElementsBestPracticeGuide_2016-01-19.pdf),
 and [pikepdf's save and stream contracts](https://pikepdf.readthedocs.io/en/stable/api/main.html).
-Accessible dashboard editing controls and the full browser/PDF-assistive-technology
-journey remain in #372. No existing review status, artifact or approval is changed
-by this library alone.
+The wider browser/PDF-assistive-technology journey remains in #372. No existing
+review status, artifact or approval is changed by this library alone.
 
 Saved-candidate regression coverage: `tests/test_pdf_review_candidate.py`.
 

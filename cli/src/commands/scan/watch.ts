@@ -1,5 +1,3 @@
-import type { Browser } from 'playwright'
-
 import { AxeBuilder } from '@axe-core/playwright'
 import { Args, Command, Flags } from '@oclif/core'
 import FormData from 'form-data'
@@ -7,7 +5,7 @@ import * as fs from 'node:fs'
 import * as fsPromises from 'node:fs/promises'
 import * as path from 'node:path'
 import pc from 'picocolors'
-import { chromium } from 'playwright'
+import { type Browser, chromium } from 'playwright'
 
 import { ApiClient } from '../../utils/api-client.js'
 import { getApiUrl } from '../../utils/config.js'

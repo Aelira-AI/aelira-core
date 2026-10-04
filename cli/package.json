@@ -31,12 +31,10 @@
     "ajv-formats": "3.0.1",
     "chai": "^6.2.2",
     "eslint": "10.10.0",
-    "eslint-config-oclif": "6.0.179",
+    "eslint-config-oclif": "7.1.8",
     "eslint-config-prettier": "10.1.8",
     "eslint-import-resolver-typescript": "4.4.5",
     "mocha": "^12.0.0",
-    "oclif": "^6.0.0",
-    "shx": "^0.4.0",
     "sinon": "^22.1.0",
     "ts-node": "^10",
     "typescript": "^5"
@@ -85,13 +83,13 @@
     "directory": "cli"
   },
   "scripts": {
-    "build": "shx rm -rf dist && tsc -b",
+    "build": "node --eval \"require('node:fs').rmSync('dist', {recursive: true, force: true})\" && tsc -b",
     "lint": "eslint",
-    "postpack": "shx rm -f oclif.manifest.json",
-    "posttest": "npm run lint",
-    "prepack": "oclif manifest && oclif readme",
+    "postpack": "node --eval \"require('node:fs').rmSync('oclif.manifest.json', {force: true})\"",
+    "posttest": "eslint",
+    "prepack": "node --loader ts-node/esm scripts/manifest.ts",
     "test": "mocha --forbid-only \"test/**/*.test.ts\"",
-    "version": "oclif readme && git add README.md"
+    "version": "git add README.md"
   },
   "types": "dist/index.d.ts",
   "overrides": {

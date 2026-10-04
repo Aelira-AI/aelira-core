@@ -1,11 +1,9 @@
-import type { Browser, Page } from 'playwright'
-
 import { AxeBuilder } from '@axe-core/playwright'
 import { intro, outro, spinner } from '@clack/prompts'
 import { Args, Command, Flags } from '@oclif/core'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { chromium } from 'playwright'
+import { type Browser, chromium, type Page } from 'playwright'
 
 import { ApiClient } from '../utils/api-client.js'
 import { buildReportEvidence, generateVerifiedPdfReport, ReportArtifactError } from '../utils/report-artifact.js'
