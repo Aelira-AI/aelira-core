@@ -30,7 +30,7 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
 # toolchain into the final image. Build the pinned Pa11y runtime separately and
 # copy only Node plus Pa11y's production dependency tree into the API image.
-FROM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS pa11y-node
+FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS pa11y-node
 
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 RUN npm install -g pa11y@9.0.1 && \
