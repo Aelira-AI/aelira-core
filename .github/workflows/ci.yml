@@ -324,7 +324,7 @@ jobs:
       - name: Install document runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev pkg-config tesseract-ocr ghostscript poppler-utils unzip zip pandoc texlive-latex-recommended texlive-science texlive-pictures texlive-lang-german
+          sudo apt-get install -y libcairo2-dev pkg-config tesseract-ocr ghostscript poppler-utils unzip zip pandoc latexml texlive-latex-recommended texlive-science texlive-pictures texlive-lang-german
           pip install -r requirements-dev.txt
       - name: Verify real API, durable worker and downloaded files
         run: |

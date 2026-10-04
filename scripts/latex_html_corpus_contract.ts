@@ -63,15 +63,20 @@ const mathUnits = (n: Node): string[] => {
     if (parts.length !== (['msubsup', 'munderover'].includes(n.tag) ? 3 : 2)) return ['malformed-script'];
     return [`${n.tag === 'munderover' ? 'msubsup' : n.tag}:${parts.map(p => mathUnits(p).join('')).join(':')}`];
   }
-  if (!['#root', 'math', 'mrow', 'mstyle', 'mpadded', 'mtd', 'mtr', 'mtable', 'mfrac', 'semantics'].includes(n.tag))
+  if (n.tag === 'mfrac') {
+    const parts = n.children.filter(c => c.tag !== '#text' || c.value.trim());
+    return parts.length === 2 ? [`fraction:${JSON.stringify(parts.map(mathUnits))}`] : ['malformed-fraction'];
+  }
+  if (!['#root', 'math', 'mrow', 'mstyle', 'mpadded', 'semantics'].includes(n.tag))
     return [`unexpected:${n.tag}`];
   if (n.tag === 'semantics') return n.children.length ? mathUnits(n.children[0]) : ['empty-semantics'];
   return n.children.flatMap(mathUnits);
 };
 const topUnits = (n: Node): string[] => n.tag === 'mfrac' ? [`fraction:${JSON.stringify(mathUnits(n))}`] :
+  n.tag === 'mtable' ? ['table'] :
   n.tag === '#text' ? (n.value.trim() ? ['unexpected:text'] : []) :
   ['mi', 'mn', 'mo', 'mtext', 'msub', 'msup', 'msubsup', 'munderover'].includes(n.tag) ? mathUnits(n) :
-  ['math', 'mrow', 'mstyle', 'mpadded', 'mtd', 'mtr', 'mtable'].includes(n.tag) ? n.children.flatMap(topUnits) :
+  ['math', 'mrow', 'mstyle', 'mpadded'].includes(n.tag) ? n.children.flatMap(topUnits) :
   n.tag === 'semantics' ? (n.children.length ? topUnits(n.children[0]) : ['empty-semantics']) :
   n.tag === 'mspace' || n.tag === 'annotation' ? [] : [`unexpected:${n.tag}`];
 const pathTo = (root: Node, wanted: Node): Node[] | null => {
@@ -116,8 +121,8 @@ export function htmlChecks(id: string, html: string): Record<string, boolean> {
       ['msup:T:μ', 'msub::νρ'], ['msubsup:T:νρ:μ'],
     ].some(expected => JSON.stringify(mathUnits(m)) === JSON.stringify(expected)));
     case 'M06': return check('matrix_coordinates', descendants(m, 'mtable').some(table => {
-      const rows = direct(table, 'mtr').map(row => direct(row, 'mtd').map(compact));
-      return JSON.stringify(rows) === JSON.stringify([['1', '0', '-i'], ['i', '2', '3']]);
+      const rows = direct(table, 'mtr').map(row => direct(row, 'mtd').map(cell => cell.children.flatMap(mathUnits)));
+      return JSON.stringify(rows) === JSON.stringify([[['1'], ['0'], ['-', 'i']], [['i'], ['2'], ['3']]]);
     }));
     case 'M07': return check('integral_limits_exponent', [
       ['msubsup:∫:0:∞', 'msup:e:-αt', 'd', 't'],
@@ -148,11 +153,11 @@ export function htmlChecks(id: string, html: string): Record<string, boolean> {
     case 'M13': return check('piecewise_boundaries', has(m, 'mtable', n => {
       const rows = direct(n, 'mtr').map(row => direct(row, 'mtd'));
       return rows.length === 2 && rows.every(row => row.length === 2) &&
-        JSON.stringify(mathUnits(rows[0][0])) === JSON.stringify(['msup:x:2']) &&
-        JSON.stringify(mathUnits(rows[0][1])) === JSON.stringify(['x', '≥', '0']) &&
-        JSON.stringify(mathUnits(rows[1][0])) === JSON.stringify(['-', 'x']) &&
-        JSON.stringify(mathUnits(rows[1][1])) === JSON.stringify(['x', '<', '0']);
-    }) && JSON.stringify(topUnits(m).slice(0, 5)) === JSON.stringify(['f', '(', 'x', ')', '=']));
+        JSON.stringify(rows[0][0].children.flatMap(mathUnits)) === JSON.stringify(['msup:x:2']) &&
+        JSON.stringify(rows[0][1].children.flatMap(mathUnits)) === JSON.stringify(['x', '≥', '0']) &&
+        JSON.stringify(rows[1][0].children.flatMap(mathUnits)) === JSON.stringify(['-', 'x']) &&
+        JSON.stringify(rows[1][1].children.flatMap(mathUnits)) === JSON.stringify(['x', '<', '0']);
+    }) && JSON.stringify(topUnits(m)) === JSON.stringify(['f', '(', 'x', ')', '=', 'table']));
     case 'M14': {
       const references = descendants(body, 'a').filter(n => n.attrs.href?.startsWith('#') && /^\(?[12]\)?$/.test(compact(n)));
       const energy = references.find(n => compact(n).includes('1'));
@@ -187,7 +192,7 @@ export function htmlChecks(id: string, html: string): Record<string, boolean> {
         final_sentinel: !!last && fraction(last,
           n => JSON.stringify(mathUnits(n)) === JSON.stringify(['97', 'msub:q:end']),
           d => JSON.stringify(mathUnits(d)) === JSON.stringify(['1', '+', 'msup:z:2'])) &&
-          mathUnits(maths.at(-1)!).slice(-5).join('|') === ['97', 'msub:q:end', '1', '+', 'msup:z:2'].join('|') };
+          observedTop.at(-1) === `fraction:${JSON.stringify(mathUnits(last))}` };
     }
     case 'M17': return { ...all, ordered_pair_context: visible.includes('ordered pair, not an interval'), pair: compact(m).includes('(a,b)') };
     case 'M18': return { ...all, interval_context: visible.includes('open interval') && visible.includes('a is less than b'), pair: compact(m).includes('(a,b)') };

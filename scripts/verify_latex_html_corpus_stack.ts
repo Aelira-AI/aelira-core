@@ -12,12 +12,38 @@ const IDs = [...Array.from({ length: 18 }, (_, n) => `M${String(n + 1).padStart(
 const expectedRefusal = new Set(['P02', 'P03', 'N01', 'N02', 'N03', 'N04']);
 const environmentalReasons = new Set(['tool_unavailable', 'unmeasured_tool_version', 'package_route_unavailable',
   'language_environment_unavailable', 'timeout', 'diagnostics_truncated']);
+const sourceFailureCodes: Record<string, string[]> = {
+  N01: ['unsupported_command'], N02: ['missing_dependency'], N03: ['missing_asset'], N04: ['malformed_expression'],
+};
+const contentFailureCodes = new Set(['raw_tex', 'error_node', 'missing_mathml', 'unresolved_reference',
+  'metadata_ambiguous', 'metadata_unsupported', 'metadata_not_preserved', 'semantics_unconfirmed',
+  'semantics_unsupported', 'semantics_not_preserved']);
 const exactVersion = /^\d+(?:\.\d+){1,3}$/;
 
-export function assertNoEnvironmentFailure(diagnostics: any) {
+const intendedCodes = (id: string) => id in sourceFailureCodes ? new Set(sourceFailureCodes[id]) :
+  id === 'M10' ? new Set([...contentFailureCodes, 'unsupported_command']) : contentFailureCodes;
+
+/** A nonzero converter exit must be explained by the declared source defect in that same stage. */
+export function assertNoEnvironmentFailure(diagnostics: any, id = '', reviewedSource = '') {
+  const n02Line = reviewedSource.split('\n').findIndex(line => line.trim() === '\\input{chapters/absent.tex}') + 1;
   for (const stage of diagnostics?.stages || []) {
-    assert(!stage.diagnostics?.some((finding: any) => environmentalReasons.has(finding.code)),
+    const findings = stage.diagnostics || [];
+    assert(!findings.some((finding: any) => environmentalReasons.has(finding.code)),
       'Environment or truncated diagnostics block corpus classification');
+    assert(stage.exit_code == null || (Number.isInteger(stage.exit_code) && stage.exit_code >= 0 && stage.exit_code < 128),
+      'Signal-terminated or invalid converter exit blocks corpus classification');
+    for (const finding of findings) if (finding.code === 'missing_dependency') {
+      assert.equal(id, 'N02', 'Unrelated missing dependency blocks corpus classification');
+      assert(n02Line > 0 && [n02Line, n02Line + 1].includes(finding.source_line),
+        'Missing dependency must identify the authored absent include line');
+    }
+    if (findings.some((finding: any) => finding.code === 'process_failed') ||
+      (typeof stage.exit_code === 'number' && stage.exit_code !== 0)) {
+      const sourceError = new Set([...(sourceFailureCodes[id] || []), ...(id === 'M10' ? ['unsupported_command'] : [])]);
+      assert(findings.some((finding: any) => sourceError.has(finding.code) &&
+        (finding.code !== 'missing_dependency' || [n02Line, n02Line + 1].includes(finding.source_line))),
+      'A crashed or failed converter is not an intended source refusal');
+    }
     if (['latexml', 'latexmlpost', 'pandoc'].includes(stage.tool))
       assert.match(String(stage.version), exactVersion, `${stage.tool} stage has an exact measured version`);
   }
@@ -28,6 +54,17 @@ export function assertNoEnvironmentFailure(diagnostics: any) {
     assert.match(String(decision.tool_versions?.[decision.selected_route]), exactVersion,
       'Selected converter has an exact measured version');
   }
+}
+
+export function assertIntendedRefusal(id: string, diagnostics: any, reviewedSource: string) {
+  assertNoEnvironmentFailure(diagnostics, id, reviewedSource);
+  const intended = intendedCodes(id);
+  assert(diagnostics?.stages?.some((stage: any) => stage.diagnostics?.some((finding: any) =>
+    intended.has(finding.code) &&
+    (finding.code !== 'missing_dependency' || (() => {
+      const line = reviewedSource.split('\n').findIndex(value => value.trim() === '\\input{chapters/absent.tex}') + 1;
+      return line > 0 && [line, line + 1].includes(finding.source_line);
+    })()))), `${id}: refusal lacks its declared source or content-loss diagnostic`);
 }
 
 export async function verifyLatexHtmlCorpus(context: {
@@ -107,7 +144,7 @@ export async function verifyLatexHtmlCorpus(context: {
         assert.equal(receipt.source_sha256, sourceHash);
         const diagnostics = receipt.conversion_diagnostics;
         if (diagnostics) {
-          assertNoEnvironmentFailure(diagnostics);
+          assertNoEnvironmentFailure(diagnostics, entry.id, reviewed.toString());
           assert.equal(diagnostics.source_sha256, job.latex_evidence?.tex?.candidate_sha256,
             'Converter input binds the saved reviewed TEX candidate');
           if (decision) {
@@ -186,6 +223,8 @@ export async function verifyLatexHtmlCorpus(context: {
         assert.equal(compatible.status, 404);
         assert.deepEqual(formats.available_formats, []);
         if (job.error_code === 'manual_required') {
+          assert(['P02', 'P03', 'N01', 'N02', 'N03', 'N04'].includes(entry.id),
+            'Manual source refusal is declared only for authored intent or negative controls');
           assert(job.human_review_required, 'Source review refusal must retain author intent');
           assert(!receipt?.conversion_diagnostics || ['accepted', 'refused'].includes(receipt.conversion_diagnostics.status));
           evidence.push({ ...base, outcome: 'manual_review_refusal',
@@ -198,6 +237,7 @@ export async function verifyLatexHtmlCorpus(context: {
           assert(receipt.conversion_diagnostics.stages.some((stage: any) => stage.diagnostics?.length),
             'Refusal needs an observed source or converter problem');
           assert.equal(receipt?.conversion_diagnostics?.status, 'refused');
+          assertIntendedRefusal(entry.id, receipt.conversion_diagnostics, reviewed.toString());
           evidence.push({ ...base, outcome: 'diagnostic_refusal', error_code: job.error_code, download_status: 404 });
           console.log(`PASS HTML ${entry.id}: diagnostic refusal, no artifact or score`);
         }

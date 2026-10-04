@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assertSavedHtml } from './latex_html_corpus_contract.ts';
-import { assertNoEnvironmentFailure } from './verify_latex_html_corpus_stack.ts';
+import { assertIntendedRefusal, assertNoEnvironmentFailure } from './verify_latex_html_corpus_stack.ts';
 
 const wrap = (math: string) => `<html lang="en"><body>${math}</body></html>`;
 const control: Record<string, string> = {
@@ -35,6 +35,10 @@ test('M01: same tokens with changed denominator fails', () => {
   assert.throws(() => assertSavedHtml('M01', control.M01.replace('<mo>−</mo>', '<mo>+</mo>')));
   assert.throws(() => assertSavedHtml('M01', control.M01.replace('<mi>c</mi><mo>−</mo><mi>d</mi>', '<mi>c</mi><msup><mo>−</mo><mi>d</mi></msup>')));
   assert.throws(() => assertSavedHtml('M01', control.M01.replace('<math>', '<math><msqrt>').replace('</math>', '</msqrt></math>')));
+  assert.throws(() => assertSavedHtml('M01', control.M01.replace('<mi>a</mi><mo>+</mo><mi>b</mi>',
+    '<mfrac><mi>a</mi><mrow><mo>+</mo><mi>b</mi></mrow></mfrac>')));
+  assert.throws(() => assertSavedHtml('M01', control.M01.replace('<mi>a</mi><mo>+</mo><mi>b</mi>',
+    '<mtable><mtr><mtd><mi>a</mi><mo>+</mo><mi>b</mi></mtd></mtr></mtable>')));
   assert.throws(() => assertSavedHtml('M01', control.M01.replace('</mfrac>', '</mfrac><mo>+</mo><mn>1</mn>')));
   assertSavedHtml('M01', control.M01.replace('<mfrac>', '<mrow><mfrac>').replace('</mfrac>', '</mfrac></mrow>'));
 });
@@ -61,6 +65,7 @@ test('M03 and M04: attachment corruption fails', () => {
 test('M06: swapped coordinates and sign fail', () => {
   assert.throws(() => assertSavedHtml('M06', control.M06.replace('<mn>0</mn>', '<mn>9</mn>')));
   assert.throws(() => assertSavedHtml('M06', control.M06.replace('<mo>−</mo>', '<mo>+</mo>')));
+  assert.throws(() => assertSavedHtml('M06', control.M06.replace('<mn>1</mn>', '<mfrac><mn>1</mn><mn>1</mn></mfrac>')));
 });
 test('M05, M07 and M13: index and power attachments fail', () => {
   assert.throws(() => assertSavedHtml('M05', control.M05.replace('<mi>ν</mi><mi>ρ</mi>', '<mi>ρ</mi><mi>ν</mi>')));
@@ -119,4 +124,25 @@ test('conversion observations reject every environmental failure and unknown con
     stages: [control.stages[0], { ...control.stages[1], version: 'unknown' }] }));
   assert.throws(() => assertNoEnvironmentFailure({ ...control,
     decision: { ...control.decision, tool_versions: { latexml: 'unknown' } } }));
+});
+test('a crash or unrelated missing dependency cannot masquerade as an intended refusal', () => {
+  const source = String.raw`\input{chapters/absent.tex}`;
+  const stage = { tool: 'latexml', version: '0.8.8', exit_code: 9, diagnostics: [{ code: 'process_failed' }] };
+  const observation = (findings: object[], exit_code = 9) => ({ stages: [{ ...stage, exit_code, diagnostics: findings }] });
+  assert.throws(() => assertIntendedRefusal('M02', observation([{ code: 'process_failed' }]), source));
+  assert.throws(() => assertIntendedRefusal('N01', observation([{ code: 'process_failed' }]), source));
+  assert.throws(() => assertIntendedRefusal('N01', observation([{ code: 'process_failed' },
+    { code: 'unsupported_command' }], -9), source));
+  assert.throws(() => assertIntendedRefusal('N01', observation([{ code: 'process_failed' },
+    { code: 'unsupported_command' }], 137), source));
+  assert.throws(() => assertIntendedRefusal('M02', observation([{ code: 'missing_dependency', source_line: 1 }]), source));
+  assert.throws(() => assertIntendedRefusal('N02', observation([{ code: 'process_failed' },
+    { code: 'missing_dependency', source_line: 3 }]), source));
+  assert.throws(() => assertIntendedRefusal('N02', observation([{ code: 'process_failed' },
+    { code: 'missing_dependency' }]), source));
+  assertIntendedRefusal('N02', observation([{ code: 'process_failed' },
+    { code: 'missing_dependency', source_line: 1 }]), source);
+  assertIntendedRefusal('N01', observation([{ code: 'process_failed' },
+    { code: 'unsupported_command' }]), String.raw`\benchUnknownMacro{a}{b}`);
+  assertIntendedRefusal('M02', observation([{ code: 'semantics_not_preserved' }], 0), source);
 });
