@@ -182,13 +182,16 @@ def test_final_package_verifier_rejects_ambiguous_piper_requirement(
 def test_final_package_verifier_follows_canonical_msgpack_pin(tmp_path: Path) -> None:
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("msgpack==1.2.4 # reviewed pin\npiper-tts==1.8.0\n")
-    assert validate(
-        "global",
-        version=_versions({"msgpack": "1.2.4"}),
-        package_not_found=MissingPackage,
-        purelib=tmp_path,
-        requirements=requirements,
-    ) == []
+    assert (
+        validate(
+            "global",
+            version=_versions({"msgpack": "1.2.4"}),
+            package_not_found=MissingPackage,
+            purelib=tmp_path,
+            requirements=requirements,
+        )
+        == []
+    )
     assert any(
         "msgpack is 1.2.2; expected 1.2.4" in error
         for error in validate(
