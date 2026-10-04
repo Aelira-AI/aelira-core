@@ -12,8 +12,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 EXPECTED = {
-    "global": {"msgpack": "1.2.2", "setuptools": None},
-    "venv": {"msgpack": "1.2.2", "setuptools": "84.0.0"},
+    "global": {"setuptools": None},
+    "venv": {"setuptools": "84.0.0"},
 }
 FORBIDDEN_METADATA = {
     "msgpack": "1.1.2",
@@ -22,20 +22,31 @@ FORBIDDEN_METADATA = {
 REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements.txt"
 
 
-def required_piper_version(requirements: Path = REQUIREMENTS) -> str:
-    """Read the single canonical Piper pin without importing runtime dependencies."""
+def required_pinned_version(package: str, requirements: Path = REQUIREMENTS) -> str:
+    """Read one exact canonical pin without importing runtime dependencies."""
+    name_pattern = "piper[-_.]tts" if package == "piper-tts" else re.escape(package)
     entries = [
         line.split("#", 1)[0].strip()
         for line in requirements.read_text().splitlines()
-        if re.match(r"^piper[-_.]tts\b", line.strip(), re.IGNORECASE)
+        if re.match(rf"^{name_pattern}\b", line.strip(), re.IGNORECASE)
     ]
     if len(entries) != 1 or not re.fullmatch(
-        r"piper[-_.]tts==[0-9]+(?:\.[0-9]+)+", entries[0], re.IGNORECASE
+        rf"{name_pattern}==[0-9]+(?:\.[0-9]+)+",
+        entries[0],
+        re.IGNORECASE,
     ):
         raise ValueError(
-            "requirements.txt must contain exactly one exact piper-tts pin"
+            f"requirements.txt must contain exactly one exact {package} pin"
         )
     return entries[0].split("==", 1)[1]
+
+
+def required_piper_version(requirements: Path = REQUIREMENTS) -> str:
+    return required_pinned_version("piper-tts", requirements)
+
+
+def required_msgpack_version(requirements: Path = REQUIREMENTS) -> str:
+    return required_pinned_version("msgpack", requirements)
 
 
 def validate(
@@ -49,6 +60,10 @@ def validate(
     """Return every package-state violation for one Python installation."""
     errors: list[str] = []
     expected = EXPECTED[scope].copy()
+    try:
+        expected["msgpack"] = required_msgpack_version(requirements)
+    except (OSError, ValueError) as exc:
+        errors.append(f"{scope}: unable to determine required msgpack version: {exc}")
     if scope == "venv":
         try:
             expected["piper-tts"] = required_piper_version(requirements)
@@ -91,8 +106,18 @@ def validate(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("scope", choices=sorted(EXPECTED))
+    parser.add_argument("scope", choices=[*sorted(EXPECTED), "msgpack-pin"])
     args = parser.parse_args()
+    if args.scope == "msgpack-pin":
+        try:
+            print(required_msgpack_version())
+        except (OSError, ValueError) as exc:
+            print(
+                f"unable to determine required msgpack version: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
     errors = validate(args.scope)
     if errors:
         for error in errors:

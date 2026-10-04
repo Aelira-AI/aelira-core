@@ -1,5 +1,6 @@
 """Alembic revision identifiers must fit the existing version table."""
 
+from src.database_url import engine_url
 from pathlib import Path
 import inspect as pyinspect
 import os
@@ -303,7 +304,7 @@ def _task8_postgres_url() -> str:
 def test_review_migration_uses_jsonb_and_survives_postgres_replay_cycle():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
     revision = scripts.get_revision("20260824_task8_review")
-    engine = create_engine(_task8_postgres_url())
+    engine = create_engine(engine_url(_task8_postgres_url()))
     schema = "task8_review_migration"
     try:
         with engine.begin() as connection:
@@ -390,7 +391,7 @@ def test_review_migration_uses_jsonb_and_survives_postgres_replay_cycle():
 def test_review_migration_postgres_constraints_reject_invalid_and_duplicate_rows():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
     revision = scripts.get_revision("20260824_task8_review")
-    engine = create_engine(_task8_postgres_url())
+    engine = create_engine(engine_url(_task8_postgres_url()))
     schema = "task8_review_constraints"
     try:
         with engine.begin() as connection:

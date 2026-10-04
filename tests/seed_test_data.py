@@ -11,6 +11,7 @@ import os
 
 def seed_test_data():
     """Create mock department and user for tests."""
+    from src.database_url import engine_url
     from src.db.models import Department, User, UserRole
 
     database_url = os.getenv(
@@ -19,7 +20,7 @@ def seed_test_data():
 
     print(f"\n🌱 Seeding test database at: {database_url}")
 
-    engine = create_engine(database_url)
+    engine = create_engine(engine_url(database_url))
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
 

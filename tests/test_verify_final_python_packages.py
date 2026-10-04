@@ -6,9 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from scripts.verify_final_python_packages import required_piper_version, validate
+from scripts.verify_final_python_packages import (
+    required_msgpack_version,
+    required_piper_version,
+    validate,
+)
 
 PIPER_VERSION = required_piper_version()
+MSGPACK_VERSION = required_msgpack_version()
 
 
 class MissingPackage(Exception):
@@ -31,7 +36,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
     assert (
         validate(
             "global",
-            version=_versions({"msgpack": "1.2.2"}),
+            version=_versions({"msgpack": MSGPACK_VERSION}),
             package_not_found=MissingPackage,
             purelib=tmp_path,
         )
@@ -41,7 +46,11 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
         validate(
             "venv",
             version=_versions(
-                {"msgpack": "1.2.2", "setuptools": "84.0.0", "piper-tts": PIPER_VERSION}
+                {
+                    "msgpack": MSGPACK_VERSION,
+                    "setuptools": "84.0.0",
+                    "piper-tts": PIPER_VERSION,
+                }
             ),
             package_not_found=MissingPackage,
             purelib=tmp_path,
@@ -56,7 +65,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
         ("global", {"msgpack": "1.1.2"}, "global: msgpack is 1.1.2"),
         (
             "global",
-            {"msgpack": "1.2.2", "setuptools": "70.3.0"},
+            {"msgpack": MSGPACK_VERSION, "setuptools": "70.3.0"},
             "global: setuptools is 70.3.0",
         ),
         (
@@ -66,7 +75,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
         ),
         (
             "venv",
-            {"msgpack": "1.2.2", "setuptools": "70.3.0"},
+            {"msgpack": MSGPACK_VERSION, "setuptools": "70.3.0"},
             "venv: setuptools is 70.3.0",
         ),
     ],
@@ -99,7 +108,11 @@ def test_final_package_verifier_rejects_stale_metadata_names(
     errors = validate(
         "venv",
         version=_versions(
-            {"msgpack": "1.2.2", "setuptools": "84.0.0", "piper-tts": PIPER_VERSION}
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "piper-tts": PIPER_VERSION,
+            }
         ),
         package_not_found=MissingPackage,
         purelib=tmp_path,
@@ -112,7 +125,7 @@ def test_final_package_verifier_rejects_stale_metadata_names(
 def test_final_package_verifier_rejects_missing_or_overridden_piper(
     tmp_path: Path, piper_version: str | None
 ) -> None:
-    installed = {"msgpack": "1.2.2", "setuptools": "84.0.0"}
+    installed = {"msgpack": MSGPACK_VERSION, "setuptools": "84.0.0"}
     if piper_version is not None:
         installed["piper-tts"] = piper_version
     assert validate(
@@ -125,12 +138,18 @@ def test_final_package_verifier_rejects_missing_or_overridden_piper(
 
 def test_final_package_verifier_follows_canonical_piper_pin(tmp_path: Path) -> None:
     requirements = tmp_path / "requirements.txt"
-    requirements.write_text("piper-tts==2.0.0 # updated canonical pin\n")
+    requirements.write_text(
+        f"msgpack=={MSGPACK_VERSION}\npiper-tts==2.0.0 # updated canonical pin\n"
+    )
     assert (
         validate(
             "venv",
             version=_versions(
-                {"msgpack": "1.2.2", "setuptools": "84.0.0", "piper-tts": "2.0.0"}
+                {
+                    "msgpack": MSGPACK_VERSION,
+                    "setuptools": "84.0.0",
+                    "piper-tts": "2.0.0",
+                }
             ),
             package_not_found=MissingPackage,
             purelib=tmp_path,
@@ -148,16 +167,58 @@ def test_final_package_verifier_rejects_ambiguous_piper_requirement(
     tmp_path: Path, contents: str
 ) -> None:
     requirements = tmp_path / "requirements.txt"
-    requirements.write_text(contents)
+    requirements.write_text(f"msgpack=={MSGPACK_VERSION}\n{contents}")
     errors = validate(
         "venv",
-        version=_versions({"msgpack": "1.2.2", "setuptools": "84.0.0"}),
+        version=_versions({"msgpack": MSGPACK_VERSION, "setuptools": "84.0.0"}),
         package_not_found=MissingPackage,
         purelib=tmp_path,
         requirements=requirements,
     )
     assert len(errors) == 1
     assert "exactly one exact piper-tts pin" in errors[0]
+
+
+def test_final_package_verifier_follows_canonical_msgpack_pin(tmp_path: Path) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("msgpack==1.2.4 # reviewed pin\npiper-tts==1.8.0\n")
+    assert validate(
+        "global",
+        version=_versions({"msgpack": "1.2.4"}),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+        requirements=requirements,
+    ) == []
+    assert any(
+        "msgpack is 1.2.2; expected 1.2.4" in error
+        for error in validate(
+            "global",
+            version=_versions({"msgpack": "1.2.2"}),
+            package_not_found=MissingPackage,
+            purelib=tmp_path,
+            requirements=requirements,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "contents",
+    ["", "msgpack>=1.2.3\n", "msgpack==1.2.2\nmsgpack==1.2.3\n"],
+)
+def test_final_package_verifier_rejects_ambiguous_msgpack_requirement(
+    tmp_path: Path, contents: str
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text(contents)
+    errors = validate(
+        "global",
+        version=_versions({"msgpack": MSGPACK_VERSION}),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+        requirements=requirements,
+    )
+    assert len(errors) == 1
+    assert "exactly one exact msgpack pin" in errors[0]
 
 
 def test_dockerfile_installs_piper_only_through_requirements() -> None:

@@ -6,6 +6,7 @@ manager and request dependency retain rollback on failure. Authentication parsin
 provider transport and worker execution are outside this fixture's evidence.
 """
 
+from src.database_url import engine_url
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -76,7 +77,7 @@ def subscription(case, credentials, *, active=True):
 
 @pytest.fixture
 def integration_route(monkeypatch):
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(engine_url(get_settings().database_url))
     assert (
         engine.dialect.name == "postgresql"
     ), "Integration contracts require PostgreSQL"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.database_url import engine_url
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -33,7 +34,7 @@ def _postgres_url() -> str:
 def _isolated_database():
     database_url = _postgres_url()
     try:
-        admin_engine = create_engine(database_url)
+        admin_engine = create_engine(engine_url(database_url))
         with admin_engine.connect() as connection:
             connection.execute(text("SELECT 1"))
     except Exception as exc:
@@ -44,7 +45,7 @@ def _isolated_database():
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
 
     engine = create_engine(
-        database_url,
+        engine_url(database_url),
         isolation_level=EXPECTED_ISOLATION_LEVEL,
         pool_size=2,
         max_overflow=0,

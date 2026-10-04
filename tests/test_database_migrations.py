@@ -8,6 +8,7 @@ Tests verify that:
 - No data loss during migrations
 """
 
+from src.database_url import engine_url
 import pytest
 import os
 import subprocess
@@ -86,7 +87,7 @@ def test_engine():
     if not TEST_DATABASE_URL:
         pytest.skip("requires TEST_MIGRATION_DATABASE_URL")
     require_disposable_postgres_url(TEST_DATABASE_URL, destructive=True)
-    engine = create_engine(TEST_DATABASE_URL)
+    engine = create_engine(engine_url(TEST_DATABASE_URL))
     yield engine
     engine.dispose()
 

@@ -1,5 +1,6 @@
 """Durable remediation outcomes and atomic generic route persistence."""
 
+from src.database_url import engine_url
 import importlib.util
 import os
 from contextlib import ExitStack
@@ -106,7 +107,7 @@ def test_postgresql_upgrade_exposes_outcome_to_reloaded_mapper():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, "head")
-    engine = create_engine(database_url)
+    engine = create_engine(engine_url(database_url))
     with Session(engine) as session:
         session.execute(select(Scan.remediation_outcome).limit(0))
 
