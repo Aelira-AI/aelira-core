@@ -251,10 +251,10 @@ def test_existing_marked_heading_refuses_unsafe_binding_without_mutation(
         page.Contents = pdf.make_stream(raw)
         tagger = ContentTaggerV2(pdf, document)
         before = BytesIO()
-        pdf.save(before)
+        pdf.save(before, deterministic_id=True)
         assert not tagger.promote_marked_paragraph_prefix(0, TITLE, 1)
         after = BytesIO()
-        pdf.save(after)
+        pdf.save(after, deterministic_id=True)
         assert after.getvalue() == before.getvalue()
 
 
@@ -320,9 +320,9 @@ def test_heading_issue_for_second_identical_marked_line_stays_manual(tmp_path):
             },
         )
         before = BytesIO()
-        pdf.save(before)
+        pdf.save(before, deterministic_id=True)
         assert not remediator._apply_heading_fix(issue, document, TITLE)
         assert issue.id in remediator._source_binding_refusals
         after = BytesIO()
-        pdf.save(after)
+        pdf.save(after, deterministic_id=True)
         assert after.getvalue() == before.getvalue()
