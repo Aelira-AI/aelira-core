@@ -296,6 +296,11 @@ def classify(stdout, stderr, *, exit_code, final_pass=True):
             lower,
         ):
             code = "malformed_expression"
+        elif (
+            "warning:not_parsed:" in lower
+            and "mathparser failed to match rule" in lower
+        ):
+            code = "semantics_unconfirmed"
         elif re.search(
             r"undefined (?:references|citations)|(?:reference|citation).*undefined|unresolved|warning:expected:(?:label|id|ref)",
             lower,

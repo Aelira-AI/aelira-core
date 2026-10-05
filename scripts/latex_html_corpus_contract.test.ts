@@ -31,6 +31,33 @@ control.M16 = wrap(`<math><mi>S</mi><mo>=</mo>${Array.from({ length: 16 }, (_, i
 for (const [id, html] of Object.entries(control)) test(`${id}: known valid saved structure passes`, () => {
   assertSavedHtml(id, html);
 });
+test('native MathML styling and grouping preserve bounded content', () => {
+  const integral = control.M07.replace('<mi>d</mi>', '<mo>𝑑</mo>');
+  const physics = control.M10.replace('<mo>|</mo><mo>|</mo>', '<mo>|</mo>')
+    .replace('<mrow><mo>∂</mo><msup><mi>x</mi><mn>2</mn></msup></mrow>',
+      '<msup><mrow><mo>∂</mo><mi>x</mi></mrow><mn>2</mn></msup>');
+  const vector = control.M11.replace('<mi mathvariant="bold">F</mi>', '<mi>𝐅</mi>')
+    .replace('<mi mathvariant="bold">v</mi>', '<mi>𝐯</mi>')
+    .replace('<mi mathvariant="bold">B</mi>', '<mi>𝐁</mi>');
+  const piecewise = control.M13.replace('<mo>=</mo>', '<mo>=</mo><mo>{</mo>');
+  for (const [id, html] of [['M07', integral], ['M10', physics], ['M11', vector], ['M13', piecewise]]) {
+    assertSavedHtml(id, html);
+  }
+  assert.throws(() => assertSavedHtml('M07', integral.replace('<mo>𝑑</mo>', '<mo>𝑞</mo>')));
+  assert.throws(() => assertSavedHtml('M07', integral.replace('<mi>∞</mi>', '<mn>2</mn>')));
+  for (const [before, after] of [
+    ['<mi>f</mi>', '<mi>g</mi>'], ['<mi>x</mi>', '<mi>y</mi>'],
+    ['<mn>2</mn>', '<mn>1</mn>'], ['<mo>+</mo>', '<mo>−</mo>'],
+    ['<msup><mrow><mo>∂</mo><mi>x</mi></mrow><mn>2</mn></msup>',
+      '<mrow><mo>∂</mo><mi>x</mi><mn>2</mn></mrow>'],
+  ]) assert.throws(() => assertSavedHtml('M10', physics.replace(before, after)));
+  for (const [before, after] of [
+    ['𝐅', 'F'], ['𝐯', 'v'], ['𝐁', 'B'], ['<mo>×</mo>', '<mo>⋅</mo>'],
+    ['<mi>q</mi><mi>𝐯</mi>', '<mi>𝐯</mi><mi>q</mi>'],
+  ]) assert.throws(() => assertSavedHtml('M11', vector.replace(before, after)));
+  assert.throws(() => assertSavedHtml('M13', piecewise.replace('<mo>≥</mo>', '<mo>&gt;</mo>')));
+  assert.throws(() => assertSavedHtml('M13', piecewise.replace('<mo>{</mo>', '<mo>}</mo>')));
+});
 test('M01: same tokens with changed denominator fails', () => {
   assert.throws(() => assertSavedHtml('M01', control.M01.replace('<mo>−</mo>', '<mo>+</mo>')));
   assert.throws(() => assertSavedHtml('M01', control.M01.replace('<mi>c</mi><mo>−</mo><mi>d</mi>', '<mi>c</mi><msup><mo>−</mo><mi>d</mi></msup>')));
@@ -82,9 +109,14 @@ test('M10: derivative attachment and top-level operation fail', () => {
 test('M14: two math rows can have multiple math nodes and resolvable references', () => {
   const split = control.M14.replace('<math><mi>E</mi><mo>=</mo>', '<math><mi>E</mi></math><math><mo>=</mo>');
   assertSavedHtml('M14', split);
+  assertSavedHtml('M14', control.M14.replace('<mi>m</mi><msup>', '<mi>m</mi><mo>⁢</mo><msup>'));
   for (const damaged of [control.M14.replace('href="#mass"', 'href="#energy"'),
     control.M14.replace('id="mass"', 'id="wrong"'), control.M14.replace('<mi>E</mi>', '<mi>Q</mi>'),
-    control.M14.replace('<mn>2</mn>', '<mn>3</mn>')]) assert.throws(() => assertSavedHtml('M14', damaged));
+    control.M14.replace('<mn>2</mn>', '<mn>3</mn>'),
+    control.M14.replace('<mfrac><mi>E</mi>', '<mfrac><mfrac><mi>E</mi><mn>1</mn></mfrac>'),
+    control.M14.replace('<mfrac><mi>E</mi><msup><mi>c</mi><mn>2</mn></msup>',
+      '<mfrac><mi>E</mi><mrow><msup><mi>c</mi><mn>2</mn></msup><mo>+</mo><mn>1</mn></mrow>')])
+    assert.throws(() => assertSavedHtml('M14', damaged));
 });
 test('M16: 17 authored fractions pass even when split between MathML blocks', () => {
   assertSavedHtml('M16', control.M16.replace(`${indexedFraction(9)}`, `</math><math>${indexedFraction(9)}`));

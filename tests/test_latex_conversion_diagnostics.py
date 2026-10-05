@@ -287,6 +287,20 @@ def test_stage_failure_never_uses_stale_output(converter, source, monkeypatch, m
     assert len(receipts["html"].model_dump_json()) < 5000
 
 
+def test_unparsed_tensor_math_requires_semantic_review():
+    findings = classify(
+        "",
+        "Warning:not_parsed:UNKNOWN.POSTSUPERSCRIPT>FLOATSUBSCRIPT "
+        "MathParser failed to match rule 'Anything' at tensor.tex; line 14 col 2",
+        exit_code=0,
+    )
+    assert len(findings) == 1
+    assert findings[0].code == "semantics_unconfirmed"
+    assert findings[0].severity == "error"
+    assert findings[0].source_line == 14
+    assert classify("Conversion complete: 1 warning", "", exit_code=0) == []
+
+
 def test_unclassified_warning_requires_review_but_known_warning_does_not():
     assert (
         classify("", "Warning: unexpected converter condition", exit_code=0)[0].severity

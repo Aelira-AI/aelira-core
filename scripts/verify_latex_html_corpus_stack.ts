@@ -128,6 +128,10 @@ export async function verifyLatexHtmlCorpus(context: {
       const job = await poll(() => request(`/education/remediation/jobs/${queued.job_id}`),
         (v: any) => ['completed', 'failed', 'cancelled', 'dead_letter'].includes(v.status));
       const latest = await request(`/education/scans/${queuedScan.scan_id}/remediation/latest`);
+      await writeFile(resolve(output, `html-job-${entry.id}.json`), JSON.stringify({
+        scan_id: queuedScan.scan_id, source_sha256: sourceHash,
+        source_issues: scanResult.scan.result.issues, job, latest,
+      }, null, 2));
       for (const field of ['job_id', 'status', 'artifact_id', 'download_available', 'fixed_count', 'remaining_count',
         'remediated_score', 'score_verified', 'latex_evidence', 'human_review_required']) {
         assert.deepEqual(latest[field], job[field], `Reload preserves ${field}`);
@@ -195,6 +199,7 @@ export async function verifyLatexHtmlCorpus(context: {
         assert.equal(formats.available_formats[0].format, 'html', 'HTML-only cannot publish a TEX fallback');
         const saved = new Uint8Array(await response.arrayBuffer());
         const savedHash = digest(saved);
+        await writeFile(resolve(output, `html-saved-${entry.id}.html`), saved);
         assert.equal(digest(new Uint8Array(await compatible.arrayBuffer())), savedHash);
         assert.equal(receipt?.candidate_sha256, savedHash);
         assert.equal(receipt?.conversion.status, 'completed');
@@ -209,7 +214,6 @@ export async function verifyLatexHtmlCorpus(context: {
         const repeat = await download(path);
         assert.equal(repeat.status, 200);
         assert.equal(digest(new Uint8Array(await repeat.arrayBuffer())), savedHash);
-        await writeFile(resolve(output, `html-saved-${entry.id}.html`), saved);
         evidence.push({ ...base, outcome: 'delivered', artifact_id: job.artifact_id, output_sha256: savedHash,
           download_status: 200, checks });
         console.log(`PASS HTML ${entry.id}: real saved HTML and bounded content oracle`);

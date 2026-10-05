@@ -127,6 +127,7 @@ export function htmlChecks(id: string, html: string): Record<string, boolean> {
     case 'M07': return check('integral_limits_exponent', [
       ['msubsup:∫:0:∞', 'msup:e:-αt', 'd', 't'],
       ['msup:msub:∫:0:∞', 'msup:e:-αt', 'd', 't'],
+      ['msubsup:∫:0:∞', 'msup:e:-αt', '𝑑', 't'],
     ].some(expected => JSON.stringify(mathUnits(m)) === JSON.stringify(expected)));
     case 'M08': {
       const sequence = token(m).filter(t => ['Γ', 'γ', 'φ', 'ϕ', 'ε', 'ϵ'].includes(t));
@@ -137,17 +138,24 @@ export function htmlChecks(id: string, html: string): Record<string, boolean> {
     case 'M10': {
       const derivative = fraction(m,
         n => JSON.stringify(mathUnits(n)) === JSON.stringify(['msup:∂:2', 'f']),
-        d => JSON.stringify(mathUnits(d)) === JSON.stringify(['∂', 'msup:x:2']));
+        d => [['∂', 'msup:x:2'], ['msup:∂x:2']].some(expected =>
+          JSON.stringify(mathUnits(d)) === JSON.stringify(expected)));
       const sequence = topUnits(m);
-      const bracket = ['⟨', 'ϕ', '|', '|', 'ψ', '⟩', '+'];
-      const alternate = ['⟨', 'φ', '|', '|', 'ψ', '⟩', '+'];
+      const brackets = ['ϕ', 'φ'].flatMap(phi => [
+        ['⟨', phi, '|', '|', 'ψ', '⟩', '+'], ['⟨', phi, '|', 'ψ', '⟩', '+'],
+      ]);
       return check('physics_second_derivative', maths.length === 1 && derivative &&
-        sequence.length === 8 && sequence.at(-1)?.startsWith('fraction:') === true &&
-        [bracket, alternate].some(expected => JSON.stringify(sequence.slice(0, 7)) === JSON.stringify(expected)));
+        sequence.at(-1)?.startsWith('fraction:') === true &&
+        brackets.some(expected => JSON.stringify(sequence.slice(0, -1)) === JSON.stringify(expected)));
     }
-    case 'M11': return check('cross_product', ['F', 'q', 'v', 'B', '×'].every(v => token(m).includes(v)) &&
-      ['F', 'v', 'B'].every(v => descendants(m, 'mi').some(n => compact(n) === v &&
-        (/bold/.test(n.attrs.mathvariant || '') || (pathTo(m, n) || []).some(p => /bold/.test(p.attrs.mathvariant || ''))))));
+    case 'M11': {
+      const bold: Record<string, string> = { F: '𝐅', v: '𝐯', B: '𝐁' };
+      const sequence = topUnits(m).map(value => Object.entries(bold).find(([, glyph]) => glyph === value)?.[0] ?? value);
+      return check('cross_product', JSON.stringify(sequence) === JSON.stringify(['F', '=', 'q', 'v', '×', 'B']) &&
+        Object.entries(bold).every(([letter, glyph]) => descendants(m, 'mi').some(n => compact(n) === glyph ||
+          (compact(n) === letter && (/bold/.test(n.attrs.mathvariant || '') ||
+            (pathTo(m, n) || []).some(p => /bold/.test(p.attrs.mathvariant || '')))))));
+    }
     case 'M12': return check('quantity_units', token(m).includes('3.00') && power(m, '10', '8') && /[×⋅\u2062]/u.test(compact(m)) &&
       (fraction(m, n => compact(n).includes('m'), d => compact(d).includes('s')) || /m\/s/.test(compact(m)) || has(m, 'msup', n => /s-1/.test(compact(n)))));
     case 'M13': return check('piecewise_boundaries', has(m, 'mtable', n => {
@@ -157,7 +165,8 @@ export function htmlChecks(id: string, html: string): Record<string, boolean> {
         JSON.stringify(rows[0][1].children.flatMap(mathUnits)) === JSON.stringify(['x', '≥', '0']) &&
         JSON.stringify(rows[1][0].children.flatMap(mathUnits)) === JSON.stringify(['-', 'x']) &&
         JSON.stringify(rows[1][1].children.flatMap(mathUnits)) === JSON.stringify(['x', '<', '0']);
-    }) && JSON.stringify(topUnits(m)) === JSON.stringify(['f', '(', 'x', ')', '=', 'table']));
+    }) && [['f', '(', 'x', ')', '=', 'table'], ['f', '(', 'x', ')', '=', '{', 'table']].some(expected =>
+      JSON.stringify(topUnits(m)) === JSON.stringify(expected)));
     case 'M14': {
       const references = descendants(body, 'a').filter(n => n.attrs.href?.startsWith('#') && /^\(?[12]\)?$/.test(compact(n)));
       const energy = references.find(n => compact(n).includes('1'));
@@ -167,10 +176,17 @@ export function htmlChecks(id: string, html: string): Record<string, boolean> {
       const energyTarget = target(energy); const massTarget = target(mass);
       const energyRow = energyTarget && referenceRow(body, energyTarget);
       const massRow = massTarget && referenceRow(body, massTarget);
+      const energySequence = energyRow ? mathNodes(energyRow).flatMap(topUnits) : [];
+      const massMaths = massRow ? mathNodes(massRow) : [];
+      const massSequence = massMaths.flatMap(topUnits);
+      const massFractions = massMaths.flatMap(node => descendants(node, 'mfrac'));
       return { ...all, distinct_references: !!energy && !!mass && energy.attrs.href !== mass.attrs.href && !!energyRow && !!massRow,
-        equation_rows: !!energyRow && !!massRow && energyRow !== massRow && compact(energyRow).includes('E=mc2') &&
-          compact(massRow).includes('Ec2=m') && power(energyRow, 'c', '2') &&
-          fraction(massRow, n => compact(n) === 'E', d => power(d, 'c', '2')) };
+        equation_rows: !!energyRow && !!massRow && energyRow !== massRow &&
+          JSON.stringify(energySequence) === JSON.stringify(['E', '=', 'm', 'msup:c:2']) &&
+          massSequence.length === 3 && massSequence[0].startsWith('fraction:') &&
+          JSON.stringify(massSequence.slice(1)) === JSON.stringify(['=', 'm']) && massFractions.length === 1 &&
+          fraction(massFractions[0], n => JSON.stringify(mathUnits(n)) === JSON.stringify(['E']),
+            d => JSON.stringify(mathUnits(d)) === JSON.stringify(['msup:c:2'])) };
     }
     case 'M15': return { ...all, three_equations: maths.length >= 3 && ['a=1', 'b=2', 'c=a+b'].every((v, i) => compact(maths[i]) === v),
       connecting_prose: /First.*then.*and finally.*All three statements precede this sentence\./.test(visible) };
