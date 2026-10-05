@@ -135,11 +135,16 @@ def test_legacy_failed_job_accounts_for_unreported_remainder(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "manual_count,verified,error",
-    [(3, True, "manual_required"), (0, False, "remediation_artifact_unavailable")],
+    "manual_count,verified,success,reported,error",
+    [
+        (3, True, True, True, "manual_required"),
+        (0, False, True, True, "remediation_artifact_unavailable"),
+        (3, False, False, True, "remediation_failed"),
+        (3, False, False, False, "remediation_failed"),
+    ],
 )
 async def test_worker_refuses_partial_and_regressed_candidates_with_complete_accounting(
-    tmp_path, monkeypatch, manual_count, verified, error
+    tmp_path, monkeypatch, manual_count, verified, success, reported, error
 ):
     from src.db.models import Scan, ScanResult, ScanType
     from src.jobs import remediation_job
@@ -175,7 +180,7 @@ async def test_worker_refuses_partial_and_regressed_candidates_with_complete_acc
     db.query.side_effect = query
     fixed_count = 8 - manual_count
     child_result = SimpleNamespace(
-        success=True,
+        success=success,
         total_issues=8,
         fixed_count=fixed_count,
         manual_count=manual_count,
@@ -191,6 +196,10 @@ async def test_worker_refuses_partial_and_regressed_candidates_with_complete_acc
         has_output_claim=lambda: True,
         close_output_claim=MagicMock(),
     )
+    if not reported:
+        # Aggregate child counts cannot invent dispositions for source findings.
+        child_result.fixed_issues = []
+        child_result.manual_issues = []
     monkeypatch.setattr(
         remediation_job,
         "run_remediation_subprocess",
@@ -219,8 +228,18 @@ async def test_worker_refuses_partial_and_regressed_candidates_with_complete_acc
     assert result["success"] is False
     assert result["error"] == error
     assert result["fixed_count"] == 0
-    assert result["withheld_count"] == fixed_count
-    assert result["manual_count"] == manual_count
-    assert result["remaining_count"] == 8
+    assert result["withheld_count"] == (fixed_count if reported else 0)
+    assert result["manual_count"] == (manual_count if reported else 0)
+    assert result["outcome_unreported_count"] == (0 if reported else 8)
+    assert result["remaining_count"] == result["total_issues"] == 8
     assert len(result["issue_outcomes"]) == 8
+    from src.jobs.contracts import JobFailure
+
+    persisted = JobFailure.deterministic(
+        error, remediation_job._safe_failure_result(error, result, scan)
+    ).details
+    projected = public_job_result(persisted)
+    assert projected["fixed_count"] == 0
+    assert projected["remaining_count"] == projected["total_issues"] == 8
+    assert projected["issue_outcomes"] == result["issue_outcomes"]
     service.claim_and_publish_stream.assert_not_called()

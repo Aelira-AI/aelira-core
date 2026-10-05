@@ -87,10 +87,12 @@ def sanitize_json(value: Any, *, _depth: int = 0) -> Any:
     if isinstance(value, Mapping):
         return {
             str(key)[:256]: (
-                (public_job_result({"issue_outcomes": item}) or {}).get(
-                    "issue_outcomes", []
+                # Typed receipts have their own bounded, path-free schema. Their
+                # equation row spans exceed the generic recursion budget.
+                (public_job_result({key: item}) or {}).get(
+                    key, {} if key == "latex_evidence" else []
                 )
-                if key == "issue_outcomes"
+                if key in {"issue_outcomes", "latex_evidence"}
                 else sanitize_json(item, _depth=_depth + 1)
             )
             for key, item in list(value.items())[:256]

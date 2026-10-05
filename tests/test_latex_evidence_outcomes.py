@@ -31,6 +31,99 @@ def assert_unverified(evidence):
         }
 
 
+@pytest.fixture(params=["M14", "M16"])
+def row_evidence(tmp_path, request):
+    from src.education.latex_diagnostics import ConversionDiagnostics, ConversionStage
+    from src.education.latex_equation_provenance import observe_representation
+
+    source = (ROOT / f"{request.param}.tex").read_bytes()
+    candidate = tmp_path / "candidate.html"
+    candidate.write_bytes(b"<html><body><math><mi>x</mi></math></body></html>")
+    trace = observe_representation(source.decode(), candidate, "html")
+    assert trace.source.expressions[0].rows
+    receipt = conversion_evidence(source, candidate.read_bytes(), "html")
+    diagnostics = ConversionDiagnostics(
+        source_sha256=receipt.source_sha256,
+        candidate_sha256=receipt.candidate_sha256,
+        status="accepted",
+        stages=[
+            ConversionStage(
+                tool="inspection",
+                phase="inspect",
+                input_sha256=receipt.source_sha256,
+                candidate_sha256=receipt.candidate_sha256,
+                equations=trace,
+            )
+        ],
+    )
+    return {
+        "html": {
+            **receipt.model_dump(mode="json"),
+            "conversion_diagnostics": diagnostics.model_dump(mode="json"),
+        }
+    }
+
+
+def test_equation_rows_survive_durable_json_and_public_reload(row_evidence):
+    from src.education.latex_evidence import LatexRepresentationEvidence
+    from src.jobs.contracts import JobFailure, JobSuccess, public_job_result
+
+    for stored in (
+        JobSuccess({"latex_evidence": row_evidence}).result,
+        JobFailure.deterministic(
+            "manual_required", {"latex_evidence": row_evidence}
+        ).details,
+    ):
+        reloaded = json.loads(json.dumps(stored))
+        projected = public_job_result(reloaded)["latex_evidence"]
+        assert projected == row_evidence
+        receipt = LatexRepresentationEvidence.model_validate(projected["html"])
+        rows = (
+            receipt.conversion_diagnostics.stages[0]
+            .equations.source.expressions[0]
+            .rows
+        )
+        assert all(type(row.source_span.start_byte) is int for row in rows)
+        assert_unverified(projected["html"])
+
+
+@pytest.mark.parametrize("mutation", ["path", "row_span", "stages", "claim"])
+def test_durable_typed_receipt_rejects_invalid_evidence(row_evidence, mutation):
+    from src.jobs.contracts import JobSuccess, public_job_result
+
+    receipt = row_evidence["html"]
+    diagnostics = receipt["conversion_diagnostics"]
+    if mutation == "path":
+        diagnostics["stages"][0]["internal_path"] = "/private/not-public"
+    elif mutation == "row_span":
+        diagnostics["stages"][0]["equations"]["source"]["expressions"][0]["rows"][0][
+            "source_span"
+        ]["start_byte"] = "<max-depth>"
+    elif mutation == "stages":
+        diagnostics["stages"] *= 25
+    else:
+        receipt["fidelity"]["status"] = "passed"
+    stored = JobSuccess({"latex_evidence": row_evidence}).result
+    assert stored["latex_evidence"] == {}
+    assert "latex_evidence" not in (public_job_result(stored) or {})
+
+
+def test_typed_evidence_keeps_generic_limits_and_credential_rejection(row_evidence):
+    from src.jobs.contracts import JobSuccess, sanitize_json, validate_json_object
+
+    with pytest.raises(ValueError, match="exceeds size limit"):
+        validate_json_object({"latex_evidence": row_evidence}, max_bytes=100)
+    nested = "leaf"
+    for _ in range(14):
+        nested = {"child": nested}
+    sanitized = sanitize_json({"ordinary": nested, "items": list(range(300))})
+    assert "<max-depth>" in json.dumps(sanitized)
+    assert len(sanitized["items"]) == 256
+    row_evidence["html"]["conversion_diagnostics"]["stages"][0]["api_key"] = "forbidden"
+    with pytest.raises(ValueError, match="credential_material_forbidden"):
+        JobSuccess({"latex_evidence": row_evidence})
+
+
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
 async def test_corpus_real_processor_never_certifies_conversion(tmp_path, case):
     data = (ROOT / case["file"]).read_bytes()
