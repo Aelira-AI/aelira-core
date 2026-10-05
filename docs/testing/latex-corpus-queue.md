@@ -100,7 +100,10 @@ node --experimental-strip-types scripts/verify_latex_corpus_compilation.ts
 
 Use Node 22 or newer, `zip`, `unzip`, Pandoc and a supported `pdflatex` or `lualatex`
 with the declared packages installed, including TikZ, physics, siunitx and German
-Babel. CI installs the prerequisites explicitly. `STACK_TEX_COMPILER=lualatex`
+Babel. CI installs the prerequisites explicitly, pins Pandoc 3.1.11.1 with a
+verified package checksum, and configures the converter's allowed remediation
+root to the same disposable artifact directory used by its worker.
+`STACK_TEX_COMPILER=lualatex`
 selects that engine; an engine change is recorded, not treated as the same runtime.
 
 `report.json` records revision, tracked-diff digest, harness/manifest hashes,
