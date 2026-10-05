@@ -1056,6 +1056,7 @@ async def process_remediation_job(
                 code = str(exc)
                 return {
                     "success": False,
+                    **account_outcomes(exc, published=False),
                     **latex_result_fields(exc),
                     "error": (
                         code
