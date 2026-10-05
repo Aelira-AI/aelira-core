@@ -1,6 +1,6 @@
 # Aelira Core
 
-**Accessibility remediation for course content. It returns fixed files, not a list of problems.**
+**Accessibility scanning and supported remediation for course content, with saved-file evidence and human review.**
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Python 3.14](https://img.shields.io/badge/Python-3.14-blue.svg)](https://www.python.org/)
@@ -12,7 +12,7 @@
 
 > **Status: 0.9.11 beta.** Scanning and remediation remain under active validation. Automated scores describe scanner findings, not accessibility conformance. Some documents require manual work and cannot produce a downloadable remediated artifact. LMS integration maturity varies by platform (see the [integration status table](#lms-integration-status) below). Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. See the [0.9.11 corrective release notes](docs/releases/v0.9.11.md) for workflow fixes and verification limits.
 
-Most accessibility tools tell you a PDF has no tags, an image has no alt text, and a table has no headers. Someone still has to open the file and fix it. Aelira does the fixing: you give it a document, it gives you back a remediated one, with a report of what changed and why.
+Aelira can apply eligible fixes and return a saved candidate with a report of recorded outcomes. Supported changes differ by format and source structure. Unsupported or ambiguous cases remain unresolved; some cannot produce a downloadable remediated artifact. Review the actual saved file before publishing it.
 
 It is built for institutions working toward WCAG 2.1 AA, including US public entities under the DOJ ADA Title II rule (**26 April 2027** for jurisdictions of 50,000+, **26 April 2028** for smaller entities).
 
@@ -46,7 +46,7 @@ service you did not select.
 
 ## Four equal product pillars
 
-For document work, upload a file and get back a remediated file rather than only a problem list. The public core treats **documents**, **LMS**, **web**, and **media** as four equal product pillars, each with its own implementation and evidence boundaries.
+For document work, scan an original file, apply supported changes, and review any saved candidate and unresolved findings. The public core treats **documents**, **LMS**, **web**, and **media** as four equal product pillars, each with its own implementation and evidence boundaries.
 
 | Pillar | Scope | Start here |
 |---|---|---|
@@ -69,7 +69,7 @@ For document work, upload a file and get back a remediated file rather than only
 
 MathML is one stage of the LaTeX pipeline; the source remains first-class. Source-level remediation can improve accessibility metadata and language, figures, tables, equations, and links, depending on the issues found. With AI configured, figure descriptions use the issue, location, and original LaTeX context rather than the filename alone, with a filename-based fallback when richer context is unavailable. Capabilities, dependencies, evidence level, and review limits for every document format are in the [document remediation hub](docs/document-remediation/README.md); the [General STEM guide](docs/document-remediation/general-stem.md) documents the visual trust pipeline and its limits.
 
-It reads course content directly from your LMS, plus **Google Drive** and **Microsoft 365**, so faculty do not have to download and re-upload anything.
+Connectors can read course content from supported LMS deployments, **Google Drive** and **Microsoft 365**. Permissions, supported operations and verification maturity differ; review and authorized writeback are separate steps.
 
 ### LMS integration status
 
@@ -77,7 +77,7 @@ Connectors are at different stages of verification. We label them honestly rathe
 
 | LMS | Connection | Status |
 |---|---|---|
-| **Canvas** | LTI 1.3 + REST API | **Production-verified** — tested end to end |
+| **Canvas** | LTI 1.3 + REST API | **Integration verified** — maintainer production integration testing; institution-specific user-journey acceptance remains necessary |
 | **Brightspace (D2L)** | LTI 1.3 + API | **Beta** — built and tested against a D2L developer instance, not recently re-verified |
 | **Blackboard** | LTI 1.3 + API | **Experimental** — implemented, not yet tested end to end |
 | **Moodle** | REST API | **Experimental** — implemented, not yet tested end to end |
@@ -138,9 +138,9 @@ examples in `.env.example` are for running the API directly on the host.
 
 Full configuration is documented in [`.env.example`](.env.example) — reconciled against every variable the code reads — and the deployment guide is in [`docs/`](docs/).
 
-**A note on data.** With Ollama, documents never leave your servers: no cloud API, no third-party processing, nothing to put through a vendor review — the right deployment for anything covered by FERPA.
+**A note on data.** Local Ollama inference can keep AI processing on institution-controlled infrastructure when local providers are deliberately configured. Review fallback providers, storage, logs, backups, network egress and access controls for the actual deployment. Local inference alone does not establish FERPA compliance or replace an institutional privacy review.
 
-**A note on analytics.** The dashboard ships with an optional, off-by-default [Umami](https://umami.is/) integration (Umami is open-source, self-hostable web analytics). It only activates if you set `VITE_UMAMI_WEBSITE_ID` and `VITE_UMAMI_URL` to point at **your own** Umami instance, and even then it loads only after the user accepts the analytics cookie consent. Nothing is hardcoded, and no usage data is ever sent to the Aelira project — there is no telemetry or phone-home anywhere in this codebase.
+**A note on analytics.** The dashboard ships with an optional, off-by-default [Umami](https://umami.is/) integration (Umami is open-source, self-hostable web analytics). It activates when you configure `VITE_UMAMI_WEBSITE_ID` and `VITE_UMAMI_URL`, and loads after analytics consent. Review the configured destination and deployment's network behavior before making a telemetry or data-residency claim.
 
 ## Architecture
 
@@ -218,7 +218,7 @@ aelira report analytics --api-url http://localhost:8000
 Not in this repository:
 
 - **Billing, CRM, campaign and helpdesk integrations.** They run the commercial service and have nothing to do with remediation.
-- **Hosted infrastructure and support** are the commercial offering. The engine is here and complete; what you buy is somebody else running it.
+- **Hosted infrastructure and support** are the commercial offering. The self-hosted core has no paid feature tier; its current beta scope and validation limits apply whether you self-host or use managed infrastructure.
 
 If you self-host and never pay us anything, the tool still works. That is the point of the licence.
 
