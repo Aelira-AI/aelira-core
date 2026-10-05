@@ -14,11 +14,11 @@ The probe resolves only the fixed `physics.sty`, `siunitx.sty` and `babel.sty` n
 
 | Control | Pandoc raw / preprocessed | LaTeXML raw / preprocessed | Public Aelira route and delivery |
 | --- | --- | --- | --- |
-| M10 physics bra/ket and second partial derivative | `observed_failure` / `observed_failure`: exit 0 with a math conversion warning; no MathML | `partial` / `partial`: clean conversion; presentation and XMath operator checks pass | LaTeXML selected; refused by existing `semantics_not_preserved` gate |
+| M10 physics bra/ket and second partial derivative | `observed_failure` / `observed_failure`: exit 0 with a math conversion warning; no MathML | `partial` / `partial`: clean conversion; presentation and XMath operator checks pass | LaTeXML selected; accepted with bra/ket, second derivative and XMath operator checks passing |
 | M12 siunitx scientific notation and units | `partial` / `partial`: `3.00 × 10⁸`, metres per second preserved in MathML | `observed_failure` / `observed_failure`: expl3 relational-token errors and fatal error, exit 1 | Pandoc selected; accepted with independent notation/unit checks passing |
 | P04 Babel, German text, `selectlanguage` and math | `partial` / `partial`: text and `v=3` survive; document language is empty | Raw `observed_failure` (Babel errors, exit 1); preprocessed `partial` (text/math survive but undefined `selectlanguage`, XML error node, postprocessor validation error and incorrect `lang=en`) | Pandoc selected; refused by existing `metadata_unsupported` gate |
 
-M10 and M12 input bytes are unchanged by preprocessing. P04 preprocessing removes the Babel declaration but retains `selectlanguage`. Its LaTeXML and latexmlpost commands both return zero after preprocessing despite explicit errors. A successful process exit therefore cannot establish compatibility or permission to deliver a candidate. No existing gate is relaxed to make this smoke pass.
+M10 and M12 input bytes are unchanged by preprocessing. P04 preprocessing removes the Babel declaration but retains `selectlanguage`. Its LaTeXML and latexmlpost commands both return zero after preprocessing despite explicit errors. A successful process exit therefore cannot establish compatibility or permission to deliver a candidate. The M10 delivery observation applies to the measured native equation output; the source-table semantics gate still applies to authored tabular data.
 
 The native project decision also refuses physics with `requirements_conflict`: the sandboxed project path selects the Pandoc family of routes, while the measured physics control requires LaTeXML. This is a decision control; it does not claim a sandboxed project was rendered.
 
@@ -51,10 +51,10 @@ they are not domain-human semantic review or reader testing.
 | M03 | Pandoc | `x^{a_b}`: subscript `b` attached to `a` inside the exponent on `x` | Accepted |
 | M04 | Pandoc | `x^a_b`: exponent `a` and subscript `b` share base `x`; equivalent combined or nested script nodes are normalized | Accepted |
 | M06 | Pandoc | Every coordinate in the 2×3 matrix `[[1,0,-i],[i,2,3]]` | Accepted |
-| M14 | LaTeXML | First row `E=mc²`, second row `E/c²=m`; distinct authored energy/mass labels and links to their exact saved row IDs | Refused by existing `semantics_not_preserved` gate |
+| M14 | LaTeXML | First row `E=mc²`, second row `E/c²=m`; distinct authored energy/mass labels and links to their exact saved row IDs | Accepted with all four saved-structure checks passing |
 | M16 | Pandoc | Sixteen ordered indexed fractions in four rows, then the final added `97q_end/(1+z²)` term in the fifth row | Accepted |
 
-M14 legitimately emits four MathML nodes for two aligned equation rows. The oracle groups nodes by their saved row targets and checks the mathematics and references; it does not require matching source-expression and output-node counts. A trace can remain `unmapped` when converter annotations do not exactly match authored source bytes. That is recorded honestly, even where the separate structural oracle passes.
+The LaTeXML stylesheet renders aligned equations as native equation elements without a layout table. M14 legitimately emits four MathML nodes for two aligned equation rows. The oracle groups nodes by their saved row targets and checks the mathematics and references; it does not require matching source-expression and output-node counts. Its damaged reference-target probe still fails the exact-target check. A trace can remain `unmapped` when converter annotations do not exactly match authored source bytes. That is recorded honestly, even where the separate structural oracle passes.
 
 For M10, the public converter's LaTeXML parse stage must contain observed nodes with nonempty intermediate-semantics hashes, bound to the actual saved XML. Its preprocessing receipt must connect original bytes to the parser input. For accepted M12, the public final trace must bind the actual delivered HTML and original source, and the decision must bind the source and declared matrix version. These are required assertions, not merely fields emitted for inspection.
 
