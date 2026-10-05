@@ -31,6 +31,10 @@ M14_EQUIVALENT = """<a href="#energy-row">1</a><table>
 <tr id="energy-row"><td><math><mrow><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow></math></td></tr>
 <tr id="mass-row"><td><math><mrow><mfrac><mi>E</mi><msup><mi>c</mi><mn>2</mn></msup></mfrac><mo>=</mo><mi>m</mi></mrow></math></td></tr>
 </table><a href="#mass-row">2</a>"""
+M14_NATIVE = """<a href="#energy-row">1</a>
+<div class="ltx_eqn_row" id="energy-row"><math><mi>E</mi></math><math><mrow><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow></math></div>
+<div class="ltx_eqn_row" id="mass-row"><math><mfrac><mi>E</mi><msup><mi>c</mi><mn>2</mn></msup></mfrac></math><math><mo>=</mo><mi>m</mi></math></div>
+<a href="#mass-row">2</a>"""
 M10 = """<math><mrow><mo>⟨</mo><mi>ϕ</mi><mo>|</mo><mi>ψ</mi><mo>⟩</mo><mo>+</mo>
 <mfrac><mrow><msup><mo>∂</mo><mn>2</mn></msup><mi>f</mi></mrow><msup><mrow><mo>∂</mo><mi>x</mi></mrow><mn>2</mn></msup></mfrac></mrow></math>"""
 M10_XML = """<document xmlns="http://dlmf.nist.gov/LaTeXML"><Math><XMath><XMApp>
@@ -89,6 +93,7 @@ def inspect(tmp_path, case, html, xml="<document/>"):
         ("M12", M12, "<document/>"),
         ("M14", M14, M14_XML),
         ("M14", M14_EQUIVALENT, M14_XML),
+        ("M14", M14_NATIVE, M14_XML),
         ("M16", M16, "<document/>"),
     ],
 )
@@ -178,6 +183,13 @@ def test_valid_structures_and_equivalent_grouping_pass(tmp_path, case, html, xml
             M14.replace("<mi>E</mi>", "<mi>Q</mi>"),
             M14_XML,
             "aligned_row_order",
+        ),
+        (
+            "M14",
+            M14_NATIVE,
+            M14_NATIVE.replace('href="#mass-row"', 'href="#energy-row"'),
+            M14_XML,
+            "exact_reference_targets",
         ),
         (
             "M16",

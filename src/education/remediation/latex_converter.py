@@ -47,10 +47,13 @@ from .latex_pdf_validation import (
 logger = logging.getLogger(__name__)
 
 # Import through LaTeXML's local XML catalog, independent of its install path.
-# Override only generated branding; authored footer/navigation content is retained.
+# Use LaTeXML's own unaligned equation templates so source equation nodes render
+# as divs, not data tables. The templates retain MathML, row IDs and tags.
+# Authored tabular data remains subject to the separate exact semantics gate.
 LATEXML_HTML_STYLESHEET = """<?xml version="1.0" encoding="UTF-8"?>
 <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
   <xsl:import href="urn:x-LaTeXML:XSLT:LaTeXML-html5.xsl"/>
+  <xsl:param name="USE_ALIGNED_EQUATIONS" select="false()"/>
   <xsl:template match="/" mode="footer-generator-identifier"/>
 </xsl:stylesheet>
 """

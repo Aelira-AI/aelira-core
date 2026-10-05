@@ -96,6 +96,7 @@ class LatexRemediator(BaseRemediator):
         )
 
         # Store original content for modifications
+        self._raw_original_content: Optional[bytes] = None
         self._original_content: Optional[str] = None
         self._modified_content: Optional[str] = None
 
@@ -104,9 +105,13 @@ class LatexRemediator(BaseRemediator):
 
     def _load_document(self) -> str:
         """Load the LaTeX document as text."""
-        with open(self.file_path, "r", encoding="utf-8") as f:
-            self._original_content = f.read()
-            self._modified_content = self._original_content
+        self._raw_original_content = Path(self.file_path).read_bytes()
+        self._original_content = (
+            self._raw_original_content.decode("utf-8")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+        )
+        self._modified_content = self._original_content
         return self._modified_content
 
     def _save_document(self, document: str) -> str:
@@ -789,6 +794,57 @@ Provide ONLY the fix content, no explanation."""
         """Check syntax and rescan source findings on saved TEX output."""
         from .source_verification import scan_latex_source, verify_source_output
 
+        if Path(output_path).suffix.lower() == ".html":
+            from .latex_html_language_verification import (
+                verify_saved_html_language_files,
+            )
+
+            # A source-language finding can be observed in final HTML. No other
+            # source finding has a bounded saved-HTML verifier here.
+            fixed = self.result.fixed_issues
+            original = {issue.id: issue for issue in self.issues}
+            if (
+                len(self.issues) == len(fixed) == 1
+                and not self.result.manual_issues
+                and not self.result.failed_issues
+                and self.result.skipped_count == 0
+                and fixed[0].issue_id in original
+                and original[fixed[0].issue_id].category == IssueCategory.LANGUAGE
+                and original[fixed[0].issue_id].description
+                == "Document class doesn't specify language"
+                and output_path == self._output_files.get("html")
+                and self._output_files.get("tex")
+                and self._raw_original_content is not None
+                and verify_saved_html_language_files(
+                    self.file_path,
+                    self._output_files["tex"],
+                    output_path,
+                    self._conversion_receipts.get("html"),
+                    self.result.latex_evidence.get("html"),
+                    self._raw_original_content,
+                )
+            ):
+                from .base import VerificationResult
+
+                fixed[0].verification_passed = True
+                fixed[0].needs_review = True
+                fixed[0].notes = (
+                    "Authored language observed in the saved HTML; other HTML "
+                    "accessibility and fidelity remain unverified."
+                )
+                self.result.remediated_compliance_score = None
+                self.result.score_provenance = None
+                self.result.score_measurement = None
+                self.result.score_verification_reason = "incomplete_comparison"
+                verification = VerificationResult(
+                    passed=True,
+                    issues_before=1,
+                    issues_after=0,
+                    issues_fixed=[fixed[0].issue_id],
+                )
+                self.result.verification_passed = True
+                self.result.verification_result = verification
+                return verification
         if Path(output_path).suffix.lower() != ".tex":
             self.result.warnings.append(
                 "PDF/HTML exports require their own accessibility verifier; source checks are not comparable."

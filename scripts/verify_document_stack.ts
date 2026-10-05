@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { execFileSync } from 'node:child_process';
 import { verifyLatexCorpus } from './verify_latex_corpus_stack.ts';
+import { verifyLatexHtmlCorpus } from './verify_latex_html_corpus_stack.ts';
 import { authenticatedTarget } from './document_stack_transport.ts';
 
 const api = new URL(process.env.STACK_API_URL || 'http://localhost:18300');
@@ -19,10 +20,19 @@ const output = resolve(process.env.STACK_EVIDENCE_DIR || 'test-results/document-
 const email = process.env.STACK_TEST_EMAIL || 'document.acceptance@example.org';
 assert(email.endsWith('@example.org'), 'Use a synthetic example.org identity');
 const cookies = new Map<string, string>();
+let sessionRefreshedAt = 0;
+let sessionRefreshCount = 0;
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const harnessFiles = [
   'scripts/verify_document_stack.ts', 'scripts/verify_latex_corpus_stack.ts',
   'scripts/latex_corpus_contract.ts', 'tests/fixtures/latex_research/corpus.json',
+  'scripts/verify_latex_html_corpus_stack.ts', 'scripts/latex_html_corpus_contract.ts',
+  'src/education/remediation/latex_converter.py',
+  'src/education/remediation/latex_remediator.py',
+  'src/education/remediation/latex_html_language_verification.py',
+  'src/education/latex_metadata.py', 'src/education/latex_semantics.py',
+  'src/education/latex_diagnostics.py', 'src/jobs/contracts.py', 'src/jobs/remediation_job.py',
+  'src/services/remediation_artifact_service.py',
   'scripts/document_stack_transport.ts',
 ];
 async function captureHarness() {
@@ -52,6 +62,7 @@ function headers(extra?: HeadersInit): Headers {
 }
 async function request(path: string, init: RequestInit = {}) {
   const target = authenticatedTarget(path, api);
+  if (target.pathname !== '/auth/session/refresh') await refreshActiveSession();
   const response = await fetch(target, { ...init, headers: headers(init.headers), redirect: 'error', signal: AbortSignal.timeout(30000) });
   for (const line of response.headers.getSetCookie()) {
     const pair = line.split(';')[0];
@@ -60,6 +71,19 @@ async function request(path: string, init: RequestInit = {}) {
   }
   assert(response.ok, `HTTP ${response.status} on ${target.pathname}`);
   return response.json();
+}
+async function refreshActiveSession() {
+  if (cookies.has('aelira_refresh') && Date.now() - sessionRefreshedAt >= 300000) {
+    const refreshed = await request('/auth/session/refresh', { method: 'POST' });
+    assert.equal(refreshed.success, true, 'The real session refresh must succeed');
+    sessionRefreshedAt = Date.now();
+    sessionRefreshCount++;
+  }
+}
+async function download(path: string, init: RequestInit = {}) {
+  const target = authenticatedTarget(path, api);
+  await refreshActiveSession();
+  return fetch(target, { ...init, headers: headers(init.headers), redirect: 'error', signal: AbortSignal.timeout(30000) });
 }
 async function poll<T>(probe: () => Promise<T>, done: (v: T) => boolean): Promise<T> {
   const deadline = Date.now() + 120000;
@@ -91,6 +115,7 @@ await request('/auth/magic-link/verify', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ email, token: login.searchParams.get('token') }),
 });
+sessionRefreshedAt = Date.now();
 // Tokens/cookies never enter evidence or stdout.
 const aiHealth = await request('/api/ai/health');
 assert.equal(aiHealth.primary_provider, null, 'Acceptance stack must have no primary AI provider');
@@ -251,13 +276,20 @@ for (const test of cases) {
   }
 }
 await verifyLatexCorpus({ request, poll, output, evidence, failures,
-  download: (path, init = {}) => fetch(authenticatedTarget(path, api), { ...init, headers: headers(init.headers), redirect: 'error', signal: AbortSignal.timeout(30000) }),
+  download,
+});
+await verifyLatexHtmlCorpus({ request, poll, output, priorEvidence: evidence, revision,
+  harnessHashes, trackedDiffHash: digest(trackedDiff),
+  download,
 });
 assert.deepEqual(await captureHarness(), harnessHashes, 'Queue harness changed during execution');
 assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), revision);
+assert.equal(digest(execFileSync('git', ['diff', 'HEAD', '--binary'])), digest(trackedDiff),
+  'Tracked source changed during the queue run');
 await writeFile(resolve(output, 'report.json'), JSON.stringify({
   revision, tracked_diff_sha256: digest(trackedDiff), harness_sha256: harnessHashes,
   node_version: process.version, configuration: { ai: false, latex_formats: ['tex'] },
+  session_refresh_count: sessionRefreshCount,
   evidence, failures,
 }, null, 2));
 assert.equal(failures.length, 0, 'Real document stack gate failed; see report.json');

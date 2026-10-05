@@ -20,8 +20,8 @@
         "raw:pandoc": "Could not convert TeX math",
         "preprocessed:pandoc": "Could not convert TeX math"
       },
-      "integrated_accepted": false,
-      "integrated_refusal": "semantics_not_preserved"
+      "integrated_accepted": true,
+      "integrated_refusal": null
     },
     {
       "id": "M12",
@@ -126,8 +126,8 @@
       "source": "tests/fixtures/latex_validation/M14.tex",
       "sha256": "00460571e2ff9ef46585d3b7c288fd12e8fe1a300b2001e96857d1d2411c25a0",
       "engine": "latexml",
-      "accepted": false,
-      "refusal": "semantics_not_preserved"
+      "accepted": true,
+      "refusal": null
     },
     {
       "id": "M16",

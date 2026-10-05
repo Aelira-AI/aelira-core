@@ -3185,12 +3185,151 @@ async def test_process_false_remediator_result_is_fatal_before_side_effects(
         "success": False,
         "error": "remediation_failed",
         "scan_id": scan.id,
+        "total_issues": 1,
+        "fixed_count": 0,
+        "withheld_count": 0,
+        "manual_count": 0,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "outcome_unreported_count": 1,
+        "remaining_count": 1,
+        "issue_outcomes": [
+            {
+                "source_index": 0,
+                "source_index_scope": "original_scan",
+                "status": "unreported",
+            }
+        ],
     }
     assert scan.status == ScanStatus.PROCESSING
     assert scan.metadata == {"preserved": True}
     assert db.commits == 0
     assert db.added == []
     assert "ScanFix" not in db.queried_models
+    notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authoritative", [False, True])
+@pytest.mark.parametrize("code", ["converter_refused", "remediation_unsupported"])
+async def test_process_subprocess_refusal_accounts_for_source_before_side_effects(
+    tmp_path, authoritative, code, _managed_artifact_service_stub
+):
+    from src.education.latex_evidence import conversion_evidence
+    from src.jobs.contracts import JobFailure, public_job_result
+    from src.jobs.remediation_job import _safe_failure_result, process_remediation_job
+    from src.jobs.remediation_subprocess import RemediationSubprocessError
+
+    path = tmp_path / "source.tex"
+    path.write_bytes(b"$x$")
+    scan = Scan(
+        id="scan-refused",
+        department_id="dept-1",
+        scan_type=ScanType.LATEX,
+        storage_path=str(path),
+        metadata={"preserved": True},
+        status=ScanStatus.PROCESSING,
+        file_name="source.tex",
+    )
+    issues = [
+        {"id": "authored-heading", "category": "heading"},
+        {"category": "language"},
+    ]
+    db = _ProcessDB(scan, SimpleNamespace(issues=issues))
+    evidence = {
+        "html": conversion_evidence(path.read_bytes(), None, "html").model_dump(
+            mode="json"
+        )
+    }
+    refusal = RemediationSubprocessError(code, latex_evidence=evidence)
+    owned = AsyncMock()
+    service = _managed_artifact_service_stub
+    service.root = tmp_path / "artifacts"
+    with (
+        patch(
+            "src.jobs.remediation_job.run_remediation_subprocess",
+            new=AsyncMock(side_effect=refusal),
+        ) as child,
+        patch(
+            "src.jobs.remediation_job._send_remediation_notification", new=AsyncMock()
+        ) as notification,
+    ):
+        result = await process_remediation_job(
+            {
+                "job_id": "job-refused",
+                "scan_id": scan.id,
+                "department_id": "dept-1",
+                "file_path": str(path),
+                "options": {"use_ai": False},
+            },
+            db,
+            lms_policy_authoritative=authoritative,
+            assert_owned=owned,
+        )
+
+    expected_error = (
+        "remediation_unsupported"
+        if code == "remediation_unsupported"
+        else "remediation_failed"
+    )
+    assert result == {
+        "success": False,
+        "error": expected_error,
+        "scan_id": scan.id,
+        "total_issues": 2,
+        "fixed_count": 0,
+        "withheld_count": 0,
+        "manual_count": 0,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "outcome_unreported_count": 2,
+        "remaining_count": 2,
+        "issue_outcomes": [
+            {
+                "source_index": 0,
+                "source_index_scope": "original_scan",
+                "issue_id": "authored-heading",
+                "status": "unreported",
+            },
+            {
+                "source_index": 1,
+                "source_index_scope": "original_scan",
+                "status": "unreported",
+            },
+        ],
+        "latex_evidence": evidence,
+    }
+    persisted = JobFailure.deterministic(
+        expected_error, _safe_failure_result(expected_error, result, scan)
+    ).details
+    public = public_job_result(persisted)
+    assert public["total_issues"] == public["remaining_count"] == 2
+    assert (
+        public["fixed_count"] == public["manual_count"] == public["failed_count"] == 0
+    )
+    assert public["outcome_unreported_count"] == 2
+    assert public["issue_outcomes"] == result["issue_outcomes"]
+    assert public["latex_evidence"] == evidence
+    child.assert_awaited_once()
+    assert child.await_args.kwargs["issues"] == [
+        issues[0],
+        {**issues[1], "id": "source-1"},
+    ]
+    assert issues == [
+        {"id": "authored-heading", "category": "heading"},
+        {"category": "language"},
+    ]
+    owned.assert_awaited_once()
+    assert scan.status == ScanStatus.PROCESSING
+    assert scan.remediation_outcome is None
+    assert scan.completed_at is None
+    assert scan.metadata == {"preserved": True}
+    assert db.commits == 0
+    assert db.added == []
+    assert "ScanFix" not in db.queried_models
+    assert "RemediationArtifact" not in db.queried_models
+    service.claim_and_publish.assert_not_called()
+    service.claim_and_publish_stream.assert_not_called()
     notification.assert_not_awaited()
 
 

@@ -1056,6 +1056,7 @@ async def process_remediation_job(
                 code = str(exc)
                 return {
                     "success": False,
+                    **account_outcomes(exc, published=False),
                     **latex_result_fields(exc),
                     "error": (
                         code
@@ -1102,6 +1103,7 @@ async def process_remediation_job(
                 "success": False,
                 "error": "remediation_failed",
                 "scan_id": scan_id,
+                **account_outcomes(remediation_result, published=False),
                 **latex_result_fields(remediation_result),
             }
         if not hasattr(remediation_result, "total_issues"):

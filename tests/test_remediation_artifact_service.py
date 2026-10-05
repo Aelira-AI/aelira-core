@@ -289,6 +289,109 @@ def test_claim_and_publish_stream_reads_exact_bytes_from_offset_zero(tmp_path):
     assert (service.root / result.storage_key).read_bytes() == payload
 
 
+def test_latex_html_stream_publication_retains_locked_scan_and_exact_bytes(tmp_path):
+    service = _service(tmp_path)
+    payload = (
+        b'<!DOCTYPE html><html lang="en"><body><math><mi>x</mi></math></body></html>'
+    )
+    source = tmp_path / "fixed.html"
+    source.write_bytes(payload)
+    parents = _parents(
+        scan=SimpleNamespace(
+            id=SCAN_ID,
+            department_id=DEPARTMENT_ID,
+            user_id=USER_ID,
+            scan_type=ScanType.LATEX,
+        )
+    )
+    published = []
+
+    def claim(_db, prepared):
+        artifact = _artifact(prepared)
+        published.append(artifact)
+        return module.ArtifactClaim(
+            artifact=artifact,
+            owned=True,
+            status="staging",
+            publication_token=prepared.publication_token,
+        )
+
+    service.claim = MagicMock(side_effect=claim)
+    service._lock_existing_artifact = MagicMock(
+        side_effect=lambda _db, _id: (
+            parents["department"],
+            parents["scan"],
+            parents["cloud"],
+            parents["job"],
+            published[0],
+        )
+    )
+    with source.open("rb") as stream:
+        result = service.claim_and_publish_stream(
+            **_stream_publish_kwargs(
+                stream,
+                payload,
+                scan_type=ScanType.LATEX,
+                filename="fixed.html",
+                claimed_filename="fixed.html",
+                claimed_mime_type="text/html",
+            )
+        )
+        _assert_stream_usable(stream, payload)
+    assert result.artifact is published[0]
+    assert result.artifact.mime_type == "text/html"
+    assert result.artifact.sha256 == hashlib.sha256(payload).hexdigest()
+    assert (service.root / result.storage_key).read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    ("payload", "scan_type", "extension"),
+    [
+        (b"%PDF-1.7\n%%EOF\n", ScanType.LATEX, ".html"),
+        (b"plain text", ScanType.LATEX, ".html"),
+        (b"<html><body>real HTML</body></html>", ScanType.PDF, ".html"),
+    ],
+)
+def test_latex_html_mapping_still_refuses_spoofs_and_wrong_scan_type(
+    tmp_path,
+    payload,
+    scan_type,
+    extension,
+):
+    service = _service(tmp_path)
+    root = tmp_path / "trusted-html"
+    root.mkdir()
+    source = root / ("fixed" + extension)
+    source.write_bytes(payload)
+    with pytest.raises(module.ArtifactMimeError):
+        _prepare(
+            service,
+            source,
+            root,
+            scan_type=scan_type,
+            filename=source.name,
+            provider="local",
+        )
+
+
+def test_latex_tex_mapping_remains_valid(tmp_path):
+    service = _service(tmp_path)
+    root = tmp_path / "trusted-tex"
+    root.mkdir()
+    source = root / "fixed.tex"
+    source.write_bytes(b"\\documentclass{article}\\begin{document}x\\end{document}")
+    prepared = _prepare(
+        service,
+        source,
+        root,
+        scan_type=ScanType.LATEX,
+        filename=source.name,
+        provider="local",
+    )
+    assert prepared.mime_type == "text/plain"
+    assert prepared.sha256 == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
 @pytest.mark.parametrize(
     ("field", "wrong"),
     [

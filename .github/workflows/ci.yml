@@ -324,18 +324,23 @@ jobs:
       - name: Install document runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev pkg-config tesseract-ocr ghostscript poppler-utils unzip zip pandoc texlive-latex-recommended texlive-science texlive-pictures texlive-lang-german
+          sudo apt-get install -y libcairo2-dev pkg-config tesseract-ocr ghostscript poppler-utils unzip zip pandoc latexml texlive-latex-recommended texlive-science texlive-pictures texlive-lang-german
+          curl -fsSL --retry 3 https://github.com/jgm/pandoc/releases/download/3.1.11.1/pandoc-3.1.11.1-1-amd64.deb -o "$RUNNER_TEMP/pandoc.deb"
+          printf '%s  %s\n' ab0ac0aa1c3f9b23243d14e43023e06cbce51a52420aba17d27bd0d9c28f73ac "$RUNNER_TEMP/pandoc.deb" | sha256sum -c -
+          sudo dpkg -i "$RUNNER_TEMP/pandoc.deb"
+          test "$(pandoc --version | head -n 1)" = 'pandoc 3.1.11.1'
           pip install -r requirements-dev.txt
       - name: Verify real API, durable worker and downloaded files
         run: |
           set -euo pipefail
-          node --experimental-strip-types --test scripts/latex_corpus_contract.test.ts scripts/latex_compilation_contract.test.ts scripts/document_stack_transport.test.ts
+          node --experimental-strip-types --test scripts/latex_corpus_contract.test.ts scripts/latex_html_corpus_contract.test.ts scripts/latex_compilation_contract.test.ts scripts/document_stack_transport.test.ts
           mkdir -p test-results/document-stack
           python -c 'import json, sys; from importlib.metadata import version; print(json.dumps({"python": sys.version, "packages": {name: version(name) for name in ["pydantic", "pydantic-core", "sympy", "mpmath", "latex2mathml"]}}, indent=2))' > test-results/document-stack/runtime.json
           export JWT_SECRET="$(openssl rand -hex 48)"
           export TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)"
           export SESSION_REPLAY_ENCRYPTION_KEY="$(openssl rand -base64 32)"
           export REMEDIATION_ARTIFACT_DIR="$RUNNER_TEMP/document-artifacts"
+          export AELIRA_REMEDIATION_DIR="$REMEDIATION_ARTIFACT_DIR"
           alembic upgrade head
           uvicorn src.api.main:app --host 127.0.0.1 --port 18300 --no-proxy-headers > "$RUNNER_TEMP/document-api.log" 2>&1 &
           api_pid=$!
