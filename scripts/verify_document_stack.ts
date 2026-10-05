@@ -31,6 +31,7 @@ const harnessFiles = [
   'src/education/remediation/latex_remediator.py',
   'src/education/remediation/latex_html_language_verification.py',
   'src/education/latex_metadata.py', 'src/education/latex_semantics.py',
+  'src/education/latex_diagnostics.py', 'src/jobs/contracts.py', 'src/jobs/remediation_job.py',
   'src/services/remediation_artifact_service.py',
   'scripts/document_stack_transport.ts',
 ];
@@ -283,6 +284,8 @@ await verifyLatexHtmlCorpus({ request, poll, output, priorEvidence: evidence, re
 });
 assert.deepEqual(await captureHarness(), harnessHashes, 'Queue harness changed during execution');
 assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), revision);
+assert.equal(digest(execFileSync('git', ['diff', 'HEAD', '--binary'])), digest(trackedDiff),
+  'Tracked source changed during the queue run');
 await writeFile(resolve(output, 'report.json'), JSON.stringify({
   revision, tracked_diff_sha256: digest(trackedDiff), harness_sha256: harnessHashes,
   node_version: process.version, configuration: { ai: false, latex_formats: ['tex'] },
