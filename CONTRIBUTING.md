@@ -2,6 +2,14 @@
 
 Thank you for your interest in contributing to Aelira! We're building an open-source accessibility compliance platform to help organizations meet WCAG 2.1 standards, and we welcome contributions from the community.
 
+## Ways to contribute
+
+Code is one route. We also welcome documentation fixes, reproducible bug reports, tests, self-hosting feedback and accessibility review of actual saved outputs. Start with [good first issues](https://github.com/Aelira-AI/aelira-core/labels/good%20first%20issue) or [help wanted](https://github.com/Aelira-AI/aelira-core/labels/help%20wanted), and discuss the scope before starting.
+
+[GOVERNANCE.md](GOVERNANCE.md) identifies the maintainers and explains contributor responsibilities and repository access. [SUPPORT.md](SUPPORT.md) helps you choose between an issue, a discussion and a private report. Organisation membership is not required to contribute.
+
+Accessibility changes should include source evidence, the saved output where applicable, and any remaining limitations. Use only material you have permission to publish; remove personal data and secrets from examples. A passing automated check is not an accessibility conformance claim.
+
 ## Code of Conduct
 
 This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to conduct@aelira.ai.
@@ -197,6 +205,8 @@ exceeded. This check enforces traceability, not correctness of the implementatio
 3. Ensure all tests pass
 4. Keep PRs focused — one feature or fix per PR
 5. Write a clear description of what changed and why
+
+CODEOWNERS routes review requests to the current maintainer accounts. Maintainers check the linked issue, required CI results, the actual diff and the validation evidence before merging. For their own changes, they record the checks and review performed without claiming independent approval.
 
 ## Getting Help
 
