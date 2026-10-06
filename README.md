@@ -3,12 +3,10 @@
 **Accessibility scanning and supported remediation for course content, with saved-file evidence and human review.**
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Python 3.14](https://img.shields.io/badge/Python-3.14-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
-[![React 19](https://img.shields.io/badge/Dashboard-React_19-61DAFB.svg)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6.svg)](https://www.typescriptlang.org/)
-[![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-336791.svg)](https://www.postgresql.org/)
-[![Docker](https://img.shields.io/badge/Deploy-Docker_Compose-2496ED.svg)](docker-compose.quickstart.yml)
+[![CI](https://github.com/Aelira-AI/aelira-core/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Aelira-AI/aelira-core/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Aelira-AI/aelira-core?display_name=tag)](https://github.com/Aelira-AI/aelira-core/releases/latest)
+
+[Quickstart](#try-it-in-one-command) · [Documentation](docs/) · [Discussions](https://github.com/Aelira-AI/aelira-core/discussions) · [Contribute](CONTRIBUTING.md) · [Get help](SUPPORT.md)
 
 > **Status: 0.9.11 beta.** Scanning and remediation remain under active validation. Automated scores describe scanner findings, not accessibility conformance. Some documents require manual work and cannot produce a downloadable remediated artifact. LMS integration maturity varies by platform (see the [integration status table](#lms-integration-status) below). Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. See the [0.9.11 corrective release notes](docs/releases/v0.9.11.md) for workflow fixes and verification limits.
 
@@ -229,6 +227,10 @@ Aelira Core stands on excellent open-source tools, and it is worth naming the on
 ## Contributing
 
 Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for expectations. Questions, setup help, and feature ideas belong in [Discussions](https://github.com/Aelira-AI/aelira-core/discussions); reproducible bugs go to the issue tracker. Security reports go to the process in [SECURITY.md](SECURITY.md), not to the public issue tracker.
+
+Technical maintenance is led by [RD (Reg) Crampton](https://github.com/rdcrampton), with the [Aelira-AI-Dev](https://github.com/Aelira-AI-Dev) project administration account. [Governance](GOVERNANCE.md) describes maintainer and contributor responsibilities, review and access. Browse [good first issues](https://github.com/Aelira-AI/aelira-core/labels/good%20first%20issue) or [help wanted](https://github.com/Aelira-AI/aelira-core/labels/help%20wanted) to find work to discuss.
+
+Follow Aelira: [Website](https://aelira.ai) · [LinkedIn](https://www.linkedin.com/company/aelira-ai) · [X](https://x.com/Aelira_dot_AI) · [Release announcements](https://github.com/Aelira-AI/aelira-core/discussions/categories/announcements)
 
 ## Licence and branding
 

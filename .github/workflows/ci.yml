@@ -17,6 +17,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ci-complete:
+    name: CI complete
+    if: always()
+    needs:
+      - configuration-smoke
+      - dev-setup-tests
+      - dependency-security
+      - lint
+      - test
+      - document-stack
+      - dashboard
+      - e2e-release
+      - cli
+      - quickstart
+      - docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job to pass
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$JOB_RESULTS" | jq -e '
+            length == 11 and all(.[]; .result == "success")
+          '
+
   configuration-smoke:
     name: Shipped configuration smoke
     runs-on: ubuntu-24.04
