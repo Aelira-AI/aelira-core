@@ -146,12 +146,46 @@ async def test_upload_preserves_zip_and_queues_explicit_entry(tmp_path, monkeypa
     )
     assert response["scan_id"] == "new-scan"
     assert (tmp_path / "department/new-scan/original.zip").read_bytes() == data
+    assert (
+        tmp_path / "department/new-scan/original.zip"
+    ).stat().st_mode & 0o777 == 0o400
     assert queued.call_args.kwargs["options"] == {
         "use_ollama": False,
         "entry_file": "main.tex",
     }
     assert queued.call_args.kwargs["input_sha256"] == hashlib.sha256(data).hexdigest()
     db.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_upload_refuses_symlinked_department(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "uploads"
+    root.mkdir()
+    (root / "department").symlink_to(outside, target_is_directory=True)
+    principal = AuthenticatedPrincipal(
+        None, "user", "department", UserRole.ADMIN, "session"
+    )
+    db = MagicMock()
+    created = []
+    db.add.side_effect = created.append
+    db.flush.side_effect = lambda: setattr(created[0], "id", "new-scan")
+    monkeypatch.setattr(routes, "require_feature", AsyncMock())
+    monkeypatch.setattr(routes.file_storage, "UPLOAD_BASE_DIR", root)
+    queued = MagicMock()
+    monkeypatch.setattr(routes, "enqueue_local_scan_job", queued)
+    with pytest.raises(OSError):
+        await routes.upload_latex_project(
+            UploadFile(io.BytesIO(archive()), filename="project.zip"),
+            "main.tex",
+            False,
+            db,
+            principal,
+        )
+    assert list(outside.iterdir()) == []
+    db.commit.assert_not_called()
+    queued.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -88,7 +88,7 @@ async def generate_image_alt_text(
 
     try:
         start_time = time.time()
-        logger.info(f"Generating alt text for: {file.filename} (user={user_id})")
+        logger.info("Generating image alt text")
 
         # Generate alt text
         generator = _workspace_image_generator(department_id)
@@ -99,12 +99,14 @@ async def generate_image_alt_text(
         )
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"Alt text generated in {processing_time}ms for: {file.filename}")
+        logger.info(
+            "Image alt text generation finished (duration_ms=%s)", processing_time
+        )
 
         if not result.get("success"):
             raise HTTPException(
                 status_code=500,
-                detail=result.get("error", "Failed to generate alt text"),
+                detail="Image analysis failed. Please try again.",
             )
 
         # Increment image usage after successful alt text generation
@@ -127,9 +129,7 @@ async def generate_image_alt_text(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error generating alt text for {file.filename}: {str(e)}", exc_info=True
-        )
+        logger.error("Image alt text generation failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Failed to generate alt text. Please try again."
         )
@@ -215,7 +215,11 @@ async def batch_generate_alt_text(
                     "long_description": result.get("long_description"),
                     "image_type": result.get("image_type"),
                     "educational_value": result.get("educational_value"),
-                    "error": result.get("error"),
+                    "error": (
+                        "Image analysis failed. Please try again."
+                        if not result.get("success")
+                        else None
+                    ),
                 }
             )
 
@@ -235,7 +239,7 @@ async def batch_generate_alt_text(
         }
 
     except Exception as e:
-        logger.error(f"Error in batch alt text generation: {str(e)}", exc_info=True)
+        logger.error("Batch image alt text generation failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Batch processing failed. Please try again."
         )
@@ -306,7 +310,7 @@ async def validate_image_alt_text(
 
     try:
         start_time = time.time()
-        logger.info(f"Validating alt text for: {file.filename} (user={user_id})")
+        logger.info("Validating image alt text")
 
         # Validate alt text
         generator = _workspace_image_generator(department_id)
@@ -316,13 +320,13 @@ async def validate_image_alt_text(
 
         processing_time = int((time.time() - start_time) * 1000)
         logger.info(
-            f"Alt text validation completed in {processing_time}ms for: {file.filename}"
+            "Image alt text validation finished (duration_ms=%s)", processing_time
         )
 
         if not result.get("success"):
             raise HTTPException(
                 status_code=500,
-                detail=result.get("error", "Failed to validate alt text"),
+                detail="Image analysis failed. Please try again.",
             )
 
         # Increment image usage after successful validation
@@ -344,9 +348,7 @@ async def validate_image_alt_text(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error validating alt text for {file.filename}: {str(e)}", exc_info=True
-        )
+        logger.error("Image alt text validation failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Failed to validate alt text. Please try again."
         )
@@ -417,7 +419,7 @@ async def score_alt_text_quality(
 
     try:
         start_time = time.time()
-        logger.info(f"Scoring alt text quality for: {file.filename} (user={user_id})")
+        logger.info("Scoring image alt text quality")
 
         # Score alt text quality
         generator = _workspace_image_generator(department_id)
@@ -428,14 +430,13 @@ async def score_alt_text_quality(
         processing_time = int((time.time() - start_time) * 1000)
 
         logger.info(
-            f"Alt text quality scored in {processing_time}ms for: {file.filename} "
-            f"(score={result.get('overall_score', 0)}, grade={result.get('grade', 'N/A')})"
+            "Image alt text quality scoring finished (duration_ms=%s)", processing_time
         )
 
         if not result.get("success"):
             raise HTTPException(
                 status_code=500,
-                detail=result.get("error", "Failed to score alt text quality"),
+                detail="Image analysis failed. Please try again.",
             )
 
         # Increment image usage after successful scoring
@@ -461,9 +462,7 @@ async def score_alt_text_quality(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error scoring alt text for {file.filename}: {str(e)}", exc_info=True
-        )
+        logger.error("Image alt text scoring failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500,
             detail="Failed to score alt text quality. Please try again.",
@@ -578,21 +577,19 @@ async def detect_image_type(
 
     try:
         start_time = time.time()
-        logger.info(f"Detecting image type for: {file.filename} (user={user_id})")
+        logger.info("Detecting image type")
 
         # Detect image type
         generator = _workspace_image_generator(department_id)
         result = await generator.detect_image_type(image_path=tmp_path, context=context)
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(
-            f"Image type detection completed in {processing_time}ms for: {file.filename}"
-        )
+        logger.info("Image type detection finished (duration_ms=%s)", processing_time)
 
         if not result.get("success"):
             raise HTTPException(
                 status_code=500,
-                detail=result.get("error", "Failed to detect image type"),
+                detail="Image analysis failed. Please try again.",
             )
 
         # Increment image usage after successful detection
@@ -622,9 +619,7 @@ async def detect_image_type(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error detecting image type for {file.filename}: {str(e)}", exc_info=True
-        )
+        logger.error("Image type detection failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Failed to detect image type. Please try again."
         )
@@ -702,9 +697,7 @@ async def describe_chart_or_graph(
 
     try:
         start_time = time.time()
-        logger.info(
-            f"Describing chart/graph: {file.filename} (user={user_id}, detail={detail_level})"
-        )
+        logger.info("Describing chart")
 
         # Generate chart description
         generator = _workspace_image_generator(department_id)
@@ -713,13 +706,11 @@ async def describe_chart_or_graph(
         )
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(
-            f"Chart description completed in {processing_time}ms for: {file.filename}"
-        )
+        logger.info("Chart description finished (duration_ms=%s)", processing_time)
 
         if not result.get("success"):
             raise HTTPException(
-                status_code=500, detail=result.get("error", "Failed to describe chart")
+                status_code=500, detail="Image analysis failed. Please try again."
             )
 
         # Increment image usage after successful chart description
@@ -747,9 +738,7 @@ async def describe_chart_or_graph(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error describing chart for {file.filename}: {str(e)}", exc_info=True
-        )
+        logger.error("Chart description failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Failed to describe chart. Please try again."
         )
@@ -813,7 +802,7 @@ async def analyze_image_comprehensive(
 
     try:
         start_time = time.time()
-        logger.info(f"Comprehensive image analysis: {file.filename} (user={user_id})")
+        logger.info("Analyzing image")
 
         # Perform comprehensive analysis
         generator = _workspace_image_generator(department_id)
@@ -822,13 +811,11 @@ async def analyze_image_comprehensive(
         )
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(
-            f"Comprehensive analysis completed in {processing_time}ms for: {file.filename}"
-        )
+        logger.info("Image analysis finished (duration_ms=%s)", processing_time)
 
         if not result.get("success"):
             raise HTTPException(
-                status_code=500, detail=result.get("error", "Failed to analyze image")
+                status_code=500, detail="Image analysis failed. Please try again."
             )
 
         # Increment image usage after successful comprehensive analysis
@@ -855,10 +842,7 @@ async def analyze_image_comprehensive(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error in comprehensive analysis for {file.filename}: {str(e)}",
-            exc_info=True,
-        )
+        logger.error("Image analysis failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Failed to analyze image. Please try again."
         )

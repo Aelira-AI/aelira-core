@@ -1637,10 +1637,10 @@ async def batch_writeback_content(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Batch write-back failed: {e}", exc_info=True)
+        logger.error("Batch write-back failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500,
-            detail=f"Batch write-back failed: {str(e)}",
+            detail="Batch write-back failed. Please check the connection and retry.",
         )
 
 
@@ -1700,10 +1700,10 @@ async def rollback_content(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Rollback failed: {e}", exc_info=True)
+        logger.error("Rollback failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500,
-            detail=f"Rollback failed: {str(e)}",
+            detail="Rollback failed. Please check the connection and retry.",
         )
 
 

@@ -119,6 +119,115 @@ async function installApiMocks(
 }
 
 test.describe('API-key retirement recovery', () => {
+  test('API-key sign-in authorizes requests only until reload and never persists the key', async ({ page }) => {
+    const requests: Request[] = [];
+    await page.addInitScript(() => {
+      const writes: string[] = [];
+      Object.defineProperty(window, '__apiKeyWrites', { value: writes });
+      const originalSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function setItem(key: string, value: string): void {
+        if (key === 'apiKey') writes.push(value);
+        originalSetItem.call(this, key, value);
+      };
+    });
+    await installApiMocks(page, {
+      authMethod: 'api_key',
+      onRequest: request => requests.push(request),
+    });
+
+    await page.goto('/login');
+    await page.getByRole('button', { name: 'Use API Key instead' }).click();
+    await expect(page.getByText('You will need to enter it again after reloading.')).toBeVisible();
+    await page.getByLabel('API Key', { exact: true }).fill('dashboard-memory-key');
+    await page.getByRole('button', { name: 'Sign in with API Key' }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+    expect(requests.find(request => new URL(request.url()).pathname === '/auth/validate')?.headers().authorization)
+      .toBe('Bearer dashboard-memory-key');
+
+    await page.getByRole('link', { name: 'Settings' }).click();
+    await expect(page.getByRole('heading', { name: 'API Key Management' })).toBeVisible();
+    await expect.poll(() => requests.some(request => new URL(request.url()).pathname === '/auth/keys')).toBe(true);
+    expect(requests.find(request => new URL(request.url()).pathname === '/auth/keys')?.headers().authorization)
+      .toBe('Bearer dashboard-memory-key');
+    expect(await page.evaluate(() => ({
+      local: localStorage.getItem('apiKey'),
+      session: sessionStorage.getItem('apiKey'),
+      writes: (window as unknown as { __apiKeyWrites: string[] }).__apiKeyWrites,
+    }))).toEqual({ local: null, session: null, writes: [] });
+
+    await page.reload();
+    await expect(page).toHaveURL(/\/login/);
+    expect(requests.filter(request => new URL(request.url()).pathname === '/auth/validate')).toHaveLength(1);
+  });
+
+  test('legacy stored key is deleted before requests and cannot sign in after reload', async ({ page }) => {
+    const requests: Request[] = [];
+    await page.addInitScript(() => {
+      localStorage.setItem('apiKey', 'legacy-local-key');
+      sessionStorage.setItem('apiKey', 'legacy-session-key');
+    });
+    await installApiMocks(page, {
+      authMethod: 'api_key',
+      onRequest: request => requests.push(request),
+    });
+
+    await page.goto('/dashboard');
+    await expect(page).toHaveURL(/\/login/);
+    expect(await page.evaluate(() => [localStorage.getItem('apiKey'), sessionStorage.getItem('apiKey')]))
+      .toEqual([null, null]);
+    expect(requests.filter(request => new URL(request.url()).pathname === '/auth/validate')).toHaveLength(0);
+    expect(requests.every(request => request.headers().authorization === undefined)).toBe(true);
+  });
+
+  test('signing out discards the in-memory key', async ({ page }) => {
+    const requests: Request[] = [];
+    await installApiMocks(page, {
+      authMethod: 'api_key',
+      onRequest: request => requests.push(request),
+    });
+
+    await page.goto('/login');
+    await page.getByRole('button', { name: 'Use API Key instead' }).click();
+    await page.getByLabel('API Key', { exact: true }).fill('logout-key');
+    await page.getByRole('button', { name: 'Sign in with API Key' }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+    await page.getByRole('button', { name: 'Sign out of your account' }).click();
+    await expect(page).toHaveURL(/\/login/);
+    const logout = requests.find(request => new URL(request.url()).pathname === '/auth/session/logout');
+    expect(logout?.headers().authorization).toBeUndefined();
+    expect(await page.evaluate(() => [localStorage.getItem('apiKey'), sessionStorage.getItem('apiKey')]))
+      .toEqual([null, null]);
+    await page.goto('/dashboard');
+    await expect(page).toHaveURL(/\/login/);
+  });
+
+  test('expired in-memory API key terminates auth and removes request credentials', async ({ page }) => {
+    const requests: Request[] = [];
+    let revoked = false;
+    await installApiMocks(page, {
+      authMethod: 'api_key',
+      onRequest: request => requests.push(request),
+    });
+    await page.route(`${API_ORIGIN}/auth/keys`, route => {
+      if (revoked) return route.fulfill({ status: 401, json: { detail: 'expired' } });
+      return route.fulfill({ json: [keyMetadata()] });
+    });
+
+    await page.goto('/login');
+    await page.getByRole('button', { name: 'Use API Key instead' }).click();
+    await page.getByLabel('API Key', { exact: true }).fill('expiring-key');
+    await page.getByRole('button', { name: 'Sign in with API Key' }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+    await page.getByRole('link', { name: 'Settings' }).click();
+    await expect(page.getByRole('heading', { name: 'API Key Management' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Refresh keys' })).toBeEnabled();
+    revoked = true;
+    await page.getByRole('button', { name: 'Refresh keys' }).click();
+    await expect(page).toHaveURL(/\/login\?expired=1/);
+    expect(requests.some(request => new URL(request.url()).pathname === '/auth/session/logout')).toBe(true);
+    expect(await page.evaluate(() => localStorage.getItem('apiKey'))).toBeNull();
+  });
+
   test('session recovery clears stale auth before key CRUD and reveals a new key once', async ({ page, context }) => {
     const errors = trackPageErrors(page);
     const keyRequests: Request[] = [];
@@ -126,8 +235,8 @@ test.describe('API-key retirement recovery', () => {
     let revoked = false;
     await page.addInitScript(() => localStorage.setItem('apiKey', 'retired-dashboard-key'));
     await context.addCookies([
-      { name: 'aelira_access', value: 'session-cookie', url: 'http://localhost:5173' },
-      { name: 'csrf_token', value: 'csrf-123', url: 'http://localhost:5173' },
+      { name: 'aelira_access', value: 'session-cookie', url: test.info().project.use.baseURL ?? 'http://localhost:5173' },
+      { name: 'csrf_token', value: 'csrf-123', url: test.info().project.use.baseURL ?? 'http://localhost:5173' },
     ]);
     await installApiMocks(page, {
       onRequest: request => {
@@ -196,20 +305,24 @@ test.describe('API-key retirement recovery', () => {
     await page.goto('/dashboard');
     await expect(page).not.toHaveURL(/\/login/);
     await expect(page.getByText('Legacy dashboard API keys have been retired')).toHaveCount(0);
-    expect(await page.evaluate(() => localStorage.getItem('apiKey'))).toBe('lti-launch-token');
+    expect(await page.evaluate(() => localStorage.getItem('apiKey'))).toBeNull();
     expect(errors).toEqual([]);
   });
 
   test('API-key self-revoke clears auth and redirects immediately', async ({ page }) => {
     const requests: Request[] = [];
-    await page.addInitScript(() => localStorage.setItem('apiKey', 'current-dashboard-key'));
     await installApiMocks(page, {
       authMethod: 'api_key',
       revokedCurrentKey: true,
       onRequest: request => requests.push(request),
     });
 
-    await page.goto('/settings');
+    await page.goto('/login');
+    await page.getByRole('button', { name: 'Use API Key instead' }).click();
+    await page.getByLabel('API Key', { exact: true }).fill('current-dashboard-key');
+    await page.getByRole('button', { name: 'Sign in with API Key' }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+    await page.getByRole('link', { name: 'Settings' }).click();
     await expect(page.getByRole('heading', { name: 'API Key Management' })).toBeVisible();
     page.once('dialog', dialog => dialog.accept());
     await page.getByRole('button', { name: 'Revoke Existing CLI' }).click();

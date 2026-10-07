@@ -10,7 +10,7 @@ const banner = readFileSync(new URL('../../src/components/APIKeyRetirementBanner
 const app = readFileSync(new URL('../../src/App.tsx', import.meta.url), 'utf8');
 const settings = readFileSync(new URL('../../src/pages/Settings.tsx', import.meta.url), 'utf8');
 
-test('session and magic-link endpoints explicitly skip stored API-key auth', () => {
+test('session and magic-link endpoints explicitly skip dashboard API-key auth', () => {
   assert.ok(client.includes('_skipApiKeyAuth?: boolean'));
   assert.ok(client.includes('config._skipApiKeyAuth'));
   for (const endpoint of ['/auth/session/validate', '/auth/session/refresh', '/auth/session/logout']) {
@@ -22,12 +22,23 @@ test('session and magic-link endpoints explicitly skip stored API-key auth', () 
 test('successful session validation clears every stale API-key location', () => {
   assert.ok(client.includes('export function clearStoredApiKeyAuth'));
   assert.ok(client.includes("localStorage.removeItem('apiKey')"));
+  assert.ok(client.includes("sessionStorage.removeItem('apiKey')"));
+  assert.ok(client.includes('dashboardApiKey = null'));
+  assert.ok(client.includes('clearLegacyApiKeyStorage();'));
   assert.ok(client.includes('delete apiClient.defaults.headers.common.Authorization'));
   assert.ok(auth.includes('clearStoredApiKeyAuth();'));
   assert.ok(auth.includes('setApiKey(null);'));
   assert.ok(auth.includes("response.data.auth_method === 'session'"));
   assert.ok(auth.includes('setAuthMethod(response.data.auth_method)'));
   assert.ok(auth.includes("setAuthMethod('api_key')"));
+});
+
+test('dashboard API key is never read from or written to browser storage', () => {
+  assert.ok(client.includes('let dashboardApiKey: string | null = null'));
+  assert.ok(client.includes('const apiKey = dashboardApiKey'));
+  assert.ok(auth.includes('setDashboardApiKey(key)'));
+  assert.equal(auth.includes("localStorage.setItem('apiKey'"), false);
+  assert.equal(client.includes("localStorage.getItem('apiKey'"), false);
 });
 
 test('LTI validation is authenticated without clearing its launch token', () => {

@@ -123,13 +123,9 @@ async def upload_latex_project(
     )
     db.add(scan)
     db.flush()
-    directory = file_storage.get_scan_storage_dir(principal.department_id, scan.id)
-    directory.mkdir(parents=True, exist_ok=False, mode=0o700)
-    original = directory / "original.zip"
-    with original.open("xb") as stream:
-        stream.write(data)
-    original.chmod(0o400)
-    scan.storage_path = str(original.absolute())
+    scan.storage_path = file_storage.save_scan_bytes(
+        data, principal.department_id, scan.id, "original.zip", mode=0o400
+    )
     enqueue_local_scan_job(
         db,
         scan=scan,

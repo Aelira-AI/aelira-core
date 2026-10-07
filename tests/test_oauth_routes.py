@@ -48,6 +48,11 @@ def oauth_settings(monkeypatch):
         ("//evil.example", "/dashboard"),
         ("https://evil.example/steal", "/dashboard"),
         ("/\\evil.example", "/dashboard"),
+        ("/%2Fevil.example", "/dashboard"),
+        ("/%252Fevil.example", "/dashboard"),
+        ("/%5Cevil.example", "/dashboard"),
+        ("/dashboard\\evil.example", "/dashboard"),
+        ("/dashboard%0Aevil.example", "/dashboard"),
     ],
 )
 def test_oauth_login_binds_safe_next_in_httponly_cookie_not_state(
@@ -127,6 +132,10 @@ class _FakeOAuthClient:
         ("//evil.example", "/dashboard"),
         ("https://evil.example/steal", "/dashboard"),
         ("/\\evil.example", "/dashboard"),
+        ("/%2Fevil.example", "/dashboard"),
+        ("/%252Fevil.example", "/dashboard"),
+        ("/%5Cevil.example", "/dashboard"),
+        ("/dashboard%0Aevil.example", "/dashboard"),
     ],
 )
 def test_oauth_callback_revalidates_cookie_redirects_and_clears_it(

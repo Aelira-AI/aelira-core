@@ -162,6 +162,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
 
       - name: Install system dependencies
         # cairo/pkg-config: pycairo builds from source; OCRmyPDF uses
@@ -187,7 +190,21 @@ jobs:
           --revision "${{ github.sha }}"
           --output test-results/journey-matrix.json
       - name: Install pinned equation-verifier browser
-        run: python -m playwright install --with-deps chromium
+        run: |
+          python -m playwright install --with-deps chromium
+          python - <<'PY' >> "$GITHUB_ENV"
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              print(f"AELIRA_TEST_CHROMIUM_EXECUTABLE={playwright.chromium.executable_path}")
+          PY
+      - name: Install pinned Pa11y and HTML_CodeSniffer for guarded browser fixtures
+        run: |
+          mkdir -p "$RUNNER_TEMP/aelira-pa11y"
+          cd "$RUNNER_TEMP/aelira-pa11y"
+          bun add --exact pa11y@9.0.1 html_codesniffer@2.5.1
+          node -e 'for (const [name, version] of [["pa11y", "9.0.1"], ["html_codesniffer", "2.5.1"]]) { const actual = require(`${name}/package.json`).version; if (actual !== version) throw new Error(`${name}: expected ${version}, found ${actual}`); }'
+          printf 'AELIRA_TEST_PA11Y_BIN=%s\n' "$RUNNER_TEMP/aelira-pa11y/node_modules/.bin/pa11y" >> "$GITHUB_ENV"
       - name: Run tests
         id: main-tests
         env:
@@ -195,6 +212,7 @@ jobs:
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-for-ci
           ENV: test
+          RUN_CONTROLLED_BROWSER_TESTS: "1"
         run: >-
           pytest tests/ -v --tb=short
           --cov-report=json:test-results/coverage.json

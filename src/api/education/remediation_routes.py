@@ -690,7 +690,7 @@ def _best_effort_terminal_dispatch_failure(
             commit=True,
         )
     except Exception:
-        logger.exception(
+        logger.error(
             "Best-effort terminal remediation dispatch audit could not be persisted",
             extra={"scan_id": scan_id, "error_code": error_code},
         )
@@ -1819,7 +1819,7 @@ async def remediate_scan(
                     commit=True,
                 )
             except Exception:
-                logger.exception(
+                logger.error(
                     "Best-effort invalid scan result audit could not be persisted",
                     extra={"scan_id": scan_id},
                 )
@@ -1953,7 +1953,7 @@ async def remediate_scan(
                         commit=True,
                     )
                 except Exception:
-                    logger.exception(
+                    logger.error(
                         "Best-effort no-op commit failure audit could not be persisted",
                         extra={"scan_id": scan_id},
                     )
@@ -2096,9 +2096,7 @@ async def remediate_scan(
                             await bs_client.close()
 
                 except Exception as e:
-                    logger.error(
-                        f"Failed to re-download cloud file for remediation: {e}"
-                    )
+                    logger.error("Cloud file re-download failed (%s)", type(e).__name__)
 
     if not file_path or not os.path.exists(file_path):
         _best_effort_terminal_dispatch_failure(
@@ -2138,7 +2136,7 @@ async def remediate_scan(
     # (This happens when a PDF is uploaded to the LaTeX scanner for math-aware scanning)
     file_ext = Path(file_path).suffix.lower()
     if scan_type == ScanType.LATEX and file_ext == ".pdf":
-        logger.info(f"LaTeX scan with PDF file - using PdfRemediator for {file_path}")
+        logger.info("PDF remediator selected for LaTeX scan")
         RemediatorClass = PdfRemediator
     else:
         RemediatorClass = remediator_map.get(scan_type)
@@ -2233,7 +2231,7 @@ async def remediate_scan(
                     commit=True,
                 )
             except Exception:
-                logger.exception(
+                logger.error(
                     "Best-effort image remediation failure audit could not be persisted",
                     extra={"scan_id": scan_id},
                 )
@@ -2291,7 +2289,7 @@ async def remediate_scan(
                     commit=True,
                 )
             except Exception:
-                logger.exception(
+                logger.error(
                     "Best-effort image remediation failure audit could not be persisted",
                     extra={"scan_id": scan_id},
                 )
@@ -2664,7 +2662,9 @@ async def remediate_scan(
 
             if contains_image_equation_fixes(result.fixed_issues):
                 raise
-            logger.warning(f"Matterhorn validation skipped for {scan_id}: {mh_err}")
+            logger.warning(
+                "Matterhorn validation unavailable (%s)", type(mh_err).__name__
+            )
 
         terminal_success = successful_complete_result
         if result.success is not True or result.failed_count > 0:
@@ -2831,7 +2831,9 @@ async def remediate_scan(
                     "Failed to restore in-memory CloudFile remediation status",
                     extra={"scan_id": scan_id},
                 )
-        logger.error(f"Remediation failed for scan {scan_id}: {e}", exc_info=True)
+        logger.error(
+            "Remediation failed (scan_id=%s, error_class=%s)", scan_id, type(e).__name__
+        )
         # The failed transaction (including any success audit row) is gone.
         # Record one sanitized terminal failure in a fresh best-effort commit.
         try:
@@ -2861,7 +2863,7 @@ async def remediate_scan(
                 commit=True,
             )
         except Exception:
-            logger.exception(
+            logger.error(
                 "Best-effort remediation failure audit could not be persisted",
                 extra={"scan_id": scan_id},
             )

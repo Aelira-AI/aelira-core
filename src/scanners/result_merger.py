@@ -119,6 +119,9 @@ class ResultMerger:
         Returns:
             Merged results with deduplication and attribution
         """
+        secondary_engine = (pa11y_results or {}).get("engine", "pa11y")
+        if secondary_engine not in {"pa11y", "htmlcs"}:
+            raise ValueError("Unsupported secondary accessibility engine")
         seen: Dict[str, MergedIssue] = {}
 
         # Process axe-core results
@@ -157,7 +160,7 @@ class ResultMerger:
 
                 if key in seen:
                     # Duplicate found - add Pa11y to detected_by
-                    seen[key].detected_by.append("pa11y")
+                    seen[key].detected_by.append(secondary_engine)
 
                     # Use longer message if Pa11y's is more detailed
                     pa11y_msg = issue_data.get("message", "")
@@ -175,7 +178,7 @@ class ResultMerger:
                         code=code,
                         message=issue_data.get("message", ""),
                         severity=issue_data.get("type", "error"),
-                        detected_by=["pa11y"],
+                        detected_by=[secondary_engine],
                         context=issue_data.get("context", ""),
                         wcag_criteria=ResultMerger.extract_wcag_criteria(code),
                     )
@@ -186,7 +189,7 @@ class ResultMerger:
 
         # Count by severity and engine
         severity_counts = {"error": 0, "warning": 0, "notice": 0}
-        engine_counts = {"axe-core": 0, "pa11y": 0, "both": 0}
+        engine_counts = {"axe-core": 0, secondary_engine: 0, "both": 0}
 
         for issue in unique_issues:
             severity_counts[issue.severity] = severity_counts.get(issue.severity, 0) + 1
@@ -195,15 +198,15 @@ class ResultMerger:
                 engine_counts["both"] += 1
             elif "axe-core" in issue.detected_by:
                 engine_counts["axe-core"] += 1
-            elif "pa11y" in issue.detected_by:
-                engine_counts["pa11y"] += 1
+            elif secondary_engine in issue.detected_by:
+                engine_counts[secondary_engine] += 1
 
         logger.info(
             f"Merged results: {len(unique_issues)} unique issues "
             f"(errors={severity_counts['error']}, warnings={severity_counts['warning']}, "
             f"notices={severity_counts['notice']}) | "
             f"Found by: axe-core={engine_counts['axe-core']}, "
-            f"pa11y={engine_counts['pa11y']}, both={engine_counts['both']}"
+            f"{secondary_engine}={engine_counts[secondary_engine]}, both={engine_counts['both']}"
         )
 
         return {

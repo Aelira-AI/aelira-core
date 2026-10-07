@@ -226,7 +226,7 @@ async def blackboard_oauth_callback(
         logger.error("Blackboard OAuth callback failed: %s", type(e).__name__)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to complete Blackboard OAuth: {str(e)}",
+            detail="Failed to complete Blackboard OAuth. Please reconnect.",
         )
 
 

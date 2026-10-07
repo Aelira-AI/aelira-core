@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import subprocess
 import tempfile
 import threading
+import sys
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.scanners.pa11y_scanner import Pa11yScanner
 
 EXPECTED_PA11Y_VERSION = "9.0.1"
 SUPPORTED_NODE_MAJORS = {24}
@@ -80,6 +87,19 @@ def main() -> None:
                 timeout=60,
                 env=smoke_env,
             )
+            # Prove the production secondary-engine path also launches with
+            # its pinned HTMLCS script and a guarded browser. This fixture has
+            # no external resource dependencies.
+            with patch.dict(os.environ, smoke_env):
+                guarded = asyncio.run(
+                    Pa11yScanner(
+                        timeout=60,
+                        config_path=str(config_path),
+                        allow_trusted_local_file=True,
+                    ).scan(fixture.as_uri(), runner="htmlcs")
+                )
+            if guarded.engine != "htmlcs" or guarded.runner != "htmlcs":
+                raise RuntimeError("Guarded HTML_CodeSniffer smoke scan failed")
         if completed.returncode not in {0, 2}:
             raise RuntimeError(
                 f"Pa11y browser launch failed ({completed.returncode}): "

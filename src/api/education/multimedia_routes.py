@@ -18,6 +18,8 @@ from ._shared import (
     validate_uploaded_file,
 )
 
+from ...education.scan_completeness import public_scan_failure_message
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -84,9 +86,7 @@ def process_multimedia_background(
 
     try:
         start_time = time.time()
-        logger.info(
-            f"[BACKGROUND] Processing Multimedia: {filename} (scan_id={scan_id})"
-        )
+        logger.info(f"[BACKGROUND] Processing Multimedia (scan_id={scan_id})")
 
         # Get scan record
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -115,13 +115,19 @@ def process_multimedia_background(
                 )
                 if progress_scan:
                     progress_scan.progress = min(progress_pct, 90)
-                    progress_scan.progress_message = message
+                    progress_scan.progress_message = "Processing in progress..."
                     progress_db.commit()
                     logger.info(
-                        f"[BACKGROUND] Multimedia Progress: {progress_pct}% - {message}"
+                        "Scan progress updated (scan_id=%s, progress=%s)",
+                        scan_id,
+                        min(max(progress_pct, 0), 100),
                     )
             except Exception as e:
-                logger.error(f"[BACKGROUND] Failed to update Multimedia progress: {e}")
+                logger.error(
+                    "[BACKGROUND] Failed to update Multimedia progress (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
+                )
             finally:
                 if progress_db:
                     progress_db.close()
@@ -150,9 +156,7 @@ def process_multimedia_background(
         )
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(
-            f"[BACKGROUND] Multimedia processed in {processing_time}ms: {filename}"
-        )
+        logger.info(f"[BACKGROUND] Multimedia processed in {processing_time}ms")
 
         # Build result structure
         structure = {
@@ -250,14 +254,15 @@ def process_multimedia_background(
 
     except Exception as e:
         logger.error(
-            f"[BACKGROUND] Error processing Multimedia {filename}: {str(e)}",
-            exc_info=True,
+            "[BACKGROUND] Error processing Multimedia (%s) (scan_id=%s)",
+            type(e).__name__,
+            scan_id,
         )
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if scan:
             scan.status = ScanStatus.FAILED
-            scan.error_message = str(e)
-            scan.progress_message = f"Processing failed: {str(e)}"
+            scan.error_message = public_scan_failure_message(e)
+            scan.progress_message = public_scan_failure_message(e)
             db.commit()
     finally:
         try:
@@ -379,8 +384,7 @@ async def scan_multimedia(
     db.refresh(scan)
 
     logger.info(
-        f"Created scan {scan.id} for Multimedia: {file.filename} "
-        f"(captions={generate_captions}, audio_desc={generate_audio_descriptions})"
+        f"Created scan {scan.id} for Multimedia (captions={generate_captions}, audio_desc={generate_audio_descriptions})"
     )
 
     # Return immediately with scan_id

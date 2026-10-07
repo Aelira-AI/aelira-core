@@ -824,24 +824,13 @@ Common issues to check for:
                 "model": model,
             }
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse validation response as JSON: {e}")
-            # Fallback: try to extract key information from text
-            is_accurate = (
-                "accurate" in response_text.lower()
-                and "not accurate" not in response_text.lower()
-            )
+        except json.JSONDecodeError:
+            logger.warning("Vision validation response was not valid JSON")
             return {
-                "success": True,
-                "is_accurate": is_accurate,
-                "accuracy_score": 0.7 if is_accurate else 0.3,
-                "issues": ["Could not parse detailed validation"],
-                "suggested_improvement": None,
-                "reasoning": response_text[:500],
-                "existing_alt_text": existing_alt_text,
+                "success": False,
+                "error": "Vision validation response was invalid",
                 "inference_time": elapsed,
                 "provider": provider,
-                "model": model,
             }
 
     @_tracked_analysis

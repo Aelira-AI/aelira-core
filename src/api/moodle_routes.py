@@ -142,10 +142,10 @@ async def connect_moodle(
             "state": state,
         }
 
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(
             status_code=500,
-            detail=str(e),
+            detail="Moodle connection could not be configured. Please check the administrator settings.",
         )
 
 
@@ -277,7 +277,7 @@ async def moodle_oauth_callback(
         logger.error("Moodle OAuth callback failed: %s", type(e).__name__)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to complete Moodle authentication: {str(e)}",
+            detail="Failed to complete Moodle authentication. Please reconnect.",
         )
 
 

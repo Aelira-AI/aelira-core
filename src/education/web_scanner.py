@@ -19,15 +19,25 @@ import logging
 import re
 import time
 from urllib.parse import urljoin, urlparse
-import requests
+import asyncio
 import tempfile
 import os
 import base64
 import psycopg2
 import json
+from io import BytesIO
+from PIL import Image, UnidentifiedImageError
 
 from src.ai.providers import get_provider_manager
-from src.security.browser_ssrf import install_browser_ssrf_guard
+from src.education.image_alt_text import ImageAltTextGenerator
+from src.security.browser_ssrf import (
+    BROWSER_EGRESS_ARGS,
+    BrowserNetworkIsolation,
+    BrowserScanIncompleteError,
+    assert_browser_channels_safe,
+    install_browser_ssrf_guard,
+    resolve_browser_navigation_url,
+)
 from src.education.focus_order_analyzer import (
     FocusOrderAnalyzer,
     FocusOrderResult,
@@ -38,6 +48,7 @@ from src.education.color_blindness_simulator import (
 )
 
 logger = logging.getLogger(__name__)
+MAX_VISION_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 class SPAFramework(str, Enum):
@@ -191,6 +202,7 @@ class WebPageIssue(BaseModel):
 
     impact: str  # critical, serious, moderate, minor
     criterion: str  # WCAG criterion (e.g., "1.1.1", "2.4.1")
+    rule_id: Optional[str] = None  # Original axe rule, e.g. image-alt
     description: str
     help_url: str
     element: Optional[str] = None
@@ -495,7 +507,7 @@ class WebScanner:
             return spa_framework
 
         except Exception as e:
-            logger.warning(f"[WebScanner] SPA detection failed: {e}")
+            logger.warning(f"[WebScanner] SPA detection failed: {type(e).__name__}")
             return SPAFramework.NONE
 
     def _wait_for_spa_hydration(
@@ -614,7 +626,7 @@ class WebScanner:
 
         except Exception as e:
             logger.warning(
-                f"[WebScanner] Hydration wait failed for {framework.value}: {e}"
+                f"[WebScanner] Hydration wait failed for {framework.value}: {type(e).__name__}"
             )
             return False
 
@@ -642,16 +654,19 @@ class WebScanner:
         for route in routes:
             try:
                 full_url = urljoin(base_origin, route)
-                logger.info(f"[WebScanner] Scanning SPA route: {route}")
+                logger.info("[WebScanner] Scanning SPA route")
 
                 # Use history.pushState for client-side navigation
-                page.evaluate(f"""
-                    () => {{
-                        window.history.pushState({{}}, '', '{route}');
+                page.evaluate(
+                    """
+                    (route) => {
+                        window.history.pushState({}, '', route);
                         // Dispatch popstate event to trigger route change
-                        window.dispatchEvent(new PopStateEvent('popstate', {{ state: {{}} }}));
-                    }}
-                """)
+                        window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+                    }
+                """,
+                    route,
+                )
 
                 # Wait for route change to complete
                 try:
@@ -665,13 +680,15 @@ class WebScanner:
                 results.append({"url": full_url, "route": route, "scanned": True})
 
             except Exception as e:
-                logger.warning(f"[WebScanner] Failed to scan SPA route {route}: {e}")
+                logger.warning(
+                    f"[WebScanner] Failed to scan SPA route: {type(e).__name__}"
+                )
                 results.append(
                     {
                         "url": urljoin(base_origin, route),
                         "route": route,
                         "scanned": False,
-                        "error": str(e),
+                        "error": type(e).__name__,
                     }
                 )
 
@@ -746,7 +763,9 @@ class WebScanner:
             return shadow_count, shadow_hosts
 
         except Exception as e:
-            logger.warning(f"[WebScanner] Shadow DOM detection failed: {e}")
+            logger.warning(
+                f"[WebScanner] Shadow DOM detection failed: {type(e).__name__}"
+            )
             return 0, []
 
     def _scan_shadow_dom(
@@ -926,7 +945,9 @@ class WebScanner:
                 )
 
         except Exception as e:
-            logger.warning(f"[WebScanner] Shadow DOM scanning failed: {e}")
+            logger.warning(
+                f"[WebScanner] Shadow DOM scanning failed: {type(e).__name__}"
+            )
 
         return issues
 
@@ -940,7 +961,10 @@ class WebScanner:
         Returns:
             WebScanResult with all findings
         """
-        logger.info(f"[WebScanner] Starting scan_website for {url}")
+        if self.max_pages < 1:
+            raise BrowserScanIncompleteError("Web scan requires at least one page")
+
+        logger.info("[WebScanner] Starting website scan")
         start_time = time.time()
         pages_results = []
 
@@ -964,19 +988,23 @@ class WebScanner:
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
+                    *BROWSER_EGRESS_ARGS,
                 ],
                 timeout=60000,  # 60 second timeout
             )
             logger.info("[WebScanner] Browser launched successfully")
             sys.stdout.flush()
-            context = browser.new_context()
-            # The API validates the initial URL, but redirects and
-            # subresources need per-request validation inside the browser.
-            install_browser_ssrf_guard(context)
-
+            isolation = None
             try:
+                isolation = BrowserNetworkIsolation()
+                context = isolation.new_context(browser)
+                # The API validates the initial URL, but redirects and
+                # subresources need per-request validation inside the browser.
+                self._browser_blocked_required = install_browser_ssrf_guard(context)
+
                 # Start crawling from root URL
-                urls_to_scan = [(url, 0)]  # (url, depth)
+                navigation_root_url = resolve_browser_navigation_url(url, context)
+                urls_to_scan = [(navigation_root_url, 0)]  # (url, depth)
 
                 while urls_to_scan and len(pages_results) < self.max_pages:
                     # Apply crawl strategy
@@ -991,15 +1019,13 @@ class WebScanner:
 
                     # Skip excluded URLs
                     if self._should_exclude_url(current_url):
-                        logger.info(f"Skipping excluded URL: {current_url}")
+                        logger.info("Skipping excluded scan URL")
                         continue
 
                     self.visited_urls.add(current_url)
 
                     # Scan this page
-                    logger.info(
-                        f"Scanning page {len(pages_results) + 1}: {current_url}"
-                    )
+                    logger.info("Scanning page %s", len(pages_results) + 1)
 
                     # Report progress and store current page for sub-progress messages
                     current_page = len(pages_results) + 1
@@ -1008,7 +1034,7 @@ class WebScanner:
                         self.progress_callback(
                             current_page,
                             self.max_pages,
-                            f"Scanning page {current_page} of {self.max_pages}: {current_url[:50]}...",
+                            f"Scanning page {current_page} of {self.max_pages}",
                         )
 
                     page_result = self._scan_page(context, current_url)
@@ -1017,7 +1043,7 @@ class WebScanner:
                     # Find links to scan (only if depth allows)
                     if depth < self.max_depth:
                         new_urls = self._extract_internal_links(
-                            context, current_url, url
+                            context, current_url, navigation_root_url
                         )
                         # Filter out excluded URLs
                         new_urls = [
@@ -1034,13 +1060,17 @@ class WebScanner:
                         urls_to_scan.extend(new_url_tuples)
 
             finally:
-                browser.close()
-                if playwright_instance:
-                    playwright_instance.stop()
-                    logger.info("[WebScanner] Playwright stopped")
+                try:
+                    browser.close()
+                finally:
+                    if isolation is not None:
+                        isolation.close()
+                    if playwright_instance:
+                        playwright_instance.stop()
+                        logger.info("[WebScanner] Playwright stopped")
         except Exception as e:
             logger.error(
-                f"[WebScanner] Error during Playwright execution: {e}", exc_info=True
+                "[WebScanner] Playwright execution failed: %s", type(e).__name__
             )
             if playwright_instance:
                 try:
@@ -1048,6 +1078,9 @@ class WebScanner:
                 except Exception:
                     pass
             raise
+
+        if not pages_results:
+            raise BrowserScanIncompleteError("No web pages were evaluated")
 
         total_time = time.time() - start_time
 
@@ -1086,7 +1119,12 @@ class WebScanner:
 
         try:
             # Load page
+            blocked = getattr(self, "_browser_blocked_required", None)
+            if blocked is not None:
+                blocked.clear()
+            url = resolve_browser_navigation_url(url, context)
             page.goto(url, wait_until="networkidle", timeout=30000)
+            assert_browser_channels_safe(page, blocked)
 
             # Detect SPA framework
             spa_framework = self._detect_spa_framework(page)
@@ -1096,13 +1134,11 @@ class WebScanner:
                 spa_hydration_waited = self._wait_for_spa_hydration(page, spa_framework)
 
             title = page.title()
-            logger.debug(
-                f"Page loaded: {url}, title: {title}, spa: {spa_framework.value}"
-            )
+            logger.debug("Page loaded; SPA framework: %s", spa_framework.value)
 
             # Run axe-core accessibility scan with comprehensive options
             axe = Axe()
-            logger.debug(f"Running axe-core scan on {url}")
+            logger.debug("Running axe-core scan")
 
             # Configure axe to run ALL rules including best practices
             axe_options = {
@@ -1170,22 +1206,22 @@ class WebScanner:
             # Focus order analysis (WCAG 2.4.3)
             focus_order_analysis = None
             if self.scan_focus_order and self.focus_order_analyzer:
-                logger.debug(f"Running focus order analysis for {url}")
+                logger.debug("Running focus order analysis")
                 try:
                     # Note: Focus order analyzer uses async, need to run separately
                     # For sync scanner, we analyze the page structure without full TAB simulation
                     focus_order_analysis = self._analyze_focus_order_sync(page, url)
                 except Exception as e:
-                    logger.warning(f"Focus order analysis failed for {url}: {e}")
+                    logger.warning("Focus order analysis failed: %s", type(e).__name__)
 
             # Color Vision Deficiency (CVD) analysis
             cvd_analysis = None
             if self.scan_cvd and self.cvd_simulator:
-                logger.debug(f"Running CVD analysis for {url}")
+                logger.debug("Running CVD analysis")
                 try:
                     cvd_analysis = self._analyze_cvd_sync(page)
                 except Exception as e:
-                    logger.warning(f"CVD analysis failed for {url}: {e}")
+                    logger.warning("CVD analysis failed: %s", type(e).__name__)
 
             # Shadow DOM analysis (WCAG 4.1.2 - Name, Role, Value for web components)
             shadow_dom_detected = False
@@ -1197,9 +1233,7 @@ class WebScanner:
                 shadow_dom_detected = shadow_dom_host_count > 0
 
                 if shadow_dom_detected:
-                    logger.debug(
-                        f"Scanning {shadow_dom_host_count} Shadow DOM hosts for {url}"
-                    )
+                    logger.debug("Scanning %s Shadow DOM hosts", shadow_dom_host_count)
                     shadow_dom_issues = self._scan_shadow_dom(page, shadow_hosts)
                     shadow_dom_issues_count = len(shadow_dom_issues)
 
@@ -1210,7 +1244,9 @@ class WebScanner:
                             f"[WebScanner] Added {shadow_dom_issues_count} Shadow DOM issues to scan results"
                         )
             except Exception as e:
-                logger.warning(f"Shadow DOM analysis failed for {url}: {e}")
+                logger.warning("Shadow DOM analysis failed: %s", type(e).__name__)
+
+            assert_browser_channels_safe(page, blocked)
 
             # Calculate compliance score
             compliance_score = self._calculate_page_score(issues)
@@ -1294,7 +1330,7 @@ class WebScanner:
         # Case 3: Can't find violations
         else:
             logger.error(f"[DEBUG] Cannot parse results! Type: {type(results)}")
-            logger.error(f"[DEBUG] Results content: {str(results)[:500]}")
+            logger.error("[DEBUG] Axe results could not be parsed")
             return []
 
         logger.debug(f"Total violations to process: {len(violations)}")
@@ -1389,12 +1425,10 @@ class WebScanner:
                                 screenshot = base64.b64encode(screenshot_bytes).decode(
                                     "utf-8"
                                 )
-                                logger.debug(
-                                    f"Captured screenshot for element: {first_selector[:50]}"
-                                )
+                                logger.debug("Captured element screenshot")
                     except Exception as e:
                         logger.warning(
-                            f"Failed to capture screenshot for element {first_selector}: {e}"
+                            f"Failed to capture element screenshot: {type(e).__name__}"
                         )
 
                 # Create context-rich description with element details
@@ -1422,6 +1456,7 @@ class WebScanner:
                 # Collect issue data — AI fixes are generated in batch below
                 issue = WebPageIssue(
                     impact=violation.get("impact", "minor"),
+                    rule_id=violation_id,
                     criterion=(
                         violation.get("tags", [""])[0]
                         if violation.get("tags")
@@ -1430,7 +1465,11 @@ class WebScanner:
                     description=contextual_description,
                     help_url=violation.get("helpUrl", ""),
                     element=element_html,
-                    fix=enhanced_fix,  # Fallback — may be upgraded by batch AI below
+                    fix=(
+                        "Review the image and add alt text that conveys its purpose."
+                        if violation_id in {"image-alt", "input-image-alt", "area-alt"}
+                        else enhanced_fix
+                    ),
                     generated_code_fix=None,
                     page_url=page_url,
                     selector=selector,
@@ -1448,7 +1487,10 @@ class WebScanner:
         # violations into groups and generate fixes with fewer API calls.
         if self.use_ai_analysis and issues:
             critical_serious = [
-                i for i in issues if i.impact in ("critical", "serious")
+                i
+                for i in issues
+                if i.impact in ("critical", "serious")
+                and not self._needs_visual_alt_review(i)
             ]
             if critical_serious:
                 logger.info(
@@ -1472,6 +1514,14 @@ class WebScanner:
                     self._batch_humanize_explanations(fixed_issues)
 
         return issues
+
+    @staticmethod
+    def _needs_visual_alt_review(issue: WebPageIssue) -> bool:
+        """Text-only models cannot infer image meaning from markup or a URL."""
+        return issue.rule_id in {"image-alt", "input-image-alt", "area-alt"} or bool(
+            re.match(r"\s*<img\b", issue.element or "", re.IGNORECASE)
+            and not re.search(r"\balt\s*=", issue.element or "", re.IGNORECASE)
+        )
 
     def _create_contextual_description(
         self, base_description: str, element_html: str, selector: str, rule_id: str
@@ -1525,7 +1575,7 @@ class WebScanner:
                 element_context.append(f'role="{role_match.group(1)}"')
 
         except Exception as e:
-            logger.warning(f"Failed to extract element context: {e}")
+            logger.warning(f"Failed to extract element context: {type(e).__name__}")
 
         # Build contextual description
         if element_context:
@@ -1715,7 +1765,7 @@ class WebScanner:
             )
 
         except Exception as e:
-            logger.error(f"Error analyzing focus order: {e}")
+            logger.error(f"Error analyzing focus order: {type(e).__name__}")
             return None
 
     def _analyze_cvd_sync(
@@ -1793,13 +1843,13 @@ class WebScanner:
                     if not analysis.accessible_for_all:
                         results.append(analysis)
                 except Exception as e:
-                    logger.debug(f"Error analyzing color pair: {e}")
+                    logger.debug(f"Error analyzing color pair: {type(e).__name__}")
                     continue
 
             return results if results else None
 
         except Exception as e:
-            logger.error(f"Error analyzing CVD accessibility: {e}")
+            logger.error(f"Error analyzing CVD accessibility: {type(e).__name__}")
             return None
 
     def _scan_page_images(self, page: Page) -> List[ImageScanResult]:
@@ -1862,9 +1912,7 @@ class WebScanner:
                             w, h = int(width), int(height)
                             if w < 20 and h < 20:
                                 skip_ai = True
-                                logger.debug(
-                                    f"Skipping AI for tiny image ({w}x{h}): {src}"
-                                )
+                                logger.debug(f"Skipping AI for tiny image ({w}x{h})")
                     except (ValueError, TypeError):
                         pass
 
@@ -1872,7 +1920,7 @@ class WebScanner:
                     spacer_patterns = ["spacer", "pixel", "transparent", "blank", "1x1"]
                     if any(pattern in src.lower() for pattern in spacer_patterns):
                         skip_ai = True
-                        logger.debug(f"Skipping AI for spacer/pixel: {src}")
+                        logger.debug("Skipping AI for spacer/pixel")
 
                     if not skip_ai:
                         if self.scan_images and not has_alt and not is_decorative:
@@ -1922,11 +1970,11 @@ class WebScanner:
                     )
 
                 except Exception as e:
-                    logger.warning(f"Failed to scan image {i}: {e}")
+                    logger.warning(f"Failed to scan image {i}: {type(e).__name__}")
                     continue
 
         except Exception as e:
-            logger.error(f"Failed to scan images: {e}")
+            logger.error(f"Failed to scan images: {type(e).__name__}")
 
         return results
 
@@ -1984,53 +2032,41 @@ class WebScanner:
                     )
 
                 except Exception as e:
-                    logger.warning(f"Failed to scan multimedia: {e}")
+                    logger.warning(f"Failed to scan multimedia: {type(e).__name__}")
                     continue
 
         except Exception as e:
-            logger.error(f"Failed to scan multimedia: {e}")
+            logger.error(f"Failed to scan multimedia: {type(e).__name__}")
 
         return results
 
     def _call_image_scanner_api(self, image_url: str) -> Optional[str]:
-        """Call image scanner API to generate alt text"""
+        """Send decoded source pixels to the workspace-bound vision provider."""
         try:
-            # Validate URL against SSRF before downloading
-            from src.utils.security import safe_requests_get
-
-            try:
-                # Validates the URL and every redirect hop against SSRF
-                response = safe_requests_get(image_url, timeout=10)
-            except ValueError:
-                logger.warning(f"Blocked private/reserved image URL: {image_url[:100]}")
+            image = self._download_vision_image(image_url)
+            if image is None:
                 return None
-            if response.status_code != 200:
-                return None
-
-            # Save to temp file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                tmp.write(response.content)
-                tmp_path = tmp.name
-
+            pixels, extension, mime_type = image
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=f".{extension}"
+            ) as tmp:
+                tmp.write(pixels)
+                image_path = tmp.name
             try:
-                # Call image scanner API
-                with open(tmp_path, "rb") as f:
-                    files = {"file": f}
-                    api_response = requests.post(
-                        f"{self.api_base_url}/api/education/image/analyze",
-                        files=files,
-                        timeout=30,
+                generator = ImageAltTextGenerator(lms_client=self.llm_client)
+                result = asyncio.run(
+                    generator.generate_alt_text(
+                        image_path=image_path,
+                        trusted_mime_type=mime_type,
+                        trusted_suffix=f".{extension}",
                     )
-
-                if api_response.status_code == 200:
-                    data = api_response.json()
-                    return data.get("alt_text", "")
-
+                )
+                return result.get("alt_text") if result.get("success") else None
             finally:
-                os.unlink(tmp_path)
+                os.unlink(image_path)
 
         except Exception as e:
-            logger.warning(f"Failed to call image scanner API: {e}")
+            logger.warning(f"Failed to call image scanner API: {type(e).__name__}")
 
         return None
 
@@ -2039,50 +2075,66 @@ class WebScanner:
     ) -> Optional[Dict]:
         """Call image validation API to check if existing alt text is accurate"""
         try:
-            # Validate URL against SSRF before downloading
-            from src.utils.security import safe_requests_get
-
-            try:
-                # Validates the URL and every redirect hop against SSRF
-                response = safe_requests_get(image_url, timeout=10)
-            except ValueError:
-                logger.warning(f"Blocked private/reserved image URL: {image_url[:100]}")
+            image = self._download_vision_image(image_url)
+            if image is None:
                 return None
-            if response.status_code != 200:
-                logger.warning(f"Failed to download image for validation: {image_url}")
-                return None
-
-            # Save to temp file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                tmp.write(response.content)
-                tmp_path = tmp.name
-
+            pixels, extension, mime_type = image
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=f".{extension}"
+            ) as tmp:
+                tmp.write(pixels)
+                image_path = tmp.name
             try:
-                # Call image validation API
-                with open(tmp_path, "rb") as f:
-                    files = {"file": f}
-                    data = {"existing_alt_text": existing_alt_text}
-                    api_response = requests.post(
-                        f"{self.api_base_url}/api/education/image/validate-alt-text",
-                        files=files,
-                        data=data,
-                        timeout=45,  # Validation can take longer than generation
+                generator = ImageAltTextGenerator(lms_client=self.llm_client)
+                result = asyncio.run(
+                    generator.validate_alt_text(
+                        image_path=image_path, existing_alt_text=existing_alt_text
                     )
-
-                if api_response.status_code == 200:
-                    return api_response.json()
-                else:
-                    logger.warning(
-                        f"Image validation API returned {api_response.status_code}: {api_response.text[:200]}"
-                    )
-
+                )
+                return result if result.get("success") else None
             finally:
-                os.unlink(tmp_path)
+                os.unlink(image_path)
 
         except Exception as e:
-            logger.warning(f"Failed to call image validation API: {e}")
+            logger.warning(f"Failed to call image validation API: {type(e).__name__}")
 
         return None
+
+    @staticmethod
+    def _download_vision_image(image_url: str) -> Optional[tuple[bytes, str, str]]:
+        """Return bounded, fully decoded image source bytes or require human review."""
+        from src.utils.security import safe_requests_get
+
+        try:
+            with safe_requests_get(image_url, timeout=10, stream=True) as response:
+                if response.status_code != 200:
+                    return None
+                payload = bytearray()
+                for chunk in response.iter_content(chunk_size=65536):
+                    payload.extend(chunk)
+                    if len(payload) > MAX_VISION_IMAGE_BYTES:
+                        return None
+            pixels = bytes(payload)
+            with Image.open(BytesIO(pixels)) as decoded:
+                if decoded.width * decoded.height > 20_000_000:
+                    return None
+                decoded.load()
+                format_name = decoded.format
+            formats = {
+                "JPEG": ("jpg", "image/jpeg"),
+                "PNG": ("png", "image/png"),
+                "WEBP": ("webp", "image/webp"),
+                "GIF": ("gif", "image/gif"),
+            }
+            if format_name not in formats:
+                return None
+            extension, mime_type = formats[format_name]
+            return pixels, extension, mime_type
+        except (ValueError, UnidentifiedImageError, OSError) as exc:
+            logger.warning(
+                "Image source unavailable for vision: %s", type(exc).__name__
+            )
+            return None
 
     def _extract_page_structure(self, page: Page) -> Dict:
         """Extract semantic page structure"""
@@ -2112,7 +2164,7 @@ class WebScanner:
             structure["forms"] = len(page.query_selector_all("form"))
 
         except Exception as e:
-            logger.error(f"Failed to extract page structure: {e}")
+            logger.error(f"Failed to extract page structure: {type(e).__name__}")
 
         return structure
 
@@ -2144,7 +2196,9 @@ class WebScanner:
                         }
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to extract heading {idx}: {e}")
+                    logger.warning(
+                        f"Failed to extract heading {idx}: {type(e).__name__}"
+                    )
                     continue
 
             logger.info(
@@ -2152,7 +2206,7 @@ class WebScanner:
             )
 
         except Exception as e:
-            logger.error(f"Failed to extract heading hierarchy: {e}")
+            logger.error(f"Failed to extract heading hierarchy: {type(e).__name__}")
 
         return heading_hierarchy
 
@@ -2277,13 +2331,15 @@ class WebScanner:
                             }
                         )
                     except Exception as e:
-                        logger.warning(f"Failed to extract landmark: {e}")
+                        logger.warning(
+                            f"Failed to extract landmark: {type(e).__name__}"
+                        )
                         continue
 
             logger.info(f"[LANDMARKS] Extracted {len(landmarks)} landmarks from page")
 
         except Exception as e:
-            logger.error(f"Failed to extract landmark structure: {e}")
+            logger.error(f"Failed to extract landmark structure: {type(e).__name__}")
 
         return landmarks
 
@@ -2393,13 +2449,13 @@ class WebScanner:
                         }
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to extract list {idx}: {e}")
+                    logger.warning(f"Failed to extract list {idx}: {type(e).__name__}")
                     continue
 
             logger.info(f"[LISTS] Extracted {len(lists)} lists from page")
 
         except Exception as e:
-            logger.error(f"Failed to extract list structure: {e}")
+            logger.error(f"Failed to extract list structure: {type(e).__name__}")
 
         return lists
 
@@ -2482,13 +2538,13 @@ class WebScanner:
                         }
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to extract table {idx}: {e}")
+                    logger.warning(f"Failed to extract table {idx}: {type(e).__name__}")
                     continue
 
             logger.info(f"[TABLES] Extracted {len(tables)} tables from page")
 
         except Exception as e:
-            logger.error(f"Failed to extract table structure: {e}")
+            logger.error(f"Failed to extract table structure: {type(e).__name__}")
 
         return tables
 
@@ -2578,7 +2634,7 @@ class WebScanner:
                         }
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to extract form {idx}: {e}")
+                    logger.warning(f"Failed to extract form {idx}: {type(e).__name__}")
                     continue
 
             # Add orphan inputs info
@@ -2596,7 +2652,7 @@ class WebScanner:
             logger.info(f"[FORMS] Extracted {len(forms)} form contexts from page")
 
         except Exception as e:
-            logger.error(f"Failed to extract form structure: {e}")
+            logger.error(f"Failed to extract form structure: {type(e).__name__}")
 
         return forms
 
@@ -2684,7 +2740,7 @@ class WebScanner:
                         }
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to extract link {idx}: {e}")
+                    logger.warning(f"Failed to extract link {idx}: {type(e).__name__}")
                     continue
 
             logger.info(
@@ -2692,7 +2748,7 @@ class WebScanner:
             )
 
         except Exception as e:
-            logger.error(f"Failed to extract link context: {e}")
+            logger.error(f"Failed to extract link context: {type(e).__name__}")
 
         return links_context
 
@@ -2858,10 +2914,16 @@ IMPORTANT: Links must be distinguishable from surrounding text by more than colo
     ) -> List[str]:
         """Extract internal links from page"""
         links = []
+        page = None
+        blocked = getattr(self, "_browser_blocked_required", None)
 
         try:
             page = context.new_page()
-            page.goto(current_url, wait_until="networkidle", timeout=30000)
+            if blocked is not None:
+                blocked.clear()
+            navigation_url = resolve_browser_navigation_url(current_url, context)
+            page.goto(navigation_url, wait_until="networkidle", timeout=30000)
+            assert_browser_channels_safe(page, blocked)
 
             # Get all links
             all_links = page.query_selector_all("a[href]")
@@ -2873,7 +2935,7 @@ IMPORTANT: Links must be distinguishable from surrounding text by more than colo
                     continue
 
                 # Make absolute
-                full_url = urljoin(current_url, href)
+                full_url = urljoin(page.url, href)
                 parsed = urlparse(full_url)
 
                 # Only internal links from same domain
@@ -2883,10 +2945,19 @@ IMPORTANT: Links must be distinguishable from surrounding text by more than colo
                     if clean_url not in self.visited_urls:
                         links.append(clean_url)
 
-            page.close()
+            assert_browser_channels_safe(page, blocked)
 
+        except BrowserScanIncompleteError:
+            raise
         except Exception as e:
-            logger.error(f"Failed to extract links: {e}")
+            if blocked:
+                raise BrowserScanIncompleteError(
+                    "Web scan incomplete: required browser resource was blocked"
+                ) from e
+            logger.error(f"Failed to extract links: {type(e).__name__}")
+        finally:
+            if page is not None:
+                page.close()
 
         return list(set(links))  # Deduplicate
 
@@ -3274,13 +3345,11 @@ Format your response as JSON with keys: readability_score, clarity_assessment, s
                 )
 
                 if not result.get("success"):
-                    logger.warning(
-                        f"[AI] Content analysis failed: {result.get('error')}"
-                    )
+                    logger.warning("[AI] Content analysis failed")
                     return {}
 
             except Exception as e:
-                logger.warning(f"[AI] Content analysis failed: {e}")
+                logger.warning(f"[AI] Content analysis failed: {type(e).__name__}")
                 return {}
 
             # Parse response
@@ -3305,10 +3374,10 @@ Format your response as JSON with keys: readability_score, clarity_assessment, s
             return analysis
 
         except Exception as e:
-            logger.error(f"AI content analysis failed: {e}")
+            logger.error(f"AI content analysis failed: {type(e).__name__}")
             return {
                 "readability_score": None,
-                "clarity_assessment": f"Analysis failed: {str(e)}",
+                "clarity_assessment": "Analysis unavailable",
                 "suggestions": [],
             }
 
@@ -3338,6 +3407,11 @@ Format your response as JSON with keys: readability_score, clarity_assessment, s
         Returns:
             Tuple of (explanation: str, code_fix: str), or fallback if generation fails
         """
+        if issue_id in {"image-alt", "input-image-alt", "area-alt"}:
+            return (
+                "Review the image and add alt text that conveys its purpose.",
+                None,
+            )
         try:
             # Truncate extremely long element HTML
             truncated_html = element_html[:400] + (
@@ -3347,7 +3421,6 @@ Format your response as JSON with keys: readability_score, clarity_assessment, s
             # Fallback fixes
             simple_fixes = {
                 "frame-title": '<iframe title="[Describe the iframe content]" ... >',
-                "image-alt": '<img alt="[Describe the image]" ... >',
                 "button-name": '<button aria-label="[Describe button action]">...</button>',
                 "link-name": '<a aria-label="[Describe link destination]">...</a>',
                 "label": '<label for="input-id">Label text</label>\n<input id="input-id" type="text">',
@@ -3420,9 +3493,7 @@ Now provide your response (remember: CODE section = ONLY HTML, NO TEXT):"""
             )
 
             if not result.get("success"):
-                logger.warning(
-                    f"[CODE FIX] Gemini failed for {issue_id}: {result.get('error')}"
-                )
+                logger.warning("[CODE FIX] Generation failed for %s", issue_id)
                 return (
                     f"Fix this {issue_id} issue by following WCAG 2.1 AA guidelines.",
                     simple_fixes.get(issue_id),
@@ -3474,7 +3545,7 @@ Now provide your response (remember: CODE section = ONLY HTML, NO TEXT):"""
                 simple_fixes.get(issue_id),
             )
         except Exception as e:
-            logger.warning(f"[CODE FIX] Failed for {issue_id}: {e}")
+            logger.warning(f"[CODE FIX] Failed for {issue_id}: {type(e).__name__}")
             return (
                 f"Fix this {issue_id} issue by following WCAG 2.1 AA guidelines.",
                 simple_fixes.get(issue_id),
@@ -3495,6 +3566,7 @@ Now provide your response (remember: CODE section = ONLY HTML, NO TEXT):"""
             page_context: Page structure context for better fixes
             batch_size: Number of issues per API call (default 5)
         """
+        issues = [issue for issue in issues if not self._needs_visual_alt_review(issue)]
         for batch_start in range(0, len(issues), batch_size):
             batch = issues[batch_start : batch_start + batch_size]
             logger.info(
@@ -3559,9 +3631,7 @@ RULES:
                 )
 
                 if not result.get("success"):
-                    logger.warning(
-                        f"[BATCH FIX] API call failed: {result.get('error')}"
-                    )
+                    logger.warning("[BATCH FIX] API call failed")
                     continue
 
                 # Parse the batch response — extract fixes by number
@@ -3593,7 +3663,7 @@ RULES:
                         )
 
             except Exception as e:
-                logger.warning(f"[BATCH FIX] Batch failed: {e}")
+                logger.warning(f"[BATCH FIX] Batch failed: {type(e).__name__}")
                 # Issues keep their fallback fix — no crash
 
     def _parse_batch_fixes(
@@ -3684,7 +3754,7 @@ Respond with ONLY the rewritten descriptions, numbered 1 to {len(issues)}, one p
             )
 
             if not result.get("success"):
-                logger.warning(f"[HUMANIZE] Failed: {result.get('error')}")
+                logger.warning("[HUMANIZE] Failed")
                 return
 
             content = result.get("content", "")
@@ -3706,7 +3776,7 @@ Respond with ONLY the rewritten descriptions, numbered 1 to {len(issues)}, one p
                         )
 
         except Exception as e:
-            logger.warning(f"[HUMANIZE] Batch humanization failed: {e}")
+            logger.warning(f"[HUMANIZE] Batch humanization failed: {type(e).__name__}")
             # Issues keep their code-model explanations — still usable
 
     def _get_wcag_guidance_for_issue(self, issue_id: str) -> str:
@@ -4104,7 +4174,9 @@ Refer to axe-core documentation for specific criterion details.
             return guideline
 
         except Exception as e:
-            logger.warning(f"[RAG] Failed to query knowledge base for {rule_id}: {e}")
+            logger.warning(
+                f"[RAG] Failed to query knowledge base for {rule_id}: {type(e).__name__}"
+            )
             return None
 
     def _enhance_fix_description(
@@ -4180,13 +4252,13 @@ Provide ONLY the improved fix description (no explanations, no introductions):""
 
                 if not result.get("success"):
                     logger.warning(
-                        f"[AI+RAG] Fix description enhancement failed for {issue_id}: {result.get('error')}"
+                        "[AI+RAG] Fix description enhancement failed for %s", issue_id
                     )
                     return None
 
             except Exception as e:
                 logger.warning(
-                    f"[AI+RAG] Fix description enhancement failed for {issue_id}: {e}"
+                    f"[AI+RAG] Fix description enhancement failed for {issue_id}: {type(e).__name__}"
                 )
                 return None
 
@@ -4210,7 +4282,9 @@ Provide ONLY the improved fix description (no explanations, no introductions):""
                 return None
 
         except Exception as e:
-            logger.warning(f"Failed to enhance fix description for {issue_id}: {e}")
+            logger.warning(
+                f"Failed to enhance fix description for {issue_id}: {type(e).__name__}"
+            )
             return None
 
     def _scan_page_math(self, page: Page) -> List[MathContentResult]:
@@ -4258,7 +4332,7 @@ Provide ONLY the improved fix description (no explanations, no introductions):""
                         )
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to process MathML: {e}")
+                    logger.warning(f"Failed to process MathML: {type(e).__name__}")
 
             # 2. LaTeX in various delimiters
             # Check for common LaTeX patterns: $...$, $$...$$, \[...\], \(...\)
@@ -4309,10 +4383,12 @@ Provide ONLY the improved fix description (no explanations, no introductions):""
                             )
                         )
                 except Exception as e:
-                    logger.warning(f"Failed to process MathJax/KaTeX: {e}")
+                    logger.warning(
+                        f"Failed to process MathJax/KaTeX: {type(e).__name__}"
+                    )
 
         except Exception as e:
-            logger.error(f"Failed to scan math content: {e}")
+            logger.error(f"Failed to scan math content: {type(e).__name__}")
 
         return results
 
@@ -4341,16 +4417,14 @@ Provide a concise description (1-2 sentences) that would help a screen reader us
                 if result.get("success"):
                     return result["content"].strip()
                 else:
-                    logger.warning(
-                        f"[AI] Math description failed: {result.get('error')}"
-                    )
+                    logger.warning("[AI] Math description failed")
                     return None
             except Exception as e:
-                logger.warning(f"[AI] Math description failed: {e}")
+                logger.warning(f"[AI] Math description failed: {type(e).__name__}")
                 return None
 
         except Exception as e:
-            logger.warning(f"Failed to describe math with AI: {e}")
+            logger.warning(f"Failed to describe math with AI: {type(e).__name__}")
             return None
 
     def _convert_latex_to_mathml(self, latex: str) -> Optional[str]:
@@ -4375,5 +4449,5 @@ Provide a concise description (1-2 sentences) that would help a screen reader us
                 return f'<math xmlns="http://www.w3.org/1998/Math/MathML"><mtext>{latex}</mtext></math>'
 
         except Exception as e:
-            logger.warning(f"Failed to convert LaTeX to MathML: {e}")
+            logger.warning(f"Failed to convert LaTeX to MathML: {type(e).__name__}")
             return None

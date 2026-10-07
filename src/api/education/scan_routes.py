@@ -54,7 +54,7 @@ def process_pdf_background(
 
     try:
         start_time = time.time()
-        logger.info(f"[BACKGROUND] Processing PDF: {filename} (scan_id={scan_id})")
+        logger.info(f"[BACKGROUND] Processing PDF (scan_id={scan_id})")
 
         # Get scan record
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -89,14 +89,18 @@ def process_pdf_background(
                 )
                 if progress_scan:
                     progress_scan.progress = min(progress_pct, 90)
-                    progress_scan.progress_message = message
+                    progress_scan.progress_message = "Processing in progress..."
                     progress_db.commit()
                     logger.info(
-                        f"[BACKGROUND] Progress: {progress_pct}% - {message} (current={current}, total={total})"
+                        "Scan progress updated (scan_id=%s, progress=%s)",
+                        scan_id,
+                        min(max(progress_pct, 0), 100),
                     )
             except Exception as e:
                 logger.error(
-                    f"[BACKGROUND] Failed to update progress: {e} (current={current}, total={total}, message={message})"
+                    "[BACKGROUND] Failed to update progress (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
                 )
             finally:
                 if progress_db:
@@ -125,7 +129,7 @@ def process_pdf_background(
         result = processor.process_pdf(file_path, original_filename=filename)
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"[BACKGROUND] PDF processed in {processing_time}ms: {filename}")
+        logger.info(f"[BACKGROUND] PDF processed in {processing_time}ms")
 
         # Update scan record
         scan.status = ScanStatus.COMPLETED
@@ -164,13 +168,14 @@ def process_pdf_background(
 
     except Exception as e:
         logger.error(
-            f"[BACKGROUND] Error processing PDF {filename}: {str(e)}", exc_info=True
+            "[BACKGROUND] Error processing PDF (%s) (scan_id=%s)",
+            type(e).__name__,
+            scan_id,
         )
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if scan:
             scan.status = ScanStatus.FAILED
-            # Full traceback already logged above (exc_info=True); these two
-            # fields render in the UI, so no internal exception text here.
+            # Only the failure class is logged; public fields never contain exception text.
             scan.error_message = public_scan_failure_message(e)
             scan.progress_message = scan.error_message
             db.commit()
@@ -275,7 +280,7 @@ async def scan_pdf(
     db.refresh(scan)
 
     logger.info(
-        f"Created scan {scan.id} for PDF: {file.filename} (generate_alt_text={generate_alt_text})"
+        f"Created scan {scan.id} for PDF (generate_alt_text={generate_alt_text})"
     )
 
     # Increment usage quota for free tier tracking
@@ -317,7 +322,7 @@ def process_pptx_background(
 
     try:
         start_time = time.time()
-        logger.info(f"[BACKGROUND] Processing PPTX: {filename} (scan_id={scan_id})")
+        logger.info(f"[BACKGROUND] Processing PPTX (scan_id={scan_id})")
 
         # Get scan record
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -346,13 +351,19 @@ def process_pptx_background(
                 )
                 if progress_scan:
                     progress_scan.progress = min(progress_pct, 90)
-                    progress_scan.progress_message = message
+                    progress_scan.progress_message = "Processing in progress..."
                     progress_db.commit()
                     logger.info(
-                        f"[BACKGROUND] PPTX Progress: {progress_pct}% - {message}"
+                        "Scan progress updated (scan_id=%s, progress=%s)",
+                        scan_id,
+                        min(max(progress_pct, 0), 100),
                     )
             except Exception as e:
-                logger.error(f"[BACKGROUND] Failed to update PPTX progress: {e}")
+                logger.error(
+                    "[BACKGROUND] Failed to update PPTX progress (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
+                )
             finally:
                 if progress_db:
                     progress_db.close()
@@ -379,7 +390,7 @@ def process_pptx_background(
         result = processor.process_pptx(file_path)
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"[BACKGROUND] PPTX processed in {processing_time}ms: {filename}")
+        logger.info(f"[BACKGROUND] PPTX processed in {processing_time}ms")
 
         all_issues, severity_counts = persisted_office_findings(result)
         critical, high, medium, low = (
@@ -440,13 +451,14 @@ def process_pptx_background(
 
     except Exception as e:
         logger.error(
-            f"[BACKGROUND] Error processing PPTX {filename}: {str(e)}", exc_info=True
+            "[BACKGROUND] Error processing PPTX (%s) (scan_id=%s)",
+            type(e).__name__,
+            scan_id,
         )
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if scan:
             scan.status = ScanStatus.FAILED
-            # Full traceback already logged above (exc_info=True); these two
-            # fields render in the UI, so no internal exception text here.
+            # Only the failure class is logged; public fields never contain exception text.
             scan.error_message = public_scan_failure_message(e)
             scan.progress_message = scan.error_message
             db.commit()
@@ -543,7 +555,7 @@ async def scan_powerpoint(
     db.refresh(scan)
 
     logger.info(
-        f"Created scan {scan.id} for PPTX: {file.filename} (generate_alt_text={generate_alt_text})"
+        f"Created scan {scan.id} for PPTX (generate_alt_text={generate_alt_text})"
     )
 
     # Return immediately with scan_id
@@ -581,7 +593,7 @@ def process_docx_background(
 
     try:
         start_time = time.time()
-        logger.info(f"[BACKGROUND] Processing DOCX: {filename} (scan_id={scan_id})")
+        logger.info(f"[BACKGROUND] Processing DOCX (scan_id={scan_id})")
 
         # Get scan record
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -610,13 +622,19 @@ def process_docx_background(
                 )
                 if progress_scan:
                     progress_scan.progress = min(progress_pct, 90)
-                    progress_scan.progress_message = message
+                    progress_scan.progress_message = "Processing in progress..."
                     progress_db.commit()
                     logger.info(
-                        f"[BACKGROUND] DOCX Progress: {progress_pct}% - {message}"
+                        "Scan progress updated (scan_id=%s, progress=%s)",
+                        scan_id,
+                        min(max(progress_pct, 0), 100),
                     )
             except Exception as e:
-                logger.error(f"[BACKGROUND] Failed to update DOCX progress: {e}")
+                logger.error(
+                    "[BACKGROUND] Failed to update DOCX progress (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
+                )
             finally:
                 if progress_db:
                     progress_db.close()
@@ -631,7 +649,7 @@ def process_docx_background(
         result = processor.process_docx(file_path, original_filename=filename)
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"[BACKGROUND] DOCX processed in {processing_time}ms: {filename}")
+        logger.info(f"[BACKGROUND] DOCX processed in {processing_time}ms")
 
         all_issues, severity_counts = persisted_office_findings(result)
         critical, high, medium, low = (
@@ -689,13 +707,14 @@ def process_docx_background(
 
     except Exception as e:
         logger.error(
-            f"[BACKGROUND] Error processing DOCX {filename}: {str(e)}", exc_info=True
+            "[BACKGROUND] Error processing DOCX (%s) (scan_id=%s)",
+            type(e).__name__,
+            scan_id,
         )
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if scan:
             scan.status = ScanStatus.FAILED
-            # Full traceback already logged above (exc_info=True); these two
-            # fields render in the UI, so no internal exception text here.
+            # Only the failure class is logged; public fields never contain exception text.
             scan.error_message = public_scan_failure_message(e)
             scan.progress_message = scan.error_message
             db.commit()
@@ -796,7 +815,7 @@ async def scan_word_document(
     db.refresh(scan)
 
     logger.info(
-        f"Created scan {scan.id} for DOCX: {file.filename} (generate_alt_text={generate_alt_text})"
+        f"Created scan {scan.id} for DOCX (generate_alt_text={generate_alt_text})"
     )
 
     # Return immediately with scan_id
@@ -834,7 +853,7 @@ def process_xlsx_background(
 
     try:
         start_time = time.time()
-        logger.info(f"[BACKGROUND] Processing XLSX: {filename} (scan_id={scan_id})")
+        logger.info(f"[BACKGROUND] Processing XLSX (scan_id={scan_id})")
 
         # Get scan record
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -863,13 +882,19 @@ def process_xlsx_background(
                 )
                 if progress_scan:
                     progress_scan.progress = min(progress_pct, 90)
-                    progress_scan.progress_message = message
+                    progress_scan.progress_message = "Processing in progress..."
                     progress_db.commit()
                     logger.info(
-                        f"[BACKGROUND] XLSX Progress: {progress_pct}% - {message}"
+                        "Scan progress updated (scan_id=%s, progress=%s)",
+                        scan_id,
+                        min(max(progress_pct, 0), 100),
                     )
             except Exception as e:
-                logger.error(f"[BACKGROUND] Failed to update XLSX progress: {e}")
+                logger.error(
+                    "[BACKGROUND] Failed to update XLSX progress (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
+                )
             finally:
                 if progress_db:
                     progress_db.close()
@@ -884,7 +909,7 @@ def process_xlsx_background(
         result = processor.process_xlsx(file_path, original_filename=filename)
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"[BACKGROUND] XLSX processed in {processing_time}ms: {filename}")
+        logger.info(f"[BACKGROUND] XLSX processed in {processing_time}ms")
 
         all_issues, severity_counts = persisted_office_findings(result)
         critical, high, medium, low = (
@@ -948,13 +973,14 @@ def process_xlsx_background(
 
     except Exception as e:
         logger.error(
-            f"[BACKGROUND] Error processing XLSX {filename}: {str(e)}", exc_info=True
+            "[BACKGROUND] Error processing XLSX (%s) (scan_id=%s)",
+            type(e).__name__,
+            scan_id,
         )
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if scan:
             scan.status = ScanStatus.FAILED
-            # Full traceback already logged above (exc_info=True); these two
-            # fields render in the UI, so no internal exception text here.
+            # Only the failure class is logged; public fields never contain exception text.
             scan.error_message = public_scan_failure_message(e)
             scan.progress_message = scan.error_message
             db.commit()
@@ -1058,7 +1084,7 @@ async def scan_excel_spreadsheet(
     db.refresh(scan)
 
     logger.info(
-        f"Created scan {scan.id} for XLSX: {file.filename} (generate_alt_text={generate_alt_text})"
+        f"Created scan {scan.id} for XLSX (generate_alt_text={generate_alt_text})"
     )
 
     # Return immediately with scan_id
@@ -1102,7 +1128,7 @@ def process_latex_background(
 
     try:
         start_time = time.time()
-        logger.info(f"[BACKGROUND] Processing LaTeX: {filename} (scan_id={scan_id})")
+        logger.info(f"[BACKGROUND] Processing LaTeX (scan_id={scan_id})")
 
         # Get scan record
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -1133,13 +1159,19 @@ def process_latex_background(
                 )
                 if progress_scan:
                     progress_scan.progress = min(progress_pct, 90)
-                    progress_scan.progress_message = message
+                    progress_scan.progress_message = "Processing in progress..."
                     progress_db.commit()
                     logger.info(
-                        f"[BACKGROUND] LaTeX Progress: {progress_pct}% - {message}"
+                        "Scan progress updated (scan_id=%s, progress=%s)",
+                        scan_id,
+                        min(max(progress_pct, 0), 100),
                     )
             except Exception as e:
-                logger.error(f"[BACKGROUND] Failed to update LaTeX progress: {e}")
+                logger.error(
+                    "[BACKGROUND] Failed to update LaTeX progress (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
+                )
             finally:
                 if progress_db:
                     progress_db.close()
@@ -1157,7 +1189,7 @@ def process_latex_background(
         accessibility_issues = processor.detect_accessibility_issues(latex_text)
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"[BACKGROUND] LaTeX processed in {processing_time}ms: {filename}")
+        logger.info(f"[BACKGROUND] LaTeX processed in {processing_time}ms")
         logger.info(
             f"[BACKGROUND] Found {len(accessibility_issues)} accessibility issues"
         )
@@ -1236,13 +1268,14 @@ def process_latex_background(
 
     except Exception as e:
         logger.error(
-            f"[BACKGROUND] Error processing LaTeX {filename}: {str(e)}", exc_info=True
+            "[BACKGROUND] Error processing LaTeX (%s) (scan_id=%s)",
+            type(e).__name__,
+            scan_id,
         )
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if scan:
             scan.status = ScanStatus.FAILED
-            # Full traceback already logged above (exc_info=True); these two
-            # fields render in the UI, so no internal exception text here.
+            # Only the failure class is logged; public fields never contain exception text.
             scan.error_message = public_scan_failure_message(e)
             scan.progress_message = scan.error_message
             db.commit()
@@ -1283,9 +1316,7 @@ def process_latex_pdf_background(
 
     try:
         start_time = time.time()
-        logger.info(
-            f"[BACKGROUND] Processing LaTeX PDF: {filename} (scan_id={scan_id})"
-        )
+        logger.info(f"[BACKGROUND] Processing LaTeX PDF (scan_id={scan_id})")
 
         # Get scan record
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -1325,13 +1356,19 @@ def process_latex_pdf_background(
                 )
                 if progress_scan:
                     progress_scan.progress = min(progress_pct, 90)
-                    progress_scan.progress_message = message
+                    progress_scan.progress_message = "Processing in progress..."
                     progress_db.commit()
                     logger.info(
-                        f"[BACKGROUND] LaTeX PDF Progress: {progress_pct}% - {message}"
+                        "Scan progress updated (scan_id=%s, progress=%s)",
+                        scan_id,
+                        min(max(progress_pct, 0), 100),
                     )
             except Exception as e:
-                logger.error(f"[BACKGROUND] Failed to update progress: {e}")
+                logger.error(
+                    "[BACKGROUND] Failed to update progress (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
+                )
             finally:
                 if progress_db:
                     progress_db.close()
@@ -1348,9 +1385,7 @@ def process_latex_pdf_background(
         result = processor.process_pdf(file_path, filename)
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(
-            f"[BACKGROUND] LaTeX PDF processed in {processing_time}ms: {filename}"
-        )
+        logger.info(f"[BACKGROUND] LaTeX PDF processed in {processing_time}ms")
 
         # Convert issues to list format
         all_issues = []
@@ -1419,14 +1454,14 @@ def process_latex_pdf_background(
 
     except Exception as e:
         logger.error(
-            f"[BACKGROUND] Error processing LaTeX PDF {filename}: {str(e)}",
-            exc_info=True,
+            "[BACKGROUND] Error processing LaTeX PDF (%s) (scan_id=%s)",
+            type(e).__name__,
+            scan_id,
         )
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if scan:
             scan.status = ScanStatus.FAILED
-            # Full traceback already logged above (exc_info=True); these two
-            # fields render in the UI, so no internal exception text here.
+            # Only the failure class is logged; public fields never contain exception text.
             scan.error_message = public_scan_failure_message(e)
             scan.progress_message = scan.error_message
             db.commit()
@@ -1549,7 +1584,7 @@ async def convert_latex_document(
     db.refresh(scan)
 
     logger.info(
-        f"Created scan {scan.id} for LaTeX: {file.filename} (is_pdf={is_pdf}, use_ollama={use_ollama}, storage={storage_path})"
+        f"Created scan {scan.id} for LaTeX (is_pdf={is_pdf}, use_ollama={use_ollama})"
     )
 
     # Return immediately with scan_id
