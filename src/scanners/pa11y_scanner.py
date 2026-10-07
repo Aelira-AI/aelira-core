@@ -1,49 +1,70 @@
-"""
-Pa11y accessibility scanner wrapper.
+"""Run Pa11y's bundled HTML_CodeSniffer on a connection-guarded browser page.
 
-Calls Pa11y CLI via subprocess and parses JSON output for multi-engine
-accessibility testing (axe-core + HTML_CodeSniffer).
+The Pa11y CLI creates its own Chromium context, so it cannot scan untrusted
+URLs safely. This wrapper loads the same pinned HTMLCS runner script into the
+WebScanner-style guarded Playwright context and returns Pa11y's issue schema.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import os
-from pathlib import Path
-from typing import Dict, List, Any, Optional
+import shutil
+import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
+
+from playwright.sync_api import sync_playwright
+
+from src.security.browser_ssrf import (
+    BROWSER_EGRESS_ARGS,
+    BrowserNetworkIsolation,
+    BrowserScanIncompleteError,
+    assert_browser_channels_safe,
+    install_browser_ssrf_guard,
+    resolve_browser_navigation_url,
+)
 
 logger = logging.getLogger(__name__)
+PA11Y_VERSION = "9.0.1"
+HTMLCS_VERSION = "2.5.1"
+
+
+class Pa11yScanError(BrowserScanIncompleteError):
+    """The secondary engine did not produce a complete, verified result."""
+
+
+class Pa11yUnsafeNetworkError(Pa11yScanError):
+    """A requested scan would bypass the guarded browser."""
 
 
 @dataclass
 class Pa11yIssue:
-    """Single Pa11y accessibility issue"""
-
     code: str
-    type: str  # error, warning, notice
+    type: str
     selector: str
     context: str
     message: str
     type_code: int
-    runner: str  # axe, htmlcs
+    runner: str
 
 
 @dataclass
 class Pa11yResult:
-    """Pa11y scan result"""
-
     url: str
     total_issues: int
     issues_by_severity: Dict[str, int]
     issues: List[Pa11yIssue]
-    engine: str = "pa11y"
-    runner: str = "axe"  # Which Pa11y runner was used
+    engine: str = "htmlcs"
+    runner: str = "htmlcs"
     scan_duration_ms: Optional[int] = None
     page_title: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization"""
         return {
             "url": self.url,
             "total_issues": self.total_issues,
@@ -67,196 +88,243 @@ class Pa11yResult:
         }
 
 
+_RUN_HTMLCS = r"""([standard, timeoutMs]) => new Promise((resolve, reject) => {
+    if (!window.HTMLCS || typeof window.HTMLCS.process !== 'function') {
+        reject(new Error('HTMLCS unavailable'));
+        return;
+    }
+    const timer = setTimeout(() => reject(new Error('HTMLCS timed out')), timeoutMs);
+    const selector = (element) => {
+        if (!element || element.nodeType !== 1) return 'html';
+        if (element.id) return '#' + CSS.escape(element.id);
+        const parts = [];
+        for (let node = element; node && node.nodeType === 1; node = node.parentElement) {
+            let part = node.tagName.toLowerCase();
+            if (node.parentElement) {
+                const siblings = Array.from(node.parentElement.children)
+                    .filter(sibling => sibling.tagName === node.tagName);
+                if (siblings.length > 1) {
+                    part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
+                }
+            }
+            parts.unshift(part);
+        }
+        return parts.join(' > ');
+    };
+    try {
+        window.HTMLCS.process(standard, document, error => {
+            clearTimeout(timer);
+            if (error) {
+                reject(new Error('HTMLCS evaluation failed'));
+                return;
+            }
+            resolve(window.HTMLCS.getMessages().map(issue => ({
+                code: String(issue.code || ''),
+                type_code: Number(issue.type),
+                message: String(issue.msg || ''),
+                selector: selector(issue.element),
+                context: issue.element && issue.element.outerHTML
+                    ? issue.element.outerHTML.slice(0, 500) : ''
+            })));
+        });
+    } catch (_) {
+        clearTimeout(timer);
+        reject(new Error('HTMLCS evaluation failed'));
+    }
+})"""
+
+
 class Pa11yScanner:
-    """
-    Wrapper for Pa11y CLI accessibility testing.
-
-    Pa11y can run multiple accessibility test runners:
-    - axe: Deque's axe-core (WCAG 2.2 AA)
-    - htmlcs: Squiz HTML_CodeSniffer (WCAG 2.1 AAA)
-
-    Runs Pa11y as subprocess, parses JSON output.
-    """
+    """A Pa11y-compatible HTMLCS scanner with guarded browser networking."""
 
     def __init__(
         self,
         timeout: int = 60,
         pa11y_bin: str = "pa11y",
         config_path: Optional[str] = None,
+        *,
+        htmlcs_script_path: Optional[str] = None,
+        chromium_executable: Optional[str] = None,
+        allow_trusted_local_file: bool = False,
     ):
-        """
-        Initialize Pa11y scanner.
-
-        Args:
-            timeout: Maximum scan time in seconds
-            pa11y_bin: Path to pa11y binary (default: "pa11y" in PATH)
-            config_path: Pa11y JSON config containing the Chromium launch contract
-        """
         self.timeout = timeout
         self.pa11y_bin = pa11y_bin
-        default_config = Path(__file__).resolve().parents[2] / "config" / "pa11y.json"
         self.config_path = config_path or os.getenv(
-            "PA11Y_CONFIG_PATH", str(default_config)
+            "PA11Y_CONFIG_PATH",
+            str(Path(__file__).resolve().parents[2] / "config" / "pa11y.json"),
+        )
+        self.htmlcs_script_path = htmlcs_script_path
+        self.chromium_executable = chromium_executable
+        self.allow_trusted_local_file = allow_trusted_local_file
+
+    def _bundled_htmlcs_script(self) -> Path:
+        if self.htmlcs_script_path:
+            script = Path(self.htmlcs_script_path)
+            if not script.is_file():
+                raise Pa11yScanError("HTML_CodeSniffer script is unavailable")
+            return script
+
+        binary = shutil.which(self.pa11y_bin)
+        if not binary:
+            raise Pa11yScanError("Pa11y runtime is unavailable")
+        resolved = Path(binary).resolve()
+        package = next(
+            (
+                parent
+                for parent in resolved.parents
+                if (parent / "package.json").is_file()
+                and _package_matches(parent / "package.json", "pa11y", PA11Y_VERSION)
+            ),
+            None,
+        )
+        if package is None:
+            raise Pa11yScanError("Pinned Pa11y runtime is unavailable")
+        for dependency_root in (package / "node_modules", package.parent):
+            dependency = dependency_root / "html_codesniffer"
+            script = dependency / "build" / "HTMLCS.js"
+            if script.is_file() and _package_matches(
+                dependency / "package.json", "html_codesniffer", HTMLCS_VERSION
+            ):
+                return script
+        raise Pa11yScanError("Pinned HTML_CodeSniffer is unavailable")
+
+    def _browser_launch(self) -> tuple[str, list[str]]:
+        try:
+            config = json.loads(Path(self.config_path).read_text())
+            launch = config["chromeLaunchConfig"]
+            executable = self.chromium_executable or launch["executablePath"]
+            args = launch.get("args", [])
+            if not Path(executable).is_file() or not isinstance(args, list):
+                raise ValueError
+            return executable, args
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise Pa11yScanError(
+                "Guarded browser configuration is unavailable"
+            ) from exc
+
+    def _scan_guarded(self, url: str, standard: str) -> Pa11yResult:
+        started = time.monotonic()
+        script = self._bundled_htmlcs_script()
+        executable, args = self._browser_launch()
+        blocked = []
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(
+                    executable_path=executable,
+                    args=[*args, *BROWSER_EGRESS_ARGS],
+                    headless=True,
+                    timeout=min(self.timeout * 1000, 30000),
+                )
+                isolation = None
+                try:
+                    isolation = BrowserNetworkIsolation()
+                    context = isolation.new_context(browser)
+                    blocked = install_browser_ssrf_guard(context)
+                    page = context.new_page()
+                    navigation_url = resolve_browser_navigation_url(url, context)
+                    page.goto(
+                        navigation_url,
+                        wait_until="networkidle",
+                        timeout=min(self.timeout * 1000, 30000),
+                    )
+                    if blocked:
+                        raise BrowserScanIncompleteError(
+                            "Required browser resource blocked"
+                        )
+                    # Evaluate the trusted local bundle through automation, as
+                    # Pa11y does. A script tag would obey the site's CSP and
+                    # make a valid page appear unscannable.
+                    page.evaluate(
+                        "window.__aeliraDefine = window.define; window.define = undefined"
+                    )
+                    try:
+                        page.evaluate(script.read_text())
+                    finally:
+                        page.evaluate(
+                            "window.define = window.__aeliraDefine; delete window.__aeliraDefine"
+                        )
+                    remaining_ms = max(
+                        1,
+                        self.timeout * 1000 - int((time.monotonic() - started) * 1000),
+                    )
+                    raw_issues = page.evaluate(_RUN_HTMLCS, [standard, remaining_ms])
+                    assert_browser_channels_safe(page, blocked)
+                    title = page.title()
+                finally:
+                    try:
+                        browser.close()
+                    finally:
+                        if isolation is not None:
+                            isolation.close()
+        except BrowserScanIncompleteError:
+            raise
+        except Exception as exc:
+            if blocked:
+                raise Pa11yScanError("Required browser resource blocked") from exc
+            logger.error("Guarded HTML_CodeSniffer scan failed: %s", type(exc).__name__)
+            raise Pa11yScanError("HTML_CodeSniffer scan did not complete") from exc
+
+        if not isinstance(raw_issues, list):
+            raise Pa11yScanError("HTML_CodeSniffer returned an invalid result")
+        severities = {1: "error", 2: "warning", 3: "notice"}
+        counts = {"error": 0, "warning": 0, "notice": 0}
+        issues = []
+        for raw in raw_issues:
+            if not isinstance(raw, dict) or raw.get("type_code") not in severities:
+                raise Pa11yScanError("HTML_CodeSniffer returned an invalid issue")
+            severity = severities[raw["type_code"]]
+            counts[severity] += 1
+            issues.append(
+                Pa11yIssue(
+                    code=str(raw.get("code", "")),
+                    type=severity,
+                    selector=str(raw.get("selector", "")),
+                    context=str(raw.get("context", "")),
+                    message=str(raw.get("message", "")),
+                    type_code=raw["type_code"],
+                    runner="htmlcs",
+                )
+            )
+        logger.info("Guarded HTML_CodeSniffer scan completed; issues=%s", len(issues))
+        return Pa11yResult(
+            url=url,
+            total_issues=len(issues),
+            issues_by_severity=counts,
+            issues=issues,
+            engine="htmlcs",
+            runner="htmlcs",
+            scan_duration_ms=int((time.monotonic() - started) * 1000),
+            page_title=title,
         )
 
     async def scan(
-        self, url: str, runner: str = "axe", standard: str = "WCAG2AA"
+        self, url: str, runner: str = "htmlcs", standard: str = "WCAG2AA"
     ) -> Pa11yResult:
-        """
-        Scan URL with Pa11y.
-
-        Args:
-            url: URL to scan
-            runner: Pa11y runner ('axe' or 'htmlcs')
-            standard: Accessibility standard (WCAG2A, WCAG2AA, WCAG2AAA)
-
-        Returns:
-            Pa11yResult with issues found
-
-        Raises:
-            Exception: If Pa11y scan fails or times out
-        """
-        import time
-
-        start_time = time.time()
-
-        cmd = [
-            self.pa11y_bin,
-            "--config",
-            self.config_path,
-            "--reporter",
-            "json",
-            "--runner",
-            runner,
-            "--standard",
-            standard,
-            "--timeout",
-            str(self.timeout * 1000),  # Pa11y uses milliseconds
-            url,
-        ]
-
-        logger.info(
-            f"Starting Pa11y scan: {url} (runner={runner}, standard={standard})"
-        )
-
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=self.timeout
-            )
-
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            # Pa11y returns:
-            # - 0: No errors found
-            # - 2: Errors found (this is normal!)
-            # - Other: Actual failure
-            if process.returncode not in (0, 2):
-                error_msg = stderr.decode().strip()
-                logger.error(
-                    f"Pa11y scan failed (exit code {process.returncode}): {error_msg}"
-                )
-                raise Exception(f"Pa11y scan failed: {error_msg}")
-
-            # Parse JSON output
-            output = stdout.decode().strip()
-            if not output:
-                logger.warning(f"Pa11y returned empty output for {url}")
-                return Pa11yResult(
-                    url=url,
-                    total_issues=0,
-                    issues_by_severity={"error": 0, "warning": 0, "notice": 0},
-                    issues=[],
-                    runner=runner,
-                    scan_duration_ms=duration_ms,
-                )
-
-            raw_results = json.loads(output)
-
-            # Convert to Pa11yIssue objects
-            issues = []
-            severity_counts = {"error": 0, "warning": 0, "notice": 0}
-
-            for raw_issue in raw_results:
-                issue_type = raw_issue.get("type", "error").lower()
-
-                issue = Pa11yIssue(
-                    code=raw_issue.get("code", ""),
-                    type=issue_type,
-                    selector=raw_issue.get("selector", ""),
-                    context=raw_issue.get("context", ""),
-                    message=raw_issue.get("message", ""),
-                    type_code=raw_issue.get("typeCode", 1),
-                    runner=raw_issue.get("runner", runner),
-                )
-                issues.append(issue)
-
-                # Count by severity
-                if issue_type in severity_counts:
-                    severity_counts[issue_type] += 1
-
-            logger.info(
-                f"Pa11y scan complete: {len(issues)} issues found "
-                f"(errors={severity_counts['error']}, "
-                f"warnings={severity_counts['warning']}, "
-                f"notices={severity_counts['notice']}) "
-                f"in {duration_ms}ms"
-            )
-
-            return Pa11yResult(
-                url=url,
-                total_issues=len(issues),
-                issues_by_severity=severity_counts,
-                issues=issues,
-                engine="pa11y",
-                runner=runner,
-                scan_duration_ms=duration_ms,
-            )
-
-        except asyncio.TimeoutError:
-            logger.error(f"Pa11y scan timed out after {self.timeout}s for {url}")
-            raise Exception(f"Pa11y scan timed out after {self.timeout}s")
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Pa11y JSON output: {e}")
-            logger.error(f"Raw output: {output}")
-            raise Exception(f"Failed to parse Pa11y output: {e}")
-        except Exception as e:
-            logger.error(f"Pa11y scan error for {url}: {e}")
-            raise
+        """Run the pinned HTMLCS engine in a connection-guarded browser."""
+        parsed = urlsplit(url)
+        if runner != "htmlcs" or standard not in {"WCAG2A", "WCAG2AA", "WCAG2AAA"}:
+            raise Pa11yScanError("Unsupported guarded secondary engine")
+        if parsed.scheme not in {"http", "https"} and not (
+            self.allow_trusted_local_file
+            and parsed.scheme == "file"
+            and parsed.netloc in {"", "localhost"}
+        ):
+            raise Pa11yUnsafeNetworkError("Unsupported scan URL")
+        return await asyncio.to_thread(self._scan_guarded, url, standard)
 
     async def verify_installation(self) -> bool:
-        """
-        Verify Pa11y is installed and accessible.
-
-        Returns:
-            True if Pa11y is installed, False otherwise
-        """
         try:
-            process = await asyncio.create_subprocess_exec(
-                self.pa11y_bin,
-                "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=5)
-
-            if process.returncode == 0:
-                version = stdout.decode().strip()
-                logger.info(f"Pa11y is installed: {version}")
-                return True
-            else:
-                logger.warning(
-                    f"Pa11y verification failed (exit code {process.returncode})"
-                )
-                return False
-
-        except FileNotFoundError:
-            logger.error(f"Pa11y binary not found at: {self.pa11y_bin}")
+            self._bundled_htmlcs_script()
+            self._browser_launch()
+            return True
+        except Pa11yScanError:
+            logger.warning("Guarded HTML_CodeSniffer runtime is unavailable")
             return False
-        except Exception as e:
-            logger.error(f"Pa11y verification error: {e}")
-            return False
+
+
+def _package_matches(path: Path, name: str, version: str) -> bool:
+    try:
+        package = json.loads(path.read_text())
+        return package.get("name") == name and package.get("version") == version
+    except (OSError, ValueError):
+        return False

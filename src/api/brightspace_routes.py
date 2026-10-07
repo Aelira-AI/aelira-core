@@ -477,10 +477,10 @@ async def connect_brightspace(
             "state": state,
         }
 
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(
             status_code=500,
-            detail=str(e),
+            detail="Brightspace connection could not be configured. Please check the administrator settings.",
         )
 
 
@@ -531,12 +531,14 @@ async def brightspace_oauth_callback(
         )
 
         # Exchange code for token
-        access_token, refresh_token, expires_at = (
-            await exchange_brightspace_code_for_token(
-                brightspace_instance_url=brightspace_instance_url,
-                authorization_code=code,
-                redirect_uri=redirect_uri,
-            )
+        (
+            access_token,
+            refresh_token,
+            expires_at,
+        ) = await exchange_brightspace_code_for_token(
+            brightspace_instance_url=brightspace_instance_url,
+            authorization_code=code,
+            redirect_uri=redirect_uri,
         )
 
         # Get user info
@@ -617,7 +619,7 @@ async def brightspace_oauth_callback(
         logger.error("Brightspace OAuth callback failed: %s", type(e).__name__)
         dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard.example.com")
         return RedirectResponse(
-            url=f"{dashboard_url}/integrations?brightspace=error&message={str(e)[:100]}",
+            url=f"{dashboard_url}/integrations?brightspace=error&code=callback_failed",
         )
 
 
@@ -3000,7 +3002,7 @@ async def batch_approve_content(
     skipped = sum(item["status"] == "skipped" for item in outcomes)
     failed = sum(item["status"] == "failed" for item in outcomes)
     errors = [
-        f'{item["cloud_file_id"]}: {item["reason"]}'
+        f"{item['cloud_file_id']}: {item['reason']}"
         for item in outcomes
         if item["reason"] is not None
     ]
@@ -3155,10 +3157,13 @@ async def writeback_content(
         db.commit()
         return {"success": True, "message": "Content written back to Brightspace"}
     except Exception as e:
-        logger.error(f"Writeback failed for {cloud_file_id}: {e}")
+        logger.error("Writeback failed (%s)", type(e).__name__)
         cf.writeback_status = "write_failed"
         db.commit()
-        raise HTTPException(status_code=500, detail=f"Write-back failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Write-back failed. Please check the connection and retry.",
+        )
     finally:
         await api_client.close()
 
@@ -3222,7 +3227,7 @@ async def batch_writeback_content(
                 cf.writeback_status = "written_back"
                 written += 1
             except Exception as e:
-                logger.error(f"Writeback failed for {cf.id}: {e}")
+                logger.error("Writeback failed (%s)", type(e).__name__)
                 cf.writeback_status = "write_failed"
                 failed += 1
         db.commit()
@@ -3301,8 +3306,11 @@ async def rollback_content(
         logger.info(f"Rolled back content for {cloud_file_id}")
         return {"success": True, "message": "Content rolled back to original"}
     except Exception as e:
-        logger.error(f"Rollback failed for {cloud_file_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Rollback failed: {str(e)}")
+        logger.error("Rollback failed (%s)", type(e).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Rollback failed. Please check the connection and retry.",
+        )
     finally:
         await api_client.close()
 
@@ -3381,7 +3389,7 @@ async def batch_rollback_content(
                 cf.writeback_status = "rolled_back"
                 rolled_back += 1
             except Exception as e:
-                logger.error(f"Rollback failed for {cf.id}: {e}")
+                logger.error("Rollback failed (%s)", type(e).__name__)
                 failed += 1
         db.commit()
     finally:

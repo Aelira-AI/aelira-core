@@ -177,7 +177,7 @@ async def analyze_color_blindness(request: CVDAnalysisRequest):
 
     except Exception as e:
         processing_time_ms = int((time.time() - start_time) * 1000)
-        logger.error(f"CVD analysis failed: {e}", exc_info=True)
+        logger.error("CVD analysis failed (%s)", type(e).__name__)
         return CVDAnalysisResponse(
             success=False,
             total_pairs_analyzed=0,
@@ -185,7 +185,7 @@ async def analyze_color_blindness(request: CVDAnalysisRequest):
             results=[],
             summary={},
             processing_time_ms=processing_time_ms,
-            error=str(e),
+            error="Color analysis could not be completed. Check the color inputs and try again.",
         )
 
 
@@ -237,13 +237,13 @@ async def simulate_cvd_color(request: CVDSimulateRequest):
         )
 
     except Exception as e:
-        logger.error(f"CVD simulation failed: {e}", exc_info=True)
+        logger.error("CVD simulation failed (%s)", type(e).__name__)
         return CVDSimulateResponse(
             success=False,
             original_color=request.color,
             cvd_type=request.cvd_type,
             simulated_color="",
-            error=str(e),
+            error="Color analysis could not be completed. Check the color inputs and try again.",
         )
 
 

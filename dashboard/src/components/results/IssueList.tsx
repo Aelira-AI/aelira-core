@@ -350,13 +350,13 @@ export function IssueList({
                             axe
                           </span>
                         )}
-                        {issue.detected_by.includes('pa11y') && (
+                        {(issue.detected_by.includes('pa11y') || issue.detected_by.includes('htmlcs')) && (
                           <span
                             className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded bg-[var(--feature-primary-surface)] text-[var(--feature-primary-content)] border border-[var(--border-accent)]"
-                            title="Detected by Pa11y"
+                            title={issue.detected_by.includes('htmlcs') ? 'Detected by HTML_CodeSniffer' : 'Detected by Pa11y'}
                           >
                             <Search className="w-3 h-3" />
-                            Pa11y
+                            {issue.detected_by.includes('htmlcs') ? 'HTMLCS' : 'Pa11y'}
                           </span>
                         )}
                         {issue.detected_by.includes('ai-vision') && (

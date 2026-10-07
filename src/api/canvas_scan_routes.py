@@ -733,8 +733,8 @@ async def upload_remediated_to_canvas(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to upload remediated file to Canvas: {e}", exc_info=True)
+        logger.error("Canvas upload failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to upload to Canvas: {str(e)}",
+            detail="Failed to upload to Canvas. Please try again.",
         )

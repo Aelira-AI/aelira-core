@@ -13,7 +13,7 @@ Security:
 
 import secrets
 import logging
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode, urlsplit
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -43,14 +43,85 @@ OAUTH_NOT_ALLOWED_MESSAGE = (
 
 def _safe_next_path(next_path: str | None) -> str:
     """Resolve an untrusted continuation using the dashboard's path policy."""
-    if (
-        not next_path
-        or not next_path.startswith("/")
-        or next_path.startswith("//")
-        or next_path.startswith("/\\")
-    ):
+    if not next_path or len(next_path) > 2048 or not next_path.startswith("/"):
+        return "/dashboard"
+    decoded = next_path
+    for _ in range(16):
+        if (
+            decoded.startswith("//")
+            or decoded.startswith("/\\")
+            or "\\" in decoded
+            or any(
+                ord(character) < 32 or ord(character) == 127 for character in decoded
+            )
+        ):
+            return "/dashboard"
+        expanded = unquote(decoded)
+        if expanded == decoded:
+            break
+        decoded = expanded
+    else:
         return "/dashboard"
     return next_path
+
+
+_INTEGRATION_ERRORS = frozenset({"oauth_failed", "invalid_state", "exchange_failed"})
+_INTEGRATION_SUCCESSES = frozenset({"google_connected", "microsoft_connected"})
+
+
+def trusted_http_origin(url: str) -> str:
+    """Validate a configured public origin used for OAuth redirects."""
+    if (
+        not isinstance(url, str)
+        or not url
+        or any(
+            character == "\\" or ord(character) <= 32 or ord(character) == 127
+            for character in url
+        )
+    ):
+        raise ValueError("Invalid OAuth origin")
+    try:
+        target = urlsplit(url)
+        port = target.port
+    except ValueError as exc:
+        raise ValueError("Invalid OAuth origin") from exc
+    if (
+        target.scheme not in {"http", "https"}
+        or not target.hostname
+        or "?" in url
+        or "#" in url
+        or "%" in target.netloc
+        or target.netloc.endswith(":")
+        or target.username is not None
+        or target.password is not None
+        or target.path not in {"", "/"}
+        or target.query
+        or target.fragment
+        or (port is not None and port <= 0)
+    ):
+        raise ValueError("Invalid OAuth origin")
+    return url.rstrip("/")
+
+
+def integration_callback_redirect(
+    dashboard_url: str,
+    *,
+    error: str | None = None,
+    success: str | None = None,
+    email: str | None = None,
+) -> RedirectResponse:
+    """Build a same-origin dashboard callback from bounded event codes."""
+    dashboard_origin = trusted_http_origin(dashboard_url)
+    if (
+        (error is None) == (success is None)
+        or (error is not None and error not in _INTEGRATION_ERRORS)
+        or (success is not None and success not in _INTEGRATION_SUCCESSES)
+    ):
+        raise ValueError("Invalid OAuth callback event")
+    query = {"error": error} if error else {"success": success}
+    if success and email:
+        query["email"] = email
+    return RedirectResponse(url=f"{dashboard_origin}/integrations?{urlencode(query)}")
 
 
 def _set_oauth_next_cookie(

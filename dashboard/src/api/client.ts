@@ -23,6 +23,22 @@ let refreshPromise: Promise<void> | null = null;
 let terminalLogoutPromise: Promise<void> | null = null;
 let credentialsCleared = false;
 let terminalRedirected = false;
+let dashboardApiKey: string | null = null;
+
+function clearLegacyApiKeyStorage(): void {
+  // Older dashboard versions persisted this credential. Never read it back.
+  try { localStorage.removeItem('apiKey'); } catch { /* Storage may be disabled. */ }
+  try { sessionStorage.removeItem('apiKey'); } catch { /* Storage may be disabled. */ }
+}
+
+clearLegacyApiKeyStorage();
+
+/** API-key dashboard sign-in lasts only until this page is reloaded. */
+export function setDashboardApiKey(key: string): void {
+  clearLegacyApiKeyStorage();
+  dashboardApiKey = key;
+  credentialsCleared = false;
+}
 
 // Extend InternalAxiosRequestConfig to include our _retry flag
 interface RetryableRequestConfig extends InternalAxiosRequestConfig {
@@ -51,7 +67,7 @@ apiClient.interceptors.request.use((config: RetryableRequestConfig) => {
   if (config._skipApiKeyAuth) {
     delete config.headers.Authorization;
   }
-  const apiKey = localStorage.getItem('apiKey');
+  const apiKey = dashboardApiKey;
   if (
     apiKey &&
     !config._skipApiKeyAuth &&
@@ -99,9 +115,10 @@ function isAuthEndpoint(url: string | undefined): boolean {
   return AUTH_ENDPOINTS.some((endpoint) => url?.includes(endpoint));
 }
 
-/** Clear every browser location from which Axios can inherit a legacy API key. */
+/** Clear the in-memory dashboard key and legacy persistent copies. */
 export function clearStoredApiKeyAuth(): void {
-  localStorage.removeItem('apiKey');
+  dashboardApiKey = null;
+  clearLegacyApiKeyStorage();
   delete apiClient.defaults.headers.common.Authorization;
 }
 

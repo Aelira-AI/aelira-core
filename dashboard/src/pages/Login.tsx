@@ -389,6 +389,8 @@ export function Login(): React.ReactElement {
                       <input
                         id="apiKey"
                         type="password"
+                        autoComplete="off"
+                        spellCheck={false}
                         value={apiKey}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => setApiKey(e.target.value)}
                         className="input"
@@ -396,6 +398,7 @@ export function Login(): React.ReactElement {
                         required
                         disabled={loading}
                       />
+                      <p className="mt-2 text-xs text-tertiary">The key stays in this open page. You will need to enter it again after reloading.</p>
                     </div>
 
                     <button

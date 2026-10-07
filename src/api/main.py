@@ -100,6 +100,8 @@ import time
 
 # Configure logging FIRST
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
+# HTTPX's INFO request log includes full caller-supplied URLs and query strings.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Get settings
@@ -261,7 +263,9 @@ async def startup_event():
                 f"No configured LLM provider initialized (primary: {primary_name})"
             )
     except Exception as e:
-        logger.error(f"Failed to initialize LLM provider manager: {e}")
+        logger.error(
+            "Failed to initialize LLM provider manager: (%s)", type(e).__name__
+        )
 
     logger.info("Initializing WCAG knowledge base...")
     rag_ready = False
@@ -272,7 +276,7 @@ async def startup_event():
         else:
             logger.info("API continuing without WCAG corpus grounding")
     except Exception as e:
-        logger.error(f"Failed to initialize WCAG knowledge base: {e}")
+        logger.error("Failed to initialize WCAG knowledge base: (%s)", type(e).__name__)
         logger.warning("API will fall back to ungrounded classification")
     accessibility_ai_client.enable_rag = rag_ready
 
@@ -283,7 +287,7 @@ async def startup_event():
         asyncio.create_task(start_scan_timeout_loop())
         logger.info("Scan timeout monitor started")
     except Exception as e:
-        logger.error(f"Failed to start scan timeout monitor: {e}")
+        logger.error("Failed to start scan timeout monitor: (%s)", type(e).__name__)
 
 
 @app.on_event("shutdown")
@@ -294,7 +298,7 @@ async def shutdown_event():
         await accessibility_ai_client.close_rag()
         logger.info("WCAG knowledge base closed successfully")
     except Exception as e:
-        logger.error(f"Error closing WCAG knowledge base: {e}")
+        logger.error("Error closing WCAG knowledge base: (%s)", type(e).__name__)
 
     # Close the LLM provider manager
     logger.info("Closing LLM provider manager...")
@@ -302,7 +306,7 @@ async def shutdown_event():
         await close_provider_manager()
         logger.info("LLM provider manager closed successfully")
     except Exception as e:
-        logger.error(f"Error closing LLM provider manager: {e}")
+        logger.error("Error closing LLM provider manager: (%s)", type(e).__name__)
 
 
 # CORS middleware - properly configured
@@ -485,12 +489,22 @@ async def generate_image_alt_text(
         try:
             validate_url_not_private(image_url)
         except ValueError as exc:
-            logger.warning(f"[generate_image_alt_text] Blocked image URL: {exc}")
+            logger.warning(
+                "[generate_image_alt_text] Blocked image URL: (%s)", type(exc).__name__
+            )
             return None
 
-        # Download image
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(image_url)
+        # Bind each TCP connection to an address checked at connect time.
+        # Keep the original hostname for the Host header and TLS verification.
+        from ..utils.public_http import PublicOnlyAsyncHTTPTransport
+
+        async with httpx.AsyncClient(
+            transport=PublicOnlyAsyncHTTPTransport(),
+            timeout=10.0,
+            trust_env=False,
+            follow_redirects=False,
+        ) as client:
+            response = await client.get(image_url, follow_redirects=False)
             if response.status_code != 200:
                 return None
 
@@ -517,7 +531,7 @@ async def generate_image_alt_text(
             generator = ImageAltTextGenerator(lms_client=provider_runtime)
             result = await generator.generate_alt_text(
                 image_path=tmp_path,
-                context=f"Image from website ({image_url})",
+                context="Website image",
                 educational_context=False,  # General web image, not educational
             )
 
@@ -533,7 +547,7 @@ async def generate_image_alt_text(
         return None
 
     except Exception as e:
-        print(f"[generate_image_alt_text] Failed: {e}")
+        logger.warning("Image analysis failed (%s)", type(e).__name__)
         return None
 
 
@@ -797,7 +811,7 @@ async def readiness(
     try:
         db.execute(text("SELECT 1"))
     except Exception as e:
-        logger.warning(f"Readiness check: database unreachable: {e}")
+        logger.warning("Readiness check: database unreachable: (%s)", type(e).__name__)
         checks["database"] = "failed"
         ready = False
 
@@ -810,7 +824,7 @@ async def readiness(
             if redis_client is None or not redis_client.ping():
                 raise ConnectionError("Redis client unavailable")
         except Exception as e:
-            logger.warning(f"Readiness check: redis unreachable: {e}")
+            logger.warning("Readiness check: redis unreachable: (%s)", type(e).__name__)
             checks["redis"] = "failed"
             ready = False
 
@@ -908,7 +922,9 @@ async def analyze_violation(
             "rag_guidelines": classification_result.get("rag_guidelines", []),
         }
         if classification_result.get("error"):
-            classification["error"] = classification_result["error"]
+            classification["error"] = (
+                "AI classification could not be completed. Please try again."
+            )
 
         # Step 2: Generate fix if requested and severity is High/Critical
         if request.generate_fix and classification.get("severity") in [
@@ -944,21 +960,11 @@ async def analyze_violation(
                         "provider": image_result.get("provider"),
                     }
                 else:
-                    # Vision failed closed; a configured text/code provider may
-                    # still produce a code-only remediation for human review.
-                    fix_result = await ai_client.generate_code_fix(
-                        html_snippet=request.html_snippet,
-                        rule_id=request.rule_id,
-                        issue_description=classification.get("explanation", ""),
-                        context=request.page_context,
-                    )
                     classification["fix"] = {
-                        "fix_recommendation": fix_result.get("fixed_code", ""),
-                        "explanation": fix_result.get("explanation", ""),
-                        "model": fix_result.get("model"),
-                        "inference_time": fix_result.get("inference_time", 0),
-                        "provider": fix_result.get("provider"),
+                        "fix_recommendation": "",
+                        "explanation": "The source image could not be analysed. Review the image and write its description manually.",
                         "vision_ai_failed": True,
+                        "human_review_required": True,
                     }
             else:
                 fix_result = await ai_client.generate_code_fix(
@@ -978,7 +984,7 @@ async def analyze_violation(
         return classification
 
     except Exception as e:
-        logger.error(f"AI analysis failed: {str(e)}", exc_info=True)
+        logger.error("AI analysis failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="AI analysis failed. Please try again."
         )
@@ -1027,7 +1033,9 @@ async def batch_analyze_violations(
                 "rag_guidelines": classification_result.get("rag_guidelines", []),
             }
             if classification_result.get("error"):
-                classification["error"] = classification_result["error"]
+                classification["error"] = (
+                    "AI classification could not be completed. Please try again."
+                )
 
             violation_result = {
                 "id": violation.id,
@@ -1070,19 +1078,11 @@ async def batch_analyze_violations(
                             "provider": image_result.get("provider"),
                         }
                     else:
-                        fix_result = await ai_client.generate_code_fix(
-                            html_snippet=violation.html_snippet,
-                            rule_id=violation.rule_id,
-                            issue_description=classification.get("explanation", ""),
-                            context=violation.page_context,
-                        )
                         violation_result["fix"] = {
-                            "fix_recommendation": fix_result.get("fixed_code", ""),
-                            "explanation": fix_result.get("explanation", ""),
-                            "model": fix_result.get("model"),
-                            "inference_time": fix_result.get("inference_time", 0),
-                            "provider": fix_result.get("provider"),
+                            "fix_recommendation": "",
+                            "explanation": "The source image could not be analysed. Review the image and write its description manually.",
                             "vision_ai_failed": True,
+                            "human_review_required": True,
                         }
                 else:
                     fix_result = await ai_client.generate_code_fix(
@@ -1102,8 +1102,13 @@ async def batch_analyze_violations(
             results.append(violation_result)
 
         except Exception as e:
+            logger.error("Batch AI analysis failed (%s)", type(e).__name__)
             results.append(
-                {"id": violation.id, "rule_id": violation.rule_id, "error": str(e)}
+                {
+                    "id": violation.id,
+                    "rule_id": violation.rule_id,
+                    "error": "AI analysis could not be completed. Please try again.",
+                }
             )
 
     return {
@@ -1144,7 +1149,11 @@ async def test_ai(
             "inference_time": result.get("inference_time"),
         }
     except Exception as e:
-        return {"message": "AI test failed", "error": str(e)}
+        logger.error("AI test failed (%s)", type(e).__name__)
+        return {
+            "message": "AI test failed",
+            "error": "AI service unavailable. Check the workspace provider configuration and try again.",
+        }
 
 
 # Mount email static assets (logo, etc.) at /static

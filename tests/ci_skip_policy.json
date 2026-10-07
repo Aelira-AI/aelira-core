@@ -14,6 +14,10 @@
   "profiles": {
     "main": {
       "required_tests": [
+        "tests/scanners/test_pa11y_scanner.py::TestGuardedHtmlcs::test_private_subresource_refuses_secondary_score",
+        "tests/scanners/test_pa11y_scanner.py::TestGuardedHtmlcs::test_public_page_produces_real_htmlcs_issues",
+        "tests/scanners/test_pa11y_scanner.py::TestGuardedHtmlcs::test_strict_csp_page_still_runs_trusted_htmlcs",
+        "tests/scanners/test_pa11y_scanner.py::TestGuardedHtmlcs::test_websocket_dependency_refuses_secondary_score",
         "tests/test_account_routes.py::test_account_database_failure_is_bounded[RuntimeError-route0]",
         "tests/test_account_routes.py::test_account_database_failure_is_bounded[RuntimeError-route1]",
         "tests/test_account_routes.py::test_account_database_failure_is_bounded[RuntimeError-route2]",
@@ -418,6 +422,17 @@
         "tests/test_auth_routes.py::TestSessionValidate::test_validated_session_recovers_from_stale_bearer_and_creates_one_requested_key",
         "tests/test_auth_routes.py::TestValidateApiKey::test_happy_path",
         "tests/test_auth_routes.py::TestValidateApiKey::test_requires_auth",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_binding_tamper_cannot_hide_blocked_worker",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_child_frame_refuses_unverifiable_score",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_native_console_reports_block_despite_full_page_tamper",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_popup_realm_refuses_score_without_private_udp",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_private_subresource_is_blocked_but_page_loads",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_public_redirect_cookie_reaches_final_browser_origin",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_public_redirect_still_followed",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_redirect_to_private_is_blocked",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_response_cookies_reach_following_browser_request",
+        "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_unrouted_channels_fail_scan_without_private_udp",
+        "tests/test_browser_ssrf_guard.py::TestWebScannerInstallsGuard::test_scan_website_refuses_private_target_at_browser_level",
         "tests/test_canvas_content_routes.py::TestApproveContent::test_approve_not_found",
         "tests/test_canvas_content_routes.py::TestApproveContent::test_approve_rejects_legacy_file_flag_without_managed_artifact",
         "tests/test_canvas_content_routes.py::TestApproveContent::test_approve_rejects_source_that_requires_rescan",
@@ -758,6 +773,8 @@
         "tests/test_google_workspace_e2e.py::test_remediation_enqueues_matching_scan_identity",
         "tests/test_google_workspace_e2e.py::test_remediation_without_scan_is_harmless",
         "tests/test_google_workspace_e2e.py::test_unsupported_upload_does_not_read_path_or_invent_success",
+        "tests/test_image_alt_httpx_logging.py::test_app_policy_omits_httpx_url_and_keeps_bounded_refusal",
+        "tests/test_image_alt_httpx_logging.py::test_httpx_info_positive_control_contains_full_synthetic_url",
         "tests/test_integration_status.py::test_disconnect_commit_failure_rolls_back_deactivation",
         "tests/test_integration_status.py::test_disconnect_deactivates_only_matching_local_credential[google]",
         "tests/test_integration_status.py::test_disconnect_deactivates_only_matching_local_credential[microsoft]",
@@ -982,6 +999,20 @@
         "tests/test_latex_validation_routes.py::test_queued_process_persists_receipt_and_only_delivers_supported_tex[formats0]",
         "tests/test_latex_validation_routes.py::test_queued_process_persists_receipt_and_only_delivers_supported_tex[formats1]",
         "tests/test_latex_validation_routes.py::test_queued_process_persists_receipt_and_only_delivers_supported_tex[formats2]",
+        "tests/test_llm_cache_clear_security.py::test_invalid_provider_never_reaches_cache_or_logs[*]",
+        "tests/test_llm_cache_clear_security.py::test_invalid_provider_never_reaches_cache_or_logs[GEMINI]",
+        "tests/test_llm_cache_clear_security.py::test_invalid_provider_never_reaches_cache_or_logs[]",
+        "tests/test_llm_cache_clear_security.py::test_invalid_provider_never_reaches_cache_or_logs[gemini:*]",
+        "tests/test_llm_cache_clear_security.py::test_invalid_provider_never_reaches_cache_or_logs[gemini?]",
+        "tests/test_llm_cache_clear_security.py::test_invalid_provider_never_reaches_cache_or_logs[gemini\\nsecret]",
+        "tests/test_llm_cache_clear_security.py::test_invalid_provider_never_reaches_cache_or_logs[secret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]",
+        "tests/test_llm_cache_clear_security.py::test_non_admin_remains_forbidden_before_provider_clear",
+        "tests/test_llm_cache_clear_security.py::test_omitted_provider_preserves_global_clear",
+        "tests/test_llm_cache_clear_security.py::test_provider_clear_deletes_only_matching_actual_keys[anthropic]",
+        "tests/test_llm_cache_clear_security.py::test_provider_clear_deletes_only_matching_actual_keys[gemini]",
+        "tests/test_llm_cache_clear_security.py::test_provider_clear_deletes_only_matching_actual_keys[ollama]",
+        "tests/test_llm_cache_clear_security.py::test_provider_clear_deletes_only_matching_actual_keys[openai]",
+        "tests/test_llm_cache_clear_security.py::test_provider_clear_deletes_only_matching_actual_keys[xai]",
         "tests/test_lms_remediation_execution_policy.py::test_process_false_remediator_result_is_fatal_before_side_effects[False]",
         "tests/test_lms_remediation_execution_policy.py::test_process_false_remediator_result_is_fatal_before_side_effects[True]",
         "tests/test_local_scan_job.py::test_child_response_loss_reloads_and_preserves_committed_scan_result",
@@ -1989,22 +2020,6 @@
           ],
           "evidence": [
             "tests/test_browser_compatibility.py"
-          ]
-        },
-        {
-          "id": "browser-request-guard",
-          "classification": "environment-gated",
-          "owner": "Security and browser-scanning maintainers",
-          "reason": "Four real Playwright-browser cases are individually gated by RUN_E2E_TESTS; mocked unit cases in the same module execute. Requires installed browsers and isolated test servers.",
-          "issue": "https://github.com/Aelira-AI/aelira-core/issues/375",
-          "nodeids": [
-            "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_private_subresource_is_blocked_but_page_loads",
-            "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_public_redirect_still_followed",
-            "tests/test_browser_ssrf_guard.py::TestBrowserSsrfGuardE2E::test_redirect_to_private_is_blocked",
-            "tests/test_browser_ssrf_guard.py::TestWebScannerInstallsGuard::test_scan_website_refuses_private_target_at_browser_level"
-          ],
-          "evidence": [
-            "tests/test_browser_ssrf_guard.py"
           ]
         },
         {

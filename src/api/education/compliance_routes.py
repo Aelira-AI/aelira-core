@@ -122,10 +122,10 @@ async def get_department_compliance_stats(
             },
         }
 
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Department not found")
     except Exception as e:
-        logger.error(f"Error getting compliance stats: {str(e)}", exc_info=True)
+        logger.error("Error getting compliance stats (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Failed to get compliance stats. Please try again."
         )
@@ -198,7 +198,7 @@ async def get_priority_issues(
         }
 
     except Exception as e:
-        logger.error(f"Error getting priority issues: {str(e)}", exc_info=True)
+        logger.error("Error getting priority issues (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Failed to get priority issues. Please try again."
         )
@@ -263,7 +263,7 @@ async def get_compliance_trend(
         }
 
     except Exception as e:
-        logger.error(f"Error getting compliance trend: {str(e)}", exc_info=True)
+        logger.error("Error getting compliance trend (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Failed to get compliance trend. Please try again."
         )

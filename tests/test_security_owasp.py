@@ -573,10 +573,10 @@ class TestSSRF:
         redirect.is_permanent_redirect = False
         redirect.headers = {"Location": "http://169.254.169.254/latest/meta-data/"}
 
-        def fake_get(url, **kwargs):
+        def fake_get(method, url, **kwargs):
             return redirect
 
-        with patch("requests.get", side_effect=fake_get):
+        with patch("requests.Session.request", side_effect=fake_get):
             with pytest.raises(ValueError):
                 # example.com resolves publicly; the redirect hop must be
                 # validated and rejected before any second request is made.
@@ -593,7 +593,11 @@ class TestSSRF:
         redirect.is_permanent_redirect = False
         redirect.headers = {"Location": "http://example.com/again"}
 
-        with patch("requests.get", return_value=redirect):
+        public_dns = [(2, 1, 6, "", ("93.184.216.34", 80))]
+        with (
+            patch("requests.Session.request", return_value=redirect),
+            patch("src.utils.security.socket.getaddrinfo", return_value=public_dns),
+        ):
             with pytest.raises(ValueError, match="Too many redirects"):
                 safe_requests_get(
                     "http://example.com/start", timeout=5, max_redirects=3

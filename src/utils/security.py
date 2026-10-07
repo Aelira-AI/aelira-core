@@ -791,17 +791,14 @@ def validate_url_not_private(url: str) -> str:
     except socket.gaierror:
         raise ValueError("Could not resolve hostname")
 
+    if not addr_infos:
+        raise ValueError("Could not resolve hostname")
+
     for addr_info in addr_infos:
         ip_str = addr_info[4][0]
         ip = ipaddress.ip_address(ip_str)
 
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_reserved
-            or ip.is_link_local
-            or ip_str == "0.0.0.0"
-        ):
+        if _is_forbidden_address(ip):
             raise ValueError("URL target is not allowed")
 
     return url
@@ -813,37 +810,114 @@ def safe_requests_get(
     max_redirects: int = 5,
     **kwargs,
 ):
-    """GET a URL with SSRF-guarded redirects.
+    """GET with public-address checks at every connection and redirect hop."""
+    return safe_requests_request(
+        "GET", url, timeout=timeout, max_redirects=max_redirects, **kwargs
+    )
 
-    validate_url_not_private() alone is not enough: requests follows
-    redirects by default, so an allowed public URL could 302 to localhost,
-    a private network, or cloud metadata. This helper disables automatic
-    redirects and re-validates every hop before following it.
 
-    Note: each hop is validated at request time via DNS resolution; a
-    hostile resolver that answers differently between validation and
-    connection (DNS rebinding) is out of scope here and mitigated by
-    running scans from an egress-restricted network.
+def safe_requests_request(
+    method: str,
+    url: str,
+    timeout: float = 10,
+    max_redirects: int = 5,
+    follow_redirects: bool = True,
+    **kwargs,
+):
+    """Request with public-address checks at every connection and redirect hop.
+
+    Returns a native requests.Response. Each TCP socket connects to a DNS
+    answer checked by the adapter, while the URL hostname remains in the
+    Host header and HTTPS certificate validation. Environment proxies are
+    disabled so they cannot bypass the connection boundary.
     """
     import requests as _requests
+    from .public_http import PublicOnlyHTTPAdapter
 
-    kwargs.pop("allow_redirects", None)
+    allow_redirects = kwargs.pop("allow_redirects", None)
+    if allow_redirects is not None:
+        follow_redirects = bool(allow_redirects)
+    if kwargs.pop("proxies", None):
+        raise ValueError("Proxies are not allowed for public URL fetches")
+    if kwargs.pop("verify", True) is not True:
+        raise ValueError("TLS verification is required for public URL fetches")
+    request_kwargs = dict(kwargs)
+    headers = dict(request_kwargs.pop("headers", {}) or {})
+    headers = {key: value for key, value in headers.items() if key.lower() != "host"}
+    initial_cookies = request_kwargs.pop("cookies", None)
     current = url
-    for _ in range(max_redirects + 1):
-        validate_url_not_private(current)
-        response = _requests.get(
-            current, timeout=timeout, allow_redirects=False, **kwargs
-        )
-        if response.is_redirect or response.is_permanent_redirect:
-            location = response.headers.get("Location")
-            if not location:
-                return response
-            # Resolve relative redirects against the current URL
-            from urllib.parse import urljoin
-
-            current = urljoin(current, location)
-            continue
-        return response
+    history = []
+    method = method.upper()
+    with _requests.Session() as session:
+        session.trust_env = False
+        session.mount("http://", PublicOnlyHTTPAdapter())
+        session.mount("https://", PublicOnlyHTTPAdapter())
+        if initial_cookies:
+            request_kwargs["cookies"] = initial_cookies
+        for _ in range(max_redirects + 1):
+            validate_url_not_private(current)
+            response = session.request(
+                method,
+                current,
+                timeout=timeout,
+                allow_redirects=False,
+                verify=True,
+                headers=headers,
+                **request_kwargs,
+            )
+            if response.is_redirect or response.is_permanent_redirect:
+                location = response.headers.get("Location")
+                if not location or not follow_redirects:
+                    response.history = history
+                    return response
+                response.close()
+                history.append(response)
+                next_url = urljoin(current, location)
+                old_origin = urlparse(current)
+                new_origin = urlparse(next_url)
+                if (
+                    old_origin.scheme.lower(),
+                    old_origin.hostname,
+                    old_origin.port or (443 if old_origin.scheme == "https" else 80),
+                ) != (
+                    new_origin.scheme.lower(),
+                    new_origin.hostname,
+                    new_origin.port or (443 if new_origin.scheme == "https" else 80),
+                ):
+                    allowed = {
+                        "accept",
+                        "accept-language",
+                        "user-agent",
+                        "cache-control",
+                    }
+                    headers = {
+                        key: value
+                        for key, value in headers.items()
+                        if key.lower() in allowed
+                    }
+                    # Requests can otherwise replay caller-supplied cookies
+                    # or cookies set by the redirecting origin on a new origin.
+                    request_kwargs.pop("cookies", None)
+                    session.cookies.clear()
+                    request_kwargs.pop("auth", None)
+                if response.status_code in (301, 302, 303) and method not in (
+                    "GET",
+                    "HEAD",
+                ):
+                    method = "GET"
+                    for key in ("data", "json", "files"):
+                        request_kwargs.pop(key, None)
+                    headers = {
+                        key: value
+                        for key, value in headers.items()
+                        if key.lower()
+                        not in {"content-type", "content-length", "transfer-encoding"}
+                    }
+                request_kwargs.pop("params", None)
+                current = next_url
+                continue
+            response.history = history
+            return response
     raise ValueError(f"Too many redirects (>{max_redirects})")
 
 

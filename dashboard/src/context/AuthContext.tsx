@@ -4,7 +4,7 @@ import React, {
   useCallback,
   ReactNode,
 } from 'react';
-import { apiClient, clearStoredApiKeyAuth } from '../api/client';
+import { apiClient, clearStoredApiKeyAuth, setDashboardApiKey } from '../api/client';
 import type { User, Department } from '../types';
 import { AuthContext } from './auth-context';
 import type { AuthMethod, LoginResult } from './auth-context';
@@ -22,8 +22,8 @@ interface ValidateResponse {
 export function AuthProvider({ children }: AuthProviderProps): React.ReactElement {
   const isExpiredLogin =
     window.location.pathname === '/login' && window.location.search === '?expired=1';
-  // Support both session-based auth (cookies) and API key auth (localStorage)
-  const [apiKey, setApiKey] = useState<string | null>(() => localStorage.getItem('apiKey'));
+  // API-key compatibility sign-in is memory-only and requires re-entry after reload.
+  const [apiKey, setApiKey] = useState<string | null>(null);
   const [department, setDepartment] = useState<Department | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -49,30 +49,11 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
     }
   }, []);
 
-  // Validate API key (legacy auth)
-  const validateApiKey = useCallback(async (key: string): Promise<boolean> => {
-    try {
-      const response = await apiClient.get<ValidateResponse>('/auth/validate', {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-      setDepartment(response.data.department);
-      setUser(response.data.user);
-      setAuthMethod('api_key');
-      return true;
-    } catch (error) {
-      const axiosError = error as { response?: { status?: number } };
-      console.warn('API key validation failed:', axiosError.response?.status);
-      localStorage.removeItem('apiKey');
-      setApiKey(null);
-      return false;
-    }
-  }, []);
-
   // Initialize auth state
   useEffect(() => {
     const initAuth = async (): Promise<void> => {
       if (isExpiredLogin) {
-        localStorage.removeItem('apiKey');
+        clearStoredApiKeyAuth();
         setApiKey(null);
         setDepartment(null);
         setUser(null);
@@ -89,16 +70,11 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
         return;
       }
 
-      // Fall back to API key auth
-      if (apiKey) {
-        await validateApiKey(apiKey);
-      }
-
       setLoading(false);
     };
 
     initAuth();
-  }, [apiKey, isExpiredLogin, validateSession, validateApiKey]);
+  }, [isExpiredLogin, validateSession]);
 
   // Login with API key (for backwards compatibility)
   const login = async (key: string): Promise<LoginResult> => {
@@ -108,11 +84,11 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
       const response = await apiClient.get<ValidateResponse>('/auth/validate', {
         headers: { Authorization: `Bearer ${key}` },
       });
+      setDashboardApiKey(key);
       setApiKey(key);
       setDepartment(response.data.department);
       setUser(response.data.user);
       setAuthMethod('api_key');
-      localStorage.setItem('apiKey', key);
       setLoading(false);
       return { success: true };
     } catch (error) {
@@ -151,7 +127,7 @@ export function AuthProvider({ children }: AuthProviderProps): React.ReactElemen
     setDepartment(null);
     setUser(null);
     setAuthMethod(null);
-    localStorage.removeItem('apiKey');
+    clearStoredApiKeyAuth();
 
     // If session-based, revoke on server
     try {

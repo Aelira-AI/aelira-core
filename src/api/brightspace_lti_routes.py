@@ -416,7 +416,10 @@ async def brightspace_lti_launch(
         return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
         logger.error("Brightspace LTI launch failed: %s", type(e).__name__)
-        raise HTTPException(status_code=400, detail=f"LTI launch failed: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail="LTI launch failed. Please restart from your learning platform.",
+        )
 
 
 # =============================================================================
@@ -460,7 +463,10 @@ async def brightspace_lti_deep_link(
         return HTMLResponse(content="LTI launch not authorized.", status_code=403)
     except Exception as e:
         logger.error("Brightspace deep link launch failed: %s", type(e).__name__)
-        raise HTTPException(status_code=400, detail=f"Deep link failed: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail="Deep link failed. Please restart from your learning platform.",
+        )
 
 
 async def handle_brightspace_deep_link_launch(

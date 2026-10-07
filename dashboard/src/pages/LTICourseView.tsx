@@ -366,8 +366,7 @@ export function LTICourseView(): React.ReactElement {
     return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
   }, [scanStatuses, courseMeta.compliance_percentage]);
 
-  // Use the generic apiClient — token is stored in localStorage by useLTISession
-  // and the apiClient interceptor attaches it automatically
+  // useLTISession sets the LTI launch token on the shared apiClient.
   useEffect(() => {
     if (accessToken) {
       clientRef.current = apiClient;

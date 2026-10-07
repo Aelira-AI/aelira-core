@@ -137,9 +137,7 @@ async def check_scan_quota(
     result = await check_quota(db, department_id, pages)
 
     if not result.allowed:
-        logger.warning(
-            f"Quota exceeded for department {department_id}: {result.message}"
-        )
+        logger.warning("Scan quota exceeded")
         raise HTTPException(
             status_code=429,
             detail={
@@ -181,9 +179,7 @@ async def check_image_analysis_quota(
     result = await check_image_quota(db, department_id, count)
 
     if not result.allowed:
-        logger.warning(
-            f"Image quota exceeded for department {department_id}: {result.message}"
-        )
+        logger.warning("Image quota exceeded")
         raise HTTPException(
             status_code=429,
             detail={
@@ -252,7 +248,7 @@ async def validate_uploaded_file(
         and department_id.startswith("dev-dept-")
         and settings.env.lower() == "development"
     ):
-        logger.debug(f"Skipping security validation for mock auth: {filename}")
+        logger.debug("Skipping security validation for development authentication")
         return content
 
     try:
@@ -300,10 +296,7 @@ async def validate_uploaded_file(
 
         # Handle threats based on severity
         if result.threat_level == ThreatLevel.CRITICAL:
-            logger.warning(
-                f"CRITICAL security threat detected in file '{filename}' "
-                f"from department {department_id}: {result.findings[0].description if result.findings else 'Unknown'}"
-            )
+            logger.warning("Critical document security threat detected")
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -335,15 +328,10 @@ async def validate_uploaded_file(
                 security_result.was_sanitized = True
                 db.commit()
 
-                logger.info(
-                    f"Sanitized high-risk file '{filename}' from department {department_id}"
-                )
+                logger.info("High-risk document sanitized")
                 return sanitized_content
             else:
-                logger.warning(
-                    f"HIGH security threat detected in file '{filename}' "
-                    f"from department {department_id}"
-                )
+                logger.warning("High document security threat detected")
                 raise HTTPException(
                     status_code=400,
                     detail={
@@ -364,18 +352,14 @@ async def validate_uploaded_file(
 
         # MEDIUM and LOW threats are logged but allowed
         if result.threat_level == ThreatLevel.MEDIUM:
-            logger.info(
-                f"Medium-risk elements detected in file '{filename}' "
-                f"from department {department_id}: "
-                f"{', '.join(f.description for f in result.findings if f.threat_level == ThreatLevel.MEDIUM)}"
-            )
+            logger.info("Medium-risk document security elements detected")
 
         return content
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Security validation error for file '{filename}': {e}")
+        logger.error("Document security validation failed (%s)", type(e).__name__)
         # Fail closed: reject files that can't be validated
         raise HTTPException(
             status_code=400,

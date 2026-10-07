@@ -76,7 +76,7 @@ async def get_faculty_leaderboard(
         }
 
     except Exception as e:
-        logger.error(f"Error getting faculty leaderboard: {str(e)}", exc_info=True)
+        logger.error("Error getting faculty leaderboard (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500,
             detail="Failed to get faculty leaderboard. Please try again.",
@@ -132,7 +132,7 @@ async def get_gamified_leaderboard(
         }
 
     except Exception as e:
-        logger.error(f"Error getting gamified leaderboard: {str(e)}", exc_info=True)
+        logger.error("Error getting gamified leaderboard (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500, detail="Failed to get leaderboard. Please try again."
         )
@@ -170,10 +170,10 @@ async def get_user_gamification_stats(
         stats = get_gamification_stats(db, user_id, department_id)
         return {"success": True, **stats}
 
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found")
     except Exception as e:
-        logger.error(f"Error getting gamification stats: {str(e)}", exc_info=True)
+        logger.error("Error getting gamification stats (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500,
             detail="Failed to get gamification stats. Please try again.",

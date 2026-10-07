@@ -120,9 +120,6 @@ function peekStoredToken(): string | undefined {
 
 function clearSession(token?: string): void {
   sessionStorage.removeItem(SESSION_STORAGE_KEY);
-  if (token && localStorage.getItem('apiKey') === token) {
-    localStorage.removeItem('apiKey');
-  }
   const authorization = apiClient.defaults.headers.common.Authorization;
   if (token && authorization === `Bearer ${token}`) {
     delete apiClient.defaults.headers.common.Authorization;

@@ -3,7 +3,6 @@
 from ...education.latex_evidence import public_scan_structure
 import json as _json
 import logging
-import traceback
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -463,8 +462,7 @@ async def download_scan_report(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
-        logger.error(f"[REPORT] Error generating report: {type(e).__name__}: {str(e)}")
-        logger.error(f"[REPORT] Traceback:\n{traceback.format_exc()}")
+        logger.error("Report generation failed (%s)", type(e).__name__)
         raise
 
 

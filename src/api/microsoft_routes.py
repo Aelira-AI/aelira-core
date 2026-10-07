@@ -9,7 +9,7 @@ Provides endpoints for:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
@@ -45,7 +45,8 @@ from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..middleware.quota import require_feature
 from ..integrations.microsoft_365.onedrive import OneDriveIntegration
 from ..integrations.microsoft_365.microsoft_oauth import MicrosoftOAuthService
-from ..config.settings import get_settings
+from ..config.settings import Settings, get_settings
+from .oauth_routes import integration_callback_redirect, trusted_http_origin
 from ..services.remediation_artifact_service import (
     ArtifactAuthorizationError,
     RemediationArtifactService,
@@ -71,6 +72,11 @@ class MicrosoftConnectRequest(BaseModel):
     scopes: Optional[List[str]] = Field(
         default=None, description="OAuth scopes to request (defaults to Files + User)"
     )
+
+
+def _integration_redirect_uri(oauth_settings: Settings) -> str:
+    """Keep integration OAuth separate from the account-login callback."""
+    return f"{trusted_http_origin(oauth_settings.public_api_url)}/microsoft/callback"
 
 
 class MicrosoftConnectResponse(BaseModel):
@@ -260,7 +266,7 @@ async def get_microsoft_credential(
         except Exception as e:
             logger.error("Failed to refresh Microsoft token: %s", type(e).__name__)
             credential.is_active = False
-            credential.last_error = f"Token refresh failed: {str(e)}"
+            credential.last_error = "Token refresh failed"
             db.commit()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -370,6 +376,19 @@ async def connect_microsoft(
             detail="Microsoft 365 already connected. Disconnect first to reconnect.",
         )
 
+    try:
+        redirect_uri = _integration_redirect_uri(get_settings())
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Microsoft integration is not configured.",
+        ) from None
+    if request.redirect_uri != redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Redirect URI does not match the Microsoft integration callback.",
+        )
+
     token_manager = get_token_manager()
 
     # Server-side CSRF state bound to this department, one-time use, TTL'd.
@@ -380,7 +399,7 @@ async def connect_microsoft(
     )
 
     auth_url = token_manager.get_microsoft_auth_url(
-        redirect_uri=request.redirect_uri,
+        redirect_uri=redirect_uri,
         scopes=request.scopes,
         state=state,
     )
@@ -392,8 +411,12 @@ async def connect_microsoft(
 
 @router.get("/callback")
 async def microsoft_callback_get(
-    code: str = Query(..., description="Authorization code from Microsoft"),
-    state: str = Query(..., description="State parameter for verification"),
+    code: Optional[str] = Query(
+        default=None, description="Authorization code from Microsoft"
+    ),
+    state: Optional[str] = Query(
+        default=None, description="State parameter for verification"
+    ),
     error: Optional[str] = Query(default=None, description="Error from OAuth provider"),
     db: Session = Depends(get_db_dependency),
 ):
@@ -404,23 +427,28 @@ async def microsoft_callback_get(
     It exchanges the authorization code for tokens and stores the connection.
     """
     # Handle OAuth errors
+    oauth_settings = get_settings()
+    dashboard_url = oauth_settings.dashboard_url
     if error:
         logger.error("Microsoft OAuth authorization was denied")
-        return RedirectResponse(
-            url=f"http://localhost:5173/integrations?error=oauth_failed&message={error}"
-        )
+        return integration_callback_redirect(dashboard_url, error="oauth_failed")
 
     # Verify + consume the server-side state (CSRF defence). department_id
     # comes ONLY from verified metadata, never the query string.
     from ..auth.redis_rate_limiter import OAuthStateManager
 
-    is_valid, metadata = OAuthStateManager.verify_and_consume_state(state)
+    is_valid, metadata = OAuthStateManager.verify_and_consume_state(state or "")
     department_id = (metadata or {}).get("department_id")
-    if not is_valid or not department_id:
+    if (
+        not is_valid
+        or not department_id
+        or (metadata or {}).get("provider") != "microsoft"
+    ):
         logger.warning("Microsoft OAuth callback with invalid/expired state")
-        return RedirectResponse(
-            url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=invalid_state"
-        )
+        return integration_callback_redirect(dashboard_url, error="invalid_state")
+
+    if not code:
+        return integration_callback_redirect(dashboard_url, error="exchange_failed")
 
     token_manager = get_token_manager()
 
@@ -428,7 +456,7 @@ async def microsoft_callback_get(
         # Exchange code for tokens
         token_data = await token_manager.exchange_microsoft_code(
             code=code,
-            redirect_uri="http://localhost:8000/microsoft/callback",
+            redirect_uri=_integration_redirect_uri(oauth_settings),
         )
 
         # Delete any existing inactive credentials
@@ -458,15 +486,13 @@ async def microsoft_callback_get(
         logger.info("Connected Microsoft 365 for department %s", department_id)
 
         # Redirect back to frontend with success
-        return RedirectResponse(
-            url=f"http://localhost:5173/integrations?success=microsoft_connected&email={token_data.get('email', '')}"
+        return integration_callback_redirect(
+            dashboard_url, success="microsoft_connected", email=token_data.get("email")
         )
 
     except Exception as e:
         logger.error("Microsoft OAuth callback failed: %s", type(e).__name__)
-        return RedirectResponse(
-            url=f"http://localhost:5173/integrations?error=exchange_failed&message={str(e)}"
-        )
+        return integration_callback_redirect(dashboard_url, error="exchange_failed")
 
 
 @router.post("/callback", response_model=MicrosoftCredentialResponse)
@@ -532,12 +558,12 @@ async def microsoft_callback(
             created_at=credential.created_at,
         )
 
-    except Exception as e:
-        logger.error("Microsoft OAuth callback failed: %s", type(e).__name__)
+    except Exception as exc:
+        logger.error("Microsoft OAuth callback failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"OAuth callback failed: {str(e)}",
-        )
+            detail="Microsoft OAuth callback failed. Please reconnect and try again.",
+        ) from None
 
 
 @router.delete("/disconnect")

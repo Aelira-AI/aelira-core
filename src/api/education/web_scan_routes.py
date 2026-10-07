@@ -29,8 +29,27 @@ from ._shared import (
     validate_uploaded_file,
 )
 
+from ...education.scan_completeness import (
+    IncompleteScanError,
+    public_scan_failure_message,
+)
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _aggregate_issue_details(pages):
+    """Persist sourced issue details in the same shape as a single-page scan."""
+    details = []
+    for page in pages:
+        for issue in page.issues:
+            detail = issue.model_dump()
+            detail["page_url"] = issue.page_url or page.url
+            detail["page_title"] = page.title
+            details.append(detail)
+            if len(details) >= 100:
+                return {"details": details}
+    return {"details": details}
 
 
 # ==================== Pydantic Models ====================
@@ -114,9 +133,7 @@ async def scan_website(
     Returns:
         scan_id and status (processing happens in background)
     """
-    logger.info(
-        f"[ENDPOINT CALLED] scan_website function entry - request received: {request.url}"
-    )
+    logger.info("Web scan request received")
     _, user_id, department_id = api_key_info
 
     # Check feature access (tier-gated via TIER_QUOTAS)
@@ -136,17 +153,18 @@ async def scan_website(
     generate_code_fixes = request.generate_code_fixes
     capture_screenshots = request.capture_screenshots
 
-    logger.info(
-        f"Starting web scan for: {url} (user={user_id}, mode={mode.value}, engines={mode.engines})"
-    )
+    logger.info("Starting web scan")
 
     # Validate URL (including SSRF protection)
     from ...utils.security import validate_url_not_private
 
     try:
         validate_url_not_private(url)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="URL cannot be scanned. Use a public HTTP or HTTPS address.",
+        )
 
     # Create scan record with PROCESSING status
     from ...db.models import ScanStatus
@@ -187,7 +205,7 @@ async def scan_website(
     db.commit()
     db.refresh(scan)
 
-    logger.info(f"Created scan {scan_id} for {url}, queued durable job")
+    logger.info(f"Created scan {scan_id}, queued durable job")
 
     # Return immediately with scan_id
     return {
@@ -242,7 +260,7 @@ async def batch_scan_websites(
     Returns:
         batch_scan_id and status
     """
-    logger.info(f"[ENDPOINT CALLED] batch_scan_websites - {len(request.urls)} URLs")
+    logger.info("Batch web scan request received (urls=%s)", len(request.urls))
     _, user_id, department_id = api_key_info
 
     # Check feature access - Batch scanning requires website + bulk_api
@@ -264,15 +282,19 @@ async def batch_scan_websites(
     for url in request.urls:
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
-            raise HTTPException(status_code=400, detail=f"Invalid URL format: {url}")
-        if parsed.scheme not in ("http", "https"):
             raise HTTPException(
-                status_code=400, detail=f"URL must use http or https: {url}"
+                status_code=400,
+                detail="Invalid URL format. Use a public HTTP or HTTPS address.",
             )
+        if parsed.scheme not in ("http", "https"):
+            raise HTTPException(status_code=400, detail="URL must use HTTP or HTTPS.")
         try:
             validate_url_not_private(url)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"URL not allowed: {url} — {e}")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="URL cannot be scanned. Use a public HTTP or HTTPS address.",
+            )
 
     # Create batch scan record
     from ...db.models import ScanStatus
@@ -367,7 +389,7 @@ async def scan_from_sitemap(
     Returns:
         scan_id and status
     """
-    logger.info(f"[ENDPOINT CALLED] scan_from_sitemap - sitemap: {request.sitemap_url}")
+    logger.info("Sitemap scan request received")
     _, user_id, department_id = api_key_info
 
     # Check feature access - Sitemap scanning requires website + bulk_api
@@ -379,8 +401,11 @@ async def scan_from_sitemap(
 
     try:
         validate_url_not_private(request.sitemap_url)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="URL cannot be scanned. Use a public HTTP or HTTPS address.",
+        )
 
     # Create sitemap scan record
     from ...db.models import ScanStatus
@@ -473,7 +498,7 @@ def process_web_scan_background(
     db = SessionLocal()
 
     try:
-        logger.info(f"[BACKGROUND] Starting scan {scan_id} for {url}")
+        logger.info(f"[BACKGROUND] Starting scan {scan_id}")
 
         # Get scan record
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -507,11 +532,15 @@ def process_web_scan_background(
                     else:
                         thread_scan.progress = 0
 
-                    thread_scan.progress_message = message
+                    thread_scan.progress_message = "Processing in progress..."
                     thread_db.commit()
                 thread_db.close()
             except Exception as e:
-                logger.error(f"[BACKGROUND] Error updating progress: {e}")
+                logger.error(
+                    "[BACKGROUND] Error updating progress (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
+                )
 
         # Initialize scanner
         scanner = WebScanner(
@@ -530,12 +559,12 @@ def process_web_scan_background(
         # Perform axe-core scan (always runs)
         start_time = time.time()
         axe_start = time.time()
-        logger.info(f"[BACKGROUND] Starting scan with mode={mode}")
-        logger.info(f"[BACKGROUND] Calling scanner.scan_website (axe-core) for {url}")
+        logger.info("Starting web scanner")
+        logger.info("Running axe-core web scan")
         result = scanner.scan_website(url)
         axe_duration_ms = int((time.time() - axe_start) * 1000)
         logger.info(
-            f"[BACKGROUND] Axe-core scan completed for {url}, pages: {result.pages_scanned}, duration: {axe_duration_ms}ms"
+            f"[BACKGROUND] Axe-core scan completed, pages: {result.pages_scanned}, duration: {axe_duration_ms}ms"
         )
 
         # Initialize Pa11y tracking variables
@@ -547,7 +576,7 @@ def process_web_scan_background(
         # Run Pa11y for comprehensive/deep modes. Container builds prove the
         # configured browser launch before this runtime path can ship.
         if should_run_pa11y(mode):
-            logger.info(f"[BACKGROUND] Running Pa11y scan (mode={mode})")
+            logger.info("Running Pa11y web scan")
             try:
                 from ...scanners.pa11y_scanner import Pa11yScanner
                 from ...scanners.result_merger import ResultMerger
@@ -563,7 +592,7 @@ def process_web_scan_background(
                 try:
                     pa11y_start = time.time()
                     pa11y_result = loop.run_until_complete(
-                        pa11y_scanner.scan(url, runner="axe")
+                        pa11y_scanner.scan(url, runner="htmlcs")
                     )
                     pa11y_duration_ms = int((time.time() - pa11y_start) * 1000)
                     logger.info(
@@ -575,49 +604,25 @@ def process_web_scan_background(
                         "url": url,
                         "violations": [
                             {
-                                "id": issue.impact
-                                or "unknown",  # Use first page's issues
-                                "impact": issue.impact or "serious",
-                                "description": (
-                                    result.pages[0].issues[0].description
-                                    if result.pages
-                                    else ""
+                                "id": issue.rule_id
+                                or (issue.metadata or {}).get(
+                                    "rule_id", issue.criterion
                                 ),
-                                "help": (
-                                    result.pages[0].issues[0].description
-                                    if result.pages
-                                    else ""
-                                ),
-                                "helpUrl": "",
+                                "impact": issue.impact,
+                                "description": issue.description,
+                                "help": issue.description,
+                                "helpUrl": issue.help_url,
                                 "nodes": [
                                     {
-                                        "html": (
-                                            page_result.issues[i].element
-                                            if i < len(page_result.issues)
-                                            else ""
-                                        ),
-                                        "target": [
-                                            (
-                                                page_result.issues[i].selector
-                                                if i < len(page_result.issues)
-                                                else ""
-                                            )
-                                        ],
-                                        "failureSummary": (
-                                            page_result.issues[i].description
-                                            if i < len(page_result.issues)
-                                            else ""
-                                        ),
+                                        "html": issue.element or "",
+                                        "target": [issue.selector or "unknown"],
+                                        "failureSummary": issue.fix or "",
                                     }
-                                    for i, page_result in enumerate(
-                                        result.pages[:1]
-                                    )  # First page only
                                 ],
                                 "tags": [],
                             }
-                            for issue in (
-                                result.pages[0].issues if result.pages else []
-                            )
+                            for page_result in result.pages[:1]
+                            for issue in page_result.issues
                         ],
                     }
 
@@ -628,27 +633,35 @@ def process_web_scan_background(
                     logger.info(
                         f"[BACKGROUND] Merged results: {merged_results['total_issues']} unique issues "
                         + f"(axe: {merged_results['engine_counts']['axe-core']}, "
-                        + f"pa11y: {merged_results['engine_counts']['pa11y']}, "
+                        + f"{pa11y_result.engine}: {merged_results['engine_counts'][pa11y_result.engine]}, "
                         + f"both: {merged_results['engine_counts']['both']})"
                     )
 
-                    engines_used.append("pa11y")
+                    engines_used.append(pa11y_result.engine)
 
                 except Exception as pa11y_error:
-                    logger.error(f"[BACKGROUND] Pa11y scan failed: {pa11y_error}")
-                    pa11y_result = None
-                    pa11y_duration_ms = None
+                    logger.error(
+                        "[BACKGROUND] Pa11y scan failed (%s) (scan_id=%s)",
+                        type(pa11y_error).__name__,
+                        scan_id,
+                    )
+                    raise IncompleteScanError(
+                        "Secondary accessibility checks failed"
+                    ) from pa11y_error
                 finally:
                     loop.close()
 
             except ImportError as e:
                 logger.warning(
-                    f"[BACKGROUND] Pa11y scanner not available (mode={mode}): {e}"
+                    "Pa11y scanner not available (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
                 )
+                raise IncompleteScanError(
+                    "Secondary accessibility engine is unavailable"
+                ) from e
         else:
-            logger.info(
-                f"[BACKGROUND] Skipping Pa11y scan (mode={mode}, only axe-core)"
-            )
+            logger.info("Skipping Pa11y scan: axe-core only")
 
         # Update scan metadata (keep progress at 95% while storing results)
         scan.progress = 95
@@ -820,7 +833,9 @@ def process_web_scan_background(
 
     except Exception as e:
         logger.error(
-            f"[BACKGROUND] Error processing scan {scan_id}: {str(e)}", exc_info=True
+            "[BACKGROUND] Error processing scan (%s) (scan_id=%s)",
+            type(e).__name__,
+            scan_id,
         )
 
         # Update scan to failed
@@ -828,12 +843,16 @@ def process_web_scan_background(
             scan = db.query(Scan).filter(Scan.id == scan_id).first()
             if scan:
                 scan.status = ScanStatus.FAILED
-                scan.error_message = str(e)
+                scan.error_message = public_scan_failure_message(e)
                 scan.progress = 0
-                scan.progress_message = f"Scan failed: {str(e)}"
+                scan.progress_message = public_scan_failure_message(e)
                 db.commit()
         except Exception as db_error:
-            logger.error(f"[BACKGROUND] Failed to update scan status: {db_error}")
+            logger.error(
+                "[BACKGROUND] Failed to update scan status (%s) (scan_id=%s)",
+                type(db_error).__name__,
+                scan_id,
+            )
 
     finally:
         db.close()
@@ -874,10 +893,14 @@ def process_batch_web_scan_background(
             if scan:
                 overall_progress = int((current / total) * 100)
                 scan.progress = overall_progress
-                scan.progress_message = message
+                scan.progress_message = "Processing in progress..."
                 db.commit()
         except Exception as e:
-            logger.warning(f"Failed to update progress: {e}")
+            logger.warning(
+                "Failed to update progress (%s) (scan_id=%s)",
+                type(e).__name__,
+                batch_scan_id,
+            )
 
     try:
         logger.info(
@@ -898,10 +921,12 @@ def process_batch_web_scan_background(
 
         # Track progress across all URLs
         total_urls = len(urls)
+        if not total_urls:
+            raise IncompleteScanError("No scan targets were supplied")
 
         for idx, url in enumerate(urls, 1):
             try:
-                logger.info(f"[BATCH] Scanning URL {idx}/{total_urls}: {url}")
+                logger.info(f"[BATCH] Scanning URL {idx}/{total_urls}")
                 progress_callback(
                     idx, total_urls, f"Scanning URL {idx}/{total_urls}: {url[:50]}..."
                 )
@@ -920,6 +945,8 @@ def process_batch_web_scan_background(
 
                 # Scan the URL
                 result = scanner.scan_website(url)
+                if not result.pages:
+                    raise IncompleteScanError("No pages were evaluated")
 
                 # Aggregate results
                 all_pages.extend(result.pages)
@@ -931,8 +958,14 @@ def process_batch_web_scan_background(
                     total_issues[severity] = total_issues.get(severity, 0) + count
 
             except Exception as e:
-                logger.error(f"[BATCH] Error scanning {url}: {e}", exc_info=True)
-                # Continue with next URL even if one fails
+                logger.error(
+                    "[BATCH] Error scanning (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    batch_scan_id,
+                )
+                raise IncompleteScanError(
+                    "A requested page could not be evaluated"
+                ) from e
 
         # Calculate overall compliance score (average)
         overall_compliance_score = (
@@ -964,7 +997,15 @@ def process_batch_web_scan_background(
         scan_result = ScanResult(
             **runtime_ollama_usage(provider_runtime),
             scan_id=batch_scan_id,
-            result_data=batch_result,
+            structure=batch_result,
+            issues=_aggregate_issue_details(all_pages),
+            critical_issues=total_issues["critical"],
+            high_issues=total_issues["serious"],
+            medium_issues=total_issues["moderate"],
+            low_issues=total_issues["minor"],
+            scan_mode=mode,
+            engines_used=["axe-core"],
+            estimated_coverage_pct=estimate_coverage_for_engines(["axe-core"]),
             compliance_score=overall_compliance_score,
             cvd_analysis=serialize_cvd_analysis({"pages": all_pages}),
         )
@@ -973,6 +1014,9 @@ def process_batch_web_scan_background(
         # Update scan status to completed
         scan = db.query(Scan).filter(Scan.id == batch_scan_id).first()
         if scan:
+            scan.pages = len(all_pages)
+            scan.processing_time_ms = int(total_scan_time * 1000)
+            scan.error_message = None
             scan.status = ScanStatus.COMPLETED
             scan.progress = 100
             scan.progress_message = (
@@ -985,21 +1029,28 @@ def process_batch_web_scan_background(
 
     except Exception as e:
         logger.error(
-            f"[BATCH BACKGROUND] Error processing batch scan {batch_scan_id}: {str(e)}",
-            exc_info=True,
+            "[BATCH BACKGROUND] Error processing batch scan (%s) (scan_id=%s)",
+            type(e).__name__,
+            batch_scan_id,
         )
 
         # Update scan to failed
+        db.rollback()
         try:
             scan = db.query(Scan).filter(Scan.id == batch_scan_id).first()
             if scan:
                 scan.status = ScanStatus.FAILED
-                scan.error_message = str(e)
+                scan.compliance_score = None
+                scan.error_message = public_scan_failure_message(e)
                 scan.progress = 0
-                scan.progress_message = f"Batch scan failed: {str(e)}"
+                scan.progress_message = public_scan_failure_message(e)
                 db.commit()
         except Exception as db_error:
-            logger.error(f"[BATCH BACKGROUND] Failed to update scan status: {db_error}")
+            logger.error(
+                "[BATCH BACKGROUND] Failed to update scan status (%s) (scan_id=%s)",
+                type(db_error).__name__,
+                batch_scan_id,
+            )
 
     finally:
         db.close()
@@ -1041,15 +1092,17 @@ def process_sitemap_scan_background(
             if scan:
                 overall_progress = int((current / total) * 100)
                 scan.progress = overall_progress
-                scan.progress_message = message
+                scan.progress_message = "Processing in progress..."
                 db.commit()
         except Exception as e:
-            logger.warning(f"Failed to update progress: {e}")
+            logger.warning(
+                "Failed to update progress (%s) (scan_id=%s)",
+                type(e).__name__,
+                sitemap_scan_id,
+            )
 
     try:
-        logger.info(
-            f"[SITEMAP BACKGROUND] Starting sitemap scan {sitemap_scan_id} for {sitemap_url}"
-        )
+        logger.info(f"[SITEMAP BACKGROUND] Starting sitemap scan {sitemap_scan_id}")
 
         # Validate sitemap URL against SSRF before fetching
         from src.utils.security import safe_requests_get, validate_url_not_private
@@ -1061,7 +1114,10 @@ def process_sitemap_scan_background(
 
         # Parse sitemap XML
         progress_callback(10, 100, "Parsing sitemap...")
-        root = ET.fromstring(response.content)
+        try:
+            root = ET.fromstring(response.content)
+        finally:
+            response.close()
 
         # Extract URLs from sitemap
         # Handle both sitemap.xml formats (with/without namespace)
@@ -1092,9 +1148,9 @@ def process_sitemap_scan_background(
                 return 0
 
             urls.sort(key=get_url_priority, reverse=True)
-            logger.info(
-                f"[SITEMAP] Sorted URLs by priority patterns: {priority_patterns}"
-            )
+            logger.info("Sitemap URLs sorted by configured priority")
+
+        total_urls_discovered = len(urls)
 
         # Limit to max_pages
         if len(urls) > max_pages:
@@ -1117,6 +1173,8 @@ def process_sitemap_scan_background(
 
         # Scan each URL from sitemap
         total_urls = len(urls)
+        if not total_urls:
+            raise IncompleteScanError("No scan targets were supplied")
         base_progress = 20  # Already at 20% after sitemap parsing
         scan_progress_range = 80  # 80% for scanning
 
@@ -1127,14 +1185,16 @@ def process_sitemap_scan_background(
                     validate_url_not_private(url)
                 except ValueError:
                     logger.warning(
-                        f"[SITEMAP] Skipping private/reserved URL: {url[:100]}"
+                        "Sitemap URL skipped: private or reserved destination"
                     )
-                    continue
+                    raise IncompleteScanError(
+                        "A sitemap destination cannot be evaluated"
+                    )
 
                 current_progress = base_progress + int(
                     (idx / total_urls) * scan_progress_range
                 )
-                logger.info(f"[SITEMAP] Scanning URL {idx}/{total_urls}: {url}")
+                logger.info(f"[SITEMAP] Scanning URL {idx}/{total_urls}")
                 progress_callback(
                     current_progress,
                     100,
@@ -1155,6 +1215,8 @@ def process_sitemap_scan_background(
 
                 # Scan the URL
                 result = scanner.scan_website(url)
+                if not result.pages:
+                    raise IncompleteScanError("No pages were evaluated")
 
                 # Aggregate results
                 all_pages.extend(result.pages)
@@ -1166,8 +1228,14 @@ def process_sitemap_scan_background(
                     total_issues[severity] = total_issues.get(severity, 0) + count
 
             except Exception as e:
-                logger.error(f"[SITEMAP] Error scanning {url}: {e}", exc_info=True)
-                # Continue with next URL even if one fails
+                logger.error(
+                    "[SITEMAP] Error scanning (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    sitemap_scan_id,
+                )
+                raise IncompleteScanError(
+                    "A requested page could not be evaluated"
+                ) from e
 
         # Calculate overall compliance score (average)
         overall_compliance_score = (
@@ -1187,7 +1255,8 @@ def process_sitemap_scan_background(
         sitemap_result = {
             "sitemap_scan_id": sitemap_scan_id,
             "sitemap_url": sitemap_url,
-            "total_urls_discovered": len(urls),
+            "total_urls_discovered": total_urls_discovered,
+            "total_urls_scanned": len(urls),
             "total_pages_scanned": len(all_pages),
             "total_scan_time": total_scan_time,
             "overall_compliance_score": overall_compliance_score,
@@ -1200,7 +1269,15 @@ def process_sitemap_scan_background(
         scan_result = ScanResult(
             **runtime_ollama_usage(provider_runtime),
             scan_id=sitemap_scan_id,
-            result_data=sitemap_result,
+            structure=sitemap_result,
+            issues=_aggregate_issue_details(all_pages),
+            critical_issues=total_issues["critical"],
+            high_issues=total_issues["serious"],
+            medium_issues=total_issues["moderate"],
+            low_issues=total_issues["minor"],
+            scan_mode=mode,
+            engines_used=["axe-core"],
+            estimated_coverage_pct=estimate_coverage_for_engines(["axe-core"]),
             compliance_score=overall_compliance_score,
             cvd_analysis=serialize_cvd_analysis({"pages": all_pages}),
         )
@@ -1209,6 +1286,9 @@ def process_sitemap_scan_background(
         # Update scan status to completed
         scan = db.query(Scan).filter(Scan.id == sitemap_scan_id).first()
         if scan:
+            scan.pages = len(all_pages)
+            scan.processing_time_ms = int(total_scan_time * 1000)
+            scan.error_message = None
             scan.status = ScanStatus.COMPLETED
             scan.progress = 100
             scan.progress_message = (
@@ -1221,22 +1301,27 @@ def process_sitemap_scan_background(
 
     except Exception as e:
         logger.error(
-            f"[SITEMAP BACKGROUND] Error processing sitemap scan {sitemap_scan_id}: {str(e)}",
-            exc_info=True,
+            "[SITEMAP BACKGROUND] Error processing sitemap scan (%s) (scan_id=%s)",
+            type(e).__name__,
+            sitemap_scan_id,
         )
 
         # Update scan to failed
+        db.rollback()
         try:
             scan = db.query(Scan).filter(Scan.id == sitemap_scan_id).first()
             if scan:
                 scan.status = ScanStatus.FAILED
-                scan.error_message = str(e)
+                scan.compliance_score = None
+                scan.error_message = public_scan_failure_message(e)
                 scan.progress = 0
-                scan.progress_message = f"Sitemap scan failed: {str(e)}"
+                scan.progress_message = public_scan_failure_message(e)
                 db.commit()
         except Exception as db_error:
             logger.error(
-                f"[SITEMAP BACKGROUND] Failed to update scan status: {db_error}"
+                "[SITEMAP BACKGROUND] Failed to update scan status (%s) (scan_id=%s)",
+                type(db_error).__name__,
+                sitemap_scan_id,
             )
 
     finally:
@@ -1269,7 +1354,7 @@ def process_code_background(
 
     try:
         start_time = time.time()
-        logger.info(f"[BACKGROUND] Processing Code: {filename} (scan_id={scan_id})")
+        logger.info(f"[BACKGROUND] Processing Code (scan_id={scan_id})")
 
         # Get scan record
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -1302,13 +1387,19 @@ def process_code_background(
                 )
                 if progress_scan:
                     progress_scan.progress = min(progress_pct, 90)
-                    progress_scan.progress_message = message
+                    progress_scan.progress_message = "Processing in progress..."
                     progress_db.commit()
                     logger.info(
-                        f"[BACKGROUND] Code Progress: {progress_pct}% - {message}"
+                        "Scan progress updated (scan_id=%s, progress=%s)",
+                        scan_id,
+                        min(max(progress_pct, 0), 100),
                     )
             except Exception as e:
-                logger.error(f"[BACKGROUND] Failed to update Code progress: {e}")
+                logger.error(
+                    "[BACKGROUND] Failed to update Code progress (%s) (scan_id=%s)",
+                    type(e).__name__,
+                    scan_id,
+                )
             finally:
                 if progress_db:
                     progress_db.close()
@@ -1328,7 +1419,7 @@ def process_code_background(
         )
 
         processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"[BACKGROUND] Code processed in {processing_time}ms: {filename}")
+        logger.info(f"[BACKGROUND] Code processed in {processing_time}ms")
 
         # Calculate issue counts
         critical = sum(1 for issue in result.issues if issue.severity == "critical")
@@ -1427,13 +1518,15 @@ def process_code_background(
 
     except Exception as e:
         logger.error(
-            f"[BACKGROUND] Error processing Code {filename}: {str(e)}", exc_info=True
+            "[BACKGROUND] Error processing Code (%s) (scan_id=%s)",
+            type(e).__name__,
+            scan_id,
         )
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if scan:
             scan.status = ScanStatus.FAILED
-            scan.error_message = str(e)
-            scan.progress_message = f"Processing failed: {str(e)}"
+            scan.error_message = public_scan_failure_message(e)
+            scan.progress_message = public_scan_failure_message(e)
             db.commit()
     finally:
         try:
@@ -1548,9 +1641,7 @@ async def scan_code(
     db.commit()
     db.refresh(scan)
 
-    logger.info(
-        f"Created scan {scan.id} for Code: {file.filename} (generate_fixes={generate_fixes})"
-    )
+    logger.info(f"Created scan {scan.id} for Code (generate_fixes={generate_fixes})")
 
     # Return immediately with scan_id
     return {

@@ -9,7 +9,7 @@ Provides endpoints for:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 from google.oauth2.credentials import Credentials
 from contextlib import contextmanager, asynccontextmanager
@@ -44,6 +44,7 @@ from ..integrations.google_workspace.google_docs import GoogleDocsService
 from ..integrations.google_workspace.google_slides import GoogleSlidesService
 from ..integrations.google_workspace.google_sheets import GoogleSheetsService
 from ..config.settings import get_settings
+from .oauth_routes import integration_callback_redirect
 from ..services.remediation_artifact_service import (
     ArtifactAuthorizationError,
     RemediationArtifactService,
@@ -609,8 +610,12 @@ async def connect_google(
 
 @router.get("/callback")
 async def google_callback_get(
-    code: str = Query(..., description="Authorization code from Google"),
-    state: str = Query(..., description="State parameter for verification"),
+    code: Optional[str] = Query(
+        default=None, description="Authorization code from Google"
+    ),
+    state: Optional[str] = Query(
+        default=None, description="State parameter for verification"
+    ),
     error: Optional[str] = Query(default=None, description="Error from OAuth provider"),
     db: Session = Depends(get_db_dependency),
 ):
@@ -621,23 +626,27 @@ async def google_callback_get(
     It exchanges the authorization code for tokens and stores the connection.
     """
     # Handle OAuth errors
+    dashboard_url = get_settings().dashboard_url
     if error:
         logger.error("Google OAuth authorization was denied")
-        return RedirectResponse(
-            url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=oauth_failed&message={error}"
-        )
+        return integration_callback_redirect(dashboard_url, error="oauth_failed")
 
     # Verify + consume the server-side state (CSRF defence). department_id
     # comes ONLY from verified metadata, never the query string.
     from ..auth.redis_rate_limiter import OAuthStateManager
 
-    is_valid, metadata = OAuthStateManager.verify_and_consume_state(state)
+    is_valid, metadata = OAuthStateManager.verify_and_consume_state(state or "")
     department_id = (metadata or {}).get("department_id")
-    if not is_valid or not department_id:
+    if (
+        not is_valid
+        or not department_id
+        or (metadata or {}).get("provider") != "google"
+    ):
         logger.warning("Google OAuth callback with invalid/expired state")
-        return RedirectResponse(
-            url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=invalid_state"
-        )
+        return integration_callback_redirect(dashboard_url, error="invalid_state")
+
+    if not code:
+        return integration_callback_redirect(dashboard_url, error="exchange_failed")
 
     token_manager = get_token_manager()
 
@@ -678,15 +687,13 @@ async def google_callback_get(
         logger.info("Connected Google Workspace for department %s", department_id)
 
         # Redirect back to frontend with success
-        return RedirectResponse(
-            url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?success=google_connected&email={token_data.get('email', '')}"
+        return integration_callback_redirect(
+            dashboard_url, success="google_connected", email=token_data.get("email")
         )
 
     except Exception as e:
         logger.error("Google OAuth callback failed: %s", type(e).__name__)
-        return RedirectResponse(
-            url=f"{os.getenv('DASHBOARD_URL', 'http://localhost:5173')}/integrations?error=exchange_failed&message={str(e)}"
-        )
+        return integration_callback_redirect(dashboard_url, error="exchange_failed")
 
 
 @router.post("/callback", response_model=GoogleCredentialResponse)
@@ -754,12 +761,12 @@ async def google_callback(
             created_at=credential.created_at,
         )
 
-    except Exception as e:
-        logger.error("Google OAuth callback failed: %s", type(e).__name__)
+    except Exception as exc:
+        logger.error("Google OAuth callback failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"OAuth callback failed: {str(e)}",
-        )
+            detail="Google OAuth callback failed. Please reconnect and try again.",
+        ) from None
 
 
 @router.delete("/disconnect")

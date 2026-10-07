@@ -64,7 +64,9 @@ export function EngineComparisonStats({
   } = scanResult;
 
   const hasAxe = engines_used.includes('axe-core');
-  const hasPa11y = engines_used.includes('pa11y');
+  const hasHtmlCS = engines_used.includes('htmlcs');
+  const hasPa11y = hasHtmlCS || engines_used.includes('pa11y');
+  const secondaryLabel = hasHtmlCS ? 'HTML_CodeSniffer' : 'Pa11y';
   const hasAI = engines_used.includes('ai-vision');
 
   // Calculate incremental value of Pa11y
@@ -129,7 +131,7 @@ export function EngineComparisonStats({
             <div className="flex items-center gap-2 mb-2">
               <Search className="w-4 h-4 text-[var(--content-accent)]" />
               <span className="text-sm font-medium text-[var(--feature-primary-content)]">
-                Pa11y
+                {secondaryLabel}
               </span>
             </div>
             <div className="text-2xl font-bold text-primary">{pa11y_issues}</div>
