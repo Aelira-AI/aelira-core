@@ -34,7 +34,7 @@ from src.ai.workspace_provider_config import (
     test_provider_row,
 )
 from src.ai.providers.manager import get_rate_limiter
-from src.ai.cache import get_llm_cache
+from src.ai.cache import CACHE_PREFIX, get_llm_cache
 from src.ai.lms_policy import LMS_AI_POLICY_VERSION
 from src.ai.lms_readiness import ReadinessReason, resolve_lms_ai_readiness
 from src.auth.dependencies import (
@@ -1259,17 +1259,36 @@ async def clear_cache(
             detail="Admin access required to clear cache",
         )
 
+    # Select a canonical name from the fixed provider set before it can enter
+    # a Redis glob, response, or log. An empty supplied value is not a global
+    # clear request; only an omitted provider selects that operation.
+    provider_name = None
+    if provider is not None:
+        provider_name = next(
+            (name for name in SUPPORTED_WORKSPACE_PROVIDERS if provider == name),
+            None,
+        )
+        if provider_name is None:
+            raise HTTPException(status_code=400, detail="Unsupported cache provider")
+
     cache = get_llm_cache()
 
-    if provider:
-        pattern = f"llm_cache:{provider}:*"
+    if provider_name is not None:
+        # _make_key joins CACHE_PREFIX (which already ends in ':') and the
+        # provider with another ':', producing llm_cache::provider:... keys.
+        pattern = f"{CACHE_PREFIX}:{provider_name}:*"
         deleted = cache.clear_all(pattern=pattern)
-        message = f"Cleared {deleted} cache entries for provider: {provider}"
+        message = f"Cleared {deleted} cache entries for provider: {provider_name}"
     else:
         deleted = cache.clear_all()
         message = f"Cleared {deleted} cache entries"
 
-    logger.info(f"{message} (by user {user_id})")
+    logger.info(
+        "LLM cache cleared: provider=%s entries=%s actor=%s",
+        provider_name or "all",
+        deleted,
+        user_id,
+    )
 
     return {
         "success": True,

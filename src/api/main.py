@@ -100,6 +100,8 @@ import time
 
 # Configure logging FIRST
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
+# HTTPX's INFO request log includes full caller-supplied URLs and query strings.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Get settings
