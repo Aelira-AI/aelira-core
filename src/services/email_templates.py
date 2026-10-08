@@ -113,7 +113,7 @@ def get_email_wrapper(
     )
     logo_url = email_logo_url()
     brand_mark = (
-        f'<img src="{html.escape(logo_url, quote=True)}" alt="{brand_name}" width="180" height="51" border="0" style="display: block; width: 180px; max-width: 100%; height: auto; background-color: #ffffff; color: #2e2963; font-size: 24px; font-weight: bold;" />'
+        f'<img src="{html.escape(logo_url, quote=True)}" alt="{brand_name}" width="180" border="0" style="display: block; width: 180px; max-width: 100%; height: auto; background-color: #ffffff; color: #2e2963; font-size: 24px; font-weight: bold;" />'
         if logo_url
         else f'<span style="color: #2e2963; font-size: 24px; font-weight: bold;">{brand_name}</span>'
     )
