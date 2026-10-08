@@ -17,6 +17,11 @@ import os
 from typing import List, Dict, Any, Optional
 
 from src.education.deadline_config import DeadlineService
+from src.services.email_branding import (
+    email_brand_name,
+    email_legal_name,
+    email_logo_url,
+)
 
 # Brand colors
 BRAND_PRIMARY = "#2E2963"  # Indigo
@@ -98,24 +103,30 @@ def get_email_wrapper(
     The versioned local PNG prevents cached, retired logo/tagline artwork.
     Self-hosters can override EMAIL_LOGO_URL and EMAIL_LEGAL_NAME.
     """
-    brand_name = html.escape(os.getenv("BRAND_NAME", "Aelira"))
-    legal_name = html.escape(os.getenv("EMAIL_LEGAL_NAME", "Aelira AI Pty Ltd"))
-    public_api_url = os.getenv("PUBLIC_API_URL", "http://localhost:8000").rstrip("/")
+    brand_name = html.escape(email_brand_name())
+    legal_name = html.escape(email_legal_name())
     public_website_url = html.escape(
         os.getenv(
             "PUBLIC_WEBSITE_URL", "https://github.com/Aelira-AI/aelira-core"
         ).rstrip("/"),
         quote=True,
     )
-    logo_url = html.escape(
-        os.getenv("EMAIL_LOGO_URL", f"{public_api_url}/static/logo-email-v1.png"),
-        quote=True,
+    logo_url = email_logo_url()
+    brand_mark = (
+        f'<img src="{html.escape(logo_url, quote=True)}" alt="{brand_name}" width="180" height="51" border="0" style="display: block; width: 180px; max-width: 100%; height: auto; background-color: #ffffff; color: #2e2963; font-size: 24px; font-weight: bold;" />'
+        if logo_url
+        else f'<span style="color: #2e2963; font-size: 24px; font-weight: bold;">{brand_name}</span>'
     )
     support_email = os.getenv("SUPPORT_EMAIL", "").strip()
     year = datetime.now(timezone.utc).year
     footer_links = [
         f'<a href="{public_website_url}" style="color: #51466f; text-decoration: underline;">Project home</a>'
     ]
+    privacy_url = os.getenv("EMAIL_PRIVACY_URL", "").strip()
+    if privacy_url:
+        footer_links.append(
+            f'<a href="{html.escape(privacy_url, quote=True)}" style="color: #51466f; text-decoration: underline;">Privacy policy</a>'
+        )
     if unsubscribe_url:
         footer_links.append(
             f'<a href="{html.escape(unsubscribe_url, quote=True)}" style="color: #51466f; text-decoration: underline;">Unsubscribe</a>'
@@ -147,7 +158,7 @@ def get_email_wrapper(
             <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#ffffff" style="width: 100%; max-width: 600px; table-layout: fixed; background-color: #ffffff; border: 1px solid #dedbe8; border-radius: 16px; border-collapse: separate;">
                 <tr><td class="email-header" bgcolor="#ffffff" style="padding: 28px 32px 24px; background-color: #ffffff; border-bottom: 1px solid #e8e5ef; border-top: 4px solid #2e2963; text-align: left;">
                     <a href="{public_website_url}" style="text-decoration: none; display: inline-block;">
-                        <img src="{logo_url}" alt="{brand_name}" width="180" height="51" border="0" style="display: block; width: 180px; max-width: 100%; height: auto; background-color: #ffffff; color: #2e2963; font-size: 24px; font-weight: bold;" />
+                        {brand_mark}
                     </a>
                 </td></tr>
                 <tr><td class="email-content" bgcolor="#ffffff" style="padding: 28px 32px 32px; background-color: #ffffff; font-size: 16px; line-height: 1.6; color: #24222d; overflow-wrap: anywhere; word-wrap: break-word;">
@@ -173,7 +184,7 @@ def get_email_footer(unsubscribe_url: Optional[str] = None) -> str:
         ).rstrip("/"),
         quote=True,
     )
-    legal_name = html.escape(os.getenv("EMAIL_LEGAL_NAME", "Aelira AI Pty Ltd"))
+    legal_name = html.escape(email_legal_name())
     year = datetime.now(timezone.utc).year
     unsubscribe = ""
     if unsubscribe_url:
@@ -254,7 +265,7 @@ def render_scan_complete_email(
             </div>
 
             <p style="color: #666; font-size: 14px; margin: 0; text-align: center;">
-                Review the results and use Aelira's AI-powered remediation to fix issues automatically.
+                Review the results and review supported remediation changes before publishing.
             </p>
     """
     return get_email_wrapper(content, unsubscribe_url)
@@ -331,7 +342,7 @@ def render_critical_issue_email(
             </div>
 
             <p style="color: #666; font-size: 14px; margin: 0; text-align: center;">
-                Use Aelira's AI-powered auto-remediation to fix most issues automatically.
+                Review supported remediation changes and verify the saved output before publishing.
             </p>
     """
     return get_email_wrapper(content, unsubscribe_url)
@@ -624,6 +635,12 @@ def render_remediation_failure_email(
     Returns:
         HTML string for email body
     """
+    support = os.getenv("SUPPORT_EMAIL", "").strip()
+    support_guidance = (
+        f'Contact <a href="mailto:{html.escape(support, quote=True)}" style="color: {BRAND_PRIMARY};">{html.escape(support)}</a>.'
+        if support
+        else "Contact your deployment administrator."
+    )
     content = f"""
             <!-- Error Badge -->
             <div style="text-align: center; margin-bottom: 24px;">
@@ -652,7 +669,7 @@ def render_remediation_failure_email(
             </ul>
 
             <p style="color: #666; font-size: 14px; margin: 0;">
-                Need help? Contact us at <a href="mailto:support@example.com" style="color: {BRAND_PRIMARY};">support@example.com</a>
+                Need help? {support_guidance}
             </p>
     """
     return get_email_wrapper(content, unsubscribe_url)
@@ -680,11 +697,13 @@ def render_department_welcome_email(
     Returns:
         HTML string for email body
     """
+    brand_name = email_brand_name()
+    safe_brand_name = html.escape(brand_name)
     deadline_guidance = _deadline_guidance_html(
         _deadline_for_email(department, deadline)
     )
     content = f"""
-            <h2 style="color: #1f2937; text-align: center; margin: 0 0 24px 0;">Welcome to Aelira!</h2>
+            <h2 style="color: #1f2937; text-align: center; margin: 0 0 24px 0;">Welcome to {safe_brand_name}!</h2>
 
             <p style="margin: 0 0 16px 0;">Hi {name or "there"},</p>
 
@@ -734,6 +753,8 @@ def render_faculty_invitation_email(
     Returns:
         HTML string for email body
     """
+    brand_name = email_brand_name()
+    safe_brand_name = html.escape(brand_name)
     content = f"""
             <!-- Invitation Badge -->
             <div style="text-align: center; margin-bottom: 24px;">
@@ -742,10 +763,10 @@ def render_faculty_invitation_email(
                 </span>
             </div>
 
-            <h2 style="color: #1f2937; text-align: center; margin: 0 0 24px 0;">You're Invited to Join Aelira</h2>
+            <h2 style="color: #1f2937; text-align: center; margin: 0 0 24px 0;">You're Invited to Join {safe_brand_name}</h2>
 
             <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
-                <strong>{inviter_name}</strong> has invited you to join the <strong>{department_name}</strong> team at <strong>{institution}</strong> on Aelira.
+                <strong>{inviter_name}</strong> has invited you to join the <strong>{department_name}</strong> team at <strong>{institution}</strong> on {safe_brand_name}.
             </p>
 
             <!-- What You'll Get -->
@@ -801,6 +822,11 @@ def render_deletion_code_email(
     Returns:
         Tuple of (html_body, text_body)
     """
+    brand_name = email_brand_name()
+    safe_brand_name = html.escape(brand_name)
+    home_url = os.getenv(
+        "PUBLIC_WEBSITE_URL", "https://github.com/Aelira-AI/aelira-core"
+    ).rstrip("/")
     content = f"""
             <h2 style="color: #1f2937; text-align: center; margin: 0 0 24px 0;">Account Deletion Request</h2>
 
@@ -809,7 +835,7 @@ def render_deletion_code_email(
             </p>
 
             <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #4b5563;">
-                You requested to permanently delete your Aelira account. Use the confirmation code below to proceed:
+                You requested to permanently delete your {safe_brand_name} account. Use the confirmation code below to proceed:
             </p>
 
             <!-- Code Box -->
@@ -846,7 +872,7 @@ def render_deletion_code_email(
 
 Hi {name},
 
-You requested to permanently delete your Aelira account.
+You requested to permanently delete your {brand_name} account.
 Use this confirmation code: {code}
 
 This code expires in 15 minutes.
@@ -857,8 +883,8 @@ deactivated immediately. All data will be permanently deleted after 30 days.
 Didn't request this? You can safely ignore this email.
 
 --
-Aelira
-https://example.com"""
+{brand_name}
+{home_url}"""
 
     return html_body, text_body
 
@@ -879,6 +905,22 @@ def render_deletion_scheduled_email(
     Returns:
         Tuple of (html_body, text_body)
     """
+    brand_name = email_brand_name()
+    safe_brand_name = html.escape(brand_name)
+    home_url = os.getenv(
+        "PUBLIC_WEBSITE_URL", "https://github.com/Aelira-AI/aelira-core"
+    ).rstrip("/")
+    support = os.getenv("SUPPORT_EMAIL", "").strip()
+    support_text = (
+        f"contacting {support}"
+        if support
+        else "contacting your deployment administrator"
+    )
+    support_html = (
+        f'contacting <a href="mailto:{html.escape(support, quote=True)}" style="color: {BRAND_SECONDARY};">{html.escape(support)}</a>'
+        if support
+        else "contacting your deployment administrator"
+    )
     content = f"""
             <h2 style="color: #1f2937; text-align: center; margin: 0 0 24px 0;">Account Deletion Scheduled</h2>
 
@@ -887,7 +929,7 @@ def render_deletion_scheduled_email(
             </p>
 
             <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #4b5563;">
-                Your Aelira account has been deactivated and is scheduled for permanent deletion on:
+                Your {safe_brand_name} account has been deactivated and is scheduled for permanent deletion on:
             </p>
 
             <!-- Date Box -->
@@ -905,8 +947,7 @@ def render_deletion_scheduled_email(
                     Changed your mind?
                 </p>
                 <p style="margin: 0; font-size: 13px; color: {COLOR_INFO_DARK};">
-                    You can cancel the deletion within 30 days by contacting us at
-                    <a href="mailto:hello@example.com" style="color: {BRAND_SECONDARY};">hello@example.com</a>.
+                    You can cancel the deletion within 30 days by {support_html}.
                 </p>
             </div>
 
@@ -915,7 +956,7 @@ def render_deletion_scheduled_email(
             </p>
 
             <p style="margin: 16px 0 0 0; font-size: 13px; color: #5e5a6c; text-align: center;">
-                Thank you for using Aelira. We're sorry to see you go.
+                Thank you for using {safe_brand_name}. We're sorry to see you go.
             </p>
     """
     html_body = get_email_wrapper(content)
@@ -924,17 +965,17 @@ def render_deletion_scheduled_email(
 
 Hi {name},
 
-Your Aelira account has been deactivated and is scheduled for permanent deletion on {scheduled_date}.
+Your {brand_name} account has been deactivated and is scheduled for permanent deletion on {scheduled_date}.
 
-Changed your mind? You can cancel the deletion within 30 days by contacting us at hello@example.com.
+Changed your mind? You can cancel the deletion within 30 days by {support_text}.
 
 After this date, all your data including scan history, reports, and account information will be permanently removed.
 
-Thank you for using Aelira. We're sorry to see you go.
+Thank you for using {brand_name}. We're sorry to see you go.
 
 --
-Aelira
-https://example.com"""
+{brand_name}
+{home_url}"""
 
     return html_body, text_body
 

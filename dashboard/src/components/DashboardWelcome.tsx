@@ -13,6 +13,7 @@ interface DashboardWelcomeProps {
 
 export function DashboardWelcome({ name, configurationRequired, canConfigure, hasIntegrations,
   onDismiss, onUpload, onConfigure, onGuide }: DashboardWelcomeProps) {
+  const brandName = import.meta.env.VITE_BRAND_NAME || 'Aelira';
   const configureTitle = configurationRequired && canConfigure ? 'Configure your institution'
     : hasIntegrations ? 'Connect your LMS' : 'Set your preferences';
   const configureHint = configurationRequired && canConfigure ? 'Verify the regulatory profile'
@@ -24,7 +25,7 @@ export function DashboardWelcome({ name, configurationRequired, canConfigure, ha
         <div>
           <p className="text-xs font-mono uppercase tracking-wider text-[var(--content-accent)] mb-2">Your first steps</p>
           <h2 id="welcome-title" className="text-xl font-bold text-[var(--content-primary)]">
-            Welcome to Aelira{name ? `, ${name.split(' ')[0]}` : ''}!
+            Welcome to {brandName}{name ? `, ${name.split(' ')[0]}` : ''}!
           </h2>
           <p className="text-sm text-[var(--content-secondary)] mt-2 max-w-2xl">
             {configurationRequired ? 'Finish your institution setup, then scan a document and review the findings.'

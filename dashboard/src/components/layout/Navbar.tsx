@@ -119,7 +119,7 @@ export function Navbar(): React.ReactElement {
     >
       {/* LEFT — breadcrumb */}
       <div className="flex items-center gap-5 min-w-0 flex-1">
-        <Link to="/dashboard" aria-label="Aelira dashboard" className="hidden lg:block shrink-0">
+        <Link to="/dashboard" aria-label="Go to dashboard" className="hidden lg:block shrink-0">
           <Logo width={144} height={41} />
         </Link>
         <Breadcrumb items={breadcrumbItems} className="min-w-0 overflow-hidden" />

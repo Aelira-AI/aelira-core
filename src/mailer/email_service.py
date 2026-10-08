@@ -15,6 +15,7 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 import httpx
 
+from src.services.email_branding import email_brand_name
 from src.services.email_templates import (
     _deadline_for_email,
     _deadline_guidance_html,
@@ -63,7 +64,8 @@ class EmailService:
         self.smtp_user = smtp_user or os.getenv("SMTP_USER", "apikey")
         self.smtp_password = smtp_password or os.getenv("SMTP_PASSWORD", "")
         self.from_email = from_email or os.getenv("FROM_EMAIL", "noreply@example.com")
-        self.from_name = from_name or os.getenv("FROM_NAME", "Aelira Accessibility")
+        self.brand_name = email_brand_name()
+        self.from_name = from_name or os.getenv("FROM_NAME", self.brand_name)
         self.sendgrid_api_key = sendgrid_api_key or os.getenv("SENDGRID_API_KEY", "")
         self.public_dashboard_url = os.getenv(
             "PUBLIC_DASHBOARD_URL", "http://localhost:5173"
@@ -276,7 +278,7 @@ class EmailService:
 
         # Variable substitution with HTML escaping to prevent injection.
         # Keys ending in _html or _url are inserted raw (trusted content).
-        for key, value in variables.items():
+        for key, value in {**variables, "brand_name": self.brand_name}.items():
             str_value = str(value)
             if not key.endswith(("_html", "_url")):
                 str_value = html_lib.escape(str_value)
@@ -697,11 +699,11 @@ class EmailService:
 
         safe_magic_link = html_lib.escape(magic_link_url, quote=True)
         content = f"""
-            <h1 style="color: #24222d; font-size: 26px; line-height: 1.25; margin: 0 0 16px;">Log in to Aelira</h1>
+            <h1 style="color: #24222d; font-size: 26px; line-height: 1.25; margin: 0 0 16px;">Log in to {html_lib.escape(self.brand_name)}</h1>
             <p style="margin: 0 0 24px;">Use the button below to log in to your account. This link expires in {expires_minutes} minutes and can only be used once.</p>
             <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin: 0 0 28px;">
                 <tr><td bgcolor="#2e2963" style="background-color: #2e2963; border-radius: 8px; text-align: center; mso-padding-alt: 14px 28px;">
-                    <a href="{safe_magic_link}" style="display: inline-block; padding: 14px 28px; color: #ffffff; font-size: 16px; font-weight: bold; line-height: 24px; text-decoration: none; border: 1px solid #2e2963; border-radius: 8px; mso-text-raise: 1pt;">Log in to Aelira</a>
+                    <a href="{safe_magic_link}" style="display: inline-block; padding: 14px 28px; color: #ffffff; font-size: 16px; font-weight: bold; line-height: 24px; text-decoration: none; border: 1px solid #2e2963; border-radius: 8px; mso-text-raise: 1pt;">Log in to {html_lib.escape(self.brand_name)}</a>
                 </td></tr>
             </table>
             <p style="color: #5e5a6c; font-size: 14px; margin: 0 0 10px;">If the button doesn't work, copy this link into your browser:</p>
@@ -716,9 +718,9 @@ class EmailService:
 
         return await self.send_email(
             to_emails=[to_email],
-            subject="Log in to Aelira",
+            subject=f"Log in to {self.brand_name}",
             html_content=html,
-            text_content=f"Log in to Aelira\n\nClick this link to log in: {magic_link_url}\n\nThis link expires in {expires_minutes} minutes.",
+            text_content=f"Log in to {self.brand_name}\n\nClick this link to log in: {magic_link_url}\n\nThis link expires in {expires_minutes} minutes.",
         )
 
     async def send_welcome_magic_link(
@@ -756,7 +758,7 @@ class EmailService:
             <h2 style="color: #1a1a2e; margin: 0 0 16px 0;">Welcome, {html_lib.escape(name)}!</h2>
 
             <p>
-                Your Aelira account is now active. You're all set to start making your
+                Your {html_lib.escape(self.brand_name)} account is now active. You're all set to start making your
                 educational content accessible.
             </p>
 
@@ -802,10 +804,10 @@ class EmailService:
 
         return await self.send_email(
             to_emails=[to_email],
-            subject=f"Welcome to Aelira, {name}!",
+            subject=f"Welcome to {self.brand_name}, {name}!",
             html_content=html,
             text_content=(
-                f"Welcome to Aelira, {name}!\n\nYour account is now active. "
+                f"Welcome to {self.brand_name}, {name}!\n\nYour account is now active. "
                 f"Visit {dashboard_url} to start reviewing your documents for accessibility.\n\n"
                 f"Plan: {tier_info['display_name']}\n"
                 f"- {tier_info['scans_limit']} document scans per month\n"
@@ -869,14 +871,14 @@ class EmailService:
             </table>
 
             <p style="color: #6b7280; font-size: 12px; margin: 24px 0 0 0; text-align: center;">
-                This is an automated notification from Aelira.
+                This is an automated notification from {html_lib.escape(self.brand_name)}.
             </p>
         """
         html = get_email_wrapper(content)
 
         return await self.send_email(
             to_emails=to_emails,
-            subject=f"[Aelira Admin] {subject}",
+            subject=f"[{self.brand_name} Admin] {subject}",
             html_content=html,
         )
 
@@ -930,9 +932,9 @@ class EmailService:
 
         return await self.send_email(
             to_emails=[to_email],
-            subject=f"You're invited to join {department_name} on Aelira",
+            subject=f"You're invited to join {department_name} on {self.brand_name}",
             html_content=html,
-            text_content=f"""You've been invited to join {department_name} on Aelira!
+            text_content=f"""You've been invited to join {department_name} on {self.brand_name}!
 
 {inviter_name} has invited you to join as a {role_display}.
 
@@ -940,7 +942,7 @@ Accept your invitation: {accept_url}
 
 This invitation expires on {expires_date}.
 
-Aelira helps your team scan, remediate, and review course materials for accessibility. Its automated results are evidence with documented limitations, not a conformance or legal determination.
+{self.brand_name} helps your team scan, remediate, and review course materials for accessibility. Its automated results are evidence with documented limitations, not a conformance or legal determination.
 
 If you weren't expecting this invitation, you can safely ignore this email.{support_line}""",
         )
@@ -989,7 +991,7 @@ If you weren't expecting this invitation, you can safely ignore this email.{supp
         """
         return await self.send_email(
             to_emails=[to_email],
-            subject="Complete your Aelira administrator setup",
+            subject=f"Complete your {self.brand_name} administrator setup",
             html_content=get_email_wrapper(content),
             text_content=(
                 f"The {department_name} workspace for {institution} is ready.\n\n"
