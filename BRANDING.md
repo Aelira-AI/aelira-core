@@ -31,6 +31,7 @@ Dashboard, via Vite environment variables:
 VITE_BRAND_NAME="Example University Accessibility"
 VITE_LOGO_LIGHT="/branding/your-logo-light.svg"
 VITE_LOGO_DARK="/branding/your-logo-dark.svg"
+VITE_PRIVACY_POLICY_URL="https://example.edu/privacy"
 ```
 
 Backend, for emails and accessibility evidence reports:
@@ -39,7 +40,15 @@ Backend, for emails and accessibility evidence reports:
 BRAND_NAME="Example University Accessibility"
 PUBLIC_WEBSITE_URL="https://accessibility.example.edu"
 SUPPORT_EMAIL="accessibility-help@example.edu"
+FROM_NAME="Example University Accessibility"
+EMAIL_LOGO_URL="https://accessibility.example.edu/static/email-logo.png"
+EMAIL_LEGAL_NAME="Example University"
+EMAIL_PRIVACY_URL="https://example.edu/privacy"
 ```
+
+Use the same name for `BRAND_NAME` and `VITE_BRAND_NAME`. Transactional subjects, body text, sender-name fallback and the email shell use the backend identity. A custom brand without an email logo receives a text header rather than the Aelira mark. Set `EMAIL_LEGAL_NAME` to the actual operating institution; otherwise a custom brand uses its own name, while the Aelira default uses Aelira AI Pty Ltd. The email footer does not alter software copyright or licence notices.
+
+Use an absolute public HTTPS URL to a PNG or JPEG for the email logo; dashboard SVG logos are not reliably supported by email clients. Logo/contact/home/privacy URLs belong to the operator. The dashboard displays a privacy link only when `VITE_PRIVACY_POLICY_URL` is configured; the email privacy link uses `EMAIL_PRIVACY_URL`.
 
 Drop your own assets into `dashboard/public/` and point the variables at them. Favicons and app icons in that directory can be replaced in place. `SUPPORT_EMAIL` matters most: leave it unset and your users are given no contact at all, which is better than being sent to a support desk that has no access to your deployment and cannot help them.
 

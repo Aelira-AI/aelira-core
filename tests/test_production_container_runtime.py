@@ -41,6 +41,10 @@ def test_email_wrapper_uses_operator_deployment_identity(monkeypatch):
     monkeypatch.setenv("PUBLIC_API_URL", "https://api.access.example.edu/")
     monkeypatch.setenv("PUBLIC_WEBSITE_URL", "https://access.example.edu/")
     monkeypatch.setenv("SUPPORT_EMAIL", "accessibility@example.edu")
+    monkeypatch.setenv(
+        "EMAIL_LOGO_URL", "https://api.access.example.edu/static/logo.png"
+    )
+    monkeypatch.setenv("EMAIL_LEGAL_NAME", "Example University")
 
     from src.services.email_templates import get_email_wrapper
 
@@ -50,5 +54,7 @@ def test_email_wrapper_uses_operator_deployment_identity(monkeypatch):
     assert 'href="https://access.example.edu"' in rendered
     assert "mailto:accessibility@example.edu" in rendered
     assert "Example University Accessibility" in rendered
+    assert "Example University. All rights reserved." in rendered
+    assert "Aelira AI Pty Ltd" not in rendered
     assert "api.example.com" not in rendered
     assert "support@example.com" not in rendered

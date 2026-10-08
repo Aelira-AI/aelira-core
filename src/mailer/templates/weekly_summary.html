@@ -12,7 +12,7 @@
 </p>
 
 <!-- Overall Score Card -->
-<div style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%);
+<div style="background-color: #2e2963;
             padding: 24px; border-radius: 12px; margin-bottom: 24px; text-align: center;">
     <p style="margin: 0 0 8px 0; color: rgba(255,255,255,0.9); font-size: 14px;">
         Average Scan Score
@@ -64,11 +64,11 @@
     <!-- Critical -->
     <div style="margin-bottom: 8px;">
         <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-            <span style="color: #dc2626; font-size: 14px; font-weight: 500;">Critical</span>
-            <span style="color: #dc2626; font-size: 14px; font-weight: 600;">{{critical_count}}</span>
+            <span style="color: #a23a2a; font-size: 14px; font-weight: 500;">Critical</span>
+            <span style="color: #a23a2a; font-size: 14px; font-weight: 600;">{{critical_count}}</span>
         </div>
         <div style="background-color: #fee2e2; height: 8px; border-radius: 4px; overflow: hidden;">
-            <div style="background-color: #dc2626; height: 100%; width: {{critical_percent}}%;"></div>
+            <div style="background-color: #a23a2a; height: 100%; width: {{critical_percent}}%;"></div>
         </div>
     </div>
 
@@ -117,7 +117,7 @@
 <!-- Action Button -->
 <div style="text-align: center; margin-top: 24px;">
     <a href="{{dashboard_url}}"
-       style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: white; padding: 14px 28px;
+       style="background-color: #2e2963; color: white; padding: 14px 28px;
               text-decoration: none; border-radius: 8px; display: inline-block;
               font-weight: 600; font-size: 16px;">
         View Scan Details
@@ -132,5 +132,5 @@
 </div>
 
 <p style="color: #666; font-size: 12px; text-align: center; margin-top: 20px;">
-    Aelira results are scan evidence with documented limitations, not a determination of accessibility-standard conformance or legal compliance.
+    {{brand_name}} results are scan evidence with documented limitations, not a determination of accessibility-standard conformance or legal compliance.
 </p>

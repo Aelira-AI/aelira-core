@@ -28,6 +28,7 @@ interface StoredConsent extends CookiePreferences {
 
 const CONSENT_COOKIE_NAME = 'aelira-cookie-consent';
 const CONSENT_VERSION = '1.0';
+const PRIVACY_POLICY_URL = import.meta.env.VITE_PRIVACY_POLICY_URL?.trim();
 
 const COOKIE_CATEGORIES: Record<string, CookieCategory> = {
   essential: {
@@ -180,16 +181,16 @@ export function CookieBanner(): React.ReactElement | null {
 
           <p className="text-sm text-secondary mb-6">
             We use cookies to enhance your experience. You can customize which cookies you allow
-            below. For more information, see our{' '}
+            below. {PRIVACY_POLICY_URL ? <>For more information, see the deployment's{' '}
             <a
-              href="https://example.com/privacy"
+              href={PRIVACY_POLICY_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[var(--content-accent)] hover:underline"
+              className="text-[var(--content-accent)] underline hover:opacity-80"
             >
               Privacy Policy
             </a>
-            .
+            .</> : 'Contact your deployment administrator for its privacy policy.'}
           </p>
 
           <div className="space-y-3">
@@ -300,14 +301,14 @@ export function CookieBanner(): React.ReactElement | null {
                   </h2>
                   <p id="cookie-banner-description" className="text-sm text-secondary">
                     We use cookies to remember your preferences and improve your experience.{' '}
-                    <a
-                      href="https://example.com/privacy"
+                    {PRIVACY_POLICY_URL && <a
+                      href={PRIVACY_POLICY_URL}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-[var(--content-accent)] hover:underline"
+                      className="text-[var(--content-accent)] underline hover:opacity-80"
                     >
                       Learn more
-                    </a>
+                    </a>}
                   </p>
                 </div>
               </div>

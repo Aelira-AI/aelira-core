@@ -16,6 +16,7 @@ const cardSource = read('../../src/components/settings/RegulatoryProfileCard.tsx
 const formSource = read('../../src/utils/regulatoryProfileForm.ts');
 const settingsSource = read('../../src/pages/Settings.tsx');
 const dashboardSource = read('../../src/pages/Dashboard.tsx');
+const welcomeSource = read('../../src/components/DashboardWelcome.tsx');
 const courseOverviewSource = read('../../src/pages/CourseOverview.tsx');
 
 test('regulatory profile API is typed and only uses the tenant-scoped admin endpoint', () => {
@@ -153,7 +154,8 @@ test('dashboard makes incomplete configuration visible and role-aware', () => {
     'Contact an institution administrator',
   ]) assert.ok(dashboardSource.includes(token), `missing ${token}`);
 
-  assert.ok(dashboardSource.includes("configurationRequired ? 'Finish your institution setup"));
+  assert.ok(welcomeSource.includes("configurationRequired ? 'Finish your institution setup"));
+  assert.ok(dashboardSource.includes("configurationRequired={configurationRequired}"));
   assert.ok(courseOverviewSource.includes("data.deadline?.applicability === 'configuration_required'"));
   assert.ok(courseOverviewSource.includes('Contact an institution administrator'));
 });

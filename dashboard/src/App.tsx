@@ -50,7 +50,7 @@ interface AppLayoutProps {
 function AppLayout({ children }: AppLayoutProps): React.ReactElement {
   return (
     <div
-      className="min-h-screen"
+      className="workspace-app min-h-screen"
       style={{ backgroundColor: 'var(--surface-primary)' }}
     >
       {/* Skip link for keyboard users (WCAG 2.4.1) */}

@@ -1,14 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, TrendingUp, AlertTriangle, Loader, Upload, BookOpen, Settings, X, Sparkles, CheckCircle, Eye, Download, Wrench, Calendar, ScanLine, Clock, ClipboardCheck } from 'lucide-react';
+import {
+  FileText, TrendingUp, Loader, Upload, Eye, Download, Wrench,
+  Calendar, ScanLine,
+} from 'lucide-react';
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer,
+} from 'recharts';
+import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
+import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import { scansApi } from '../api/scans';
 import type { DepartmentReviewSummary } from '../api/scans';
 import { unwrapResponse } from '../utils/apiUnwrap';
-import { TrendGraph } from '../components/TrendGraph';
-import { ConfidenceBadge } from '../components/review/ConfidenceBadge';
-
 import { AnalyticsDashboard } from '../components/AnalyticsDashboard';
 import { EvidenceReportAction } from '../components/EvidenceReportAction';
+import { ConfidenceBadge } from '../components/review/ConfidenceBadge';
 import { useAuth } from '../context/auth-context';
 import { useToast } from '../context/toast-context';
 import { useFeatureAccess } from '../hooks/useFeatureAccess';
@@ -18,15 +25,24 @@ import {
   type CurrentDashboardStats,
   type RawCurrentComplianceStats,
 } from '../utils/currentCompliance';
-import {
-  hasDatedDeadline,
-} from '../types/deadline';
+import { hasDatedDeadline } from '../types/deadline';
+import { DashboardWelcome } from '../components/DashboardWelcome';
+import { Card } from '../components/ui/Card';
+import { Button } from '../components/ui/Button';
+import { ScoreChip } from '../components/ui/ScoreChip';
+import { StatCard } from '../components/ui/StatCard';
+import { ComplianceRing } from '../components/ui/ComplianceRing';
+import { ProgressBar } from '../components/ui/ProgressBar';
+import { DataTable } from '../components/ui/DataTable';
 
 const WELCOME_BANNER_KEY = 'aelira_welcome_dismissed';
 
 interface PriorityIssue {
   file_name: string;
-  issue_count: number;
+  // Backend PriorityIssue payload does not include a per-file issue count
+  // (see docs/planning/DASHBOARD_STATS_AUDIT.md finding #10) — optional
+  // until the backend adds one.
+  issue_count?: number;
   scan_type: string;
   compliance_score: number;
   severity: string;
@@ -48,6 +64,63 @@ interface RecentScan {
   issues_count: number | null;
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const formatDate = (dateStr: string): string => {
+  const date = new Date(dateStr);
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+const formatRelativeDate = (dateString: string): string => {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffHours < 1) return 'Just now';
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+const complianceBandLabel = (score: number): string => {
+  if (score >= 90) return 'High scan score';
+  if (score >= 70) return 'Needs improvement';
+  return 'Needs attention';
+};
+
+// ---------------------------------------------------------------------------
+// Trend tooltip
+// ---------------------------------------------------------------------------
+
+const TrendTooltip = ({
+  active,
+  payload,
+}: TooltipContentProps<ValueType, NameType>): React.ReactElement | null => {
+  if (!active || !payload?.length) return null;
+  const point = payload[0].payload as TrendDataPoint;
+  return (
+    <div
+      className="p-3 rounded-[11px] text-sm border border-[var(--border-primary)] bg-[var(--surface-primary)]"
+      style={{ boxShadow: 'none' }}
+    >
+      <p className="font-semibold text-[var(--content-primary)]">{formatDate(point.date)}</p>
+      <p className="font-mono font-bold text-[var(--content-primary)]">
+        {Math.round(point.score)}/100
+      </p>
+      <p className="text-xs text-[var(--content-tertiary)]">
+        {point.scans} scan{point.scans !== 1 ? 's' : ''}
+      </p>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export function Dashboard(): React.ReactElement {
   const [stats, setStats] = useState<CurrentDashboardStats | null>(null);
   const [priorityIssues, setPriorityIssues] = useState<PriorityIssue[]>([]);
@@ -62,7 +135,7 @@ export function Dashboard(): React.ReactElement {
   );
   const [downloadingReport, setDownloadingReport] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { authMethod, department, user } = useAuth();
+  const { department, user, authMethod } = useAuth();
   const toast = useToast();
   const { hasFeature } = useFeatureAccess();
 
@@ -71,7 +144,6 @@ export function Dashboard(): React.ReactElement {
     setShowWelcomeBanner(false);
   };
 
-  // Use department ID from auth context, fallback to default for testing
   const departmentId = department?.id || 'default-dept-001';
 
   useEffect(() => {
@@ -79,23 +151,18 @@ export function Dashboard(): React.ReactElement {
       try {
         setLoading(true);
 
-        // Fetch general stats (works without department ID)
         const statsData = await scansApi.getGeneralStats();
 
-        // API may wrap response in { success, stats: {...} }
         const statsResult = unwrapResponse<RawCurrentComplianceStats>(statsData, 'stats');
         setStats(normalizeCurrentComplianceStats(statsResult));
 
-        // Try to fetch priority issues (may require department ID)
         try {
           const issuesData = await scansApi.getPriorityIssues(departmentId, 5);
           setPriorityIssues(unwrapResponse<PriorityIssue[]>(issuesData, 'issues'));
         } catch (issueErr) {
           console.warn('Priority issues not available:', issueErr);
-          // Continue without priority issues
         }
 
-        // Try to fetch recent scans
         try {
           const scansResponse = await scansApi.listScans({ limit: 5 });
           const scansList = scansResponse.scans || scansResponse || [];
@@ -116,33 +183,28 @@ export function Dashboard(): React.ReactElement {
           console.warn('Recent scans not available:', scansErr);
         }
 
-        // Try to fetch trend data (may require department ID)
         try {
           setTrendLoading(true);
           const trendResponse = await scansApi.getComplianceTrend(departmentId, 30);
-          // Transform trend data to chart format — backend may wrap in { trend: [...] }
           interface RawTrendPoint { date: string; avg_compliance_score?: number; scan_count?: number }
           const trendArray = unwrapResponse<RawTrendPoint[]>(trendResponse, 'trend');
           const chartData = trendArray.map((point) => ({
             date: point.date,
             score: point.avg_compliance_score || 0,
-            scans: point.scan_count || 0
+            scans: point.scan_count || 0,
           }));
           setTrendData(chartData);
         } catch (trendErr) {
           console.warn('Trend data not available:', trendErr);
-          // Continue without trend data
         } finally {
           setTrendLoading(false);
         }
 
-        // Try to fetch review summary
         try {
           const summaryData = await scansApi.getDepartmentReviewSummary();
           setReviewSummary(summaryData);
         } catch (summaryErr) {
           console.warn('Review summary not available:', summaryErr);
-          // Continue without review summary
         }
 
       } catch (err: unknown) {
@@ -157,34 +219,32 @@ export function Dashboard(): React.ReactElement {
     fetchDashboardData();
   }, [departmentId]);
 
+  // ---------------------------------------------------------------------------
+  // Loading skeleton
+  // ---------------------------------------------------------------------------
+
   if (loading) {
     return (
-      <div className="p-8" role="status" aria-label="Loading dashboard">
-        <div className="max-w-7xl mx-auto animate-pulse">
-          {/* Title skeleton */}
-          <div className="h-8 w-48 rounded mb-6" style={{ backgroundColor: 'var(--surface-tertiary)' }} />
-          {/* Stats cards skeleton */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="card p-6">
-                <div className="h-4 w-20 rounded mb-3" style={{ backgroundColor: 'var(--surface-tertiary)' }} />
-                <div className="h-8 w-16 rounded" style={{ backgroundColor: 'var(--surface-tertiary)' }} />
+      <div className="p-4 sm:p-7" role="status" aria-label="Loading dashboard">
+        <div className="max-w-[1240px] mx-auto animate-pulse">
+          <div className="h-8 w-56 rounded-[8px] mb-6 bg-[var(--surface-tertiary)]" />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="rounded-[16px] p-6 border border-[var(--border-primary)] bg-[var(--surface-primary)]">
+                <div className="h-3 w-20 rounded mb-3 bg-[var(--surface-tertiary)]" />
+                <div className="h-8 w-16 rounded bg-[var(--surface-tertiary)]" />
               </div>
             ))}
           </div>
-          {/* Chart skeleton */}
-          <div className="card p-6 mb-6">
-            <div className="h-5 w-36 rounded mb-4" style={{ backgroundColor: 'var(--surface-tertiary)' }} />
-            <div className="h-48 rounded" style={{ backgroundColor: 'var(--surface-tertiary)' }} />
+          <div className="rounded-[16px] p-6 mb-4 border border-[var(--border-primary)] bg-[var(--surface-primary)]">
+            <div className="h-5 w-36 rounded mb-4 bg-[var(--surface-tertiary)]" />
+            <div className="h-48 rounded bg-[var(--surface-tertiary)]" />
           </div>
-          {/* Table skeleton */}
-          <div className="card p-6">
-            <div className="h-5 w-32 rounded mb-4" style={{ backgroundColor: 'var(--surface-tertiary)' }} />
-            <div className="space-y-3">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="h-12 rounded" style={{ backgroundColor: 'var(--surface-tertiary)' }} />
-              ))}
-            </div>
+          <div className="rounded-[16px] p-6 border border-[var(--border-primary)] bg-[var(--surface-primary)]">
+            <div className="h-5 w-32 rounded mb-4 bg-[var(--surface-tertiary)]" />
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-12 rounded mb-3 bg-[var(--surface-tertiary)]" />
+            ))}
           </div>
         </div>
         <span className="sr-only">Loading dashboard data...</span>
@@ -192,18 +252,16 @@ export function Dashboard(): React.ReactElement {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Error state
+  // ---------------------------------------------------------------------------
+
   if (error) {
     return (
-      <div className="p-8">
-        <div className="max-w-7xl mx-auto">
+      <div className="p-4 sm:p-7">
+        <div className="max-w-[1240px] mx-auto">
           <div
-            className="rounded-lg p-4"
-            style={{
-              backgroundColor: 'var(--surface-error-subtle)',
-              borderColor: 'var(--content-error)',
-              border: '1px solid',
-              color: 'var(--content-error)'
-            }}
+            className="rounded-[11px] p-4 border bg-[var(--surface-error-subtle)] border-[var(--content-error)] text-[var(--content-error)]"
             role="alert"
           >
             Error: {error}
@@ -213,34 +271,31 @@ export function Dashboard(): React.ReactElement {
     );
   }
 
-  const formatCompliance = (score: number | null | undefined): string | number => {
-    if (score == null) return '--';
-    return Math.round(score);
-  };
+  // ---------------------------------------------------------------------------
+  // Computed values
+  // ---------------------------------------------------------------------------
 
-  const getScoreColor = (score: number): string => {
-    if (score >= 90) return 'text-[var(--feature-success-content)]';
-    if (score >= 70) return 'text-[var(--feature-warning-content)]';
-    return 'text-[var(--feature-danger-content)]';
-  };
+  const avg = stats?.avgCompliance ?? null;
+  const datedDeadline = hasDatedDeadline(stats?.deadline) ? stats.deadline : null;
+  const daysLeft = datedDeadline?.days_remaining ?? '—';
+  const deadlineSublabel = datedDeadline?.deadline_label ?? 'No dated deadline configured';
+  const configurationRequired = stats?.deadline?.applicability === 'configuration_required';
+  const canConfigureRegulatoryProfile = configurationRequired
+    && authMethod !== 'lti'
+    && (user?.role === 'admin' || user?.role === 'super_admin');
 
-  const getScoreBgColor = (score: number): string => {
-    if (score >= 90) return 'text-[var(--feature-success-content)] bg-[var(--feature-success-surface)]';
-    if (score >= 70) return 'text-[var(--feature-warning-content)] bg-[var(--feature-warning-surface)]';
-    return 'text-[var(--feature-danger-content)] bg-[var(--feature-danger-surface)]';
-  };
+  // Greeting time-of-day prefix
+  const hour = new Date().getHours();
+  const timePrefix = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const firstName = user?.name?.split(' ')[0];
+  const greetingName = firstName ? `, ${firstName}` : '';
+  const deptName = department?.name || 'your department';
 
-  const formatRelativeDate = (dateString: string): string => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    const diffDays = Math.floor(diffHours / 24);
-    if (diffHours < 1) return 'Just now';
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  };
+  // Trend delta
+  const trendDelta =
+    trendData.length >= 2
+      ? Math.round((trendData[trendData.length - 1].score - trendData[0].score))
+      : null;
 
   const handleDownloadReport = async (scanId: string, filename: string): Promise<void> => {
     setDownloadingReport(scanId);
@@ -263,511 +318,531 @@ export function Dashboard(): React.ReactElement {
     }
   };
 
-  const configurationRequired = stats?.deadline?.applicability === 'configuration_required';
-  const canConfigureRegulatoryProfile = configurationRequired
-    && authMethod !== 'lti'
-    && (user?.role === 'admin' || user?.role === 'super_admin');
+  // ---------------------------------------------------------------------------
+  // Severity dot color token per issue severity
+  // ---------------------------------------------------------------------------
+
+  const severityDotClass = (severity: string): string => {
+    if (severity === 'critical' || severity === 'high') return 'bg-[var(--content-error)]';
+    if (severity === 'medium') return 'bg-[var(--content-warning)]';
+    return 'bg-[var(--content-tertiary)]';
+  };
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
 
   return (
-    <div className="p-8">
-      <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold text-primary mb-6">Dashboard</h1>
+    <div className="p-4 sm:p-7">
+      <div className="max-w-[1240px] mx-auto">
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Greeting row                                                        */}
+        {/* ------------------------------------------------------------------ */}
+        <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
+          <div className="flex-1 min-w-0">
+            <h1
+              className="font-bold text-[var(--content-primary)] mb-1"
+              style={{ fontSize: '30px', letterSpacing: '-0.025em' }}
+            >
+              {timePrefix}{greetingName}
+            </h1>
+            <p className="text-sm text-[var(--content-secondary)]">
+              Here's the current accessibility picture for {deptName}.
+            </p>
+          </div>
+          <Button variant="secondary" size="md" onClick={() => navigate('/review')}>
+            Open review queue
+          </Button>
+        </div>
 
         {configurationRequired && (
           <section className="card mb-8 border border-[var(--feature-warning-border)]" aria-labelledby="regulatory-configuration-title">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 mt-0.5 text-[var(--feature-warning-content)]" aria-hidden="true" />
-              <div>
-                <h2 id="regulatory-configuration-title" className="font-semibold text-primary">Regulatory deadline setup required</h2>
-                <p className="text-sm text-secondary mt-1">Aelira needs your institution’s verified country and regulatory framework before it can show a legal deadline.</p>
-                {canConfigureRegulatoryProfile ? (
-                  <button type="button" className="btn-primary mt-4" onClick={() => navigate('/settings#regulatory-profile')}>Configure regulatory profile</button>
-                ) : (
-                  <p className="text-sm text-tertiary mt-3">Contact an institution administrator to complete this setup.</p>
-                )}
-              </div>
-            </div>
+            <h2 id="regulatory-configuration-title" className="font-semibold text-primary">Institution setup is incomplete</h2>
+            <p className="mt-1 text-sm text-secondary">
+              {canConfigureRegulatoryProfile ? 'Finish your institution setup in Settings.' : 'Contact an institution administrator to finish the regulatory profile.'}
+            </p>
+            {canConfigureRegulatoryProfile && <button type="button" className="btn-secondary mt-3" onClick={() => navigate('/settings#regulatory-profile')}>Open Settings</button>}
           </section>
         )}
 
-        {/* First-Time User Welcome Banner */}
+        {/* ------------------------------------------------------------------ */}
+        {/* Welcome banner (first-time users)                                  */}
+        {/* ------------------------------------------------------------------ */}
         {showWelcomeBanner && (
-          <div className="mb-8 rounded-xl overflow-hidden border border-[var(--border-accent)] bg-[var(--surface-secondary)]">
-            <div className="p-6">
-              <div className="flex items-start justify-between">
-                <div className="flex items-start space-x-4">
-                  <div className="p-3 rounded-full bg-[var(--feature-info-content)]/10">
-                    <Sparkles className="w-6 h-6 text-[var(--feature-info-content)]" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-primary mb-2">
-                      Welcome to Aelira{user?.name ? `, ${user.name.split(' ')[0]}` : ''}!
-                    </h2>
-                    <p className="text-secondary mb-4">
-                      {configurationRequired ? 'Finish your institution setup, then start making your documents accessible:' : "You're all set to start making your documents accessible. Here's how to get started:"}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={dismissWelcomeBanner}
-                  className="p-2 hover:bg-[var(--surface-tertiary)] rounded-lg transition-colors"
-                  aria-label="Dismiss welcome banner"
-                >
-                  <X className="w-5 h-5 text-tertiary" />
-                </button>
-              </div>
-
-              {/* Getting Started Steps */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-                <button
-                  onClick={() => {
-                    trackEvent('dash-onboarding-step', { step: 'upload' });
-                    navigate('/upload');
-                  }}
-                  className="flex items-center space-x-3 p-4 rounded-lg bg-[var(--surface-primary)] hover:bg-[var(--surface-secondary)] border border-[var(--border-primary)] transition-all hover:border-[var(--feature-info-border)] group"
-                >
-                  <div className="p-2 rounded-lg bg-[var(--feature-success-surface)] group-hover:bg-[var(--feature-success-content)]/20 transition-colors">
-                    <Upload className="w-5 h-5 text-[var(--feature-success-content)]" />
-                  </div>
-                  <div className="text-left">
-                    <div className="font-semibold text-primary">1. Upload a Document</div>
-                    <div className="text-sm text-tertiary">PDF, PowerPoint, Word, or Excel</div>
-                  </div>
-                </button>
-
-                <button
-                  onClick={() => {
-                    trackEvent('dash-onboarding-step', { step: 'integrations' });
-                    navigate(configurationRequired && canConfigureRegulatoryProfile ? '/settings#regulatory-profile' : hasFeature('showIntegrations') ? '/integrations' : '/settings');
-                  }}
-                  className="flex items-center space-x-3 p-4 rounded-lg bg-[var(--surface-primary)] hover:bg-[var(--surface-secondary)] border border-[var(--border-primary)] transition-all hover:border-[var(--feature-info-border)] group"
-                >
-                  <div className="p-2 rounded-lg bg-[var(--feature-info-surface)] group-hover:bg-[var(--feature-info-content)]/20 transition-colors">
-                    <Settings className="w-5 h-5 text-[var(--feature-info-content)]" />
-                  </div>
-                  <div className="text-left">
-                    {configurationRequired && canConfigureRegulatoryProfile ? (
-                      <>
-                        <div className="font-semibold text-primary">2. Configure Deadline</div>
-                        <div className="text-sm text-tertiary">Verify your institution’s regulatory profile</div>
-                      </>
-                    ) : hasFeature('showIntegrations') ? (
-                      <>
-                        <div className="font-semibold text-primary">2. Connect Your LMS</div>
-                        <div className="text-sm text-tertiary">Canvas, Blackboard, Google, Microsoft</div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="font-semibold text-primary">2. Configure Settings</div>
-                        <div className="text-sm text-tertiary">Set up your account preferences</div>
-                      </>
-                    )}
-                  </div>
-                </button>
-
-                <a
-                  href="https://example.com/docs/getting-started"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => trackEvent('dash-onboarding-step', { step: 'guide' })}
-                  className="flex items-center space-x-3 p-4 rounded-lg bg-[var(--surface-primary)] hover:bg-[var(--surface-secondary)] border border-[var(--border-primary)] transition-all hover:border-[var(--feature-info-border)] group"
-                >
-                  <div className="p-2 rounded-lg bg-[var(--feature-warning-surface)] group-hover:bg-[var(--feature-warning-content)]/20 transition-colors">
-                    <BookOpen className="w-5 h-5 text-[var(--feature-warning-content)]" />
-                  </div>
-                  <div className="text-left">
-                    <div className="font-semibold text-primary">3. Read the Guide</div>
-                    <div className="text-sm text-tertiary">Quick start documentation</div>
-                  </div>
-                </a>
-              </div>
-
-              {/* Feature highlights */}
-              <div className="mt-4 pt-4 border-t border-[var(--border-primary)]">
-                <div className="flex flex-wrap gap-3 text-sm">
-                  <span className="inline-flex items-center gap-1.5 text-secondary">
-                    <CheckCircle className="w-4 h-4 text-[var(--feature-success-content)]" />
-                    AI-powered alt text generation
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 text-secondary">
-                    <CheckCircle className="w-4 h-4 text-[var(--feature-success-content)]" />
-                    PDF & PowerPoint remediation
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 text-secondary">
-                    <CheckCircle className="w-4 h-4 text-[var(--feature-success-content)]" />
-                    LaTeX to MathML conversion
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 text-secondary">
-                    <CheckCircle className="w-4 h-4 text-[var(--feature-success-content)]" />
-                    Accessibility evidence reports with recorded findings and limitations
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <DashboardWelcome
+            name={user?.name ?? undefined}
+            configurationRequired={configurationRequired}
+            canConfigure={canConfigureRegulatoryProfile}
+            hasIntegrations={hasFeature('showIntegrations')}
+            onDismiss={dismissWelcomeBanner}
+            onUpload={() => { trackEvent('dash-onboarding-step', { step: 'upload' }); navigate('/upload'); }}
+            onConfigure={() => {
+              trackEvent('dash-onboarding-step', { step: 'integrations' });
+              navigate(configurationRequired && canConfigureRegulatoryProfile
+                ? '/settings#regulatory-profile' : hasFeature('showIntegrations') ? '/integrations' : '/settings');
+            }}
+            onGuide={() => trackEvent('dash-onboarding-step', { step: 'guide' })}
+          />
         )}
 
-        {/* Stats Cards */}
+        {/* ------------------------------------------------------------------ */}
+        {/* Stats section                                                       */}
+        {/* ------------------------------------------------------------------ */}
         {stats && (
           <>
             {stats.enrolledDocuments === 0 && stats.historicalScanCount === 0 ? (
-              /* Empty stats - show encouraging prompt instead of zeros */
-              <div className="card mb-8 text-center py-8">
-                <ScanLine className="w-10 h-10 text-tertiary mx-auto mb-3" aria-hidden="true" />
-                <p className="text-lg font-medium text-primary mb-1">Ready to check your first document</p>
-                <p className="text-sm text-tertiary mb-4">Upload a PDF, Word doc, or PowerPoint to see your compliance stats here.</p>
-                <button
+              /* Empty stats — encourage first upload */
+              <Card className="mb-8 text-center py-8">
+                <ScanLine className="w-10 h-10 text-[var(--content-tertiary)] mx-auto mb-3" aria-hidden="true" />
+                <p className="text-lg font-medium text-[var(--content-primary)] mb-1">
+                  Ready to check your first document
+                </p>
+                <p className="text-sm text-[var(--content-tertiary)] mb-4">
+                  Upload a PDF, Word doc, or PowerPoint to see your scan results here.
+                </p>
+                <Button
                   onClick={() => navigate('/upload')}
-                  className="btn-primary inline-flex items-center gap-2"
+                  leftIcon={<Upload className="w-4 h-4" aria-hidden="true" />}
                 >
-                  <Upload className="w-4 h-4" aria-hidden="true" />
                   Upload Your First File
-                </button>
-              </div>
+                </Button>
+              </Card>
             ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6 mb-8">
-              <div className="card">
-                <div className="text-sm font-medium text-secondary mb-1">Current Documents</div>
-                <div className="text-3xl font-bold text-primary">{stats.enrolledDocuments}</div>
-                <div className="text-sm text-tertiary mt-1">
-                  {stats.verifiedDocuments} verified · {stats.unverifiedDocuments} awaiting results
-                </div>
-              </div>
+              /* ---- 5-col stat cards ---- */
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-[14px] mb-[14px]">
+                {/* Total scans */}
+                <StatCard
+                  label="Total scans"
+                  value={stats.historicalScanCount.toLocaleString()}
+                  sublabel={`${stats.scansThisMonth} this month`}
+                />
 
-              <div className="card">
-                <div className="text-sm font-medium text-secondary mb-1">Avg Compliance</div>
-                <div className={`text-3xl font-bold ${stats.avgCompliance == null ? 'text-primary' : getScoreColor(stats.avgCompliance)}`}>
-                  {formatCompliance(stats.avgCompliance)}
-                  {stats.avgCompliance != null && <span className="text-lg">/100</span>}
-                </div>
-                <div className="text-sm text-tertiary mt-1">
-                  {stats.avgCompliance == null ? 'No verified results' : stats.avgCompliance >= 90 ? 'Excellent' : stats.avgCompliance >= 70 ? 'Needs improvement' : 'Poor'}
-                </div>
-              </div>
-
-              <div className="card">
-                <div className="text-sm font-medium text-secondary mb-1">Scan Attempts</div>
-                <div className="text-3xl font-bold text-primary">{stats.historicalScanCount}</div>
-                <div className="text-sm text-tertiary mt-1">{stats.scansThisMonth} this month</div>
-              </div>
-
-              <div className="card">
-                <div className="text-sm font-medium text-secondary mb-1">Issues Found</div>
-                <div className="text-3xl font-bold text-primary">{stats.issuesFound}</div>
-                <div className="text-sm text-tertiary mt-1">In current verified results</div>
-              </div>
-
-              <div className="card">
-                <div className="text-sm font-medium text-secondary mb-1">CVD Accessibility</div>
-                <div
-                  className={`text-3xl font-bold ${stats.cvdAccessibilityRate == null ? 'text-primary' : getScoreColor(stats.cvdAccessibilityRate)}`}
-                  aria-label={stats.cvdAccessibilityRate == null ? 'CVD accessibility not assessed' : `CVD accessibility rate ${Math.round(stats.cvdAccessibilityRate)} percent`}
-                >
-                  {stats.cvdAccessibilityRate == null ? '--' : `${Math.round(stats.cvdAccessibilityRate)}%`}
-                </div>
-                <div className="text-sm text-tertiary mt-1">
-                  {stats.cvdFilesAnalyzed === 0
-                    ? 'No CVD-analyzed documents'
-                    : `${stats.cvdFilesAnalyzed} analyzed · ${stats.cvdAffectedFiles} affected · ${stats.cvdIssuesTotal} findings`}
-                </div>
-              </div>
-
-              {hasDatedDeadline(stats.deadline) && (() => {
-                const daysLeft = stats.deadline.days_remaining;
-                const avg = stats.avgCompliance;
-                const isCritical = avg != null && daysLeft < 90 && avg < 90;
-                const isWarning = avg != null && daysLeft < 180 && avg < 80;
-                const isAhead = avg != null && avg >= 90;
-                return (
-                  <div className="card">
-                    <div className="text-sm font-medium text-secondary mb-1 flex items-center gap-1.5">
-                      <Calendar className="w-3.5 h-3.5" aria-hidden="true" />
-                      Days to Target Date
-                    </div>
-                    <div className={`text-3xl font-bold ${isCritical ? 'text-[var(--content-error)]' : isWarning ? 'text-[var(--content-warning)]' : 'text-primary'}`}>
-                      {daysLeft}
-                    </div>
-                    <div className="text-sm mt-1">
-                      {isCritical ? (
-                        <span className="text-[var(--content-error)] flex items-center gap-1">
-                          <AlertTriangle className="w-3 h-3" aria-hidden="true" />
-                          Target at Risk
-                        </span>
-                      ) : isWarning ? (
-                        <span className="text-[var(--content-warning)] flex items-center gap-1">
-                          <Clock className="w-3 h-3" aria-hidden="true" />
-                          Needs Attention
-                        </span>
-                      ) : isAhead ? (
-                        <span className="text-[var(--content-success)] flex items-center gap-1">
-                          <CheckCircle className="w-3 h-3" aria-hidden="true" />
-                          Scan Score on Target
-                        </span>
-                      ) : (
-                        <span className="text-tertiary">{stats.deadline.deadline_label}</span>
+                {/* Avg scan score — custom interior with ComplianceRing */}
+                <Card className="flex flex-col">
+                  <span className="font-mono uppercase text-xs tracking-wider text-[var(--content-tertiary)] mb-2">
+                    Avg scan score
+                  </span>
+                  <div className="flex items-center gap-3">
+                    <ComplianceRing
+                      score={avg ?? 0}
+                      size={46}
+                      strokeWidth={5}
+                    />
+                    <div>
+                      <div className="text-3xl font-bold leading-tight text-[var(--content-primary)]">
+                        {avg == null ? 'Unverified' : Math.round(avg)}
+                        {avg != null && (
+                          <span className="text-base font-semibold text-[var(--content-tertiary)]">/100</span>
+                        )}
+                      </div>
+                      {avg != null && (
+                        <div className="text-xs font-semibold mt-1 text-[var(--content-secondary)]">
+                          {complianceBandLabel(avg)}
+                        </div>
                       )}
                     </div>
                   </div>
-                );
-              })()}
-            </div>
+                </Card>
+
+                {/* Files processed */}
+                <StatCard
+                  label="Current documents"
+                  value={stats.enrolledDocuments.toLocaleString()}
+                  sublabel={`${stats.verifiedDocuments} verified · ${stats.unverifiedDocuments} unverified`}
+                />
+
+                {/* Issues found */}
+                <StatCard
+                  label="Issues found"
+                  value={stats.issuesFound.toLocaleString()}
+                  sublabel="In current verified results"
+                />
+
+                <StatCard
+                  label="CVD Accessibility"
+                  value={stats.cvdAccessibilityRate == null ? 'Unverified' : `${Math.round(stats.cvdAccessibilityRate)}%`}
+                  sublabel={stats.cvdFilesAnalyzed === 0 ? 'No CVD-analyzed documents' : `${stats.cvdAffectedFiles} affected · ${stats.cvdIssuesTotal} issues`}
+                />
+
+                {/* Days to deadline — accent variant */}
+                <StatCard
+                  variant="accent"
+                  label="Days to target date"
+                  value={daysLeft}
+                  sublabel={deadlineSublabel}
+                />
+              </div>
             )}
 
-            {/* Compliance Trend Graph (30 Days) */}
-            <div className="mb-8">
-              <TrendGraph data={trendData} loading={trendLoading} />
-            </div>
-
-            {/* Analytics Dashboard */}
-            <div className="mb-8">
-              <AnalyticsDashboard departmentId={departmentId} />
-            </div>
-
-            {/* Accessibility Evidence Report */}
             <div className="mb-8">
               <EvidenceReportAction departmentId={departmentId} />
             </div>
 
-            {/* Review Summary Card */}
-            {reviewSummary && (reviewSummary.total_documents > 0 || reviewSummary.pending_count > 0) && (
-              <div className="card mb-8">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <ClipboardCheck className="w-5 h-5 text-accent" aria-hidden="true" />
-                    <h2 className="text-xl font-semibold text-primary">Review Status</h2>
+            {/* -------------------------------------------------------------- */}
+            {/* Scan score trend + Review status (side-by-side)                 */}
+            {/* -------------------------------------------------------------- */}
+            <div className="grid grid-cols-1 lg:grid-cols-[1.55fr_1fr] gap-[14px] mb-[14px]">
+
+              {/* ---- Scan score trend chart ---- */}
+              <Card className="p-5">
+                <div className="flex items-start justify-between mb-2">
+                  <div>
+                    <h2 className="text-base font-bold text-[var(--content-primary)] mb-0.5">
+                      Scan score trend
+                    </h2>
+                    <p className="text-xs text-[var(--content-tertiary)]">30-day department average</p>
                   </div>
-                  <button
-                    onClick={() => {
-                      trackEvent('dash-go-to-review', {});
-                      navigate('/review');
-                    }}
-                    className="text-sm text-accent hover:underline"
-                  >
-                    Go to Review Queue
-                  </button>
+                  {trendDelta !== null && (
+                    <div className="text-right">
+                      <div className="font-bold text-[var(--content-primary)] leading-tight"
+                        style={{ fontSize: '22px', letterSpacing: '-0.02em' }}>
+                        {trendDelta >= 0 ? '+' : ''}{trendDelta}
+                        <span className="text-sm text-[var(--content-tertiary)] font-normal">pts</span>
+                      </div>
+                      <div className="text-xs font-semibold text-[var(--content-secondary)]">across this period</div>
+                    </div>
+                  )}
                 </div>
 
-                {/* Progress bar */}
-                <div className="mb-4">
-                  <div className="flex items-center justify-between text-sm mb-1.5">
-                    <span className="text-secondary font-medium">
-                      Reviewed
-                    </span>
-                    <span className="text-primary font-semibold">
-                      {reviewSummary.reviewed_percent}%
-                    </span>
+                {trendLoading ? (
+                  <div className="h-[200px] flex items-center justify-center text-sm text-[var(--content-tertiary)]">
+                    Loading trend data…
                   </div>
+                ) : trendData.length === 0 ? (
+                  <div className="h-[200px] flex items-center justify-center text-sm text-[var(--content-tertiary)]">
+                    Not enough data yet. Upload more scans to see progress.
+                  </div>
+                ) : (
                   <div
-                    className="w-full h-2.5 rounded-full overflow-hidden"
-                    style={{ backgroundColor: 'var(--surface-tertiary)' }}
-                    role="progressbar"
-                    aria-valuenow={reviewSummary.reviewed_percent}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-label={`${reviewSummary.reviewed_percent}% of fixes reviewed`}
+                    role="img"
+                    aria-label={`30-day scan score trend chart. ${trendData.length} data points.`}
                   >
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${Math.min(reviewSummary.reviewed_percent, 100)}%`,
-                        backgroundColor: reviewSummary.reviewed_percent >= 90
-                          ? 'var(--feature-success-content)'
-                          : reviewSummary.reviewed_percent >= 50
-                            ? 'var(--feature-warning-content)'
-                            : 'var(--accent-solid)',
+                    <ResponsiveContainer width="100%" height={200}>
+                      <AreaChart
+                        data={trendData}
+                        margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
+                      >
+                        <defs>
+                          <linearGradient id="trendAreaFill" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.10} />
+                            <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.02} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid
+                          horizontal
+                          vertical={false}
+                          stroke="var(--border-primary)"
+                          strokeWidth={1}
+                          strokeDasharray=""
+                          horizontalValues={[40, 70, 90]}
+                        />
+                        <XAxis
+                          dataKey="date"
+                          tickFormatter={formatDate}
+                          tick={{
+                            fontSize: '10.5px',
+                            fontFamily: 'JetBrains Mono, monospace',
+                            fill: 'var(--content-tertiary)',
+                          }}
+                          axisLine={false}
+                          tickLine={false}
+                          interval="preserveStartEnd"
+                        />
+                        <YAxis
+                          domain={[0, 100]}
+                          tick={{
+                            fontSize: '10.5px',
+                            fontFamily: 'JetBrains Mono, monospace',
+                            fill: 'var(--content-tertiary)',
+                          }}
+                          axisLine={false}
+                          tickLine={false}
+                          width={30}
+                          ticks={[40, 70, 90]}
+                        />
+                        <Tooltip content={TrendTooltip} cursor={{ stroke: 'var(--border-secondary)', strokeWidth: 1 }} />
+                        <Area
+                          type="monotone"
+                          dataKey="score"
+                          isAnimationActive={false}
+                          stroke="var(--accent)"
+                          strokeWidth={2.5}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          fill="url(#trendAreaFill)"
+                          dot={false}
+                          activeDot={{ r: 4, fill: 'var(--accent)', strokeWidth: 0 }}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                    <div className="sr-only">
+                      <ul>
+                        {trendData.map((point) => (
+                          <li key={point.date}>
+                            {formatDate(point.date)}: Score {Math.round(point.score)}, {point.scans} scans
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+              </Card>
+
+              {/* ---- Review status ---- */}
+              {reviewSummary ? (
+                <Card className="p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-base font-bold text-[var(--content-primary)]">Review status</h2>
+                    <button
+                      onClick={() => {
+                        trackEvent('dash-go-to-review', {});
+                        navigate('/review');
                       }}
-                    />
-                  </div>
-                </div>
-
-                {/* Stat counters */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="text-center p-3 rounded-lg" style={{ backgroundColor: 'var(--surface-secondary)' }}>
-                    <div className="text-2xl font-bold text-primary">{reviewSummary.total_documents}</div>
-                    <div className="text-xs text-tertiary mt-0.5">Documents</div>
-                  </div>
-                  <div className="text-center p-3 rounded-lg" style={{ backgroundColor: 'var(--feature-success-surface)' }}>
-                    <div className="text-2xl font-bold text-[var(--feature-success-content)]">{reviewSummary.approved_count}</div>
-                    <div className="text-xs text-tertiary mt-0.5">Approved</div>
-                  </div>
-                  <div className="text-center p-3 rounded-lg" style={{ backgroundColor: 'var(--feature-warning-surface)' }}>
-                    <div className="text-2xl font-bold text-[var(--feature-warning-content)]">{reviewSummary.pending_count}</div>
-                    <div className="text-xs text-tertiary mt-0.5">Pending</div>
-                  </div>
-                  <div className="text-center p-3 rounded-lg" style={{ backgroundColor: 'var(--feature-danger-surface)' }}>
-                    <div className="text-2xl font-bold text-[var(--feature-danger-content)]">{reviewSummary.rejected_count}</div>
-                    <div className="text-xs text-tertiary mt-0.5">Rejected</div>
-                  </div>
-                </div>
-
-                {/* Average confidence */}
-                <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
-                  <div className="flex items-center justify-between gap-3 text-sm">
-                    <span className="text-secondary">Average reported confidence</span>
-                    <ConfidenceBadge confidence={reviewSummary.avg_confidence} size="sm" />
-                  </div>
-                  <p className="mt-1 text-xs text-tertiary">Fixes without reported confidence are excluded.</p>
-                </div>
-              </div>
-            )}
-
-            {/* Priority Issues Section */}
-            {priorityIssues.length > 0 && (
-              <div className="card mb-8">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-semibold text-primary">Priority Issues</h2>
-                  <button
-                    onClick={() => navigate('/history')}
-                    className="text-sm text-accent hover:underline"
-                  >
-                    View All
-                  </button>
-                </div>
-
-                <div className="space-y-3">
-                  {priorityIssues.map((issue, index) => (
-                    <div
-                      key={index}
-                      className="flex items-center justify-between p-4 rounded-lg bg-surface-tertiary border border-primary"
+                      className="text-xs font-semibold text-[var(--content-accent)] hover:underline"
                     >
-                      <div className="flex items-center space-x-4">
-                        <div>
-                          <AlertTriangle
-                            className={`w-5 h-5 ${
-                              issue.severity === 'critical' ? 'text-[var(--feature-danger-content)]' :
-                              issue.severity === 'high' ? 'text-[var(--feature-warning-content)]' :
-                              issue.severity === 'medium' ? 'text-[var(--feature-info-content)]' :
-                              'text-tertiary'
-                            }`}
-                            aria-hidden="true"
-                          />
-                        </div>
-                        <div>
-                          <div className="font-medium text-primary">{issue.file_name}</div>
-                          <div className="text-sm text-secondary">
-                            {issue.issue_count} issues · {issue.scan_type}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center space-x-4">
-                        <div className="text-right">
-                          <div className={`text-sm font-semibold ${getScoreColor(issue.compliance_score)}`}>
-                            {Math.round(issue.compliance_score)}/100
-                          </div>
-                          <div className="text-xs text-tertiary">
-                            {issue.severity} priority
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => navigate(`/scan/${issue.scan_id}`)}
-                          className="text-accent hover:underline text-sm"
-                        >
-                          View
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+                      Queue →
+                    </button>
+                  </div>
 
-            {/* Recent Scans Section */}
-            <div className="card">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold text-primary">Recent Scans</h2>
-                <button
-                  onClick={() => navigate('/history')}
-                  className="text-sm text-accent hover:underline"
-                >
-                  View All
-                </button>
-              </div>
+                  {/* Progress bar */}
+                  <div className="flex justify-between text-xs mb-1.5">
+                    <span className="font-medium text-[var(--content-secondary)]">Fixes reviewed</span>
+                    <span className="font-bold text-[var(--content-primary)]">{reviewSummary.reviewed_percent}%</span>
+                  </div>
+                  <ProgressBar
+                    value={reviewSummary.reviewed_percent}
+                    max={100}
+                    tone="success"
+                    aria-label={`Fixes reviewed: ${reviewSummary.reviewed_percent}%`}
+                    className="mb-4 h-2"
+                  />
 
-              {recentScans.length === 0 && stats.historicalScanCount === 0 ? (
-                <div className="text-center py-12">
-                  <FileText className="w-12 h-12 text-tertiary mx-auto mb-4" aria-hidden="true" />
-                  <p className="text-tertiary mb-4">No scans yet. Upload your first document to get started!</p>
-                  <button
-                    onClick={() => navigate('/upload')}
-                    className="btn-primary"
-                  >
-                    Upload File
-                  </button>
-                </div>
-              ) : recentScans.length > 0 ? (
-                <div className="space-y-3">
-                  {recentScans.map((scan) => (
-                    <div
-                      key={scan.id}
-                      className="flex items-center justify-between p-4 rounded-lg border border-[var(--border-primary)] hover:bg-[var(--surface-secondary)] transition-colors"
-                    >
-                      <div className="flex items-center space-x-4 min-w-0">
-                        <FileText className="w-5 h-5 text-tertiary shrink-0" aria-hidden="true" />
-                        <div className="min-w-0">
-                          <div className="font-medium text-primary truncate">{scan.filename}</div>
-                          <div className="flex items-center gap-3 text-xs text-tertiary mt-0.5">
-                            <span className="uppercase font-medium">{scan.type}</span>
-                            <span className="flex items-center gap-1">
-                              <Calendar className="w-3 h-3" />
-                              {formatRelativeDate(scan.uploaded_at)}
-                            </span>
-                            <span>
-                              {scan.issues_count == null ? 'Issues unavailable' : `${scan.issues_count} issues`}
-                            </span>
-                          </div>
-                        </div>
+                  {/* 2×2 counters */}
+                  <div className="grid grid-cols-2 gap-[10px]">
+                    <div className="border border-[var(--border-primary)] rounded-[11px] p-[13px]">
+                      <div className="font-bold leading-tight text-[var(--content-primary)]"
+                        style={{ fontSize: '22px', letterSpacing: '-0.02em' }}>
+                        {reviewSummary.total_documents}
                       </div>
-                      <div className="flex items-center gap-3 shrink-0 ml-4">
-                        <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${scan.compliance_score == null ? 'text-tertiary bg-[var(--surface-tertiary)]' : getScoreBgColor(scan.compliance_score)}`}>
-                          {scan.compliance_score == null ? 'Unverified' : `${Math.round(scan.compliance_score)}/100`}
-                        </span>
-                        <button
-                          onClick={() => navigate(`/scan/${scan.id}`)}
-                          className="p-2 text-tertiary hover:text-accent transition-colors rounded-lg hover:bg-[var(--surface-tertiary)]"
-                          aria-label={`View ${scan.filename}`}
-                          title="View details"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => navigate(`/remediate/${scan.id}`)}
-                          className="p-2 text-tertiary hover:text-[var(--feature-success-content)] transition-colors rounded-lg hover:bg-[var(--surface-tertiary)]"
-                          aria-label={`Remediate ${scan.filename}`}
-                          title="Remediate"
-                        >
-                          <Wrench className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDownloadReport(scan.id, scan.filename)}
-                          disabled={downloadingReport === scan.id}
-                          className="p-2 text-tertiary hover:text-accent transition-colors rounded-lg hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
-                          aria-label={`Download report for ${scan.filename}`}
-                          title="Download report"
-                        >
-                          {downloadingReport === scan.id ? (
-                            <Loader className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Download className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
+                      <div className="text-xs text-[var(--content-tertiary)] mt-0.5">Documents</div>
                     </div>
-                  ))}
-                </div>
+                    <div className="border border-[var(--border-primary)] rounded-[11px] p-[13px] bg-[var(--surface-success-subtle)]">
+                      <div className="font-bold leading-tight text-[var(--content-success)]"
+                        style={{ fontSize: '22px', letterSpacing: '-0.02em' }}>
+                        {reviewSummary.approved_count}
+                      </div>
+                      <div className="text-xs text-[var(--content-tertiary)] mt-0.5">Approved</div>
+                    </div>
+                    <div className="border border-[var(--border-primary)] rounded-[11px] p-[13px] bg-[var(--surface-warning-subtle)]">
+                      <div className="font-bold leading-tight text-[var(--content-warning)]"
+                        style={{ fontSize: '22px', letterSpacing: '-0.02em' }}>
+                        {reviewSummary.pending_count}
+                      </div>
+                      <div className="text-xs text-[var(--content-tertiary)] mt-0.5">Pending</div>
+                    </div>
+                    <div className="border border-[var(--border-primary)] rounded-[11px] p-[13px] bg-[var(--surface-error-subtle)]">
+                      <div className="font-bold leading-tight text-[var(--content-error)]"
+                        style={{ fontSize: '22px', letterSpacing: '-0.02em' }}>
+                        {reviewSummary.rejected_count}
+                      </div>
+                      <div className="text-xs text-[var(--content-tertiary)] mt-0.5">Rejected</div>
+                    </div>
+                  </div>
+
+                  {/* Average reported confidence */}
+                  <div className="mt-4 pt-3.5 border-t border-[var(--border-primary)] text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <span className="text-[var(--content-secondary)]">Average reported confidence</span>
+                      <ConfidenceBadge confidence={reviewSummary.avg_confidence} size="sm" />
+                    </div>
+                    <p className="mt-1 text-[var(--content-tertiary)]">Fixes without reported confidence are excluded.</p>
+                  </div>
+                </Card>
               ) : (
-                <div className="text-center py-8">
-                  <TrendingUp className="w-8 h-8 text-accent mx-auto mb-2" aria-hidden="true" />
-                  <p className="text-secondary">
-                    You have {stats.historicalScanCount} scan{stats.historicalScanCount !== 1 ? 's' : ''} in your history.
-                  </p>
+                /* Placeholder when review data unavailable */
+                <Card className="p-5 flex items-center justify-center">
+                  <p className="text-sm text-[var(--content-tertiary)]">Review data unavailable</p>
+                </Card>
+              )}
+            </div>
+
+            {/* -------------------------------------------------------------- */}
+            {/* Analytics Dashboard (Phase 4 component)                         */}
+            {/* -------------------------------------------------------------- */}
+            <div className="mb-[14px]">
+              <AnalyticsDashboard departmentId={departmentId} />
+            </div>
+
+            {/* -------------------------------------------------------------- */}
+            {/* Priority issues + Recent scans (side-by-side)                   */}
+            {/* -------------------------------------------------------------- */}
+            <div className={`grid grid-cols-1 ${priorityIssues.length > 0 ? 'lg:grid-cols-[1fr_1.4fr]' : ''} gap-[14px]`}>
+
+              {/* ---- Priority issues ---- */}
+              {priorityIssues.length > 0 && (
+                <Card className="p-5">
+                  <div className="flex items-center justify-between mb-3.5">
+                    <h2 className="text-base font-bold text-[var(--content-primary)]">Priority issues</h2>
+                    <button
+                      onClick={() => navigate('/history')}
+                      className="text-xs font-semibold text-[var(--content-accent)] hover:underline"
+                    >
+                      All →
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    {priorityIssues.map((issue, index) => (
+                      <div
+                        key={index}
+                        className="flex items-center gap-3 p-[11px] rounded-[10px] border border-[var(--border-primary)] hover:bg-[var(--surface-secondary)] transition-colors cursor-default"
+                        onClick={() => navigate(`/scan/${issue.scan_id}`)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => e.key === 'Enter' && navigate(`/scan/${issue.scan_id}`)}
+                        aria-label={
+                          typeof issue.issue_count === 'number'
+                            ? `View ${issue.file_name} — ${issue.issue_count} issues`
+                            : `View ${issue.file_name}`
+                        }
+                      >
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 ${severityDotClass(issue.severity)}`}
+                          aria-hidden="true"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-semibold text-[var(--content-primary)] truncate">
+                            {issue.file_name}
+                          </div>
+                          <div className="text-xs text-[var(--content-tertiary)]">
+                            {typeof issue.issue_count === 'number' && `${issue.issue_count} issues · `}
+                            {issue.scan_type.toUpperCase()}
+                          </div>
+                        </div>
+                        <ScoreChip score={issue.compliance_score} />
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
+              {/* ---- Recent scans ---- */}
+              <Card className="p-5">
+                <div className="flex items-center justify-between mb-3.5">
+                  <h2 className="text-base font-bold text-[var(--content-primary)]">Recent scans</h2>
                   <button
                     onClick={() => navigate('/history')}
-                    className="mt-4 btn-primary"
+                    className="text-xs font-semibold text-[var(--content-accent)] hover:underline"
                   >
-                    View Scan History
+                    History →
                   </button>
                 </div>
-              )}
+
+                {recentScans.length === 0 && stats.historicalScanCount === 0 ? (
+                  <div className="text-center py-10">
+                    <FileText className="w-10 h-10 text-[var(--content-tertiary)] mx-auto mb-3" aria-hidden="true" />
+                    <p className="text-sm text-[var(--content-tertiary)] mb-4">
+                      No scans yet. Upload your first document to get started!
+                    </p>
+                    <Button
+                      onClick={() => navigate('/upload')}
+                      leftIcon={<Upload className="w-4 h-4" aria-hidden="true" />}
+                    >
+                      Upload File
+                    </Button>
+                  </div>
+                ) : recentScans.length > 0 ? (
+                  <DataTable<RecentScan>
+                    className="-mx-1"
+                    caption="Recent scans"
+                    rows={recentScans}
+                    getRowKey={(scan) => scan.id}
+                    columns={[
+                      {
+                        key: 'file',
+                        header: 'File',
+                        render: (scan) => (
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-[var(--content-primary)] truncate">
+                              {scan.filename}
+                            </div>
+                            <div className="text-xs text-[var(--content-tertiary)] font-mono uppercase">
+                              {scan.type} · {scan.issues_count == null ? 'Issues unavailable' : `${scan.issues_count} issues`}
+                            </div>
+                          </div>
+                        ),
+                      },
+                      {
+                        key: 'when',
+                        header: 'When',
+                        render: (scan) => (
+                          <span className="flex items-center gap-1 text-xs text-[var(--content-tertiary)]">
+                            <Calendar className="w-3 h-3 shrink-0" aria-hidden="true" />
+                            {formatRelativeDate(scan.uploaded_at)}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'score',
+                        header: 'Score',
+                        render: (scan) => scan.compliance_score == null ? <span>Unverified</span> : <ScoreChip score={scan.compliance_score} />,
+                      },
+                      {
+                        key: 'actions',
+                        header: 'Actions',
+                        align: 'right',
+                        render: (scan) => (
+                          <span className="flex gap-2 justify-end">
+                            <button
+                              onClick={() => navigate(`/scan/${scan.id}`)}
+                              className="p-2 min-h-9 min-w-9 rounded-[7px] text-[var(--content-tertiary)] hover:text-[var(--content-accent)] hover:bg-[var(--surface-secondary)] transition-colors"
+                              aria-label={`View ${scan.filename}`}
+                              title="View details"
+                            >
+                              <Eye className="w-4 h-4" aria-hidden="true" />
+                            </button>
+                            <button
+                              onClick={() => navigate(`/remediate/${scan.id}`)}
+                              className="p-2 min-h-9 min-w-9 rounded-[7px] text-[var(--content-tertiary)] hover:text-[var(--content-success)] hover:bg-[var(--surface-secondary)] transition-colors"
+                              aria-label={`Remediate ${scan.filename}`}
+                              title="Remediate"
+                            >
+                              <Wrench className="w-4 h-4" aria-hidden="true" />
+                            </button>
+                            <button
+                              onClick={() => handleDownloadReport(scan.id, scan.filename)}
+                              disabled={downloadingReport === scan.id}
+                              className="p-2 min-h-9 min-w-9 rounded-[7px] text-[var(--content-tertiary)] hover:text-[var(--content-accent)] hover:bg-[var(--surface-secondary)] transition-colors disabled:opacity-50"
+                              aria-label={`Download report for ${scan.filename}`}
+                              title="Download report"
+                            >
+                              {downloadingReport === scan.id ? (
+                                <Loader className="w-4 h-4 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <Download className="w-4 h-4" aria-hidden="true" />
+                              )}
+                            </button>
+                          </span>
+                        ),
+                      },
+                    ]}
+                  />
+                ) : (
+                  <div className="text-center py-8">
+                    <TrendingUp className="w-8 h-8 text-[var(--content-accent)] mx-auto mb-2" aria-hidden="true" />
+                    <p className="text-sm text-[var(--content-secondary)]">
+                      You have {stats.historicalScanCount} scan{stats.historicalScanCount !== 1 ? 's' : ''} in your history.
+                    </p>
+                    <Button
+                      className="mt-4"
+                      onClick={() => navigate('/history')}
+                    >
+                      View Scan History
+                    </Button>
+                  </div>
+                )}
+              </Card>
             </div>
           </>
         )}

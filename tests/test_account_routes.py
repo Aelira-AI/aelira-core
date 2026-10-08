@@ -194,9 +194,14 @@ def test_code_delivery_failure_never_claims_sent(account_route, monkeypatch, fai
     )
 
 
+@pytest.mark.parametrize("brand", ["Aelira", "Example University Accessibility"])
 def test_code_request_sends_matching_code_without_exposing_hash(
-    account_route, monkeypatch
+    account_route, monkeypatch, brand
 ):
+    monkeypatch.setenv("BRAND_NAME", brand)
+    monkeypatch.setenv("PUBLIC_WEBSITE_URL", "https://accessibility.example.edu")
+    monkeypatch.delenv("EMAIL_LEGAL_NAME", raising=False)
+    monkeypatch.delenv("EMAIL_LOGO_URL", raising=False)
     monkeypatch.setattr(service_module.secrets, "randbelow", lambda limit: 123456)
     response = request(account_route, ROUTES[1])
     assert response.status_code == 200
@@ -205,7 +210,10 @@ def test_code_request_sends_matching_code_without_exposing_hash(
     account_route.mail.send_email.assert_awaited_once()
     sent = account_route.mail.send_email.call_args.kwargs
     assert sent["to_emails"] == [account_route.user.email]
-    assert sent["subject"] == "Aelira Account Deletion - Confirmation Code"
+    assert sent["subject"] == f"{brand} Account Deletion - Confirmation Code"
+    if brand != "Aelira":
+        assert "Aelira" not in sent["html_content"]
+        assert "Aelira" not in sent["text_content"]
     assert "123456" in sent["text_content"] and "123456" in sent["html_content"]
     account_route.db.expire_all()
     assert bcrypt.checkpw(
@@ -281,7 +289,14 @@ def test_deactivation_requires_confirmation(account_route, payload, status):
     assert account_route.sessions[0].revoked_at is None
 
 
-def test_confirmation_schedules_only_principal_and_revokes_credentials(account_route):
+@pytest.mark.parametrize("brand", ["Aelira", "Example University Accessibility"])
+def test_confirmation_schedules_only_principal_and_revokes_credentials(
+    account_route, monkeypatch, brand
+):
+    monkeypatch.setenv("BRAND_NAME", brand)
+    monkeypatch.setenv("PUBLIC_WEBSITE_URL", "https://accessibility.example.edu")
+    monkeypatch.delenv("EMAIL_LEGAL_NAME", raising=False)
+    monkeypatch.delenv("EMAIL_LOGO_URL", raising=False)
     code(account_route)
     response = request(account_route, ROUTES[2])
     assert response.status_code == 200
@@ -315,6 +330,11 @@ def test_confirmation_schedules_only_principal_and_revokes_credentials(account_r
     )
     assert block.deletion_type == "gdpr_deleted" and block.cooldown_until is None
     account_route.mail.send_email.assert_awaited_once()
+    sent = account_route.mail.send_email.call_args.kwargs
+    assert sent["subject"] == f"Your {brand} Account Deletion is Scheduled"
+    if brand != "Aelira":
+        assert "Aelira" not in sent["html_content"]
+        assert "Aelira" not in sent["text_content"]
 
 
 @pytest.mark.parametrize(
