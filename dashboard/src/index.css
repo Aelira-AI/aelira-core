@@ -1,7 +1,8 @@
 @import "tailwindcss";
+@import "./styles/workspace.css";
 
 /* ============================================================================
-   AELIRA DASHBOARD - "Warm & Human" Academic Aesthetic
+   AELIRA DASHBOARD - "Clarity" Design System
    Mirrors main website design system (website/app/globals.css)
 
    Philosophy:
@@ -13,8 +14,8 @@
    - Academic/scholarly feel with purposeful imperfection
 
    Typography:
-   - Lora for headings (warm balanced serif, contemporary classic, readable)
-   - Source Sans 3 for body text (modern humanist sans, warm, excellent readability)
+   - Hanken Grotesk for headings and body
+   - JetBrains Mono for data labels
 
    Accent Color Semantic Roles (WCAG AA compliant on ivory #FDFBF7):
    - Purple (#7C3AED): Primary brand, CTAs, links (4.77:1)
@@ -40,8 +41,9 @@
 
 @theme {
   /* Typography - Custom font families (Warm & Human) */
-  --font-heading: 'Lora', Georgia, 'Times New Roman', serif;
-  --font-body: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-heading: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
 
   /* Logo-matched Brand Colors */
   --color-aelira-purple: #B794F6;
@@ -97,140 +99,156 @@
 ============================================================================ */
 
 :root {
-  /* Surface Tokens (Backgrounds) - WARM ACADEMIC PALETTE */
-  --surface-primary: #FDFBF7;             /* Warm ivory (was #FFFFFF) */
-  --surface-secondary: #F7F3ED;           /* Parchment (was #F8FAFC) */
-  --surface-tertiary: #EDE8DF;            /* Textbook cream (was #F1F5F9) */
-  --surface-dark: #2D2A26;                /* Charcoal brown (was #1E293B) */
-  --surface-accent-subtle: #F5F3FF;       /* Very light purple wash */
-  --surface-accent: #E9D5FF;              /* Light purple bg (purple-200) */
-  --surface-accent-strong: #A78BFA;       /* Medium purple bg (purple-400) */
-  --surface-success-subtle: #F0FDF4;      /* Light green */
-  --surface-info-subtle: #F7F3ED;         /* Parchment - stay on brand */
-  --surface-warning-subtle: #FEF3E2;      /* Warm amber tint for urgency */
-  --surface-error-subtle: #FEF2F2;        /* Light red for errors */
+  /* Surface Tokens (Backgrounds) - CLARITY PALETTE */
+  --surface-primary: #FFFFFF;
+  --surface-secondary: #F5F5F7;
+  --surface-tertiary: #EDEDF0;
+  --surface-dark: #1D1D1F;
+  --surface-accent-subtle: #EDEAF6;
+  --surface-accent: #DCD6F0;
+  --surface-accent-strong: #2E2963;
+  --surface-success-subtle: #ECF3EE;
+  --surface-info-subtle: #EDEAF6;         /* Collapsed to accent-subtle (Clarity has no info surface) */
+  --surface-warning-subtle: #FAF1DF;
+  --surface-error-subtle: #F8ECEA;
 
-  /* Content Tokens (Text & Icons) - WARM TONES */
-  --content-primary: #1F1D1A;             /* Warm black - 16.27:1 contrast */
-  --content-secondary: #5C564D;           /* Warm gray - 7.02:1 contrast */
-  --content-tertiary: #706B63;            /* Muted warm - 5.12:1 contrast (WCAG AA) */
-  --content-inverse: #FDFBF7;             /* Ivory text on dark backgrounds */
-  --content-accent: #7C3AED;              /* Purple text - 5.51:1 contrast */
-  --content-accent-strong: #5B21B6;       /* Dark purple text (purple-700) */
-  --content-success: #15803D;             /* Green text (green-700) */
-  --content-info: #1D4ED8;                /* Blue text (blue-700) */
-  --content-warning: #A35540;             /* Terracotta for warnings */
-  --content-error: #DC2626;               /* Red text for errors */
+  /* Content Tokens (Text & Icons) */
+  --content-primary: #1D1D1F;
+  --content-secondary: #5E5E64;
+  --content-tertiary: #6A6A70;
+  --content-inverse: #FFFFFF;
+  --content-accent: #2E2963;
+  --content-accent-strong: #241F50;
+  --content-success: #2F6B40;
+  --content-info: #5E5E64;                /* Collapsed to content-secondary */
+  --content-warning: #7E5310;
+  --content-error: #A23A2A;
 
-  /* Semantic Accent Colors - WCAG AA compliant (4.5:1+ on ivory) */
-  --accent-sage: #5E7550;                 /* SUCCESS: 4.91:1 contrast - compliant, approved */
-  --accent-sage-light: #E8EDE4;           /* Light sage for backgrounds */
-  --accent-terracotta: #A35540;           /* URGENCY: 5.17:1 contrast - deadlines, warnings */
-  --accent-terracotta-light: #F8EBE7;     /* Light terracotta for backgrounds */
-  --accent-gold: #7D6628;                 /* PREMIUM: 5.34:1 contrast - highlights, achievements */
-  --accent-gold-light: #FBF6E8;           /* Light gold for backgrounds */
+  /* Semantic Accent Colors - Clarity (collapsed rainbow to single accent) */
+  --accent-sage: #2F6B40;                 /* SUCCESS role → Clarity success green */
+  --accent-sage-light: #EAF3ED;           /* SUCCESS soft */
+  --accent-terracotta: #A23A2A;           /* URGENCY/WARNING role → Clarity danger */
+  --accent-terracotta-light: #F8ECEA;     /* Danger soft */
+  --accent-gold: #7E5310;                 /* PREMIUM/WARNING role → Clarity warning */
+  --accent-gold-light: #FAF1DF;           /* Warning soft */
+
+  /* Clarity accent tokens */
+  --accent:        #2E2963;
+  --accent-solid:  #2E2963;
+  --accent-soft:   #EDEAF6;
+  --accent-node:   #B7A8D9;
+  --head-accent:   #2E2963;
+  --eyebrow:       #2E2963;
 
   /* Icon Tokens (for icon containers) */
-  --icon-color: #1F1D1A;                  /* Warm black */
-  --icon-bg-accent: #E9D5FF;              /* Light purple icon bg (purple-200) */
-  --icon-fg-accent: #5B21B6;              /* Dark purple icon (purple-700) */
-  --icon-bg-success: #DCFCE7;             /* Light green icon bg (green-100) */
-  --icon-fg-success: #15803D;             /* Dark green icon (green-700) */
-  --icon-bg-info: #DBEAFE;                /* Light blue icon bg (blue-100) */
-  --icon-fg-info: #1D4ED8;                /* Dark blue icon (blue-700) */
+  --icon-color: #1D1D1F;
+  --icon-bg-accent: #DCD6F0;              /* surface-accent */
+  --icon-fg-accent: #241F50;              /* content-accent-strong */
+  --icon-bg-success: #ECF3EE;             /* surface-success-subtle */
+  --icon-fg-success: #2F6B40;             /* content-success */
+  --icon-bg-info: #EDEAF6;               /* accent-subtle */
+  --icon-fg-info: #2E2963;               /* accent */
 
-  /* Feature Card Icon Tokens - SIMPLIFIED TO PURPLE/SLATE/GREEN */
-  --feature-primary-surface: #F3E8FF;     /* Purple-100 - Primary features */
-  --feature-primary-content: #7C3AED;     /* Purple-600 */
-  --feature-secondary-surface: #F1F5F9;   /* Slate-100 - Stay on brand */
-  --feature-secondary-content: #64748B;   /* Slate-500 */
-  --feature-success-surface: #DCFCE7;     /* Green-100 - Success/completed features */
-  --feature-success-content: #166534;     /* Green-800 - WCAG AA compliant */
-  --feature-success-border: #4ADE80;      /* Green-400 - Border for success badges */
-  --feature-warning-surface: #FEF3E2;     /* Warm amber - urgency */
-  --feature-warning-content: #A35540;     /* Terracotta */
-  --feature-warning-border: #F59E0B;      /* Amber-500 - For progress indicators */
-  --feature-info-surface: #DBEAFE;        /* Blue-100 */
-  --feature-info-content: #1D4ED8;        /* Blue-700 */
-  --feature-danger-surface: #FEE2E2;      /* Red-100 */
-  --feature-danger-content: #DC2626;      /* Red-600 */
-  --feature-danger-border: #EF4444;       /* Red-500 - For critical indicators */
-  --feature-special-surface: #F3E8FF;     /* Purple-100 */
-  --feature-special-content: #7C3AED;     /* Purple-600 */
-  --feature-media-surface: #CCFBF1;       /* Teal-100 */
-  --feature-media-content: #0D9488;       /* Teal-600 */
-  --feature-highlight-surface: #F3E8FF;   /* Purple-100 */
-  --feature-highlight-content: #7C3AED;   /* Purple-600 */
-  --feature-advanced-surface: #DCFCE7;    /* Green-100 */
-  --feature-advanced-content: #16A34A;    /* Green-600 */
-  --feature-code-surface: #F1F5F9;        /* Slate-100 */
-  --feature-code-content: #64748B;        /* Slate-500 */
-  --feature-analytics-surface: #F3E8FF;   /* Purple-100 */
-  --feature-analytics-content: #7C3AED;   /* Purple-600 */
+  /* Feature Card Icon Tokens - Clarity (all rainbow accents → single accent #2E2963) */
+  --feature-primary-surface: #EDEAF6;     /* accent-subtle */
+  --feature-primary-content: #2E2963;     /* accent */
+  --feature-secondary-surface: #EDEDF0;   /* surface-tertiary */
+  --feature-secondary-content: #5E5E64;   /* content-secondary */
+  --feature-success-surface: #ECF3EE;     /* surface-success-subtle */
+  --feature-success-content: #2F6B40;     /* content-success */
+  --feature-success-border: #2F6B40;      /* content-success */
+  --feature-warning-surface: #FAF1DF;     /* surface-warning-subtle */
+  --feature-warning-content: #7E5310;     /* content-warning */
+  --feature-warning-border: #7E5310;      /* content-warning */
+  --feature-info-surface: #EDEAF6;        /* accent-subtle */
+  --feature-info-content: #2E2963;        /* accent */
+  --feature-danger-surface: #F8ECEA;      /* surface-error-subtle */
+  --feature-danger-content: #A23A2A;      /* content-error */
+  --feature-danger-border: #A23A2A;       /* content-error */
+  --feature-special-surface: #EDEAF6;     /* accent-subtle */
+  --feature-special-content: #2E2963;     /* accent */
+  --feature-media-surface: #EDEDF0;       /* surface-tertiary */
+  --feature-media-content: #5E5E64;       /* content-secondary */
+  --feature-highlight-surface: #EDEAF6;   /* accent-subtle */
+  --feature-highlight-content: #2E2963;   /* accent */
+  --feature-advanced-surface: #ECF3EE;    /* surface-success-subtle */
+  --feature-advanced-content: #2F6B40;    /* content-success */
+  --feature-code-surface: #EDEDF0;        /* surface-tertiary */
+  --feature-code-content: #5E5E64;        /* content-secondary */
+  --feature-analytics-surface: #EDEAF6;   /* accent-subtle */
+  --feature-analytics-content: #2E2963;   /* accent */
 
   /* Border Tokens */
-  --border-primary: rgba(31, 29, 26, 0.12);  /* Warm border */
-  --border-accent: #A78BFA;               /* Purple border (purple-400) */
-  --border-subtle: rgba(31, 29, 26, 0.06);
-  --border-color: rgba(31, 29, 26, 0.12); /* Legacy support */
+  --border-primary: #D9D9DE;
+  --border-secondary: #C7C7CC;
+  --border-accent: #2E2963;
+  --border-subtle: rgba(29, 29, 31, 0.08);
+  --border-color: #D9D9DE;                /* Legacy support */
 
   /* Interactive Tokens (Buttons, Links) */
-  --interactive-primary-bg: #7C3AED;      /* Purple button (purple-600) */
-  --interactive-primary-fg: #FFFFFF;      /* White text on purple */
-  --interactive-primary-hover: #6D28D9;   /* Darker purple hover (purple-700) */
+  --interactive-primary-bg: #2E2963;
+  --interactive-primary-fg: #FFFFFF;
+  --interactive-primary-hover: #241F50;
   --interactive-primary-border: rgba(255, 255, 255, 0.2);
   --interactive-secondary-bg: transparent;
-  --interactive-secondary-fg: #7C3AED;
-  --interactive-secondary-border: #7C3AED;
-  --interactive-secondary-hover-bg: #F5F3FF;
+  --interactive-secondary-fg: #1D1D1F;
+  --interactive-secondary-border: #C7C7CC;
+  --interactive-secondary-hover-bg: #EDEAF6;
   --interactive-inverse-bg: #FFFFFF;
-  --interactive-inverse-fg: #7C3AED;
+  --interactive-inverse-fg: #2E2963;
   --interactive-inverse-hover: rgba(255, 255, 255, 0.9);
-  --interactive-accent-bg: var(--accent-sage);
+  --interactive-accent-bg: #2F6B40;       /* Success green for accent actions */
   --interactive-accent-fg: #FFFFFF;
-  --interactive-accent-hover: #4D6342;
+  --interactive-accent-hover: #2E5C3A;
 
-  /* Core navy accent shorthand (used broadly for focus rings, progress bars, icons) */
-  --accent: #2E2963;                      /* Clarity core navy */
-  --accent-solid: #2E2963;                /* Solid accent with white text */
+  /* Accent shorthand (used broadly for focus rings, progress bars, icons) */
 
-  /* Shadow Tokens - WARM TONES (using warm black rgba(31, 29, 26, ...)) */
-  --shadow-xs: 0 1px 2px 0 rgba(31, 29, 26, 0.03);
-  --shadow-sm: 0 1px 3px 0 rgba(31, 29, 26, 0.05), 0 1px 2px -1px rgba(31, 29, 26, 0.03);
-  --shadow-md: 0 4px 6px -1px rgba(31, 29, 26, 0.07), 0 2px 4px -2px rgba(31, 29, 26, 0.04);
-  --shadow-lg: 0 10px 15px -3px rgba(31, 29, 26, 0.08), 0 4px 6px -4px rgba(31, 29, 26, 0.04);
-  --shadow-xl: 0 20px 25px -5px rgba(31, 29, 26, 0.08), 0 8px 10px -6px rgba(31, 29, 26, 0.04);
-  --shadow-2xl: 0 25px 50px -12px rgba(31, 29, 26, 0.15);
+  /* Radius Tokens */
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 18px;
+  --radius-pill: 980px;
+
+  /* Shadow Product */
+  --shadow-product: 0 30px 60px -30px rgba(20, 18, 40, .28);
+
+  /* Shadow Tokens */
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
 
   /* Colored glow shadows */
-  --glow-accent: 0 0 40px -8px rgba(124, 58, 237, 0.35);
-  --glow-success: 0 0 40px -8px rgba(22, 163, 74, 0.35);
-  --glow-warning: 0 0 40px -8px rgba(163, 85, 64, 0.35);
-  --glow-danger: 0 0 40px -8px rgba(220, 38, 38, 0.35);
+  --glow-accent: 0 0 40px -8px rgba(46, 41, 99, 0.35);
+  --glow-success: 0 0 40px -8px rgba(63, 122, 79, 0.35);
+  --glow-warning: 0 0 40px -8px rgba(154, 103, 19, 0.35);
+  --glow-danger: 0 0 40px -8px rgba(162, 58, 42, 0.35);
 
   /* Inset shadow for recessed elements */
-  --shadow-inset: inset 0 2px 4px 0 rgba(31, 29, 26, 0.05);
-  --shadow-colored: 0 8px 20px -4px rgba(124, 58, 237, 0.25);
+  --shadow-inset: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
+  --shadow-colored: 0 8px 20px -4px rgba(46, 41, 99, 0.25);
 
-  /* Paper/Card Tokens (replaces glassmorphism) */
+  /* Paper/Card Tokens */
   --card-bg: var(--surface-primary);
   --card-bg-hover: var(--surface-secondary);
-  --card-border: rgba(31, 29, 26, 0.1);
-  --card-border-hover: rgba(31, 29, 26, 0.15);
-  --card-shadow: 0 2px 8px rgba(31, 29, 26, 0.06), 0 1px 2px rgba(31, 29, 26, 0.04);
-  --card-shadow-hover: 0 8px 24px rgba(31, 29, 26, 0.08), 0 2px 6px rgba(31, 29, 26, 0.04);
+  --card-border: rgba(29, 29, 31, 0.1);
+  --card-border-hover: rgba(29, 29, 31, 0.15);
+  --card-shadow: 0 2px 8px rgba(29, 29, 31, 0.06), 0 1px 2px rgba(29, 29, 31, 0.04);
+  --card-shadow-hover: 0 8px 24px rgba(29, 29, 31, 0.08), 0 2px 6px rgba(29, 29, 31, 0.04);
 
   /* Paper texture (subtle noise) */
   --paper-texture: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
 
   /* Header Tokens (solid, no glass) */
-  --header-bg: rgba(253, 251, 247, 0.95);
-  --header-shadow: 0 1px 3px rgba(31, 29, 26, 0.06);
+  --header-bg: rgba(255, 255, 255, 0.95);
+  --header-shadow: 0 1px 3px rgba(29, 29, 31, 0.06);
 
   /* Dropdown Tokens (solid, no glass) */
   --dropdown-bg: var(--surface-primary);
-  --dropdown-shadow: 0 4px 16px rgba(31, 29, 26, 0.1), 0 2px 4px rgba(31, 29, 26, 0.06);
-  --dropdown-border: rgba(31, 29, 26, 0.08);
+  --dropdown-shadow: 0 4px 16px rgba(29, 29, 31, 0.1), 0 2px 4px rgba(29, 29, 31, 0.06);
+  --dropdown-border: rgba(29, 29, 31, 0.08);
 
   /* Legacy glass tokens (mapped to paper for backwards compatibility) */
   --glass-bg: var(--card-bg);
@@ -256,106 +274,113 @@
 }
 
 /* ============================================================================
-   DARK MODE - Semantic Tokens (WARM DARK PALETTE)
+   DARK MODE - Semantic Tokens (CLARITY DARK PALETTE)
 ============================================================================ */
 
 .dark {
-  /* Surface Tokens (Backgrounds) - WARM DARK PALETTE */
-  --surface-primary: #1A1816;             /* Warm dark (was #0F172A) */
-  --surface-secondary: #252320;           /* Leather brown (was #1E293B) */
-  --surface-tertiary: #353230;            /* Warm slate (was #334155) */
-  --surface-dark: #1A1816;                /* Same as primary in dark mode */
-  --surface-accent-subtle: #1E1B4B;       /* Very dark purple (indigo-950) */
-  --surface-accent: #4C1D95;              /* Dark purple (purple-900) */
-  --surface-accent-strong: #6D28D9;       /* Medium purple (purple-700) */
-  --surface-success-subtle: #14532D;      /* Dark green */
-  --surface-info-subtle: #1E3A8A;         /* Dark blue */
-  --surface-warning-subtle: #2D2520;      /* Warm amber dark */
-  --surface-error-subtle: #450A0A;        /* Dark red */
+  /* Surface Tokens (Backgrounds) - CLARITY DARK PALETTE */
+  --surface-primary: #000000;
+  --surface-secondary: #0E0E10;
+  --surface-tertiary: #1A1A1D;
+  --surface-dark: #000000;
+  --surface-accent-subtle: #17142C;
+  --surface-accent: #241F50;
+  --surface-accent-strong: #6A5EA6;
+  --surface-success-subtle: #122017;
+  --surface-info-subtle: #17142C;         /* Collapsed to accent-subtle */
+  --surface-warning-subtle: #1E1608;      /* Very dark warning bg */
+  --surface-error-subtle: #1E0A08;        /* Very dark error bg */
 
-  /* Content Tokens (Text & Icons) - WARM TONES */
-  --content-primary: #F5F2ED;             /* Cream white (was #F8FAFC) */
-  --content-secondary: #B5AFA5;           /* Warm light gray (was #94A3B8) */
-  --content-tertiary: #918982;            /* Muted warm (4.92:1 contrast on dark) */
-  --content-inverse: #F5F2ED;             /* Cream text */
-  --content-accent: #C4B5FD;              /* Light purple (purple-300) */
-  --content-accent-strong: #A78BFA;       /* Medium purple (purple-400) */
-  --content-success: #86EFAC;             /* Light green (green-300) */
-  --content-info: #93C5FD;                /* Light blue (blue-300) */
-  --content-warning: #D4917C;             /* Light terracotta */
-  --content-error: #FCA5A5;               /* Light red (red-300) */
+  /* Content Tokens (Text & Icons) */
+  --content-primary: #F5F5F7;
+  --content-secondary: #A1A1A6;
+  --content-tertiary: #949499;   /* AA fix: ≥4.5:1 on --surface-accent (#241F50); was #8A8A90 (4.41) */
+  --content-inverse: #000000;
+  --content-accent: #9C8DD3;     /* AA fix: ≥4.5:1 on --surface-accent (#241F50); was #9181C9 (4.46) */
+  --content-accent-strong: #A99ADB;
+  --content-success: #5FB87A;
+  --content-info: #A1A1A6;                /* Collapsed to content-secondary */
+  --content-warning: #D2A14A;
+  --content-error: #D2705F;
 
-  /* Dark mode accent colors */
-  --accent-sage: #9BB08D;                 /* Lighter sage for dark mode */
-  --accent-sage-light: #2A3228;           /* Dark sage background */
-  --accent-terracotta: #D4917C;           /* Lighter terracotta for dark mode */
-  --accent-terracotta-light: #2D2320;     /* Dark terracotta background */
-  --accent-gold: #D9C07A;                 /* Lighter gold for dark mode */
-  --accent-gold-light: #2D2A20;           /* Dark gold background */
+  /* Dark mode accent colors - Clarity */
+  --accent-sage: #5FB87A;                 /* SUCCESS: Clarity dark success */
+  --accent-sage-light: #122017;           /* SUCCESS soft dark bg */
+  --accent-terracotta: #D2705F;           /* DANGER: Clarity dark danger */
+  --accent-terracotta-light: #1E0A08;     /* Danger soft dark bg */
+  --accent-gold: #D2A14A;                 /* WARNING: Clarity dark warning */
+  --accent-gold-light: #1E1608;           /* Warning soft dark bg */
+
+  /* Clarity accent tokens */
+  --accent:        #C4B5FD;
+  --accent-solid:  #6A5EA6;
+  --accent-soft:   #17142C;
+  --accent-node:   #B7A8D9;
+  --head-accent:   #F5F5F7;
+  --eyebrow:       #9A97A4;
 
   /* Icon Tokens (for icon containers) */
-  --icon-color: #F5F2ED;                        /* Cream icon color in dark mode */
-  --icon-bg-accent: rgba(109, 40, 217, 0.3);   /* Dark purple with opacity */
-  --icon-fg-accent: #C4B5FD;                    /* Light purple (purple-300) */
-  --icon-bg-success: rgba(22, 163, 74, 0.3);   /* Dark green with opacity */
-  --icon-fg-success: #86EFAC;                   /* Light green (green-300) */
-  --icon-bg-info: rgba(29, 78, 216, 0.3);      /* Dark blue with opacity */
-  --icon-fg-info: #93C5FD;                      /* Light blue (blue-300) */
+  --icon-color: #F5F5F7;
+  --icon-bg-accent: #241F50;              /* surface-accent */
+  --icon-fg-accent: #A99ADB;              /* content-accent-strong */
+  --icon-bg-success: #122017;             /* surface-success-subtle */
+  --icon-fg-success: #5FB87A;             /* content-success */
+  --icon-bg-info: #17142C;               /* accent-subtle */
+  --icon-fg-info: #9181C9;               /* content-accent */
 
-  /* Feature Card Icon Tokens - Dark mode */
-  --feature-primary-surface: #581C87;          /* Purple-900 */
-  --feature-primary-content: #C4B5FD;          /* Purple-300 */
-  --feature-secondary-surface: #1E293B;        /* Slate-800 */
-  --feature-secondary-content: #94A3B8;        /* Slate-400 */
-  --feature-success-surface: #14532D;          /* Green-900 */
-  --feature-success-content: #86EFAC;          /* Green-300 */
-  --feature-success-border: #22C55E;           /* Green-500 */
-  --feature-warning-surface: #2D2520;          /* Warm amber dark */
-  --feature-warning-content: #D4917C;          /* Light terracotta */
-  --feature-warning-border: #FBBF24;           /* Amber-400 - For progress indicators */
-  --feature-info-surface: #1E3A8A;             /* Blue-900 */
-  --feature-info-content: #93C5FD;             /* Blue-300 */
-  --feature-danger-surface: #450A0A;           /* Red-950 */
-  --feature-danger-content: #FCA5A5;           /* Red-300 */
-  --feature-danger-border: #F87171;            /* Red-400 - For critical indicators */
-  --feature-special-surface: #581C87;          /* Purple-900 */
-  --feature-special-content: #C4B5FD;          /* Purple-300 */
-  --feature-media-surface: #134E4A;            /* Teal-900 */
-  --feature-media-content: #5EEAD4;            /* Teal-300 */
-  --feature-highlight-surface: #581C87;        /* Purple-900 */
-  --feature-highlight-content: #C4B5FD;        /* Purple-300 */
-  --feature-advanced-surface: #14532D;         /* Green-900 */
-  --feature-advanced-content: #86EFAC;         /* Green-300 */
-  --feature-code-surface: #1E293B;             /* Slate-800 */
-  --feature-code-content: #94A3B8;             /* Slate-400 */
-  --feature-analytics-surface: #581C87;        /* Purple-900 */
-  --feature-analytics-content: #C4B5FD;        /* Purple-300 */
+  /* Feature Card Icon Tokens - Dark mode (Clarity, all rainbow → single accent #6A5EA6) */
+  --feature-primary-surface: #17142C;          /* accent-subtle */
+  --feature-primary-content: #9181C9;          /* content-accent */
+  --feature-secondary-surface: #1A1A1D;        /* surface-tertiary */
+  --feature-secondary-content: #A1A1A6;        /* content-secondary */
+  --feature-success-surface: #122017;          /* surface-success-subtle */
+  --feature-success-content: #5FB87A;          /* content-success */
+  --feature-success-border: #5FB87A;           /* content-success */
+  --feature-warning-surface: #1E1608;          /* warning soft dark */
+  --feature-warning-content: #D2A14A;          /* content-warning */
+  --feature-warning-border: #D2A14A;           /* content-warning */
+  --feature-info-surface: #17142C;             /* accent-subtle */
+  --feature-info-content: #9181C9;             /* content-accent */
+  --feature-danger-surface: #1E0A08;           /* error soft dark */
+  --feature-danger-content: #D2705F;           /* content-error */
+  --feature-danger-border: #D2705F;            /* content-error */
+  --feature-special-surface: #17142C;          /* accent-subtle */
+  --feature-special-content: #9181C9;          /* content-accent */
+  --feature-media-surface: #1A1A1D;            /* surface-tertiary */
+  --feature-media-content: #A1A1A6;            /* content-secondary */
+  --feature-highlight-surface: #17142C;        /* accent-subtle */
+  --feature-highlight-content: #9181C9;        /* content-accent */
+  --feature-advanced-surface: #122017;         /* surface-success-subtle */
+  --feature-advanced-content: #5FB87A;         /* content-success */
+  --feature-code-surface: #1A1A1D;             /* surface-tertiary */
+  --feature-code-content: #A1A1A6;             /* content-secondary */
+  --feature-analytics-surface: #17142C;        /* accent-subtle */
+  --feature-analytics-content: #9181C9;        /* content-accent */
 
   /* Border Tokens */
-  --border-primary: rgba(245, 242, 237, 0.1);  /* Warm light border */
-  --border-accent: #6D28D9;               /* Medium purple (purple-700) */
-  --border-subtle: rgba(245, 242, 237, 0.05);
-  --border-color: rgba(245, 242, 237, 0.1); /* Legacy support */
+  --border-primary: #28282B;
+  --border-secondary: #3A3A3D;
+  --border-accent: #6A5EA6;
+  --border-subtle: rgba(245, 245, 247, 0.06);
+  --border-color: #28282B;                /* Legacy support */
 
   /* Interactive Tokens (Buttons, Links) */
-  --interactive-primary-bg: #6D28D9;      /* Purple button (purple-700) */
-  --interactive-primary-fg: #FFFFFF;      /* White text */
-  --interactive-primary-hover: #7C3AED;   /* Lighter purple hover (purple-600) */
+  --interactive-primary-bg: #6A5EA6;
+  --interactive-primary-fg: #FFFFFF;
+  --interactive-primary-hover: #7265B0;
   --interactive-primary-border: rgba(255, 255, 255, 0.1);
   --interactive-secondary-bg: transparent;
-  --interactive-secondary-fg: #C4B5FD;
-  --interactive-secondary-border: #6D28D9;
-  --interactive-secondary-hover-bg: rgba(109, 40, 217, 0.1);
+  --interactive-secondary-fg: #F5F5F7;
+  --interactive-secondary-border: #3A3A3D;
+  --interactive-secondary-hover-bg: #17142C;
   --interactive-inverse-bg: #FFFFFF;
-  --interactive-inverse-fg: #6D28D9;
+  --interactive-inverse-fg: #2E2963;
   --interactive-inverse-hover: rgba(255, 255, 255, 0.85);
-  --interactive-accent-bg: #6B8560;       /* Lighter sage for dark mode */
-  --interactive-accent-fg: #FFFFFF;
-  --interactive-accent-hover: #5E7550;
+  --interactive-accent-bg: #5FB87A;       /* Success green for accent actions */
+  --interactive-accent-fg: #000000;       /* black on #5FB87A = 8.62:1 (white was 2.44:1, AA fail) */
+  --interactive-accent-hover: #4DA368;
 
-  /* Dark-mode accent separates readable foregrounds from solid controls. */
-  --accent: #C4B5FD;                      /* Foreground/focus on dark surfaces */
-  --accent-solid: #6A5EA6;                /* Solid accent with white text */
+  /* Accent shorthand (used broadly for focus rings, progress bars, icons) */
 
   /* Shadow Tokens - darker for dark mode */
   --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.15);
@@ -365,21 +390,24 @@
   --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.4);
   --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
 
-  /* Colored glow shadows (brighter for dark mode) */
-  --glow-accent: 0 0 40px -8px rgba(124, 58, 237, 0.5);
-  --glow-success: 0 0 40px -8px rgba(22, 163, 74, 0.5);
-  --glow-warning: 0 0 40px -8px rgba(163, 85, 64, 0.5);
-  --glow-danger: 0 0 40px -8px rgba(220, 38, 38, 0.5);
+  /* Colored glow shadows (Clarity dark) */
+  --glow-accent: 0 0 40px -8px rgba(106, 94, 166, 0.5);
+  --glow-success: 0 0 40px -8px rgba(95, 184, 122, 0.5);
+  --glow-warning: 0 0 40px -8px rgba(210, 161, 74, 0.5);
+  --glow-danger: 0 0 40px -8px rgba(210, 112, 95, 0.5);
 
   /* Inset shadow for recessed elements */
   --shadow-inset: inset 0 2px 4px 0 rgba(0, 0, 0, 0.2);
-  --shadow-colored: 0 8px 20px -4px rgba(124, 58, 237, 0.4);
+  --shadow-colored: 0 8px 20px -4px rgba(106, 94, 166, 0.4);
+
+  /* Shadow Product */
+  --shadow-product: 0 30px 60px -24px rgba(0, 0, 0, .6);
 
   /* Paper/Card Tokens - Dark Mode */
   --card-bg: var(--surface-primary);
   --card-bg-hover: var(--surface-secondary);
-  --card-border: rgba(245, 242, 237, 0.08);
-  --card-border-hover: rgba(245, 242, 237, 0.12);
+  --card-border: rgba(245, 245, 247, 0.08);
+  --card-border-hover: rgba(245, 245, 247, 0.12);
   --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.15);
   --card-shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.2);
 
@@ -387,13 +415,13 @@
   --paper-texture: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.02'/%3E%3C/svg%3E");
 
   /* Header Tokens - Dark Mode (solid, no glass) */
-  --header-bg: rgba(26, 24, 22, 0.95);
+  --header-bg: rgba(0, 0, 0, 0.95);
   --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 
   /* Dropdown Tokens - Dark Mode (solid, no glass) */
   --dropdown-bg: var(--surface-secondary);
   --dropdown-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2);
-  --dropdown-border: rgba(245, 242, 237, 0.06);
+  --dropdown-border: rgba(245, 245, 247, 0.06);
 
   /* Legacy glass tokens - Dark Mode (mapped to paper) */
   --glass-bg: var(--card-bg);

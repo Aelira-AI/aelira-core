@@ -28,6 +28,7 @@ interface StoredConsent extends CookiePreferences {
 
 const CONSENT_COOKIE_NAME = 'aelira-cookie-consent';
 const CONSENT_VERSION = '1.0';
+const PRIVACY_POLICY_URL = import.meta.env.VITE_PRIVACY_POLICY_URL || 'https://aelira.ai/privacy';
 
 const COOKIE_CATEGORIES: Record<string, CookieCategory> = {
   essential: {
@@ -182,10 +183,10 @@ export function CookieBanner(): React.ReactElement | null {
             We use cookies to enhance your experience. You can customize which cookies you allow
             below. For more information, see our{' '}
             <a
-              href="https://example.com/privacy"
+              href={PRIVACY_POLICY_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[var(--content-accent)] hover:underline"
+              className="text-[var(--content-accent)] underline hover:opacity-80"
             >
               Privacy Policy
             </a>
@@ -301,10 +302,10 @@ export function CookieBanner(): React.ReactElement | null {
                   <p id="cookie-banner-description" className="text-sm text-secondary">
                     We use cookies to remember your preferences and improve your experience.{' '}
                     <a
-                      href="https://example.com/privacy"
+                      href={PRIVACY_POLICY_URL}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-[var(--content-accent)] hover:underline"
+                      className="text-[var(--content-accent)] underline hover:opacity-80"
                     >
                       Learn more
                     </a>

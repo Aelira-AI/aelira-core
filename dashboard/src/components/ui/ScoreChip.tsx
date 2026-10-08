@@ -27,7 +27,7 @@ const BAND_CLASSES: Record<ScoreBand, string> = {
 };
 
 const BASE =
-  'inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-semibold font-mono tabular-nums';
+  'workspace-pill inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-semibold font-mono tabular-nums';
 
 // ---------------------------------------------------------------------------
 // Component

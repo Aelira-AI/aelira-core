@@ -117,7 +117,7 @@ const NavContent: React.FC<NavContentProps> = ({ onItemClick, navigation }) => (
     )}
     {/* External help link */}
     <a
-      href="https://help.example.com"
+      href="https://aelira.ai/docs"
       target="_blank"
       rel="noopener noreferrer"
       onClick={onItemClick}
@@ -261,7 +261,7 @@ export function Sidebar(): React.ReactElement {
         role="dialog"
         aria-modal="true"
         aria-label="Navigation menu"
-        className={`lg:hidden fixed inset-y-0 left-0 z-40 w-64 transform transition-transform duration-300 ease-in-out ${
+        className={`workspace-sidebar lg:hidden fixed inset-y-0 left-0 z-40 w-64 transform transition-transform duration-300 ease-in-out ${
           mobileOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
         style={{
@@ -279,7 +279,7 @@ export function Sidebar(): React.ReactElement {
 
       {/* Desktop Sidebar */}
       <aside
-        className="hidden lg:block w-64 min-h-screen shrink-0"
+        className="workspace-sidebar hidden lg:block w-64 min-h-screen shrink-0"
         style={{
           backgroundColor: 'var(--surface-primary)',
           borderRight: '1px solid var(--border-subtle)',

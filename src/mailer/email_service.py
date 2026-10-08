@@ -299,7 +299,7 @@ class EmailService:
             action_button = f"""
             <div style="text-align: center; margin-top: 24px;">
                 <a href="{action_url}"
-                   style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: white; padding: 12px 24px;
+                   style="background-color: #2e2963; color: white; padding: 12px 24px;
                           text-decoration: none; border-radius: 8px; display: inline-block; font-weight: 600;">
                     {action_text}
                 </a>
@@ -332,13 +332,13 @@ class EmailService:
 
         # Determine status color and message
         if compliance_score >= 90:
-            status_color = "#22c55e"
+            status_color = "#2f6b40"
             status_text = "Excellent"
         elif compliance_score >= 70:
-            status_color = "#f59e0b"
+            status_color = "#7e5310"
             status_text = "Needs Improvement"
         else:
-            status_color = "#ef4444"
+            status_color = "#a23a2a"
             status_text = "Critical Issues Found"
 
         html = self.render_template(
@@ -411,7 +411,7 @@ class EmailService:
                 "remediate_url": remediate_url or resolved_action_url,
                 "deadline_guidance_html": deadline_guidance,
                 "message": f"""
-                <p style="color: #ef4444;">
+                <p style="color: #a23a2a;">
                     <strong>Urgent:</strong> {len(critical_issues)} critical accessibility issues were found
                     in <strong>{safe_file_name}</strong>.
                 </p>
@@ -543,7 +543,7 @@ class EmailService:
                         </tr>
                         <tr>
                             <td style="padding: 8px 0;"><strong>Issues Fixed:</strong></td>
-                            <td style="text-align: right; color: #22c55e;">{issues_fixed_display}</td>
+                            <td style="text-align: right; color: #2f6b40;">{issues_fixed_display}</td>
                         </tr>
                     </table>
                 </div>
@@ -695,40 +695,22 @@ class EmailService:
         if parsed.scheme not in ("https", "http"):
             raise ValueError(f"Invalid magic_link_url scheme: {parsed.scheme}")
 
+        safe_magic_link = html_lib.escape(magic_link_url, quote=True)
         content = f"""
-            <h2 style="color: #1a1a2e; margin: 0 0 16px 0;">Login to Your Account</h2>
-
-            <p>
-                Click the button below to securely log in to your Aelira account.
-                This link will expire in {expires_minutes} minutes.
+            <h1 style="color: #24222d; font-size: 26px; line-height: 1.25; margin: 0 0 16px;">Log in to Aelira</h1>
+            <p style="margin: 0 0 24px;">Use the button below to log in to your account. This link expires in {expires_minutes} minutes and can only be used once.</p>
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin: 0 0 28px;">
+                <tr><td bgcolor="#2e2963" style="background-color: #2e2963; border-radius: 8px; text-align: center; mso-padding-alt: 14px 28px;">
+                    <a href="{safe_magic_link}" style="display: inline-block; padding: 14px 28px; color: #ffffff; font-size: 16px; font-weight: bold; line-height: 24px; text-decoration: none; border: 1px solid #2e2963; border-radius: 8px; mso-text-raise: 1pt;">Log in to Aelira</a>
+                </td></tr>
+            </table>
+            <p style="color: #5e5a6c; font-size: 14px; margin: 0 0 10px;">If the button doesn't work, copy this link into your browser:</p>
+            <p style="background-color: #f4f3f7; border: 1px solid #e8e5ef; padding: 14px; border-radius: 8px; word-break: break-all; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; margin: 0;">
+                <a href="{safe_magic_link}" style="color: #2e2963; text-decoration: underline; word-break: break-all;">{safe_magic_link}</a>
             </p>
-
-            <div style="text-align: center; margin: 32px 0;">
-                <a href="{magic_link_url}"
-                   style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: white; padding: 16px 32px;
-                          text-decoration: none; border-radius: 8px; display: inline-block;
-                          font-weight: 600; font-size: 16px;">
-                    Log In to Aelira
-                </a>
-            </div>
-
-            <p style="color: #666; font-size: 14px;">
-                If the button doesn't work, you can copy and paste this link into your browser:
+            <p style="color: #5e5a6c; font-size: 14px; line-height: 1.6; margin: 24px 0 0; padding-top: 20px; border-top: 1px solid #e8e5ef;">
+                <strong>Didn't request this email?</strong> You can safely ignore it. Don't share this link with anyone.
             </p>
-            <p style="background: #f3f4f6; padding: 12px; border-radius: 6px; word-break: break-all;
-                      font-size: 12px; color: #333;">
-                {html_lib.escape(magic_link_url)}
-            </p>
-
-            <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-                <p style="color: #6b7280; font-size: 12px; margin: 0;">
-                    <strong>Didn't request this email?</strong> You can safely ignore it.
-                    Someone may have typed your email address by mistake.
-                </p>
-                <p style="color: #6b7280; font-size: 12px; margin: 12px 0 0 0;">
-                    This link can only be used once and expires in {expires_minutes} minutes.
-                </p>
-            </div>
         """
         html = get_email_wrapper(content)
 
@@ -778,7 +760,7 @@ class EmailService:
                 educational content accessible.
             </p>
 
-            <div style="background: #f0fdf4; border: 1px solid #22c55e; border-radius: 8px; padding: 16px; margin: 24px 0;">
+            <div style="background: #f0fdf4; border: 1px solid #2f6b40; border-radius: 8px; padding: 16px; margin: 24px 0;">
                 <p style="color: #166534; margin: 0; font-weight: 600;">
                     Your Plan: {tier_info['display_name']}
                 </p>
@@ -801,7 +783,7 @@ class EmailService:
 
             <div style="text-align: center; margin: 32px 0;">
                 <a href="{safe_dashboard_url}"
-                   style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: white; padding: 16px 32px;
+                   style="background-color: #2e2963; color: white; padding: 16px 32px;
                           text-decoration: none; border-radius: 8px; display: inline-block;
                           font-weight: 600; font-size: 16px;">
                     Go to Dashboard
@@ -878,7 +860,7 @@ class EmailService:
             """
 
         content = f"""
-            <div style="background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px; margin-bottom: 24px; border-radius: 0 8px 8px 0;">
+            <div style="background: #eff6ff; border-left: 4px solid #2e2963; padding: 12px 16px; margin-bottom: 24px; border-radius: 0 8px 8px 0;">
                 <strong style="color: #1a1a2e;">{event_type.replace("_", " ").title()}</strong>
             </div>
 
@@ -988,7 +970,7 @@ If you weren't expecting this invitation, you can safely ignore this email.{supp
             </p>
             <div style="text-align: center; margin: 32px 0;">
                 <a href="{safe_url}"
-                   style="background-color: #7C3AED; color: white; padding: 16px 32px;
+                   style="background-color: #2e2963; color: white; padding: 16px 32px;
                           text-decoration: none; border-radius: 8px; display: inline-block;
                           font-weight: 600; font-size: 16px;">
                     Complete administrator setup

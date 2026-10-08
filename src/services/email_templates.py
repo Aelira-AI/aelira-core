@@ -5,37 +5,38 @@ Standalone functions for rendering email templates.
 These provide simple template rendering for alerts and notifications.
 
 All emails use a unified brand template with:
-- Aelira branded header (purple gradient)
+- Current tagline-free logo on an opaque light header
 - White card container on gray background
 - Context-aware accent colors (green=success, red=error, amber=warning, blue=info)
 - Consistent footer with privacy/unsubscribe links
 """
 
 import html
+from datetime import datetime, timezone
 import os
 from typing import List, Dict, Any, Optional
 
 from src.education.deadline_config import DeadlineService
 
 # Brand colors
-BRAND_PRIMARY = "#8B5CF6"  # Purple
-BRAND_SECONDARY = "#6366F1"  # Indigo
-BRAND_ACCENT = "#3B82F6"  # Blue
+BRAND_PRIMARY = "#2E2963"  # Indigo
+BRAND_SECONDARY = "#51466F"  # Muted indigo
+BRAND_ACCENT = "#2E2963"  # Brand accent
 
 # Context colors (Tailwind-inspired)
-COLOR_SUCCESS = "#22c55e"
+COLOR_SUCCESS = "#2f6b40"
 COLOR_SUCCESS_BG = "#f0fdf4"
-COLOR_SUCCESS_DARK = "#16a34a"
+COLOR_SUCCESS_DARK = "#2f6b40"
 
-COLOR_ERROR = "#ef4444"
+COLOR_ERROR = "#a23a2a"
 COLOR_ERROR_BG = "#fee2e2"
-COLOR_ERROR_DARK = "#dc2626"
+COLOR_ERROR_DARK = "#a23a2a"
 
-COLOR_WARNING = "#f59e0b"
+COLOR_WARNING = "#7e5310"
 COLOR_WARNING_BG = "#fffbeb"
 COLOR_WARNING_DARK = "#92400e"
 
-COLOR_INFO = "#3b82f6"
+COLOR_INFO = "#2e2963"
 COLOR_INFO_BG = "#eff6ff"
 COLOR_INFO_DARK = "#1e40af"
 
@@ -73,7 +74,7 @@ def _deadline_guidance_html(deadline: Any) -> str:
             f'<p style="margin: 8px 0 0 0; font-size: 13px;">{message}</p>'
         )
     return (
-        '<div style="background-color: #eff6ff; border-left: 4px solid #3b82f6; '
+        '<div style="background-color: #eff6ff; border-left: 4px solid #2e2963; '
         "border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 0 0 24px 0; "
         'color: #1e3a8a;">' + "".join(paragraphs) + "</div>"
     )
@@ -91,122 +92,96 @@ def get_email_wrapper(
     content: str,
     unsubscribe_url: Optional[str] = None,
 ) -> str:
-    """
-    Wrap email content in branded Aelira template.
+    """Wrap body fragments in the shared, responsive transactional email shell.
 
-    Args:
-        content: HTML content to wrap (goes inside the white card)
-        unsubscribe_url: URL for unsubscribe link (optional)
-
-    Returns:
-        Complete HTML email with branded header/footer
+    Tables and inline colours provide an opaque, readable Outlook fallback.
+    The versioned local PNG prevents cached, retired logo/tagline artwork.
+    Self-hosters can override EMAIL_LOGO_URL and EMAIL_LEGAL_NAME.
     """
     brand_name = html.escape(os.getenv("BRAND_NAME", "Aelira"))
-    public_api_url = html.escape(
-        os.getenv("PUBLIC_API_URL", "http://localhost:8000").rstrip("/"),
-        quote=True,
-    )
+    legal_name = html.escape(os.getenv("EMAIL_LEGAL_NAME", "Aelira AI Pty Ltd"))
+    public_api_url = os.getenv("PUBLIC_API_URL", "http://localhost:8000").rstrip("/")
     public_website_url = html.escape(
         os.getenv(
             "PUBLIC_WEBSITE_URL", "https://github.com/Aelira-AI/aelira-core"
         ).rstrip("/"),
         quote=True,
     )
+    logo_url = html.escape(
+        os.getenv("EMAIL_LOGO_URL", f"{public_api_url}/static/logo-email-v1.png"),
+        quote=True,
+    )
     support_email = os.getenv("SUPPORT_EMAIL", "").strip()
-
-    unsubscribe_link = ""
+    year = datetime.now(timezone.utc).year
+    footer_links = [
+        f'<a href="{public_website_url}" style="color: #51466f; text-decoration: underline;">Project home</a>'
+    ]
     if unsubscribe_url:
-        unsubscribe_link = f'<a href="{unsubscribe_url}" style="color: #9ca3af; text-decoration: underline;">Unsubscribe</a> | '
-
-    support_link = ""
-    if support_email:
-        escaped_support_email = html.escape(support_email, quote=True)
-        support_link = (
-            f' | <a href="mailto:{escaped_support_email}" '
-            'style="color: #9ca3af; text-decoration: underline;">Support</a>'
+        footer_links.append(
+            f'<a href="{html.escape(unsubscribe_url, quote=True)}" style="color: #51466f; text-decoration: underline;">Unsubscribe</a>'
         )
-
+    if support_email:
+        footer_links.append(
+            f'<a href="mailto:{html.escape(support_email, quote=True)}" style="color: #51466f; text-decoration: underline;">Support</a>'
+        )
+    links = " &nbsp;·&nbsp; ".join(footer_links)
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light">
+    <meta name="supported-color-schemes" content="light">
     <title>{brand_name}</title>
+    <style>
+      @media screen and (max-width: 600px) {{
+        .email-outer {{ padding: 16px 8px !important; }}
+        .email-content, .email-header, .email-footer {{ padding-left: 20px !important; padding-right: 20px !important; }}
+      }}
+    </style>
 </head>
-<body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f3f4f6;">
-        <tr>
-            <td align="center" style="padding: 40px 20px;">
-                <!-- Main container -->
-                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width: 600px; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-
-                    <!-- Header -->
-                    <tr>
-                        <td style="background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 50%, #3B82F6 100%); padding: 32px; text-align: center;">
-                            <a href="{public_website_url}" style="text-decoration: none;">
-                                <img src="{public_api_url}/static/logo.png" alt="{brand_name}" width="180" style="display: inline-block; max-width: 180px; height: auto; margin-bottom: 12px;" />
-                            </a>
-                            <p style="margin: 0; font-size: 12px; color: rgba(255, 255, 255, 0.85); text-transform: uppercase; letter-spacing: 1.5px;">Higher Education Accessibility</p>
-                        </td>
-                    </tr>
-
-                    <!-- Content -->
-                    <tr>
-                        <td style="padding: 32px 40px; line-height: 1.6; color: #333;">
-                            {content}
-                        </td>
-                    </tr>
-
-                    <!-- Footer -->
-                    <tr>
-                        <td style="background-color: #1f2937; padding: 24px 40px; text-align: center;">
-                            <p style="margin: 0 0 12px 0; font-size: 12px; color: #9ca3af;">
-                                {unsubscribe_link}<a href="{public_website_url}" style="color: #9ca3af; text-decoration: underline;">Project home</a>{support_link}
-                            </p>
-                            <p style="margin: 0; font-size: 11px; color: #6b7280;">
-                                © 2026 Aelira AI Pty Ltd. All rights reserved.
-                            </p>
-                        </td>
-                    </tr>
-
-                </table>
-            </td>
-        </tr>
+<body style="margin: 0; padding: 0; width: 100%; background-color: #f4f3f7; color: #24222d; font-family: Arial, Helvetica, sans-serif; -webkit-text-size-adjust: 100%;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f4f3f7" style="background-color: #f4f3f7;">
+        <tr><td class="email-outer" align="center" style="padding: 32px 16px;">
+            <!--[if mso]><table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#ffffff" style="width: 100%; max-width: 600px; table-layout: fixed; background-color: #ffffff; border: 1px solid #dedbe8; border-radius: 16px; border-collapse: separate;">
+                <tr><td class="email-header" bgcolor="#ffffff" style="padding: 28px 32px 24px; background-color: #ffffff; border-bottom: 1px solid #e8e5ef; border-top: 4px solid #2e2963; text-align: left;">
+                    <a href="{public_website_url}" style="text-decoration: none; display: inline-block;">
+                        <img src="{logo_url}" alt="{brand_name}" width="180" height="51" border="0" style="display: block; width: 180px; max-width: 100%; height: auto; background-color: #ffffff; color: #2e2963; font-size: 24px; font-weight: bold;" />
+                    </a>
+                </td></tr>
+                <tr><td class="email-content" bgcolor="#ffffff" style="padding: 28px 32px 32px; background-color: #ffffff; font-size: 16px; line-height: 1.6; color: #24222d; overflow-wrap: anywhere; word-wrap: break-word;">
+                    {content}
+                </td></tr>
+                <tr><td class="email-footer" bgcolor="#f7f6fa" style="background-color: #f7f6fa; border-top: 1px solid #e8e5ef; padding: 22px 32px; text-align: left;">
+                    <p style="margin: 0 0 10px; font-size: 13px; line-height: 1.6; color: #51466f;">{links}</p>
+                    <p style="margin: 0; font-size: 12px; line-height: 1.6; color: #5e5a6c;">© {year} {legal_name}. All rights reserved.</p>
+                </td></tr>
+            </table>
+            <!--[if mso]></td></tr></table><![endif]-->
+        </td></tr>
     </table>
 </body>
 </html>"""
 
 
 def get_email_footer(unsubscribe_url: Optional[str] = None) -> str:
-    """
-    Generate standard email footer with unsubscribe link.
-
-    DEPRECATED: Use get_email_wrapper() instead for new templates.
-    Kept for backwards compatibility with existing templates.
-
-    Args:
-        unsubscribe_url: Full URL for unsubscribe link. If None, shows generic footer.
-
-    Returns:
-        HTML string for email footer
-    """
-    unsubscribe_section = ""
+    """Legacy fragment API; new templates should use get_email_wrapper."""
+    home = html.escape(
+        os.getenv(
+            "PUBLIC_WEBSITE_URL", "https://github.com/Aelira-AI/aelira-core"
+        ).rstrip("/"),
+        quote=True,
+    )
+    legal_name = html.escape(os.getenv("EMAIL_LEGAL_NAME", "Aelira AI Pty Ltd"))
+    year = datetime.now(timezone.utc).year
+    unsubscribe = ""
     if unsubscribe_url:
-        unsubscribe_section = f"""
-            <a href="{unsubscribe_url}" style="color: #9ca3af; text-decoration: underline;">Unsubscribe</a> |
-        """
-
-    return f"""
-        <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 32px 0 16px 0;">
-        <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
-            You're receiving this because you use Aelira.<br>
-            {unsubscribe_section}
-            <a href="https://example.com/privacy" style="color: #9ca3af; text-decoration: underline;">Privacy Policy</a>
-        </p>
-        <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 8px 0 0 0;">
-            © 2026 Aelira AI Pty Ltd. All rights reserved.
-        </p>
-    """
+        unsubscribe = f'<a href="{html.escape(unsubscribe_url, quote=True)}" style="color: #51466f;">Unsubscribe</a> · '
+    return f"""<hr style="border: none; border-top: 1px solid #e8e5ef; margin: 24px 0 16px;">
+        <p style="color: #5e5a6c; font-size: 12px; line-height: 1.6; margin: 0;">
+        {unsubscribe}<a href="{home}" style="color: #51466f;">Project home</a><br>
+        © {year} {legal_name}. All rights reserved.</p>"""
 
 
 def render_scan_complete_email(
@@ -273,7 +248,7 @@ def render_scan_complete_email(
 
             <!-- CTA Button -->
             <div style="text-align: center; margin: 32px 0;">
-                <a href="{scan_url}" style="display: inline-block; background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: #ffffff; font-size: 16px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px;">
+                <a href="{scan_url}" style="display: inline-block; background-color: #2e2963; color: #ffffff; font-size: 16px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px;">
                     View Detailed Results
                 </a>
             </div>
@@ -483,7 +458,7 @@ def render_weekly_summary_email(
 
             <!-- CTA Button -->
             <div style="text-align: center; margin: 32px 0;">
-                <a href="{dashboard_url}" style="display: inline-block; background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: #ffffff; font-size: 16px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px;">
+                <a href="{dashboard_url}" style="display: inline-block; background-color: #2e2963; color: #ffffff; font-size: 16px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px;">
                     View Full Report
                 </a>
             </div>
@@ -727,7 +702,7 @@ def render_department_welcome_email(
 
             <!-- CTA Button -->
             <div style="text-align: center; margin: 32px 0;">
-                <a href="{dashboard_url}" style="display: inline-block; background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: #ffffff; font-size: 16px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px;">
+                <a href="{dashboard_url}" style="display: inline-block; background-color: #2e2963; color: #ffffff; font-size: 16px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px;">
                     Start Scanning Documents
                 </a>
             </div>
@@ -786,7 +761,7 @@ def render_faculty_invitation_email(
 
             <!-- CTA Button -->
             <div style="text-align: center; margin: 32px 0;">
-                <a href="{accept_url}" style="display: inline-block; background-color: #7C3AED; background: linear-gradient(135deg, #8B5CF6 0%, #6366F1 100%); color: #ffffff; font-size: 16px; font-weight: 600; text-decoration: none; padding: 16px 40px; border-radius: 8px;">
+                <a href="{accept_url}" style="display: inline-block; background-color: #2e2963; color: #ffffff; font-size: 16px; font-weight: 600; text-decoration: none; padding: 16px 40px; border-radius: 8px;">
                     Accept Invitation
                 </a>
             </div>
@@ -861,7 +836,7 @@ def render_deletion_code_email(
                 </p>
             </div>
 
-            <p style="margin: 24px 0 0 0; font-size: 13px; color: #9ca3af; text-align: center;">
+            <p style="margin: 24px 0 0 0; font-size: 13px; color: #5e5a6c; text-align: center;">
                 Didn't request this? You can safely ignore this email. Your account will not be affected.
             </p>
     """
@@ -939,7 +914,7 @@ def render_deletion_scheduled_email(
                 After this date, all your data including scan history, reports, and account information will be permanently removed.
             </p>
 
-            <p style="margin: 16px 0 0 0; font-size: 13px; color: #9ca3af; text-align: center;">
+            <p style="margin: 16px 0 0 0; font-size: 13px; color: #5e5a6c; text-align: center;">
                 Thank you for using Aelira. We're sorry to see you go.
             </p>
     """

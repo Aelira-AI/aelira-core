@@ -6,13 +6,13 @@ export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 const CARD_BASE =
-  'bg-[var(--surface-primary)] border border-[var(--border-primary)] rounded-[16px] p-6';
+  'workspace-card bg-[var(--surface-primary)] border border-[var(--border-primary)] rounded-[16px] p-6';
 
 /**
  * Card — Clarity Design System (dashboard)
  *
  * Hairline border, 16px radius, surface-primary background.
- * No shadow, no glassmorphism, no backdrop-filter.
+ * Subtle elevation and edge highlights from the shared workspace finish.
  */
 export const Card = React.forwardRef<HTMLDivElement, CardProps>(
   ({ children, className = '', ...props }, ref) => {

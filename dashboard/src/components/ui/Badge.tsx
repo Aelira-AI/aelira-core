@@ -20,7 +20,7 @@ const VARIANTS: Record<NonNullable<BadgeProps['variant']>, string> = {
 };
 
 const BASE =
-  'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold font-mono tracking-wide';
+  'workspace-pill inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold font-mono tracking-wide';
 
 /**
  * Badge — Clarity Design System (dashboard)
