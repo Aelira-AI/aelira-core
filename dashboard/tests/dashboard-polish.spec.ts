@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import AxeBuilder from '@axe-core/playwright';
+import { injectAxe, getViolations } from 'axe-playwright';
 import { readFileSync } from 'node:fs';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/workspace-api.json', import.meta.url), 'utf8'));
@@ -40,8 +40,11 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(menu).toHaveAttribute('aria-expanded', 'false');
       const size = await page.evaluate(() => ({width:document.documentElement.clientWidth, scroll:document.documentElement.scrollWidth}));
       expect(size.scroll).toBeLessThanOrEqual(size.width + 1);
-      const audit = await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa']).analyze();
-      expect(audit.violations.map(v => ({id:v.id, nodes:v.nodes.map(n=>({target:n.target, summary:n.failureSummary}))}))).toEqual([]);
+      await injectAxe(page);
+      const violations = await getViolations(page, undefined, {
+        runOnly: { type: 'tag', values: ['wcag2a','wcag2aa','wcag21a','wcag21aa'] },
+      });
+      expect(violations.map(v => ({id:v.id, nodes:v.nodes.map(n=>({target:n.target, summary:n.failureSummary}))}))).toEqual([]);
     });
   }
 }
