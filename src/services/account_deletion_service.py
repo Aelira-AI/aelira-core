@@ -35,6 +35,7 @@ from ..auth.session_service import get_session_service
 from ..security.audit_service import AuditService
 from ..mailer.email_service import get_email_service
 from .remediation_artifact_service import RemediationArtifactService
+from .email_branding import email_brand_name
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ class AccountDeletionService:
             )
             result = await email_service.send_email(
                 to_emails=[user.email],
-                subject="Aelira Account Deletion - Confirmation Code",
+                subject=f"{email_brand_name()} Account Deletion - Confirmation Code",
                 html_content=html_body,
                 text_content=text_body,
             )
@@ -404,7 +405,7 @@ class AccountDeletionService:
                 )
                 result = await email_service.send_email(
                     to_emails=[user.email],
-                    subject="Your Aelira Account Deletion is Scheduled",
+                    subject=f"Your {email_brand_name()} Account Deletion is Scheduled",
                     html_content=html_body,
                     text_content=text_body,
                 )
