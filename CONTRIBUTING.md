@@ -201,6 +201,7 @@ bounded to 1,000 open PRs and 3,000 dependency files and fail if these limits ar
 exceeded. This check enforces traceability, not correctness of the implementation.
 
 1. Update documentation if you changed public APIs
+   Add notable user-facing changes to `CHANGELOG.md` under **Unreleased**, including compatibility limits and any operator actions. Move entries into a dated version section when that release is published.
 2. Add tests for new functionality
 3. Ensure all tests pass
 4. Keep PRs focused — one feature or fix per PR

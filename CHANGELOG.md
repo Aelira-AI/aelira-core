@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+These entries describe changes merged into `main` since v0.9.11, not a new versioned release. Published v0.9.11 artifacts and stable Compose image references remain unchanged.
+
+### Security
+
+- Outbound HTTP connections are pinned to validated public addresses. Browser scan requests use the guarded transport; unsupported frames, popups, workers and alternate network channels leave required checks incomplete rather than producing a verified score ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
+- New upload writes are confined through directory descriptors. OAuth callback destinations are constrained, and affected API errors and persisted diagnostics omit unfiltered exception details ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
+- Image descriptions require verified source pixels and the workspace vision provider. Text-only fallbacks are removed; missing images remain unresolved ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
+- Dashboard API keys are held in memory instead of persistent browser storage. Cookie-session recovery remains available; API-key users re-enter their key after a full reload ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
+- Cache deletion accepts canonical provider filters, and HTTPX request-detail logs that could expose caller URL paths or queries are suppressed ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
+- Dependency updates include security fixes for JWT handling, PDF parsing, dashboard HTML sanitisation, CLI brace expansion and KaTeX development tooling. Existing dependency audit and image gates remain required ([#518](https://github.com/Aelira-AI/aelira-core/pull/518), [#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
+
+### Added
+
+- The dashboard can prepare bounded PDF heading-level, sibling-order and simple first-row column-header edits from verified structure targets. Saves create immutable, pending-review candidates with source checksums and durable concurrency guards; they do not approve output or write it back to an LMS. Unsupported structures remain refused ([reading-order and editing guide](docs/reading-order-review.md)).
+- The PPTX direct-library remediator can save an explicitly accepted, source-bound shape order for supported slides, verifying unchanged package parts and the reopened output. This does not add an API/queue reviewer-input workflow or establish PowerPoint/assistive-technology acceptance ([#501](https://github.com/Aelira-AI/aelira-core/pull/501)).
+- A bounded LaTeX project ZIP workflow preserves original member bytes, inventories literal dependencies and exposes checksum-bound original retrieval and accepted HTML candidates. Unsupported or incomplete projects retain explicit diagnostics; multi-file source remediation and project PDF output remain outside this workflow ([project workflow](docs/testing/latex-source-projects.md)).
+- Workspace administrators can inspect and edit saved Ollama text, code and vision model identifiers, or disable workspace AI while retaining configuration. Model selection does not download models, and the connection test exercises only the saved text model ([local AI settings](docs/deployment/local-ai-models.md#workspace-settings)).
+
+### Fixed
+
+- Short direct-text PDFs no longer inherit the OCR output minimum. Incomplete required PDF checks expose bounded manual-review reasons and withhold unverified scores ([#384](https://github.com/Aelira-AI/aelira-core/pull/384)).
+- Missing remediation confidence stays unknown across persistence, review, aggregation and exports; genuine zero scores remain zero. Unknown values cannot pass numeric batch approval. Historical generic AI defaults are conservatively corrected with audit records and invalidated approval bindings ([confidence and migration guidance](docs/document-remediation/confidence.md)).
+- LaTeX handling preserves complete supported math input, authored metadata and verified figure/table relationships instead of fabricating defaults or treating conversion as accessibility evidence. Compilation failures and incomplete exports retain diagnostics and cannot publish a partial PDF ([PDF validation boundaries](docs/testing/latex-pdf-validation.md), [authored relationships](docs/testing/latex-authored-relationships.md)).
+- LaTeX converter selection records the compatibility decision, preprocessing and source/equation provenance without silently trying another HTML converter after failure. Bounded saved HTML exports use native non-table equation layout and verified language fixes, preserve durable conversion receipts, and keep refused findings unresolved with zero fixed credit. HTML has no verified accessibility score; companion stylesheets remain unpackaged ([#479](https://github.com/Aelira-AI/aelira-core/pull/479), [#532](https://github.com/Aelira-AI/aelira-core/pull/532)).
+- Google and Microsoft routes return actual binary downloads/exports and persisted scan/remediation job identities, refresh credentials and clean temporary storage. Legacy server-local upload requests return unsupported status; Google exports reject the obsolete `output_path` field. Interrupted Microsoft subscription mutations retain a pending reconciliation marker ([#437](https://github.com/Aelira-AI/aelira-core/pull/437), [#438](https://github.com/Aelira-AI/aelira-core/pull/438)).
+- Account deletion confirmations and administrator invitations await required delivery. Account lifecycle changes commit account, session and audit updates together; failed invitation delivery remains visible for retry. Notification preferences and alert recipient contracts preserve stored state ([#434](https://github.com/Aelira-AI/aelira-core/pull/434), [#433](https://github.com/Aelira-AI/aelira-core/pull/433), [#431](https://github.com/Aelira-AI/aelira-core/pull/431), [#432](https://github.com/Aelira-AI/aelira-core/pull/432)).
+- Dashboard review selection survives refresh and narrow-screen controls remain usable. LMS policy denials provide actionable recovery without changing authorization ([#488](https://github.com/Aelira-AI/aelira-core/pull/488), [#495](https://github.com/Aelira-AI/aelira-core/pull/495)).
+- Cancelled CLI prompts stop before dispatching operations. SARIF validation uses AJV 8 with explicit format checks ([#472](https://github.com/Aelira-AI/aelira-core/pull/472), [#344](https://github.com/Aelira-AI/aelira-core/pull/344)).
+- Development setup, non-root upload storage, nginx route forwarding, encoded database URLs and checksum-verified Piper voice installation match the current runtime configuration ([#398](https://github.com/Aelira-AI/aelira-core/pull/398), [#386](https://github.com/Aelira-AI/aelira-core/pull/386), [#421](https://github.com/Aelira-AI/aelira-core/pull/421)).
+
+### Changed
+
+- Dashboard presentation uses shared theme tokens, clearer typography, restrained card depth, responsive summary/table layouts, keyboard account disclosure, working guide/help actions and an unclipped score ring. Theme transitions preserve navigation contrast ([#541](https://github.com/Aelira-AI/aelira-core/pull/541)).
+- Transactional emails use a table/inline-style shell and a current tagline-free PNG for default Aelira branding. Institution branding covers subjects, body text, sender-name fallback, legal identity and operator links; custom logos retain their aspect ratio, and a custom brand without a logo uses a text header ([branding configuration](BRANDING.md#replacing-the-branding)).
+- The guarded secondary web engine identifies new findings as HTML_CodeSniffer; stored Pa11y findings retain their legacy label ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
+- CI requires explicit coverage/skip accounting, PostgreSQL worker/race checks, saved Office preservation, and real LaTeX compilation/TEX/HTML download evidence. Both native image architectures exercise functional LaTeX runtime controls. The aggregate `CI complete` check requires every job to succeed; these checks do not certify accessibility conformance ([coverage policy](docs/testing/coverage-and-skips.md), [release journey matrix](docs/testing/release-journey-matrix.md)).
+- Opt-in alpha release tooling isolates prereleases from stable Docker, npm and GitHub release defaults while retaining the release safety gates ([alpha release guide](docs/deployment/alpha-releases.md)).
+- Governance, CODEOWNERS and contribution/support routes identify the current maintainer and administration account, with Discussions, company social links and live CI/release badges ([GOVERNANCE.md](GOVERNANCE.md), [SUPPORT.md](SUPPORT.md)).
+
+### Operator action required
+
+- Before deploying these `main` changes, pause intake and review/remediation writers, drain work and take a coordinated backup of the database, uploads, artifacts and private configuration. Run `alembic upgrade head` and verify the head is `20260928_pdf_edit_pub`; deploy API, worker and dashboard from the same revision ([upgrade procedure](docs/deployment/self-hosting.md#upgrade-procedure)).
+- Review the `20260917_unknown_confidence` historical correction before migrating: affected non-rejected fixes and approved artifacts not yet written back can return to pending review. Already published external output is not undone. Older images may not support nullable confidence; restoring only an old application image is not a safe rollback ([correction and recovery](docs/document-remediation/confidence.md#historical-correction)).
+- Align backend `BRAND_NAME` and dashboard `VITE_BRAND_NAME`. Optional `EMAIL_LOGO_URL`, `EMAIL_LEGAL_NAME`, `EMAIL_PRIVACY_URL` and `VITE_PRIVACY_POLICY_URL` support institution-owned identity and policies. Use a public HTTPS PNG/JPEG for email logos, rebuild the dashboard after changing Vite settings, and verify delivery in the mail clients your institution uses ([BRANDING.md](BRANDING.md)).
+- Expect API-key re-entry after a dashboard reload. Dynamic pages requiring unsupported browser network features can remain incomplete and unscored; image remediation needs retrievable source pixels. Validate representative files/pages and review saved outputs before publication.
+- Preserve earlier release backup, deployment, provider, LMS and review requirements. LaTeX PDF machine validation additionally requires the configured veraPDF service; conversion success, synthetic controls and accepted candidates do not replace human review or assistive-technology testing.
+
 ## [0.9.11] - 2026-09-12
 
 ### Fixed
