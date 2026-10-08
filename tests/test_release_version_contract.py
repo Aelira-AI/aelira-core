@@ -79,13 +79,13 @@ def _assert_v0911_notice(notes: str) -> None:
 
 def test_changelog_promotes_v0_9_11_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
+    headings = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
+    assert headings[:2] == ["[Unreleased]", RELEASE_HEADING.removeprefix("## ")]
     unreleased = changelog.index("## [Unreleased]")
     release = changelog.index(RELEASE_HEADING)
     historical = changelog.index("## [0.9.8] - 2026-09-08")
-    unreleased_notes = changelog[unreleased + len("## [Unreleased]") : release].strip()
-    assert not unreleased_notes
     assert unreleased < release < historical
-    _assert_v0911_notice(_release_notes(changelog, "## [0.9.8] - 2026-09-08"))
+    _assert_v0911_notice(_release_notes(changelog, "## [0.9.10] - 2026-09-12"))
 
 
 def test_checked_in_github_release_body_has_operator_notice_and_evidence():
