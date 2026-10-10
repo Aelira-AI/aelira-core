@@ -1,6 +1,7 @@
 """Synthetic LaTeX worker boundary checks for review and bounded receipts."""
 
 import json
+from hashlib import sha256
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -139,6 +140,125 @@ async def test_worker_subprocess_failure_keeps_latex_receipts(tmp_path, monkeypa
     safe = remediation_job._safe_failure_result(result["error"], result, scan)
     for field, receipt in _receipts().items():
         assert result[field] == safe[field] == receipt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remaining_kind", ["manual", "failed"])
+@pytest.mark.parametrize("latex_format", ["tex", "pdf"])
+async def test_worker_withholds_mixed_latex_candidate_before_publication(
+    tmp_path, monkeypatch, remaining_kind, latex_format
+):
+    from src.db.models import Scan, ScanResult, ScanType
+    from src.education.latex_evidence import conversion_evidence, source_evidence
+
+    source = tmp_path / "source.tex"
+    source.write_text("\\documentclass{article}\\begin{document}Source\\end{document}")
+    issues = [
+        {"id": "title", "type": "missing_title"},
+        {"id": "unresolved", "type": "missing_alt_text"},
+    ]
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id="dept-1",
+        scan_type=ScanType.LATEX,
+        storage_path=str(source),
+        file_hash=None,
+    )
+    scan_result = SimpleNamespace(issues=issues, compliance_score=50.0)
+    db = MagicMock()
+
+    def query(model):
+        chain = MagicMock()
+        chain.filter.return_value = chain
+        chain.first.return_value = (
+            scan if model is Scan else scan_result if model is ScanResult else None
+        )
+        chain.one_or_none.return_value = scan
+        return chain
+
+    db.query.side_effect = query
+    source_bytes = source.read_bytes()
+    candidate = (
+        b"\\documentclass{article}\\begin{document}Candidate\\end{document}"
+        if latex_format == "tex"
+        else b"%PDF-1.7\n% bounded synthetic candidate\n"
+    )
+    receipt = (
+        source_evidence(source_bytes, candidate, 1)
+        if latex_format == "tex"
+        else conversion_evidence(source_bytes, candidate, "pdf")
+    ).model_dump(mode="json")
+    assert receipt["source_sha256"] == sha256(source_bytes).hexdigest()
+    assert receipt["candidate_sha256"] == sha256(candidate).hexdigest()
+    if latex_format == "pdf":
+        assert receipt["conversion"]["status"] == "completed"
+    child_result = SimpleNamespace(
+        success=True,
+        total_issues=2,
+        fixed_count=1,
+        manual_count=int(remaining_kind == "manual"),
+        failed_count=int(remaining_kind == "failed"),
+        skipped_count=0,
+        fixed_issues=[SimpleNamespace(issue_id="title")],
+        manual_issues=(
+            [SimpleNamespace(issue_id="unresolved")]
+            if remaining_kind == "manual"
+            else []
+        ),
+        failed_issues=(
+            [SimpleNamespace(issue_id="unresolved")]
+            if remaining_kind == "failed"
+            else []
+        ),
+        verification_passed=True,
+        has_output_claim=lambda: True,
+        close_output_claim=MagicMock(),
+        latex_evidence={latex_format: receipt},
+    )
+    runner = AsyncMock(return_value=child_result)
+    monkeypatch.setattr(remediation_job, "run_remediation_subprocess", runner)
+    service = SimpleNamespace(
+        root=tmp_path / "managed",
+        claim_and_publish_stream=MagicMock(),
+        claim_and_publish=MagicMock(),
+    )
+    monkeypatch.setattr(
+        remediation_job.RemediationArtifactService,
+        "from_settings",
+        classmethod(lambda cls: service),
+    )
+
+    result = await remediation_job.process_remediation_job(
+        {
+            "scan_id": scan.id,
+            "department_id": scan.department_id,
+            "job_id": "job-1",
+            "file_path": str(source),
+            "options": {"use_ai": False, "latex_formats": [latex_format]},
+        },
+        db,
+        assert_owned=AsyncMock(),
+        defer_final_commit=True,
+    )
+
+    runner.assert_awaited_once()
+    assert result["success"] is False
+    assert result["error"] == "manual_required"
+    assert result["fixed_count"] == 0
+    assert result["withheld_count"] == 1
+    assert result["remaining_count"] == result["total_issues"] == 2
+    assert [row["status"] for row in result["issue_outcomes"]] == [
+        "withheld",
+        remaining_kind,
+    ]
+    assert result["latex_evidence"] == {latex_format: receipt}
+    safe = remediation_job._safe_failure_result(result["error"], result, scan)
+    assert safe["artifact_id"] is None
+    assert safe["fixed_count"] == 0
+    assert safe["latex_evidence"] == result["latex_evidence"]
+    service.claim_and_publish_stream.assert_not_called()
+    service.claim_and_publish.assert_not_called()
+    child_result.close_output_claim.assert_called_once_with()
 
 
 @pytest.mark.asyncio

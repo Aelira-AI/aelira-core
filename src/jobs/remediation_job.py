@@ -1137,6 +1137,7 @@ async def process_remediation_job(
             }
 
         is_pdf = scan.scan_type in ("PDF", "pdf", ScanType.PDF)
+        is_latex = scan.scan_type in ("LATEX", "latex", ScanType.LATEX)
         # A typed reviewed recovery must traverse the subprocess receipt and
         # output-claim checks even for direct callers without a queue claim.
         killable_execution = reviewed_pdf_recovery is not None or (
@@ -1380,11 +1381,12 @@ async def process_remediation_job(
                 **account_outcomes(remediation_result, published=False),
             }
 
-        # A verified improvement may be downloaded with unresolved findings.
-        # If nothing was fixed there are no improved bytes to publish.
-        if remediation_result.fixed_count == 0 and (
+        # PDF working files may contain verified improvements alongside unresolved
+        # findings. LaTeX output with unresolved semantics still needs author
+        # review, even if other edits were verified.
+        if (
             remediation_result.manual_count > 0 or remediation_result.failed_count > 0
-        ):
+        ) and (remediation_result.fixed_count == 0 or is_latex):
             if not defer_final_commit:
                 scan.status = ScanStatus.FAILED
                 _set_remediation_outcome(scan, RemediationOutcome.MANUAL_REQUIRED)
