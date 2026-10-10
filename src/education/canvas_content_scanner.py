@@ -67,6 +67,7 @@ from ..services.canvas_content_provenance import (
     invalidate_canvas_content_candidate,
     lock_current_canvas_content_candidate,
 )
+from ..services.lms_content_approval import current_lms_content_approval
 from ..utils.security import require_persisted_canvas_origin
 from .deterministic_axe import DeterministicScanUnavailable, run_deterministic_axe
 
@@ -1566,6 +1567,7 @@ class CanvasContentScanner:
             "source_file_id": str(cloud_file.provider_file_id),
             "expected_file_name": accessible_name,
             "artifact_checksum": artifact.sha256,
+            "written_by": approved_by,
         }
         writeback_log = ContentWritebackLog(
             id=str(uuid.uuid4()),
@@ -1574,7 +1576,7 @@ class CanvasContentScanner:
                 f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}"
             ),
             remediated_body=f"canvas-file:unknown {accessible_name}",
-            approved_by=approved_by,
+            approved_by=artifact.approved_by_id,
             approved_at=artifact.approved_at,
             artifact_id=artifact.id,
             artifact_checksum=artifact.sha256,
@@ -1657,6 +1659,18 @@ class CanvasContentScanner:
                 "success": False,
                 "stale": False,
                 "error": "Artifact is not approved",
+                "error_code": "artifact_not_approved",
+            }
+        if (
+            not isinstance(getattr(artifact, "approved_by_id", None), str)
+            or not artifact.approved_by_id
+            or not isinstance(artifact.approved_at, datetime)
+        ):
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": False,
+                "error": "Artifact human approval is missing",
                 "error_code": "artifact_not_approved",
             }
         if cloud_file.provider_modified_at is None:
@@ -1764,7 +1778,7 @@ class CanvasContentScanner:
             cloud_file_id=cloud_file.id,
             original_body=f"canvas-file:{cloud_file.provider_file_id} {cloud_file.file_name}",
             remediated_body=f"canvas-file:{upload.file_id} {accessible_name}",
-            approved_by=approved_by,
+            approved_by=artifact.approved_by_id,
             approved_at=artifact.approved_at,
             written_back_at=now,
             canvas_revision=str(upload.file_id),
@@ -1772,7 +1786,10 @@ class CanvasContentScanner:
             artifact_checksum=artifact.sha256,
             correlation_id=correlation_id,
             reconciliation_status="committed",
-            provider_result=getattr(upload, "provider_result", None),
+            provider_result={
+                **(getattr(upload, "provider_result", None) or {}),
+                "written_by": approved_by,
+            },
         )
         self.db.add(writeback_log)
         cloud_file.remediated_file_id = str(upload.file_id)
@@ -1859,6 +1876,14 @@ class CanvasContentScanner:
                 "stale": False,
                 "error": "Content is not approved for write-back",
             }
+        approval = current_lms_content_approval(cloud_file)
+        if approval is None:
+            self.db.rollback()
+            return {
+                "success": False,
+                "stale": True,
+                "error": "Human approval is missing or stale; review current content",
+            }
         if cloud_file.needs_rescan:
             self.db.rollback()
             return {
@@ -1924,8 +1949,8 @@ class CanvasContentScanner:
             cloud_file_id=cloud_file.id,
             original_body=cloud_file.content_body,
             remediated_body=cloud_file.remediated_body,
-            approved_by=approved_by,
-            approved_at=datetime.now(timezone.utc),
+            approved_by=approval["approved_by_id"],
+            approved_at=datetime.fromisoformat(approval["approved_at"]),
             correlation_id=str(uuid.uuid4()),
             reconciliation_status="reconciliation_required",
             provider_result={
@@ -1934,6 +1959,8 @@ class CanvasContentScanner:
                 "source_sha256": expected_source_sha256,
                 "candidate_sha256": expected_candidate_sha256,
                 "candidate_fingerprint": expected_fingerprint,
+                "approved_by_ref": approval["approved_by_ref"],
+                "written_by": approved_by,
             },
         )
         self.db.add(writeback_log)
@@ -1950,9 +1977,21 @@ class CanvasContentScanner:
             if isinstance(current_metadata, dict)
             else None
         )
+        source_still_current = False
+        if current is not None:
+            try:
+                source_still_current = (
+                    current.content_updated_at is not None
+                    and await self._get_canvas_updated_at(current)
+                    == current.content_updated_at
+                )
+            except Exception:
+                source_still_current = False
         if (
             current is None
+            or not source_still_current
             or current.writeback_status != "approved"
+            or current_lms_content_approval(current) != approval
             or current_fingerprint != expected_fingerprint
             or not isinstance(current.content_body, str)
             or not isinstance(current.remediated_body, str)
@@ -2296,31 +2335,43 @@ class CanvasContentScanner:
         course_id = cloud_file.provider_parent_id
 
         if content_source == "page":
-            item = await self.canvas_client.get_page(course_id, cloud_file.content_slug)
-            return item.updated_at
+            page = await self.canvas_client.get_page(course_id, cloud_file.content_slug)
+            body = page.body
+            updated_at = page.updated_at
         elif content_source == "assignment":
-            item = await self.canvas_client.get_assignment(
+            assignment = await self.canvas_client.get_assignment(
                 course_id, cloud_file.provider_file_id
             )
-            return item.updated_at
+            body = assignment.description
+            updated_at = assignment.updated_at
         elif content_source == "announcement":
-            item = await self.canvas_client.get_announcement(
+            announcement = await self.canvas_client.get_announcement(
                 course_id, cloud_file.provider_file_id
             )
-            return item.updated_at
+            body = announcement.message
+            updated_at = announcement.updated_at
         elif content_source == "quiz":
-            item = await self.canvas_client.get_quiz(
+            quiz = await self.canvas_client.get_quiz(
                 course_id, cloud_file.provider_file_id
             )
-            return item.updated_at
+            body = quiz.description
+            updated_at = quiz.updated_at
         elif content_source == "discussion":
-            item = await self.canvas_client.get_discussion(
+            discussion = await self.canvas_client.get_discussion(
                 course_id, cloud_file.provider_file_id
             )
-            return item.updated_at
+            body = discussion.message
+            updated_at = discussion.updated_at
         else:
             logger.warning("Unknown content_source: %s", content_source)
             return None
+        # A matching timestamp alone is not authority to replace different HTML.
+        if (
+            not isinstance(body, str)
+            or sanitize_for_postgres(body) != cloud_file.content_body
+        ):
+            return None
+        return updated_at
 
     async def _update_canvas_content(
         self,

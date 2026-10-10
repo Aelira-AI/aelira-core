@@ -687,6 +687,10 @@ async def upload_remediated_to_canvas(
     )
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
+    if getattr(scan, "document_source", None) != "cloud_file" or str(
+        getattr(scan, "document_id", None)
+    ) != str(cloud_file.id):
+        raise HTTPException(status_code=404, detail="Scan not found")
 
     await require_feature(
         db, principal.department_id, "lms_integration", "Canvas LMS Integration"

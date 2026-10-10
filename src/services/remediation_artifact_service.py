@@ -39,6 +39,7 @@ from src.db.models import (
 from src.services.scan_fix_service import (
     artifact_approval_review_digest,
     artifact_review_blockers,
+    artifact_output_membership_blockers,
 )
 
 
@@ -2100,6 +2101,11 @@ class RemediationArtifactService:
             .all()
         )
         blockers = artifact_review_blockers(fixes)
+        blockers.extend(
+            artifact_output_membership_blockers(
+                artifact, fixes, source_sha256=getattr(scan, "file_hash", None)
+            )
+        )
         if blockers:
             if any(
                 blocker.startswith(
@@ -2397,12 +2403,18 @@ class RemediationArtifactService:
         if _utc(artifact.expires_at) <= written_at:
             raise ArtifactExpiredError("artifact has expired")
         if artifact.written_back_at is not None:
+            saved_result = artifact.provider_result
+            prior_writeback = (
+                saved_result.get("writeback_result")
+                if isinstance(saved_result, dict) and "writeback_result" in saved_result
+                else saved_result
+            )
             if (
                 artifact.lifecycle_status == "available"
                 and artifact.review_status == "approved"
                 and artifact.approval_checksum is not None
                 and hmac.compare_digest(artifact.approval_checksum, artifact.sha256)
-                and artifact.provider_result == sanitized_result
+                and prior_writeback == sanitized_result
             ):
                 self._require_current_approval(db, artifact, scan, cloud_file)
                 return artifact
@@ -2423,7 +2435,10 @@ class RemediationArtifactService:
             raise ArtifactAuthorizationError("artifact is not approved for writeback")
         self._require_current_approval(db, artifact, scan, cloud_file)
         artifact.written_back_at = written_at
-        artifact.provider_result = sanitized_result
+        artifact.provider_result = {
+            **(artifact.provider_result or {}),
+            "writeback_result": sanitized_result,
+        }
         artifact.expires_at = written_at + timedelta(days=self.written_retention_days)
         db.flush()
         return artifact

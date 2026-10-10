@@ -6,7 +6,7 @@ Aelira Core scans and can remediate PDF, DOCX, PPTX, XLSX, and LaTeX content. Th
 
 > **v0.9.7 boundary:** The immutable-source OCR, accessible-HTML sanitization, embedded-image validation, exact-byte managed-publication controls, and General STEM specialist pipeline described here are included in v0.9.7. They were not part of v0.9.5.
 
-Choose a format guide: [PDF](pdf.md), [Office: DOCX, PPTX, XLSX](office.md), or [LaTeX](latex.md). The [General STEM visual remediation](general-stem.md) guide covers the complete v0.9.7 detection, source association, specialist verification, saved-file verification, mixed composition, and human-approval pipeline. Focused semantic guides cover [commutative diagrams](commutative-diagrams.md), [chemical formulas](chemical-formulas.md), [molecular graphs](molecular-graphs.md), and the [handwritten-math suitability corpus](handwritten-math.md).
+Choose a format guide: [PDF](pdf.md), [Office: DOCX, PPTX, XLSX](office.md), or [LaTeX](latex.md). The [PDF outcomes and reviewed working files](reviewed-pdf.md) guide explains deterministic scoring, partial downloads and review-bound publication. The [General STEM visual remediation](general-stem.md) guide covers the complete v0.9.7 detection, source association, specialist verification, saved-file verification, mixed composition, and human-approval pipeline. Focused semantic guides cover [commutative diagrams](commutative-diagrams.md), [chemical formulas](chemical-formulas.md), [molecular graphs](molecular-graphs.md), and the [handwritten-math suitability corpus](handwritten-math.md).
 
 ## Format support and maturity
 
@@ -61,14 +61,14 @@ PDF, DOCX, PPTX, and XLSX remediators save the same primary format as their inpu
 
 ## Managed artifacts and review
 
-The direct remediation API publishes a scan-bound managed artifact only when remediation succeeds, applies at least one fix, has zero manual issues and zero failed issues, produces an output file, and verification passes. If that publication gate is not met, do not expect an artifact ID. A published artifact includes filename, MIME type, size, SHA-256, expiry, review status, lifecycle status, and approval blockers. Artifact access is tenant- and scan-scoped; download verifies the stored object before streaming it.
+The direct and queued remediation APIs retain a scan-bound managed working artifact when remediation succeeds, applies at least one fix, produces saved output, and verification passes. A useful verified PDF can be downloaded for review and further manual work even when findings remain unresolved. This does not approve external publication. An artifact includes filename, MIME type, size, SHA-256, expiry, review status, lifecycle status, and approval blockers. Artifact access is tenant- and scan-scoped; download verifies the stored object before streaming it.
 
 A typical review is:
 
 1. Complete a scan and call `POST /education/remediate/{scan_id}`.
-2. Confirm the publication gate in the response: success, at least one fixed issue, zero manual and zero failed issues, and passed verification with an artifact ID.
+2. Confirm saved-output verification and the artifact ID in the response. Inspect unresolved findings and the recorded per-finding outcomes; a partial working file is not a conformance claim.
 3. Fetch `GET /api/reviews/{scan_id}`. For every `ScanFix` that still needs a decision, call `POST /api/reviews/{scan_id}/fixes/{fix_id}` to approve, reject, or edit it. All fix decisions must be terminal (`auto_approved`, `approved`, or `rejected`), with at least one accepted fix (`auto_approved` or `approved`), before artifact approval.
-4. Read `GET /education/scans/{scan_id}/artifacts/{artifact_id}` and inspect `approval_blockers` and `can_approve`. Do not attempt approval while blockers remain.
+4. If decisions edited or rejected included PDF changes, request a reviewed rebuild with `POST /education/pdf/remediate/{scan_id}` and wait for the durable job. Read the current artifact metadata and inspect `approval_blockers` and `can_approve`. Do not attempt approval while blockers remain.
 5. Download the verified review copy from `GET /education/scans/{scan_id}/artifacts/{artifact_id}/download` and review the document itself.
 6. Call `POST /education/scans/{scan_id}/artifacts/{artifact_id}/approve` only when the fix review is terminal, at least one fix is accepted, and `can_approve` is true; otherwise call `POST /education/scans/{scan_id}/artifacts/{artifact_id}/reject`.
 

@@ -137,5 +137,14 @@ def test_queue_races_use_a_separate_disposable_required_database():
         in shlex.split(suite["run"])
     )
     _, worker_required, worker_allowed = policy_for(policy, "worker-postgres")
-    assert len(worker_required) == 41
+    assert len(worker_required) == 44
     assert not worker_allowed
+    assert {
+        "tests/test_durable_job_processor_postgres.py::test_scoped_claim_leaves_unrelated_runnable_and_blocked_jobs_untouched",
+        "tests/test_reviewed_upload_journey_postgres.py::test_reviewed_upload_progresses_after_artifact_locks_release[True]",
+        "tests/test_reviewed_upload_journey_postgres.py::test_reviewed_upload_progresses_after_artifact_locks_release[False]",
+    } <= worker_required
+    worker = next(step for step in steps if step.get("id") == "worker-tests")
+    assert "tests/test_reviewed_upload_journey_postgres.py" in shlex.split(
+        worker["run"]
+    )

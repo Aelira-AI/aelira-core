@@ -42,7 +42,7 @@ The skipped SQLite `test_real_cancellation_waits_for_child_reap_before_terminal_
 | Profile | Database and scope | Required evidence |
 | --- | --- | --- |
 | `main` | Ordinary disposable `aelira_test`; provider HTTP and service contracts | Exact required node IDs and the unchanged 68% full-suite coverage floor. The two optional race skips remain visible here because this profile does not configure their separate database. |
-| `worker-postgres` | `worker_isolation_test` | The existing exact 41 worker cases, unchanged, with no allowed skips. |
+| `worker-postgres` | `worker_isolation_test` | All 44 exact worker cases, including scoped claims and reviewed-artifact upload with and without a producing job, with no allowed skips. |
 | `queue-races-postgres` | Separate `queue_races_test` | Exactly the concurrent enqueue unique-winner case and concurrent refresh identical-pair case, with no allowed skips. |
 
 The race step in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) explicitly sets `TEST_DATABASE_URL`, `TEST_MIGRATION_DATABASE_URL`, `ALLOW_DESTRUCTIVE_MIGRATION_TESTS=1` and `REQUIRE_QUEUE_POSTGRES_TESTS=1`. The shared test helper validates the existing disposable PostgreSQL name/host/opt-in rules before connecting. Missing or unavailable PostgreSQL fails the required lane; an ordinary optional run without a configured race database reports a skip. The guards have positive, missing-database, unsafe-target and connection-failure tests in `test_queue_race_guards.py`.

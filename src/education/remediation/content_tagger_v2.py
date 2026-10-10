@@ -59,6 +59,8 @@ except ImportError:
     HAS_FITZ = False
     fitz = None  # type: ignore[assignment]
 
+from .pdf_font_text import FontTextBindingError, decode_page_text_runs
+
 logger = logging.getLogger(__name__)
 
 # Structure element types managed by TableTagger — skip them here
@@ -374,8 +376,12 @@ class ContentTaggerV2:
         """
         page = self.pdf.pages[page_index]
         ops = list(pikepdf.parse_content_stream(page))
+        decoded = {
+            run.start: run.text
+            for run in decode_page_text_runs(self.pdf, page_index, ops)
+        }
         candidates = [
-            (start, _extract_text_from_ops(ops[start:end]))
+            (start, decoded.get(start))
             for start, end, kind in self._find_content_blocks(ops, page)
             if kind == "text" and start not in reserved
         ]
@@ -744,7 +750,8 @@ class ContentTaggerV2:
         if self._order_generated_structure:
             self._order_new_structure(struct_root)
         self._ensure_document_root(struct_root)
-        self._set_pdfua_identifier()
+        # Tagging alone does not establish PDF/UA conformance. Preserve any
+        # existing declaration; do not invent one without independent validation.
 
         return stats
 
@@ -850,6 +857,12 @@ class ContentTaggerV2:
         if not content_blocks:
             return page_stats
 
+        # Font codes are not PDFDoc strings. Refuse incomplete decoding before
+        # writing any /ActualText or claiming a source-to-structure match.
+        decoded = {
+            run.start: run.text
+            for run in decode_page_text_runs(self.pdf, page_idx, ops)
+        }
         fitz_blocks = self._get_fitz_blocks(page_idx)
         fitz_image_blocks = self._get_fitz_image_blocks(page_idx)
         used_elem_indices: set = set()
@@ -895,8 +908,15 @@ class ContentTaggerV2:
             mcid = self._next_mcid
 
             candidate_boxes = fitz_image_blocks if kind == "image" else fitz_blocks
+            if kind == "text" and cb_start not in decoded:
+                raise FontTextBindingError()
             result = self._match_element_to_block(
-                elements, block_ops, candidate_boxes, used_elem_indices, kind
+                elements,
+                block_ops,
+                candidate_boxes,
+                used_elem_indices,
+                kind,
+                decoded_text=decoded.get(cb_start) if kind == "text" else None,
             )
 
             if result is not None:
@@ -918,7 +938,9 @@ class ContentTaggerV2:
                 if kind == "image":
                     elem = self._create_figure_element(page.obj)
                 else:
-                    block_text = _extract_text_from_ops(block_ops)
+                    block_text = decoded.get(cb_start)
+                    if not block_text:
+                        raise FontTextBindingError()
                     if block_text:
                         compact = "".join(_normalize_nfkd(block_text).split())
                         source_matches = {
@@ -1221,6 +1243,8 @@ class ContentTaggerV2:
         fitz_blocks: List[Tuple[float, float, float, float, str]],
         used_indices: set,
         kind: str = "text",
+        *,
+        decoded_text: Optional[str] = None,
     ) -> Optional[Tuple[Any, str, float]]:
         """Match a content block to a structure element.
 
@@ -1260,7 +1284,11 @@ class ContentTaggerV2:
                 continue
 
             if kind == "text" and self._order_generated_structure:
-                block_text = _extract_text_from_ops(block_ops)
+                block_text = (
+                    decoded_text
+                    if decoded_text is not None
+                    else _extract_text_from_ops(block_ops)
+                )
                 elem_text = self._get_element_text(elem)
                 if not block_text or not elem_text:
                     continue
@@ -1286,7 +1314,11 @@ class ContentTaggerV2:
                     return (elem, "position", 0.90)
 
             # --- Text fallback ---
-            block_text = _extract_text_from_ops(block_ops)
+            block_text = (
+                decoded_text
+                if decoded_text is not None
+                else _extract_text_from_ops(block_ops)
+            )
             if block_text:
                 elem_text = self._get_element_text(elem)
                 # ReportLab's built-in bullet can decode as U+FFFD in raw
@@ -3086,7 +3118,7 @@ def _xobject_graph_bindings(
     if xobjects is None:
         return 0
     bindings = 0
-    for value in xobjects.values():
+    for _, value in xobjects.items():
         identity = tuple(value.objgen)
         if identity == target_objgen:
             bindings += 1

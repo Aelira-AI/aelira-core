@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   brightspaceApprovalIds,
   brightspaceApprovalSummary,
+  brightspaceWritebackSummary,
 } from '../../src/utils/brightspaceBatchSelection.ts';
 
 describe('brightspaceApprovalIds', () => {
@@ -14,6 +15,25 @@ describe('brightspaceApprovalIds', () => {
       { cloud_file_id: 'terminal', approval_eligible: false },
     ]);
     assert.deepEqual(ids, ['artifact', 'html']);
+  });
+});
+
+describe('brightspaceWritebackSummary', () => {
+  it('reports unsupported file skips and stale-only batches without green success', () => {
+    for (const result of [
+      { written_count: 0, failed_count: 0, stale_count: 0, skipped_count: 3, errors: ['Managed file write-back unavailable; download and upload manually'] },
+      { written_count: 0, failed_count: 0, stale_count: 2 },
+    ]) {
+      const summary = brightspaceWritebackSummary(result);
+      assert.equal(summary.status, 'zero');
+      assert.match(summary.message, /Wrote back 0/);
+    }
+    assert.match(brightspaceWritebackSummary({ written_count: 0, failed_count: 0, stale_count: 0, skipped_count: 3, errors: ['Download and upload manually'] }).message, /3 skipped.*Download and upload manually/);
+  });
+
+  it('reserves success for confirmed writes without skips, stale items or errors', () => {
+    assert.equal(brightspaceWritebackSummary({ written_count: 2, failed_count: 0, stale_count: 0 }).status, 'success');
+    assert.equal(brightspaceWritebackSummary({ written_count: 1, failed_count: 0, stale_count: 0, skipped_count: 1 }).status, 'mixed');
   });
 });
 

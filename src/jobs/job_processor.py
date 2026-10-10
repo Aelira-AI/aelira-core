@@ -16,7 +16,15 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
 from ..db.database import SessionLocal
-from ..db.models import CloudJobQueue, CloudJobStatus, Scan, ScanStatus, WorkerHeartbeat
+from ..db.models import (
+    CloudFile,
+    CloudJobQueue,
+    CloudJobStatus,
+    RemediationArtifact,
+    Scan,
+    ScanStatus,
+    WorkerHeartbeat,
+)
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..monitoring.worker_sentry import capture_terminal_job_failure
 from .contracts import (
@@ -89,16 +97,22 @@ def build_runnable_pending_query(
     )
 
 
-def build_claim_query(registered_types: set[str] | frozenset[str], *, limit: int):
+def build_claim_query(
+    registered_types: set[str] | frozenset[str],
+    *,
+    limit: int,
+    job_id: str | None = None,
+):
     """Build the dependency-gated PostgreSQL claim selection."""
     runnable_ids = build_runnable_pending_query(registered_types).subquery()
-    return (
+    query = (
         select(CloudJobQueue)
         .join(runnable_ids, runnable_ids.c.id == CloudJobQueue.id)
         .order_by(CloudJobQueue.priority.asc(), CloudJobQueue.created_at.asc())
         .limit(limit)
         .with_for_update(of=CloudJobQueue, skip_locked=True)
     )
+    return query.where(CloudJobQueue.id == job_id) if job_id is not None else query
 
 
 @dataclass(frozen=True)
@@ -393,8 +407,12 @@ class JobProcessor:
             job.updated_at = now
         return len(cycle_ids)
 
-    def claim_batch(self, *, limit: int | None = None) -> list[ClaimedJob]:
-        """Claim every selected row in one transaction, then return detached data."""
+    def claim_batch(
+        self, *, limit: int | None = None, job_id: str | None = None
+    ) -> list[ClaimedJob]:
+        """Claim runnable work; a scoped operator claim never mutates other jobs."""
+        if job_id is not None and (not isinstance(job_id, str) or not job_id.strip()):
+            raise ValueError("job_id must be a nonempty string")
         registered = self.registry.job_types
         if not registered or self._draining:
             return []
@@ -407,12 +425,19 @@ class JobProcessor:
         if claim_limit <= 0:
             return []
         with self.session_factory() as db:
-            self._fail_dependency_cycles(
-                db, limit=max(self.batch_size, claim_limit, 100)
-            )
-            self._fail_blocked_dependencies(db, limit=max(self.batch_size, claim_limit))
+            if job_id is None:
+                self._fail_dependency_cycles(
+                    db, limit=max(self.batch_size, claim_limit, 100)
+                )
+                self._fail_blocked_dependencies(
+                    db, limit=max(self.batch_size, claim_limit)
+                )
+            # Dependency gating still applies to the target. Leave a blocked
+            # target pending; global housekeeping belongs to ordinary workers.
             jobs = list(
-                db.scalars(build_claim_query(registered, limit=claim_limit)).all()
+                db.scalars(
+                    build_claim_query(registered, limit=claim_limit, job_id=job_id)
+                ).all()
             )
             for job in jobs:
                 if type(job.payload) is not dict:
@@ -633,12 +658,143 @@ class JobProcessor:
     def _begin_external_effect_sync(self, claim: ClaimedJob) -> str:
         """Commit a stable request token before provider bytes can leave."""
         with self.session_factory() as db:
-            job = db.scalar(
-                select(CloudJobQueue).where(self._active_fence(claim)).with_for_update()
-            )
+            job = db.scalar(select(CloudJobQueue).where(self._active_fence(claim)))
             if job is None or job.job_type not in _EXTERNAL_EFFECT_JOB_TYPES:
                 db.rollback()
                 raise LostJobOwnership("external effect fence unavailable")
+            if job.job_type == "upload":
+                from ..services.remediation_artifact_service import (
+                    ArtifactError,
+                    RemediationArtifactService,
+                )
+                from .upload_job import (
+                    require_upload_approval_snapshot,
+                    require_upload_source_snapshot,
+                )
+
+                payload = dict(job.payload) if isinstance(job.payload, dict) else {}
+                artifact_id = payload.get("artifact_id")
+                scan_id = payload.get("scan_id")
+                cloud_file = (
+                    db.get(CloudFile, job.cloud_file_id) if job.cloud_file_id else None
+                )
+                artifact = (
+                    db.get(RemediationArtifact, artifact_id)
+                    if isinstance(artifact_id, str)
+                    else None
+                )
+                if (
+                    not isinstance(artifact_id, str)
+                    or not isinstance(scan_id, str)
+                    or cloud_file is None
+                    or artifact is None
+                    or cloud_file.department_id != job.department_id
+                    or artifact.department_id != job.department_id
+                    or artifact.cloud_file_id != job.cloud_file_id
+                    or artifact.scan_id != scan_id
+                    or artifact.provider != job.provider
+                    or cloud_file.provider != job.provider
+                    or cloud_file.credential_id != job.credential_id
+                    or artifact.lifecycle_status != "available"
+                    or cloud_file.current_remediation_artifact_id != artifact.id
+                    or cloud_file.needs_rescan is True
+                ):
+                    db.rollback()
+                    raise LostJobOwnership("upload artifact authority changed")
+                authority = (
+                    job.department_id,
+                    job.cloud_file_id,
+                    job.credential_id,
+                    job.provider,
+                )
+                service = RemediationArtifactService.from_settings()
+                try:
+                    # Acquire the canonical parents before either queue or
+                    # artifact locks. The upload queue row follows its producing
+                    # remediation row and precedes the artifact/fix review rows.
+                    service._lock_authority_order(
+                        db,
+                        department_id=str(job.department_id),
+                        scan_id=scan_id,
+                        cloud_file_id=str(job.cloud_file_id),
+                        remediation_job_id=(
+                            str(artifact.remediation_job_id)
+                            if artifact.remediation_job_id is not None
+                            else None
+                        ),
+                        provider=str(job.provider),
+                    )
+                    job = db.scalar(
+                        select(CloudJobQueue)
+                        .where(self._active_fence(claim))
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                    if (
+                        job is None
+                        or job.job_type != "upload"
+                        or job.payload != payload
+                        or (
+                            job.department_id,
+                            job.cloud_file_id,
+                            job.credential_id,
+                            job.provider,
+                        )
+                        != authority
+                    ):
+                        raise LostJobOwnership("upload artifact authority changed")
+                    _, locked_scan, locked_cloud, _, artifact = service.lock_current(
+                        db,
+                        artifact_id=artifact_id,
+                        department_id=str(job.department_id),
+                        cloud_file_id=str(job.cloud_file_id),
+                        provider=str(job.provider),
+                    )
+                    if artifact is None or locked_cloud is None:
+                        raise LostJobOwnership("upload artifact authority changed")
+                    if artifact.written_back_at is not None:
+                        raise LostJobOwnership("upload artifact already written")
+                    other_effect = (
+                        db.query(CloudJobQueue.id)
+                        .filter(
+                            CloudJobQueue.department_id == job.department_id,
+                            CloudJobQueue.cloud_file_id == job.cloud_file_id,
+                            CloudJobQueue.job_type == "upload",
+                            CloudJobQueue.id != job.id,
+                            CloudJobQueue.payload["artifact_id"].as_string()
+                            == artifact_id,
+                            CloudJobQueue.external_effect_state.in_(
+                                ("requesting", "indeterminate", "confirmed")
+                            ),
+                        )
+                        .first()
+                    )
+                    if other_effect is not None:
+                        raise LostJobOwnership("upload artifact effect already exists")
+                    require_upload_source_snapshot(locked_cloud, locked_scan, payload)
+                    service.resolve_record(
+                        db,
+                        artifact,
+                        department_id=str(job.department_id),
+                        scan_id=scan_id,
+                        cloud_file_id=str(job.cloud_file_id),
+                        require_approved=True,
+                        approval_checksum=payload.get("artifact_checksum"),
+                    )
+                    require_upload_approval_snapshot(artifact, payload)
+                except (ArtifactError, LostJobOwnership) as exc:
+                    db.rollback()
+                    raise LostJobOwnership("upload artifact approval changed") from exc
+            else:
+                job = db.scalar(
+                    select(CloudJobQueue)
+                    .where(self._active_fence(claim))
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if job is None or job.job_type not in _EXTERNAL_EFFECT_JOB_TYPES:
+                    db.rollback()
+                    raise LostJobOwnership("external effect fence unavailable")
             if job.external_effect_state == "requesting":
                 token = str(job.external_effect_token)
                 db.commit()

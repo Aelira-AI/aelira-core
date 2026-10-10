@@ -501,6 +501,7 @@ def test_pdf_remediator_honors_explicit_manual_reason_before_any_fixer():
         },
     )
     remediator = object.__new__(PdfRemediator)
+    remediator.config = RemediationConfig()
     recorded = []
     remediator._add_manual_issue = lambda *args, **kwargs: recorded.append(kwargs)
     remediator._is_category_enabled = lambda category: pytest.fail(

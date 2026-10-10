@@ -2,7 +2,7 @@
 Unit tests for PDF content stream tagger.
 
 Tests the BDC/EMC marked content insertion, MCID assignment,
-ParentTree construction, and PDF/UA-1 identifier setting.
+ParentTree construction, and PDF/UA-1 declaration boundaries.
 """
 
 import pytest
@@ -607,16 +607,16 @@ class TestElementMatching:
 
 
 class TestPDFUAIdentifier:
-    """Tests for PDF/UA-1 XMP metadata."""
+    """Tagging does not independently certify PDF/UA-1 conformance."""
 
-    def test_pdfua1_identifier_set(self, structured_pdf):
-        """tag_all_pages should set PDF/UA-1 identifier in XMP."""
+    def test_tagging_does_not_declare_pdfua_conformance(self, structured_pdf):
+        """Tagging alone must not declare independently unverified conformance."""
         tagger = ContentTagger(structured_pdf)
         tagger.tag_all_pages()
 
         with structured_pdf.open_metadata() as meta:
             part = meta.get("{http://www.aiim.org/pdfua/ns/id/}part")
-            assert part == "1"
+            assert part is None
 
     def test_mark_info_set(self, structured_pdf):
         """tag_all_pages should ensure MarkInfo.Marked is true."""

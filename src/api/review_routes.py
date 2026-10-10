@@ -20,26 +20,27 @@ import re
 import stat
 import tempfile
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from collections.abc import Iterable
-from typing import Literal, Optional
+from typing import Literal, Optional, cast
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 from sqlalchemy import func, case, false
 from sqlalchemy.orm import Session
 
-from ..auth.dependencies import (
-    AuthenticatedPrincipal,
-    get_authenticated_principal,
+from ..auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
+from .education._scope import (
+    authorize_review_scan_access as authorize_scan_access,
+    authorize_scan_access as authorize_pdf_scan_access,
 )
-from .education._scope import authorize_scan_access
 from ..db.database import get_db_dependency
 from ..db.models import (
     CloudFile,
-    CloudProvider,
     Department,
     Scan,
     ScanFix,
@@ -80,6 +81,7 @@ from ..services.remediation_artifact_service import (
 from ..services.scan_fix_service import (
     apply_authenticated_batch_review,
     bind_fix_review_decision,
+    inherit_output_membership,
     invalidate_current_artifact_approvals,
     lock_scan_review_graph,
     valid_sha256,
@@ -127,9 +129,8 @@ def _review_scope_filters(principal: AuthenticatedPrincipal) -> tuple:
     """Apply scan authority before aggregates, counts, and pagination."""
     filters = (Scan.department_id == principal.department_id,)
     if principal.auth_method == "lti" and not principal.lti_account_wide:
-        # Course identifiers are platform-local. Only Canvas file bindings are
-        # supported here; another LMS cannot borrow a matching Canvas course ID.
-        if principal.lti_platform != "canvas":
+        provider = principal.lti_platform
+        if provider not in {"canvas", "brightspace"}:
             return filters + (false(),)
         # EXISTS preserves one scan row even when multiple links reference it.
         filters += (
@@ -138,8 +139,10 @@ def _review_scope_filters(principal: AuthenticatedPrincipal) -> tuple:
                 .with_only_columns(CloudFile.id)
                 .where(
                     CloudFile.last_scan_id == Scan.id,
+                    CloudFile.id == Scan.document_id,
+                    Scan.document_source == "cloud_file",
                     CloudFile.department_id == principal.department_id,
-                    CloudFile.provider == CloudProvider.CANVAS.value,
+                    CloudFile.provider == provider,
                     CloudFile.provider_parent_id == principal.lti_course_id,
                 )
                 .correlate(Scan)
@@ -285,6 +288,40 @@ def _read_verified_source(
     )
 
 
+def _preview_available(scan: Scan) -> bool:
+    scan_type = getattr(scan.scan_type, "value", scan.scan_type)
+    if str(scan_type).upper() != "PDF" or not scan.storage_path:
+        return False
+    try:
+        source = Path(scan.storage_path)
+        return source.suffix.lower() == ".pdf" and source.is_file()
+    except OSError:
+        return False
+
+
+def _open_preview_pdf(scan: Scan):
+    if not _preview_available(scan):
+        raise HTTPException(status_code=404, detail="Document preview unavailable")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(str(scan.storage_path), flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or os.read(descriptor, 5) != b"%PDF-":
+            raise OSError("invalid PDF source")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        stream = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        return stream, opened.st_size
+    except OSError:
+        raise HTTPException(
+            status_code=404, detail="Document preview unavailable"
+        ) from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _unavailable_reading_order(page_number: int, reason: str) -> dict:
     """Never expose unverified document metadata or underlying exception paths."""
     return {
@@ -412,7 +449,9 @@ class QueueStats(BaseModel):
 class DocumentReview(BaseModel):
     scan_id: str
     file_name: str
+    scan_type: str = "unknown"
     status: Literal["pending", "approved", "rejected"]
+    preview_available: bool = False
     fixes: list[FixSummary]
     total_fixes: int
     needs_review_count: int
@@ -421,6 +460,8 @@ class DocumentReview(BaseModel):
     matterhorn_total: int
     matterhorn_passed: int
     matterhorn_failed: int
+    matterhorn_warnings: int = 0
+    matterhorn_validated_at: datetime | None = None
     validator_result: str
     visual_analyses: list[VisualAnalysisSummary] = Field(default_factory=list)
 
@@ -971,7 +1012,12 @@ def get_document_review(
 
     passed = sum(1 for m in matterhorn if m.status == "pass")
     failed = sum(1 for m in matterhorn if m.status == "fail")
+    warnings = sum(1 for m in matterhorn if m.status == "warning")
     total = len(matterhorn)
+    validated_at = max(
+        (m.created_at for m in matterhorn if m.created_at is not None),
+        default=None,
+    )
 
     validator_result = compute_validator_result(total, passed, failed)
     statuses = [fix.review_status for fix in fixes]
@@ -980,17 +1026,56 @@ def get_document_review(
     return DocumentReview(
         scan_id=scan_id,
         file_name=scan.file_name,
+        scan_type=_scan_type_display(scan.scan_type),
         status=compute_doc_status(statuses),
+        preview_available=_preview_available(scan),
         fixes=[_fix_summary(fix) for fix in fixes],
         **summary,
         matterhorn_total=total,
         matterhorn_passed=passed,
         matterhorn_failed=failed,
+        matterhorn_warnings=warnings,
+        matterhorn_validated_at=validated_at,
         validator_result=validator_result,
         visual_analyses=[
             _visual_analysis_summary(analysis, fixes_by_id)
             for analysis in visual_analyses
         ],
+    )
+
+
+@router.get("/{scan_id}/source")
+def preview_document_source(
+    scan_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
+):
+    """Stream an authenticated PDF source for inline review."""
+    _, _user_id, department_id = auth_result.as_legacy_tuple()
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if scan is None or scan.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, auth_result)
+    stream, size_bytes = _open_preview_pdf(scan)
+
+    def chunks():
+        try:
+            while chunk := stream.read(64 * 1024):
+                yield chunk
+        finally:
+            stream.close()
+
+    return StreamingResponse(
+        chunks(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                "inline; filename*=UTF-8''" + quote(scan.file_name, safe="")
+            ),
+            "Content-Length": str(size_bytes),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -1480,11 +1565,15 @@ def _pdf_edit_authority(
     scan_id: str,
     principal: AuthenticatedPrincipal,
     cloud_file_id: str | None,
+    *,
+    require_pdf: bool = True,
 ) -> tuple[Scan, CloudFile | None, str, str, str | None]:
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if scan is None or scan.department_id != principal.department_id:
         raise HTTPException(status_code=404, detail="Scan not found")
-    course_cloud = authorize_scan_access(db, scan, principal)
+    authorize = authorize_pdf_scan_access if require_pdf else authorize_scan_access
+    course_cloud = authorize(db, scan, principal)
+    cloud_file: CloudFile | None
     if principal.auth_method == "lti" and not principal.lti_account_wide:
         if course_cloud is None:
             raise HTTPException(status_code=404, detail="Scan not found")
@@ -1493,7 +1582,7 @@ def _pdf_edit_authority(
             .filter(
                 CloudFile.last_scan_id == scan.id,
                 CloudFile.department_id == principal.department_id,
-                CloudFile.provider == "canvas",
+                CloudFile.provider == principal.lti_platform,
                 CloudFile.provider_parent_id == principal.lti_course_id,
             )
             .all()
@@ -1533,10 +1622,45 @@ def _pdf_edit_authority(
             )
             if cloud_file is None:
                 raise HTTPException(status_code=404, detail="Scan not found")
-    if getattr(scan.scan_type, "value", scan.scan_type) != "PDF":
+    if getattr(scan, "document_source", None) == "cloud_file":
+        if (
+            len(linked) != 1
+            or cloud_file is None
+            or str(cloud_file.id) != str(getattr(scan, "document_id", None))
+        ):
+            raise HTTPException(status_code=404, detail="Scan not found")
+    elif linked or cloud_file is not None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    scan_type = getattr(scan.scan_type, "value", scan.scan_type)
+    if require_pdf and scan_type != "PDF":
         raise HTTPException(status_code=409, detail="PDF source required")
     provider = cloud_file.provider if cloud_file is not None else "local"
     return scan, cloud_file, provider, scope_kind, course_id
+
+
+@router.get("/{scan_id}/working-artifact")
+def get_current_working_artifact(
+    scan_id: str,
+    response: Response,
+    cloud_file_id: str | None = Query(None),
+    db: Session = Depends(get_db_dependency),
+    auth_result: AuthenticatedPrincipal = Depends(get_auth),
+) -> dict[str, str | None]:
+    """Discover a current managed candidate in its explicit cloud context."""
+    scan, cloud_file, _, _, _ = _pdf_edit_authority(
+        db, scan_id, auth_result, cloud_file_id, require_pdf=False
+    )
+    owner = cloud_file if cloud_file is not None else scan
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "scan_id": scan_id,
+        "cloud_file_id": str(cloud_file.id) if cloud_file is not None else None,
+        "artifact_id": (
+            str(owner.current_remediation_artifact_id)
+            if owner.current_remediation_artifact_id is not None
+            else None
+        ),
+    }
 
 
 def _pdf_edit_source(
@@ -1697,6 +1821,31 @@ def save_pdf_edit_candidate(
             else 422
         )
         raise HTTPException(status_code=code, detail=str(exc)) from None
+    provider_result = None
+    if request.source_kind == "saved":
+        predecessor = (
+            db.query(RemediationArtifact)
+            .filter(
+                RemediationArtifact.id == precondition["expected_artifact_id"],
+                RemediationArtifact.scan_id == scan.id,
+                RemediationArtifact.department_id == scan.department_id,
+            )
+            .one_or_none()
+        )
+        if (
+            predecessor is None
+            or predecessor.sha256 != precondition["source_sha256"]
+            or predecessor.cloud_file_id
+            != (cloud_file.id if cloud_file is not None else None)
+        ):
+            raise HTTPException(status_code=409, detail="PDF review state changed")
+        membership = inherit_output_membership(
+            predecessor,
+            source_sha256=cast(Optional[str], scan.file_hash),
+            output_sha256=candidate.sha256,
+        )
+        if membership is not None:
+            provider_result = {"reviewed_output_membership": membership}
     with tempfile.NamedTemporaryFile(suffix=".pdf") as temporary:
         temporary.write(candidate.content)
         temporary.flush()
@@ -1717,7 +1866,7 @@ def save_pdf_edit_candidate(
                     provider=provider,
                     scan_type=ScanType.PDF,
                     filename="review-edit.pdf",
-                    provider_result=None,
+                    provider_result=provider_result,
                     edit_precondition=precondition,
                     edit_provenance={
                         "source_kind": request.source_kind,

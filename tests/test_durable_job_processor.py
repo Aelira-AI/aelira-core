@@ -339,6 +339,32 @@ def test_claim_query_is_skip_locked_and_dependency_gated():
     assert "completed" in sql
 
 
+def test_scoped_operator_claim_never_runs_global_dependency_housekeeping():
+    from sqlalchemy.dialects import postgresql
+    from src.jobs.job_processor import JobProcessor
+
+    db = MagicMock()
+    db.scalars.return_value.all.return_value = []
+    factory = MagicMock()
+    factory.return_value.__enter__.return_value = db
+    worker = JobProcessor(
+        session_factory=factory, registry=_complete_registry(AsyncMock())
+    )
+    worker._fail_dependency_cycles = MagicMock()
+    worker._fail_blocked_dependencies = MagicMock()
+
+    assert worker.claim_batch(job_id="operator-target", limit=1) == []
+    worker._fail_dependency_cycles.assert_not_called()
+    worker._fail_blocked_dependencies.assert_not_called()
+    sql = str(
+        db.scalars.call_args.args[0].compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "cloud_job_queue.id = 'operator-target'" in sql
+    assert "SKIP LOCKED" in sql and "depends_on_job_id" in sql
+
+
 def test_runnable_health_predicate_matches_claim_dependency_and_type_gate():
     from sqlalchemy.dialects import postgresql
 

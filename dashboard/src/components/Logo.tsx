@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import logoDark from '../assets/aelira-horizontal-dark.svg';
+import logoLight from '../assets/aelira-horizontal-light.svg';
 
 // ============================================================================
 // Types
@@ -57,10 +59,10 @@ export function Logo({ width = 200, height = 60, className = '' }: LogoProps): R
   const brandName = import.meta.env.VITE_BRAND_NAME || 'Aelira';
   const darkLogo =
     import.meta.env.VITE_LOGO_DARK ||
-    '/aelira logo horizontal - dark mode Transparent bg.svg';
+    logoDark;
   const lightLogo =
     import.meta.env.VITE_LOGO_LIGHT ||
-    '/aelira logo horizontal - light mode Transparent bg.svg';
+    logoLight;
 
   return (
     <img

@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from test_managed_artifact_routes import artifact_http  # noqa: F401
 from src.db.models import CloudJobQueue, Scan, ScanResult, ScanStatus, ScanType
+from src.services.scan_fix_service import build_output_membership
 
 pytestmark = pytest.mark.integration
 OPTIONS = {
@@ -37,6 +38,11 @@ def queue_http(artifact_http, tmp_path):  # noqa: F811 - imported pytest fixture
     )
     case.scan.storage_path = str(source)
     case.scan.file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    case.artifact.provider_result = {
+        "reviewed_output_membership": build_output_membership(
+            case.artifact.sha256, case.scan.file_hash, [case.fix]
+        )
+    }
     case.scan.result = ScanResult(compliance_score=60.0, issues=[])
     case.db.commit()
     return case
@@ -93,6 +99,7 @@ def test_enqueue_persists_job_and_returns_status_and_latest(queue_http):
         "scan_id": case.scan.id,
         "requested_by_id": case.user.id,
         "options": OPTIONS,
+        "approved_fix_snapshot": None,
     }
     canonical = json.dumps(OPTIONS, sort_keys=True, separators=(",", ":")).encode()
     assert (
@@ -133,7 +140,7 @@ def test_repeat_enqueue_reuses_active_job(queue_http):
     assert _jobs(queue_http).count() == 1
 
 
-def test_completed_job_maps_to_approved_artifact_download(queue_http):
+def test_completed_job_exposes_working_download_before_separate_approval(queue_http):
     case = queue_http
     response = _enqueue(case)
     assert response.status_code == 202
@@ -141,6 +148,12 @@ def test_completed_job_maps_to_approved_artifact_download(queue_http):
     job = _jobs(case).one()
     assert case.client.get(f"{status_url}/download").status_code == 404
     # Explicit stored completion fixture: no worker or model is run here.
+    # Ordinary verified WORD output is a working download, with publication
+    # approval recorded separately; this fixture has no visual-review gate.
+    case.artifact.provider_result = {
+        **case.artifact.provider_result,
+        "requires_approval": False,
+    }
     artifact_id = case.artifact.id
     job.status = "completed"
     job.completed_at = datetime.now(timezone.utc)
@@ -149,8 +162,13 @@ def test_completed_job_maps_to_approved_artifact_download(queue_http):
     case.db.commit()
     pending_review = case.client.get(status_url)
     assert pending_review.status_code == 200
-    assert pending_review.json()["download_available"] is False
-    assert case.client.get(f"{status_url}/download").status_code == 404
+    assert pending_review.json()["download_available"] is True
+    assert pending_review.json()["download_url"] == f"{status_url}/download"
+    working_download = case.client.get(f"{status_url}/download")
+    assert working_download.status_code == 200
+    assert working_download.content == case.payload
+    assert case.artifact.review_status == "pending"
+    assert case.artifact.approval_checksum is None
     assert case.client.post(f"{case.url}/approve").status_code == 200
     status = case.client.get(status_url)
     latest = case.client.get(f"/education/scans/{case.scan.id}/remediation/latest")

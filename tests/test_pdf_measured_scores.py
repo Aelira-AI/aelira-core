@@ -46,7 +46,9 @@ def setup_remediator(tmp_path, monkeypatch, before, after):
 
 
 def scan(score, findings):
-    return SimpleNamespace(compliance_score=score, issues=findings)
+    return SimpleNamespace(
+        compliance_score=score, issues=findings, review_requirements=[]
+    )
 
 
 def test_pdf_paired_scores_and_verified_disappearance(tmp_path, monkeypatch):

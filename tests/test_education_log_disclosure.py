@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException, UploadFile
 
-SECRET = "private-student-token-8f31"
+SECRET = "example_sensitive-token-8f31"
 FILENAME = f"{SECRET}.png"
 URL = f"https://example.edu/private/{SECRET}?access_token={SECRET}"
 SCAN_ID = "6d5a104f-c75f-41a0-a678-1c1bfc8b0438"

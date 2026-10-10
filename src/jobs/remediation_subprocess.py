@@ -14,7 +14,7 @@ import signal
 import stat
 import sys
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.education.latex_evidence import public_latex_evidence
@@ -23,9 +23,21 @@ from src.education.remediation.latex_pdf_validation import (
     public_pdf_validation,
 )
 
+if TYPE_CHECKING:
+    from src.education.remediation.pdf_recovery_plan import ReviewedPDFRecovery
+
 _MAX_REQUEST_BYTES = 8 * 1024 * 1024
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _MAX_ISSUES = 10_000
+_PRIVATE_RECOVERY_OPTIONS = frozenset(
+    {
+        "reviewed_pdf_recovery",
+        "font_recovery_manifest",
+        "semantic_recovery_manifest",
+        "font_manifest",
+        "semantic_manifest",
+    }
+)
 
 
 class RemediationSubprocessError(RuntimeError):
@@ -200,7 +212,34 @@ def _purpose_clients(binding: Any) -> tuple[Any, Any]:
     return remediation, alt_text
 
 
+def _reject_recovery_options(options: Any) -> None:
+    if isinstance(options, dict) and _PRIVATE_RECOVERY_OPTIONS.intersection(options):
+        raise RemediationSubprocessError("invalid_job_payload")
+
+
+def _reviewed_recovery_request(request: dict[str, Any]) -> ReviewedPDFRecovery | None:
+    """Only the explicit private request field can carry reviewed recovery."""
+    _reject_recovery_options(request.get("options"))
+    if "reviewed_pdf_recovery" not in request:
+        return None
+    if (
+        str(request.get("scan_type", "")).upper() != "PDF"
+        or request.get("operation", "remediation") != "remediation"
+    ):
+        raise RemediationSubprocessError("invalid_job_payload")
+    from src.education.remediation.pdf_recovery_plan import (
+        PDFRecoveryPlanError,
+        deserialize_reviewed_pdf_recovery,
+    )
+
+    try:
+        return deserialize_reviewed_pdf_recovery(request["reviewed_pdf_recovery"])
+    except PDFRecoveryPlanError as exc:
+        raise RemediationSubprocessError("invalid_job_payload") from exc
+
+
 def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
+    recovery = _reviewed_recovery_request(request)
     if (
         str(request.get("scan_type", "")).upper() == "LATEX"
         and source.suffix.lower() == ".zip"
@@ -210,10 +249,16 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
 
     options = request.get("options") if isinstance(request.get("options"), dict) else {}
     lms_binding = request.get("lms_binding")
-    ai_client, alt_text_client = _purpose_clients(lms_binding)
+    ai_client, alt_text_client = (
+        (None, None) if recovery is not None else _purpose_clients(lms_binding)
+    )
     authoritative = isinstance(lms_binding, dict)
     approved_fixes_only = bool(options.get("approved_fixes_only", False))
-    use_ai = bool(options.get("use_ai", True)) and not approved_fixes_only
+    use_ai = (
+        bool(options.get("use_ai", True))
+        and not approved_fixes_only
+        and recovery is None
+    )
     if not authoritative and use_ai:
         workspace_id = request.get("workspace_id")
         if not isinstance(workspace_id, str) or not workspace_id:
@@ -278,22 +323,89 @@ def _build_remediator(request: dict[str, Any], source: Path, work_dir: Path):
     else:
         raise RemediationSubprocessError("remediation_unsupported")
 
-    return cls(
+    recovery_kwargs: dict[str, Any] = {}
+    if recovery is not None:
+        recovery_kwargs = {
+            "font_recovery_manifest": recovery.font_manifest,
+            "semantic_recovery_manifest": recovery.semantic_manifest,
+        }
+    remediator = cls(
         file_path=str(source),
         issues=issues,
         config=config,
         ai_client=ai_client,
         alt_text_client=alt_text_client,
+        **recovery_kwargs,
     )
+    if recovery is not None:
+        setattr(remediator, "_reviewed_pdf_recovery_plan", recovery)
+    return remediator
 
 
 def _run_child(request: dict[str, Any]) -> dict[str, Any]:
+    # Reject private fields even on the public demo dispatch, which does not
+    # otherwise use the regular remediator factory.
+    _reject_recovery_options(request.get("options"))
+    if (
+        request.get("operation") == "demo_document"
+        and "reviewed_pdf_recovery" in request
+    ):
+        raise RemediationSubprocessError("invalid_job_payload")
     source = Path(str(request.get("source_path", ""))).resolve(strict=True)
     work_dir = Path(str(request.get("work_dir", ""))).resolve(strict=True)
     if not source.is_file() or not work_dir.is_dir() or source.parent != work_dir:
         raise RemediationSubprocessError("source_file_unavailable")
-    result = _build_remediator(request, source, work_dir).remediate()
+    remediator = _build_remediator(request, source, work_dir)
+    result = remediator.remediate()
     try:
+        from src.education.remediation.score_reporting import score_fields
+
+        recovery_receipt = None
+        recovery = getattr(remediator, "_reviewed_pdf_recovery_plan", None)
+        if recovery is not None:
+            from src.education.remediation.pdf_recovery_plan import (
+                reviewed_pdf_recovery_receipt,
+            )
+
+            recovery_receipt = reviewed_pdf_recovery_receipt(recovery)
+            font = getattr(remediator, "_font_recovery_evidence", None)
+            semantic = getattr(remediator, "_semantic_recovery_evidence", None)
+            applied = font is not None and semantic is not None
+            if result.success and not applied:
+                raise RemediationSubprocessError("remediation_failed")
+            if applied and (
+                font.source_sha256 != recovery.font_manifest.source_sha256
+                or font.output_sha256 != recovery.semantic_manifest.source_sha256
+                or semantic.source_sha256 != font.output_sha256
+            ):
+                raise RemediationSubprocessError("remediation_failed")
+            recovery_receipt["applied"] = applied
+            if applied:
+                recovery_receipt.update(
+                    {
+                        "font_output_sha256": font.output_sha256,
+                        "output_sha256": semantic.output_sha256,
+                        "font_compiler_review_sha256": font.review_sha256,
+                        "semantic_compiler_review_sha256": semantic.review_sha256,
+                    }
+                )
+        review_requirements = getattr(
+            getattr(result, "verification_result", None), "review_requirements", []
+        )
+        child_score_verified = score_fields(
+            {
+                "original_compliance_score": result.original_compliance_score,
+                "remediated_compliance_score": result.remediated_compliance_score,
+                "score_provenance": getattr(result, "score_provenance", None),
+                "score_measurement": getattr(result, "score_measurement", None),
+                "score_verification_reason": getattr(
+                    result, "score_verification_reason", None
+                ),
+                "score_verified": getattr(result, "score_verified", None),
+            },
+            original_score=result.original_compliance_score,
+            source_scan_type=request.get("scan_type"),
+        )["score_verified"]
         return {
             **latex_result_fields(result),
             "success": bool(result.success),
@@ -307,13 +419,18 @@ def _run_child(request: dict[str, Any]) -> dict[str, Any]:
             "remediated_compliance_score": result.remediated_compliance_score,
             "score_provenance": getattr(result, "score_provenance", None),
             "score_measurement": getattr(result, "score_measurement", None),
+            "score_verified": child_score_verified,
             "score_verification_reason": getattr(
                 result, "score_verification_reason", None
             ),
             "compliance_improvement": result.improvement,
             "duration_seconds": result.duration_seconds,
             "verification_passed": getattr(result, "verification_passed", False),
-            "human_review_required": bool(latex_result_fields(result))
+            "review_requirements": review_requirements,
+            **({"reviewed_pdf_recovery": recovery_receipt} if recovery_receipt else {}),
+            "human_review_required": recovery is not None
+            or bool(review_requirements)
+            or bool(latex_result_fields(result))
             or not getattr(result, "verification_passed", False)
             or bool(
                 getattr(
@@ -359,9 +476,15 @@ def child_main(request_path: Path, response_path: Path) -> int:
             "policy_not_permitted",
             "source_file_unavailable",
             "remediation_unsupported",
+            "project_source_review_required",
         }:
             code = "remediation_failed"
-        _write_response(response_path, {"success": False, "error_code": code})
+        from src.education.remediation.latex_pdf_validation import latex_result_fields
+
+        _write_response(
+            response_path,
+            {"success": False, "error_code": code, **latex_result_fields(exc)},
+        )
         return 1
     except Exception:
         _write_response(
@@ -659,16 +782,37 @@ async def run_remediation_subprocess(
     issues: Any,
     options: dict[str, Any],
     work_root: str | Path,
+    source_stream: BinaryIO | None = None,
+    source_filename: str | None = None,
     workspace_id: str | None = None,
     lms_binding: dict[str, Any] | None = None,
+    reviewed_pdf_recovery: ReviewedPDFRecovery | None = None,
     timeout_seconds: float,
     termination_grace_seconds: float,
 ) -> SubprocessRemediationResult:
     """Run one remediation in an isolated process group and reap every child."""
-    try:
-        source = Path(source_path).resolve(strict=True)
-    except OSError as exc:
-        raise RemediationSubprocessError("source_file_unavailable") from exc
+    _reject_recovery_options(options)
+    recovery_json: str | None = None
+    if reviewed_pdf_recovery is not None:
+        if str(getattr(scan_type, "value", scan_type)).upper() != "PDF":
+            raise RemediationSubprocessError("invalid_job_payload")
+        from src.education.remediation.pdf_recovery_plan import (
+            PDFRecoveryPlanError,
+            serialize_reviewed_pdf_recovery,
+        )
+
+        try:
+            recovery_json = serialize_reviewed_pdf_recovery(reviewed_pdf_recovery)
+        except PDFRecoveryPlanError as exc:
+            raise RemediationSubprocessError("invalid_job_payload") from exc
+    if (source_stream is None) == (not bool(source_path)):
+        raise RemediationSubprocessError("invalid_job_payload")
+    source: Path | None = None
+    if source_path:
+        try:
+            source = Path(source_path).resolve(strict=True)
+        except OSError as exc:
+            raise RemediationSubprocessError("source_file_unavailable") from exc
     root = Path(os.path.abspath(work_root))
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     root_state = root.lstat()
@@ -700,10 +844,26 @@ async def run_remediation_subprocess(
     result_value: SubprocessRemediationResult | None = None
     primary_error: BaseException | None = None
     try:
-        local_source = work_dir / f"source{source.suffix.lower()}"
-        await asyncio.to_thread(
-            _copy_bound_file, source, work_dir_fd, local_source.name
-        )
+        if source_stream is not None:
+            safe_source_name = Path(source_filename or "").name
+            if (
+                not safe_source_name
+                or safe_source_name != source_filename
+                or safe_source_name in {".", ".."}
+            ):
+                raise RemediationSubprocessError("invalid_job_payload")
+            local_source = work_dir / f"source{Path(safe_source_name).suffix.lower()}"
+            source_stream.seek(0)
+            source_bytes = source_stream.read()
+            if not isinstance(source_bytes, bytes):
+                raise RemediationSubprocessError("invalid_job_payload")
+            _write_bound_file(work_dir_fd, local_source.name, source_bytes)
+        else:
+            assert source is not None
+            local_source = work_dir / f"source{source.suffix.lower()}"
+            await asyncio.to_thread(
+                _copy_bound_file, source, work_dir_fd, local_source.name
+            )
         request = {
             "source_path": str(local_source),
             "scan_type": str(getattr(scan_type, "value", scan_type)).upper(),
@@ -713,6 +873,8 @@ async def run_remediation_subprocess(
             "workspace_id": workspace_id,
             "lms_binding": lms_binding,
         }
+        if recovery_json is not None:
+            request["reviewed_pdf_recovery"] = recovery_json
         try:
             encoded = json.dumps(
                 request, allow_nan=False, separators=(",", ":")
@@ -767,6 +929,28 @@ async def run_remediation_subprocess(
             work_dir=work_dir,
             work_dir_fd=work_dir_fd,
         )
+        receipt = response.get("reviewed_pdf_recovery")
+        if reviewed_pdf_recovery is not None:
+            from src.education.remediation.pdf_recovery_plan import (
+                reviewed_pdf_recovery_receipt,
+            )
+
+            expected = reviewed_pdf_recovery_receipt(reviewed_pdf_recovery)
+            if (
+                not isinstance(receipt, dict)
+                or any(receipt.get(key) != value for key, value in expected.items())
+                or receipt.get("applied") is not True
+                or receipt.get("independent_review_pending") is not True
+                or receipt.get("font_output_sha256")
+                != reviewed_pdf_recovery.semantic_manifest.source_sha256
+                or output_claim is None
+                or receipt.get("output_sha256") != output_claim.sha256
+                or response.get("verification_passed") is not True
+                or response.get("human_review_required") is not True
+            ):
+                raise RemediationSubprocessError("remediation_failed")
+        elif receipt is not None:
+            raise RemediationSubprocessError("remediation_failed")
         result_value = SubprocessRemediationResult(response, output_claim)
     except BaseException as exc:
         primary_error = exc

@@ -8,14 +8,14 @@ import hashlib
 import os
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.db.models import CloudProvider, ScanFix
+from src.db.models import CloudProvider, Scan, ScanFix, ScanStatus
 from src.education.remediation.base import RemediationResult
 from src.education.remediation.output_claim import DescriptorBoundOutputClaim
 from src.services.remediation_artifact_service import ArtifactPublicationResult
@@ -93,6 +93,122 @@ class _PdfResult(SimpleNamespace):
             self.claim.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual,failed", [(1, 0), (0, 1), (2, 1)])
+async def test_verified_partial_pdf_remains_downloadable_with_unresolved_counts(
+    tmp_path, manual, failed
+):
+    output = tmp_path / "partial.pdf"
+    output.write_bytes(CLAIMED_PDF)
+    result = _PdfResult(output)
+    result.manual_count = manual
+    result.failed_count = failed
+    run = await _run_pdf_outer(tmp_path, result)
+    assert run.outcome.status == "manual_required"
+    assert run.outcome.has_remediated_version is True
+    assert run.outcome.artifact_id == "artifact-pdf"
+    assert run.outcome.fixed_count == 1
+    assert run.outcome.manual_count == manual
+    assert run.outcome.failed_count == failed
+    assert run.cloud_file.remediated_issues_remaining == manual + failed
+    assert run.cloud_file.writeback_status == "pending_review"
+    assert run.published == [CLAIMED_PDF]
+    assert run.validated == [CLAIMED_PDF]
+    assert result.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_pdf_does_not_bypass_failed_verification(tmp_path):
+    output = tmp_path / "partial.pdf"
+    output.write_bytes(CLAIMED_PDF)
+    result = _PdfResult(output)
+    result.manual_count = 1
+    result.verification_passed = False
+    run = await _run_pdf_outer(tmp_path, result)
+    assert run.outcome.has_remediated_version is False
+    assert run.published == []
+    assert result.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_pdf_uses_authenticated_download_route(tmp_path):
+    from io import BytesIO
+    from src.api.education import remediation_routes as routes
+
+    output = tmp_path / "partial.pdf"
+    output.write_bytes(CLAIMED_PDF)
+    result = _PdfResult(output)
+    result.manual_count = 2
+    run = await _run_pdf_outer(tmp_path, result)
+    artifact = _artifact()
+    artifact.filename = "partial.pdf"
+    scan = SimpleNamespace(id="scan-pdf", remediation_outcome="manual_required")
+    principal = SimpleNamespace(department_id="dept-1")
+    service = MagicMock()
+
+    @contextmanager
+    def verified(_db, candidate, **authority):
+        assert candidate is artifact
+        assert authority["department_id"] == "dept-1"
+        assert authority["scan_id"] == "scan-pdf"
+        assert authority["cloud_file_id"] == run.cloud_file.id
+        with BytesIO(run.published[0]) as stream:
+            yield stream
+
+    service.open_verified.side_effect = verified
+    run.db.query.return_value.filter.return_value.first.return_value = None
+    with (
+        patch.object(
+            routes,
+            "_managed_artifact_authority",
+            return_value=(scan, run.cloud_file, artifact),
+        ) as authorize,
+        patch.object(
+            routes.RemediationArtifactService, "from_settings", return_value=service
+        ),
+    ):
+        response = await routes.download_managed_artifact(
+            "scan-pdf", artifact.id, run.db, principal
+        )
+        downloaded = b"".join([chunk async for chunk in response.body_iterator])
+    assert downloaded == CLAIMED_PDF
+    authorize.assert_called_once_with(
+        run.db, scan_id="scan-pdf", artifact_id=artifact.id, principal=principal
+    )
+    assert response.media_type == "application/pdf"
+    assert run.cloud_file.remediated_issues_remaining == 2
+
+
+def test_partial_artifact_job_keeps_manual_state_without_failed_job():
+    from src.api.brightspace_routes import RemediationOutcome
+    from src.jobs.brightspace_content_job import (
+        _public_outcome,
+        _commit_terminal_outcome,
+    )
+
+    outcome = RemediationOutcome(
+        cloud_file_id="cloud-pdf",
+        status="manual_required",
+        fixed_count=1,
+        manual_count=2,
+        failed_count=1,
+        has_remediated_version=True,
+        artifact_id="artifact-pdf",
+    )
+    public = _public_outcome(outcome, scan_id="scan-pdf")
+    assert public["status"] == "manual_required"
+    assert public["download_available"] is True
+    db = MagicMock()
+    job = SimpleNamespace(id="job", claim_token="claim", worker_id="worker")
+    owner = SimpleNamespace()
+    db.execute.return_value.scalar_one_or_none.return_value = owner
+    _commit_terminal_outcome(db, job, public)
+    assert owner.status == "completed"
+    assert owner.result_data["manual_count"] == 2
+    assert owner.result_data["failed_count"] == 1
+    assert "manual review" in owner.progress_message
+
+
 def _cloud_file() -> SimpleNamespace:
     return SimpleNamespace(
         id="cloud-pdf",
@@ -132,7 +248,32 @@ def _db(*, commit_error: Exception | None = None) -> MagicMock:
     query = MagicMock()
     query.filter.return_value = query
     query.first.return_value = scan_result
-    db.query.return_value = query
+    scan = SimpleNamespace(
+        id="scan-pdf",
+        department_id="dept-1",
+        document_source="cloud_file",
+        document_id="cloud-pdf",
+        file_hash=hashlib.sha256(b"%PDF-source").hexdigest(),
+        current_remediation_artifact_id=None,
+        scan_type="PDF",
+        status=ScanStatus.COMPLETED,
+        remediation_outcome=None,
+    )
+    scan_query = MagicMock()
+    scan_query.filter.return_value = scan_query
+    scan_query.with_for_update.return_value = scan_query
+    scan_query.populate_existing.return_value = scan_query
+    scan_query.first.return_value = scan
+
+    def query_for(model):
+        if model is Scan:
+            return scan_query
+        if model is ScanFix.id:
+            return db.query.return_value
+        return query
+
+    db.query.side_effect = query_for
+    db.source_scan = scan
     if commit_error is not None:
         db.commit.side_effect = commit_error
     return db
@@ -141,12 +282,25 @@ def _db(*, commit_error: Exception | None = None) -> MagicMock:
 def _artifact() -> SimpleNamespace:
     return SimpleNamespace(
         id="artifact-pdf",
+        scan_id="scan-pdf",
+        department_id="dept-1",
+        cloud_file_id="cloud-pdf",
+        provider_result={},
         lifecycle_status="available",
         mime_type="application/pdf",
         size_bytes=len(CLAIMED_PDF),
         sha256=hashlib.sha256(CLAIMED_PDF).hexdigest(),
-        expires_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         review_status="pending",
+        written_back_at=None,
+        approved_at=None,
+        approved_by_id=None,
+        approved_by_ref=None,
+        approval_checksum=None,
+        approval_review_digest=None,
+        rejected_by_id=None,
+        rejected_by_ref=None,
+        rejected_at=None,
     )
 
 
@@ -160,6 +314,9 @@ async def _run_pdf_outer(
     commit_error: Exception | None = None,
     matterhorn_result=None,
     matterhorn_error: Exception | None = None,
+    source_bytes: bytes = b"%PDF-source",
+    source_hash: str | None = "default",
+    final_source_hash: str | None = "default",
 ):
     from src.api.brightspace_routes import (
         _WorkerRemediationResult,
@@ -168,10 +325,16 @@ async def _run_pdf_outer(
 
     cloud_file = _cloud_file()
     db = _db(commit_error=commit_error)
+    db.source_scan.file_hash = (
+        hashlib.sha256(source_bytes).hexdigest()
+        if source_hash == "default"
+        else source_hash
+    )
     api_client = AsyncMock()
-    api_client.get_topic_file.return_value = (b"%PDF-source", "application/pdf")
+    api_client.get_topic_file.return_value = (source_bytes, "application/pdf")
     service = MagicMock()
     published: list[bytes] = []
+    artifacts = []
 
     def publish(_db_arg, **kwargs):
         published.append(kwargs["source_stream"].read())
@@ -179,7 +342,15 @@ async def _run_pdf_outer(
             publication_hook()
         if publication_error is not None:
             raise publication_error
-        return _artifact()
+        artifact = _artifact()
+        artifact.sha256 = kwargs["claimed_sha256"]
+        artifact.size_bytes = kwargs["claimed_size_bytes"]
+        artifact.provider_result = kwargs["provider_result"]
+        cloud_file.current_remediation_artifact_id = artifact.id
+        artifacts.append(artifact)
+        if final_source_hash != "default":
+            db.source_scan.file_hash = final_source_hash
+        return artifact
 
     service.claim_and_publish_stream.side_effect = publish
     service.claim_and_publish.side_effect = AssertionError(
@@ -259,6 +430,8 @@ async def _run_pdf_outer(
         service=service,
         published=published,
         validated=validated,
+        artifact=artifacts[-1] if artifacts else None,
+        scan=db.source_scan,
     )
 
 
@@ -294,6 +467,250 @@ def _image_equation_result(output_path: Path) -> RemediationResult:
         )
     )
     return result
+
+
+def _real_partial_pdf_result(tmp_path):
+    import pymupdf as fitz
+
+    from src.api.brightspace_routes import _run_remediator_worker
+    from src.education.pdf_processor import PDFProcessor
+    from src.education.remediation.base import RemediationConfig
+
+    source = tmp_path / "source.pdf"
+    with fitz.open() as pdf:
+        page = pdf.new_page()
+        page.insert_textbox(
+            fitz.Rect(40, 40, 540, 700),
+            "Accessible course material with a clear reading order. " * 30,
+        )
+        pdf.save(source)
+    issues = (
+        PDFProcessor(generate_alt_text=False, validate_alt_text=False)
+        .process_pdf(str(source))
+        .issues
+    )
+    worker = _run_remediator_worker(
+        ext="pdf",
+        raw_issues=issues,
+        config=RemediationConfig(
+            use_ai=False, allow_legacy_nested_ai=False, create_backup=False
+        ),
+        remediation_client=None,
+        source_bytes=source.read_bytes(),
+    )
+    assert worker.result.verification_passed is True
+    assert worker.result.fixed_count > 0
+    assert worker.result.manual_count > 0
+    assert worker.result.score_measurement is not None
+    return source.read_bytes(), worker.result
+
+
+def _approve_produced_artifact(run, tmp_path, *, change=None):
+    from io import BytesIO
+
+    from src.services.remediation_artifact_service import RemediationArtifactService
+    from src.services.scan_fix_service import apply_authenticated_batch_review
+
+    rows = [
+        call.args[0]
+        for call in run.db.add.call_args_list
+        if call.args and isinstance(call.args[0], ScanFix)
+    ]
+    assert rows
+    if change == "edit":
+        rows[0].fixed_content = "Changed after these output bytes were saved"
+    apply_authenticated_batch_review(
+        run.db,
+        scan_id=run.scan.id,
+        fixes=rows,
+        action="approve",
+        user_id="human-reviewer",
+        reviewed_at=datetime.now(timezone.utc),
+    )
+    if change == "reject":
+        apply_authenticated_batch_review(
+            run.db,
+            scan_id=run.scan.id,
+            fixes=rows[:1],
+            action="reject",
+            user_id="human-reviewer",
+            reviewed_at=datetime.now(timezone.utc),
+        )
+    if change == "output":
+        run.artifact.sha256 = "0" * 64
+    query = MagicMock()
+    query.filter.return_value = query
+    query.with_for_update.return_value = query
+    query.populate_existing.return_value = query
+    query.all.return_value = rows
+    run.db.query.side_effect = lambda _: query
+    service = RemediationArtifactService(
+        root=tmp_path / "managed",
+        max_bytes=1_000_000,
+        retention_days=1,
+        staging_grace_seconds=1,
+    )
+
+    @contextmanager
+    def verified(_db, artifact, **_authority):
+        payload = run.published[0]
+        assert hashlib.sha256(payload).hexdigest() == artifact.sha256
+        with BytesIO(payload) as stream:
+            yield stream
+
+    with (
+        patch.object(
+            service,
+            "_lock_mutable_graph",
+            return_value=(run.scan, run.cloud_file, run.artifact),
+        ),
+        patch.object(service, "open_verified", side_effect=verified),
+    ):
+        return service.approve(
+            run.db,
+            artifact_id=run.artifact.id,
+            approved_by_id="human-reviewer",
+            approved_by_ref="session:human-reviewer",
+        )
+
+
+@pytest.mark.asyncio
+async def test_real_partial_pdf_producer_can_reach_human_artifact_approval(tmp_path):
+    source, result = _real_partial_pdf_result(tmp_path)
+    run = await _run_pdf_outer(tmp_path, result, source_bytes=source)
+    assert run.outcome.status == "manual_required"
+    assert run.scan.remediation_outcome == "completed"
+    receipt = run.artifact.provider_result["reviewed_output_membership"]
+    assert receipt["source_sha256"] == hashlib.sha256(source).hexdigest()
+    assert receipt["output_sha256"] == hashlib.sha256(run.published[0]).hexdigest()
+    assert len(receipt["fixes"]) == result.fixed_count
+    approved = _approve_produced_artifact(run, tmp_path)
+    assert approved.review_status == "approved"
+    assert approved.approved_by_id == "human-reviewer"
+    assert run.cloud_file.remediated_issues_remaining == result.manual_count
+
+
+@pytest.mark.asyncio
+async def test_real_office_producer_records_applied_members_and_human_approval(
+    tmp_path,
+):
+    from docx import Document
+
+    from src.api.brightspace_routes import _remediate_file_impl
+    from src.db.models import ScanResult
+    from src.education.docx_processor import DocxProcessor
+
+    source = tmp_path / "source.docx"
+    document = Document()
+    document.add_heading("Course overview", level=1)
+    document.add_paragraph("Review this week's notes.")
+    document.save(source)
+    source_bytes = source.read_bytes()
+    issues = DocxProcessor(require_complete_scan=True).process_docx(str(source)).issues
+    cloud = _cloud_file()
+    cloud.file_name = "source.docx"
+    cloud.provider_metadata["url"] = "/content/source.docx"
+    cloud.file_size_bytes = len(source_bytes)
+    db = _db()
+    db.source_scan.scan_type = "WORD"
+    db.source_scan.file_hash = hashlib.sha256(source_bytes).hexdigest()
+    db.query(ScanResult).first.return_value.issues = issues
+    api = AsyncMock()
+    api.get_topic_file.return_value = (source_bytes, "application/octet-stream")
+    artifact = _artifact()
+    published = []
+    service = MagicMock()
+
+    def publish(_db, **kwargs):
+        payload = Path(kwargs["source_path"]).read_bytes()
+        published.append(payload)
+        artifact.sha256 = hashlib.sha256(payload).hexdigest()
+        artifact.size_bytes = len(payload)
+        artifact.provider_result = kwargs["provider_result"]
+        cloud.current_remediation_artifact_id = artifact.id
+        return ArtifactPublicationResult(artifact=artifact, artifact_id=artifact.id)
+
+    service.claim_and_publish.side_effect = publish
+
+    async def run_worker(_department, worker, *args, **kwargs):
+        return worker(*args, **kwargs)
+
+    with (
+        patch("src.api.brightspace_routes._run_brightspace_worker", new=run_worker),
+        patch(
+            "src.api.brightspace_routes.RemediationArtifactService.from_settings",
+            return_value=service,
+        ),
+        patch(
+            "src.services.scan_fix_service.lock_scan_review_graph",
+            return_value=ScanReviewGraph(db.source_scan, (), (), ()),
+        ),
+    ):
+        outcome = await _remediate_file_impl(cloud, db, api_client=api)
+    assert outcome.status == "completed"
+    assert db.source_scan.remediation_outcome == "completed"
+    assert (
+        artifact.provider_result["reviewed_output_membership"]["source_sha256"]
+        == db.source_scan.file_hash
+    )
+    run = SimpleNamespace(
+        db=db,
+        scan=db.source_scan,
+        artifact=artifact,
+        cloud_file=cloud,
+        published=published,
+    )
+    assert _approve_produced_artifact(run, tmp_path).review_status == "approved"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["edit", "reject", "output"])
+async def test_review_changes_cannot_approve_old_brightspace_output(tmp_path, change):
+    from src.services.remediation_artifact_service import ArtifactAuthorizationError
+
+    source, result = _real_partial_pdf_result(tmp_path)
+    run = await _run_pdf_outer(tmp_path, result, source_bytes=source)
+    with pytest.raises(ArtifactAuthorizationError):
+        _approve_produced_artifact(run, tmp_path, change=change)
+    assert run.artifact.approved_by_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("missing_source", "source_hash_unavailable"),
+        ("stale_source", "source_changed_since_scan"),
+        ("concurrent_source", "source_changed_since_scan"),
+        ("missing_verification", "saved_file_verification_unavailable"),
+        ("wrong_output_receipt", "saved_file_verification_unavailable"),
+    ],
+)
+async def test_unbound_partial_output_stays_downloadable_but_cannot_be_approved(
+    tmp_path, change, reason
+):
+    from src.services.remediation_artifact_service import ArtifactAuthorizationError
+
+    source, result = _real_partial_pdf_result(tmp_path)
+    options = {}
+    if change == "missing_source":
+        options["source_hash"] = None
+    elif change == "stale_source":
+        options["source_hash"] = "0" * 64
+    elif change == "concurrent_source":
+        options["final_source_hash"] = "0" * 64
+    elif change == "missing_verification":
+        result.verification_result = None
+    else:
+        result.score_measurement["output_sha256"] = "0" * 64
+    run = await _run_pdf_outer(tmp_path, result, source_bytes=source, **options)
+    assert run.outcome.has_remediated_version is True
+    assert run.published
+    assert run.scan.remediation_outcome is None
+    assert "reviewed_output_membership" not in run.artifact.provider_result
+    assert run.artifact.provider_result["output_membership_blocker"] == reason
+    with pytest.raises(ArtifactAuthorizationError):
+        _approve_produced_artifact(run, tmp_path)
 
 
 @pytest.mark.asyncio

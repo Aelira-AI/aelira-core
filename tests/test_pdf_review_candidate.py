@@ -82,7 +82,7 @@ def page_evidence(content):
 def test_heading_candidate_changes_saved_tag_and_preserves_pages_and_metadata():
     source = rewrite(
         make_pdf(),
-        lambda pdf: pdf.docinfo.update({"/Title": String("Synthetic course")}),
+        lambda pdf: pdf.docinfo.__setitem__("/Title", String("Synthetic course")),
     )
     original = source[:]
     result = edit.create_pdf_edit_candidate(source, sha(source), heading(source))
@@ -367,7 +367,7 @@ def test_checksum_and_target_identity_do_not_transfer_to_changed_source():
     source = make_pdf()
     operation = heading(source)
     changed = rewrite(
-        source, lambda pdf: pdf.docinfo.update({"/Title": String("New revision")})
+        source, lambda pdf: pdf.docinfo.__setitem__("/Title", String("New revision"))
     )
     with pytest.raises(edit.PDFEditRefused, match="source_checksum_mismatch"):
         edit.create_pdf_edit_candidate(changed, sha(source), operation)

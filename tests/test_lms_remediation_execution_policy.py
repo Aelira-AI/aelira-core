@@ -261,6 +261,8 @@ def _route_scan(path, *, issues=None):
     return SimpleNamespace(
         id="scan-1",
         department_id="dept-1",
+        document_source="cloud_file",
+        document_id="cloud-1",
         scan_type=ScanType.WORD,
         storage_path=str(path),
         file_name="file.docx",
@@ -1754,7 +1756,8 @@ def test_lms_worker_has_no_global_manager_or_legacy_image_transport():
     assert "ImageAltTextGenerator(" not in inspect.getsource(
         module.handle_remediation_job
     )
-    assert not hasattr(module, "_queue_upload_job")
+    for name in ("process_remediation_job", "handle_remediation_job"):
+        assert "_queue_upload_job" not in inspect.getsource(getattr(module, name))
     assert "job_data=" not in source
 
 
@@ -1800,6 +1803,8 @@ async def test_generic_lms_route_requires_explicit_ai_intent(
     scan = SimpleNamespace(
         id="scan-1",
         department_id="dept-1",
+        document_source="cloud_file",
+        document_id="cloud-1",
         scan_type=ScanType.WORD,
         storage_path=None,
         file_name="file.docx",
@@ -1876,6 +1881,8 @@ async def test_generic_non_lms_alt_intent_controls_remediator_config(
     path.write_bytes(b"document")
     scan = _route_scan(path, issues=[{"type": "alt_text", "description": "missing"}])
     db = CloudFileDB([])
+    scan.document_source = None
+    scan.document_id = None
     remediator = MagicMock()
     remediator.remediate.return_value = _route_result(path)
     manager = MagicMock()
@@ -1940,6 +1947,9 @@ async def test_generic_false_remediator_result_emits_one_atomic_terminal_failure
     path.write_bytes(b"document")
     scan = _route_scan(path)
     db = CloudFileDB([_cloud_file()] if lms_backed else [])
+    if not lms_backed:
+        scan.document_source = None
+        scan.document_id = None
     remediator = MagicMock()
     failed_result = _route_result(path)
     failed_result.success = False
@@ -1985,6 +1995,8 @@ async def test_generic_lms_request_true_denied_is_stable_403_before_provider(tmp
     scan = SimpleNamespace(
         id="scan-1",
         department_id="dept-1",
+        document_source="cloud_file",
+        document_id="cloud-1",
         scan_type=ScanType.WORD,
         storage_path=str(path),
         file_name="file.docx",
@@ -2029,6 +2041,8 @@ async def test_generic_lms_image_injects_alt_text_client_without_legacy(tmp_path
         id="scan-1",
         department_id="dept-1",
         scan_type=ScanType.IMAGE,
+        document_source="cloud_file",
+        document_id="cloud-1",
         storage_path=str(path),
         file_name="image.png",
         status=ScanStatus.PROCESSING,
@@ -2124,7 +2138,8 @@ async def test_generic_lms_omitted_intent_uses_no_ai_or_workspace_runtime(
             principal=_principal_for(auth_method),
         )
 
-    assert result["success"] is True
+    assert result["success"] is False
+    assert result["manual_count"] == 1
     assert cls.call_args.kwargs["config"].use_ai is False
     assert cls.call_args.kwargs["ai_client"] is None
     bind.assert_not_called()
@@ -2145,6 +2160,7 @@ async def test_generic_lms_explicit_true_is_policy_gated_with_exact_client(tmp_p
         ],
     )
     cloud_file = _cloud_file(id="exact-cloud")
+    scan.document_id = cloud_file.id
     db = CloudFileDB([cloud_file])
     client = object()
     remediator = MagicMock()
@@ -2430,6 +2446,8 @@ async def test_generic_workspace_runtime_call_through_audits_actual_remediation_
     path.write_bytes(b"document")
     scan = _route_scan(path, issues=[{"id": "heading", "type": "heading"}])
     db = CloudFileDB([])
+    scan.document_source = None
+    scan.document_id = None
     manager = LegacyProviderManager(provider, success=success)
     remediator = MagicMock()
 
@@ -2482,6 +2500,8 @@ async def test_generic_workspace_runtime_alt_only_call_through_audits_alt_purpos
     path.write_bytes(b"document")
     scan = _route_scan(path, issues=[{"id": "alt", "type": "image-alt"}])
     db = CloudFileDB([])
+    scan.document_source = None
+    scan.document_id = None
     manager = LegacyProviderManager("gemini")
     remediator = MagicMock()
 
@@ -2965,6 +2985,8 @@ async def test_generic_tenant_scan_uses_workspace_runtime(tmp_path):
     path.write_bytes(b"document")
     scan = _route_scan(path)
     db = CloudFileDB([])
+    scan.document_source = None
+    scan.document_id = None
     manager = object()
     remediator = MagicMock()
     remediator.remediate.return_value = _route_result(path)
@@ -3664,6 +3686,7 @@ async def test_worker_persists_verified_output_before_temp_cleanup(
             "source_index": 0,
             "source_index_scope": "original_scan",
             "status": "fixed" if source_linked else "unreported",
+            **({"needs_review": True} if source_linked else {}),
         }
     ]
 
@@ -4035,6 +4058,8 @@ async def test_generic_image_without_valid_alt_or_explicit_decorative_is_manual(
         scan_type=ScanType.IMAGE,
         storage_path=str(path),
         file_name="image.png",
+        document_source="cloud_file",
+        document_id="cloud-1",
         status=ScanStatus.COMPLETED,
         metadata={"preserved": True},
     )

@@ -224,12 +224,17 @@ async def _run_route(
     cloud_file=None,
     publication_hook=None,
     artifact_service=None,
+    source_binding="missing",
 ):
     from src.api.education.remediation_routes import remediate_scan
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"%PDF-1.7\nsource\n%%EOF\n")
     scan = _scan(source)
+    if source_binding != "missing":
+        scan.file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        if source_binding == "drift":
+            source.write_bytes(b"%PDF-1.7\nchanged since scan\n%%EOF\n")
     db = _RouteDB()
     remediator = MagicMock()
 
@@ -249,6 +254,7 @@ async def _run_route(
         if publication_error is not None:
             raise publication_error
         artifact = _artifact()
+        publication["artifact"] = artifact
         if publication_hook is not None:
             publication_hook(artifact)
         return ArtifactPublicationResult(
@@ -286,6 +292,7 @@ async def _run_route(
 
     matterhorn.validate.side_effect = validate
     audit = MagicMock()
+    remediator_factory = MagicMock(return_value=remediator)
     with ExitStack() as stack:
         stack.enter_context(
             patch(
@@ -300,7 +307,7 @@ async def _run_route(
             )
         )
         stack.enter_context(
-            patch("src.education.remediation.PdfRemediator", return_value=remediator)
+            patch("src.education.remediation.PdfRemediator", remediator_factory)
         )
         stack.enter_context(
             patch(
@@ -332,6 +339,7 @@ async def _run_route(
         db=db,
         service=artifact_service,
         publication=publication,
+        remediator_factory=remediator_factory,
         validation=validation,
         audit=audit,
     )
@@ -373,6 +381,31 @@ async def test_direct_pdf_persists_real_image_equation_remediation_result(tmp_pa
         persisted[0].verification_evidence["source_sha256"] == EVIDENCE["source_sha256"]
     )
     assert result.has_output_claim() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_binding", ["exact", "drift"])
+async def test_direct_helper_only_records_membership_for_current_scanned_bytes(
+    tmp_path, source_binding
+):
+    output = tmp_path / "fixed.pdf"
+    output.write_bytes(CLAIMED_BYTES)
+    result = _DirectPdfResult(output)
+
+    run = await _run_route(tmp_path, result, source_binding=source_binding)
+
+    assert run.response["success"] is True
+    remediator_input = Path(run.remediator_factory.call_args.kwargs["file_path"])
+    assert remediator_input != Path(run.scan.storage_path)
+    assert not remediator_input.exists()
+    membership = getattr(run.publication["artifact"], "provider_result", {}).get(
+        "reviewed_output_membership"
+    )
+    if source_binding == "exact":
+        assert membership["source_sha256"] == run.scan.file_hash
+        assert membership["output_sha256"] == run.publication["artifact"].sha256
+    else:
+        assert membership is None
 
 
 @pytest.mark.asyncio

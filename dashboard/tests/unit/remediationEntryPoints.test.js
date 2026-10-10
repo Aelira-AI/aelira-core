@@ -118,8 +118,11 @@ describe('remediation entry points', () => {
     assert.doesNotMatch(uploader, /getRootProps\(\{\s*role: 'button'/);
   });
 
-  it('makes findings keyboard-scrollable and uses readable badge tokens', () => {
-    assert.match(source('pages/Remediate.tsx'), /tabIndex=\{0\}[\s\S]{0,120}aria-label="Recorded findings and changes"/);
+  it('keeps findings in document flow with keyboard links and readable badge tokens', () => {
+    const breakdown = source('components/results/RemediationOutcomeBreakdown.tsx');
+    assert.match(breakdown, /aria-label="Jump to remediation outcomes"/);
+    assert.match(breakdown, /href=\{`#outcomes-\$\{group.key\}`\}/);
+    assert.doesNotMatch(breakdown, /overflow-y-auto|max-h-/);
     assert.doesNotMatch(source('utils/remediationIssueOutcomes.ts'), /text-tertiary/);
     assert.doesNotMatch(source('components/upload/ScanTypeSelector.tsx'), /color: type\.badge[^\n]*#[0-9A-Fa-f]+/);
     assert.doesNotMatch(source('components/upload/FileUploader.tsx'), /llava:7b|~10 seconds/);

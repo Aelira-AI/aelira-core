@@ -21,6 +21,8 @@ REASON_CODES = frozenset(
     {
         "original_file_missing",
         "original_scan_failed",
+        "source_text_mapping_unavailable",
+        "source_text_scope_unsupported",
         "output_file_missing",
         "output_scan_failed",
         "incomplete_comparison",

@@ -877,6 +877,108 @@ def chemical_formula_review_blockers(fixes: Iterable[Any]) -> list[str]:
     )
 
 
+def build_output_membership(
+    output_sha256: Any, source_sha256: Any, fixes: Iterable[Any]
+) -> dict[str, Any] | None:
+    """Describe the exact changes actually written, never current approval alone."""
+    if not valid_sha256(output_sha256) or not valid_sha256(source_sha256):
+        return None
+    rows = list(fixes)
+    if not rows or len(rows) > 10_000:
+        return None
+    members = []
+    for fix in rows:
+        occurrence_key = getattr(fix, "occurrence_key", None)
+        digest = _current_review_digest(fix)
+        if not valid_sha256(occurrence_key) or digest is None:
+            return None
+        members.append({"occurrence_key": occurrence_key, "review_digest": digest})
+    if len({member["occurrence_key"] for member in members}) != len(members):
+        return None
+    return {
+        "version": 1,
+        "source_sha256": source_sha256,
+        "output_sha256": output_sha256,
+        "fixes": sorted(members, key=lambda member: member["occurrence_key"]),
+    }
+
+
+def artifact_output_membership_blockers(
+    artifact: Any, fixes: Iterable[Any], *, source_sha256: str | None = None
+) -> list[str]:
+    """Reject old bytes after a review removes or changes an applied fix."""
+    provider_result = getattr(artifact, "provider_result", None)
+    receipt = (
+        provider_result.get("reviewed_output_membership")
+        if isinstance(provider_result, dict)
+        else None
+    )
+    if not isinstance(receipt, dict):
+        return ["output_membership_unrecorded"]
+    accepted = [
+        fix
+        for fix in fixes
+        if getattr(fix, "review_status", None) in {"auto_approved", "approved"}
+    ]
+    expected = build_output_membership(
+        getattr(artifact, "sha256", None), source_sha256, accepted
+    )
+    if (
+        expected is None
+        or receipt != expected
+        or type(receipt.get("version")) is not int
+    ):
+        return ["reviewed_changes_not_in_output"]
+    return []
+
+
+def inherit_output_membership(
+    predecessor: Any, *, source_sha256: str | None, output_sha256: str
+) -> dict[str, Any] | None:
+    """Carry applied members through a verified manual edit of these exact bytes.
+
+    Never reconstruct membership from current review decisions: a predecessor
+    may still contain a now-rejected change, which must continue to block it.
+    """
+    provider_result = getattr(predecessor, "provider_result", None)
+    receipt = (
+        provider_result.get("reviewed_output_membership")
+        if isinstance(provider_result, dict)
+        else None
+    )
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != {"version", "source_sha256", "output_sha256", "fixes"}
+        or type(receipt.get("version")) is not int
+        or receipt["version"] != 1
+        or not valid_sha256(source_sha256)
+        or not valid_sha256(output_sha256)
+        or receipt["source_sha256"] != source_sha256
+        or not valid_sha256(receipt["output_sha256"])
+        or receipt["output_sha256"] != getattr(predecessor, "sha256", None)
+        or not isinstance(receipt["fixes"], list)
+        or not 1 <= len(receipt["fixes"]) <= 10_000
+    ):
+        return None
+    members = receipt["fixes"]
+    if any(
+        not isinstance(member, dict)
+        or set(member) != {"occurrence_key", "review_digest"}
+        or not all(valid_sha256(value) for value in member.values())
+        for member in members
+    ):
+        return None
+    if len({member["occurrence_key"] for member in members}) != len(
+        members
+    ) or members != sorted(members, key=lambda member: member["occurrence_key"]):
+        return None
+    return {
+        **receipt,
+        "output_sha256": output_sha256,
+        "fixes": [dict(member) for member in members],
+    }
+
+
 def artifact_review_blockers(fixes: Iterable[Any]) -> list[str]:
     """Return shared blockers used by metadata and approval boundaries."""
     rows = list(fixes)

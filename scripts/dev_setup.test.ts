@@ -140,15 +140,15 @@ test('worker model overrides participate in the deduplicated model set', () => {
 });
 
 test('uses resolved configured cloud provider; shell choices override without overwriting .env', () => {
-  const config = { LLM_PROVIDER: 'openai', OPENAI_API_KEY: 'do-not-print-this-secret' };
-  const dotenv = 'LLM_PROVIDER=openai\nOPENAI_API_KEY=do-not-print-this-secret\nNOT_SHELL=$(touch should-not-exist)\n';
+  const config = { LLM_PROVIDER: 'openai', OPENAI_API_KEY: 'example_do-not-print-this-secret' };
+  const dotenv = 'LLM_PROVIDER=openai\nOPENAI_API_KEY=example_do-not-print-this-secret\nNOT_SHELL=$(touch should-not-exist)\n';
   const cloud = run({ config, dotenv });
   assert.equal(cloud.status, 0, cloud.output);
   assert.deepEqual(pulls(cloud), []);
   const selected = run({ config, dotenv, env: { LLM_PROVIDER: 'ollama', OLLAMA_TEXT_MODEL: 'shell-choice:v1' } });
   assert.equal(selected.status, 0, selected.output);
   assert.ok(pulls(selected).includes('shell-choice:v1'));
-  assert.doesNotMatch(selected.output + cloud.output, /do-not-print-this-secret/);
+  assert.doesNotMatch(selected.output + cloud.output, /example_do-not-print-this-secret/);
 });
 
 test('caller cwd, paths with spaces, repeated overrides, project name and no-build are preserved', () => {

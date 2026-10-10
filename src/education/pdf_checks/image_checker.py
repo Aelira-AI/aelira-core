@@ -27,10 +27,18 @@ def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
     """Return deterministic identities for addressable embedded image draws."""
     resource_xrefs = {int(info[0]) for info in page.get_images(full=True)}
     displayed_infos = list(page.get_image_info(xrefs=True))
+    # MuPDF resolves image_info xrefs by image digest. Distinct resources with
+    # identical pixels can therefore receive the same/wrong xref. Bind direct
+    # draws to their actual resource references, retaining display order.
+    direct_xrefs = _direct_image_draw_xrefs(page, len(displayed_infos))
     ordinals: Dict[int, int] = {}
     occurrences: List[Dict] = []
     for image_index, info in enumerate(displayed_infos):
-        xref = int(info.get("xref") or 0)
+        xref = (
+            direct_xrefs[image_index]
+            if direct_xrefs is not None
+            else int(info.get("xref") or 0)
+        )
         ordinal = ordinals.get(xref, 0)
         ordinals[xref] = ordinal + 1
         raw_bbox = info.get("bbox")
@@ -67,6 +75,40 @@ def _displayed_image_occurrences(page, page_number: int) -> List[Dict]:
             }
         )
     return occurrences
+
+
+def _direct_image_draw_xrefs(page, expected_count: int) -> Optional[List[int]]:
+    """Use exact resource identities only for bounded, page-direct image draws."""
+    source = getattr(getattr(page, "parent", None), "name", None)
+    if not isinstance(source, str) or not source:
+        return None
+    try:
+        import pikepdf
+        from ..remediation.pdf_font_text import require_bounded_page_streams
+
+        with pikepdf.open(source, attempt_recovery=False) as pdf:
+            target = pdf.pages[page.number]
+            require_bounded_page_streams(target)
+            ops = list(pikepdf.parse_content_stream(target))
+            if len(ops) > 100_000:
+                return None
+            images = target.Resources.get("/XObject", {})
+            xrefs = []
+            for op in ops:
+                if str(op.operator) != "Do":
+                    continue
+                if len(op.operands) != 1:
+                    return None
+                image = images.get(op.operands[0])
+                if (
+                    not isinstance(image, pikepdf.Stream)
+                    or image.get("/Subtype") != pikepdf.Name.Image
+                ):
+                    return None
+                xrefs.append(int(image.objgen[0]))
+            return xrefs if len(xrefs) == expected_count else None
+    except Exception:
+        return None
 
 
 def _occurrence_alt_lookup(
@@ -178,6 +220,7 @@ class ImageAccessibilityChecker:
         scan_only = not ai_enabled
 
         image_issues: List[PDFImageIssue] = []
+        missing_issue_indices: Dict[str, int] = {}
         images_to_analyze = []  # List of dicts with owned temporary paths
         doc = None  # Track document for cleanup in finally block
         logger.info(
@@ -193,6 +236,11 @@ class ImageAccessibilityChecker:
             for page_num, page in enumerate(doc, start=1):
                 images = _displayed_image_occurrences(page, page_num)
                 alt_lookup = _occurrence_alt_lookup(doc, page, images)
+                from .image_semantics import structured_image_semantics
+
+                structured = structured_image_semantics(file_path, page_num - 1, images)
+                if structured is not None:
+                    alt_lookup = structured
                 logger.info(
                     f"[ImageChecker] Page {page_num}: found {len(images)} images"
                 )
@@ -204,9 +252,13 @@ class ImageAccessibilityChecker:
                         occurrence["occurrence_id"]
                     ]
 
-                    if not has_alt_text and scan_only:
-                        # Scan-only mode: record the issue with xref so the
-                        # remediator can extract image bytes for vision AI later.
+                    if not has_alt_text:
+                        # Source-derived inventory is fixed before optional AI work.
+                        # Keep one finding for each displayed occurrence even when
+                        # generation fails or only validation was requested.
+                        missing_issue_indices[occurrence["occurrence_id"]] = len(
+                            image_issues
+                        )
                         image_issues.append(
                             PDFImageIssue(
                                 **occurrence,
@@ -214,7 +266,7 @@ class ImageAccessibilityChecker:
                                 image_type="informative",  # conservative default
                             )
                         )
-                    elif not has_alt_text and self.generate_alt_text:
+                    if not has_alt_text and not scan_only and self.generate_alt_text:
                         # Extract and save image to temp file immediately
                         try:
                             base_image = doc.extract_image(xref)
@@ -247,20 +299,17 @@ class ImageAccessibilityChecker:
                                 }
                             )
                         except Exception as e:
-                            record_incomplete_check("image_checker.check")
                             logger.error(
-                                f"[ImageChecker] Failed to extract image on page {page_num}: {e}"
+                                f"[ImageChecker] AI image extraction failed on page {page_num}: {e}"
                             )
-                            # Add failed extraction as issue
-                            image_issues.append(
-                                PDFImageIssue(
-                                    **occurrence,
-                                    has_alt_text=False,
-                                    suggested_alt_text=f"[Extraction failed: {str(e)}]",
-                                )
-                            )
-                    elif has_alt_text and existing_alt_text and self.validate_alt_text:
+                    elif (
+                        has_alt_text
+                        and existing_alt_text
+                        and self.validate_alt_text
+                        and not scan_only
+                    ):
                         # Image HAS alt text - validate it with AI
+                        temp_path = None
                         try:
                             base_image = doc.extract_image(xref)
                             image_bytes = base_image["image"]
@@ -295,12 +344,6 @@ class ImageAccessibilityChecker:
                                 )
                             )
 
-                            # Clean up temp file
-                            try:
-                                os.unlink(temp_path)
-                            except Exception:
-                                pass
-
                             if validation_result.get("success"):
                                 is_accurate = validation_result.get("is_accurate", True)
                                 accuracy_score = validation_result.get(
@@ -330,10 +373,17 @@ class ImageAccessibilityChecker:
                                         )
                                     )
                         except Exception as e:
-                            record_incomplete_check("image_checker.check")
                             logger.warning(
                                 f"[ImageChecker] Alt text validation failed for page {page_num}: {e}"
                             )
+                        finally:
+                            if temp_path and os.path.exists(temp_path):
+                                try:
+                                    os.unlink(temp_path)
+                                except Exception:
+                                    logger.warning(
+                                        "[ImageChecker] Failed to delete validation temp file"
+                                    )
 
             total_images = len(images_to_analyze)
             logger.info(
@@ -654,22 +704,38 @@ class ImageAccessibilityChecker:
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(run_batch_async)
-                batch_results = future.result(
-                    timeout=total_images * 60
-                )  # 60s per image max
+                try:
+                    batch_results = future.result(
+                        timeout=total_images * 60
+                    )  # 60s per image max
+                except Exception as e:
+                    logger.warning("[ImageChecker] AI batch analysis failed: %s", e)
+                    batch_results = []
 
             # Process results and clean up temp files
             for img_data, result in batch_results:
+                if not isinstance(result, dict):
+                    logger.warning(
+                        "[ImageChecker] AI image result had an unsupported shape"
+                    )
+                    continue
                 suggested_alt = None
                 detailed_desc = None
                 image_type = None
                 is_chart = False
 
                 if result.get("success"):
-                    suggested_alt = result.get("alt_text", "")
-                    detailed_desc = result.get("detailed_description")
-                    image_type = result.get("image_type", "informative")
-                    is_chart = result.get("is_chart", False)
+                    alt_value = result.get("alt_text")
+                    suggested_alt = alt_value if isinstance(alt_value, str) else None
+                    detail_value = result.get("detailed_description")
+                    detailed_desc = (
+                        detail_value if isinstance(detail_value, str) else None
+                    )
+                    type_value = result.get("image_type")
+                    image_type = (
+                        type_value if isinstance(type_value, str) else "informative"
+                    )
+                    is_chart = result.get("is_chart") is True
 
                     # For decorative images, use empty alt text (WCAG compliant)
                     if result.get("is_decorative"):
@@ -679,19 +745,18 @@ class ImageAccessibilityChecker:
                             f"[ImageChecker] Page {img_data['page_num']} image "
                             f"{img_data['img_index']+1}: Decorative - using empty alt"
                         )
-                else:
-                    suggested_alt = f"[AI generation failed: {result.get('error', 'Unknown error')}]"
-
-                image_issues.append(
-                    PDFImageIssue(
-                        **img_data["identity"],
-                        has_alt_text=False,
-                        suggested_alt_text=suggested_alt,
-                        image_type=image_type,
-                        is_chart=is_chart,
-                        detailed_description=detailed_desc,
+                # Attach the suggestion to the exact source occurrence. Failed
+                # calls leave its missing-alt finding intact without fake alt.
+                index = missing_issue_indices[img_data["identity"]["occurrence_id"]]
+                if result.get("success"):
+                    image_issues[index] = image_issues[index].model_copy(
+                        update={
+                            "suggested_alt_text": suggested_alt,
+                            "image_type": image_type,
+                            "is_chart": is_chart,
+                            "detailed_description": detailed_desc,
+                        }
                     )
-                )
 
                 # Clean up temp file
                 try:

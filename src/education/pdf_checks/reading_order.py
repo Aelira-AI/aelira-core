@@ -95,7 +95,10 @@ class ReadingOrderVerifier:
                     pages_analyzed += 1
 
                     # Get visual text order (sorted by position)
-                    visual_blocks = self._get_visual_text_order(page)
+                    duplicates = self._verified_artifact_duplicates(
+                        file_path, page_num, page
+                    )
+                    visual_blocks = self._get_visual_text_order(page, duplicates)
 
                     # Detect multi-column layout
                     if self._detect_multi_column(visual_blocks):
@@ -184,7 +187,86 @@ class ReadingOrderVerifier:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_visual_text_order(self, page) -> List[Dict]:
+    def _verified_artifact_duplicates(self, file_path, page_num, page):
+        """Exclude overprinted glyphs only with the same reachable native counterpart.
+
+        An Artifact marker cannot hide unique text. A 0.05 point tolerance
+        allows subpixel overprint positioning (less than 0.001 inch), not
+        proximity between words. Visual glyph matching remains at 0.001 point.
+        Unsupported or ambiguous ownership retains the ordinary visible text.
+        """
+        if (
+            page.rotation
+            or tuple(page.cropbox) != tuple(page.mediabox)
+            or page.mediabox.x0
+            or page.mediabox.y0
+        ):
+            return []
+        try:
+            with pikepdf.open(file_path) as pdf:
+                if "/StructTreeRoot" not in pdf.Root:
+                    return []
+                # Most pages do not contain decorative text; avoid a second
+                # full glyph decode unless an Artifact scope is present.
+                from ..remediation.pdf_font_text import require_bounded_page_streams
+
+                require_bounded_page_streams(pdf.pages[page_num])
+                ops = list(pikepdf.parse_content_stream(pdf.pages[page_num]))
+                if len(ops) > 100_000:
+                    record_incomplete_check("reading_order.artifact_limit")
+                    return []
+                if not any(
+                    str(op.operator) in {"BMC", "BDC"}
+                    and op.operands
+                    and op.operands[0] == pikepdf.Name.Artifact
+                    for op in ops
+                ):
+                    return []
+            from ..remediation.pdf_reviewed_semantics import (
+                inspect_tagged_semantic_source,
+            )
+            from pathlib import Path
+
+            source = Path(file_path)
+            if source.stat().st_size > 32 * 1024 * 1024:
+                record_incomplete_check("reading_order.artifact_limit")
+                return []
+            inventory = inspect_tagged_semantic_source(source.read_bytes())
+            semantic = defaultdict(list)
+            artifacts = []
+            for occurrence in inventory.occurrences:
+                if occurrence.page_index != page_num:
+                    continue
+                for glyph in occurrence.glyphs:
+                    if occurrence.artifact:
+                        artifacts.append(glyph)
+                    else:
+                        semantic[glyph.text].append(glyph)
+            duplicates = []
+            for glyph in artifacts:
+                if any(
+                    all(
+                        abs(a - b) <= 0.05
+                        for a, b in zip(
+                            glyph.bbox + glyph.origin, other.bbox + other.origin
+                        )
+                    )
+                    for other in semantic[glyph.text]
+                ):
+                    duplicates.append(
+                        (
+                            glyph.text,
+                            glyph.origin[0],
+                            page.mediabox.height - glyph.origin[1],
+                        )
+                    )
+            return duplicates
+        except Exception:
+            # Ordinary text comparison remains authoritative; unsupported
+            # artifacts cannot make its coverage requirement less strict.
+            return []
+
+    def _get_visual_text_order(self, page, duplicates=None) -> List[Dict]:
         """Extract text blocks from page sorted by visual position.
 
         Sorting: Primary by y-position (top to bottom), secondary by x-position
@@ -200,17 +282,61 @@ class ReadingOrderVerifier:
 
         try:
             # Get text blocks with position info
-            text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            text_dict = page.get_text(
+                "rawdict" if duplicates else "dict", flags=fitz.TEXT_PRESERVE_WHITESPACE
+            )
+            excluded = set()
+            if duplicates:
+                candidates = []
+                for block in text_dict.get("blocks", []):
+                    if block.get("type") != 0:
+                        continue
+                    chars = [
+                        char
+                        for line in block.get("lines", [])
+                        for span in line.get("spans", [])
+                        for char in span.get("chars", [])
+                    ]
+                    # Prefer keeping the occurrence in its complete text block;
+                    # isolated overprint fragments should not split a word.
+                    for char in chars:
+                        candidates.append((len(chars), char))
+                for text, x, y in duplicates:
+                    matches = [
+                        (size, char)
+                        for size, char in candidates
+                        if id(char) not in excluded
+                        and char.get("c") == text
+                        and abs(char["origin"][0] - x) <= 0.001
+                        and abs(char["origin"][1] - y) <= 0.001
+                    ]
+                    if not matches:
+                        record_incomplete_check("reading_order.artifact_geometry")
+                        raise ValueError(
+                            "Artifact glyph did not match visual extraction"
+                        )
+                    excluded.add(id(min(matches, key=lambda item: item[0])[1]))
 
             for block in text_dict.get("blocks", []):
                 if block.get("type") == 0:  # Text block
                     bbox = block.get("bbox", (0, 0, 0, 0))
-                    # Collect all text from spans in the block
+                    # Keep native span boundaries within a line; separate
+                    # lines so drawing-operation splits cannot join words.
                     text_parts = []
                     for line in block.get("lines", []):
+                        spans = []
                         for span in line.get("spans", []):
-                            text_parts.append(span.get("text", ""))
-
+                            if not duplicates:
+                                spans.append(span.get("text", ""))
+                            else:
+                                spans.append(
+                                    "".join(
+                                        char.get("c", "")
+                                        for char in span.get("chars", [])
+                                        if id(char) not in excluded
+                                    )
+                                )
+                        text_parts.append(("" if duplicates else " ").join(spans))
                     text = " ".join(text_parts).strip()
                     if text:  # Skip empty blocks
                         blocks.append(
@@ -698,13 +824,14 @@ class ReadingOrderVerifier:
         visual_texts = [b["text"][:100] for b in visual[:5]]
         structure_texts = [b["text"][:100] for b in structure[:5]]
 
-        def issue(recommendation, severity="warning"):
+        def issue(recommendation, severity="warning", review_only=False):
             return ReadingOrderIssue(
                 page_number=page_num,
                 expected_order=visual_texts,
                 actual_order=structure_texts,
                 severity=severity,
                 recommendation=recommendation,
+                review_only=review_only,
                 visual_positions=(
                     [{"x": b.get("x", 0), "y": b.get("y", 0)} for b in visual[:5]]
                     if visual
@@ -733,7 +860,8 @@ class ReadingOrderVerifier:
             # needs human review, not a failed text-extraction check.
             nonvisual_review = issue(
                 "Review the placement of image descriptions in the reading order. "
-                "A text-only comparison cannot verify their position relative to images."
+                "A text-only comparison cannot verify their position relative to images.",
+                review_only=True,
             )
             structure = [b for b in structure if b.get("source") != "Alt"]
 

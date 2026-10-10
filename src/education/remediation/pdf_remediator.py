@@ -74,6 +74,18 @@ from .confidence import ConfidenceCalculator, FixMethod
 from .pdf_structure import PDFStructureTree
 from .reading_order import HeuristicStrategy, ReadingOrderFixResult
 from .content_tagger import ContentTagger
+from .pdf_font_text import FontTextBindingError
+from .pdf_ocr_form import OCRFormFlatteningError
+from .pdf_verified_font_recovery import (
+    FontRecoveryManifest,
+    VerifiedFontRecoveryResult,
+    recover_verified_font_maps,
+)
+from .pdf_reviewed_semantics import (
+    ReviewedSemanticManifest,
+    ReviewedSemanticResult,
+    apply_reviewed_semantics,
+)
 from .content_tagger_v2 import (
     ContentTaggerV2,
     associate_image_formula,
@@ -94,7 +106,6 @@ from .table_tagger import (
 from .form_fixer import FormFixer
 from .link_fixer import LinkFixer
 from .role_mapping_fixer import RoleMappingFixer
-from .font_unicode_fixer import FontUnicodeFixer
 from .math_fixer import MathFixer, PendingScannedRegionAssociation
 from .handwritten_equation_verifier import HandwrittenEquationVerificationEvidence
 from .equation_image_source import WorkingEquationRegionOccurrence
@@ -760,6 +771,8 @@ class PdfRemediator(BaseRemediator):
         ai_client: Optional[Any] = None,
         *,
         alt_text_client: Optional[Any] = None,
+        font_recovery_manifest: Optional[FontRecoveryManifest] = None,
+        semantic_recovery_manifest: Optional[ReviewedSemanticManifest] = None,
     ):
         """Initialize the PDF remediator."""
         if not HAS_PYMUPDF:
@@ -805,6 +818,12 @@ class PdfRemediator(BaseRemediator):
         # Exact identity of a final PDF published by this remediator instance.
         # Cleanup must never infer ownership merely from the deterministic name.
         self._published_output_binding: Optional[tuple[str, int, int, str]] = None
+        # Internal reviewed recovery only. The ordinary upload/API path must
+        # never infer a mapping or treat a supplied label as source evidence.
+        self._font_recovery_manifest = font_recovery_manifest
+        self._font_recovery_evidence: Optional[VerifiedFontRecoveryResult] = None
+        self._semantic_recovery_manifest = semantic_recovery_manifest
+        self._semantic_recovery_evidence: Optional[ReviewedSemanticResult] = None
 
         # WCAG criteria mapping per issue category
         self._wcag_map: Dict[IssueCategory, str] = {
@@ -841,6 +860,27 @@ class PdfRemediator(BaseRemediator):
         self._published_output_binding = None
         try:
             logger.info("Starting two-phase remediation of %s", self.file_path)
+            if self.config.use_supplied_fixes and any(
+                issue.category
+                not in {
+                    IssueCategory.ALT_TEXT,
+                    IssueCategory.LINK,
+                    IssueCategory.READING_ORDER,
+                }
+                and not (
+                    issue.category == IssueCategory.STRUCTURE
+                    and issue.metadata.get("issue_type") == "missing_document_root"
+                )
+                for issue in self.issues
+            ):
+                for issue in self.issues:
+                    self._add_manual_issue(
+                        issue,
+                        reason="Reviewed PDF replay does not support this change set.",
+                        recommendation="Apply the reviewed changes in the source document or a PDF editor and rescan.",
+                    )
+                self.result.complete()
+                return self.result
 
             # Table safety must be decided from the untouched input. Cache the
             # read-only document-wide outcome before backup creation, document
@@ -864,8 +904,21 @@ class PdfRemediator(BaseRemediator):
             # the original. Fails closed on signed input or OCR failure.
             self._stage_working_copy()
 
+            # Untagged sources bypass marked-content decoding during their
+            # initial scan. Check the staged text with the strict verifier's
+            # decoder before spending provider calls on an unverifiable PDF.
+            from .pdf_text_mapping import require_decodable_pdf_text
+
+            require_decodable_pdf_text(self._working_file_path or self.file_path)
+
             # Load the document
             document = self._load_document()
+
+            if self.config.use_supplied_fixes and self._generated_structure:
+                raise ValueError("reviewed_pdf_requires_existing_tagged_source")
+
+            if self._semantic_recovery_evidence is not None:
+                return self._complete_reviewed_recovery(document)
 
             # Group issues by category for efficient batch dispatch
             issues_by_category: Dict[IssueCategory, List[RemediationIssue]] = {}
@@ -1134,6 +1187,11 @@ class PdfRemediator(BaseRemediator):
             )
 
         except Exception as e:
+            from .score_measurement import MeasurementError
+
+            if isinstance(e, MeasurementError):
+                self.result.score_verification_reason = e.code
+                self._account_for_unprocessed_issues()
             logger.error("Remediation failed: %s", e)
             if any(issue.category == IssueCategory.TABLE for issue in self.issues):
                 if getattr(self, "_pre_table_pikepdf_doc", None) is not None:
@@ -1146,6 +1204,51 @@ class PdfRemediator(BaseRemediator):
         finally:
             self._cleanup_working_copy()
 
+        return self.result
+
+    def _complete_reviewed_recovery(self, document: Any) -> "RemediationResult":
+        """Verify the exact reviewed candidate without heuristic retagging.
+
+        A complete manifest supplies source-bound text/image coverage and tag
+        order. It does not waive the saved scanner/validator comparison or
+        constitute practitioner approval. Unsupported findings stay manual.
+        """
+        if not self.config.verify_fixes:
+            raise ValueError("Reviewed PDF recovery requires saved verification")
+        supported = {
+            IssueCategory.LANGUAGE,
+            IssueCategory.TITLE,
+            IssueCategory.STRUCTURE,
+            IssueCategory.HEADING,
+            IssueCategory.NAVIGATION,
+            IssueCategory.READING_ORDER,
+            IssueCategory.LIST,
+            IssueCategory.ALT_TEXT,
+        }
+        assert self._semantic_recovery_evidence is not None
+        for issue in self.issues:
+            if issue.category in supported:
+                self._add_fixed_issue(
+                    issue,
+                    fixed_content="Source-bound Unicode and semantic recovery candidate",
+                    fix_method="reviewed_recovery",
+                    needs_review=True,
+                    notes="Assistant/operator source inspection; independent accessibility review remains pending.",
+                )
+            else:
+                self._add_manual_issue(
+                    issue,
+                    reason="This finding is outside the reviewed recovery scope.",
+                    recommendation="Review the saved candidate for this finding.",
+                )
+        output_path = self._save_document(document)
+        self.result.output_file = output_path
+        self._verify_fixes(output_path)
+        self._calculate_scores()
+        if not self.result.verification_passed:
+            self.result.success = False
+            self.result.error_message = "Reviewed recovery output verification failed"
+        self.result.complete()
         return self.result
 
     def _account_for_unprocessed_issues(self) -> None:
@@ -1219,21 +1322,22 @@ class PdfRemediator(BaseRemediator):
                         )
 
             elif name == "link":
-                specialist = LinkFixer(
+                link_specialist = LinkFixer(
                     self._pikepdf_doc, self._pdf, ai_client=self.ai_client
                 )
-                results = specialist.fix(issues)
-                for i, result in enumerate(results):
+                link_results = link_specialist.fix(issues)
+                for i, link_result in enumerate(link_results):
                     issue = issues[i] if i < len(issues) else None
                     if issue is None:
                         continue
-                    if result.success:
+                    if link_result.links_fixed:
                         self._structure_modified = True
+                    if link_result.success:
                         self._add_fixed_issue(
                             issue,
-                            fixed_content=result.notes
-                            or f"Fixed {result.links_fixed} links",
-                            fix_method=result.fix_method,
+                            fixed_content=link_result.notes
+                            or f"Fixed {link_result.links_fixed} links",
+                            fix_method=link_result.fix_method,
                             confidence=0.85,
                             wcag_criteria=self._wcag_map.get(issue.category),
                             page_number=issue.metadata.get("page_number"),
@@ -1241,7 +1345,8 @@ class PdfRemediator(BaseRemediator):
                     else:
                         self._add_manual_issue(
                             issue,
-                            reason=result.error or "Could not fix link annotations",
+                            reason=link_result.error
+                            or "Could not fix link annotations",
                             recommendation="Manually add descriptive /Contents to link annotations",
                         )
 
@@ -1281,38 +1386,18 @@ class PdfRemediator(BaseRemediator):
                         )
 
             elif name == "font_unicode":
-                specialist = FontUnicodeFixer(self._pikepdf_doc, self._pdf)
-                results = specialist.fix(issues)
-                for i, result in enumerate(results):
-                    issue = issues[i] if i < len(issues) else None
-                    if issue is None:
-                        continue
-                    if result.success:
-                        self._structure_modified = True
-                        self._add_fixed_issue(
-                            issue,
-                            fixed_content=(
-                                f"Added ToUnicode CMap for {result.font_name} "
-                                f"({result.mappings_added} mappings)"
-                            ),
-                            fix_method="rule",
-                            confidence=result.confidence,
-                            needs_review=result.needs_review,
-                            wcag_criteria=self._wcag_map.get(issue.category),
-                            page_number=issue.metadata.get("page_number"),
-                        )
-                    else:
-                        self._add_manual_issue(
-                            issue,
-                            reason=(
-                                f"Cannot build ToUnicode CMap for {result.font_name}: "
-                                "no /Encoding /Differences available"
-                            ),
-                            recommendation=(
-                                "Re-embed the font with proper Unicode mappings, "
-                                "or add /ActualText spans for affected text."
-                            ),
-                        )
+                # Scanner findings aggregate fonts and have no identity binding.
+                # Never zip font results to issues or count a no-op as a fix.
+                for issue in issues:
+                    self._add_manual_issue(
+                        issue,
+                        reason="Source-bound font mapping review required",
+                        recommendation=(
+                            "Check the affected glyphs against authoring material. "
+                            "Re-export with complete Unicode maps or supply a "
+                            "source-bound reviewed recovery plan."
+                        ),
+                    )
 
             elif name == "math":
                 specialist = MathFixer(
@@ -1386,6 +1471,38 @@ class PdfRemediator(BaseRemediator):
         Overrides the base class to attach per-fix confidence, fix method,
         WCAG criteria, and review-needed flags to every FixedIssue.
         """
+        if (
+            self.config.use_supplied_fixes
+            and issue.metadata.get("issue_type") == "missing_document_root"
+        ):
+            expected = "Resolved by content tagging pass: missing document root"
+            pdf = self._pikepdf_doc
+            if pdf is None or issue.metadata.get("reviewed_fixed_content") != expected:
+                self._add_manual_issue(
+                    issue,
+                    reason="Reviewed PDF change could not be applied exactly.",
+                    recommendation="Review the saved change and regenerate from the original source.",
+                )
+                return
+            tagger = ContentTaggerV2(pdf, self._pdf)
+            tagger._ensure_document_root(pdf.Root.StructTreeRoot)
+            self._structure_modified = True
+            self._add_fixed_issue(
+                issue,
+                fixed_content=expected,
+                fix_method=FixMethod.RULE.value,
+                confidence=1.0,
+                needs_review=False,
+                page_number=issue.metadata.get("page_number"),
+            )
+            return
+        if self._is_ai_alt_quality_review(issue):
+            self._add_manual_issue(
+                issue,
+                reason="AI assessment of existing alt text; excluded from the rule-based score.",
+                recommendation="Compare the existing description with the image and its context before changing it.",
+            )
+            return
         classification_reason = issue.metadata.get("classification_manual_reason")
         if classification_reason:
             self._add_manual_issue(
@@ -1407,8 +1524,16 @@ class PdfRemediator(BaseRemediator):
         if not self.can_auto_fix(issue):
             self._add_manual_issue(
                 issue,
-                reason=self._get_manual_reason(issue),
-                recommendation=self._get_manual_recommendation(issue),
+                reason=(
+                    "PDF/UA conformance declaration requires independent validation"
+                    if issue.metadata.get("issue_type") == "missing_pdfua_identifier"
+                    else self._get_manual_reason(issue)
+                ),
+                recommendation=(
+                    "Complete independent PDF/UA validation before declaring conformance."
+                    if issue.metadata.get("issue_type") == "missing_pdfua_identifier"
+                    else self._get_manual_recommendation(issue)
+                ),
             )
             return
 
@@ -1417,7 +1542,15 @@ class PdfRemediator(BaseRemediator):
         if fix_content is None:
             self._add_manual_issue(
                 issue,
-                reason="Could not generate appropriate fix",
+                reason=(
+                    (
+                        "Alt-text AI provider unavailable"
+                        if self.alt_text_client is None
+                        else "No usable image description was returned"
+                    )
+                    if issue.category == IssueCategory.ALT_TEXT
+                    else "Could not generate appropriate fix"
+                ),
                 recommendation=self._get_manual_recommendation(issue),
             )
             return
@@ -1445,14 +1578,25 @@ class PdfRemediator(BaseRemediator):
                 page_number=page_num,
             )
         else:
+            if issue.category == IssueCategory.READING_ORDER and issue.metadata.get(
+                "reading_order_refusal"
+            ):
+                self._add_manual_issue(
+                    issue,
+                    reason=issue.metadata["reading_order_refusal"],
+                    recommendation="Review the page layout and existing semantic groups before changing reading order.",
+                )
+                return
             source_refusal = getattr(self, "_source_binding_refusals", {}).get(issue.id)
             if source_refusal:
                 self._add_manual_issue(
                     issue,
                     reason=source_refusal,
                     recommendation=(
-                        "Review the source text and split its content runs before "
-                        "applying heading or list structure."
+                        "Review the image's actual Figure and marked-content ownership before editing its description."
+                        if issue.category
+                        in {IssueCategory.ALT_TEXT, IssueCategory.CHART}
+                        else "Review the source text and split its content runs before applying heading or list structure."
                     ),
                 )
                 return
@@ -1696,6 +1840,20 @@ class PdfRemediator(BaseRemediator):
         self._working_file_path = staged_path
         self._signature_preflight(staged_path)
 
+        if self._font_recovery_manifest is not None:
+            recovery = recover_verified_font_maps(
+                Path(staged_path).read_bytes(), self._font_recovery_manifest
+            )
+            Path(staged_path).write_bytes(recovery.pdf_bytes)
+            self._font_recovery_evidence = recovery
+
+        if self._semantic_recovery_manifest is not None:
+            semantic = apply_reviewed_semantics(
+                Path(staged_path).read_bytes(), self._semantic_recovery_manifest
+            )
+            Path(staged_path).write_bytes(semantic.pdf_bytes)
+            self._semantic_recovery_evidence = semantic
+
         page_texts, page_has_images = self._page_text_profile(staged_path)
         total_text = "".join(page_texts).strip()
         # Mixed-safe OCR can recognize image-only pages while preserving pages
@@ -1738,6 +1896,9 @@ class PdfRemediator(BaseRemediator):
                 len(page_texts),
             )
             return
+
+        if self.config.use_supplied_fixes:
+            raise ValueError("reviewed_pdf_ocr_requires_separate_review")
 
         if not HAS_OCRMYPDF:
             raise RuntimeError(
@@ -1789,6 +1950,13 @@ class PdfRemediator(BaseRemediator):
                 "unsearchable remediated file."
             ) from e
 
+        # OCRmyPDF may put invisible text inside a Form. Flatten only this
+        # privately generated, bounded OCR grammar; arbitrary source Forms
+        # stay unsupported. This proves font decoding, not OCR accuracy.
+        ocr_path = self._normalize_ocr_text_forms(
+            ocr_path, page_indices=tuple(needy_pages)
+        )
+
         derivative_texts, _ = self._page_text_profile(ocr_path)
         missing_pages = [
             i + 1
@@ -1814,6 +1982,92 @@ class PdfRemediator(BaseRemediator):
             "OCR working copy ready (%d pages recognized): %s",
             len(needy_pages),
             ocr_path,
+        )
+
+    def _normalize_ocr_text_forms(
+        self, ocr_path: str, *, page_indices: tuple[int, ...] | None = None
+    ) -> str:
+        from .pdf_text_mapping import (
+            inspect_pdf_text_quality,
+            require_decodable_pdf_text,
+        )
+        from .score_measurement import MeasurementError
+        from .pdf_ocr_form import (
+            OCRFormFlatteningError,
+            apply_ocr_form_flattening,
+            plan_ocr_form_flattening,
+        )
+
+        quality = inspect_pdf_text_quality(ocr_path)
+        if quality.reason != "source_text_scope_unsupported":
+            if quality.reason is not None:
+                raise MeasurementError(quality.reason)
+            return ocr_path
+        if self._work_dir is None:
+            raise MeasurementError("source_text_scope_unsupported")
+        candidate = str(Path(self._work_dir) / "ocr_page_text.pdf")
+        try:
+            with pikepdf.open(ocr_path) as pdf:
+                plan = plan_ocr_form_flattening(pdf, page_indices=page_indices)
+                apply_ocr_form_flattening(pdf, plan)
+                pdf.save(candidate)
+            # Verify the exact saved private derivative, not its in-memory
+            # plan. Invisible text flattening must preserve both rendered
+            # pixels, glyph coordinates and extraction on every page.
+            require_decodable_pdf_text(candidate)
+            with fitz.open(ocr_path) as before, fitz.open(candidate) as after:
+                if len(before) != len(after) or len(before) > 100:
+                    raise MeasurementError("source_text_scope_unsupported")
+                for index in range(len(before)):
+                    original, flattened = before[index], after[index]
+                    if (
+                        original.rect != flattened.rect
+                        or original.rotation != flattened.rotation
+                    ):
+                        raise MeasurementError("source_text_scope_unsupported")
+                    if original.rect.width * original.rect.height * 4 > 16_000_000:
+                        raise MeasurementError("source_text_scope_unsupported")
+                    if original.get_text() != flattened.get_text():
+                        raise MeasurementError("source_text_scope_unsupported")
+                    if self._ocr_text_geometry(original) != self._ocr_text_geometry(
+                        flattened
+                    ):
+                        raise MeasurementError("source_text_scope_unsupported")
+                    old_pixels = original.get_pixmap(
+                        matrix=fitz.Matrix(2, 2), alpha=False
+                    )
+                    new_pixels = flattened.get_pixmap(
+                        matrix=fitz.Matrix(2, 2), alpha=False
+                    )
+                    if (old_pixels.width, old_pixels.height, old_pixels.samples) != (
+                        new_pixels.width,
+                        new_pixels.height,
+                        new_pixels.samples,
+                    ):
+                        raise MeasurementError("source_text_scope_unsupported")
+            self.result.warnings.append(
+                "OCR Form text was normalized to page text and checked for "
+                "unchanged rendering and extraction. Review OCR accuracy and "
+                "reading order before using the output."
+            )
+            return candidate
+        except (OCRFormFlatteningError, MeasurementError):
+            Path(candidate).unlink(missing_ok=True)
+            raise MeasurementError("source_text_scope_unsupported") from None
+        except Exception:
+            Path(candidate).unlink(missing_ok=True)
+            raise MeasurementError("source_text_scope_unsupported") from None
+
+    @staticmethod
+    def _ocr_text_geometry(page: Any) -> tuple:
+        """Saved glyph identity/geometry, including invisible OCR text."""
+        return tuple(
+            (char["c"], tuple(char["origin"]), tuple(char["bbox"]), tuple(line["dir"]))
+            for block in page.get_text("rawdict")["blocks"]
+            if block["type"] == 0
+            for line in block["lines"]
+            for span in line["spans"]
+            for char in span["chars"]
         )
 
     @staticmethod
@@ -2806,6 +3060,28 @@ class PdfRemediator(BaseRemediator):
     def _write_pdf_output(self, document: Any, output_path: str) -> None:
         """Write the current PDF state to ``output_path``."""
 
+        if self.config.use_supplied_fixes:
+            # Replay only the selected edits on the original existing tag tree.
+            # Broad content tagging would also reapply unselected/rejected fixes.
+            if (
+                not self._pikepdf_doc
+                or self._generated_structure
+                or self._pending_image_equations
+            ):
+                raise ValueError("reviewed_pdf_scope_unsupported")
+            self._pikepdf_doc.save(output_path)
+            return
+
+        if self._semantic_recovery_evidence is not None:
+            data = Path(self._working_path).read_bytes()
+            if (
+                hashlib.sha256(data).hexdigest()
+                != self._semantic_recovery_evidence.output_sha256
+            ):
+                raise ValueError("Reviewed PDF candidate changed before publication")
+            Path(output_path).write_bytes(data)
+            return
+
         # If we modified the structure tree with pikepdf, save with pikepdf
         # This is critical because PyMuPDF cannot save structure tree changes
         if self._structure_modified and self._pikepdf_doc:
@@ -3026,6 +3302,10 @@ class PdfRemediator(BaseRemediator):
                             "content",
                             stats.get("pages_processed", 0),
                         )
+                except (FontTextBindingError, OCRFormFlatteningError):
+                    # Authoritative source refusals must never enter the old
+                    # tagger, including when optional fix scoring is disabled.
+                    raise
                 except Exception as e:
                     if self._pending_image_equations:
                         raise RuntimeError(
@@ -3181,6 +3461,16 @@ class PdfRemediator(BaseRemediator):
                     transaction_fitz.close()
                 if working_pdf is not self._pikepdf_doc:
                     working_pdf.close()
+                if isinstance(e, (FontTextBindingError, OCRFormFlatteningError)):
+                    from .score_measurement import MeasurementError
+
+                    reason = (
+                        "source_text_mapping_unavailable"
+                        if isinstance(e, FontTextBindingError)
+                        and e.code == "source_text_mapping_unavailable"
+                        else "source_text_scope_unsupported"
+                    )
+                    raise MeasurementError(reason) from None
                 logger.error(f"Failed to save with pikepdf: {e}")
                 if getattr(self, "_table_expected_bound_cells", 0):
                     self._rollback_provisional_table_fixes()
@@ -3345,9 +3635,7 @@ class PdfRemediator(BaseRemediator):
     # Issue types ContentTaggerV2 always resolves when it completes, and
     # those it only resolves when it actually tagged content blocks
     # (an empty tagging pass leaves the ParentTree /Nums empty).
-    _TAGGER_FIXED_ALWAYS = frozenset(
-        ["missing_document_root", "missing_pdfua_identifier"]
-    )
+    _TAGGER_FIXED_ALWAYS = frozenset(["missing_document_root"])
     _TAGGER_FIXED_IF_TAGGED = frozenset(
         ["missing_content_marking", "empty_parent_tree"]
     )
@@ -3359,7 +3647,7 @@ class PdfRemediator(BaseRemediator):
         Phase 1 files the scanner's document-level structure findings as
         manual because no per-issue fixer handles them, but the tagger
         resolves exactly these during save: content marking (BDC/EMC),
-        ParentTree /Nums, /Document root, and the PDF/UA identifier.
+        ParentTree /Nums and /Document root. PDF/UA declaration remains manual.
         Reclassification is driven by the tagger's own stats, so a v1
         fallback or tagger failure leaves the issues manual.
         """
@@ -3874,6 +4162,15 @@ class PdfRemediator(BaseRemediator):
             logger.error(f"Error applying structure fix: {e}")
             return False
 
+    @staticmethod
+    def _is_ai_alt_quality_review(issue: RemediationIssue) -> bool:
+        return (
+            issue.metadata.get("issue_type") == "ai_alt_quality_review"
+            and issue.metadata.get("assessment_type") == "ai_alt_quality_review"
+            and issue.metadata.get("review_only") is True
+            and issue.metadata.get("scoring_included") is False
+        )
+
     def _apply_alt_text_fix(
         self, issue: RemediationIssue, document: Any, alt_text: str
     ) -> bool:
@@ -3891,7 +4188,74 @@ class PdfRemediator(BaseRemediator):
             image_index = issue.metadata.get("image_index", 0)
             image_bbox = issue.metadata.get("bbox")
 
-            # Try to embed directly in PDF structure tree (THE KEY FIX)
+            # An existing tagged image must keep its actual content owner.
+            # A new root-level Figure cannot describe an already owned draw.
+            if self._struct_tree and not self._generated_structure:
+                from ..pdf_checks.image_semantics import resolve_image_ownership
+                from .pdf_image_finding_identity import _identity
+
+                identity = _identity(issue)
+                if not alt_text and (
+                    issue.metadata.get("is_decorative") is True
+                    or issue.metadata.get("image_type") == "decorative"
+                ):
+                    return self._refuse_source_binding(
+                        issue,
+                        "Decorative image artifact conversion requires source-level review.",
+                    )
+                if identity is None or not alt_text or document is None:
+                    return self._refuse_source_binding(
+                        issue,
+                        "The image occurrence could not be uniquely bound to an existing Figure.",
+                    )
+                # Other passes may rewrite the staged file while the live
+                # document retains its original resource numbers. Inventory
+                # the immutable source, then resolve on the live pikepdf owner.
+                with fitz.open(self.file_path) as source_document:
+                    occurrences = _displayed_image_occurrences(
+                        source_document[page_num - 1], page_num
+                    )
+                matches = [
+                    occurrence
+                    for occurrence in occurrences
+                    if (
+                        occurrence["page_number"],
+                        occurrence["image_xref"],
+                        occurrence["image_index"],
+                        occurrence["occurrence_ordinal"],
+                        tuple(occurrence["bbox"]),
+                        occurrence["occurrence_id"],
+                    )
+                    == identity
+                ]
+                if len(matches) != 1:
+                    return self._refuse_source_binding(
+                        issue,
+                        "The image occurrence could not be uniquely bound to an existing Figure.",
+                    )
+                try:
+                    ownership = resolve_image_ownership(
+                        self._struct_tree.pdf,
+                        self.file_path,
+                        page_num - 1,
+                        occurrences,
+                    )
+                    figure = ownership.exclusive_figures.get(
+                        matches[0]["occurrence_id"]
+                    )
+                except Exception:
+                    figure = None
+                if figure is None or "/Alt" in figure or "/ActualText" in figure:
+                    return self._refuse_source_binding(
+                        issue,
+                        "The existing Figure has ambiguous, shared or unsupported image ownership.",
+                    )
+                figure["/Alt"] = pikepdf.String(alt_text)
+                self._structure_modified = True
+                return True
+
+            # Newly generated structure is bound by the content tagger and
+            # independently checked after save; no existing owner is replaced.
             if self._struct_tree and alt_text:
                 if self._struct_tree.add_alt_text_to_image(
                     page_num=page_num,
@@ -4053,11 +4417,21 @@ class PdfRemediator(BaseRemediator):
         records the result metadata on the issue for confidence scoring.
         """
         try:
-            strategy = HeuristicStrategy()
-            result: ReadingOrderFixResult = strategy.fix(self._working_path)
+            page_number = issue.metadata.get("page_number")
+            if not isinstance(page_number, int) or isinstance(page_number, bool):
+                issue.metadata["reading_order_refusal"] = "reading_order_invalid_page"
+                return False
+            strategy = getattr(self, "_reading_order_strategy", None)
+            if strategy is None:
+                strategy = HeuristicStrategy()
+                self._reading_order_strategy = strategy
+            result: ReadingOrderFixResult = strategy.fix_document(
+                self._pikepdf_doc, page_number
+            )
 
             if not result.success:
-                logger.error("Reading order fix failed: %s", result.error)
+                logger.info("Reading order fix refused: %s", result.error)
+                issue.metadata["reading_order_refusal"] = result.error
                 return False
 
             # Store confidence on issue metadata so _compute_fix_metadata can use it
@@ -4542,6 +4916,9 @@ class PdfRemediator(BaseRemediator):
         self, issue: RemediationIssue, document: Any
     ) -> Optional[str]:
         """Get a rule-based fix for an issue."""
+        if self.config.use_supplied_fixes and issue.category == IssueCategory.ALT_TEXT:
+            supplied = issue.metadata.get("reviewed_fixed_content")
+            return supplied if isinstance(supplied, str) else None
         if issue.category == IssueCategory.ALT_TEXT:
             # Decorative images get empty alt text per WCAG 1.1.1
             if (
@@ -4628,6 +5005,12 @@ class PdfRemediator(BaseRemediator):
             return text or None
 
         return None
+
+    def _generate_fix(self, issue: RemediationIssue, document: Any) -> Optional[str]:
+        if self.config.use_supplied_fixes:
+            # A reviewed replay must never generate a replacement description.
+            return self._get_rule_based_fix(issue, document)
+        return super()._generate_fix(issue, document)
 
     def _get_ai_generated_fix(
         self, issue: RemediationIssue, document: Any, *, client: Any
@@ -4802,6 +5185,8 @@ Generate only the alt text, nothing else:"""
         logger.info("Verifying descriptor-bound remediation output for %s", output_path)
 
         stage = "original_scan_failed"
+        for fixed in self.result.fixed_issues:
+            fixed.saved_file_verification = None
         try:
             with self._materialize_output_claim_for_verification() as verification_path:
                 snapshot = begin_measurement(self.file_path, verification_path)
@@ -4827,17 +5212,62 @@ Generate only the alt text, nothing else:"""
                 from collections import Counter
 
                 def finding_key(issue):
+                    description = issue.description
+                    if (
+                        description
+                        == "Image missing alternative text - AI analysis pending"
+                    ):
+                        description = "Image missing alternative text"
                     return (
                         issue.category.value,
                         issue.location or "",
-                        issue.description,
+                        description,
                     )
 
                 before_findings = self._normalize_issues(source_result.issues)
                 after_findings = self._normalize_issues(new_result.issues)
+                from .pdf_image_finding_identity import (
+                    bind_missing_image_findings,
+                    output_image_key,
+                    preserve_image_pages,
+                )
+
+                source_rule_issues = [
+                    issue
+                    for issue in self.issues
+                    if not self._is_ai_alt_quality_review(issue)
+                ]
+                image_bindings = bind_missing_image_findings(
+                    source_rule_issues, before_findings, finding_key
+                )
+                # A reviewed subset can deliberately leave source images
+                # undescribed. Preserve and account for those occurrences too,
+                # so the existing grouped Matterhorn proof has complete source
+                # evidence. Only image_bindings below can award selected credit.
+                preservation_bindings = (
+                    bind_missing_image_findings(
+                        before_findings, before_findings, finding_key
+                    )
+                    if self.config.use_supplied_fixes
+                    else image_bindings
+                )
+                saved_images = preserve_image_pages(
+                    self.file_path, verification_path, preservation_bindings
+                )
+
+                def submitted_key(issue):
+                    binding = image_bindings.get(issue.id)
+                    return binding.key if binding else finding_key(issue)
+
                 before_keys = Counter(map(finding_key, before_findings))
-                after_keys = Counter(map(finding_key, after_findings))
-                if any(not before_keys[finding_key(issue)] for issue in self.issues):
+                after_keys = Counter(
+                    output_image_key(issue, saved_images, finding_key)
+                    for issue in after_findings
+                )
+                if any(
+                    not before_keys[submitted_key(issue)]
+                    for issue in source_rule_issues
+                ):
                     raise ValueError(
                         "Source findings could not be reproduced by verification"
                     )
@@ -4847,9 +5277,19 @@ Generate only the alt text, nothing else:"""
                 claimed_keys = set()
                 for fixed in self.result.fixed_issues:
                     original = originals.get(fixed.issue_id)
-                    key = finding_key(original) if original else None
+                    key = submitted_key(original) if original else None
+                    image_binding = image_bindings.get(fixed.issue_id)
+                    image_semantics_verified = (
+                        image_binding is None
+                        or (
+                            image_binding.page_number,
+                            image_binding.image_index,
+                        )
+                        in saved_images.accessible
+                    )
                     if (
                         key
+                        and image_semantics_verified
                         and before_keys[key] == 1
                         and not after_keys[key]
                         and key not in claimed_keys
@@ -4902,6 +5342,7 @@ Generate only the alt text, nothing else:"""
                     passed=len(regressions) == 0
                     and new_result.compliance_score >= source_result.compliance_score
                     and (len(issues_fixed) > 0 or issues_before == 0),
+                    review_requirements=list(new_result.review_requirements),
                     issues_before=issues_before,
                     issues_after=issues_after,
                     issues_fixed=issues_fixed,
@@ -4909,6 +5350,16 @@ Generate only the alt text, nothing else:"""
                     regressions=regressions,
                     verification_score=verification_score,
                 )
+                if self.config.use_supplied_fixes:
+                    selected_resolutions = Counter(
+                        submitted_key(originals[fixed.issue_id])
+                        for fixed in verified_fixes
+                    )
+                    if (before_keys - after_keys) - selected_resolutions:
+                        verification.passed = False
+                        verification.unavailable_checks.append(
+                            "reviewed_pdf_unselected_finding_changed"
+                        )
 
                 try:
                     from ..validation.matterhorn import (
@@ -4985,15 +5436,48 @@ Generate only the alt text, nothing else:"""
 
                         before_evidence = Counter(map(failure_evidence, before_records))
                         after_evidence = Counter(map(failure_evidence, after_records))
+                        verified_partial_figure_repair = False
                         if (
-                            any(
-                                not isinstance(
-                                    getattr(checkpoint, "details", None), str
-                                )
-                                or not checkpoint.details.strip()
-                                for checkpoint in before_records + after_records
+                            key == ("13-004", None)
+                            and len(before_records) == len(after_records) == 1
+                            and before_records[0].name == after_records[0].name
+                            and before_records[0].severity == after_records[0].severity
+                            and after_evidence != before_evidence
+                        ):
+                            from ..pdf_checks.image_semantics import (
+                                missing_figure_occurrences,
                             )
-                            or after_evidence - before_evidence
+
+                            before_figures = missing_figure_occurrences(self.file_path)
+                            after_figures = missing_figure_occurrences(
+                                verification_path
+                            )
+                            if before_figures is not None and after_figures is not None:
+                                before_missing = before_figures.missing
+                                after_missing = after_figures.missing
+                                verified_partial_figure_repair = (
+                                    before_figures.figure_count
+                                    == after_figures.figure_count
+                                    and after_missing < before_missing
+                                    and before_missing.issubset(
+                                        saved_images.occurrences
+                                    )
+                                    and (before_missing - after_missing).issubset(
+                                        after_figures.described
+                                    )
+                                    and (before_missing - after_missing).issubset(
+                                        saved_images.accessible
+                                    )
+                                )
+                        if any(
+                            not isinstance(
+                                details := getattr(checkpoint, "details", None), str
+                            )
+                            or not details.strip()
+                            for checkpoint in before_records + after_records
+                        ) or (
+                            after_evidence - before_evidence
+                            and not verified_partial_figure_repair
                         ):
                             uncertain_failures.add(key)
                             verification.unavailable_checks.append(
@@ -5038,6 +5522,16 @@ Generate only the alt text, nothing else:"""
             self.result.remediated_compliance_score = new_result.compliance_score
             self.result.score_provenance = "scanner_rescan"
             self.result.score_measurement = measurement
+            # Bind each independently resolved finding only after the complete
+            # saved-file comparison finished against unchanged source/output.
+            for fixed in self.result.fixed_issues:
+                if fixed.verification_passed is True:
+                    fixed.saved_file_verification = {
+                        "method_version": "pdf-finding-presence-v1",
+                        "issue_id": fixed.issue_id,
+                        "source_sha256": measurement["source_sha256"],
+                        "output_sha256": measurement["output_sha256"],
+                    }
             self.result.score_verification_reason = None
             logger.info(
                 "Verification complete: %d fixed, %d remaining, %d regressions",

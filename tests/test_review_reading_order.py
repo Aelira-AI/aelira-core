@@ -182,10 +182,14 @@ def test_course_scoped_preview_authorizes_before_reading_bytes(
         lti_course_id="course-a",
         lti_staff_role="Instructor",
     )
+    cloud_file_id = str(uuid4())
+    preview.scan.document_source = "cloud_file"
+    preview.scan.document_id = cloud_file_id
     preview.cloud_file = (
         None
         if scope == "missing"
         else SimpleNamespace(
+            id=cloud_file_id,
             last_scan_id=preview.scan.id,
             department_id="other" if scope == "tenant" else preview.scan.department_id,
             provider="google" if scope == "provider" else "canvas",

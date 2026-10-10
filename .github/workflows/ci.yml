@@ -240,6 +240,10 @@ jobs:
           python scripts/office_preservation_corpus.py
           --workdir test-results/office-preservation
           --revision "${{ github.sha }}"
+      - name: Required pinned PDF font recovery corpus
+        run: >-
+          python scripts/pdf_font_recovery_corpus.py
+          --output test-results/pdf-font-recovery.json --require-pinned
       - name: Retain Office source and candidate evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -263,7 +267,8 @@ jobs:
           JWT_SECRET: test-secret-for-ci
           ENV: test
         run: >-
-          pytest tests/test_durable_job_processor_postgres.py -v --tb=short --no-cov
+          pytest tests/test_durable_job_processor_postgres.py
+          tests/test_reviewed_upload_journey_postgres.py -v --tb=short --no-cov
           --test-evidence=test-results/worker-postgres.json
           --test-evidence-profile=worker-postgres
       - name: Require PostgreSQL worker checks to execute

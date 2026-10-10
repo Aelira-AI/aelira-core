@@ -107,7 +107,7 @@ def _execution_preflight(pdf, stream_sizes):
                 or ("/SMask" in obj and obj.SMask != Name("/None"))
             ):
                 raise _Unavailable("unsupported_pdf")
-            children = list(obj.values())
+            children = [value for _, value in obj.items()]
         _limit(len(children) + len(stack) > MAX_OBJECTS)
         stack.extend((child, depth + 1) for child in children)
 

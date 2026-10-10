@@ -24,7 +24,8 @@ const matterhornSource = readFileSync(
 );
 
 test('review data stays bound to its route and file context, and aborts superseded requests', () => {
-  assert.match(documentSource, /<DocumentReviewContent key=\{`\$\{scanId\}:\$\{location\.search\}`\} scanId=\{scanId\}/);
+  assert.match(documentSource, /<DocumentReviewContent key=\{`\$\{scanId\}:\$\{context\.cloudFileId \?\? location\.search\}`\} \{\.\.\.context\} scanId=\{scanId\}/);
+  assert.match(documentSource, /parsePDFCloudContext\(suppliedCloudId === undefined \? location\.search : `\?cloud_file_id=\$\{encodeURIComponent\(suppliedCloudId\)\}`\)/);
   assert.match(documentSource, /useAbortableRequestOwner\(scanId\)/);
   assert.match(documentSource, /signal: attempt\.controller\.signal/);
   assert.match(documentSource, /if \(!reviewOwner\.isCurrent\(attempt\)\) return/);
@@ -35,6 +36,23 @@ test('review data stays bound to its route and file context, and aborts supersed
 test('document review sends the API-supported batch action', () => {
   assert.match(documentSource, /action:\s*['"]approve['"]/);
   assert.doesNotMatch(documentSource, /approve_all/);
+});
+
+test('managed file review discovers the current scoped candidate for every file type', () => {
+  const panel = readFileSync(new URL('../../src/components/review/ArtifactReviewPanel.tsx', import.meta.url), 'utf8');
+  assert.match(panel, /getCurrentWorkingArtifact\(scanId, cloudFileId, controller\.signal\)/);
+  assert.doesNotMatch(panel, /getLatestRemediationJob/);
+});
+
+test('Brightspace file review uses the existing human review with scoped context and preserves the existing theme', () => {
+  const page = readFileSync(new URL('../../src/pages/LTIBrightspaceReview.tsx', import.meta.url), 'utf8');
+  assert.match(page, /<DocumentReviewPage scanId=\{diff\.scan_id\} cloudFileId=\{cloudFileId\}/);
+  assert.match(page, /getContentDiff\(cloudFileId, controller\.signal\)/);
+  assert.match(page, /<BrightspaceContentReview key=\{location\.pathname\}/);
+  assert.match(page, /if \(isLTI\) return <LTILayout/);
+  assert.match(page, /pdfToolsAvailable=\{!isLTI\}/);
+  assert.match(documentSource, /scan_type\.toLowerCase\(\) === 'pdf' && pdfToolsAvailable/);
+  assert.match(page, /Brightspace file write-back is unavailable/);
 });
 
 test('real document review contains no simulated visual evidence or save success', () => {

@@ -3,9 +3,9 @@
 Phase 1 classifies the scanner's four document-level structure issue types
 (missing_content_marking, empty_parent_tree, missing_document_root,
 missing_pdfua_identifier) as manual because no per-issue fixer handles
-them - but Phase 2's ContentTaggerV2 fixes exactly those four things
-during save. Without reconciliation the result reports them as manual
-even though verification confirms them fixed.
+them - but Phase 2's ContentTaggerV2 fixes the first three things
+during save. Reconciliation promotes only those verified structure changes;
+the PDF/UA conformance declaration remains manual.
 
 These tests drive _reconcile_content_tagger_fixes directly: seed the
 manual bucket the way Phase 1 does, set the tagger stats the way
@@ -52,7 +52,9 @@ def _make_remediator(tmp_path, issue_types):
 
 
 class TestReconcileContentTaggerFixes:
-    def test_all_four_types_promoted_when_tagging_succeeded(self, tmp_path):
+    def test_conformance_declaration_stays_manual_when_tagging_succeeded(
+        self, tmp_path
+    ):
         remediator = _make_remediator(tmp_path, CONTENT_TAGGER_TYPES)
         remediator._content_tagger_stats = {
             "pages_processed": 3,
@@ -62,11 +64,16 @@ class TestReconcileContentTaggerFixes:
 
         remediator._reconcile_content_tagger_fixes()
 
-        assert remediator.result.fixed_count == 4
-        assert remediator.result.manual_count == 0
-        assert remediator.result.manual_issues == []
+        assert remediator.result.fixed_count == 3
+        assert remediator.result.manual_count == 1
+        assert (
+            remediator.result.manual_issues[0].metadata["issue_type"]
+            == "missing_pdfua_identifier"
+        )
         assert {f.issue_id for f in remediator.result.fixed_issues} == {
-            i.id for i in remediator.issues
+            i.id
+            for i in remediator.issues
+            if i.metadata["issue_type"] != "missing_pdfua_identifier"
         }
         for fixed in remediator.result.fixed_issues:
             assert fixed.fix_method == "rule"
@@ -81,18 +88,18 @@ class TestReconcileContentTaggerFixes:
 
         remediator._reconcile_content_tagger_fixes()
 
-        # Document root and PDF/UA identifier are set unconditionally by
-        # the tagger; content marking and ParentTree need tagged blocks.
+        # Document root is set by tagging. Conformance declaration stays
+        # manual; content marking and ParentTree need tagged blocks.
         promoted = {f.issue_id for f in remediator.result.fixed_issues}
         still_manual = {m.issue_id for m in remediator.result.manual_issues}
         by_type = {i.metadata["issue_type"]: i.id for i in remediator.issues}
 
         assert by_type["missing_document_root"] in promoted
-        assert by_type["missing_pdfua_identifier"] in promoted
+        assert by_type["missing_pdfua_identifier"] in still_manual
         assert by_type["missing_content_marking"] in still_manual
         assert by_type["empty_parent_tree"] in still_manual
-        assert remediator.result.fixed_count == 2
-        assert remediator.result.manual_count == 2
+        assert remediator.result.fixed_count == 1
+        assert remediator.result.manual_count == 3
 
     def test_nothing_promoted_without_tagger_stats(self, tmp_path):
         """v1 fallback or tagger failure: stay honest, keep issues manual."""

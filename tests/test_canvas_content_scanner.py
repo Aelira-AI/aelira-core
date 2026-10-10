@@ -980,6 +980,15 @@ class TestStaleDetection:
             )
         )
 
+        from src.services.lms_content_approval import approve_lms_content
+
+        cloud_file.provider = "canvas"
+        cloud_file.provider_file_id = "page-1"
+        cloud_file.current_remediation_artifact_id = None
+        approve_lms_content(
+            cloud_file, actor_id="reviewer-1", actor_ref="session:reviewer-1"
+        )
+
         scanner = CanvasContentScanner(
             canvas_client=canvas_client,
             db=db,
@@ -1026,6 +1035,13 @@ class TestStaleDetection:
         replacement.provider_metadata = {
             "canvas_content_candidate": {"fingerprint": "b" * 64}
         }
+        from src.services.lms_content_approval import approve_lms_content
+
+        original.provider = "canvas"
+        original.current_remediation_artifact_id = None
+        approve_lms_content(
+            original, actor_id="reviewer-1", actor_ref="session:reviewer-1"
+        )
         persisted_log = MagicMock()
         db = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = None
@@ -1079,6 +1095,13 @@ class TestStaleDetection:
         cloud_file.provider_metadata = {
             "canvas_content_candidate": {"fingerprint": "a" * 64}
         }
+        from src.services.lms_content_approval import approve_lms_content
+
+        cloud_file.provider = "canvas"
+        cloud_file.current_remediation_artifact_id = None
+        approve_lms_content(
+            cloud_file, actor_id="reviewer-1", actor_ref="session:reviewer-1"
+        )
         persisted_log = MagicMock()
         db = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = None
@@ -1164,6 +1187,15 @@ class TestStaleDetection:
                 published=True,
                 updated_at=datetime.now(timezone.utc),
             )
+        )
+
+        from src.services.lms_content_approval import approve_lms_content
+
+        cloud_file.provider = "canvas"
+        cloud_file.current_remediation_artifact_id = None
+        cloud_file.provider_metadata = {}
+        approve_lms_content(
+            cloud_file, actor_id="reviewer-1", actor_ref="session:reviewer-1"
         )
 
         scanner = CanvasContentScanner(

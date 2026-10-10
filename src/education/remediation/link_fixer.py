@@ -1,46 +1,22 @@
-"""LinkFixer specialist module for PDF link annotation accessibility.
+"""Source-bound PDF annotation descriptions, without AI or URL retrieval.
 
-Adds accessible names (/Contents) to link annotations that are missing them,
-and replaces vague link text (e.g. "click here") with descriptive alternatives.
-
-WCAG 2.4.4 (Link Purpose, In Context): The purpose of each link can be
-determined from the link text alone, or from the link text together with its
-programmatically determined link context.
-
-PDF/UA requirement: All Link annotation dictionaries must have a /Contents
-entry that provides an accessible name for assistive technology.
-
-Coordinate system note:
-  PDF uses bottom-left origin; PyMuPDF uses top-left origin.
-  When converting, for a page of height H:
-    fitz_y0 = H - pdf_y1  (PDF top edge → fitz top)
-    fitz_y1 = H - pdf_y0  (PDF bottom edge → fitz bottom)
+Grouped scanner findings cover the whole document. Mutations touch /Contents
+only; actions, destinations, geometry, existing names and tag relations remain
+intact. Partial repair retains a concrete unresolved grouped outcome.
 """
 
-import logging
+import math
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, List, Optional
+from urllib.parse import urlsplit
 
-try:
-    import pymupdf as fitz  # PyMuPDF
-
-    HAS_PYMUPDF = True
-except ImportError:
-    HAS_PYMUPDF = False
-
-try:
-    from pikepdf import String
-
-    HAS_PIKEPDF = True
-except ImportError:
-    HAS_PIKEPDF = False
+import pikepdf
+import pymupdf as fitz
 
 from .base import IssueCategory, RemediationIssue
 
-logger = logging.getLogger(__name__)
-
-# Phrases considered too vague to serve as accessible link names.
-VAGUE_PHRASES: set = {
+VAGUE_PHRASES = {
     "click here",
     "here",
     "read more",
@@ -54,374 +30,279 @@ VAGUE_PHRASES: set = {
     "go",
     "continue",
 }
+MAX_PAGES = 1000
+MAX_ANNOTATIONS = 10000
+MAX_LABEL = 2048
 
 
 @dataclass
 class FixResult:
-    """Result of a single link fix operation."""
-
     success: bool
     links_examined: int = 0
     links_fixed: int = 0
-    fix_method: str = "heuristic"
+    fix_method: str = "rule"
     notes: Optional[str] = None
     error: Optional[str] = None
 
 
+def _safe_text(value):
+    if not isinstance(value, pikepdf.String):
+        return ""
+    text = str(value).strip()
+    if len(text) > MAX_LABEL or any(
+        unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in text
+    ):
+        return ""
+    return text
+
+
 class LinkFixer:
-    """Fix link annotation accessibility issues in PDF documents.
-
-    Takes a pikepdf document and a PyMuPDF document (for text extraction)
-    and adds /Contents entries to link annotations that are missing them,
-    and replaces vague link text with descriptive alternatives.
-
-    Args:
-        pdf: An open pikepdf.Pdf object (will be modified in place).
-        fitz_doc: An open fitz.Document for text extraction.
-        ai_client: Optional AI client for generating descriptions for vague
-            link text. If not provided, falls back to using the URI.
-    """
-
-    def __init__(
-        self,
-        pdf: Any,
-        fitz_doc: Any,
-        ai_client: Optional[Any] = None,
-    ) -> None:
+    def __init__(self, pdf: Any, fitz_doc: Any, ai_client: Optional[Any] = None):
         self._pdf = pdf
         self._fitz_doc = fitz_doc
-        self._ai_client = ai_client
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
+        # Signature retained for callers. Generated labels are not source evidence.
 
     def fix(self, issues: List[RemediationIssue]) -> List[FixResult]:
-        """Fix link accessibility issues.
-
-        Dispatches each issue to the appropriate sub-fixer based on
-        ``metadata["issue_type"]``.
-
-        Args:
-            issues: List of RemediationIssue objects with
-                ``category == IssueCategory.LINK``.
-
-        Returns:
-            List of FixResult objects, one per processed issue.
-        """
-        results: List[FixResult] = []
-
+        results = []
         for issue in issues:
-            if issue.category != IssueCategory.LINK:
-                results.append(
-                    FixResult(
-                        success=False,
-                        notes=f"Skipped: not a LINK issue (got {issue.category})",
-                    )
-                )
+            kind = issue.metadata.get("issue_type", "links_missing_alt")
+            if issue.category != IssueCategory.LINK or kind not in {
+                "links_missing_alt",
+                "links_missing_contents",
+                "vague_link_text",
+            }:
+                results.append(FixResult(False, error="link_unsupported_finding"))
                 continue
-
-            issue_type = issue.metadata.get("issue_type", "links_missing_alt")
-            page_number = issue.metadata.get("page_number")  # 1-indexed or None
-
             try:
-                if issue_type in ("links_missing_alt", "links_missing_contents"):
-                    result = self._fix_missing_contents(page_number)
-                elif issue_type == "vague_link_text":
-                    result = self._fix_vague_text(page_number)
-                else:
-                    # Default: try to add /Contents to all links on the page
-                    result = self._fix_missing_contents(page_number)
-            except Exception as exc:
-                logger.error("LinkFixer.fix() error for issue %s: %s", issue.id, exc)
-                result = FixResult(success=False, error=str(exc))
-
-            results.append(result)
-
+                # These scanner types are document-wide aggregates; page_number=1
+                # is a display location, not an annotation selection boundary.
+                page_number = (
+                    issue.metadata.get("page_number")
+                    if issue.metadata.get("link_scope") == "page"
+                    else None
+                )
+                results.append(
+                    self._repair(page_number, vague=kind == "vague_link_text")
+                )
+            except (ValueError, TypeError, KeyError, pikepdf.PdfError):
+                results.append(FixResult(False, error="link_malformed_source"))
         return results
 
-    # ------------------------------------------------------------------
-    # Sub-fixers
-    # ------------------------------------------------------------------
-
-    def _fix_missing_contents(self, page_number: Optional[int]) -> FixResult:
-        """Add /Contents to link annotations that are missing it.
-
-        Args:
-            page_number: 1-indexed page number, or None to process all pages.
-
-        Returns:
-            FixResult summarising what was changed.
-        """
-        page_indices = self._resolve_page_indices(page_number)
-        examined = 0
-        fixed = 0
-
-        for page_idx in page_indices:
-            if page_idx >= len(self._pdf.pages):
-                continue
-
-            page_obj = self._pdf.pages[page_idx].obj
-            annots = page_obj.get("/Annots")
-            if annots is None:
-                continue
-
-            fitz_page = (
-                self._fitz_doc[page_idx] if page_idx < len(self._fitz_doc) else None
-            )
-
-            for annot_ref in annots:
-                annot = annot_ref
-                # Resolve indirect reference
-                if hasattr(annot, "obj"):
-                    annot = annot.obj
-
-                subtype = str(annot.get("/Subtype", ""))
-                if subtype != "/Link":
+    def _inventory(self, page_number):
+        if len(self._pdf.pages) > MAX_PAGES:
+            raise ValueError("link_page_limit")
+        if page_number is not None and (
+            not isinstance(page_number, int)
+            or isinstance(page_number, bool)
+            or not 1 <= page_number <= len(self._pdf.pages)
+        ):
+            raise ValueError("link_invalid_page")
+        inventory = []
+        seen = set()
+        count = 0
+        for index, page in enumerate(self._pdf.pages):
+            annots = page.obj.get("/Annots", pikepdf.Array())
+            if not isinstance(annots, pikepdf.Array):
+                raise ValueError("link_malformed_annotations")
+            count += len(annots)
+            if count > MAX_ANNOTATIONS:
+                raise ValueError("link_annotation_limit")
+            for ordinal, annot in enumerate(annots):
+                if not isinstance(annot, pikepdf.Dictionary):
+                    raise ValueError("link_malformed_annotation")
+                if annot.get("/Subtype") != pikepdf.Name.Link:
                     continue
+                if not annot.is_indirect or annot.objgen in seen:
+                    raise ValueError("link_ambiguous_annotation_ownership")
+                seen.add(annot.objgen)
+                if "/P" in annot and annot.P != page.obj:
+                    raise ValueError("link_invalid_page_owner")
+                if page_number is None or index == page_number - 1:
+                    inventory.append((index, ordinal, annot))
+        return inventory
 
-                examined += 1
-
-                # Already has /Contents — skip
-                if "/Contents" in annot:
+    def _repair(self, page_number, *, vague=False):
+        try:
+            inventory = self._inventory(page_number)
+        except ValueError as exc:
+            return FixResult(False, error=str(exc))
+        pending, refused = [], []
+        for index, ordinal, annot in inventory:
+            contents = annot.get("/Contents")
+            # Preserve nonempty existing names, including names outside our new
+            # label policy. Never replace one as a side effect of a missing-name fix.
+            if contents is not None and str(contents).strip():
+                if not vague or not self._is_vague(str(contents)):
                     continue
-
-                # Try to get visible text under the link rectangle
-                rect = annot.get("/Rect")
-                label = ""
-                if rect is not None and fitz_page is not None:
-                    label = self._extract_text_under_rect(fitz_page, rect)
-
-                # Fall back to URI
-                if not label:
-                    label = self._get_link_uri(annot) or ""
-
-                if label:
-                    annot["/Contents"] = String(label)
-                    fixed += 1
-                    logger.debug(
-                        "Added /Contents=%r to link on page %d", label, page_idx + 1
-                    )
-
+            elif vague:
+                continue
+            destination, reason = self._destination(annot)
+            if reason:
+                refused.append(f"page {index + 1} link {ordinal + 1}: {reason}")
+                continue
+            alt = _safe_text(annot.get("/Alt"))
+            if (
+                annot.get("/Alt") is not None
+                and str(annot.get("/Alt")).strip()
+                and not alt
+            ):
+                refused.append(
+                    f"page {index + 1} link {ordinal + 1}: link_existing_name_requires_review"
+                )
+                continue
+            label = alt
+            if not label and index < len(self._fitz_doc):
+                label = self._extract_text_under_rect(
+                    self._fitz_doc[index], annot.get("/Rect")
+                )
+            if not label or self._is_vague(label):
+                label = destination
+            if not label:
+                refused.append(
+                    f"page {index + 1} link {ordinal + 1}: link_source_label_unavailable"
+                )
+                continue
+            pending.append((annot, label))
+        for annot, label in pending:
+            annot.Contents = pikepdf.String(label)
+        count = len(pending)
         return FixResult(
-            success=True,
-            links_examined=examined,
-            links_fixed=fixed,
-            fix_method="heuristic",
-            notes=f"Processed {len(page_indices)} page(s)",
+            success=bool(count) and not refused,
+            links_examined=len(inventory),
+            links_fixed=count,
+            notes=f"Added source-bound descriptions to {count} link annotation(s).",
+            error=(
+                "; ".join(refused[:20])
+                if refused
+                else (None if count else "link_no_missing_supported_descriptions")
+            ),
         )
 
-    def _fix_vague_text(self, page_number: Optional[int]) -> FixResult:
-        """Replace vague /Contents text with a descriptive label.
-
-        Replaces vague phrases (e.g. "click here") with an AI-generated
-        description when an AI client is available, otherwise uses the URI.
-
-        Args:
-            page_number: 1-indexed page number, or None to process all pages.
-
-        Returns:
-            FixResult summarising what was changed.
-        """
-        page_indices = self._resolve_page_indices(page_number)
-        examined = 0
-        fixed = 0
-        method_used = "rule"
-
-        for page_idx in page_indices:
-            if page_idx >= len(self._pdf.pages):
+    def _destination(self, annot):
+        if "/AA" in annot:
+            return "", "link_additional_action_requires_review"
+        action = annot.get("/A")
+        if action is not None:
+            if (
+                not isinstance(action, pikepdf.Dictionary)
+                or "/Next" in action
+                or "/Dest" in annot
+            ):
+                return "", "link_ambiguous_action"
+            kind = action.get("/S")
+            if kind == pikepdf.Name.URI:
+                uri = _safe_text(action.get("/URI"))
+                if (
+                    not uri
+                    or any(char.isspace() for char in uri)
+                    or action.get("/IsMap", False)
+                ):
+                    return "", "link_unsupported_uri"
+                try:
+                    parts = urlsplit(uri)
+                    if parts.scheme.lower() in {"https", "http"}:
+                        # Relative URIs depend on catalog /URI /Base. Credentials
+                        # and deceptive control text are not suitable names.
+                        if not parts.hostname or parts.username or parts.password:
+                            return "", "link_unsupported_uri"
+                        _ = parts.port
+                    elif parts.scheme.lower() == "mailto":
+                        if not parts.path or "@" not in parts.path or parts.netloc:
+                            return "", "link_unsupported_uri"
+                    else:
+                        return "", "link_unsupported_uri_scheme"
+                except ValueError:
+                    return "", "link_unsupported_uri"
+                return uri, ""
+            if kind != pikepdf.Name.GoTo:
+                return "", "link_unsupported_action"
+            dest = action.get("/D")
+        else:
+            dest = annot.get("/Dest")
+        # An explicit intra-document destination can be described exactly.
+        # Named trees, remote targets and malformed arrays require review.
+        if not isinstance(dest, pikepdf.Array) or len(dest) < 2:
+            return "", "link_unresolved_destination"
+        target = dest[0]
+        if not isinstance(target, pikepdf.Dictionary) or not target.is_indirect:
+            return "", "link_unresolved_destination"
+        page_numbers = [
+            index + 1
+            for index, page in enumerate(self._pdf.pages)
+            if page.obj.objgen == target.objgen
+        ]
+        lengths = {
+            "/Fit": 2,
+            "/FitB": 2,
+            "/FitH": 3,
+            "/FitV": 3,
+            "/FitBH": 3,
+            "/FitBV": 3,
+            "/XYZ": 5,
+            "/FitR": 6,
+        }
+        if len(page_numbers) != 1 or lengths.get(str(dest[1])) != len(dest):
+            return "", "link_unresolved_destination"
+        for number in list(dest)[2:]:
+            if number is None and str(dest[1]) != "/FitR":
                 continue
-
-            page_obj = self._pdf.pages[page_idx].obj
-            annots = page_obj.get("/Annots")
-            if annots is None:
-                continue
-
-            for annot_ref in annots:
-                annot = annot_ref
-                if hasattr(annot, "obj"):
-                    annot = annot.obj
-
-                subtype = str(annot.get("/Subtype", ""))
-                if subtype != "/Link":
-                    continue
-
-                examined += 1
-
-                current_label = ""
-                if "/Contents" in annot:
-                    current_label = str(annot["/Contents"]).strip()
-
-                if not self._is_vague(current_label):
-                    continue
-
-                uri = self._get_link_uri(annot) or ""
-                new_label = ""
-
-                # Try AI first
-                if self._ai_client and uri:
-                    new_label = self._generate_link_description(uri, current_label)
-                    if new_label:
-                        method_used = "ai_text"
-
-                # Fall back to URI
-                if not new_label:
-                    new_label = uri
-
-                if new_label:
-                    annot["/Contents"] = String(new_label)
-                    fixed += 1
-                    logger.debug(
-                        "Replaced vague label %r → %r on page %d",
-                        current_label,
-                        new_label,
-                        page_idx + 1,
-                    )
-
-        return FixResult(
-            success=True,
-            links_examined=examined,
-            links_fixed=fixed,
-            fix_method=method_used,
-            notes=f"Replaced vague link text on {len(page_indices)} page(s)",
-        )
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+            try:
+                if isinstance(
+                    number, (bool, pikepdf.String, pikepdf.Name)
+                ) or not math.isfinite(float(number)):
+                    return "", "link_unresolved_destination"
+            except (TypeError, ValueError):
+                return "", "link_unresolved_destination"
+        return f"Go to page {page_numbers[0]}", ""
 
     def _extract_text_under_rect(self, fitz_page: Any, rect: Any) -> str:
-        """Extract visible text from the area covered by a link annotation.
-
-        CRITICAL: PDF uses bottom-left origin; PyMuPDF uses top-left origin.
-        We must convert PDF coordinates to PyMuPDF coordinates before calling
-        page.get_textbox().
-
-        Args:
-            fitz_page: A fitz.Page object.
-            rect: A pikepdf Array or object with four numeric items
-                [x0, y0, x1, y1] in PDF coordinates (bottom-left origin).
-
-        Returns:
-            Stripped text string, or empty string if nothing found.
-        """
         try:
-            x0 = float(rect[0])
-            y0 = float(rect[1])
-            x1 = float(rect[2])
-            y1 = float(rect[3])
-
-            page_height = fitz_page.rect.height
-
-            # Convert PDF bottom-left origin to PyMuPDF top-left origin
-            fitz_y0 = page_height - y1  # PDF top → fitz top
-            fitz_y1 = page_height - y0  # PDF bottom → fitz bottom
-
-            fitz_rect = fitz.Rect(x0, fitz_y0, x1, fitz_y1)
-            text = fitz_page.get_textbox(fitz_rect).strip()
-            return text
-        except Exception as exc:
-            logger.debug("Text extraction under rect failed: %s", exc)
-            return ""
-
-    def _get_link_uri(self, annot: Any) -> Optional[str]:
-        """Extract the URI (or destination string) from a link annotation.
-
-        Checks:
-        1. ``/A`` action dictionary with ``/S /URI``
-        2. ``/A`` action dictionary with ``/S /GoTo`` (returns destination name)
-        3. ``/Dest`` entry (returns string representation)
-
-        Args:
-            annot: A pikepdf Dictionary for a /Link annotation.
-
-        Returns:
-            URI string or destination label, or None if not found.
-        """
-        try:
-            action = annot.get("/A")
-            if action is not None:
-                subtype = str(action.get("/S", ""))
-                if subtype == "/URI":
-                    uri_val = action.get("/URI")
-                    if uri_val is not None:
-                        return str(uri_val)
-                elif subtype == "/GoTo":
-                    dest = action.get("/D")
-                    if dest is not None:
-                        return str(dest)
-
-            dest = annot.get("/Dest")
-            if dest is not None:
-                return str(dest)
-        except Exception as exc:
-            logger.debug("URI extraction failed: %s", exc)
-
-        return None
-
-    def _generate_link_description(self, uri: str, current_text: str) -> str:
-        """Generate a descriptive link label using the AI client.
-
-        Constructs a prompt asking the AI to suggest a concise, descriptive
-        link label given the URI and current (vague) text.
-
-        Args:
-            uri: The link destination URI.
-            current_text: The existing (vague) link text.
-
-        Returns:
-            A descriptive label string, or empty string if generation failed.
-        """
-        if not self._ai_client:
-            return ""
-
-        prompt = (
-            f"You are helping make a PDF document accessible.\n"
-            f"A hyperlink has the following vague text: '{current_text}'\n"
-            f"The link destination is: {uri}\n\n"
-            f"Write a concise, descriptive accessible name for this link "
-            f"(5–10 words maximum) that clearly conveys its purpose. "
-            f"Return ONLY the label text with no punctuation at the end."
-        )
-
-        try:
-            result = self._ai_client.generate_text_sync(
-                prompt=prompt,
-                max_tokens=50,
+            if rect is None or len(rect) != 4:
+                return ""
+            values = [float(value) for value in rect]
+            if not all(math.isfinite(value) for value in values):
+                return ""
+            if values[0] >= values[2] or values[1] >= values[3]:
+                return ""
+            # This matrix accounts for the crop box and page coordinate origin.
+            box = fitz.Rect(values) * fitz_page.transformation_matrix
+            layout = fitz_page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            if any(
+                tuple(line.get("dir", (1, 0))) != (1, 0)
+                for block in layout.get("blocks", [])
+                for line in block.get("lines", [])
+                if fitz.Rect(line["bbox"]).intersects(box)
+            ):
+                return ""
+            words = fitz_page.get_text("words")
+            if len(words) > 20000:
+                return ""
+            selected = []
+            for word in words:
+                wb = fitz.Rect(word[:4])
+                overlap = wb & box
+                if overlap.is_empty:
+                    continue
+                if (
+                    wb.x0 < box.x0 - 1
+                    or wb.x1 > box.x1 + 1
+                    or overlap.height < wb.height * 0.5
+                ):
+                    return ""
+                selected.append(word)
+            if not selected or len({(word[5], word[6]) for word in selected}) != 1:
+                return ""
+            label = " ".join(
+                word[4] for word in sorted(selected, key=lambda word: word[0])
             )
-            if isinstance(result, dict):
-                content = result.get("content", "")
-            else:
-                content = str(result)
-            label = content.strip().strip('"').strip("'")
-            return label if label else ""
-        except Exception as exc:
-            logger.debug("AI link description generation failed: %s", exc)
+            if any(
+                unicodedata.bidirectional(char) in {"R", "AL", "AN"} for char in label
+            ):
+                return ""
+            return _safe_text(pikepdf.String(label))
+        except (ValueError, TypeError, RuntimeError):
             return ""
 
-    def _is_vague(self, text: str) -> bool:
-        """Return True if *text* is a known vague link phrase.
-
-        Args:
-            text: The current link label.
-
-        Returns:
-            True if the text (lowercased, stripped) is in VAGUE_PHRASES.
-        """
+    @staticmethod
+    def _is_vague(text: str) -> bool:
         return text.lower().strip() in VAGUE_PHRASES
-
-    def _resolve_page_indices(self, page_number: Optional[int]) -> List[int]:
-        """Convert a 1-indexed page number to a list of 0-indexed page indices.
-
-        Args:
-            page_number: 1-indexed page number, or None to process all pages.
-
-        Returns:
-            List of 0-indexed page indices to process.
-        """
-        if page_number is None:
-            return list(range(len(self._pdf.pages)))
-        page_idx = int(page_number) - 1
-        if page_idx < 0:
-            page_idx = 0
-        return [page_idx]

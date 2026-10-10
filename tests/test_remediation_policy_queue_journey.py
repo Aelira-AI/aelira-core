@@ -69,8 +69,8 @@ def policy_queue_http():
                 id=credential_id,
                 department_id=department_id,
                 provider="canvas",
-                access_token="synthetic-never-decrypted",
-                refresh_token="synthetic-never-decrypted",
+                access_token="example_synthetic-never-decrypted",
+                refresh_token="example_synthetic-never-decrypted",
                 token_expires_at=datetime.now(timezone.utc),
                 is_active=True,
             )
@@ -84,6 +84,8 @@ def policy_queue_http():
                 scan_type=ScanType.WORD,
                 file_name="policy-fixture.docx",
                 status=ScanStatus.COMPLETED,
+                document_source="cloud_file",
+                document_id=cloud_id,
                 result=ScanResult(compliance_score=100.0, issues=[]),
             )
         )

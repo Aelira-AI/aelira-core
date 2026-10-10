@@ -4,6 +4,7 @@ import { ArrowLeft } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { LTILayout } from '../components/LTILayout';
 import { useLTISession } from '../hooks/useLTISession';
+import { DocumentReviewPage } from './DocumentReviewPage';
 import {
   approveContent,
   getContentDiff,
@@ -12,6 +13,11 @@ import {
 } from '../api/brightspaceContent';
 
 export function LTIBrightspaceReview(): React.ReactElement {
+  const location = useLocation();
+  return <BrightspaceContentReview key={location.pathname} />;
+}
+
+function BrightspaceContentReview(): React.ReactElement {
   const { courseId, orgUnitId, cloudFileId } = useParams<{
     courseId: string;
     orgUnitId: string;
@@ -40,10 +46,12 @@ export function LTIBrightspaceReview(): React.ReactElement {
 
   useEffect(() => {
     if (session.loading || session.error || scopeError || !cloudFileId) return;
-    getContentDiff(cloudFileId)
-      .then(setDiff)
-      .catch(() => setError('Failed to load Brightspace content review.'))
-      .finally(() => setLoading(false));
+    const controller = new AbortController();
+    getContentDiff(cloudFileId, controller.signal)
+      .then(value => { if (!controller.signal.aborted) setDiff(value); })
+      .catch(() => { if (!controller.signal.aborted) setError('Failed to load Brightspace content review.'); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
   }, [cloudFileId, scopeError, session.error, session.loading]);
 
   async function decide(decision: 'approve' | 'reject'): Promise<void> {
@@ -60,13 +68,10 @@ export function LTIBrightspaceReview(): React.ReactElement {
     }
   }
 
-  return (
-    <LTILayout
-      loading={session.loading || (!scopeError && loading)}
-      error={session.error || scopeError || error}
-    >
-      {diff && (
-        <main className="max-w-5xl mx-auto space-y-4">
+  const content = (
+    <>
+      {diff && diff.cloud_file_id === cloudFileId && (
+        <div className="max-w-5xl mx-auto space-y-4">
           <button
             type="button"
             onClick={() => navigate(coursePath)}
@@ -76,6 +81,11 @@ export function LTIBrightspaceReview(): React.ReactElement {
             Back to Course
           </button>
           <h1 className="text-2xl font-bold text-[var(--content-primary)]">{diff.title}</h1>
+          {!['html', 'topic_html', 'text/html', 'webpage'].includes(diff.content_type.toLowerCase()) ? <>
+            <p className="text-sm text-[var(--content-secondary)]">Review and download the improved working file below. Brightspace file write-back is unavailable; upload the reviewed file manually.</p>
+            {diff.scan_id ? <DocumentReviewPage scanId={diff.scan_id} cloudFileId={cloudFileId} backPath={coursePath} pdfToolsAvailable={!isLTI} resultPath={isLTI ? `/lti/report/${encodeURIComponent(diff.scan_id)}` : undefined} />
+              : <p role="status">No completed scan is available for this file yet. Return to the course and scan it first.</p>}
+          </> : <>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <section className="rounded-lg border border-[var(--border-primary)] p-4">
               <h2 className="font-semibold mb-3">Original</h2>
@@ -107,8 +117,15 @@ export function LTIBrightspaceReview(): React.ReactElement {
               {action === 'reject' ? 'Rejecting…' : 'Reject'}
             </button>
           </div>
-        </main>
+          </>}
+        </div>
       )}
-    </LTILayout>
+    </>
   );
+  const pending = session.loading || (!scopeError && loading);
+  const failure = session.error || scopeError || error;
+  if (isLTI) return <LTILayout loading={pending} error={failure}>{content}</LTILayout>;
+  if (pending) return <p role="status" className="p-4 text-secondary">Loading Brightspace content review…</p>;
+  if (failure) return <p role="alert" className="p-4 text-[var(--feature-danger-content)]">{failure}</p>;
+  return content;
 }

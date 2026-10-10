@@ -1,4 +1,4 @@
-import type { BatchApproveResponse } from '../api/brightspaceContent';
+import type { BatchApproveResponse, BatchWritebackResponse } from '../api/brightspaceContent';
 import { summarizeBatchOutcome, type BatchResultSummary } from './batchActionResult.ts';
 
 interface BrightspaceApprovalCandidate {
@@ -23,5 +23,15 @@ export function brightspaceApprovalSummary(
       { label: 'failed', count: result.failed_count },
     ],
     errors: result.errors,
+  });
+}
+
+export function brightspaceWritebackSummary(result: BatchWritebackResponse): BatchResultSummary {
+  return summarizeBatchOutcome({
+    verb: 'Wrote back', succeededCount: result.written_count,
+    buckets: [{ label: 'stale', count: result.stale_count },
+      { label: 'failed', count: result.failed_count },
+      { label: 'skipped', count: result.skipped_count ?? 0 }],
+    errors: result.errors ?? [],
   });
 }

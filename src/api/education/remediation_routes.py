@@ -5,6 +5,7 @@ import json
 import hashlib
 import logging
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -52,9 +53,14 @@ from ...services.remediation_artifact_service import (
 )
 from ...services.scan_fix_service import (
     artifact_review_blockers as scan_fix_review_blockers,
+    artifact_output_membership_blockers,
+    build_output_membership,
     persist_scan_fixes,
 )
-from ...jobs.remediation_job import _partition_authoritative_document_issues
+from ...jobs.remediation_job import (
+    _approved_fix_snapshot as _job_approved_fix_snapshot,
+    _partition_authoritative_document_issues,
+)
 from ...jobs.contracts import public_job_error_code, public_job_result
 from ...services.job_enqueue_service import JobEnqueueError, enqueue_cloud_job
 from ...utils.sanitization import sanitize_for_postgres
@@ -67,9 +73,10 @@ from ._shared import (
     APPROVED_REVIEW_STATUSES,
     RemediationOptions,
 )
-from ._scope import authorize_scan_access
+from ._scope import authorize_review_scan_access, authorize_scan_access
 
 from ...education.remediation.latex_pdf_validation import latex_result_fields
+from ...education.remediation.score_reporting import fresh_score_comparison
 from ...education.latex_evidence import latex_evidence_fields
 
 logger = logging.getLogger(__name__)
@@ -147,7 +154,7 @@ def _managed_artifact_authority(
     scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
     if scan is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    authorized_cloud = authorize_scan_access(db, scan, principal)
+    authorized_cloud = authorize_review_scan_access(db, scan, principal)
     cloud_file = _resolve_bound_scan_cloud_file(db, scan, principal, authorized_cloud)
     artifact = (
         db.query(RemediationArtifact)
@@ -180,6 +187,29 @@ def _artifact_review_blockers(
         blockers.append("verification_not_passed")
     fixes = db.query(ScanFix).filter(ScanFix.scan_id == scan.id).all()
     blockers.extend(scan_fix_review_blockers(fixes))
+    blockers.extend(
+        artifact_output_membership_blockers(
+            artifact, fixes, source_sha256=getattr(scan, "file_hash", None)
+        )
+    )
+    provider_result = getattr(artifact, "provider_result", None)
+    reason = (
+        provider_result.get("output_membership_blocker")
+        if isinstance(provider_result, dict)
+        else None
+    )
+    if (
+        "output_membership_unrecorded" in blockers
+        and isinstance(reason, str)
+        and reason
+        in {
+            "source_hash_unavailable",
+            "source_changed_since_scan",
+            "saved_file_verification_unavailable",
+            "applied_fix_membership_unavailable",
+        }
+    ):
+        blockers.append(reason)
     return blockers
 
 
@@ -243,7 +273,34 @@ async def get_managed_artifact_metadata(
         )
     except ArtifactError as exc:
         raise _artifact_failure(exc) from None
+    writeback_provider = (
+        cloud_file.provider
+        if cloud_file is not None
+        and cloud_file.provider in {"google", "microsoft", "blackboard"}
+        else None
+    )
+    writeback_available = False
+    if (
+        writeback_provider is not None
+        and cloud_file is not None
+        and artifact.review_status == "approved"
+    ):
+        try:
+            service.resolve_record(
+                db,
+                artifact,
+                department_id=principal.department_id,
+                scan_id=scan_id,
+                cloud_file_id=str(cloud_file.id),
+                require_approved=True,
+                approval_checksum=str(artifact.sha256),
+            )
+        except ArtifactError:
+            pass
+        else:
+            writeback_available = True
     blockers = _artifact_review_blockers(db, scan, artifact)
+    has_manual_edits = getattr(artifact, "edit_provenance", None) is not None
     return {
         "id": artifact.id,
         "scan_id": artifact.scan_id,
@@ -257,6 +314,14 @@ async def get_managed_artifact_metadata(
         "availability": "available",
         "approval_blockers": blockers,
         "can_approve": not blockers,
+        "writeback_available": writeback_available,
+        "writeback_provider": writeback_provider,
+        "has_manual_edits": has_manual_edits,
+        "reviewed_rebuild_available": artifact.scan_type == "PDF"
+        and not has_manual_edits,
+        "reviewed_rebuild_blocker": (
+            "manual_pdf_edits_require_review" if has_manual_edits else None
+        ),
     }
 
 
@@ -748,6 +813,13 @@ def _resolve_bound_scan_cloud_file(
         raise HTTPException(status_code=404, detail="Scan not found")
 
     cloud_file = cloud_files[0] if cloud_files else None
+    source_kind = getattr(scan, "document_source", None)
+    source_id = getattr(scan, "document_id", None)
+    if source_kind == "cloud_file":
+        if cloud_file is None or not source_id or str(cloud_file.id) != str(source_id):
+            raise HTTPException(status_code=404, detail="Scan not found")
+    elif cloud_file is not None:
+        raise HTTPException(status_code=404, detail="Scan not found")
     if cloud_file is not None and (
         cloud_file.department_id != principal.department_id
         or cloud_file.last_scan_id != scan.id
@@ -1181,8 +1253,17 @@ def _canonical_remediation_options(
     return values
 
 
-def _remediation_dedupe_key(scan_id: str, options: dict[str, Any]) -> str:
-    canonical = json.dumps(options, sort_keys=True, separators=(",", ":")).encode()
+def _remediation_dedupe_key(
+    scan_id: str,
+    options: dict[str, Any],
+    reviewed_snapshot: dict[str, Any] | None = None,
+) -> str:
+    identity = (
+        options
+        if reviewed_snapshot is None
+        else {"options": options, "reviewed_snapshot": reviewed_snapshot}
+    )
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     return f"remediate:{scan_id}:{hashlib.sha256(canonical).hexdigest()}"
 
 
@@ -1363,6 +1444,27 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         output_sha256=getattr(score_artifact, "sha256", None) or "",
     )
     downloadable, artifact = _artifact_is_downloadable(db, job, scan_id)
+    fresh_comparison = None
+    if (
+        downloadable
+        and artifact is not None
+        and score_artifact is not None
+        and getattr(artifact, "id", None) == artifact_id
+        and getattr(score_artifact, "id", None) == artifact_id
+        and raw_result.get("fresh_score_comparison") is not None
+        and job.status == CloudJobStatus.COMPLETED.value
+        and (cloud_file_id is not None or provider == "local")
+        and all(
+            str(getattr(artifact, field, "")) == str(expected)
+            for field, expected in artifact_authority
+        )
+    ):
+        fresh_comparison = fresh_score_comparison(
+            {"fresh_score_comparison": raw_result["fresh_score_comparison"]},
+            source_scan_type=getattr(source_scan, "scan_type", None),
+            source_sha256=getattr(source_scan, "file_hash", None),
+            output_sha256=getattr(artifact, "sha256", None),
+        )
     if not downloadable and str(job.status) == "failed":
         # Repair legacy display accounting without changing historical records
         # or inventing per-finding dispositions. Prior fix claims were withheld.
@@ -1389,6 +1491,24 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
             and all(type(count) is int for count in known_counts)
         ):
             result["outcome_unreported_count"] = max(0, total - sum(known_counts))
+    from ...education.remediation.outcome_evidence import bind_outcome_evidence
+
+    for outcome in result.get("issue_outcomes", []):
+        evidence = bind_outcome_evidence(
+            outcome,
+            status=outcome["status"],
+            source_sha256=(fresh_comparison or {}).get("source_sha256"),
+            output_sha256=(fresh_comparison or {}).get("output_sha256"),
+        )
+        for field in (
+            "verification_passed",
+            "verification_scope",
+            "saved_file_verification",
+            "needs_review",
+            "original_source_index",
+        ):
+            outcome.pop(field, None)
+        outcome.update(evidence)
     progress = job.progress if type(job.progress) is int else 0
     unresolved_counts = (
         result.get("manual_count"),
@@ -1447,6 +1567,7 @@ def _public_job_shape(db: Session, job: CloudJobQueue, scan_id: str) -> dict[str
         "score_verified": scores["score_verified"],
         "score_provenance": scores["score_provenance"],
         "score_measurement": scores["score_measurement"],
+        "fresh_score_comparison": fresh_comparison,
         "score_verification_reason": scores["score_verification_reason"],
         "human_review_required": getattr(source_scan, "scan_type", None)
         == ScanType.LATEX
@@ -1558,12 +1679,57 @@ def _enqueue_scan_remediation(
     scan: Scan,
     principal: AuthenticatedPrincipal,
     options: dict[str, Any],
+    approved_fixes_only: bool = False,
     commit: bool = True,
 ) -> CloudJobQueue:
     cloud_file, credential = _resolve_remediation_queue_source(
         db, scan=scan, principal=principal
     )
+    if (
+        approved_fixes_only
+        and str(getattr(scan.scan_type, "value", scan.scan_type)).upper() == "PDF"
+    ):
+        owner = cloud_file if cloud_file is not None else scan
+        current_id = getattr(owner, "current_remediation_artifact_id", None)
+        if current_id is not None:
+            current = (
+                db.query(RemediationArtifact)
+                .filter(
+                    RemediationArtifact.id == current_id,
+                    RemediationArtifact.scan_id == scan.id,
+                    RemediationArtifact.department_id == principal.department_id,
+                )
+                .one_or_none()
+            )
+            if current is None or current.cloud_file_id != (
+                cloud_file.id if cloud_file is not None else None
+            ):
+                raise HTTPException(status_code=404, detail="Artifact not found")
+            if getattr(current, "edit_provenance", None) is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "manual_pdf_edits_require_review",
+                        "message": "This PDF contains saved manual corrections. Continue editing the saved PDF, or download and rescan it; rebuilding from the original would discard those corrections.",
+                    },
+                )
     provider = cloud_file.provider if cloud_file is not None else "local"
+    approved_snapshot = None
+    if approved_fixes_only:
+        fixes = (
+            db.query(ScanFix)
+            .filter(
+                ScanFix.scan_id == scan.id,
+                ScanFix.review_status.in_(tuple(APPROVED_REVIEW_STATUSES)),
+            )
+            .all()
+        )
+        if not fixes or any(not isinstance(fix.fixed_content, str) for fix in fixes):
+            raise HTTPException(status_code=400, detail="Reviewed fixes are required")
+        approved_snapshot = {
+            key: list(values)
+            for key, values in _job_approved_fix_snapshot(fixes).items()
+        }
     purposes = []
     if options.get("use_ai") is True:
         purposes.append("remediation")
@@ -1577,9 +1743,12 @@ def _enqueue_scan_remediation(
             payload={
                 "scan_id": str(scan.id),
                 "options": options,
+                "approved_fix_snapshot": approved_snapshot,
                 "requested_by_id": principal.user_id,
             },
-            dedupe_key=_remediation_dedupe_key(str(scan.id), options),
+            dedupe_key=_remediation_dedupe_key(
+                str(scan.id), options, approved_snapshot
+            ),
             provider=provider,
             credential_id=str(credential.id) if credential is not None else None,
             cloud_file_id=str(cloud_file.id) if cloud_file is not None else None,
@@ -1672,6 +1841,58 @@ async def enqueue_remediate_scan(
     )
     job = _enqueue_scan_remediation(
         db, scan=scan, principal=principal, options=canonical_options
+    )
+    return await _respond_for_enqueued_job(
+        job,
+        scan_id=scan_id,
+        department_id=principal.department_id,
+        respond_async=_prefer_respond_async(request),
+    )
+
+
+@router.post("/pdf/remediate/{scan_id}")
+async def remediate_reviewed_pdf_scan(
+    scan_id: str,
+    request: Request,
+    db: Session = Depends(get_db_dependency),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    """Queue a PDF rebuild from the original and the current reviewed fixes."""
+    scan = ScanService.get_scan_with_result(db=db, scan_id=scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    authorize_scan_access(db, scan, principal)
+    _require_editable_source(scan)
+    if str(getattr(scan.scan_type, "value", scan.scan_type)).upper() != "PDF":
+        raise HTTPException(status_code=400, detail="PDF scan required")
+    if scan.result is None:
+        raise HTTPException(status_code=400, detail="Scan has no results")
+    specialized = (
+        db.query(ScanFix.id)
+        .filter(
+            ScanFix.scan_id == scan_id,
+            ScanFix.source_kind.in_(
+                (
+                    "image_equation",
+                    "chemical_formula",
+                    "chemical_structure",
+                    "commutative_diagram",
+                )
+            ),
+        )
+        .first()
+    )
+    if specialized is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This PDF requires its specialized visual review workflow",
+        )
+    options = _canonical_remediation_options(
+        None, use_ai=False, generate_alt_text=False
+    )
+    options["approved_fixes_only"] = True
+    job = _enqueue_scan_remediation(
+        db, scan=scan, principal=principal, options=options, approved_fixes_only=True
     )
     return await _respond_for_enqueued_job(
         job,
@@ -2364,9 +2585,21 @@ async def remediate_scan(
     artifact_publication = None
     artifact_service = None
     artifact_temp_dir = None
+    source_snapshot_dir = None
+    source_hash_bound = False
     result = None
 
     try:
+        source_bytes = Path(file_path).read_bytes()
+        stored_source_hash = getattr(scan, "file_hash", None)
+        source_hash_bound = bool(
+            isinstance(stored_source_hash, str)
+            and re.fullmatch(r"[0-9a-f]{64}", stored_source_hash)
+            and hashlib.sha256(source_bytes).hexdigest() == stored_source_hash
+        )
+        source_snapshot_dir = tempfile.mkdtemp(prefix="aelira_direct_source_")
+        immutable_source_path = Path(source_snapshot_dir) / Path(file_path).name
+        immutable_source_path.write_bytes(source_bytes)
         # Configuration, partitioning, and persisted-input normalization are
         # fallible and therefore belong inside the audited transaction funnel.
         config = RemediationConfig(
@@ -2379,7 +2612,7 @@ async def remediate_scan(
             ),
             verify_fixes=True,
             create_backup=True,
-            output_directory=str(Path(file_path).parent),
+            output_directory=str(immutable_source_path.parent),
         )
 
         if scan_type == ScanType.LATEX:
@@ -2424,7 +2657,7 @@ async def remediate_scan(
 
         # Create remediator and run remediation
         remediator_kwargs = {
-            "file_path": file_path,
+            "file_path": str(immutable_source_path),
             "issues": normalized_issues,
             "config": config,
             "ai_client": ai_client,
@@ -2449,14 +2682,14 @@ async def remediate_scan(
                 purpose="manual_review",
             )
 
-        successful_complete_result = (
-            result.success is True
-            and result.manual_count == 0
-            and result.failed_count == 0
-        )
+        publishable_result = result.success is True and result.fixed_count > 0
         if (
             pdf_claim_required
-            and successful_complete_result
+            and result.success is True
+            and (
+                publishable_result
+                or (result.manual_count == 0 and result.failed_count == 0)
+            )
             and result.has_output_claim() is not True
         ):
             scan.status = ScanStatus.FAILED
@@ -2492,7 +2725,7 @@ async def remediate_scan(
                 "artifact_id": None,
             }
 
-        if successful_complete_result and result.fixed_count > 0:
+        if publishable_result:
             if pdf_claim_required:
                 output_path = None
                 output_available = result.has_output_claim()
@@ -2594,20 +2827,27 @@ async def remediate_scan(
                 artifact_temp_dir = None
 
         # Direct and queued flows share one canonical, idempotent writer.
-        persist_scan_fixes(db, scan_id, result.fixed_issues)
+        persisted_fixes = persist_scan_fixes(db, scan_id, result.fixed_issues)
+        if artifact is not None:
+            membership = build_output_membership(
+                getattr(artifact, "sha256", None),
+                stored_source_hash if source_hash_bound else None,
+                persisted_fixes,
+            )
+            if membership is not None:
+                artifact.provider_result = {
+                    **(getattr(artifact, "provider_result", None) or {}),
+                    "reviewed_output_membership": membership,
+                }
 
         import uuid as _uuid
 
-        # Run Matterhorn only for a complete result with eligible output bytes.
+        # Validate the exact published PDF bytes, including improved drafts.
         try:
             from ...education.validation.matterhorn import MatterhornValidator
             from ...db import models as _dbm
 
-            if (
-                pdf_claim_required
-                and successful_complete_result
-                and result.has_output_claim()
-            ):
+            if pdf_claim_required and publishable_result and result.has_output_claim():
                 claim_metadata = result.output_claim_metadata()
                 with result.open_output_stream() as output_stream:
                     with _bounded_pdf_claim_validation_file(
@@ -2624,7 +2864,7 @@ async def remediate_scan(
 
                         if contains_image_equation_fixes(result.fixed_issues):
                             require_image_equation_matterhorn_result(mh_result)
-            elif successful_complete_result and not pdf_claim_required:
+            elif publishable_result and not pdf_claim_required:
                 output_path = result.output_file
                 if (
                     output_path
@@ -2666,8 +2906,17 @@ async def remediate_scan(
                 "Matterhorn validation unavailable (%s)", type(mh_err).__name__
             )
 
-        terminal_success = successful_complete_result
-        if result.success is not True or result.failed_count > 0:
+        terminal_success = result.success is True and (
+            artifact is not None
+            or (result.manual_count == 0 and result.failed_count == 0)
+        )
+        if result.success is not True:
+            scan.status = ScanStatus.FAILED
+            scan.remediation_outcome = RemediationOutcome.REMEDIATION_FAILED.value
+        elif artifact is not None:
+            scan.status = ScanStatus.COMPLETED
+            scan.remediation_outcome = RemediationOutcome.COMPLETED.value
+        elif result.failed_count > 0:
             scan.status = ScanStatus.FAILED
             scan.remediation_outcome = RemediationOutcome.REMEDIATION_FAILED.value
         elif result.manual_count > 0:
@@ -2692,17 +2941,18 @@ async def remediate_scan(
                 "remediated_compliance_score": result.remediated_compliance_score,
                 "score_provenance": getattr(result, "score_provenance", None),
                 "score_measurement": getattr(result, "score_measurement", None),
+                "score_verified": getattr(result, "score_verified", None),
                 "score_verification_reason": getattr(
                     result, "score_verification_reason", None
                 ),
             },
             original_score=getattr(recorded, "compliance_score", None),
             source_scan_type=scan.scan_type,
-            source_sha256=getattr(scan, "file_hash", None) or "",
+            source_sha256=stored_source_hash if source_hash_bound else "",
             output_sha256=getattr(artifact, "sha256", None) or "",
         )
         response_payload = {
-            "success": terminal_success if pdf_claim_required else result.success,
+            "success": terminal_success,
             "scan_id": scan_id,
             "artifact_id": str(artifact.id) if artifact is not None else None,
             "artifact_mime_type": artifact.mime_type if artifact is not None else None,
@@ -2872,6 +3122,8 @@ async def remediate_scan(
         )
 
     finally:
+        if source_snapshot_dir:
+            shutil.rmtree(source_snapshot_dir, ignore_errors=True)
         if result is not None:
             close_output_claim = getattr(result, "close_output_claim", None)
             if callable(close_output_claim):

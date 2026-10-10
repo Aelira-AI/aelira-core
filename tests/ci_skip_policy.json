@@ -1395,6 +1395,11 @@
         "tests/test_release_journey_matrix.py::test_invalid_inventory_fails_closed[wrong-command]",
         "tests/test_release_journey_matrix.py::test_real_inventory_reports_boundaries_without_execution",
         "tests/test_release_journey_matrix.py::test_source_symlink_cannot_leave_repository",
+        "tests/test_pdf_recovery_persistence_postgres.py::test_emitted_recovery_fixes_commit_without_approving_independent_review",
+        "tests/test_remediation_completion_postgres.py::test_completion_commits_presentation_with_actual_fixes_and_managed_artifact[direct]",
+        "tests/test_remediation_completion_postgres.py::test_completion_commits_presentation_with_actual_fixes_and_managed_artifact[deferred]",
+        "tests/test_remediation_completion_postgres.py::test_completion_commits_presentation_with_actual_fixes_and_managed_artifact[queued]",
+        "tests/test_remediation_completion_postgres.py::test_completion_commits_presentation_with_actual_fixes_and_managed_artifact[commit_failure]",
         "tests/test_remediation_artifact_db_first.py::test_approval_retry_requires_the_exact_current_accepted_fix_set",
         "tests/test_remediation_artifact_db_first.py::test_approve_matching_retry_after_expiry_fails_without_mutation",
         "tests/test_remediation_artifact_db_first.py::test_approve_retry_different_actor_or_checksum_conflicts",
@@ -1519,7 +1524,12 @@
         "tests/test_remediation_execution_hardening.py::test_code_remediation_route_enqueues_approved_fixes",
         "tests/test_remediation_execution_hardening.py::test_download_validation_uses_job_cloud_authority",
         "tests/test_remediation_execution_hardening.py::test_equation_artifact_stays_gated_if_current_fix_row_is_removed",
-        "tests/test_remediation_execution_hardening.py::test_handler_marks_only_revalidated_code_fixes_applied",
+        "tests/test_remediation_execution_hardening.py::test_handler_preserves_revalidated_fix_approval[approved-CODE]",
+        "tests/test_remediation_execution_hardening.py::test_handler_preserves_revalidated_fix_approval[approved-PDF]",
+        "tests/test_remediation_execution_hardening.py::test_handler_preserves_revalidated_fix_approval[edited-CODE]",
+        "tests/test_remediation_execution_hardening.py::test_handler_preserves_revalidated_fix_approval[edited-PDF]",
+        "tests/test_remediation_execution_hardening.py::test_handler_preserves_revalidated_fix_approval[auto_approved-CODE]",
+        "tests/test_remediation_execution_hardening.py::test_handler_preserves_revalidated_fix_approval[auto_approved-PDF]",
         "tests/test_remediation_execution_hardening.py::test_handler_revalidates_code_fix_under_completion_fence",
         "tests/test_remediation_execution_hardening.py::test_hard_timeout_reaps_child_and_removes_work_directory",
         "tests/test_remediation_execution_hardening.py::test_image_equation_artifact_is_not_downloadable_before_approval",
@@ -1550,7 +1560,7 @@
         "tests/test_remediation_execution_hardening.py::test_zero_retry_budget_is_not_coerced_to_default",
         "tests/test_remediation_queue_routes.py::test_batch_enqueues_all_requested_scans",
         "tests/test_remediation_queue_routes.py::test_batch_missing_scan_refuses_entire_request",
-        "tests/test_remediation_queue_routes.py::test_completed_job_maps_to_approved_artifact_download",
+        "tests/test_remediation_queue_routes.py::test_completed_job_exposes_working_download_before_separate_approval",
         "tests/test_remediation_queue_routes.py::test_enqueue_persists_job_and_returns_status_and_latest",
         "tests/test_remediation_queue_routes.py::test_enqueue_rejects_invalid_options[boolean]",
         "tests/test_remediation_queue_routes.py::test_enqueue_rejects_invalid_options[latex_format]",
@@ -2130,6 +2140,7 @@
             "tests/test_durable_job_processor_postgres.py::test_scaled_idle_worker_is_healthy_when_pending_job_dependency_is_owned",
             "tests/test_durable_job_processor_postgres.py::test_scan_timeout_and_new_owner_serialize_on_scan_row",
             "tests/test_durable_job_processor_postgres.py::test_scan_timeout_monitors_skip_locked_and_fail_once",
+            "tests/test_durable_job_processor_postgres.py::test_scoped_claim_leaves_unrelated_runnable_and_blocked_jobs_untouched",
             "tests/test_durable_job_processor_postgres.py::test_to_thread_blocking_work_keeps_lease_heartbeat_alive",
             "tests/test_durable_job_processor_postgres.py::test_two_running_workers_respect_independent_concurrency_caps",
             "tests/test_durable_job_processor_postgres.py::test_two_workers_cannot_double_claim_and_batch_is_committed_first",
@@ -2139,10 +2150,13 @@
             "tests/test_durable_job_processor_postgres.py::test_upload_pre_request_failure_keeps_bounded_retry",
             "tests/test_durable_job_processor_postgres.py::test_upload_success_confirms_effect_and_completes_once",
             "tests/test_durable_job_processor_postgres.py::test_upload_timeout_after_checkpoint_is_terminal_without_retry",
-            "tests/test_durable_job_processor_postgres.py::test_worker_cleanly_transitions_running_draining_stopped"
+            "tests/test_durable_job_processor_postgres.py::test_worker_cleanly_transitions_running_draining_stopped",
+            "tests/test_reviewed_upload_journey_postgres.py::test_reviewed_upload_progresses_after_artifact_locks_release[False]",
+            "tests/test_reviewed_upload_journey_postgres.py::test_reviewed_upload_progresses_after_artifact_locks_release[True]"
           ],
           "evidence": [
-            "tests/test_durable_job_processor_postgres.py"
+            "tests/test_durable_job_processor_postgres.py",
+            "tests/test_reviewed_upload_journey_postgres.py"
           ]
         },
         {
@@ -2462,6 +2476,7 @@
         "tests/test_durable_job_processor_postgres.py::test_scaled_idle_worker_is_healthy_when_pending_job_dependency_is_owned",
         "tests/test_durable_job_processor_postgres.py::test_scan_timeout_and_new_owner_serialize_on_scan_row",
         "tests/test_durable_job_processor_postgres.py::test_scan_timeout_monitors_skip_locked_and_fail_once",
+        "tests/test_durable_job_processor_postgres.py::test_scoped_claim_leaves_unrelated_runnable_and_blocked_jobs_untouched",
         "tests/test_durable_job_processor_postgres.py::test_to_thread_blocking_work_keeps_lease_heartbeat_alive",
         "tests/test_durable_job_processor_postgres.py::test_two_running_workers_respect_independent_concurrency_caps",
         "tests/test_durable_job_processor_postgres.py::test_two_workers_cannot_double_claim_and_batch_is_committed_first",
@@ -2471,7 +2486,9 @@
         "tests/test_durable_job_processor_postgres.py::test_upload_pre_request_failure_keeps_bounded_retry",
         "tests/test_durable_job_processor_postgres.py::test_upload_success_confirms_effect_and_completes_once",
         "tests/test_durable_job_processor_postgres.py::test_upload_timeout_after_checkpoint_is_terminal_without_retry",
-        "tests/test_durable_job_processor_postgres.py::test_worker_cleanly_transitions_running_draining_stopped"
+        "tests/test_durable_job_processor_postgres.py::test_worker_cleanly_transitions_running_draining_stopped",
+        "tests/test_reviewed_upload_journey_postgres.py::test_reviewed_upload_progresses_after_artifact_locks_release[False]",
+        "tests/test_reviewed_upload_journey_postgres.py::test_reviewed_upload_progresses_after_artifact_locks_release[True]"
       ],
       "allowed_skips": []
     },

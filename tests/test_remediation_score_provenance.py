@@ -258,9 +258,16 @@ def test_public_worker_keeps_automatic_upload_disabled():
         isinstance(node.value, ast.Constant) and node.value.value is None
         for node in assignments
     )
+    automatic_paths = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in {"process_remediation_job", "handle_remediation_job"}
+    ]
     upload_calls = [
         node
-        for node in ast.walk(tree)
+        for function in automatic_paths
+        for node in ast.walk(function)
         if isinstance(node, ast.Call)
         and any(
             keyword.arg == "job_type"

@@ -82,6 +82,7 @@ def _artifact(service, *, lifecycle="available", scan_type="WORD"):
 def _db(service, artifact, *, locked_scan_type="WORD"):
     from src.services.scan_fix_service import (
         artifact_approval_review_digest,
+        build_output_membership,
         review_digest_for,
     )
 
@@ -109,6 +110,12 @@ def _db(service, artifact, *, locked_scan_type="WORD"):
     )
     accepted_fix.review_digest = review_digest_for(accepted_fix)
     accepted_fix.approved_review_digest = accepted_fix.review_digest
+    artifact.provider_result = {
+        **(artifact.provider_result or {}),
+        "reviewed_output_membership": build_output_membership(
+            artifact.sha256, "a" * 64, [accepted_fix]
+        ),
+    }
     if artifact.review_status == "approved" and artifact.approval_review_digest is None:
         artifact.approval_review_digest = artifact_approval_review_digest(
             artifact.sha256, [accepted_fix]
@@ -128,6 +135,7 @@ def _db(service, artifact, *, locked_scan_type="WORD"):
                 id=SCAN,
                 department_id=DEPT,
                 scan_type=locked_scan_type,
+                file_hash="a" * 64,
                 status=ScanStatus.COMPLETED,
                 remediation_outcome=RemediationOutcome.COMPLETED.value,
             ),
@@ -315,7 +323,14 @@ def test_mark_written_uses_written_retention_setting(tmp_path):
 
     assert artifact.written_back_at == now
     assert artifact.expires_at == now + timedelta(days=7)
-    assert artifact.provider_result == {"revision": "42", "ok": True}
+    assert artifact.provider_result["writeback_result"] == {
+        "revision": "42",
+        "ok": True,
+    }
+    assert (
+        artifact.provider_result["reviewed_output_membership"]["output_sha256"]
+        == artifact.sha256
+    )
 
 
 def test_mark_written_revalidates_fixes_and_invalidates_stale_approval(tmp_path):
@@ -338,7 +353,8 @@ def test_mark_written_revalidates_fixes_and_invalidates_stale_approval(tmp_path)
         )
 
     assert artifact.written_back_at is None
-    assert artifact.provider_result is None
+    assert "reviewed_output_membership" in artifact.provider_result
+    assert "writeback_result" not in artifact.provider_result
     assert artifact.review_status == "pending"
     assert artifact.approval_checksum is None
     assert cloud.writeback_status == "pending_review"
@@ -366,7 +382,34 @@ def test_mark_written_retry_is_semantic_noop_without_retention_extension(tmp_pat
 
     assert artifact.written_back_at == first
     assert artifact.expires_at == first_expiry
-    assert artifact.provider_result == original_result
+    assert artifact.provider_result["writeback_result"] == original_result
+    assert (
+        artifact.provider_result["reviewed_output_membership"]["output_sha256"]
+        == artifact.sha256
+    )
+
+
+def test_provider_writeback_result_cannot_replace_candidate_membership(tmp_path):
+    service = _service(tmp_path)
+    artifact = _artifact(service)
+    db, _ = _db(service, artifact)
+    receipt = dict(artifact.provider_result["reviewed_output_membership"])
+    forged_result = {"reviewed_output_membership": {"forged": True}, "revision": "42"}
+    now = datetime(2026, 8, 21, tzinfo=timezone.utc)
+
+    service.mark_written(
+        db, artifact_id=artifact.id, provider_result=forged_result, now=now
+    )
+    service.mark_written(
+        db,
+        artifact_id=artifact.id,
+        provider_result=forged_result,
+        now=now + timedelta(days=1),
+    )
+
+    assert artifact.provider_result["reviewed_output_membership"] == receipt
+    assert artifact.provider_result["writeback_result"] == forged_result
+    assert artifact.written_back_at == now
 
 
 def test_mark_written_matching_retry_after_expiry_fails_without_mutation(tmp_path):
@@ -479,7 +522,7 @@ def test_approve_sets_writeback_deadline_and_retry_preserves_original_expiry(tmp
     assert artifact.approval_review_digest is not None
     assert artifact.approval_review_digest != artifact.approval_checksum
     assert artifact.expires_at == first + timedelta(days=30)
-    assert artifact.provider_result == {"remediation_snapshot": {"issues_fixed": 3}}
+    assert artifact.provider_result["remediation_snapshot"] == {"issues_fixed": 3}
 
 
 def test_mark_written_is_allowed_before_approval_deadline_and_rejected_at_it(tmp_path):
@@ -626,7 +669,11 @@ def test_mark_written_invalidates_changed_accepted_fix_set(tmp_path):
     db.accepted_fixes.append(added)
 
     with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
-        service.mark_written(db, artifact_id=artifact.id)
+        service.mark_written(
+            db,
+            artifact_id=artifact.id,
+            provider_result=artifact.provider_result.get("writeback_result"),
+        )
 
     assert artifact.review_status == "pending"
     assert artifact.approval_checksum is None
@@ -668,6 +715,7 @@ def test_written_artifact_reports_stale_review_without_mutating_terminal_state(
     db, _ = _db(service, artifact)
     artifact.written_back_at = datetime.now(timezone.utc)
     artifact.approval_review_digest = "d" * 64
+    artifact.provider_result["writeback_result"] = {}
     durable = (
         artifact.review_status,
         artifact.approval_checksum,
@@ -677,7 +725,7 @@ def test_written_artifact_reports_stale_review_without_mutating_terminal_state(
     )
 
     with pytest.raises(ArtifactAuthorizationError, match="approval became stale"):
-        service.mark_written(db, artifact_id=artifact.id)
+        service.mark_written(db, artifact_id=artifact.id, provider_result={})
 
     assert (
         artifact.review_status,

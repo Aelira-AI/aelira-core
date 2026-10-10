@@ -48,6 +48,7 @@ from src.education.color_blindness_simulator import (
     ColorBlindnessSimulator,
 )
 from src.education.pdf_checks.models import (
+    PDFImageIssue,
     PDFProcessingResult,
 )
 from src.education.pdf_checks.table_checker import TableAccessibilityChecker
@@ -217,6 +218,7 @@ class PDFProcessor:
 
         # 6. Check compliance (pass context for enhanced descriptions)
         score, issues = self._check_compliance(html, structure, document_context)
+        review_requirements: List[str] = []
 
         # 7. Always scan images. The checker itself stays in no-AI scan-only
         # mode unless generation or validation was explicitly requested.
@@ -239,44 +241,45 @@ class PDFProcessor:
                 f"[PDFProcessor] Merging {len(image_issues)} image issues into main issues array"
             )
             for img_issue in image_issues:
-                # Handle different image types appropriately
-                if img_issue.image_type == "decorative":
-                    # Decorative images need empty alt text (not missing alt text)
-                    message = 'Decorative image detected - use empty alt="" attribute'
-                    suggested_fix = 'Add alt="" (empty) to mark this as decorative'
-                    severity = "medium"  # Lower severity - just needs empty alt
-                elif img_issue.is_chart and img_issue.detailed_description:
-                    # Chart/graph with detailed description
-                    short_desc = img_issue.suggested_alt_text or ""
+                # Missing alt is a source-derived finding. Model suggestions
+                # may help remediation but cannot change its count or severity.
+                quality_review = img_issue.has_alt_text
+                if quality_review:
                     message = (
-                        f'Chart/Graph detected - Alt: "{short_desc[:100]}..."'
-                        if len(short_desc) > 100
-                        else f'Chart/Graph detected - Alt: "{short_desc}"'
+                        "AI review suggests existing alternative text may need revision"
                     )
                     suggested_fix = (
-                        f'Add alt text: "{short_desc}"\n\nFor complex charts, also add a longer description:\n{img_issue.detailed_description[:500]}...'
-                        if len(img_issue.detailed_description or "") > 500
-                        else f'Add alt text: "{short_desc}"\n\nFor complex charts, also add a longer description:\n{img_issue.detailed_description}'
+                        f'Review suggested alternative text: "{img_issue.suggested_alt_text}"'
+                        if img_issue.suggested_alt_text
+                        else "Review the existing alternative text against the image"
                     )
-                    severity = "high"
-                elif img_issue.suggested_alt_text:
-                    # Standard informative image with alt text
-                    message = f'AI-Generated Alt Text: "{img_issue.suggested_alt_text}"'
-                    suggested_fix = f'Add this alt text to the image: "{img_issue.suggested_alt_text}"'
-                    severity = "high"
                 else:
-                    message = "Image missing alternative text - AI analysis pending"
+                    message = "Image missing alternative text"
                     suggested_fix = "Add descriptive alt text for this image"
-                    severity = "high"
+                    if img_issue.image_type == "decorative":
+                        suggested_fix = 'AI suggests this image may be decorative; review whether alt="" is appropriate'
+                    elif img_issue.suggested_alt_text:
+                        suggested_fix = f'Review AI-suggested alternative text: "{img_issue.suggested_alt_text}"'
+                        if img_issue.is_chart and img_issue.detailed_description:
+                            suggested_fix += (
+                                "\n\nReview whether a longer description is needed: "
+                                f"{img_issue.detailed_description[:500]}"
+                            )
 
-                new_issue = {
-                    "severity": severity,
+                new_issue: Dict[str, object] = {
+                    "issue_type": (
+                        "ai_alt_quality_review"
+                        if quality_review
+                        else "missing_alt_text"
+                    ),
+                    "has_alt_text": img_issue.has_alt_text,
+                    "severity": "medium" if quality_review else "high",
                     "rule": "WCAG 1.1.1",
                     "message": message,
                     "impact": (
-                        "Screen reader users cannot understand image content"
-                        if img_issue.image_type != "decorative"
-                        else "Decorative images should have empty alt to be ignored by screen readers"
+                        "AI review suggests the description may not convey the image content"
+                        if quality_review
+                        else "Screen reader users cannot understand image content"
                     ),
                     "page_number": img_issue.page_number,
                     "location": f"Page {img_issue.page_number}, Image {img_issue.image_index + 1}",
@@ -293,6 +296,18 @@ class PDFProcessor:
                     "is_chart": img_issue.is_chart,  # True if chart/graph/infographic
                     "detailed_description": img_issue.detailed_description,  # For charts/complex images
                 }
+                if quality_review:
+                    new_issue.update(
+                        {
+                            "assessment_type": "ai_alt_quality_review",
+                            "review_only": True,
+                            "scoring_included": False,
+                            "existing_alt_text": img_issue.existing_alt_text,
+                            "alt_text_accurate": img_issue.alt_text_accurate,
+                            "alt_text_issues": img_issue.alt_text_issues,
+                            "validation_score": img_issue.validation_score,
+                        }
+                    )
                 logger.info(
                     f"[PDFProcessor] Adding image issue: type={img_issue.image_type}, xref={img_issue.image_xref}, is_chart={img_issue.is_chart}, alt={img_issue.suggested_alt_text[:50] if img_issue.suggested_alt_text else 'None'}..."
                 )
@@ -308,9 +323,23 @@ class PDFProcessor:
             logger.info("[PDFProcessor] No image issues to merge")
 
         # Conservative equation candidates are independent of LaTeX-aware
-        # document-wide warnings and never invoke a provider.
+        # document-wide warnings and never use AI-enriched classification.
+        source_missing_images = [
+            PDFImageIssue(
+                page_number=issue.page_number,
+                image_index=issue.image_index,
+                occurrence_ordinal=issue.occurrence_ordinal,
+                bbox=issue.bbox,
+                occurrence_id=issue.occurrence_id,
+                image_xref=issue.image_xref,
+                has_alt_text=False,
+                image_type="informative",
+            )
+            for issue in image_issues
+            if not issue.has_alt_text
+        ]
         equation_candidates = MathEquationChecker().find_image_equation_candidates(
-            file_path, image_issues
+            file_path, source_missing_images
         )
         if equation_candidates:
             issues.extend(equation_candidates)
@@ -357,6 +386,11 @@ class PDFProcessor:
             )
             if ro_result.issues:
                 for ro_issue in ro_result.issues:
+                    if ro_issue.review_only:
+                        review_requirements.append(
+                            f"Page {ro_issue.page_number}: {ro_issue.recommendation}"
+                        )
+                        continue
                     # An empty extracted order does not imply absent tags:
                     # MCID references may exist but be unresolved. Only dedupe
                     # when the structure checker actually reported no tree.
@@ -489,6 +523,7 @@ class PDFProcessor:
             compliance_score=score,
             issues=issues,
             image_issues=image_issues,
+            review_requirements=review_requirements,
             cvd_analysis=cvd_analysis,
         )
 
@@ -1174,7 +1209,17 @@ Be concise (2-3 sentences) and focus on practical solutions for PDF creators."""
         """
         from .compliance_scoring import get_score_only
 
-        return get_score_only(issues, total_elements, severity_field="severity")
+        scored_issues = [
+            issue
+            for issue in issues
+            if not (
+                issue.get("issue_type") == "ai_alt_quality_review"
+                and issue.get("assessment_type") == "ai_alt_quality_review"
+                and issue.get("review_only") is True
+                and issue.get("scoring_included") is False
+            )
+        ]
+        return get_score_only(scored_issues, total_elements, severity_field="severity")
 
     def _get_page_count(self, file_path: str) -> int:
         """Get PDF page count"""

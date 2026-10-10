@@ -8,7 +8,6 @@ comes from PDF font decoding or a PDF ActualText string, never an MCID label.
 from collections import defaultdict
 
 import pikepdf
-from pdfminer.encodingdb import EncodingDB, name2unicode
 from pdfminer.layout import LTChar
 from pdfminer.pdfdevice import PDFTextDevice
 from pdfminer.pdfinterp import PDFPageInterpreter, PDFResourceManager
@@ -18,6 +17,11 @@ from pdfminer.psparser import LIT, PSLiteral, literal_name
 from pdfminer.utils import decode_text
 
 from .completeness import record_incomplete_check
+from .font_mapping import (
+    FontMappingUnavailable,
+    TrueTypeUnicodeResolver,
+    simple_encoding_map,
+)
 
 
 def incomplete(reason):
@@ -38,6 +42,7 @@ class _FontResourceManager(PDFResourceManager):
         self.fail = fail
 
     def get_font(self, objid, spec):
+        original_spec = spec
         subtype = literal_name(spec.get("Subtype"))
         if (
             subtype == "Type0"
@@ -46,64 +51,49 @@ class _FontResourceManager(PDFResourceManager):
             # Bound composite decoding to two-byte horizontal identity codes.
             # Other CMaps can silently discard undecodable bytes in pdfminer.
             self.fail("font_encoding")
-        if subtype in ("Type1", "TrueType", "MMType1"):
-            encoding = resolve1(spec.get("Encoding"))
-            if encoding is None and "ToUnicode" not in spec:
-                # These standard fonts have a defined built-in encoding. Make
-                # that default explicit in our private resource copy: OCRmyPDF
-                # may otherwise remove pdfminer's implicit mapping globally.
-                standard_roman = {
-                    "Courier",
-                    "Courier-Bold",
-                    "Courier-Oblique",
-                    "Courier-BoldOblique",
-                    "Helvetica",
-                    "Helvetica-Bold",
-                    "Helvetica-Oblique",
-                    "Helvetica-BoldOblique",
-                    "Times-Roman",
-                    "Times-Bold",
-                    "Times-Italic",
-                    "Times-BoldItalic",
-                }
-                if (
-                    subtype == "Type1"
-                    and literal_name(spec.get("BaseFont")) in standard_roman
-                ):
-                    spec = dict(spec, Encoding=LIT("StandardEncoding"))
-                else:
-                    self.fail("font_encoding")
-            elif encoding is not None:
-                name = (
-                    encoding.get("BaseEncoding", LIT("StandardEncoding"))
-                    if isinstance(encoding, dict)
-                    else encoding
-                )
-                if literal_name(name) not in EncodingDB.encodings:
-                    self.fail("font_encoding")
-                if isinstance(encoding, dict):
-                    differences = resolve1(encoding.get("Differences", []))
-                    if not isinstance(differences, list):
-                        self.fail("font_encoding")
-                    else:
-                        for item in differences:
-                            if isinstance(item, PSLiteral):
-                                try:
-                                    name2unicode(literal_name(item))
-                                except (KeyError, ValueError):
-                                    self.fail("font_encoding")
-                            elif not _integer(item):
-                                self.fail("font_encoding")
+        simple_map = None
+        if subtype in ("Type1", "TrueType", "MMType1") and "ToUnicode" not in spec:
+            try:
+                simple_map = simple_encoding_map(spec)
+            except FontMappingUnavailable:
+                self.fail("font_encoding")
+                raise ValueError("Unsupported font encoding") from None
+            # Do not let pdfminer choose a different implicit base encoding.
+            if resolve1(spec.get("Encoding")) is None and simple_map is not None:
+                spec = dict(spec, Encoding=LIT("StandardEncoding"))
+        if subtype == "Type0" and "ToUnicode" not in spec:
+            # pdfminer expands its implicit reverse cmap in the constructor,
+            # before our bounded resolver can run. Omit only that program from
+            # the private metrics spec; retain the original for lazy evidence.
+            descendants = resolve1(spec.get("DescendantFonts"))
+            if not isinstance(descendants, list) or len(descendants) != 1:
+                self.fail("font_encoding")
+                raise ValueError("Unsupported font encoding")
+            descendant = dict(dict_value(descendants[0]))
+            descriptor = dict(dict_value(descendant.get("FontDescriptor", {})))
+            descriptor.pop("FontFile2", None)
+            descendant["FontDescriptor"] = descriptor
+            spec = dict(spec, DescendantFonts=[descendant])
         font = super().get_font(objid, spec)
-        encoding = resolve1(spec.get("Encoding"))
-        base = encoding.get("BaseEncoding") if isinstance(encoding, dict) else encoding
-        if literal_name(base) == "WinAnsiEncoding" and hasattr(font, "cid2unicode"):
-            # PDF WinAnsi assigns these spare positions to bullet (also used by
-            # ReportLab). pdfminer's EncodingDB omits them. Copy, never mutate
-            # the shared encoding table, and retain explicit Differences.
-            font.cid2unicode = dict(font.cid2unicode)
-            for code in (127, 129, 141, 143, 144, 157):
-                font.cid2unicode.setdefault(code, "\u2022")
+        font.aelira_evidence_origin = "declared_tounicode"
+        if "ToUnicode" not in spec:
+            if subtype == "Type0":
+                # Lazy resolution is per used glyph. The nonsemantic recovery
+                # inventory must still be able to collect undecodable fonts.
+                if (
+                    getattr(font, "cidcoding", "")
+                    not in ("Adobe-Identity", "Adobe-UCS")
+                    and getattr(font, "unicode_map", None) is not None
+                ):
+                    font.aelira_evidence_origin = "defined_character_collection"
+                else:
+                    font.aelira_unicode_resolver = TrueTypeUnicodeResolver(
+                        original_spec
+                    )
+                    font.aelira_evidence_origin = "embedded_truetype_chain"
+            elif simple_map is not None:
+                font.cid2unicode = simple_map
+                font.aelira_evidence_origin = "defined_simple_encoding"
         return font
 
 
@@ -114,6 +104,7 @@ class _MarkedTextDevice(PDFTextDevice):
         self.stack = []
         self.entries = {}
         self.character_count = 0
+        self.evidence_origins = set()
 
     def begin_tag(self, tag, props=None):
         incomplete = self.fail
@@ -135,7 +126,7 @@ class _MarkedTextDevice(PDFTextDevice):
             if len(self.entries) >= 20000:
                 incomplete("content_limit")
                 raise _LimitExceeded()
-            entry = {"text": "", "source": "MCID", "previous": None}
+            entry = {"text": "", "source": "MCID", "previous": None, "bbox": None}
             self.entries.setdefault(mcid, entry)
         replacement = None
         if "ActualText" in props:
@@ -205,12 +196,30 @@ class _MarkedTextDevice(PDFTextDevice):
             raise _LimitExceeded()
         # Undefined mappings must raise, never become '(cid:N)'.
         unicode_map = getattr(font, "unicode_map", None)
-        text = (
-            unicode_map.get_unichr(cid)
-            if unicode_map is not None
-            else font.to_unichr(cid)
+        resolver = getattr(font, "aelira_unicode_resolver", None)
+        try:
+            text = (
+                resolver.resolve(cid)
+                if resolver is not None
+                else (
+                    unicode_map.get_unichr(cid)
+                    if unicode_map is not None
+                    else font.to_unichr(cid)
+                )
+            )
+        except FontMappingUnavailable:
+            incomplete("font_unicode")
+            raise ValueError("Unresolved Unicode glyph") from None
+        self.evidence_origins.add(
+            getattr(font, "aelira_evidence_origin", "unsupported")
         )
-        if not isinstance(text, str) or not text:
+        if (
+            not isinstance(text, str)
+            or not text
+            or len(text) > 16
+            or "\ufffd" in text
+            or any(0xD800 <= ord(char) <= 0xDFFF for char in text)
+        ):
             incomplete("font_unicode")
             raise ValueError("Unresolved Unicode glyph")
         if font.is_vertical():
@@ -228,6 +237,18 @@ class _MarkedTextDevice(PDFTextDevice):
             graphicstate,
         )
         entry = self._entry()
+        if entry is not None and "bbox" in entry:
+            previous_box = entry["bbox"]
+            entry["bbox"] = (
+                (
+                    min(previous_box[0], char.x0),
+                    min(previous_box[1], char.y0),
+                    max(previous_box[2], char.x1),
+                    max(previous_box[3], char.y1),
+                )
+                if previous_box is not None
+                else char.bbox
+            )
         replacements = [
             frame for frame in self.stack if frame["replacement"] is not None
         ]
@@ -429,3 +450,12 @@ class MarkedContentResolver:
             incomplete("missing_mcid")
             return None
         return {"text": entry["text"].strip(), "source": entry["source"]}
+
+    def bounds(self, key):
+        """Decoded source-glyph bounds in pdfminer's page coordinates.
+
+        Repair evidence only: this does not change scanner text or scoring.
+        Empty/image marked content has no glyph bounds and returns None.
+        """
+        self.text(key)
+        return self.decoded.get(key[0], {}).get(key[1], {}).get("bbox")

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "scope": "authored page-direct font diagnostics; not universal PDF accessibility",
+  "cases": [
+    {
+      "id": "identity-unique",
+      "expected_text": "AB",
+      "native": "resolved"
+    },
+    {
+      "id": "nonidentity-unique",
+      "expected_text": "BA",
+      "native": "resolved"
+    },
+    {
+      "id": "inverse-alias",
+      "expected_text": "AB",
+      "native": "mapping_unavailable"
+    },
+    {
+      "id": "glyph-zero",
+      "expected_text": "AB",
+      "native": "mapping_unavailable"
+    },
+    {
+      "id": "partial-map",
+      "expected_text": "AB",
+      "native": "mapping_unavailable"
+    },
+    {
+      "id": "wrong-valid-digit",
+      "expected_text": "AB",
+      "native": "review_required"
+    },
+    {
+      "id": "base-plus-differences",
+      "expected_text": "AB\u2022",
+      "native": "resolved"
+    },
+    {
+      "id": "supplementary",
+      "expected_text": "\ud83d\ude00B",
+      "native": "resolved"
+    },
+    {
+      "id": "wrong-valid-numbers",
+      "expected_text": "ACCESSIBLE 105 - 1.5",
+      "native": "review_required"
+    }
+  ]
+}

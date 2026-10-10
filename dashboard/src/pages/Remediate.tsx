@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   AlertTriangle,
   CheckCircle,
@@ -25,15 +25,14 @@ import {
 } from '../utils/remediationJob';
 import type { RemediationJobState } from '../utils/remediationJob';
 import { remediationScore } from '../utils/remediationScore';
+import { AggregateResults, RecordedOutcomeGroups } from "../components/results/RemediationOutcomeBreakdown";
 import { ScoreComparison } from '../components/ScoreComparison';
 import {
-  issueDescription,
-  outcomePresentation,
   pairIssuesWithFixes,
 } from '../utils/remediationIssueOutcomes';
+import { parsePDFCloudContext } from '../utils/pdfStructureEditor';
 import type {
   RemediationIssueLike,
-  RemediationIssueRow,
 } from '../utils/remediationIssueOutcomes';
 
 type Issue = RemediationIssueLike;
@@ -150,60 +149,9 @@ const STATE_PRESENTATION: Record<PageState, StatePresentation> = {
   },
 };
 
-function AggregateResults({ job }: { job: RemediationJobStatus }): React.ReactElement | null {
-  const values = [
-    { label: 'Reported changes', value: job.score_verified === true ? job.fixed_count : null, color: 'text-primary' },
-    { label: 'Remaining', value: job.remaining_count, color: 'text-[var(--feature-warning-content)]' },
-    { label: 'Total issues', value: job.total_issues, color: 'text-primary' },
-    { label: 'Manual review', value: job.manual_count, color: 'text-[var(--feature-warning-content)]' },
-    { label: 'Failed', value: job.failed_count, color: 'text-[var(--feature-danger-content)]' },
-    { label: 'Skipped', value: job.skipped_count, color: 'text-[var(--content-secondary)]' },
-    { label: 'Withheld changes', value: job.withheld_count, color: 'text-[var(--content-secondary)]' },
-    { label: 'Outcome not reported', value: job.outcome_unreported_count, color: 'text-[var(--content-secondary)]' },
-  ].filter((item): item is { label: string; value: number; color: string } =>
-    typeof item.value === 'number' && Number.isFinite(item.value)
-  );
-
-  if (values.length === 0) return null;
-
-  return (
-    <div className={`grid gap-3 sm:grid-cols-2 ${values.length > 2 ? 'lg:grid-cols-4' : ''}`}>
-      {values.map((item) => (
-        <div key={item.label} className="rounded-lg border border-[var(--border-primary)] p-4 text-center">
-          <p className={`text-2xl font-bold ${item.color}`}>{item.value}</p>
-          <p className="mt-1 text-sm text-tertiary">{item.label}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function RecordedIssueRow({ issue, fix, outcomeSource, recordedOutcome }: RemediationIssueRow): React.ReactElement {
-  const outcome = outcomePresentation(fix, outcomeSource, recordedOutcome);
-  return (
-    <div className="flex flex-col items-start justify-between gap-3 border-b border-[var(--border-primary)] p-3 last:border-b-0 sm:flex-row sm:gap-4">
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="rounded bg-[var(--surface-tertiary)] p-1.5">
-          <FileText className="h-4 w-4 text-[var(--content-secondary)]" aria-hidden="true" />
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm font-medium leading-5 text-primary">
-            {issueDescription(issue)}
-          </p>
-          <p className="mt-1 text-xs leading-4 text-tertiary">
-            {issue.category || issue.severity || issue.rule || 'Recorded scan finding'}
-          </p>
-        </div>
-      </div>
-      <span className={`max-w-48 shrink-0 rounded px-2 py-1 text-right text-xs leading-4 sm:self-start ${outcome.className}`}>
-        {outcome.label}
-      </span>
-    </div>
-  );
-}
-
 function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
   const pollController = useRef<AbortController | null>(null);
   const startCoordinator = useRef(createRemediationStartCoordinator());
@@ -425,6 +373,10 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
   const canDownload = job?.download_available === true && typeof job.download_url === 'string';
   const displayedProgress = job?.progress ?? (pageState === 'completed' ? 100 : 0);
   const issueRows = pairIssuesWithFixes(scan.issues || [], recordedFixes || [], job || undefined);
+  const reviewQuery = new URLSearchParams();
+  const cloudContext = parsePDFCloudContext(location.search);
+  if (cloudContext.kind === 'cloud') reviewQuery.set('cloud_file_id', cloudContext.id);
+  const reviewHref = `/review/${encodeURIComponent(scanId || '')}${reviewQuery.size ? `?${reviewQuery}` : ''}`;
 
   return (
     <div className="p-4 sm:p-8">
@@ -443,12 +395,15 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
               <span className="truncate text-sm text-secondary">{scan.file_name || 'Document'}</span>
             </div>
           </div>
+          <div className="flex w-full flex-wrap gap-3 sm:w-auto">
+          {job && job.status === 'completed' && cloudContext.kind !== 'invalid' && <Link to={reviewHref} className="btn-primary flex items-center justify-center gap-2">Review changes</Link>}
           {canDownload && (
-            <button onClick={downloadArtifact} className="btn-primary flex w-full items-center justify-center gap-2 sm:w-auto">
+            <button onClick={downloadArtifact} className="btn-secondary flex items-center justify-center gap-2">
               <Download className="h-4 w-4" aria-hidden="true" />
-              Download Output for Review
+              Download improved working file
             </button>
           )}
+          </div>
         </div>
 
         <section className="card mb-6" aria-labelledby="remediation-status-heading">
@@ -506,6 +461,12 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
 
           {pageState !== 'idle' && !isDenied && (
             <div className="mt-5 border-t border-[var(--border-primary)] pt-4">
+              {job && ['completed', 'failed'].includes(job.status) ? (
+                <p className="text-sm font-medium text-primary" role="status">
+                  {pageState === 'completed' ? 'Automatic processing ended.' : 'Automatic processing stopped.'}
+                  {pageState === 'partial' && ' Manual review is required.'}
+                </p>
+              ) : (<>
               <div className="mb-2 flex items-center justify-between text-sm">
                 <span className="text-secondary">Server progress</span>
                 <span className="font-medium text-primary">{displayedProgress}%</span>
@@ -516,6 +477,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
                   style={{ width: `${Math.min(100, Math.max(0, displayedProgress))}%` }}
                 />
               </div>
+              </>)}
             </div>
           )}
         </section>
@@ -527,10 +489,12 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
                 Recorded Results
               </h2>
               <p className="mt-1 text-sm text-tertiary">
-                These are document-level values returned by the remediation job.
+                Applied changes and unresolved findings are counted separately. An improved score does not approve the document for publication.
               </p>
             </div>
-            <AggregateResults job={job} />
+            <AggregateResults job={job} rows={issueRows} />
+            {job.issue_outcomes?.some(outcome => outcome.source_index_scope === 'approved_subset') && <p className="text-sm text-secondary">This run reports the selected reviewed changes. Findings outside that selection are shown below without a new per-finding outcome; the remaining count comes from checking the whole saved file.</p>}
+            {canDownload && <p className="text-sm text-secondary">The working file includes delivered automatic improvements. Review changes before publishing to an LMS or cloud storage; remaining manual work can be completed from this file.</p>}
             <ScoreComparison job={job} scan={scan} />
           </section>
         )}
@@ -548,23 +512,7 @@ function RemediateScan({ scanId }: { scanId?: string }): React.ReactElement {
                 : 'Per-issue remediation outcomes are not available for this job.'}
             </p>
           </div>
-          <div className="max-h-96 overflow-y-auto focus-visible:outline-2 focus-visible:outline-[var(--content-accent)]" tabIndex={0} role="region" aria-label="Recorded findings and changes">
-            {issueRows.map((row, index) => (
-              <RecordedIssueRow
-                key={row.fix?.id || `${issueDescription(row.issue)}-${index}`}
-                issue={row.issue}
-                fix={row.fix}
-                outcomeSource={row.outcomeSource}
-                recordedOutcome={row.recordedOutcome}
-              />
-            ))}
-            {issueRows.length === 0 && (
-              <div className="py-8 text-center">
-                <FileText className="mx-auto mb-4 h-12 w-12 text-tertiary" aria-hidden="true" />
-                <p className="font-medium text-primary">No recorded issues are available for this scan.</p>
-              </div>
-            )}
-          </div>
+          <RecordedOutcomeGroups rows={issueRows} />
         </section>
       </div>
     </div>

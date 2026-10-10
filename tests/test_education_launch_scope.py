@@ -63,6 +63,8 @@ def _scan(scan_id="scan-1", *, department_id=DEPT, result=None):
     return SimpleNamespace(
         id=scan_id,
         department_id=department_id,
+        document_source="cloud_file",
+        document_id="cf-1",
         file_name="document.pdf",
         scan_type=ScanType.PDF,
         status=SimpleNamespace(value="completed"),
@@ -405,7 +407,7 @@ def test_non_lti_remediation_rejects_cross_tenant_cloud_file_before_side_effects
     ):
         response = client.post("/education/remediate/scan-1")
 
-    assert response.status_code == 400
+    assert response.status_code == 404
     refresh_token.assert_not_awaited()
     canvas_client.assert_not_called()
     assert cloud_file.has_remediated_version is False
@@ -614,7 +616,12 @@ def test_non_canvas_course_scan_and_remediation_routes_stop_before_effects(
     resolve.assert_not_called()
     artifacts.assert_not_called()
     refresh.assert_not_awaited()
-    db._cloud_query.filter.assert_not_called()
+    if platform == "brightspace" and "/artifacts/" in path:
+        # Artifact review can inspect Brightspace course scope, but this
+        # fixture is linked to Canvas and must still be hidden.
+        db._cloud_query.filter.assert_called_once()
+    else:
+        db._cloud_query.filter.assert_not_called()
     db.add.assert_not_called()
     db.delete.assert_not_called()
     db.commit.assert_not_called()
