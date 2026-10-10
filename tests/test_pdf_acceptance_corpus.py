@@ -86,6 +86,14 @@ def test_generator_is_byte_reproducible_and_sources_are_valid_pdfs(tmp_path):
     for case in manifest.required_cases:
         with pikepdf.open(first / case.fixture) as pdf:
             assert len(pdf.pages) >= 1
+            if "/StructTreeRoot" in pdf.Root:
+                root = pdf.Root.StructTreeRoot
+                document = root.K
+                paragraph = document.K[0]
+                assert document.P.objgen == root.objgen
+                assert paragraph.P.objgen == document.objgen
+                assert paragraph.Pg.objgen == pdf.pages[0].obj.objgen
+                assert root.ParentTree.Nums[1][0].objgen == paragraph.objgen
 
 
 def test_runner_fails_closed_instead_of_cleaning_existing_directories(tmp_path):

@@ -235,10 +235,12 @@ def _cloud_file():
     )
 
 
-def _scan(path, scan_type=ScanType.WORD):
+def _scan(path, scan_type=ScanType.WORD, *, cloud=True):
     return SimpleNamespace(
         id="scan-1",
         department_id="dept-1",
+        document_source="cloud_file" if cloud else None,
+        document_id="cloud-1" if cloud else None,
         scan_type=scan_type,
         storage_path=str(path),
         file_name=path.name,
@@ -459,7 +461,7 @@ async def test_jobless_local_success_creates_scan_bound_artifact_without_cloud_f
     path = tmp_path / "file.docx"
     path.write_bytes(b"document")
     path.with_name("fixed.docx").write_bytes(b"remediated document")
-    scan = _scan(path)
+    scan = _scan(path, cloud=False)
     db = _TransactionDB(None)
 
     response = await _run_document_route(path, scan, db, lambda **kwargs: None)
@@ -518,7 +520,7 @@ async def test_malformed_persisted_issues_fail_once_without_provider_or_raw_leak
 
     path = tmp_path / "file.docx"
     path.write_bytes(b"document")
-    scan = _scan(path)
+    scan = _scan(path, cloud=False)
     scan.result.issues = malformed_issues
     db = _TransactionDB(None)
     audit = MagicMock()
@@ -561,7 +563,7 @@ async def test_response_construction_failure_precedes_success_audit_and_commit(
 
     path = tmp_path / "file.docx"
     path.write_bytes(b"document")
-    scan = _scan(path)
+    scan = _scan(path, cloud=False)
     db = _TransactionDB(None)
     result = _result(path, fixed_count=0, manual_count=1)
 
@@ -617,7 +619,7 @@ async def test_lone_surrogate_response_fails_before_success_audit_commit_or_stat
 ):
     path = tmp_path / "file.docx"
     path.write_bytes(b"document")
-    scan = _scan(path)
+    scan = _scan(path, cloud=False)
     db = _TransactionDB(None)
     result = _result(path)
     result.warnings = ["SENSITIVE lone surrogate: \ud800"]
@@ -641,7 +643,7 @@ async def test_lone_surrogate_response_fails_before_success_audit_commit_or_stat
 async def test_normal_unicode_response_succeeds_before_commit(tmp_path):
     path = tmp_path / "file.docx"
     path.write_bytes(b"document")
-    scan = _scan(path)
+    scan = _scan(path, cloud=False)
     db = _TransactionDB(None)
     result = _result(path)
     result.warnings = ["Résumé ready 😀"]
@@ -669,7 +671,7 @@ async def test_postcommit_serialization_failure_cannot_add_second_terminal_audit
 
     path = tmp_path / "file.docx"
     path.write_bytes(b"document")
-    scan = _scan(path)
+    scan = _scan(path, cloud=False)
     db = _TransactionDB(None)
     audit = MagicMock()
     result = _result(path)
@@ -1106,7 +1108,7 @@ async def test_image_analysis_missing_optional_alt_text_is_manual_required(tmp_p
 
     path = tmp_path / "image.png"
     path.write_bytes(b"image")
-    scan = _scan(path, scan_type=ScanType.IMAGE)
+    scan = _scan(path, scan_type=ScanType.IMAGE, cloud=False)
     db = _TransactionDB(None)
     generator = MagicMock()
     generator.analyze_image_comprehensive = AsyncMock(
@@ -1205,7 +1207,7 @@ async def test_workspace_image_terminal_audit_uses_runtime_transport_metadata(
 
     path = tmp_path / "image.png"
     Image.new("RGB", (10, 10), color="blue").save(path)
-    scan = _scan(path, scan_type=ScanType.IMAGE)
+    scan = _scan(path, scan_type=ScanType.IMAGE, cloud=False)
     db = _TransactionDB(None)
     audit = MagicMock()
     settings = SimpleNamespace(

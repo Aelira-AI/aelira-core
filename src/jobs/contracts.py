@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -185,7 +186,12 @@ _PUBLIC_JOB_ERROR_CODES = frozenset(
 
 
 def public_job_result(value: Any) -> dict[str, Any] | None:
-    """Project internal result data onto the path-free public contract."""
+    """Project internal result data onto the path-free public contract.
+
+    A fresh score receipt needs persisted artifact and scan authority, which
+    this generic projector cannot establish. Only the scan-scoped API may
+    expose it after checking the published artifact.
+    """
     if not isinstance(value, Mapping):
         return None
     result: dict[str, Any] = {}
@@ -224,12 +230,29 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
                 if (
                     type(index) is not int
                     or not 0 <= index < 10_000
+                    or not isinstance(status, str)
                     or status
                     not in {"fixed", "withheld", "manual", "failed", "unreported"}
                 ):
                     continue
                 outcome = {"source_index": index, "status": status}
-                if record.get("source_index_scope") in {
+                from ..education.remediation.outcome_explanations import (
+                    public_explanation,
+                )
+
+                explanation = public_explanation(record.get("reason_code"))
+                if isinstance(record.get("reason_code"), str) and (
+                    status == "manual"
+                    and record.get("reason_code")
+                    not in {"output_verification_failed", "output_not_published"}
+                    or status == "withheld"
+                    and record.get("reason_code")
+                    in {"output_verification_failed", "output_not_published"}
+                ):
+                    outcome.update(explanation)
+                if isinstance(record.get("source_index_scope"), str) and record.get(
+                    "source_index_scope"
+                ) in {
                     "original_scan",
                     "approved_subset",
                 }:
@@ -239,7 +262,35 @@ def public_job_result(value: Any) -> dict[str, Any] | None:
                     identifier
                 ):
                     outcome["issue_id"] = identifier
+                from ..education.remediation.outcome_evidence import (
+                    public_outcome_evidence,
+                )
+
+                outcome.update(public_outcome_evidence(record, status=status))
                 outcomes.append(outcome)
+            source_counts = Counter(
+                (row["source_index"], row.get("source_index_scope")) for row in outcomes
+            )
+            original_counts = Counter(
+                row["original_source_index"]
+                for row in outcomes
+                if "original_source_index" in row
+            )
+            for row in outcomes:
+                if (
+                    source_counts[(row["source_index"], row.get("source_index_scope"))]
+                    != 1
+                    or "original_source_index" in row
+                    and original_counts[row["original_source_index"]] != 1
+                ):
+                    for field in (
+                        "verification_passed",
+                        "verification_scope",
+                        "saved_file_verification",
+                        "needs_review",
+                        "original_source_index",
+                    ):
+                        row.pop(field, None)
             result[key] = outcomes
         elif key in {"ai_used", "external_ai_used"}:
             if item is None or type(item) is bool:

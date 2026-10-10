@@ -10,10 +10,12 @@ import {
 import { AxiosError } from 'axios';
 import { apiClient } from '../api/client';
 import { useToast } from '../context/toast-context';
-import { useAbortableRequestOwner } from '../hooks/useAbortableRequestOwner';
 import { FixCard } from '../components/review/FixCard';
+import { ArtifactReviewPanel } from '../components/review/ArtifactReviewPanel';
+import { useAbortableRequestOwner } from '../hooks/useAbortableRequestOwner';
 import { ReadingOrderComparison } from '../components/review/ReadingOrderComparison';
 import { PDFStructureEditor } from '../components/review/PDFStructureEditor';
+import { Button } from '../components/ui/Button';
 import { MatterhornResultsBar } from '../components/review/MatterhornResultsBar';
 import {
   VisualAnalysisStatusPanel,
@@ -22,6 +24,7 @@ import {
 import type { Fix } from '../components/review/FixCard';
 import {
   getDeferralLifecycle,
+  isPendingReviewStatus,
   isAttentionRequired,
   isHumanReviewedStatus,
   summarizeReviewFixes,
@@ -41,17 +44,27 @@ import { parsePDFCloudContext } from '../utils/pdfStructureEditor';
 interface DocumentReview {
   scan_id: string;
   file_name: string;
+  scan_type: string;
   status: ReviewQueueStatus;
+  preview_available: boolean;
   fixes: Fix[];
   matterhorn_total: number;
   matterhorn_passed: number;
   matterhorn_failed: number;
+  matterhorn_warnings: number;
+  matterhorn_validated_at: string | null;
   validator_result: string;
   total_fixes: number;
   needs_review_count: number;
   auto_approved_count: number;
   reviewed_count: number;
   visual_analyses: VisualAnalysisSummary[];
+}
+
+interface PdfPreviewState {
+  scanId: string;
+  url: string | null;
+  error: string | null;
 }
 
 interface ReviewResponse {
@@ -82,17 +95,26 @@ const EVIDENCE_FORMATS: { value: ReviewEvidenceFormat; label: string }[] = [
 // Component
 // ============================================================================
 
-export function DocumentReviewPage(): React.ReactElement {
-  const { scanId } = useParams<{ scanId: string }>();
-  const location = useLocation();
-  return <DocumentReviewContent key={`${scanId}:${location.search}`} scanId={scanId} />;
+interface ReviewPageContext {
+  scanId?: string;
+  cloudFileId?: string;
+  backPath?: string;
+  resultPath?: string;
+  pdfToolsAvailable?: boolean;
 }
 
-function DocumentReviewContent({ scanId }: { scanId: string | undefined }): React.ReactElement {
+export function DocumentReviewPage(context: ReviewPageContext = {}): React.ReactElement {
+  const { scanId: routeScanId } = useParams<{ scanId: string }>();
+  const scanId = context.scanId ?? routeScanId;
+  const location = useLocation();
+  return <DocumentReviewContent key={`${scanId}:${context.cloudFileId ?? location.search}`} {...context} scanId={scanId} />;
+}
+
+function DocumentReviewContent({ scanId, cloudFileId: suppliedCloudId, backPath, resultPath, pdfToolsAvailable = true }: ReviewPageContext): React.ReactElement {
   const navigate = useNavigate();
   const location = useLocation();
   const toast = useToast();
-  const cloudContext = parsePDFCloudContext(location.search);
+  const cloudContext = parsePDFCloudContext(suppliedCloudId === undefined ? location.search : `?cloud_file_id=${encodeURIComponent(suppliedCloudId)}`);
   const cloudFileId = cloudContext.kind === 'cloud' ? cloudContext.id : null;
 
   const [review, setReview] = useState<DocumentReview | null>(null);
@@ -100,46 +122,109 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
   const [error, setError] = useState<string | null>(null);
   const [fixFilter, setFixFilter] = useState<FixFilter>('all');
   const [approveAllLoading, setApproveAllLoading] = useState(false);
+  const [previewState, setPreviewState] = useState<PdfPreviewState | null>(null);
   const [downloadingFormat, setDownloadingFormat] = useState<ReviewEvidenceFormat | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const [comparisonRefresh, setComparisonRefresh] = useState(0);
   const reviewOwner = useAbortableRequestOwner(scanId);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [artifactRefresh, setArtifactRefresh] = useState(0);
 
   // Fetch document review data
-  const fetchReview = useCallback(async (initial = false): Promise<void> => {
-    if (!scanId) return;
+  const loadReview = useCallback(async (): Promise<DocumentReview | null> => {
+    if (!scanId) return null;
     const attempt = reviewOwner.begin();
     try {
-      if (initial) setLoading(true);
       const response = await apiClient.get<DocumentReview>(`/api/reviews/${scanId}`, { signal: attempt.controller.signal });
-      if (!reviewOwner.isCurrent(attempt)) return;
+      if (!reviewOwner.isCurrent(attempt)) return null;
       if (response.data.scan_id !== scanId) throw new Error('Review response does not match this document.');
-      setReview(response.data);
+      return response.data;
+    } catch (error) {
+      if (!reviewOwner.isCurrent(attempt)) return null;
+      throw error;
+    } finally {
+      reviewOwner.finish(attempt);
+    }
+  }, [scanId, reviewOwner]);
+
+  const refreshReview = async (preserveCurrent = false): Promise<void> => {
+    try {
+      const nextReview = await loadReview();
+      if (!nextReview) return;
+      setReview(nextReview);
+      setArtifactRefresh(value => value + 1);
       setError(null);
     } catch (err: unknown) {
-      if (!reviewOwner.isCurrent(attempt)) return;
       console.error('Failed to fetch review:', err);
       const message = err instanceof AxiosError
         ? err.response?.data?.detail || err.message
         : err instanceof Error
           ? err.message
           : 'An unexpected error occurred';
-      if (initial) setError(message);
-      else toast.error('Could not refresh the review. Reload the page to see current decisions.', 'Review Refresh');
-    } finally {
-      if (reviewOwner.finish(attempt)) setLoading(false);
+      if (preserveCurrent) {
+        toast.error('The PDF candidate was saved, but the review could not refresh. Reload the page to see current decisions.', 'Review Refresh');
+      } else {
+        setError(message);
+      }
     }
-  }, [scanId, reviewOwner, toast]);
+  };
 
   useEffect(() => {
     let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) void fetchReview(true);
+    void loadReview().then((nextReview) => {
+      if (!cancelled && nextReview) {
+        setReview(nextReview);
+        setError(null);
+      }
+    }).catch((err: unknown) => {
+      if (cancelled) return;
+      console.error('Failed to fetch review:', err);
+      const message = err instanceof AxiosError
+        ? err.response?.data?.detail || err.message
+        : err instanceof Error
+          ? err.message
+          : 'An unexpected error occurred';
+      setError(message);
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [fetchReview]);
+  }, [loadReview]);
+
+  // Fetch the source with the authenticated API client, then hand a local
+  // object URL to the browser's native PDF renderer.
+  useEffect(() => {
+    if (!scanId || review?.scan_id !== scanId || !review?.preview_available || !previewOpen) {
+      return;
+    }
+
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+
+    void apiClient.get<Blob>(`/api/reviews/${scanId}/source`, {
+      responseType: 'blob',
+      signal: controller.signal,
+    }).then((response) => {
+      if (controller.signal.aborted) return;
+      objectUrl = window.URL.createObjectURL(response.data);
+      setPreviewState({ scanId, url: objectUrl, error: null });
+    }).catch((err: unknown) => {
+      if (controller.signal.aborted) return;
+      console.error('Failed to fetch PDF preview:', err);
+      setPreviewState({
+        scanId,
+        url: null,
+        error: 'The source PDF could not be loaded for preview.',
+      });
+    });
+
+    return () => {
+      controller.abort();
+      if (objectUrl) window.URL.revokeObjectURL(objectUrl);
+    };
+  }, [scanId, review?.scan_id, review?.preview_available, previewOpen]);
 
   const summary = useMemo(
     () => summarizeReviewFixes(review?.fixes ?? []),
@@ -180,7 +265,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
         notes,
       });
 
-      await fetchReview();
+      await refreshReview();
 
       toast.success(editedContent ? 'Fix edited and approved' : 'Fix approved', 'Review Updated');
     } catch (err: unknown) {
@@ -202,7 +287,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
         notes,
       });
 
-      await fetchReview();
+      await refreshReview();
 
       toast.success('Fix rejected', 'Review Updated');
     } catch (err: unknown) {
@@ -228,7 +313,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
         reason,
         expires_at: expiresAt,
       });
-      await fetchReview();
+      await refreshReview();
       toast.success('Deferral recorded; the finding remains unresolved', 'Review Deferred');
     } catch (err: unknown) {
       const message = err instanceof AxiosError
@@ -244,7 +329,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
     if (!scanId || editSaving) return;
     try {
       await apiClient.post(`/api/reviews/${scanId}/fixes/${fixId}/deferral/revoke`);
-      await fetchReview();
+      await refreshReview();
       toast.success('Deferral revoked; the finding requires attention', 'Deferral Revoked');
     } catch (err: unknown) {
       const message = err instanceof AxiosError
@@ -269,7 +354,7 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
         action: 'approve',
         fix_ids: pendingFixIds,
       });
-      await fetchReview();
+      await refreshReview();
 
       if (response.data.affected === pendingFixIds.length) {
         toast.success('All pending fixes approved', 'Batch Approve');
@@ -352,29 +437,34 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
           >
             {error || 'Document not found'}
           </div>
-          <button onClick={() => navigate('/review')} className="btn-secondary mt-4 flex items-center gap-2">
+          <Button variant="secondary" size="sm" className="mt-4 flex items-center gap-2" onClick={() => navigate(backPath ?? '/review')}>
             <ArrowLeft className="w-4 h-4" aria-hidden="true" />
-            Back to Queue
-          </button>
+            {backPath ? 'Back to Course' : 'Back to Queue'}
+          </Button>
         </div>
       </div>
     );
   }
 
   const needsReviewCount = summary.needs_review_count;
+  const currentPreview = previewState?.scanId === scanId ? previewState : null;
+  const previewUrl = review.preview_available ? currentPreview?.url || null : null;
+  const previewLoading = review.preview_available && !currentPreview;
+  const previewError = review.preview_available
+    ? currentPreview?.error || null
+    : 'The source PDF is no longer available for preview.';
 
   return (
     <div className="flex min-w-0 flex-col min-h-[calc(100dvh-4rem)]">
       {/* Top bar */}
       <div
-        className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 shrink-0 sm:px-6"
-        style={{ backgroundColor: 'var(--surface-secondary)', borderBottom: '1px solid var(--border-primary)' }}
+        className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 shrink-0 bg-[var(--surface-secondary)] border-b border-[var(--border-primary)] sm:px-6"
       >
         <div className="flex flex-[1_1_20rem] items-center gap-3 min-w-0 sm:gap-4">
           <button
-            onClick={() => navigate('/review')}
+            onClick={() => navigate(backPath ?? '/review')}
             className="p-1.5 shrink-0 rounded hover:bg-[var(--surface-tertiary)] transition-colors"
-            aria-label="Back to review queue"
+            aria-label={backPath ? 'Back to course' : 'Back to review queue'}
           >
             <ArrowLeft className="w-5 h-5 text-[var(--content-secondary)]" aria-hidden="true" />
           </button>
@@ -388,18 +478,20 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
             {needsReviewCount > 0 ? (
               <span className="text-[var(--feature-warning-content)] font-medium">{needsReviewCount} need review</span>
             ) : (
-              <span className="text-[var(--feature-success-content)]">{summary.total_fixes === 0 ? 'No findings to review' : 'All findings reviewed'}</span>
+              <span className="text-[var(--feature-success-content)]">{summary.total_fixes === 0 ? 'No proposed changes to review' : 'All proposed changes reviewed'}</span>
             )}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 max-w-full sm:justify-end">
           <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Download review evidence">
             {EVIDENCE_FORMATS.map(({ value, label }) => (
-              <button
+              <Button
                 key={value}
+                variant="secondary"
+                size="sm"
                 onClick={() => handleEvidenceDownload(value)}
                 disabled={downloadingFormat !== null}
-                className="btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                className="flex items-center gap-1.5"
                 aria-label={`Download ${label} review evidence`}
               >
                 {downloadingFormat === value ? (
@@ -408,14 +500,16 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
                   <Download className="w-4 h-4" aria-hidden="true" />
                 )}
                 {downloadingFormat === value ? 'Downloading' : label}
-              </button>
+              </Button>
             ))}
           </div>
           {needsReviewCount > 0 && (
-            <button
+            <Button
+              variant="primary"
+              size="sm"
               onClick={handleApproveAll}
               disabled={approveAllLoading || editSaving}
-              className="btn-primary text-sm py-1.5 px-4 flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
+              className="flex items-center gap-2"
               aria-label={`Approve all ${needsReviewCount} pending fixes`}
             >
               {approveAllLoading ? (
@@ -424,31 +518,61 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
                 <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
               )}
               Approve All ({needsReviewCount})
-            </button>
+            </Button>
           )}
         </div>
       </div>
 
       {/* Main content */}
       <div className="flex flex-1 flex-col min-w-0">
-        {cloudContext.kind === 'invalid' ?
-          <p className="border-b border-[var(--border-primary)] px-4 py-3 text-sm text-[var(--feature-danger-content)]" role="alert">This Review link has invalid file context. Open a valid file-specific Review link to inspect or edit PDF structure.</p> : <>
+        {scanId && cloudContext.kind !== 'invalid' && <ArtifactReviewPanel key={`${scanId}:${cloudFileId ?? ''}`} scanId={scanId} scanType={review.scan_type} cloudFileId={cloudFileId} resultPath={resultPath} refreshToken={artifactRefresh} editing={editSaving} rebuildSupported={pdfToolsAvailable} canRebuild={review.fixes.some(fix => ['approved', 'edited', 'auto_approved', 'applied'].includes(fix.review_status)) && !review.fixes.some(fix => isPendingReviewStatus(fix.review_status))} />}
+        {review.scan_type.toLowerCase() === 'pdf' && !pdfToolsAvailable && <p className="border-b border-[var(--border-primary)] px-4 py-3 text-sm text-secondary" role="status">PDF structure editing and reviewed rebuilds are unavailable in this Brightspace launch. Download the working file for further manual corrections.</p>}
+        {review.scan_type.toLowerCase() === 'pdf' && pdfToolsAvailable && (cloudContext.kind === 'invalid' ?
+          <p className="border-b border-[var(--border-primary)] px-4 py-3 text-sm text-[var(--feature-danger-content)]" role="alert">This Review link has invalid file context. PDF structure editing is unavailable here.</p> : <>
             {cloudFileId ? <p className="border-b border-[var(--border-primary)] px-4 py-3 text-sm text-secondary" role="status">Reading-order comparison for this cloud file is unavailable on this page.</p> :
               <ReadingOrderComparison key={scanId} scanId={scanId!} refreshToken={comparisonRefresh} />}
-            <PDFStructureEditor key={`${scanId}:${cloudFileId ?? ''}`} scanId={scanId!} cloudFileId={cloudFileId}
+            {review.scan_type.toLowerCase() === 'pdf' && <PDFStructureEditor key={`${scanId}:${cloudFileId ?? ''}`} scanId={scanId!} cloudFileId={cloudFileId}
               onSavingChange={setEditSaving}
-              onSaved={() => { setComparisonRefresh(value => value + 1); void fetchReview(); }} />
-          </>}
+              onSaved={() => { setComparisonRefresh(value => value + 1); void refreshReview(true); }} />}
+          </>)}
+        {/* Keep the full-document preview available without reserving half the viewport. */}
+        {review.scan_type.toLowerCase() === 'pdf' && <details className="border-b border-[var(--border-primary)] p-4" onToggle={event => { setPreviewState(null); setPreviewOpen(event.currentTarget.open); }}>
+          <summary className="cursor-pointer text-sm font-semibold text-primary">Full original PDF preview</summary>
+          {previewOpen && <div className="mt-3 h-[65dvh] min-h-[20rem]">
+            {previewUrl ? (
+              <iframe
+                src={previewUrl}
+                title={`Preview of ${review.file_name}`}
+                className="w-full h-full border-0 bg-white"
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center p-8">
+                  {previewLoading ? (
+                    <Loader className="w-10 h-10 mx-auto mb-4 animate-spin text-[var(--accent)]" aria-hidden="true" />
+                  ) : (
+                    <FileText className="w-16 h-16 mx-auto mb-4 text-[var(--content-tertiary)] opacity-40" aria-hidden="true" />
+                  )}
+                  <p className="text-lg font-medium text-[var(--content-tertiary)]">
+                    {previewLoading ? 'Loading PDF preview' : 'PDF preview unavailable'}
+                  </p>
+                  {previewError && (
+                    <p className="text-sm text-[var(--content-tertiary)] mt-1">{previewError}</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>}
+        </details>}
 
-        {/* Fix list */}
+        {/* Right panel - fix list */}
         <div className="flex-1 flex flex-col min-w-0">
           <VisualAnalysisStatusPanel analyses={review.visual_analyses} />
           {/* Filter bar */}
           <div
-            className="flex flex-wrap items-center gap-2 px-4 py-2 shrink-0"
+            className="flex flex-wrap items-center gap-2 px-4 py-2 shrink-0 border-b border-[var(--border-primary)]"
             role="group"
             aria-label="Filter fixes"
-            style={{ borderBottom: '1px solid var(--border-primary)' }}
           >
             {(
               [
@@ -512,7 +636,9 @@ function DocumentReviewContent({ scanId }: { scanId: string | undefined }): Reac
           total={review.matterhorn_total}
           passed={review.matterhorn_passed}
           failed={review.matterhorn_failed}
+          warnings={review.matterhorn_warnings}
           result={review.validator_result}
+          validatedAt={review.matterhorn_validated_at}
         />
       </div>
     </div>

@@ -175,7 +175,15 @@ export interface RecordedRemediationOutcome {
   source_index: number;
   source_index_scope: 'original_scan' | 'approved_subset';
   issue_id?: string | null;
+  original_source_index?: number;
   status: 'fixed' | 'withheld' | 'manual' | 'failed' | 'unreported';
+  reason_code?: string;
+  reason?: string;
+  next_step?: string;
+  attempt?: 'not_recorded' | 'not_attempted' | 'not_applied' | 'candidate_change' | 'delivered_change';
+  verification_passed?: boolean;
+  verification_scope?: 'saved_file_finding';
+  needs_review?: boolean;
 }
 
 export interface RemediationJobStatus extends RemediationJobStart {
@@ -201,6 +209,7 @@ export interface RemediationJobStatus extends RemediationJobStart {
   score_provenance?: string | null;
   score_verification_reason?: string | null;
   score_measurement?: RemediationScoreMeasurement | null;
+  fresh_score_comparison?: RemediationScoreMeasurement | null;
   human_review_required?: boolean;
   improvement: number | null;
   artifact_id: string | null;

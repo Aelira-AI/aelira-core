@@ -509,7 +509,7 @@ class StructureTreeChecker:
                 )
                 pass
 
-            if has_struct_tree and not has_pdfua_id:
+            if not has_pdfua_id:
                 issues.append(
                     {
                         "severity": "medium",
@@ -519,7 +519,7 @@ class StructureTreeChecker:
                         "page_number": 1,
                         "location": "XMP metadata",
                         "element": "pdfuaid:part",
-                        "suggested_fix": "Set pdfuaid:part=1 in XMP metadata to declare PDF/UA-1 conformance",
+                        "suggested_fix": "Complete independent PDF/UA validation and accessibility review before declaring conformance in XMP metadata",
                         "issue_type": "missing_pdfua_identifier",
                     }
                 )
@@ -713,13 +713,19 @@ class StructureTreeChecker:
                             "Times-Italic",
                             "Times-BoldItalic",
                         }
-                        if any(std in base_font for std in standard_14):
+                        if (
+                            font_subtype == "/Type1"
+                            and base_font.lstrip("/") in standard_14
+                        ):
                             continue
 
                         if not has_tounicode:
                             # Check if /Encoding provides adequate mapping
                             encoding = font.get(Name("/Encoding"))
-                            if encoding is None:
+                            if encoding is None or (
+                                font_subtype == "/Type0"
+                                and str(encoding) in {"/Identity-H", "/Identity-V"}
+                            ):
                                 fonts_missing_unicode += 1
                     except Exception:
                         record_incomplete_check(

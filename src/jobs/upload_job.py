@@ -6,6 +6,8 @@ Uploads remediated files back to cloud storage (Google Drive, OneDrive, SharePoi
 """
 
 import asyncio
+from datetime import datetime, timezone
+import hmac
 import logging
 import os
 import shutil
@@ -20,6 +22,7 @@ from ..db.models import (
     CloudProvider,
     CloudFile,
     RemediationArtifact,
+    Scan,
 )
 from ..integrations.oauth_token_manager import OAuthTokenManager
 from ..integrations.google_workspace.google_drive import GoogleDriveIntegration
@@ -31,11 +34,91 @@ from ..integrations.cloud_base import (
     CloudRateLimitError,
 )
 from ..services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
     ArtifactError,
     RemediationArtifactService,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def upload_approval_snapshot(artifact: Any) -> dict[str, str]:
+    """Bind writeback to exact bytes and one human review decision."""
+    checksum = getattr(artifact, "approval_checksum", None)
+    digest = getattr(artifact, "approval_review_digest", None)
+    actor = getattr(artifact, "approved_by_ref", None)
+    approved_at = getattr(artifact, "approved_at", None)
+    if (
+        getattr(artifact, "review_status", None) != "approved"
+        or not isinstance(checksum, str)
+        or not isinstance(getattr(artifact, "sha256", None), str)
+        or not hmac.compare_digest(checksum, artifact.sha256)
+        or not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or not isinstance(actor, str)
+        or not actor.strip()
+        or not isinstance(approved_at, datetime)
+        or approved_at.tzinfo is None
+    ):
+        raise ArtifactAuthorizationError("human artifact approval is required")
+    return {
+        "artifact_checksum": checksum,
+        "approval_review_digest": digest,
+        "approved_by_ref": actor,
+        "approved_at": approved_at.astimezone(timezone.utc).isoformat(),
+    }
+
+
+def require_upload_approval_snapshot(artifact: Any, payload: dict[str, Any]) -> None:
+    expected = upload_approval_snapshot(artifact)
+    if any(
+        not isinstance(payload.get(key), str)
+        or not hmac.compare_digest(payload[key], value)
+        for key, value in expected.items()
+    ):
+        raise ArtifactAuthorizationError("upload approval changed after enqueue")
+
+
+def upload_source_snapshot(cloud_file: Any, scan: Any) -> dict[str, str | None]:
+    """Bind the approved bytes to the current public scan and remote target."""
+    if (
+        cloud_file is None
+        or scan is None
+        or getattr(cloud_file, "needs_rescan", False) is True
+        or getattr(scan, "document_source", None) != "cloud_file"
+        or str(getattr(scan, "document_id", None))
+        != str(getattr(cloud_file, "id", None))
+        or str(getattr(cloud_file, "last_scan_id", None))
+        != str(getattr(scan, "id", None))
+        or not isinstance(getattr(cloud_file, "provider_file_id", None), str)
+        or not cloud_file.provider_file_id
+        or not isinstance(getattr(cloud_file, "file_name", None), str)
+        or not cloud_file.file_name
+    ):
+        raise ArtifactAuthorizationError("upload source changed after review")
+    modified_at = getattr(cloud_file, "provider_modified_at", None)
+    if modified_at is not None and not isinstance(modified_at, datetime):
+        raise ArtifactAuthorizationError("upload source changed after review")
+    return {
+        "source_scan_id": str(scan.id),
+        "source_document_id": str(scan.document_id),
+        "source_provider_file_id": cloud_file.provider_file_id,
+        "source_provider_parent_id": getattr(cloud_file, "provider_parent_id", None),
+        "source_file_name": cloud_file.file_name,
+        "source_provider_version": getattr(cloud_file, "provider_version", None),
+        "source_provider_modified_at": modified_at.isoformat() if modified_at else None,
+    }
+
+
+def require_upload_source_snapshot(
+    cloud_file: Any, scan: Any, payload: dict[str, Any]
+) -> None:
+    expected = upload_source_snapshot(cloud_file, scan)
+    if any(
+        key not in payload or payload[key] != value for key, value in expected.items()
+    ):
+        raise ArtifactAuthorizationError("upload source changed after enqueue")
 
 
 class IndeterminateProviderOutcome(RuntimeError):
@@ -124,11 +207,35 @@ async def process_upload_job(
         artifact.department_id != job_data.get("department_id")
         or artifact.cloud_file_id != job_data.get("cloud_file_id")
         or artifact.provider != job_data.get("provider")
+        or artifact.scan_id != job_data.get("scan_id")
     ):
         return {
             "success": False,
             "uploaded": False,
             "error": "managed_artifact_unavailable",
+        }
+
+    cloud_file = db.get(CloudFile, artifact.cloud_file_id)
+    scan = db.get(Scan, artifact.scan_id)
+    if (
+        cloud_file is None
+        or cloud_file.department_id != artifact.department_id
+        or cloud_file.provider != artifact.provider
+        or cloud_file.current_remediation_artifact_id != artifact.id
+        or cloud_file.credential_id != job_data.get("credential_id")
+    ):
+        return {
+            "success": False,
+            "uploaded": False,
+            "error": "provider_authority_invalid",
+        }
+    try:
+        require_upload_source_snapshot(cloud_file, scan, job_data)
+    except ArtifactAuthorizationError:
+        return {
+            "success": False,
+            "uploaded": False,
+            "error": "provider_authority_invalid",
         }
 
     temp_path: str | None = None
@@ -143,6 +250,7 @@ async def process_upload_job(
             require_approved=True,
             approval_checksum=job_data.get("artifact_checksum"),
         ) as stream:
+            require_upload_approval_snapshot(artifact, job_data)
             with tempfile.NamedTemporaryFile(
                 prefix="aelira-upload-",
                 suffix=Path(artifact.filename).suffix,
@@ -150,8 +258,11 @@ async def process_upload_job(
             ) as temporary:
                 temp_path = temporary.name
                 shutil.copyfileobj(stream, temporary)
+        # open_verified locks the scan, cloud file and approval rows. Its stream
+        # closes without ending the transaction; release read locks before the
+        # separate final effect fence acquires that same authority order.
+        db.rollback()
         internal_data = dict(job_data)
-        internal_data.pop("artifact_id", None)
         internal_data.pop("artifact_checksum", None)
         internal_data["file_path"] = temp_path
         return await _process_upload_path(
@@ -327,10 +438,25 @@ async def _process_upload_path(
                 f"-> {result.get('new_file_id')}"
             )
 
-            # Update cloud file record to track remediated version
+            artifact_id = job_data.get("artifact_id")
+            if isinstance(artifact_id, str):
+                RemediationArtifactService.from_settings().mark_written(
+                    db,
+                    artifact_id=artifact_id,
+                    provider_result={
+                        "provider": provider,
+                        "new_file_id": result.get("new_file_id"),
+                        "new_file_name": result.get("new_file_name"),
+                        "external_effect_token": external_effect_token,
+                    },
+                )
+            # Persist the cloud pointer and artifact writeback receipt together.
             cloud_file.has_remediated_version = True
             cloud_file.remediation_origin = "manual"
             cloud_file.remediated_file_id = result.get("new_file_id")
+            if isinstance(artifact_id, str):
+                cloud_file.writeback_status = "written_back"
+                cloud_file.writeback_at = datetime.now(timezone.utc)
             if assert_owned is not None:
                 await assert_owned()
             db.commit()
@@ -489,8 +615,13 @@ async def _upload_to_blackboard(
                 "error": "Blackboard instance URL not found in credential metadata",
             }
 
-        # Get course_id from cloud file metadata
-        course_id = cloud_file.metadata.get("course_id")
+        # Blackboard rows bind provider_parent_id to the authorized course.
+        metadata = (
+            cloud_file.provider_metadata
+            if isinstance(cloud_file.provider_metadata, dict)
+            else {}
+        )
+        course_id = cloud_file.provider_parent_id
         if not course_id:
             return {
                 "success": False,
@@ -509,7 +640,7 @@ async def _upload_to_blackboard(
             result = await api_client.upload_file(
                 course_id=course_id,
                 local_path=file_path,
-                parent_content_id=cloud_file.provider_parent_id,
+                parent_content_id=metadata.get("parent_content_id"),
                 title=file_name,
             )
 
@@ -565,7 +696,23 @@ async def handle_upload_job(
             "uploaded": False,
             "error": "invalid_job_scope",
         }
-    for field in ("artifact_id", "artifact_checksum"):
+    job_data["credential_id"] = job.credential_id
+    for field in (
+        "artifact_id",
+        "artifact_checksum",
+        "approval_review_digest",
+        "approved_by_ref",
+        "approved_at",
+        "scan_id",
+        "create_new_version",
+        "source_scan_id",
+        "source_document_id",
+        "source_provider_file_id",
+        "source_provider_parent_id",
+        "source_file_name",
+        "source_provider_version",
+        "source_provider_modified_at",
+    ):
         if field in payload:
             job_data[field] = payload[field]
     return await process_upload_job(

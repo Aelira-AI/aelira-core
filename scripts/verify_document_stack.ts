@@ -47,9 +47,11 @@ function officeContent(file: string, kind: string): string[] {
     assert(text.length > 0, 'PDF text-preservation probe must observe source content');
     return [text];
   }
-  const entry = kind === 'powerpoint' ? 'ppt/slides/slide1.xml' : 'xl/worksheets/sheet1.xml';
+  const entry = kind === 'word' ? 'word/document.xml'
+    : kind === 'powerpoint' ? 'ppt/slides/slide1.xml' : 'xl/worksheets/sheet1.xml';
   const xml = execFileSync('unzip', ['-p', file, entry], { encoding: 'utf8' });
-  const pattern = kind === 'powerpoint' ? /<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g : /<(?:t|v)(?:\s[^>]*)?>([\s\S]*?)<\/(?:t|v)>/g;
+  const pattern = kind === 'word' ? /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g
+    : kind === 'powerpoint' ? /<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g : /<(?:t|v)(?:\s[^>]*)?>([\s\S]*?)<\/(?:t|v)>/g;
   const values = [...xml.matchAll(pattern)].map((match) => match[1]);
   assert(values.length > 0, 'Content-preservation probe must observe source content');
   return values;
@@ -173,13 +175,15 @@ async function scanBytes(bytes: Uint8Array, filename: string, kind: string) {
     (v: any) => Boolean(v.scan?.result) || v.scan?.status?.toLowerCase() === 'failed');
   return result.scan;
 }
-const cases: { name: string; kind: string; publish: boolean; incomplete?: boolean; useAI?: boolean; file?: string }[] = [
+const cases: { name: string; kind: string; publish: boolean; partial?: boolean; expectedRemaining?: string[]; incomplete?: boolean; useAI?: boolean; file?: string }[] = [
   { name: 'course.pptx', kind: 'powerpoint', publish: true },
   { name: 'course.xlsx', kind: 'excel', publish: true },
-  { name: 'course.docx', kind: 'word', publish: false },
-  { name: 'metadata.pdf', kind: 'pdf', publish: true },
-  { name: 'simple_syllabus.pdf', kind: 'pdf', publish: false },
-  { name: 'test_forms_links.pdf', kind: 'pdf', publish: true },
+  // Verified improvements remain downloadable while unresolved findings need review.
+  { name: 'course.docx', kind: 'word', publish: true, partial: true },
+  // Adding tags does not certify PDF/UA; its undeclared identifier remains manual.
+  { name: 'metadata.pdf', kind: 'pdf', publish: true, partial: true, expectedRemaining: ['missing_pdfua_identifier'] },
+  { name: 'simple_syllabus.pdf', kind: 'pdf', publish: true, partial: true },
+  { name: 'test_forms_links.pdf', kind: 'pdf', publish: true, partial: true, expectedRemaining: ['missing_pdfua_identifier'] },
   { name: 'academic_paper.pdf', kind: 'pdf', publish: false, incomplete: true },
   { name: 'image_heavy.pptx', kind: 'powerpoint', file: 'tests/fixtures/powerpoint/image_heavy.pptx', publish: false, useAI: true },
 ];
@@ -251,7 +255,20 @@ for (const test of cases) {
       const rescan = await scanBytes(saved, `saved-${test.name}`, test.kind);
       assert.equal(rescan.result.compliance_score, job.remediated_score, 'Downloaded bytes independently rescan to displayed score');
       assert.equal(rescan.result.issues.length, job.remaining_count);
-      assert.equal(job.remaining_count, 0, 'Successful fixture has no remaining scanner findings');
+      if (test.expectedRemaining) {
+        assert.deepEqual(rescan.result.issues.map((issue: any) => issue.issue_type), test.expectedRemaining);
+        assert.equal(job.fixed_count, total - test.expectedRemaining.length);
+        assert.equal(job.manual_count, test.expectedRemaining.length);
+        assert.equal(job.failed_count, 0);
+        assert.equal(job.skipped_count, 0);
+      }
+      if (test.partial) {
+        assert(job.fixed_count > 0, 'Partial candidate includes verified improvements');
+        assert(job.remaining_count > 0, 'Partial candidate retains unresolved findings');
+        assert.equal(job.human_review_required, true, 'Partial candidates require human review');
+      } else {
+        assert.equal(job.remaining_count, 0, 'Complete fixture has no remaining scanner findings');
+      }
       const savedPath = resolve(output, `saved-${test.name}`);
       await writeFile(savedPath, saved);
       assert.deepEqual(officeContent(savedPath, test.kind), officeContent(file, test.kind), 'Fixture text, values and order survive remediation');
@@ -263,6 +280,7 @@ for (const test of cases) {
       assert.equal(reviewedJob.score_verified, job.score_verified);
       assert.equal(reviewedJob.fixed_count, job.fixed_count);
       assert.equal(reviewedJob.remaining_count, job.remaining_count);
+      if (test.partial) assert.equal(reviewedJob.human_review_required, true, 'Approving recorded changes does not resolve remaining findings');
       const afterReview = await fetch(new URL(downloadPath, api), { headers: headers(), redirect: 'error' });
       assert.equal(afterReview.status, 200);
       assert.equal(digest(new Uint8Array(await afterReview.arrayBuffer())), digest(saved), 'Post-approval download is byte-identical to inspected output');

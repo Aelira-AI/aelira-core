@@ -376,7 +376,7 @@ def test_region_association_rejects_soft_mask_before_mutation(tmp_path):
         ).tag_all_pages()
         page = pdf.pages[0]
         xobjects = page.obj[Name.Resources][Name.XObject]
-        image = next(iter(xobjects.values()))
+        image = next(iter(xobjects.items()))[1]
         image[Name("/SMask")] = image
         before = pikepdf.unparse_content_stream(
             list(pikepdf.parse_content_stream(page))
@@ -834,6 +834,12 @@ def test_real_ocr_working_copy_keeps_search_layer_and_exact_region(tmp_path):
         assert alias not in xobjects
         original_form_payload = form.read_bytes()
         assert b"3 Tr" in original_form_payload
+        # OCR engine versions may omit explicit safe graphics-state defaults.
+        # Supply them in this in-memory grammar fixture so unsafe mutations
+        # are still tested without depending on a particular emitted stream.
+        if b" J\n" not in original_form_payload or b" w\n" not in original_form_payload:
+            original_form_payload = b"1 J\n1 w\n" + original_form_payload
+            form.write(original_form_payload)
         assert b" J\n" in original_form_payload
         assert b" w\n" in original_form_payload
         unsafe_graphics_state_payloads = (
@@ -929,9 +935,13 @@ def test_real_ocr_working_copy_keeps_search_layer_and_exact_region(tmp_path):
     import uuid
 
     from src.db.models import RemediationOutcome, ScanStatus
-    from src.services.remediation_artifact_service import RemediationArtifactService
+    from src.services.remediation_artifact_service import (
+        ArtifactAuthorizationError,
+        RemediationArtifactService,
+    )
     from src.services.scan_fix_service import (
         apply_authenticated_batch_review,
+        build_output_membership,
         build_scan_fix,
     )
 
@@ -993,12 +1003,14 @@ def test_real_ocr_working_copy_keeps_search_layer_and_exact_region(tmp_path):
         rejected_by_id=None,
         rejected_by_ref=None,
         rejected_at=None,
+        provider_result={},
     )
     scan = SimpleNamespace(
         id=scan_id,
         current_remediation_artifact_id=artifact_id,
         status=ScanStatus.COMPLETED,
         remediation_outcome=RemediationOutcome.COMPLETED.value,
+        file_hash=hashlib.sha256(source.read_bytes()).hexdigest(),
     )
     query = review_db.query.return_value
     query.filter.return_value = query
@@ -1010,6 +1022,20 @@ def test_real_ocr_working_copy_keeps_search_layer_and_exact_region(tmp_path):
         service._open_verified(artifact, allowed_lifecycle={"available"})
     )
 
+    with pytest.raises(ArtifactAuthorizationError, match="bindings"):
+        service.approve(
+            review_db,
+            artifact_id=artifact_id,
+            approved_by_ref="reviewer@example.test",
+            approved_by_id=reviewer_id,
+            now=now,
+        )
+    artifact.provider_result = {
+        "reviewed_output_membership": build_output_membership(
+            artifact_sha256, scan.file_hash, [persisted_fix]
+        ),
+    }
+    assert artifact.provider_result["reviewed_output_membership"] is not None
     approved = service.approve(
         review_db,
         artifact_id=artifact_id,

@@ -33,7 +33,7 @@ from src.db.models import (
     UserRole,
 )
 from src.services.remediation_artifact_service import RemediationArtifactService
-from src.services.scan_fix_service import review_digest_for
+from src.services.scan_fix_service import build_output_membership, review_digest_for
 
 pytestmark = pytest.mark.integration
 OPERATIONS = ("metadata", "download", "approve", "reject")
@@ -68,6 +68,7 @@ def artifact_http(tmp_path, monkeypatch):
                 department_id=department.id,
                 scan_type=ScanType.WORD,
                 file_name="source.docx",
+                file_hash="d" * 64,
                 status=ScanStatus.COMPLETED,
                 remediation_outcome=RemediationOutcome.COMPLETED.value,
             )
@@ -126,7 +127,12 @@ def artifact_http(tmp_path, monkeypatch):
                 sha256=hashlib.sha256(payload).hexdigest(),
                 lifecycle_status="available",
                 review_status="pending",
-                provider_result={"requires_approval": True},
+                provider_result={
+                    "requires_approval": True,
+                    "reviewed_output_membership": build_output_membership(
+                        hashlib.sha256(payload).hexdigest(), scan.file_hash, [fix]
+                    ),
+                },
                 created_at=datetime.now(timezone.utc) - timedelta(days=2),
                 expires_at=datetime.now(timezone.utc) + timedelta(days=1),
             )
@@ -453,11 +459,17 @@ def test_canvas_course_staff_artifact_scope(artifact_http, operation, course_mat
     case.db.flush()
     case.artifact.provider = "canvas"
     case.artifact.cloud_file_id = cloud.id
-    case.artifact.provider_result = {}
-    case.scan.document_source = "canvas"
+    case.scan.document_source = "cloud_file"
     case.scan.document_id = cloud.id
     case.user.role = UserRole.FACULTY
     case.db.commit()
+    if operation == "download":
+        # A WORD working file still requires explicit approval before download.
+        # Approve as the fixture's account-wide principal, then check that the
+        # course-scoped actor can read only the exact course's approved bytes.
+        assert _request(case, "approve").status_code == 200
+    initial_review_status = case.artifact.review_status
+    initial_approved_audits = len(_audit(case, "artifact_approved"))
     actor = AuthenticatedPrincipal(
         api_key=None,
         user_id=case.user.id,
@@ -474,8 +486,8 @@ def test_canvas_course_staff_artifact_scope(artifact_http, operation, course_mat
     if not course_matches:
         assert response.status_code == 404
         assert response.json() == {"detail": "Scan not found"}
-        assert case.artifact.review_status == "pending"
-        assert _audit(case, "artifact_approved") == []
+        assert case.artifact.review_status == initial_review_status
+        assert len(_audit(case, "artifact_approved")) == initial_approved_audits
         assert _audit(case, "artifact_rejected") == []
         return
     assert response.status_code == 200

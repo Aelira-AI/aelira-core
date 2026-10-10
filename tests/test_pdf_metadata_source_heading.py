@@ -53,10 +53,15 @@ def test_metadata_full_scan_remediation_preserves_source(tmp_path):
         assert result.output_file
         assert result.success
         assert result.verification_passed
-        assert result.fixed_count == len(scan.issues)
-        assert not result.manual_issues
+        assert result.fixed_count == len(scan.issues) - 1
+        assert result.manual_count == 1
+        assert (
+            result.manual_issues[0].metadata["issue_type"] == "missing_pdfua_identifier"
+        )
         remaining = scanner.process_pdf(result.output_file)
-        assert not remaining.issues, [issue for issue in remaining.issues]
+        assert [issue["issue_type"] for issue in remaining.issues] == [
+            "missing_pdfua_identifier"
+        ]
         with fitz.open(source) as original, fitz.open(result.output_file) as saved:
             assert [page.get_text() for page in saved] == [
                 page.get_text() for page in original

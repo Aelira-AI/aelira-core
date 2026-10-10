@@ -6,6 +6,7 @@ import asyncio
 from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
+from io import BytesIO
 import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -461,6 +462,33 @@ async def test_normal_child_returns_only_serializable_result_and_bound_output(tm
 
 
 @pytest.mark.asyncio
+async def test_child_uses_immutable_source_stream_after_original_path_changes(tmp_path):
+    source = tmp_path / "source.html"
+    source.write_text("<!doctype html><html lang='fr'><body>Bonjour</body></html>")
+    scanned_bytes = source.read_bytes()
+    source.write_text("<!doctype html><html lang='fr'><body>Changed</body></html>")
+    execution = await run_remediation_subprocess(
+        source_path="",
+        source_stream=BytesIO(scanned_bytes),
+        source_filename=source.name,
+        scan_type="CODE",
+        issues=[],
+        options={"use_ai": False},
+        work_root=tmp_path / "work",
+        timeout_seconds=20,
+        termination_grace_seconds=0.1,
+    )
+    try:
+        assert execution.success is True
+        with execution.open_output_stream() as stream:
+            saved_bytes = stream.read()
+        assert b"Bonjour" in saved_bytes
+        assert b"Changed" not in saved_bytes
+    finally:
+        execution.close_output_claim()
+
+
+@pytest.mark.asyncio
 async def test_nonserializable_child_request_fails_with_stable_code(tmp_path):
     source = tmp_path / "source.html"
     source.write_text("<!doctype html><html lang='en'></html>")
@@ -793,6 +821,7 @@ async def test_worker_revalidates_approved_code_fixes_before_child(
         id="scan-1",
         department_id="department-1",
         scan_type=ScanType.CODE,
+        file_hash=hashlib.sha256(source.read_bytes()).hexdigest(),
         storage_path=str(source),
         status="processing",
         remediation_outcome=None,
@@ -877,6 +906,107 @@ async def test_worker_revalidates_approved_code_fixes_before_child(
             "metadata": {},
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_authority", ["edited_artifact", "source_hash"])
+async def test_reviewed_pdf_worker_recovers_locator_and_rechecks_current_authority(
+    tmp_path, monkeypatch, changed_authority
+):
+    from src.jobs import remediation_job
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"reviewed PDF source")
+    scanned_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id="department-1",
+        scan_type=ScanType.PDF,
+        storage_path=str(source),
+        file_hash=scanned_hash,
+        current_remediation_artifact_id="artifact-1",
+    )
+    scan_result = SimpleNamespace(
+        issues=[
+            {
+                "id": "image-1",
+                "category": "alt_text",
+                "description": "Missing alt text",
+                "location": "Page 1",
+                "metadata": {"image_index": 0},
+            }
+        ]
+    )
+    approved = SimpleNamespace(
+        id="fix-1",
+        issue_id="image-1",
+        category="alt_text",
+        severity="high",
+        description="Missing alt text",
+        location="Page 1",
+        original_content=None,
+        fixed_content="Reviewed description",
+        wcag_criteria="1.1.1",
+        review_status="approved",
+        updated_at=None,
+    )
+    db = MagicMock()
+
+    def query(model):
+        chain = MagicMock()
+        chain.filter.return_value = chain
+        if model is Scan:
+            chain.first.return_value = scan
+            chain.one_or_none.return_value = scan
+        elif model is ScanResult:
+            chain.first.return_value = scan_result
+        elif model is ScanFix:
+            chain.all.return_value = [approved]
+        return chain
+
+    db.query.side_effect = query
+    db.get.return_value = SimpleNamespace(
+        scan_id=scan.id,
+        department_id=scan.department_id,
+        cloud_file_id=None,
+        edit_provenance={"kind": "manual_pdf_edit"},
+    )
+
+    def lock_authority(*_args, **_kwargs):
+        if changed_authority == "source_hash":
+            scan.file_hash = "f" * 64
+        return None, scan, None, None, None
+
+    artifact_service = SimpleNamespace(
+        root=tmp_path / "artifacts", _lock_authority_order=lock_authority
+    )
+    monkeypatch.setattr(
+        remediation_job.RemediationArtifactService,
+        "from_settings",
+        classmethod(lambda cls: artifact_service),
+    )
+    child = AsyncMock(return_value=SimpleNamespace(success=False))
+    monkeypatch.setattr(remediation_job, "run_remediation_subprocess", child)
+
+    result = await remediation_job.process_remediation_job(
+        {
+            "job_id": "job-1",
+            "scan_id": scan.id,
+            "department_id": scan.department_id,
+            "options": {"approved_fixes_only": True, "use_ai": False},
+        },
+        db,
+        assert_owned=AsyncMock(),
+        defer_final_commit=True,
+    )
+
+    assert result["error"] == "manual_required"
+    child_issues = child.await_args.kwargs["issues"]
+    assert child_issues[0]["metadata"]["image_index"] == 0
+    if changed_authority == "edited_artifact":
+        db.get.assert_called_once()
+    else:
+        db.get.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1250,13 +1380,17 @@ async def test_handler_revalidates_code_fix_under_completion_fence(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handler_marks_only_revalidated_code_fixes_applied(monkeypatch):
+@pytest.mark.parametrize("scan_type", [ScanType.CODE, ScanType.PDF])
+@pytest.mark.parametrize("review_status", ["approved", "edited", "auto_approved"])
+async def test_handler_preserves_revalidated_fix_approval(
+    monkeypatch, scan_type, review_status
+):
     from src.jobs import remediation_job
 
     scan = SimpleNamespace(
         id="scan-1",
         department_id="department-1",
-        scan_type=ScanType.CODE,
+        scan_type=scan_type,
         storage_path="/uploads/source.html",
         status="processing",
         remediation_outcome=None,
@@ -1278,7 +1412,11 @@ async def test_handler_marks_only_revalidated_code_fixes_applied(monkeypatch):
         scan if model is Scan and identity == "scan-1" else None
     )
     approved = SimpleNamespace(
-        id="fix-1", issue_id="issue-1", review_status="approved", updated_at=None
+        id="fix-1",
+        issue_id="issue-1",
+        review_status=review_status,
+        approved_review_digest="a" * 64,
+        updated_at=None,
     )
     result = remediation_job.RemediationProcessingResult(
         {"success": True, "scan_id": "scan-1"},
@@ -1297,7 +1435,10 @@ async def test_handler_marks_only_revalidated_code_fixes_applied(monkeypatch):
     returned = await remediation_job.handle_remediation_job(job, db, object())
 
     assert returned["success"] is True
-    assert approved.review_status == "applied"
+    assert approved.review_status == (
+        "approved" if review_status == "edited" else review_status
+    )
+    assert approved.approved_review_digest == "a" * 64
     assert approved.updated_at is not None
     revalidate.assert_called_once()
     db.commit.assert_called_once()

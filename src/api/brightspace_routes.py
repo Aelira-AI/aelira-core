@@ -42,6 +42,8 @@ from ..db.models import (
     CloudJobStatus,
     APIKey,
     Scan,
+    ScanStatus,
+    RemediationOutcome as ScanRemediationOutcome,
 )
 from ..integrations.brightspace import (
     get_brightspace_authorization_url,
@@ -67,7 +69,14 @@ from ..services.remediation_artifact_service import (
 )
 from ..services.job_enqueue_service import JobEnqueueError, enqueue_cloud_job
 from ..jobs.brightspace_content_job import enqueue_brightspace_content_remediation
-from ..services.scan_fix_service import persist_scan_fixes
+from ..services.scan_fix_service import build_output_membership, persist_scan_fixes
+from ..education.remediation.score_reporting import score_fields
+from ..services.lms_content_approval import (
+    LMSContentApprovalError,
+    approve_lms_content,
+    clear_lms_content_approval,
+    current_lms_content_approval,
+)
 from ..utils.security import (
     PERSISTED_BRIGHTSPACE_ORIGIN_ERROR,
     require_brightspace_oauth_allowed_origin,
@@ -1521,6 +1530,102 @@ def _brightspace_pdf_artifact_unavailable(
     )
 
 
+def _record_brightspace_output_membership(
+    db: Session,
+    *,
+    artifact: Any,
+    cloud_file: CloudFile,
+    result: Any,
+    source_sha256: str | None,
+    scanned_source_sha256: str | None,
+    output_sha256: str,
+) -> None:
+    """Bind actually applied fixes before the guarded final publication commit.
+
+    The publisher has acquired parent locks and verified the output bytes. Its
+    staging commits precede this call, so no receipt is committed without the
+    canonical fix rows and final owner state in the same transaction.
+    """
+    if artifact.sha256 != output_sha256:
+        raise ValueError("Brightspace output does not match the worker result")
+    rows = persist_scan_fixes(
+        db, str(artifact.scan_id), getattr(result, "fixed_issues", ())
+    )
+    scan = (
+        db.query(Scan)
+        .filter(
+            Scan.id == artifact.scan_id,
+            Scan.department_id == cloud_file.department_id,
+        )
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    current_source = getattr(scan, "file_hash", None)
+    source_bound = (
+        isinstance(scanned_source_sha256, str)
+        and source_sha256 == scanned_source_sha256 == current_source
+    )
+    receipt = build_output_membership(
+        output_sha256,
+        source_sha256 if source_bound else None,
+        rows,
+    )
+    score_values = {
+        key: getattr(result, key, None)
+        for key in (
+            "score_provenance",
+            "score_verified",
+            "original_compliance_score",
+            "remediated_compliance_score",
+            "score_measurement",
+        )
+    }
+    measured = score_fields(
+        score_values,
+        original_score=score_values["original_compliance_score"],
+        source_scan_type=getattr(scan, "scan_type", None),
+        source_sha256=source_sha256,
+        output_sha256=output_sha256,
+    )
+    verification = getattr(result, "verification_result", None)
+    verified = (
+        source_bound
+        and getattr(result, "success", None) is True
+        and getattr(result, "verification_passed", None) is True
+        and getattr(verification, "passed", None) is True
+        and not getattr(verification, "regressions", ())
+        and measured["score_verified"] is True
+        and _bounded_count(getattr(result, "fixed_count", 0)) == len(rows)
+    )
+    metadata = dict(artifact.provider_result or {})
+    metadata.pop("reviewed_output_membership", None)
+    metadata.pop("output_membership_blocker", None)
+    if receipt is not None and verified and scan is not None:
+        metadata["reviewed_output_membership"] = receipt
+        metadata["fresh_score_comparison"] = measured["score_measurement"]
+        # Completion certifies the saved candidate check, not resolution of
+        # every original finding. Remaining work stays on the job and cloud row.
+        setattr(scan, "status", ScanStatus.COMPLETED)
+        scan.remediation_outcome = ScanRemediationOutcome.COMPLETED.value
+    else:
+        metadata.pop("fresh_score_comparison", None)
+        metadata["output_membership_blocker"] = (
+            "source_hash_unavailable"
+            if not isinstance(scanned_source_sha256, str) or not scanned_source_sha256
+            else (
+                "source_changed_since_scan"
+                if not source_bound
+                else (
+                    "saved_file_verification_unavailable"
+                    if not verified
+                    else "applied_fix_membership_unavailable"
+                )
+            )
+        )
+    artifact.provider_result = metadata
+
+
 async def _finish_brightspace_pdf_remediation(
     cloud_file: CloudFile,
     db: Session,
@@ -1529,6 +1634,8 @@ async def _finish_brightspace_pdf_remediation(
     complete: bool,
     decisions: Dict[str, str],
     alt_text_client: Any,
+    source_sha256: str | None = None,
+    scanned_source_sha256: str | None = None,
     assert_owned: Callable[[], Awaitable[None]] | None = None,
     remediation_job_id: str | None = None,
     commit_changes: bool = True,
@@ -1557,7 +1664,12 @@ async def _finish_brightspace_pdf_remediation(
             setattr(cloud_file, field, value)
 
     try:
-        if not complete:
+        safe_partial = (
+            getattr(result, "success", None) is True
+            and fixed > 0
+            and getattr(result, "verification_passed", None) is True
+        )
+        if not safe_partial:
             cloud_file.has_remediated_version = False
             cloud_file.remediation_origin = None
             cloud_file.remediated_issues_fixed = fixed
@@ -1597,7 +1709,13 @@ async def _finish_brightspace_pdf_remediation(
                     provider=CloudProvider.BRIGHTSPACE.value,
                     scan_type="PDF",
                     filename=claim_metadata.filename,
-                    provider_result={"verification_passed": True},
+                    provider_result={
+                        "verification_passed": True,
+                        "fixed_count": fixed,
+                        "manual_count": manual,
+                        "failed_count": failed,
+                        "remaining_count": manual + failed,
+                    },
                     commit=False,
                 )
                 if isinstance(published, ArtifactPublicationResult):
@@ -1605,10 +1723,14 @@ async def _finish_brightspace_pdf_remediation(
                     artifact = published.artifact
                 else:
                     artifact = published
-            persist_scan_fixes(
+            _record_brightspace_output_membership(
                 db,
-                str(cloud_file.last_scan_id),
-                getattr(result, "fixed_issues", ()),
+                artifact=artifact,
+                cloud_file=cloud_file,
+                result=result,
+                source_sha256=source_sha256,
+                scanned_source_sha256=scanned_source_sha256,
+                output_sha256=claim_metadata.sha256,
             )
             # A cancellation requested while the synchronous publisher held
             # control must land before any completion state or commit.
@@ -1666,7 +1788,7 @@ async def _finish_brightspace_pdf_remediation(
         cloud_file.has_remediated_version = True
         cloud_file.remediation_origin = "manual"
         cloud_file.remediated_issues_fixed = fixed
-        cloud_file.remediated_issues_remaining = 0
+        cloud_file.remediated_issues_remaining = manual + failed
         cloud_file.writeback_status = "pending_review"
         try:
             if assert_owned is not None:
@@ -1702,7 +1824,7 @@ async def _finish_brightspace_pdf_remediation(
         assert artifact is not None
         return RemediationOutcome(
             cloud_file_id=str(cloud_file.id),
-            status="completed",
+            status="completed" if complete else "manual_required",
             fixed_count=fixed,
             manual_count=manual,
             failed_count=failed,
@@ -1910,6 +2032,15 @@ async def _remediate_file_impl(
         "mov",
         "webm",
     }:
+        source_scan = (
+            db.query(Scan)
+            .filter(
+                Scan.id == cloud_file.last_scan_id,
+                Scan.department_id == cloud_file.department_id,
+            )
+            .first()
+        )
+        scanned_source_sha256 = getattr(source_scan, "file_hash", None)
         file_bytes, _ = await api_client.get_topic_file(
             metadata["org_unit_id"], int(cloud_file.provider_file_id)
         )
@@ -1939,6 +2070,8 @@ async def _remediate_file_impl(
                 complete=complete,
                 decisions=decisions,
                 alt_text_client=alt_text_client,
+                source_sha256=hashlib.sha256(file_bytes).hexdigest(),
+                scanned_source_sha256=scanned_source_sha256,
                 assert_owned=assert_owned,
                 remediation_job_id=remediation_job_id,
                 commit_changes=commit_changes,
@@ -1987,6 +2120,18 @@ async def _remediate_file_impl(
                     )
                     if isinstance(artifact, ArtifactPublicationResult):
                         artifact_publication = artifact
+                        artifact = artifact.artifact
+                    _record_brightspace_output_membership(
+                        db,
+                        artifact=artifact,
+                        cloud_file=cloud_file,
+                        result=result,
+                        source_sha256=hashlib.sha256(file_bytes).hexdigest(),
+                        scanned_source_sha256=scanned_source_sha256,
+                        output_sha256=hashlib.sha256(
+                            worker_result.remediated_bytes
+                        ).hexdigest(),
+                    )
                     durable_output = artifact.lifecycle_status == "available"
     else:
         return RemediationOutcome(
@@ -2523,6 +2668,15 @@ def _brightspace_approval_eligibility(
     cloud_file: CloudFile, *, now: Optional[datetime] = None
 ) -> _BrightspaceApprovalEligibility:
     """Return the server-authoritative durable approval authority for an item."""
+    if (
+        cloud_file.writeback_status == "approved"
+        and not cloud_file.current_remediation_artifact_id
+        and cloud_file.remediated_body
+        and current_lms_content_approval(cloud_file) is None
+    ):
+        # Legacy status-only approvals and changed candidates require a fresh
+        # human decision, which must remain reachable through Approve All.
+        return _BrightspaceApprovalEligibility(True, authority="html")
     terminal_statuses = {
         "approved",
         "written_back",
@@ -2532,7 +2686,7 @@ def _brightspace_approval_eligibility(
     }
     if cloud_file.writeback_status in terminal_statuses:
         return _BrightspaceApprovalEligibility(False, reason="already_terminal")
-    if cloud_file.remediated_body:
+    if not cloud_file.current_remediation_artifact_id and cloud_file.remediated_body:
         return _BrightspaceApprovalEligibility(True, authority="html")
 
     artifact_id = cloud_file.current_remediation_artifact_id
@@ -2562,18 +2716,17 @@ def _brightspace_approval_eligibility(
 
 
 def _get_cloud_file_or_404(
-    db: Session, cloud_file_id: str, department_id: str
+    db: Session, cloud_file_id: str, department_id: str, *, for_update: bool = False
 ) -> CloudFile:
     """Get a CloudFile by ID and department, or raise 404."""
-    cf = (
-        db.query(CloudFile)
-        .filter(
-            CloudFile.id == cloud_file_id,
-            CloudFile.department_id == department_id,
-            CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
-        )
-        .first()
+    query = db.query(CloudFile).filter(
+        CloudFile.id == cloud_file_id,
+        CloudFile.department_id == department_id,
+        CloudFile.provider == CloudProvider.BRIGHTSPACE.value,
     )
+    if for_update:
+        query = query.with_for_update().populate_existing()
+    cf = query.first()
     if not cf:
         raise HTTPException(status_code=404, detail="Content item not found")
     return cf
@@ -2583,9 +2736,13 @@ def _get_authorized_cloud_file_or_404(
     db: Session,
     cloud_file_id: str,
     principal: AuthenticatedPrincipal,
+    *,
+    for_update: bool = False,
 ) -> CloudFile:
     """Resolve a tenant-owned Brightspace item and enforce its launch course."""
-    cloud_file = _get_cloud_file_or_404(db, cloud_file_id, principal.department_id)
+    cloud_file = _get_cloud_file_or_404(
+        db, cloud_file_id, principal.department_id, for_update=for_update
+    )
     try:
         org_unit_id = int(cloud_file.provider_parent_id)
     except (TypeError, ValueError):
@@ -2826,6 +2983,7 @@ async def get_content_diff(
 
     issues_fixed = 0
     issues_remaining = 0
+    scan_result = None
     remediated = cf.has_remediated_version or cf.remediated_body
     if remediated and cf.remediated_issues_fixed is not None:
         # Authoritative counts from the remediator
@@ -2839,8 +2997,52 @@ async def get_content_diff(
             # A stored score does not attribute legacy findings to verified fixes.
             issues_remaining = len(scan_result.issues)
 
+    issues = []
+    if scan_result is not None and isinstance(scan_result.issues, list):
+        for issue in scan_result.issues[:500]:
+            if not isinstance(issue, dict):
+                continue
+            nodes = issue.get("nodes")
+            tags = issue.get("tags")
+            issues.append(
+                {
+                    "id": issue.get("id"),
+                    "impact": issue.get("impact"),
+                    "description": issue.get("description") or issue.get("help"),
+                    "wcag_tags": (
+                        [tag for tag in tags if isinstance(tag, str)]
+                        if isinstance(tags, list)
+                        else []
+                    ),
+                    "nodes_affected": len(nodes) if isinstance(nodes, list) else 0,
+                }
+            )
+
+    scan = (
+        db.query(Scan)
+        .filter(
+            Scan.id == cf.last_scan_id,
+            Scan.department_id == principal.department_id,
+        )
+        .first()
+        if cf.last_scan_id
+        else None
+    )
+    scan_id = None
+    scan_type = None
+    if (
+        scan is not None
+        and getattr(scan, "id", None) == cf.last_scan_id
+        and getattr(scan, "department_id", None) == principal.department_id
+        and getattr(scan, "document_source", None) == "cloud_file"
+        and str(getattr(scan, "document_id", None)) == str(cf.id)
+    ):
+        scan_id = str(scan.id)
+        scan_type = str(getattr(scan.scan_type, "value", scan.scan_type))
     return {
         "cloud_file_id": cf.id,
+        "scan_id": scan_id,
+        "scan_type": scan_type,
         "content_type": cf.file_type,
         "title": cf.file_name,
         "original_html": cf.content_body or "",
@@ -2870,12 +3072,24 @@ async def approve_content(
                 approved_by_ref=f"{principal.auth_method}:{principal.user_id}",
             )
         else:
-            cf.writeback_status = "approved"
+            cf = _get_authorized_cloud_file_or_404(
+                db, cloud_file_id, principal, for_update=True
+            )
+            approve_lms_content(
+                cf,
+                actor_id=principal.user_id,
+                actor_ref=f"{principal.auth_method}:{principal.user_id}",
+            )
         db.commit()
-    except ArtifactError:
+    except (ArtifactError, LMSContentApprovalError) as exc:
         db.rollback()
         raise HTTPException(
-            status_code=409, detail="artifact_approval_validation_failed"
+            status_code=409,
+            detail=(
+                "content_approval_missing_or_stale"
+                if isinstance(exc, LMSContentApprovalError)
+                else "artifact_approval_validation_failed"
+            ),
         ) from None
     return {"success": True, "message": "Content approved"}
 
@@ -2900,6 +3114,12 @@ async def reject_content(
                 rejected_by_ref=f"{principal.auth_method}:{principal.user_id}",
             )
         else:
+            cf = _get_authorized_cloud_file_or_404(
+                db, cloud_file_id, principal, for_update=True
+            )
+            if cf.current_remediation_artifact_id:
+                raise ArtifactAuthorizationError("artifact_rejection_validation_failed")
+            clear_lms_content_approval(cf)
             cf.writeback_status = "rejected"
             cf.has_remediated_version = False
             cf.remediation_origin = None
@@ -2980,7 +3200,14 @@ async def batch_approve_content(
                         approved_by_ref=f"{principal.auth_method}:{principal.user_id}",
                     )
                 else:
-                    cloud_file.writeback_status = "approved"
+                    cloud_file = _get_authorized_cloud_file_or_404(
+                        db, cloud_file_id, principal, for_update=True
+                    )
+                    approve_lms_content(
+                        cloud_file,
+                        actor_id=principal.user_id,
+                        actor_ref=f"{principal.auth_method}:{principal.user_id}",
+                    )
             outcomes.append(
                 {
                     "cloud_file_id": cloud_file_id,
@@ -2988,12 +3215,16 @@ async def batch_approve_content(
                     "reason": None,
                 }
             )
-        except ArtifactError:
+        except (ArtifactError, LMSContentApprovalError) as exc:
             outcomes.append(
                 {
                     "cloud_file_id": cloud_file_id,
                     "status": "failed",
-                    "reason": "artifact_approval_validation_failed",
+                    "reason": (
+                        "content_approval_missing_or_stale"
+                        if isinstance(exc, LMSContentApprovalError)
+                        else "artifact_approval_validation_failed"
+                    ),
                 }
             )
 
@@ -3017,100 +3248,72 @@ async def batch_approve_content(
 
 
 async def _writeback_single(api_client, cf: CloudFile, org_unit_id, topic_id, db=None):
-    """Write a single remediated file back to Brightspace.
-
-    Saves the current Brightspace content before overwriting so it can be rolled back.
-    """
+    """Replace only the exact human-approved candidate and unchanged source."""
+    if db is None:
+        raise HTTPException(status_code=409, detail="content_approval_missing_or_stale")
+    department_id = str(cf.department_id)
+    cf = _get_cloud_file_or_404(db, str(cf.id), department_id, for_update=True)
+    if not _validate_brightspace_file_scope(
+        cf, department_id=department_id, org_unit_id=int(org_unit_id)
+    ) or str(cf.provider_file_id) != str(topic_id):
+        raise HTTPException(status_code=404, detail="Content item not found")
+    if cf.current_remediation_artifact_id:
+        raise HTTPException(
+            status_code=501,
+            detail="Managed artifact automatic write-back is unsupported for Brightspace; use authenticated download",
+        )
+    if getattr(api_client, "credential_id", None) != cf.credential_id:
+        raise HTTPException(
+            status_code=409, detail="content_connection_changed_review_required"
+        )
+    approval = current_lms_content_approval(cf)
+    if approval is None:
+        raise HTTPException(status_code=409, detail="content_approval_missing_or_stale")
+    candidate = cf.remediated_body
+    ext = _brightspace_file_extension(cf)
     metadata = cf.provider_metadata or {}
-    url = metadata.get("url", "")
-    ext = url.rsplit(".", 1)[-1].lower() if "." in url else ""
-
-    if ext in ("html", "htm") or (
-        cf.content_body
-        and ext
-        not in (
-            "jpg",
-            "jpeg",
-            "png",
-            "gif",
-            "bmp",
-            "webp",
-            "svg",
-            "docx",
-            "doc",
-            "pptx",
-            "ppt",
-            "xlsx",
-            "xls",
-            "pdf",
-            "mp4",
-            "mp3",
-            "wav",
-            "avi",
-            "mov",
-            "webm",
+    if ext in {"html", "htm"}:
+        source_bytes, _ = await api_client.get_topic_file(
+            int(org_unit_id), int(topic_id)
         )
-    ):
-        # Save current file content as restore point before overwriting
-        try:
-            file_bytes, _ = await api_client.get_topic_file(int(org_unit_id), topic_id)
-            cf.content_body = file_bytes.decode("utf-8", errors="replace")
-        except Exception:
-            pass  # Keep existing content_body as fallback
-
-        # Upload remediated HTML as replacement file, preserving original name
-        original_url = (cf.provider_metadata or {}).get("url", "")
-        if original_url and "." in original_url:
-            filename = original_url.rsplit("/", 1)[-1]
-        else:
-            filename = f"{cf.file_name or 'content'}.html"
-        remediated_bytes = cf.remediated_body.encode("utf-8")
-        await api_client.replace_topic_file(
-            org_unit_id, topic_id, remediated_bytes, filename
+        current_source = source_bytes.decode("utf-8")
+        filename = metadata.get("url", "").rsplit("/", 1)[-1] or "content.html"
+        replace_file = True
+    elif cf.remediated_file_id or ext in {
+        "pdf",
+        "doc",
+        "docx",
+        "ppt",
+        "pptx",
+        "xls",
+        "xlsx",
+    }:
+        raise HTTPException(
+            status_code=501,
+            detail="File automatic write-back is unsupported for Brightspace; use authenticated download",
         )
-    elif ext in ("jpg", "jpeg", "png", "gif", "bmp", "webp", "svg"):
-        # Image: update topic description with alt text
-        await api_client.update_topic_html(org_unit_id, topic_id, cf.remediated_body)
-    elif ext in ("mp4", "mp3", "wav", "avi", "mov", "webm", "ogg"):
-        # Multimedia: DON'T replace the video/audio file with a caption file.
-        # Instead update the topic description with generated captions/transcript info.
-        if cf.remediated_body:
-            await api_client.update_topic_html(
-                org_unit_id, topic_id, cf.remediated_body
-            )
-    elif cf.remediated_file_id and os.path.exists(cf.remediated_file_id):
-        # Save original file before overwriting
-        try:
-            original_bytes, _ = await api_client.get_topic_file(
-                int(org_unit_id), topic_id
-            )
-            backup_dir = f"/app/uploads/remediated/{cf.id}"
-            os.makedirs(backup_dir, exist_ok=True)
-            original_path = os.path.join(backup_dir, f"original.{ext}")
-            with open(original_path, "wb") as bf:
-                bf.write(original_bytes)
-            meta = cf.provider_metadata or {}
-            meta["original_file_path"] = original_path
-            cf.provider_metadata = meta
-        except Exception as backup_err:
-            logger.warning(f"Failed to backup original file for {cf.id}: {backup_err}")
-
-        # Document: upload the remediated file with original name
-        with open(cf.remediated_file_id, "rb") as f:
-            file_bytes = f.read()
-        original_url = (cf.provider_metadata or {}).get("url", "")
-        if original_url and "." in original_url:
-            filename = original_url.rsplit("/", 1)[-1]
-        else:
-            filename = f"{cf.file_name or 'file'}.{ext}"
-        await api_client.replace_topic_file(org_unit_id, topic_id, file_bytes, filename)
     else:
-        if cf.remediated_body:
-            await api_client.update_topic_html(
-                org_unit_id, topic_id, cf.remediated_body
-            )
-        else:
-            raise Exception("No remediated content available for write-back")
+        current_source = await api_client.get_topic_html(
+            int(org_unit_id), int(topic_id)
+        )
+        replace_file = False
+    if (
+        not isinstance(current_source, str)
+        or hashlib.sha256(current_source.encode("utf-8")).hexdigest()
+        != approval["source_sha256"]
+        or current_lms_content_approval(cf) != approval
+    ):
+        raise HTTPException(
+            status_code=409, detail="content_source_changed_review_required"
+        )
+    # The row lock remains held through the provider effect. content_body stays
+    # the approved original, preserving the existing rollback contract.
+    if replace_file:
+        await api_client.replace_topic_file(
+            int(org_unit_id), int(topic_id), candidate.encode("utf-8"), filename
+        )
+    else:
+        await api_client.update_topic_html(int(org_unit_id), int(topic_id), candidate)
 
 
 @router.post("/content/{cloud_file_id}/writeback")
@@ -3120,7 +3323,9 @@ async def writeback_content(
     db: Session = Depends(get_db_dependency),
 ) -> Dict[str, Any]:
     """Write approved remediated content back to Brightspace."""
-    cf = _get_authorized_cloud_file_or_404(db, cloud_file_id, principal)
+    cf = _get_authorized_cloud_file_or_404(
+        db, cloud_file_id, principal, for_update=True
+    )
 
     if cf.current_remediation_artifact_id:
         raise HTTPException(
@@ -3138,6 +3343,10 @@ async def writeback_content(
         )
 
     credential = _get_credential(db, principal.department_id)
+    if cf.credential_id != credential.id:
+        raise HTTPException(
+            status_code=409, detail="content_connection_changed_review_required"
+        )
     access_token = await _ensure_valid_token(credential, db)
     metadata = cf.provider_metadata or {}
     org_unit_id = metadata.get("org_unit_id")
@@ -3152,10 +3361,13 @@ async def writeback_content(
     )
 
     try:
-        await _writeback_single(api_client, cf, org_unit_id, topic_id)
+        await _writeback_single(api_client, cf, org_unit_id, topic_id, db=db)
         cf.writeback_status = "written_back"
         db.commit()
         return {"success": True, "message": "Content written back to Brightspace"}
+    except HTTPException as exc:
+        db.rollback()
+        raise exc
     except Exception as e:
         logger.error("Writeback failed (%s)", type(e).__name__)
         cf.writeback_status = "write_failed"
@@ -3185,13 +3397,18 @@ async def batch_writeback_content(
             CloudFile.provider_parent_id == str(org_unit_id),
             CloudFile.department_id == principal.department_id,
             CloudFile.writeback_status == "approved",
-            CloudFile.remediated_body.isnot(None),
         )
         .all()
     )
 
     if not approved_files:
-        return {"written_count": 0, "failed_count": 0, "stale_count": 0}
+        return {
+            "written_count": 0,
+            "failed_count": 0,
+            "stale_count": 0,
+            "skipped_count": 0,
+            "errors": [],
+        }
 
     if any(
         not _validate_brightspace_file_scope(
@@ -3216,17 +3433,40 @@ async def batch_writeback_content(
 
     written = 0
     failed = 0
+    stale = 0
+    skipped = 0
+    errors = []
     try:
         for cf in approved_files:
             try:
+                if cf.current_remediation_artifact_id:
+                    skipped += 1
+                    errors.append(
+                        f"{cf.id}: managed artifact write-back is unsupported; use authenticated download"
+                    )
+                    continue
+                if cf.credential_id != credential.id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="content_connection_changed_review_required",
+                    )
                 topic_id = int(cf.provider_file_id)
                 file_org_unit = (cf.provider_metadata or {}).get(
                     "org_unit_id", org_unit_id
                 )
-                await _writeback_single(api_client, cf, file_org_unit, topic_id)
+                await _writeback_single(api_client, cf, file_org_unit, topic_id, db=db)
                 cf.writeback_status = "written_back"
                 written += 1
+            except HTTPException as exc:
+                if exc.status_code == 409:
+                    stale += 1
+                elif exc.status_code == 501:
+                    skipped += 1
+                else:
+                    failed += 1
+                errors.append(f"{cf.id}: {exc.detail}")
             except Exception as e:
+                errors.append(f"{cf.id}: write-back failed")
                 logger.error("Writeback failed (%s)", type(e).__name__)
                 cf.writeback_status = "write_failed"
                 failed += 1
@@ -3234,7 +3474,13 @@ async def batch_writeback_content(
     finally:
         await api_client.close()
 
-    return {"written_count": written, "failed_count": failed, "stale_count": 0}
+    return {
+        "written_count": written,
+        "failed_count": failed,
+        "stale_count": stale,
+        "skipped_count": skipped,
+        "errors": errors,
+    }
 
 
 @router.post("/content/{cloud_file_id}/rollback")

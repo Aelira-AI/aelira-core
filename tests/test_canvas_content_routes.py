@@ -27,6 +27,7 @@ from src.api.main import app
 from src.auth.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from src.db.database import get_db_dependency
 from src.db.models import CloudProvider, UserRole
+from src.services.lms_content_approval import approve_lms_content
 
 pytestmark = pytest.mark.integration
 
@@ -151,6 +152,12 @@ def _make_cloud_file(
     cf.needs_rescan = False
     cf.provider = CloudProvider.CANVAS.value
     cf.credential_id = "cred-1"
+    cf.content_slug = None
+    cf.provider_metadata = {}
+    if writeback_status == "approved" and remediated_body is not None:
+        approve_lms_content(
+            cf, actor_id="test-user-123", actor_ref="api_key:test-user-123"
+        )
     return cf
 
 

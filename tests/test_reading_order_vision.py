@@ -9,7 +9,6 @@ from unittest.mock import patch, MagicMock
 
 from src.education.remediation.reading_order import (
     ContentBlock,
-    LayoutType,
     VisionStrategy,
     get_reading_order_strategy,
 )
@@ -173,8 +172,8 @@ class TestVisionFixMissingDeps:
 class TestVisionFixWithMockedAI:
     """Test VisionStrategy.fix() with mocked AI provider."""
 
-    def test_fix_success_mocked(self):
-        """Full pipeline with mocked AI returning correct order."""
+    def test_unbound_ai_order_cannot_mutate_structure(self):
+        """AI block ordinals cannot certify an untagged PDF or identify tags."""
         strategy = VisionStrategy(allow_legacy_provider_manager=True)
 
         # Create a test PDF with content
@@ -205,8 +204,14 @@ class TestVisionFixWithMockedAI:
                 ):
                     result = strategy.fix(f.name, page_num=0)
 
-                assert result.success
-                assert result.layout_type == LayoutType.COMPLEX
+                assert not result.success
+                assert result.error == "reading_order_unbound_block_indices"
+                with fitz.open(f.name) as saved:
+                    assert saved[0].get_text().splitlines() == [
+                        "First paragraph",
+                        "Second paragraph",
+                        "Third paragraph",
+                    ]
             finally:
                 os.unlink(f.name)
 

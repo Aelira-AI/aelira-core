@@ -307,7 +307,7 @@ class ContentTagger:
             self._tag_page(page_idx, page, doc_elem, page_elems)
 
         self._build_parent_tree(struct_root)
-        self._set_pdfua_identifier()
+        # Preserve existing declarations; tagging does not certify PDF/UA.
 
     # ------------------------------------------------------------------
     # Document root

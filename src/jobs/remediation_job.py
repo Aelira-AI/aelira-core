@@ -6,6 +6,8 @@ Applies automated fixes to accessibility issues.
 """
 
 import asyncio
+import hashlib
+from io import BytesIO
 import json
 import logging
 import os
@@ -26,10 +28,12 @@ from ..db.models import (
     ScanType,
     ScanResult,
     ScanFix,
+    RemediationArtifact,
     ReviewAuditLog,
     MatterhornResult as MatterhornResultModel,
     CloudFile,
     CloudJobQueue,
+    CloudJobType,
     CloudJobStatus,
     CloudOAuthCredentials,
     CloudProvider,
@@ -51,14 +55,17 @@ from ..utils.security import (
     require_persisted_canvas_origin,
 )
 from ..services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
     ArtifactInProgressError,
     ArtifactIntegrityError,
     ArtifactPublicationResult,
     ArtifactPublicationRetryable,
     RemediationArtifactService,
 )
-from ..services.scan_fix_service import persist_scan_fixes
-from ..education.remediation.score_reporting import score_fields
+from ..services.scan_fix_service import build_output_membership, persist_scan_fixes
+from ..services.job_enqueue_service import enqueue_cloud_job
+from ..education.remediation.score_reporting import fresh_score_comparison, score_fields
+from ..education.remediation.pdf_recovery_plan import ReviewedPDFRecovery
 from ..education.remediation.latex_pdf_validation import (
     latex_result_fields,
     public_pdf_validation,
@@ -110,6 +117,7 @@ _JOB_FAILURE_CODES = {
     "remediation_failed",
     "scan_results_unavailable",
     "source_file_unavailable",
+    "project_source_review_required",
 }
 
 
@@ -241,6 +249,20 @@ def _approved_fix_snapshot(rows: list[ScanFix]) -> dict[str, tuple[Any, ...]]:
     }
 
 
+def _reviewed_output_matches(rows: list[ScanFix], fixed_issues: list[Any]) -> bool:
+    expected = {str(row.issue_id or row.id): row.fixed_content for row in rows}
+    actual = {
+        str(getattr(fix, "issue_id", "")): getattr(fix, "fixed_content", None)
+        for fix in fixed_issues
+    }
+    return bool(
+        rows
+        and len(expected) == len(rows)
+        and len(actual) == len(fixed_issues) == len(rows)
+        and actual == expected
+    )
+
+
 def _lock_and_revalidate_approved_fixes(
     db: Session,
     *,
@@ -338,6 +360,9 @@ _SAFE_RESULT_FIELDS = {
     "score_verified",
     "score_provenance",
     "score_measurement",
+    "fresh_score_comparison",
+    "reviewed_pdf_recovery",
+    "review_requirements",
     "score_verification_reason",
     "human_review_required",
     "latex_pdf_validation",
@@ -394,6 +419,13 @@ def _safe_failure_result(
         for outcome in safe["issue_outcomes"]:
             if outcome["status"] == "fixed":
                 outcome["status"] = "withheld"
+            for field in (
+                "verification_passed",
+                "verification_scope",
+                "saved_file_verification",
+                "original_source_index",
+            ):
+                outcome.pop(field, None)
     # A terminal failure has no delivered artifact, even if a legacy handler
     # reports provisional changes as fixed.
     safe["withheld_count"] += safe["fixed_count"]
@@ -527,7 +559,14 @@ async def _commit_terminal_failure(
         if prior_scan_state is None:
             prior_scan_state = {
                 field: getattr(scan, field, None)
-                for field in ("status", "remediation_outcome", "completed_at")
+                for field in (
+                    "status",
+                    "remediation_outcome",
+                    "completed_at",
+                    "progress",
+                    "progress_message",
+                    "error_message",
+                )
             }
         valid_failure_outcomes = {
             RemediationOutcome.MANUAL_REQUIRED.value,
@@ -544,6 +583,30 @@ async def _commit_terminal_failure(
             scan.completed_at = datetime.now(timezone.utc)
         elif scan.completed_at is None:
             scan.completed_at = datetime.now(timezone.utc)
+        if scan.remediation_outcome == RemediationOutcome.MANUAL_REQUIRED.value:
+            scan.progress_message = "Remediation needs manual review"
+            reason = failure.details.get("score_verification_reason")
+            if reason == "source_text_mapping_unavailable":
+                scan.error_message = (
+                    "PDF text encoding could not be verified. Export a new PDF "
+                    "from the source document or use a reviewed font/text recovery workflow."
+                )
+            elif reason == "source_text_scope_unsupported":
+                scan.error_message = (
+                    "The PDF contains a text stream this remediation path cannot verify. "
+                    "Export a new PDF from the source document or use reviewed recovery."
+                )
+            else:
+                scan.error_message = (
+                    "Remediation needs manual review. Check the recorded outcome "
+                    "and unresolved findings."
+                )
+        else:
+            scan.progress_message = "Remediation failed"
+            scan.error_message = (
+                "Remediation did not produce a verified result. Review the job "
+                "details before retrying."
+            )
 
     try:
         db.commit()
@@ -694,6 +757,7 @@ async def process_remediation_job(
     token_manager: OAuthTokenManager | None = None,
     defer_final_commit: bool = False,
     assert_owned: Any = None,
+    reviewed_pdf_recovery: ReviewedPDFRecovery | None = None,
 ) -> Dict[str, Any]:
     """
     Process a remediation job.
@@ -730,6 +794,7 @@ async def process_remediation_job(
     raw_options = job_data.get("options")
     options = raw_options if isinstance(raw_options, dict) else {}
     temp_file_path = None
+    source_snapshot_dir = None
     artifact_temp_dir = None
     artifact_service = None
     artifact_id = None
@@ -771,9 +836,28 @@ async def process_remediation_job(
                 "error": "invalid_job_payload",
                 "scan_id": scan_id,
             }
+        if reviewed_pdf_recovery is not None and (
+            not isinstance(reviewed_pdf_recovery, ReviewedPDFRecovery)
+            or cloud_file_id is not None
+            or str(getattr(scan.scan_type, "value", scan.scan_type)).upper() != "PDF"
+            or options.get("approved_fixes_only") is True
+            or job_data.get("upload_to_cloud") is True
+        ):
+            return {
+                "success": False,
+                "error": "invalid_job_payload",
+                "scan_id": scan_id,
+            }
         prior_scan_state = {
             field: getattr(scan, field, None)
-            for field in ("status", "remediation_outcome", "completed_at")
+            for field in (
+                "status",
+                "remediation_outcome",
+                "completed_at",
+                "progress",
+                "progress_message",
+                "error_message",
+            )
         }
 
         if (
@@ -794,6 +878,17 @@ async def process_remediation_job(
                 "error": "Scan results not found",
                 "scan_id": scan_id,
             }
+        structure = getattr(scan_result, "structure", None)
+        if (
+            str(getattr(scan.scan_type, "value", scan.scan_type)).upper() == "LATEX"
+            and isinstance(structure, dict)
+            and "latex_project" in structure
+        ):
+            return {
+                "success": False,
+                "error": "project_source_review_required",
+                "scan_id": scan_id,
+            }
         approved_fixes: list[ScanFix] = []
         original_scan_score = getattr(scan_result, "compliance_score", None)
         original_file_hash = getattr(scan, "file_hash", None)
@@ -804,7 +899,7 @@ async def process_remediation_job(
             scan_type_value = str(
                 getattr(scan.scan_type, "value", scan.scan_type)
             ).upper()
-            if scan_type_value != "CODE":
+            if scan_type_value not in {"CODE", "PDF"}:
                 return {
                     "success": False,
                     "error": "invalid_job_payload",
@@ -825,23 +920,30 @@ async def process_remediation_job(
                     "scan_id": scan_id,
                 }
             approved_fix_snapshot = _approved_fix_snapshot(approved_fixes)
+            requested_snapshot = job_data.get("approved_fix_snapshot")
+            if requested_snapshot is not None and requested_snapshot != {
+                key: list(values) for key, values in approved_fix_snapshot.items()
+            }:
+                return {
+                    "success": False,
+                    "error": "manual_required",
+                    "scan_id": scan_id,
+                }
         elif not scan_result.issues:
-            original_status = scan.status
-            original_outcome = scan.remediation_outcome
-            original_completed_at = scan.completed_at
             try:
                 scan.status = ScanStatus.COMPLETED
                 _set_remediation_outcome(scan, RemediationOutcome.NO_OP)
                 scan.completed_at = datetime.now(timezone.utc)
+                scan.progress = 100
+                scan.progress_message = "Remediation complete"
+                scan.error_message = None
                 if not defer_final_commit:
                     if assert_owned is not None:
                         await assert_owned()
                     db.commit()
             except Exception:
                 db.rollback()
-                scan.status = original_status
-                scan.remediation_outcome = original_outcome
-                scan.completed_at = original_completed_at
+                restore_prior_scan_state()
                 raise
             return {
                 "success": True,
@@ -887,6 +989,33 @@ async def process_remediation_job(
                 "score_verification_reason": "original_file_missing",
                 "original_compliance_score": original_scan_score,
             }
+        source_hash_valid = (
+            isinstance(original_file_hash, str)
+            and re.fullmatch(r"[0-9a-f]{64}", original_file_hash) is not None
+        )
+        source_hash_bound = False
+        reviewed_source: bytes | None = None
+        if approved_fixes_only and not source_hash_valid:
+            return {"success": False, "error": "manual_required", "scan_id": scan_id}
+        if source_hash_valid:
+            try:
+                reviewed_source = await asyncio.to_thread(Path(file_path).read_bytes)
+            except OSError:
+                return {
+                    "success": False,
+                    "error": "source_file_unavailable",
+                    "scan_id": scan_id,
+                }
+            source_hash_bound = (
+                hashlib.sha256(reviewed_source).hexdigest() == original_file_hash
+            )
+            if approved_fixes_only and not source_hash_bound:
+                return {
+                    "success": False,
+                    "error": "manual_required",
+                    "scan_id": scan_id,
+                    "score_verification_reason": "artifact_mismatch",
+                }
 
         # Managed artifacts supersede caller-visible backup paths.
 
@@ -910,6 +1039,22 @@ async def process_remediation_job(
             if approved_fixes_only
             else (scan_result.issues or [])
         )
+        if (
+            approved_fixes_only
+            and str(getattr(scan.scan_type, "value", scan.scan_type)).upper() == "PDF"
+        ):
+            from ..education.remediation.reviewed_pdf import (
+                recover_reviewed_pdf_issues,
+            )
+
+            try:
+                issues = recover_reviewed_pdf_issues(issues, scan_result.issues)
+            except ValueError:
+                return {
+                    "success": False,
+                    "error": "manual_required",
+                    "scan_id": scan_id,
+                }
         # Give findings without IDs stable source-array identities before the
         # remediator normalizes them. Do not mutate persisted scan findings.
         original_source_issues = issues
@@ -923,14 +1068,37 @@ async def process_remediation_job(
         ]
         source_issues = issues
 
+        source_original_indices = (
+            [
+                issue.get("original_source_index") if isinstance(issue, dict) else None
+                for issue in source_issues
+            ]
+            if approved_fixes_only
+            else None
+        )
+
         def account_outcomes(result, *, published):
             return outcome_accounting(
                 source_issues,
                 result,
                 published=published,
                 original_issues=original_source_issues,
+                withheld_reason=(
+                    (
+                        "output_verification_failed"
+                        if getattr(result, "verification_passed", None) is False
+                        else "output_not_published"
+                    )
+                    if not published
+                    else None
+                ),
                 source_index_scope=(
                     "approved_subset" if approved_fixes_only else "original_scan"
+                ),
+                source_original_indices=source_original_indices,
+                source_sha256=(original_file_hash if source_hash_bound else None),
+                output_sha256=(
+                    getattr(artifact, "sha256", None) if published else None
                 ),
             )
 
@@ -969,19 +1137,35 @@ async def process_remediation_job(
             }
 
         is_pdf = scan.scan_type in ("PDF", "pdf", ScanType.PDF)
-        killable_execution = remediation_job_id is not None and assert_owned is not None
-        if not lms_policy_authoritative and bool(options.get("use_ai", True)):
+        is_latex = scan.scan_type in ("LATEX", "latex", ScanType.LATEX)
+        # A typed reviewed recovery must traverse the subprocess receipt and
+        # output-claim checks even for direct callers without a queue claim.
+        killable_execution = reviewed_pdf_recovery is not None or (
+            remediation_job_id is not None and assert_owned is not None
+        )
+        if (
+            reviewed_pdf_recovery is None
+            and not lms_policy_authoritative
+            and bool(options.get("use_ai", True))
+        ):
             if ai_client is None:
                 ai_client = workspace_provider_runtime(str(department_id))
             if alt_text_client is None:
                 alt_text_client = ai_client
         if not killable_execution:
+            remediator_path = file_path
+            if reviewed_source is not None:
+                source_snapshot_dir = tempfile.mkdtemp(
+                    prefix="aelira_remediation_source_"
+                )
+                remediator_path = str(Path(source_snapshot_dir) / Path(file_path).name)
+                Path(remediator_path).write_bytes(reviewed_source)
             effective_use_ai = (
                 ai_client is not None if lms_policy_authoritative else True
             )
             remediator = _get_remediator_for_scan_type(
                 scan_type=scan.scan_type,
-                file_path=file_path,
+                file_path=remediator_path,
                 issues=issues,
                 use_ai=effective_use_ai,
                 ai_client=ai_client,
@@ -1024,8 +1208,15 @@ async def process_remediation_job(
             if assert_owned is not None:
                 await assert_owned()
             try:
+                source_arguments: dict[str, Any] = {"source_path": str(file_path)}
+                if reviewed_source is not None:
+                    source_arguments = {
+                        "source_path": "",
+                        "source_stream": BytesIO(reviewed_source),
+                        "source_filename": Path(file_path).name,
+                    }
                 remediation_result = await run_remediation_subprocess(
-                    source_path=str(file_path),
+                    **source_arguments,
                     scan_type=scan.scan_type,
                     issues=issues,
                     options={
@@ -1041,6 +1232,7 @@ async def process_remediation_job(
                         None if lms_policy_authoritative else str(department_id)
                     ),
                     lms_binding=lms_binding,
+                    reviewed_pdf_recovery=reviewed_pdf_recovery,
                     timeout_seconds=settings.remediation_execution_timeout_seconds,
                     termination_grace_seconds=(
                         settings.remediation_termination_grace_seconds
@@ -1065,6 +1257,7 @@ async def process_remediation_job(
                             "invalid_job_payload",
                             "policy_not_permitted",
                             "source_file_unavailable",
+                            "project_source_review_required",
                             "remediation_unsupported",
                         }
                         else "remediation_failed"
@@ -1086,12 +1279,63 @@ async def process_remediation_job(
                 }
             if approved_fix_snapshot is not None:
                 try:
+                    if (
+                        str(getattr(scan.scan_type, "value", scan.scan_type)).upper()
+                        == "PDF"
+                    ):
+                        approval_service = RemediationArtifactService.from_settings()
+                        cloud_coordinates = (
+                            db.query(CloudFile)
+                            .filter(CloudFile.id == cloud_file_id)
+                            .one_or_none()
+                            if cloud_file_id is not None
+                            else None
+                        )
+                        _, scan, current_cloud, _, _ = (
+                            approval_service._lock_authority_order(
+                                db,
+                                department_id=str(department_id),
+                                scan_id=str(scan_id),
+                                cloud_file_id=cloud_file_id,
+                                remediation_job_id=(
+                                    str(remediation_job_id)
+                                    if cloud_file_id is not None
+                                    and remediation_job_id is not None
+                                    else None
+                                ),
+                                provider=(
+                                    str(cloud_coordinates.provider)
+                                    if cloud_coordinates is not None
+                                    else "local"
+                                ),
+                            )
+                        )
+                        owner = current_cloud if current_cloud is not None else scan
+                        current_id = getattr(
+                            owner, "current_remediation_artifact_id", None
+                        )
+                        if getattr(scan, "file_hash", None) != original_file_hash:
+                            raise ApprovedFixAuthorityError(
+                                "reviewed source authority changed"
+                            )
+                        if current_id is not None:
+                            current = db.get(RemediationArtifact, current_id)
+                            if (
+                                current is None
+                                or str(current.scan_id) != str(scan_id)
+                                or str(current.department_id) != str(department_id)
+                                or current.cloud_file_id != cloud_file_id
+                                or getattr(current, "edit_provenance", None) is not None
+                            ):
+                                raise ApprovedFixAuthorityError(
+                                    "current PDF requires manual review"
+                                )
                     approved_fixes = _lock_and_revalidate_approved_fixes(
                         db,
                         scan_id=str(scan_id),
                         expected=approved_fix_snapshot,
                     )
-                except ApprovedFixAuthorityError:
+                except (ApprovedFixAuthorityError, ArtifactAuthorizationError):
                     db.rollback()
                     return {
                         "success": False,
@@ -1123,14 +1367,30 @@ async def process_remediation_job(
                 reason="alt_text_client_unavailable",
                 purpose="manual_review",
             )
+        if approved_fixes_only and (
+            remediation_result.manual_count > 0
+            or remediation_result.failed_count > 0
+            or not _reviewed_output_matches(
+                approved_fixes, remediation_result.fixed_issues
+            )
+        ):
+            return {
+                "success": False,
+                "error": "manual_required",
+                "scan_id": scan_id,
+                **account_outcomes(remediation_result, published=False),
+            }
 
-        # Manual or failed work remains manual; never publish a partial output as
-        # the authoritative remediation artifact.
-        if remediation_result.manual_count > 0 or remediation_result.failed_count > 0:
-            scan.status = ScanStatus.FAILED
-            _set_remediation_outcome(scan, RemediationOutcome.MANUAL_REQUIRED)
-            scan.completed_at = datetime.now(timezone.utc)
+        # PDF working files may contain verified improvements alongside unresolved
+        # findings. LaTeX output with unresolved semantics still needs author
+        # review, even if other edits were verified.
+        if (
+            remediation_result.manual_count > 0 or remediation_result.failed_count > 0
+        ) and (remediation_result.fixed_count == 0 or is_latex):
             if not defer_final_commit:
+                scan.status = ScanStatus.FAILED
+                _set_remediation_outcome(scan, RemediationOutcome.MANUAL_REQUIRED)
+                scan.completed_at = datetime.now(timezone.utc)
                 if assert_owned is not None:
                     await assert_owned()
                 db.commit()
@@ -1191,10 +1451,12 @@ async def process_remediation_job(
                 or (cloud_file_id is not None and cloud_file is None)
                 or (cloud_file_id is not None and remediation_job_id is None)
             ):
-                scan.status = ScanStatus.FAILED
-                _set_remediation_outcome(scan, RemediationOutcome.ARTIFACT_UNAVAILABLE)
-                scan.completed_at = datetime.now(timezone.utc)
                 if not defer_final_commit:
+                    scan.status = ScanStatus.FAILED
+                    _set_remediation_outcome(
+                        scan, RemediationOutcome.ARTIFACT_UNAVAILABLE
+                    )
+                    scan.completed_at = datetime.now(timezone.utc)
                     if assert_owned is not None:
                         await assert_owned()
                     db.commit()
@@ -1258,12 +1520,12 @@ async def process_remediation_job(
                 except Exception:
                     if remediation_result.has_output_claim() is True:
                         raise
-                    scan.status = ScanStatus.FAILED
-                    _set_remediation_outcome(
-                        scan, RemediationOutcome.ARTIFACT_UNAVAILABLE
-                    )
-                    scan.completed_at = datetime.now(timezone.utc)
                     if not defer_final_commit:
+                        scan.status = ScanStatus.FAILED
+                        _set_remediation_outcome(
+                            scan, RemediationOutcome.ARTIFACT_UNAVAILABLE
+                        )
+                        scan.completed_at = datetime.now(timezone.utc)
                         if assert_owned is not None:
                             await assert_owned()
                         db.commit()
@@ -1308,19 +1570,6 @@ async def process_remediation_job(
         # durable artifact and approval record.
         upload_job_id = None
 
-        # 11. Update scan record with remediation results. Authoritative LMS
-        # output is ephemeral until Task 16, so never persist a deleted path.
-        scan.completed_at = datetime.now(timezone.utc)
-        scan.status = ScanStatus.COMPLETED
-        _set_remediation_outcome(
-            scan,
-            (
-                RemediationOutcome.COMPLETED
-                if remediation_result.fixed_count > 0
-                else RemediationOutcome.NO_OP
-            ),
-        )
-
         if approved_fixes_only:
             applied_fix_ids = frozenset(
                 str(getattr(fix, "issue_id", ""))
@@ -1330,10 +1579,39 @@ async def process_remediation_job(
             for approved_fix in approved_fixes:
                 approved_issue_id = str(approved_fix.issue_id or approved_fix.id)
                 if approved_issue_id in applied_fix_ids:
-                    approved_fix.review_status = "applied"
+                    if approved_fix.review_status == "edited":
+                        approved_fix.review_status = "approved"
                     approved_fix.updated_at = applied_at
+            persisted_fixes = approved_fixes
         else:
-            persist_scan_fixes(db, scan_id, remediation_result.fixed_issues)
+            persisted_fixes = persist_scan_fixes(
+                db, scan_id, remediation_result.fixed_issues
+            )
+        if artifact is not None:
+            membership = build_output_membership(
+                getattr(artifact, "sha256", None),
+                original_file_hash if source_hash_bound else None,
+                persisted_fixes,
+            )
+            if membership is not None:
+                artifact.provider_result = {
+                    **(artifact.provider_result or {}),
+                    "reviewed_output_membership": membership,
+                }
+
+        # Review-graph locking refreshes this Scan with populate_existing().
+        # Stage completion once, after those refreshes, so the final commit
+        # persists it with the artifact, fixes, and queue completion.
+        scan.completed_at = datetime.now(timezone.utc)
+        scan.status = ScanStatus.COMPLETED
+        scan.remediation_outcome = (
+            RemediationOutcome.COMPLETED.value
+            if remediation_result.fixed_count > 0
+            else RemediationOutcome.NO_OP.value
+        )
+        scan.progress = 100
+        scan.progress_message = "Remediation complete"
+        scan.error_message = None
 
         # Log remediation completion to audit trail
         auto_approved = sum(
@@ -1476,6 +1754,12 @@ async def process_remediation_job(
             "compliance_improvement": remediation_result.improvement,
             "upload_job_id": upload_job_id,
             "scan_id": scan_id,
+            "reviewed_pdf_recovery": getattr(
+                remediation_result, "reviewed_pdf_recovery", None
+            ),
+            "review_requirements": getattr(
+                remediation_result, "review_requirements", []
+            ),
         }
         response.update(
             account_outcomes(remediation_result, published=artifact is not None)
@@ -1495,24 +1779,54 @@ async def process_remediation_job(
                     "score_measurement": getattr(
                         remediation_result, "score_measurement", None
                     ),
+                    "score_verified": getattr(
+                        remediation_result, "score_verified", None
+                    ),
                     "score_verification_reason": getattr(
                         remediation_result, "score_verification_reason", None
                     ),
                 },
                 original_score=original_scan_score,
                 source_scan_type=source_scan_type,
-                source_sha256=(
-                    original_file_hash if isinstance(original_file_hash, str) else ""
-                ),
+                source_sha256=original_file_hash if source_hash_bound else "",
                 output_sha256=(
                     getattr(artifact, "sha256", "") if artifact is not None else ""
                 ),
             )
         )
+        response["fresh_score_comparison"] = (
+            fresh_score_comparison(
+                {
+                    "original_compliance_score": getattr(
+                        remediation_result, "original_compliance_score", None
+                    ),
+                    "remediated_compliance_score": getattr(
+                        remediation_result, "remediated_compliance_score", None
+                    ),
+                    "score_provenance": getattr(
+                        remediation_result, "score_provenance", None
+                    ),
+                    "score_measurement": getattr(
+                        remediation_result, "score_measurement", None
+                    ),
+                    "score_verified": getattr(
+                        remediation_result, "score_verified", None
+                    ),
+                },
+                source_scan_type=source_scan_type,
+                source_sha256=original_file_hash if source_hash_bound else None,
+                output_sha256=getattr(artifact, "sha256", None),
+            )
+            if artifact is not None
+            else None
+        )
         response["human_review_required"] = (
             bool(latex_result_fields(remediation_result))
             or not response["score_verified"]
             or getattr(remediation_result, "human_review_required", False) is True
+            or bool(getattr(remediation_result, "review_requirements", []))
+            or remediation_result.manual_count > 0
+            or remediation_result.failed_count > 0
             or bool(
                 getattr(
                     getattr(remediation_result, "verification_result", None),
@@ -1644,6 +1958,8 @@ async def process_remediation_job(
     finally:
         if remediation_result is not None:
             _close_output_claim(remediation_result)
+        if source_snapshot_dir:
+            shutil.rmtree(source_snapshot_dir, ignore_errors=True)
         # Cleanup temp file and directory if downloaded from cloud
         if temp_file_path:
             try:
@@ -1971,6 +2287,153 @@ def _get_remediator_for_scan_type(
         return None
 
 
+def _queue_upload_job(
+    cloud_file_id: str,
+    department_id: str,
+    provider: str,
+    db: Session,
+    artifact_id: str,
+    remediation_job_id: str | None,
+    scan_id: str,
+    credential_id: str,
+    create_new_version: bool,
+    requested_by_ref: str,
+) -> str:
+    """
+    Queue an explicitly requested write-back after human artifact approval.
+
+    Args:
+        cloud_file_id: Cloud file ID
+        department_id: Department ID
+        provider: Cloud provider (google/microsoft)
+        db: Database session
+
+    Returns:
+        Upload job ID
+    """
+    if not isinstance(requested_by_ref, str) or not requested_by_ref.strip():
+        raise ValueError("writeback_actor_required")
+    cloud_file = db.get(CloudFile, cloud_file_id)
+    if (
+        cloud_file is None
+        or str(cloud_file.department_id) != str(department_id)
+        or str(cloud_file.credential_id) != str(credential_id)
+        or str(cloud_file.provider) != str(provider)
+    ):
+        raise ValueError("cloud_file_not_found")
+    from .upload_job import upload_approval_snapshot, upload_source_snapshot
+
+    service = RemediationArtifactService.from_settings()
+    _, locked_scan, locked_cloud, _, artifact = service.lock_current(
+        db,
+        artifact_id=artifact_id,
+        department_id=department_id,
+        cloud_file_id=cloud_file_id,
+        provider=provider,
+    )
+    if (
+        artifact is None
+        or artifact.scan_id != scan_id
+        or artifact.remediation_job_id != remediation_job_id
+        or locked_cloud is None
+        or locked_cloud.credential_id != credential_id
+    ):
+        raise ValueError("artifact_authority_mismatch")
+    source_snapshot = upload_source_snapshot(locked_cloud, locked_scan)
+    service.resolve_record(
+        db,
+        artifact,
+        department_id=department_id,
+        scan_id=scan_id,
+        cloud_file_id=cloud_file_id,
+        require_approved=True,
+        approval_checksum=str(artifact.sha256),
+    )
+    approval = {**upload_approval_snapshot(artifact), **source_snapshot}
+    unresolved_effect = (
+        db.query(CloudJobQueue.id)
+        .filter(
+            CloudJobQueue.department_id == department_id,
+            CloudJobQueue.cloud_file_id == cloud_file_id,
+            CloudJobQueue.job_type == CloudJobType.UPLOAD.value,
+            CloudJobQueue.payload["artifact_id"].as_string() == artifact_id,
+            CloudJobQueue.external_effect_state.in_(("requesting", "indeterminate")),
+            or_(
+                CloudJobQueue.external_effect_state == "indeterminate",
+                CloudJobQueue.status.notin_(
+                    (CloudJobStatus.PENDING.value, CloudJobStatus.PROCESSING.value)
+                ),
+            ),
+        )
+        .first()
+    )
+    if unresolved_effect is not None:
+        raise ValueError("writeback_reconciliation_required")
+    approval_key = hashlib.sha256(
+        json.dumps(approval, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    dedupe_key = (
+        f"upload:{provider}:{cloud_file_id}:{artifact_id}:"
+        f"{approval_key}:{int(create_new_version)}"
+    )
+    completed_upload = (
+        db.query(CloudJobQueue.id)
+        .filter(
+            CloudJobQueue.department_id == department_id,
+            CloudJobQueue.cloud_file_id == cloud_file_id,
+            CloudJobQueue.job_type == CloudJobType.UPLOAD.value,
+            CloudJobQueue.dedupe_key == dedupe_key,
+            CloudJobQueue.status == CloudJobStatus.COMPLETED.value,
+            CloudJobQueue.external_effect_state == "confirmed",
+        )
+        .first()
+    )
+    if completed_upload is not None:
+        return str(completed_upload[0])
+    if artifact.written_back_at is not None:
+        raise ValueError("writeback_already_completed")
+    active_upload = (
+        db.query(CloudJobQueue.id, CloudJobQueue.dedupe_key)
+        .filter(
+            CloudJobQueue.department_id == department_id,
+            CloudJobQueue.cloud_file_id == cloud_file_id,
+            CloudJobQueue.job_type == CloudJobType.UPLOAD.value,
+            CloudJobQueue.payload["artifact_id"].as_string() == artifact_id,
+            CloudJobQueue.status.in_(
+                (CloudJobStatus.PENDING.value, CloudJobStatus.PROCESSING.value)
+            ),
+        )
+        .first()
+    )
+    if active_upload is not None:
+        if active_upload[1] == dedupe_key:
+            return str(active_upload[0])
+        raise ValueError("writeback_reconciliation_required")
+    upload_job = enqueue_cloud_job(
+        db,
+        department_id=department_id,
+        job_type=CloudJobType.UPLOAD.value,
+        payload={
+            "artifact_id": artifact_id,
+            "scan_id": scan_id,
+            "cloud_file_id": cloud_file_id,
+            "create_new_version": create_new_version,
+            "requested_by_ref": requested_by_ref,
+            **approval,
+        },
+        dedupe_key=dedupe_key,
+        depends_on_job_id=remediation_job_id,
+        provider=provider,
+        credential_id=credential_id,
+        priority=2,  # High priority
+        cloud_file_id=cloud_file_id,
+        provider_file_id=locked_cloud.provider_file_id,
+    )
+
+    logger.info(f"Queued upload job {upload_job.id} for file {cloud_file_id}")
+    return str(upload_job.id)
+
+
 async def _send_remediation_notification(
     scan: Scan,
     result: Any,  # RemediationResult
@@ -2075,6 +2538,8 @@ async def handle_remediation_job(
     job: Any,  # CloudJobQueue
     db: Session,
     token_manager: Any,  # OAuthTokenManager
+    *,
+    reviewed_pdf_recovery: ReviewedPDFRecovery | None = None,
 ) -> Dict[str, Any]:
     """
     Job handler for remediation jobs (matches JobProcessor signature).
@@ -2173,6 +2638,8 @@ async def handle_remediation_job(
         await _commit_terminal_failure(
             job, db, "unsupported_lms_remediation", scan=authoritative_scan
         )
+    raw_scan_type = getattr(scan, "scan_type", payload.get("scan_type", ""))
+    scan_type = str(getattr(raw_scan_type, "value", raw_scan_type)).upper()
     if provider in _LMS_PROVIDERS and scan.scan_type in (
         "IMAGE",
         "image",
@@ -2182,6 +2649,20 @@ async def handle_remediation_job(
         # unsupported/manual outcome rather than inventing an artifact.
         await _commit_terminal_failure(
             job, db, "remediation_artifact_unavailable", scan=authoritative_scan
+        )
+
+    # Recovery is an operator-supplied typed plan, never queue/client JSON.
+    # It cannot authorize a cloud write or weaken the existing tenant fence.
+    if reviewed_pdf_recovery is not None and (
+        not isinstance(reviewed_pdf_recovery, ReviewedPDFRecovery)
+        or not local_job
+        or scan_type != "PDF"
+        or payload.get("upload_to_cloud") is True
+        or payload.get("approved_fixes_only") is True
+        or payload.get("requested_by_id") != str(getattr(scan, "user_id", ""))
+    ):
+        await _commit_terminal_failure(
+            job, db, "invalid_job_scope", scan=authoritative_scan
         )
 
     context = sanitize_execution_context(getattr(job, "execution_context", {}))
@@ -2216,7 +2697,7 @@ async def handle_remediation_job(
                 await _commit_terminal_failure(
                     job, db, "policy_not_permitted", scan=authoritative_scan
                 )
-    else:
+    elif reviewed_pdf_recovery is None:
         remediation_client = workspace_provider_runtime(str(job.department_id))
         alt_text_client = remediation_client
 
@@ -2229,13 +2710,21 @@ async def handle_remediation_job(
         "scan_id": scan_id,
         "file_path": scan.storage_path if local_job else None,
         "actor_id": payload.get("requested_by_id"),
+        "approved_fix_snapshot": payload.get("approved_fix_snapshot"),
         "options": (
             payload.get("options") if isinstance(payload.get("options"), dict) else {}
         ),
     }
     pre_process_scan_state = {
         field: getattr(scan, field, None)
-        for field in ("status", "remediation_outcome", "completed_at")
+        for field in (
+            "status",
+            "remediation_outcome",
+            "completed_at",
+            "progress",
+            "progress_message",
+            "error_message",
+        )
     }
     result = await process_remediation_job(
         job_data,
@@ -2247,6 +2736,7 @@ async def handle_remediation_job(
         token_manager=token_manager,
         defer_final_commit=True,
         assert_owned=getattr(job, "_assert_owned", None),
+        reviewed_pdf_recovery=reviewed_pdf_recovery,
     )
     if result.get("success") is not True:
         error = result.get("error")
@@ -2296,7 +2786,8 @@ async def handle_remediation_job(
             for approved_fix in approved_fixes:
                 approved_issue_id = str(approved_fix.issue_id or approved_fix.id)
                 if applied_fix_ids is not None and approved_issue_id in applied_fix_ids:
-                    approved_fix.review_status = "applied"
+                    if approved_fix.review_status == "edited":
+                        approved_fix.review_status = "approved"
                     approved_fix.updated_at = applied_at
         db.commit()
     except ApprovedFixAuthorityError:

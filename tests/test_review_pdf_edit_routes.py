@@ -57,6 +57,8 @@ def test_cloud_edit_selects_cloud_pointer_and_requires_exact_context(preview):
         current_remediation_artifact_id=preview.artifact.id,
     )
     preview.scan.current_remediation_artifact_id = "unrelated-local-artifact"
+    preview.scan.document_source = "cloud_file"
+    preview.scan.document_id = cloud.id
     preview.artifact.cloud_file_id = cloud.id
     preview.artifact.provider = cloud.provider
     preview.lock.return_value = (

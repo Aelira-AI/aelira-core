@@ -295,7 +295,11 @@ async def test_single_html_rejection_clears_remediation_authority():
         remediation_origin="manual",
     )
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.return_value = html_item
+    query = db.query.return_value
+    query.filter.return_value = query
+    query.with_for_update.return_value = query
+    query.populate_existing.return_value = query
+    query.first.return_value = html_item
     service = MagicMock()
 
     with patch(

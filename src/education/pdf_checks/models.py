@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 # Required by PDFProcessingResult.cvd_analysis field
 from ..color_blindness_simulator import ColorBlindnessAnalysisResult
@@ -38,6 +38,7 @@ class ReadingOrderIssue(BaseModel):
     actual_order: List[str]  # Structure tree order text snippets
     severity: str  # "critical" if content skipped, "warning" if order differs
     recommendation: str
+    review_only: bool = False  # Placement review after complete native text comparison
     visual_positions: Optional[List[Dict[str, float]]] = (
         None  # bbox coords for visualization
     )
@@ -138,6 +139,7 @@ class PDFProcessingResult(BaseModel):
     html_output: str
     compliance_score: float
     issues: List[Dict]
+    review_requirements: List[str] = Field(default_factory=list)
     image_issues: Optional[List[PDFImageIssue]] = None  # Image accessibility issues
     # Color vision deficiency analysis
     cvd_analysis: Optional[List[ColorBlindnessAnalysisResult]] = None

@@ -453,6 +453,9 @@ class FixedIssue(BaseModel):
     ] = None
     visual_semantic_contract: Optional[VisualSemanticContract] = None
     verification_passed: bool = True
+    # Set only after an actual saved PDF finding check; the legacy boolean's
+    # default alone is not proof that verification ran.
+    saved_file_verification: Optional[Dict[str, Any]] = None
     notes: Optional[str] = None
     wcag_criteria: Optional[str] = None
     page_number: Optional[int] = None
@@ -799,6 +802,7 @@ class VerificationResult(BaseModel):
     issues_remaining: List[str] = Field(default_factory=list)
     regressions: List[str] = Field(default_factory=list)  # New issues introduced
     persistent_failures: List[str] = Field(default_factory=list)
+    review_requirements: List[str] = Field(default_factory=list)
     unavailable_checks: List[str] = Field(default_factory=list)
     verification_score: float = 0.0  # 0-100 improvement score
 

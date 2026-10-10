@@ -14,6 +14,62 @@ def measured_score(value: Any) -> float | None:
     return float(value) if 0 <= value <= 100 and math.isfinite(value) else None
 
 
+def fresh_score_comparison(
+    result: Mapping[str, Any],
+    *,
+    source_scan_type: Any,
+    source_sha256: Any,
+    output_sha256: Any,
+) -> dict[str, Any] | None:
+    """Verify a paired rules scan independently of the recorded scan baseline.
+
+    Callers must separately establish that the output artifact was published and
+    belongs to the requested tenant, scan, cloud file, provider, and job.
+    """
+    scan_type = str(getattr(source_scan_type, "value", source_scan_type)).upper()
+    methods_by_type = {
+        "WORD": {"office-word-strict-v1"},
+        "DOCX": {"office-word-strict-v1"},
+        "POWERPOINT": {"office-powerpoint-strict-v1"},
+        "PPTX": {"office-powerpoint-strict-v1"},
+        "EXCEL": {"office-excel-strict-v1"},
+        "XLSX": {"office-excel-strict-v1"},
+        "PDF": {"pdf-strict-v1"},
+        "CODE": {"code-static-v1"},
+        "HTML": {"code-static-v1"},
+        "LATEX": {"latex-source-v1", "pdf-strict-v1"},
+    }
+    existing = result.get("fresh_score_comparison")
+    if existing is not None:
+        measurement = valid_measurement(existing)
+    elif (
+        result.get("score_provenance") == "scanner_rescan"
+        and result.get("score_verified") is True
+    ):
+        measurement = valid_measurement(result.get("score_measurement"))
+        if measurement is None or (
+            measured_score(result.get("original_compliance_score"))
+            != measurement["source_score"]
+            or measured_score(result.get("remediated_compliance_score"))
+            != measurement["output_score"]
+        ):
+            return None
+    else:
+        return None
+    if measurement is None or measurement["method_version"] not in methods_by_type.get(
+        scan_type, set()
+    ):
+        return None
+    if (
+        not isinstance(source_sha256, str)
+        or not isinstance(output_sha256, str)
+        or measurement["source_sha256"] != source_sha256
+        or measurement["output_sha256"] != output_sha256
+    ):
+        return None
+    return measurement
+
+
 def score_fields(
     result: Mapping[str, Any],
     *,

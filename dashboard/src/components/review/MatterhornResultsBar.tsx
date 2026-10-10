@@ -5,7 +5,9 @@ interface MatterhornResultsBarProps {
   total: number;
   passed: number;
   failed: number;
+  warnings: number;
   result: string;
+  validatedAt: string | null;
 }
 
 function getValidatorResultStyle(result: string): { label: string; color: string; bg: string } {
@@ -43,19 +45,29 @@ function getValidatorResultStyle(result: string): { label: string; color: string
   }
 }
 
-export function MatterhornResultsBar({ total, passed, failed, result }: MatterhornResultsBarProps): React.ReactElement {
-  const warnings = total - passed - failed;
+export function MatterhornResultsBar({
+  total,
+  passed,
+  failed,
+  warnings,
+  result,
+  validatedAt,
+}: MatterhornResultsBarProps): React.ReactElement {
   const resultStyle = getValidatorResultStyle(result);
 
   return (
     <div
-      className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6"
-      style={{ backgroundColor: 'var(--surface-secondary)', borderTop: '1px solid var(--border-primary)' }}
+      className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-primary)] bg-[var(--surface-secondary)] px-4 py-3 sm:px-6"
       role="status"
       aria-label="Matterhorn Protocol validation results"
     >
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <span className="text-sm font-medium text-[var(--content-secondary)]">Matterhorn Protocol</span>
+      <div className="flex flex-wrap items-center gap-3 sm:gap-6">
+        <span
+          className="text-sm font-medium text-[var(--content-secondary)]"
+          title={validatedAt || `${total} checkpoints`}
+        >
+          Matterhorn Protocol
+        </span>
 
         <div className="flex items-center gap-1.5">
           <CheckCircle className="w-4 h-4 text-[var(--feature-success-content)]" aria-hidden="true" />

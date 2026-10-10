@@ -74,6 +74,8 @@ def _file_graph(payload=b"%PDF-1.7\n"):
         size_bytes=len(payload),
         sha256=digest,
         approval_checksum=digest,
+        approved_by_id="reviewer-1",
+        approved_by_ref="session:reviewer-1",
         approved_at=datetime.now(timezone.utc),
         review_status="approved",
         lifecycle_status="available",
@@ -320,7 +322,7 @@ async def test_canvas_indeterminate_upload_persists_durable_reconciliation_log()
     assert len(required) == 1
     assert required[0].artifact_id == artifact.id
     assert required[0].artifact_checksum == artifact.sha256
-    assert required[0].approved_by == "user-1"
+    assert required[0].approved_by == "reviewer-1"
     db.rollback.assert_called()
     db.commit.assert_called_once()
 

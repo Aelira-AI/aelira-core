@@ -2,11 +2,14 @@ import type { RemediationJobStatus } from '../api/scans';
 
 export type RemediationScoreJob = Partial<Pick<RemediationJobStatus,
   'original_score' | 'remediated_score' | 'score_verified' | 'human_review_required'
-  | 'score_verification_reason' | 'score_measurement' | 'download_available'>>;
+  | 'score_verification_reason' | 'score_measurement' | 'download_available'
+  | 'fresh_score_comparison'>>;
 
 const REASONS = {
   original_file_missing: 'The original file is unavailable, so its score could not be measured.',
   original_scan_failed: 'The original file could not be scored.',
+  source_text_mapping_unavailable: 'The PDF’s text encoding could not be verified. Export a new PDF from the source document with readable Unicode text, or have its font mappings repaired manually.',
+  source_text_scope_unsupported: 'The PDF contains text in a Form or another stream scope that this remediation path cannot verify. Export a new PDF from the source document or use a reviewed recovery workflow.',
   output_file_missing: 'The output file is unavailable, so its score could not be measured.',
   output_scan_failed: 'The output could not be scored.',
   incomplete_comparison: 'The measured before-and-after comparison is incomplete.',
@@ -25,6 +28,25 @@ export function measuredScore(value: unknown): number | null {
 export function displayScore(value: unknown): string {
   const score = measuredScore(value);
   return score === null ? 'Not available' : `${score.toFixed(1)}/100`;
+}
+
+export function freshScoreComparison(job: RemediationScoreJob) {
+  const receipt = job.fresh_score_comparison;
+  if (job.download_available !== true || !receipt || !/^[a-f0-9]{64}$/.test(receipt.source_sha256)
+    || !/^[a-f0-9]{64}$/.test(receipt.output_sha256)
+    || ![
+      'office-word-strict-v1', 'office-powerpoint-strict-v1',
+      'office-excel-strict-v1', 'pdf-strict-v1', 'code-static-v1',
+      'latex-source-v1',
+    ].includes(receipt.method_version)) return null;
+  const source = measuredScore(receipt.source_score);
+  const output = measuredScore(receipt.output_score);
+  if (source === null || output === null) return null;
+  const delta = Number((output - source).toFixed(1));
+  return {
+    source, output, methodVersion: receipt.method_version,
+    deltaLabel: `${delta > 0 ? '+' : ''}${delta.toFixed(1)} points`,
+  };
 }
 
 export function remediationScore(job: RemediationScoreJob,

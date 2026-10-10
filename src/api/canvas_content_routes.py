@@ -71,8 +71,15 @@ from ..jobs.contracts import sanitize_json
 from ..integrations.canvas.content_models import CanvasContentType
 from ..middleware.quota import require_feature
 from ..services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
     ArtifactError,
     RemediationArtifactService,
+)
+from ..services.lms_content_approval import (
+    LMSContentApprovalError,
+    approve_lms_content,
+    clear_lms_content_approval,
+    current_lms_content_approval,
 )
 from ..services.job_enqueue_service import enqueue_cloud_job
 from ..services.job_enqueue_service import JobEnqueueError
@@ -1272,7 +1279,17 @@ async def approve_content(
             detail="Remediated content is stale or unverified; run remediation again",
         )
     cf = current_candidate
-    cf.writeback_status = "approved"
+    try:
+        approve_lms_content(
+            cf,
+            actor_id=user_id,
+            actor_ref=f"{principal.auth_method}:{user_id}",
+        )
+    except LMSContentApprovalError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="content_approval_missing_or_stale"
+        ) from None
     db.commit()
 
     logger.info(
@@ -1288,6 +1305,42 @@ async def approve_content(
         cloud_file_id=cf.id,
         writeback_status="approved",
     )
+
+
+def _review_canvas_file_artifact(
+    db: Session,
+    cloud_file: CloudFile,
+    principal: AuthenticatedPrincipal,
+    *,
+    reject: bool = False,
+) -> None:
+    """File approval uses the same exact-output review gate as the artifact API."""
+    artifact = cloud_file.current_remediation_artifact
+    if (
+        not isinstance(cloud_file.current_remediation_artifact_id, str)
+        or artifact is None
+        or artifact.id != cloud_file.current_remediation_artifact_id
+        or artifact.cloud_file_id != cloud_file.id
+        or artifact.department_id != principal.department_id
+        or artifact.scan_id != cloud_file.last_scan_id
+        or artifact.provider != CloudProvider.CANVAS.value
+    ):
+        raise ArtifactAuthorizationError("artifact_approval_validation_failed")
+    service = RemediationArtifactService.from_settings()
+    if reject:
+        service.reject(
+            db,
+            artifact_id=artifact.id,
+            rejected_by_id=principal.user_id,
+            rejected_by_ref=f"{principal.auth_method}:{principal.user_id}",
+        )
+    else:
+        service.approve(
+            db,
+            artifact_id=artifact.id,
+            approved_by_id=principal.user_id,
+            approved_by_ref=f"{principal.auth_method}:{principal.user_id}",
+        )
 
 
 # =============================================================================
@@ -1330,6 +1383,7 @@ async def reject_content(
                 status_code=400, detail="Artifact cannot be rejected"
             ) from None
     else:
+        clear_lms_content_approval(cf)
         cf.writeback_status = "rejected"
         cf.remediation_origin = None
         db.commit()
@@ -1427,9 +1481,13 @@ async def batch_approve_content(
                 current_candidate = lock_current_canvas_content_candidate(db, cf)
                 if current_candidate is None:
                     raise ValueError("stale_canvas_candidate")
-                current_candidate.writeback_status = "approved"
+                approve_lms_content(
+                    current_candidate,
+                    actor_id=user_id,
+                    actor_ref=f"{principal.auth_method}:{user_id}",
+                )
         db.commit()
-    except (ArtifactError, ValueError):
+    except (ArtifactError, LMSContentApprovalError, ValueError):
         db.rollback()
         raise HTTPException(status_code=400, detail="Batch approval failed") from None
 
@@ -1480,6 +1538,13 @@ async def writeback_content(
     cf = _get_cloud_file_or_404(db, cloud_file_id, principal)
     _require_fresh_canvas_source(cf)
 
+    if not _is_canvas_file(cf) and current_lms_content_approval(cf) is None:
+        return WritebackResponse(
+            success=False,
+            stale=True,
+            error="Current human content approval is required",
+        )
+
     try:
         credential, api_client = await _get_canvas_client(auth_department_id, db)
         try:
@@ -1489,8 +1554,6 @@ async def writeback_content(
                 department_id=auth_department_id,
                 credential_id=credential.id,
             )
-            # Files are uploaded alongside the original; content items are
-            # edited in place. Two mechanisms, one action to the user.
             if _is_canvas_file(cf):
                 result = await scanner.write_back_file(cf, approved_by=user_id)
             else:
@@ -1603,6 +1666,10 @@ async def batch_writeback_content(
             errors: List[str] = []
 
             for cf in approved_files:
+                if current_lms_content_approval(cf) is None:
+                    stale += 1
+                    errors.append(f"{cf.id}: current human approval is required")
+                    continue
                 result = await scanner.write_back_content(cf, approved_by=user_id)
                 if result.get("success"):
                     written += 1

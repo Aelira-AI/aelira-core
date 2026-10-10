@@ -198,9 +198,21 @@ async def test_stale_approval_reaches_no_upload_sink(monkeypatch, tmp_path):
         scan_type="WORD",
         status=models.ScanStatus.COMPLETED,
         remediation_outcome=models.RemediationOutcome.COMPLETED.value,
+        document_source="cloud_file",
+        document_id=CLOUD_FILE_ID,
     )
     cloud = SimpleNamespace(
         id=CLOUD_FILE_ID,
+        department_id=DEPARTMENT_ID,
+        provider="canvas",
+        credential_id="credential-1",
+        provider_file_id="remote-1",
+        provider_parent_id="course-1",
+        provider_version="version-1",
+        provider_modified_at=None,
+        file_name="source.docx",
+        last_scan_id=SCAN_ID,
+        needs_rescan=False,
         current_remediation_artifact_id=ARTIFACT_ID,
         writeback_status="approved",
         has_remediated_version=True,
@@ -210,7 +222,11 @@ async def test_stale_approval_reaches_no_upload_sink(monkeypatch, tmp_path):
         return_value=(SimpleNamespace(id=DEPARTMENT_ID), scan, cloud, None, artifact)
     )
     db = MagicMock()
-    db.get.return_value = artifact
+    db.get.side_effect = lambda model, _id: {
+        models.RemediationArtifact: artifact,
+        models.CloudFile: cloud,
+        models.Scan: scan,
+    }.get(model)
     query = db.query.return_value
     query.filter.return_value = query
     query.with_for_update.return_value = query
@@ -225,10 +241,13 @@ async def test_stale_approval_reaches_no_upload_sink(monkeypatch, tmp_path):
     result = await upload_job.process_upload_job(
         {
             "artifact_id": ARTIFACT_ID,
+            "scan_id": SCAN_ID,
             "department_id": DEPARTMENT_ID,
             "cloud_file_id": CLOUD_FILE_ID,
+            "credential_id": "credential-1",
             "provider": "canvas",
             "artifact_checksum": "a" * 64,
+            **upload_job.upload_source_snapshot(cloud, scan),
         },
         db,
     )

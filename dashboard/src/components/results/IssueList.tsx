@@ -1,6 +1,8 @@
 import React from 'react';
 import { AlertCircle, AlertTriangle, Info, Zap, Search, Eye, LucideIcon } from 'lucide-react';
 import { shouldRenderGenericLocation } from './issueLocation';
+import { findingDisplayText } from '../../utils/remediationIssueOutcomes';
+import { isUnscoredAltReview, type AIReviewMarker } from '../../utils/aiReviewFindings';
 
 // ============================================================================
 // Types
@@ -24,7 +26,7 @@ interface ColorBlindnessIssue {
   suggested_fix?: string;
 }
 
-interface Issue {
+interface Issue extends AIReviewMarker {
   severity?: string;
   impact?: string;
   criterion?: string;
@@ -281,6 +283,7 @@ export function IssueList({
   return (
     <div className="space-y-3">
       {issues.map((issue, index) => {
+        const unscoredReview = isUnscoredAltReview(issue);
         // Map backend severity/impact values to display levels
         // PDF/DOCX/XLSX: critical/high/medium/low
         // Code scanner: critical/serious/moderate/minor
@@ -311,10 +314,10 @@ export function IssueList({
         // LaTeX uses error/reason, video uses message, code uses description
         // Fall back to rich type-based descriptions when backend sends no message
         const issueTypeKey = issue.type || issue.category || '';
-        const descriptionText = issue.alt_text
+        const descriptionText = findingDisplayText(issue.alt_text
           ? (issue.message || issue.description || 'Image missing alternative text')
           : (issue.message || issue.description || issue.error || issue.reason
-            || ISSUE_TYPE_DESCRIPTIONS[issueTypeKey] || issue.impact || issue.issue_type || '');
+            || ISSUE_TYPE_DESCRIPTIONS[issueTypeKey] || issue.impact || issue.issue_type || ''));
 
         // Fix suggestion - backend uses several field names depending on scanner
         // DOCX/XLSX: suggested_fix, Code: fix_suggestion, Video: recommendation, Website: fix
@@ -329,7 +332,7 @@ export function IssueList({
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="font-semibold text-primary text-base">
-                      {issueTitle}
+                      {unscoredReview ? 'AI alt-text assessment' : issueTitle}
                     </h3>
                     {wcagCriterion && (
                       <span className="text-xs font-mono font-medium px-2 py-0.5 rounded bg-[var(--surface-tertiary)] text-secondary border border-[var(--border-primary)]">
@@ -371,7 +374,7 @@ export function IssueList({
                       </div>
                     )}
                     <span className={`text-xs font-medium px-2 py-1 rounded ${config.bg} ${config.color}`}>
-                      {config.label}
+                      {unscoredReview ? 'Unscored review' : config.label}
                     </span>
                   </div>
                 </div>

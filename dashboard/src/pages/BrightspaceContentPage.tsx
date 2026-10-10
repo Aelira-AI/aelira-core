@@ -35,6 +35,7 @@ import { remediateAllInChunks } from '../utils/brightspaceRemediateAll';
 import {
   brightspaceApprovalIds,
   brightspaceApprovalSummary,
+  brightspaceWritebackSummary,
 } from '../utils/brightspaceBatchSelection';
 import { resolveBrightspaceContentStatus } from '../utils/brightspaceContentStatus';
 import { apiClient } from '../api/client';
@@ -400,12 +401,9 @@ export default function BrightspaceContentPage({
     setWritingBackAll(true);
     try {
       const result = await batchWriteBack({ org_unit_id: orgUnitIdNum });
-      const message = `Written: ${result.written_count}, Failed: ${result.failed_count}, Stale: ${result.stale_count}`;
-      if (result.failed_count > 0) {
-        toast.warning(message, 'Write Back Complete');
-      } else {
-        toast.success(message, 'Write Back Complete');
-      }
+      const summary = brightspaceWritebackSummary(result);
+      if (summary.status === 'success') toast.success(summary.message, 'Write Back Complete');
+      else toast.warning(summary.message, 'Write Back Complete');
       // Refresh data
       await fetchStatus();
     } catch (err) {
@@ -554,15 +552,9 @@ export default function BrightspaceContentPage({
   // Navigation helper
   // --------------------------------------------------
   const handleItemClick = (item: ContentItemStatus): void => {
-    if (item.content_type === 'html' || item.content_type === 'topic_html') {
-      navigate(
-        isLTI
-          ? `/lti/course/${orgUnitId}/content/${item.cloud_file_id}/review`
-          : `/brightspace/courses/${orgUnitId}/content/${item.cloud_file_id}/review`
-      );
-    }
-    // For file items, we could navigate to scan detail if a scan exists
-    // but we don't have scan_id on the item — the review page will handle it
+    navigate(isLTI
+      ? `/lti/course/${orgUnitId}/content/${encodeURIComponent(item.cloud_file_id)}/review`
+      : `/brightspace/courses/${orgUnitId}/content/${encodeURIComponent(item.cloud_file_id)}/review`);
   };
 
   // --------------------------------------------------

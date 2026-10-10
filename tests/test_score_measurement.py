@@ -142,8 +142,8 @@ def test_finish_rejects_invalid_scores_and_method(documents, before, after, meth
 
 
 @pytest.mark.parametrize("code", sorted(REASON_CODES))
-def test_all_nine_codes_remain_safe_across_measurement_and_reporting(code):
-    assert len(REASON_CODES) == 9
+def test_all_codes_remain_safe_across_measurement_and_reporting(code):
+    assert len(REASON_CODES) == 11
     assert str(MeasurementError(code)) == code
     result = {
         "score_provenance": "scanner_rescan",

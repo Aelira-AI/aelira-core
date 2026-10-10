@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 import asyncio
+import hashlib
 import signal
 import subprocess
 import sys
 import time
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Event
@@ -44,6 +46,8 @@ from src.jobs.registry import (
     adapt_legacy_handler,
 )
 from src.jobs.local_scan_subprocess import _run_process
+from src.jobs.upload_job import upload_approval_snapshot, upload_source_snapshot
+from src.services.remediation_artifact_service import RemediationArtifactService
 
 pytestmark = pytest.mark.integration
 
@@ -124,6 +128,31 @@ def test_external_effect_begin_cannot_cross_committed_cancellation(pg_sessions):
         assert job.external_effect_state is None
         assert job.external_effect_token is None
         assert job.last_error_code == "scan_cancel_requested"
+
+
+def test_scoped_claim_leaves_unrelated_runnable_and_blocked_jobs_untouched(pg_sessions):
+    factory, department_id = pg_sessions
+    registry = registry_with(AsyncMock(return_value=JobSuccess()))
+    unrelated = enqueue(factory, department_id, priority=0)
+    failed = enqueue(
+        factory,
+        department_id,
+        status="failed",
+        completed_at=datetime.now(timezone.utc),
+    )
+    blocked = enqueue(factory, department_id, depends_on_job_id=failed)
+    target = enqueue(factory, department_id, priority=50)
+    worker = processor(factory, "task17-worker-operator", registry)
+
+    [claim] = worker.claim_batch(job_id=target, limit=1)
+    assert claim.job_id == target
+    with factory() as db:
+        for job_id in (unrelated, blocked):
+            job = db.get(CloudJobQueue, job_id)
+            assert job.status == "pending" and job.claim_token is None
+            assert job.attempt_count == 0
+    assert worker.claim_batch(job_id=blocked, limit=1) == []
+    assert worker.claim_batch(job_id=target, limit=1) == []
 
 
 def test_local_failure_terminal_cas_loses_to_committed_cancellation(pg_sessions):
@@ -1305,12 +1334,23 @@ def pg_sessions():
             )
         scan_ids = select(Scan.id).where(Scan.department_id == department_id)
         db.execute(
+            update(CloudFile)
+            .where(CloudFile.department_id == department_id)
+            .values(current_remediation_artifact_id=None)
+        )
+        db.execute(
             delete(RemediationArtifact).where(
                 RemediationArtifact.department_id == department_id
             )
         )
         db.execute(delete(ScanResult).where(ScanResult.scan_id.in_(scan_ids)))
+        db.execute(delete(CloudFile).where(CloudFile.department_id == department_id))
         db.execute(delete(Scan).where(Scan.department_id == department_id))
+        db.execute(
+            delete(CloudOAuthCredentials).where(
+                CloudOAuthCredentials.department_id == department_id
+            )
+        )
         db.execute(delete(Department).where(Department.id == department_id))
         db.commit()
     engine.dispose()
@@ -1337,6 +1377,143 @@ def enqueue(factory, department_id, **values) -> str:
         )
         db.commit()
     return job_id
+
+
+def enqueue_approved_upload_checkpoint(
+    factory, department_id, tmp_path, monkeypatch
+) -> str:
+    """Give checkpoint tests a real current, reviewed cloud artifact authority."""
+    from src.education.remediation.base import FixedIssue, IssueCategory, IssueSeverity
+    from src.services.scan_fix_service import build_output_membership, build_scan_fix
+
+    now = datetime.now(timezone.utc)
+    scan_id, cloud_id, credential_id, artifact_id = (
+        str(uuid.uuid4()) for _ in range(4)
+    )
+    service = RemediationArtifactService(
+        root=tmp_path / "artifacts",
+        max_bytes=1024 * 1024,
+        retention_days=30,
+        staging_grace_seconds=3600,
+    )
+    storage_key = f"{department_id}/{scan_id}/{artifact_id}/{uuid.uuid4()}.docx"
+    artifact_path = service.root / storage_key
+    artifact_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(artifact_path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", "<document/>")
+    artifact_bytes = artifact_path.read_bytes()
+    checksum = hashlib.sha256(artifact_bytes).hexdigest()
+    monkeypatch.setattr(
+        RemediationArtifactService,
+        "from_settings",
+        classmethod(lambda cls: service),
+    )
+    with factory() as db:
+        scan = Scan(
+            id=scan_id,
+            department_id=department_id,
+            scan_type=ScanType.WORD,
+            status=ScanStatus.COMPLETED,
+            remediation_outcome="completed",
+            file_name="source.docx",
+            file_hash="d" * 64,
+            document_source="cloud_file",
+            document_id=cloud_id,
+        )
+        db.add(scan)
+        db.add(
+            CloudOAuthCredentials(
+                id=credential_id,
+                department_id=department_id,
+                provider="google",
+                access_token="unexpired-test-token",
+                refresh_token="test-refresh-token",
+                token_expires_at=now + timedelta(hours=1),
+            )
+        )
+        db.flush()
+        cloud = CloudFile(
+            id=cloud_id,
+            department_id=department_id,
+            credential_id=credential_id,
+            provider="google",
+            provider_file_id=f"provider-{cloud_id}",
+            provider_parent_id="provider-parent",
+            provider_version="version-1",
+            provider_modified_at=now,
+            file_name="source.docx",
+            file_type="docx",
+            last_scan_id=scan_id,
+            needs_rescan=False,
+        )
+        db.add(cloud)
+        db.flush()
+        artifact = RemediationArtifact(
+            id=artifact_id,
+            department_id=department_id,
+            scan_id=scan_id,
+            cloud_file_id=cloud_id,
+            provider="google",
+            scan_type="WORD",
+            storage_key=storage_key,
+            filename="verified-output.docx",
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size_bytes=len(artifact_bytes),
+            sha256=checksum,
+            lifecycle_status="available",
+            published_at=now,
+            expires_at=now + timedelta(days=1),
+        )
+        db.add(artifact)
+        db.flush()
+        cloud.current_remediation_artifact_id = artifact_id
+        fix = build_scan_fix(
+            scan_id,
+            FixedIssue(
+                issue_id="language-1",
+                category=IssueCategory.LANGUAGE,
+                severity=IssueSeverity.LOW,
+                description="Missing language",
+                fixed_content="en-AU",
+                fix_method="rule",
+                confidence=1.0,
+            ),
+        )
+        db.add(fix)
+        artifact.provider_result = {
+            "reviewed_output_membership": build_output_membership(
+                checksum, scan.file_hash, [fix]
+            )
+        }
+        db.flush()
+        service.approve(
+            db,
+            artifact_id=artifact_id,
+            approved_by_ref="session:checkpoint-reviewer",
+        )
+        payload = {
+            "artifact_id": artifact_id,
+            "scan_id": scan_id,
+            "cloud_file_id": cloud_id,
+            "department_id": department_id,
+            "credential_id": credential_id,
+            "provider": "google",
+            "create_new_version": True,
+            **upload_approval_snapshot(artifact),
+            **upload_source_snapshot(cloud, scan),
+        }
+        db.commit()
+    return enqueue(
+        factory,
+        department_id,
+        job_type="upload",
+        cloud_file_id=cloud_id,
+        credential_id=credential_id,
+        provider="google",
+        provider_file_id=f"provider-{cloud_id}",
+        payload=payload,
+    )
 
 
 def seed_foreign_scan_contract(factory) -> dict[str, str]:
@@ -1503,10 +1680,14 @@ def _restore_constraints(db, constraints) -> None:
 @pytest.mark.asyncio
 async def test_upload_checkpoint_crash_is_reaped_manual_and_never_reclaimed(
     pg_sessions,
+    tmp_path,
+    monkeypatch,
 ):
     factory, department_id = pg_sessions
     provider = AsyncMock()
-    job_id = enqueue(factory, department_id, job_type="upload")
+    job_id = enqueue_approved_upload_checkpoint(
+        factory, department_id, tmp_path, monkeypatch
+    )
     first = processor(
         factory,
         "task17-upload-crashed",
@@ -1544,7 +1725,9 @@ async def test_upload_checkpoint_crash_is_reaped_manual_and_never_reclaimed(
 
 
 @pytest.mark.asyncio
-async def test_upload_timeout_after_checkpoint_is_terminal_without_retry(pg_sessions):
+async def test_upload_timeout_after_checkpoint_is_terminal_without_retry(
+    pg_sessions, tmp_path, monkeypatch
+):
     factory, department_id = pg_sessions
     accepted = asyncio.Event()
 
@@ -1553,7 +1736,9 @@ async def test_upload_timeout_after_checkpoint_is_terminal_without_retry(pg_sess
         accepted.set()
         await asyncio.sleep(10)
 
-    job_id = enqueue(factory, department_id, job_type="upload")
+    job_id = enqueue_approved_upload_checkpoint(
+        factory, department_id, tmp_path, monkeypatch
+    )
     worker = processor(
         factory,
         "task17-upload-timeout",
@@ -1571,7 +1756,9 @@ async def test_upload_timeout_after_checkpoint_is_terminal_without_retry(pg_sess
 
 
 @pytest.mark.asyncio
-async def test_upload_success_confirms_effect_and_completes_once(pg_sessions):
+async def test_upload_success_confirms_effect_and_completes_once(
+    pg_sessions, tmp_path, monkeypatch
+):
     factory, department_id = pg_sessions
     provider_calls = 0
 
@@ -1581,7 +1768,9 @@ async def test_upload_success_confirms_effect_and_completes_once(pg_sessions):
         provider_calls += 1
         return JobSuccess({"uploaded": True})
 
-    job_id = enqueue(factory, department_id, job_type="upload")
+    job_id = enqueue_approved_upload_checkpoint(
+        factory, department_id, tmp_path, monkeypatch
+    )
     worker = processor(factory, "task17-upload-success", upload_registry(upload_once))
     [claim] = worker.claim_batch()
     assert await worker.process_claim(claim) is True
@@ -1618,7 +1807,9 @@ async def test_upload_pre_request_failure_keeps_bounded_retry(pg_sessions):
 
 
 @pytest.mark.asyncio
-async def test_upload_heartbeat_ownership_loss_reaps_manual(pg_sessions):
+async def test_upload_heartbeat_ownership_loss_reaps_manual(
+    pg_sessions, tmp_path, monkeypatch
+):
     factory, department_id = pg_sessions
     checkpointed = asyncio.Event()
 
@@ -1627,7 +1818,9 @@ async def test_upload_heartbeat_ownership_loss_reaps_manual(pg_sessions):
         checkpointed.set()
         await asyncio.Event().wait()
 
-    job_id = enqueue(factory, department_id, job_type="upload")
+    job_id = enqueue_approved_upload_checkpoint(
+        factory, department_id, tmp_path, monkeypatch
+    )
     worker = processor(
         factory,
         "task17-upload-heartbeat-loss",

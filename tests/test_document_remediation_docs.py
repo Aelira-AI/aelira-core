@@ -225,9 +225,13 @@ def test_managed_artifact_workflow_documents_publication_and_approval_gates():
     publication_contracts = (
         "remediation succeeds",
         "at least one fix",
-        "zero manual",
-        "zero failed",
+        "produces saved output",
         "verification passes",
+        "downloaded for review and further manual work even when findings remain unresolved",
+        "does not approve external publication",
+        "partial working file is not a conformance claim",
+        "sha-256",
+        "review the document itself",
     )
     for contract in publication_contracts:
         assert contract in lower, f"artifact publication gate missing {contract!r}"
@@ -243,6 +247,7 @@ def test_managed_artifact_workflow_documents_publication_and_approval_gates():
         assert contract in hub, f"artifact review gate missing {contract!r}"
 
     assert hub.index("/api/reviews/{scan_id}") < hub.index("/approve")
+    assert hub.index("/download") < hub.index("/approve")
 
 
 def test_authorization_header_inline_code_is_well_formed():

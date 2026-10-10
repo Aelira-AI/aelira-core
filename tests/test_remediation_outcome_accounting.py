@@ -137,7 +137,6 @@ def test_legacy_failed_job_accounts_for_unreported_remainder(monkeypatch):
 @pytest.mark.parametrize(
     "manual_count,verified,success,reported,error",
     [
-        (3, True, True, True, "manual_required"),
         (0, False, True, True, "remediation_artifact_unavailable"),
         (3, False, False, True, "remediation_failed"),
         (3, False, False, False, "remediation_failed"),
@@ -243,3 +242,126 @@ async def test_worker_refuses_partial_and_regressed_candidates_with_complete_acc
     assert projected["remaining_count"] == projected["total_issues"] == 8
     assert projected["issue_outcomes"] == result["issue_outcomes"]
     service.claim_and_publish_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_worker_publishes_verified_improvement_with_manual_findings(tmp_path):
+    """Unresolved findings stay visible while improved bytes remain usable."""
+    from unittest.mock import AsyncMock, patch
+
+    from src.jobs.remediation_job import process_remediation_job
+    from src.db.models import ScanResult
+    from tests.test_queued_pdf_output_claim import _artifact, _context, _result
+    from tests.test_image_equation_review_gate import _fix as typed_equation_fix
+
+    payload = b"%PDF-verified-partial-output"
+    _, output_path, _scan, cloud_file, db, job_data = _context(tmp_path)
+    remediation_result = _result(tmp_path / "input.pdf", output_path, payload)
+    remediation_result.fixed_issues = [
+        typed_equation_fix(
+            issue_id="fixed-1",
+            description="Verified equation alternative",
+            location="page 1 / image 0 / occurrence 0",
+            fixed_content="Formula, Alt, and MathML",
+            provider_used="ollama",
+            model_used="vision-test",
+            page_number=1,
+        )
+    ]
+    remediation_result.manual_count = 1
+    remediation_result.total_issues = 2
+    remediation_result.manual_issues = [SimpleNamespace(issue_id="manual-1")]
+    db.values[ScanResult].issues = [
+        {"id": "fixed-1", "description": "Equation lacks an alternative"},
+        {"id": "manual-1", "description": "Heading needs review"},
+    ]
+    remediator = MagicMock()
+    remediator.remediate.return_value = remediation_result
+    artifact = _artifact(payload)
+    service = MagicMock()
+
+    def publish(*_args, **kwargs):
+        assert kwargs["source_stream"].read() == payload
+        cloud_file.current_remediation_artifact_id = artifact.id
+        return artifact
+
+    service.claim_and_publish_stream.side_effect = publish
+    validator = MagicMock()
+    validator.validate.return_value = SimpleNamespace(
+        checkpoints=[
+            SimpleNamespace(
+                id="01-003",
+                name="Structure tree present",
+                status=SimpleNamespace(value="pass"),
+                severity="error",
+                details=None,
+                page_number=None,
+            )
+        ],
+        total=1,
+        passed=1,
+        failed=0,
+        warnings=0,
+    )
+    with (
+        patch(
+            "src.jobs.remediation_job._get_remediator_for_scan_type",
+            return_value=remediator,
+        ),
+        patch(
+            "src.jobs.remediation_job.RemediationArtifactService.from_settings",
+            return_value=service,
+        ),
+        patch(
+            "src.jobs.remediation_job._download_cloud_file",
+            new=AsyncMock(
+                return_value={"success": True, "local_path": job_data["file_path"]}
+            ),
+        ),
+        patch(
+            "src.education.validation.matterhorn.MatterhornValidator",
+            return_value=validator,
+        ),
+    ):
+        result = await process_remediation_job(job_data, db)
+
+    assert result["success"] is True
+    assert result["artifact_id"] == artifact.id
+    assert result["fixed_count"] == 1, result
+    assert result["manual_count"] == 1
+    assert result["human_review_required"] is True
+    assert remediation_result.has_output_claim() is False
+
+
+@pytest.mark.asyncio
+async def test_direct_route_publishes_verified_partial_pdf_for_download(tmp_path):
+    from tests.test_direct_pdf_claim_publication import (
+        CLAIMED_BYTES,
+        _DirectPdfResult,
+        _run_route,
+    )
+
+    output = tmp_path / "fixed.pdf"
+    output.write_bytes(CLAIMED_BYTES)
+    result = _DirectPdfResult(output)
+    result.total_issues = 2
+    result.manual_count = 1
+    result.manual_issues = [
+        SimpleNamespace(
+            issue_id="manual-1",
+            category=SimpleNamespace(value="structure"),
+            severity=SimpleNamespace(value="medium"),
+            description="Heading needs review",
+            reason="manual_review",
+            recommendation="Confirm document hierarchy",
+        )
+    ]
+
+    run = await _run_route(tmp_path, result)
+
+    assert run.response["success"] is True
+    assert run.response["artifact_id"] is not None
+    assert run.response["manual_count"] == 1
+    assert run.response["human_review_required"] is True
+    assert run.publication["bytes"] == CLAIMED_BYTES
+    assert run.validation["bytes"] == CLAIMED_BYTES

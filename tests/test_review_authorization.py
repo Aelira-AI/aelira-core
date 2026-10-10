@@ -7,7 +7,16 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import Column, DateTime, Float, MetaData, String, Table, create_engine
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Float,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    update,
+)
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -57,6 +66,8 @@ def aggregate_db():
         Column("file_name", String),
         Column("department_id", String),
         Column("scan_type", String),
+        Column("document_source", String),
+        Column("document_id", String),
         Column("created_at", DateTime(timezone=True)),
     )
     fixes = Table(
@@ -98,6 +109,8 @@ def aggregate_db():
                 file_name=scan_id,
                 department_id=department,
                 scan_type=scan_type,
+                document_source="cloud_file" if scan_id != "unlinked" else None,
+                document_id=scan_id if scan_id != "unlinked" else None,
                 created_at=datetime.now(timezone.utc),
             )
         )
@@ -124,7 +137,7 @@ def aggregate_db():
                     ),
                 )
             )
-    # Multiple valid links must not inflate document or fix counts.
+    # An additional reverse link cannot override the scan's exact source binding.
     link_rows.append(dict(link_rows[0], id="second-own-link"))
     with engine.begin() as connection:
         connection.execute(scans.insert(), scan_rows)
@@ -184,6 +197,35 @@ def test_course_stats_and_summary_count_only_authorized_fixes(aggregate_db):
         "avg_confidence": 0.5,
         "by_type": {"pdf": 2, "word": 1},
     }
+
+
+@pytest.mark.parametrize(
+    "source_binding",
+    [
+        {"document_id": "other-cloud"},
+        {"document_id": None},
+        {"document_source": "upload"},
+        {"document_source": None},
+    ],
+)
+def test_course_aggregates_exclude_wrong_or_missing_source_binding(
+    aggregate_db, source_binding
+):
+    aggregate_db.execute(
+        update(Scan).where(Scan.id == "own-pending").values(**source_binding)
+    )
+    aggregate_db.commit()
+    client = client_for(aggregate_db, principal())
+    queue = client.get("/api/reviews/queue").json()
+    stats = client.get("/api/reviews/queue/stats").json()
+    summary = client.get("/api/reviews/department-summary").json()
+    assert queue["total"] == summary["total_documents"] == 2
+    assert {row["scan_id"] for row in queue["items"]} == {
+        "own-approved",
+        "own-rejected",
+    }
+    assert stats["total"] == 2
+    assert stats["pending"] == summary["pending_count"] == 0
 
 
 @pytest.mark.parametrize(
@@ -294,9 +336,14 @@ def document_state(monkeypatch):
             id="scan",
             department_id="dept-a",
             file_name="source.pdf",
+            scan_type="PDF",
+            storage_path=None,
+            document_source="cloud_file",
+            document_id="cloud-file",
             current_remediation_artifact_id=None,
         ),
         link=SimpleNamespace(
+            id="cloud-file",
             last_scan_id="scan",
             department_id="dept-a",
             provider="canvas",
@@ -372,6 +419,10 @@ def document_state(monkeypatch):
         "wrong_link_tenant",
         "wrong_scan_tenant",
         "wrong_scan_link",
+        "wrong_source_id",
+        "missing_source_id",
+        "wrong_source_kind",
+        "missing_source_kind",
         "missing_scan",
         "blackboard",
         "brightspace",
@@ -395,6 +446,14 @@ def test_document_routes_deny_before_reads_mutations_or_exports(
         state.scan.department_id = "dept-b"
     elif scope == "wrong_scan_link":
         state.link.last_scan_id = "another-scan"
+    elif scope == "wrong_source_id":
+        state.scan.document_id = "other-cloud"
+    elif scope == "missing_source_id":
+        state.scan.document_id = None
+    elif scope == "wrong_source_kind":
+        state.scan.document_source = "upload"
+    elif scope == "missing_source_kind":
+        state.scan.document_source = None
     elif scope == "missing_scan":
         state.scan = None
     actor = (
@@ -422,6 +481,7 @@ def test_document_routes_deny_before_reads_mutations_or_exports(
     "kind,platform",
     [
         ("course", "canvas"),
+        ("course", "brightspace"),
         ("session", "canvas"),
         ("admin", "canvas"),
         ("admin", "blackboard"),
@@ -434,6 +494,8 @@ def test_authorized_document_routes_reach_success(
     state = document_state
     if kind != "course":
         state.link = None
+    else:
+        state.link.provider = platform
     response = client_for(state.db, principal(kind, platform=platform)).request(
         method, "/api/reviews/scan" + suffix, json=body
     )

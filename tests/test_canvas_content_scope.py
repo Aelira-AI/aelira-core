@@ -56,6 +56,12 @@ def _cloud_file(
     cloud_file.department_id = DEPARTMENT_ID
     cloud_file.provider = provider
     cloud_file.provider_parent_id = course_id
+    cloud_file.provider_file_id = f"page-{cloud_file_id}"
+    cloud_file.credential_id = "credential-1"
+    cloud_file.provider_metadata = {}
+    cloud_file.content_slug = None
+    cloud_file.content_updated_at = None
+    cloud_file.current_remediation_artifact_id = None
     cloud_file.content_source = "page"
     cloud_file.file_name = "Page"
     cloud_file.content_body = "<p>Original</p>"

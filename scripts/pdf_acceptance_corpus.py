@@ -290,6 +290,9 @@ def _write_pdf(
                 ParentTreeNextKey=1,
             )
         )
+        document[Name.P] = pdf.Root[Name.StructTreeRoot]
+        paragraph[Name.P] = document
+        paragraph[Name.Pg] = page_obj
         pdf.Root[Name.MarkInfo] = Dictionary(Marked=True)
         page_obj[Name.StructParents] = 0
 

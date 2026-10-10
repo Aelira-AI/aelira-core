@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-These entries describe changes merged into `main` since v0.9.11, not a new versioned release. Published v0.9.11 artifacts and stable Compose image references remain unchanged.
+These entries describe changes for the next release after v0.9.11. Published v0.9.11 artifacts and stable Compose image references remain unchanged.
 
 ### Security
 
@@ -27,6 +27,10 @@ These entries describe changes merged into `main` since v0.9.11, not a new versi
 
 ### Fixed
 
+- PDF scans keep rule-derived scores separate from optional AI review of existing descriptions. Fresh source/output comparisons bind the measurements to exact checksums; changed scoring baselines are labelled explicitly.
+- PDF repair records source-bound image occurrences, bounded reading-order and link repairs, and saved-file evidence. Unreadable font mappings stop unsafe processing; reviewed recovery checks preserved text, paint and geometry.
+- Completed remediation results group applied changes, pending human review and remaining manual work without a misleading active progress bar. Recorded refusal reasons, attempts and next steps remain visible; absent historical evidence is labelled unavailable.
+- Verified improved PDFs remain downloadable while manual work remains. Reviewed rebuilding applies accepted changes and excludes rejected changes; publication and queued writeback recheck current file identity, approval and scope ([reviewed working files](docs/document-remediation/reviewed-pdf.md)).
 - Short direct-text PDFs no longer inherit the OCR output minimum. Incomplete required PDF checks expose bounded manual-review reasons and withhold unverified scores ([#384](https://github.com/Aelira-AI/aelira-core/pull/384)).
 - Missing remediation confidence stays unknown across persistence, review, aggregation and exports; genuine zero scores remain zero. Unknown values cannot pass numeric batch approval. Historical generic AI defaults are conservatively corrected with audit records and invalidated approval bindings ([confidence and migration guidance](docs/document-remediation/confidence.md)).
 - Analytics exports preserve measured zero and label absent scores `Not assessed`; alt-text quality aggregates use recorded finite values and leave unavailable averages and the legacy conformance-rate field null. CSV lengths count UTF-8 bytes, and route filters/pagination reject invalid bounds ([#439](https://github.com/Aelira-AI/aelira-core/pull/439)).
@@ -42,6 +46,8 @@ These entries describe changes merged into `main` since v0.9.11, not a new versi
 
 ### Changed
 
+- Result pages link directly to individual change review and the improved working file. Publication approval remains separate from download and writeback. Unsupported Brightspace binary writeback is reported as skipped with a manual-download path.
+- Default dashboard logos use bundled current tagline-free assets. Institution logo and brand-name overrides remain supported.
 - Dashboard presentation uses shared theme tokens, clearer typography, restrained card depth, responsive summary/table layouts, keyboard account disclosure, working guide/help actions and an unclipped score ring. Theme transitions preserve navigation contrast ([#541](https://github.com/Aelira-AI/aelira-core/pull/541)).
 - Transactional emails use a table/inline-style shell and a current tagline-free PNG for default Aelira branding. Institution branding covers subjects, body text, sender-name fallback, legal identity and operator links; custom logos retain their aspect ratio, and a custom brand without a logo uses a text header ([branding configuration](BRANDING.md#replacing-the-branding)).
 - The guarded secondary web engine identifies new findings as HTML_CodeSniffer; stored Pa11y findings retain their legacy label ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).

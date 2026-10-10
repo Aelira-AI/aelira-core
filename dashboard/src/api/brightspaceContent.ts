@@ -69,6 +69,8 @@ export interface CourseContentStatusResponse {
 
 export interface ContentDiffResponse {
   cloud_file_id: string;
+  scan_id?: string | null;
+  scan_type?: string | null;
   content_type: string;
   title: string;
   original_html: string;
@@ -101,6 +103,8 @@ export interface BatchWritebackResponse {
   written_count: number;
   failed_count: number;
   stale_count: number;
+  skipped_count?: number;
+  errors?: string[];
 }
 
 export type RemediateResponse = BrightspaceRemediationResult;
@@ -198,10 +202,12 @@ export async function listCourseFiles(orgUnitId: number): Promise<ScannableItem[
  * Get the diff between original and remediated content for review.
  * GET /brightspace/content/{cloudFileId}/diff
  */
-export async function getContentDiff(cloudFileId: string): Promise<ContentDiffResponse> {
-  return get<ContentDiffResponse>(
-    `/brightspace/content/${encodeURIComponent(cloudFileId)}/diff`
+export async function getContentDiff(cloudFileId: string, signal?: AbortSignal): Promise<ContentDiffResponse> {
+  const result = await get<ContentDiffResponse>(
+    `/brightspace/content/${encodeURIComponent(cloudFileId)}/diff`, { signal }
   );
+  if (result.cloud_file_id !== cloudFileId) throw new Error('Content review response does not match this file.');
+  return result;
 }
 
 /**

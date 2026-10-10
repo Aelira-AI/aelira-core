@@ -101,8 +101,15 @@ def _commit_terminal_outcome(
     public = public_job_result(result) or public_job_result(
         _failure_outcome("remediation_failed", payload=job.payload)
     )
+    partial_artifact = (
+        result.get("status") == "manual_required"
+        and result.get("download_available") is True
+        and isinstance(result.get("artifact_id"), str)
+        and bool(result["artifact_id"])
+    )
     succeeded = bool(
-        result.get("success") is True and result.get("status") in {"completed", "no_op"}
+        result.get("success") is True
+        and (result.get("status") in {"completed", "no_op"} or partial_artifact)
     )
     now = datetime.now(timezone.utc)
     owner.status = (
@@ -110,7 +117,11 @@ def _commit_terminal_outcome(
     )
     owner.completed_at = now
     owner.progress = 100 if succeeded else 0
-    owner.progress_message = "Completed" if succeeded else "Failed"
+    owner.progress_message = (
+        "Completed; manual review remains"
+        if succeeded and partial_artifact
+        else "Completed" if succeeded else "Failed"
+    )
     owner.result_data = public
     owner.error_message = None if succeeded else str(result.get("error_code"))[:128]
     owner.last_error_code = owner.error_message
@@ -325,7 +336,13 @@ def _public_outcome(outcome: Any, *, scan_id: str) -> dict[str, Any]:
         }
     }
     result = {
-        "success": status_value in {"completed", "no_op"},
+        "success": status_value in {"completed", "no_op"}
+        or (
+            status_value == "manual_required"
+            and outcome.has_remediated_version is True
+            and isinstance(outcome.artifact_id, str)
+            and bool(outcome.artifact_id)
+        ),
         "status": status_value,
         "scan_id": scan_id,
         "fixed_count": outcome.fixed_count,

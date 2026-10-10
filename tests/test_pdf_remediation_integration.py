@@ -168,7 +168,7 @@ def test_incident_fixture_raw_scanner_output_reconciles_every_finding():
     processor = PDFProcessor(generate_alt_text=False, validate_alt_text=False)
     scan_result = processor.process_pdf(input_pdf)
 
-    assert len(scan_result.issues) == 8
+    assert len(scan_result.issues) == 9
     structure_finding = next(
         issue
         for issue in scan_result.issues
@@ -190,9 +190,9 @@ def test_incident_fixture_raw_scanner_output_reconciles_every_finding():
         result = remediator.remediate()
 
         assert result.success, result.error_message
-        assert result.total_issues == 8
+        assert result.total_issues == 9
         assert result.fixed_count == 5
-        assert result.manual_count == 3
+        assert result.manual_count == 4
         assert result.failed_count == 0
         assert result.skipped_count == 0
         assert (
@@ -233,7 +233,7 @@ def test_reported_three_finding_payload_stays_unverified_when_source_differs():
         {
             "issue_type": "missing_pdfua_identifier",
             "rule": "PDF/UA 6.6.4",
-            "message": "PDF/UA identifier not set in XMP metadata",
+            "message": "Historical PDF/UA finding that current source scan cannot reproduce",
             "severity": "medium",
             "location": "XMP metadata",
             "page_number": 1,

@@ -206,7 +206,15 @@ def test_bound_image_alt_keeps_strict_scan_available_with_honest_review(
     scan = PDFProcessor(generate_alt_text=False, validate_alt_text=False).process_pdf(
         str(saved)
     )
-    assert any("reading order" in item["message"].lower() for item in scan.issues)
+    assert result.issues[0].review_only is (not reordered)
+    if reordered:
+        assert any("reading order" in item["message"].lower() for item in scan.issues)
+        assert not scan.review_requirements
+    else:
+        assert not any(
+            i.get("issue_type") == "reading_order_mismatch" for i in scan.issues
+        )
+        assert scan.review_requirements and "placement" in scan.review_requirements[0]
 
 
 @pytest.mark.parametrize("replacement", ["Parent replacement", ""])

@@ -10,8 +10,9 @@ import { RemediationStatusLink } from '../components/results/RemediationStatusLi
 import { scansApi } from '../api/scans';
 import { Breadcrumbs } from '../components/layout/Breadcrumbs';
 import { useToast } from '../context/toast-context';
+import { isUnscoredAltReview, type AIReviewMarker } from '../utils/aiReviewFindings';
 
-interface Issue {
+interface Issue extends AIReviewMarker {
   severity?: string;
   impact?: string;
   description?: string;
@@ -204,12 +205,14 @@ export function ScanDetail(): React.ReactElement {
     });
   };
 
+  const ruleIssues = scan.issues.filter(issue => !isUnscoredAltReview(issue));
+  const aiReviews = scan.issues.filter(isUnscoredAltReview);
   // Backend uses 'impact' field, map to severity for display
   const issuesBySeverity: IssuesBySeverity = {
-    critical: scan.issues.filter(i => (i.severity || i.impact) === 'critical').length,
-    high: scan.issues.filter(i => (i.severity || i.impact) === 'high' || (i.severity || i.impact) === 'serious').length,
-    medium: scan.issues.filter(i => (i.severity || i.impact) === 'medium' || (i.severity || i.impact) === 'moderate').length,
-    low: scan.issues.filter(i => (i.severity || i.impact) === 'low' || (i.severity || i.impact) === 'minor').length
+    critical: ruleIssues.filter(i => (i.severity || i.impact) === 'critical').length,
+    high: ruleIssues.filter(i => (i.severity || i.impact) === 'high' || (i.severity || i.impact) === 'serious').length,
+    medium: ruleIssues.filter(i => (i.severity || i.impact) === 'medium' || (i.severity || i.impact) === 'moderate').length,
+    low: ruleIssues.filter(i => (i.severity || i.impact) === 'low' || (i.severity || i.impact) === 'minor').length
   };
 
   return (
@@ -326,18 +329,25 @@ export function ScanDetail(): React.ReactElement {
         {/* Data Visualizations */}
         {!isProcessing && scan.issues.length > 0 && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            <IssuesByTypeChart issues={scan.issues} />
-            <WCAGCriteriaChart issues={scan.issues} />
+            <IssuesByTypeChart issues={ruleIssues} />
+            <WCAGCriteriaChart issues={ruleIssues} />
           </div>
         )}
 
         {/* Issues List */}
         {scan.compliance_score != null && <div className="mb-6">
           <h2 className="text-xl font-semibold text-primary mb-4">
-            Issues Found ({scan.issues.length})
+            Rule-based findings ({ruleIssues.length})
           </h2>
-          <IssueList issues={scan.issues} scanType={scan.type} />
+          <IssueList issues={ruleIssues} scanType={scan.type} />
         </div>}
+        {scan.compliance_score != null && aiReviews.length > 0 && (
+          <section className="mb-6" aria-labelledby="ai-review-heading">
+            <h2 id="ai-review-heading" className="text-xl font-semibold text-primary mb-2">AI alt-text review ({aiReviews.length})</h2>
+            <p className="text-sm text-secondary mb-4">These assessments do not affect the numeric score. Compare each description with the actual image and its context before making changes.</p>
+            <IssueList issues={aiReviews} scanType={scan.type} />
+          </section>
+        )}
       </div>
     </div>
   );

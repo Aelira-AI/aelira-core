@@ -846,7 +846,12 @@ def test_upload_requires_current_approved_managed_artifact_before_canvas_client(
         current_remediation_artifact_id="artifact-1",
         writeback_status="pending_review",
     )
-    scan = SimpleNamespace(id="scan-1", department_id=DEPT)
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id=DEPT,
+        document_source="cloud_file",
+        document_id=cloud_file.id,
+    )
     cloud_file_query = MagicMock()
     cloud_file_query.filter.return_value = cloud_file_query
     cloud_file_query.first.return_value = cloud_file
@@ -884,7 +889,12 @@ def test_upload_delegates_approved_artifact_to_managed_file_writer(client, db):
         current_remediation_artifact_id="artifact-1",
         writeback_status="approved",
     )
-    scan = SimpleNamespace(id="scan-1", department_id=DEPT)
+    scan = SimpleNamespace(
+        id="scan-1",
+        department_id=DEPT,
+        document_source="cloud_file",
+        document_id=cloud_file.id,
+    )
     cloud_file_query = MagicMock()
     cloud_file_query.filter.return_value = cloud_file_query
     cloud_file_query.first.return_value = cloud_file
@@ -944,6 +954,8 @@ def test_upload_never_uses_same_filename_remediation_from_another_course(
     authorized_scan = SimpleNamespace(
         id="scan-current",
         department_id=DEPT,
+        document_source="cloud_file",
+        document_id=cloud_file.id,
         file_name="syllabus.pdf",
         storage_path=str(tmp_path / "current-course" / "syllabus.pdf"),
     )

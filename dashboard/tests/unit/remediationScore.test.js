@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { displayScore, remediationScore } from '../../src/utils/remediationScore.ts';
+import { displayScore, freshScoreComparison, remediationScore } from '../../src/utils/remediationScore.ts';
 
 describe('measured remediation scores', () => {
   const scan = { compliance_score: 95.7 };
@@ -80,6 +80,8 @@ describe('measured remediation scores', () => {
     for (const [reasonCode, message] of [
       ['original_file_missing', /original file is unavailable/i],
       ['output_scan_failed', /output could not be scored/i],
+      ['source_text_mapping_unavailable', /Export a new PDF from the source document/],
+      ['source_text_scope_unsupported', /reviewed recovery workflow/],
       ['incomplete_comparison', /before-and-after comparison is incomplete/i],
     ]) {
       const result = remediationScore({ score_verified: false, score_verification_reason: reasonCode }, scan);
@@ -106,11 +108,33 @@ describe('measured remediation scores', () => {
   it('honors every supported failure reason even if a stale verified flag is present', () => {
     for (const score_verification_reason of ['original_file_missing', 'original_scan_failed',
       'output_file_missing', 'output_scan_failed', 'incomplete_comparison', 'baseline_mismatch',
-      'unsupported_scan_type', 'legacy_unverified', 'artifact_mismatch']) {
+      'unsupported_scan_type', 'legacy_unverified', 'artifact_mismatch', 'source_text_mapping_unavailable', 'source_text_scope_unsupported']) {
       const result = remediationScore({ ...job, score_verification_reason }, scan);
       assert.equal(result.reasonCode, score_verification_reason);
       assert.equal(result.after, null);
       assert.equal(result.success, false);
     }
+  });
+  it('shows an independent fresh pair without changing the recorded comparison', () => {
+    const fresh = {
+      method_version: 'pdf-strict-v1', source_sha256: 'a'.repeat(64),
+      output_sha256: 'b'.repeat(64), source_score: 57.9, output_score: 0,
+    };
+    const mismatched = {
+      original_score: 59.7, remediated_score: null, score_verified: false,
+      score_verification_reason: 'baseline_mismatch', human_review_required: true,
+      fresh_score_comparison: fresh, download_available: true,
+    };
+    const recorded = remediationScore(mismatched, { compliance_score: 59.7 });
+    assert.equal(recorded.before, 59.7);
+    assert.equal(recorded.after, null);
+    assert.equal(recorded.success, false);
+    assert.deepEqual(freshScoreComparison(mismatched), {
+      source: 57.9, output: 0, methodVersion: 'pdf-strict-v1',
+      deltaLabel: '-57.9 points',
+    });
+    assert.equal(freshScoreComparison({ ...mismatched, download_available: false }), null);
+    assert.equal(freshScoreComparison({ ...mismatched,
+      fresh_score_comparison: { ...fresh, output_sha256: 'invalid' } }), null);
   });
 });

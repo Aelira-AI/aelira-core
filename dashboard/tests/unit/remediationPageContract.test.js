@@ -12,6 +12,7 @@ const outcomeSource = readFileSync(
 );
 const scoreSource = readFileSync(new URL('../../src/components/ScoreComparison.tsx', import.meta.url), 'utf8');
 const scoreDecisions = readFileSync(new URL('../../src/utils/remediationScore.ts', import.meta.url), 'utf8');
+const breakdownSource = readFileSync(new URL('../../src/components/results/RemediationOutcomeBreakdown.tsx', import.meta.url), 'utf8');
 
 describe('durable remediation page contract', () => {
   it('renders every terminal state and keeps browser timeout distinct', () => {
@@ -49,6 +50,7 @@ describe('durable remediation page contract', () => {
 
   it('does not invent scores or per-issue remediation outcomes', () => {
     assert.match(scoreSource, /Remediated score/);
+    assert.match(scoreSource, /Current rule-based comparison/);
     assert.match(scoreDecisions, /Not available/);
     assert.match(outcomeSource, /Outcome not reported/);
     assert.match(pageSource, /fixes\.length === terminalJob\.fixed_count/);
@@ -58,7 +60,6 @@ describe('durable remediation page contract', () => {
     assert.match(outcomeSource, /counts\.failed_count === 0/);
     assert.match(outcomeSource, /counts\.skipped_count === 0/);
     assert.match(outcomeSource, /Fix proposed · review required/);
-    assert.match(outcomeSource, /Approved for remediation/);
     assert.match(outcomeSource, /review_status === 'apply_failed'/);
     assert.doesNotMatch(pageSource, /fixedDescs|manualDescs|matchedFixed|matchedManual/);
     assert.doesNotMatch(pageSource, /remediated_(?:score|compliance_score)[^\n]*\|\|\s*100/);
@@ -66,14 +67,14 @@ describe('durable remediation page contract', () => {
   });
 
   it('keeps server-authored fixed, remaining, and total aggregate counts', () => {
-    assert.match(pageSource, /label: 'Reported changes', value: job\.score_verified === true \? job\.fixed_count : null/);
-    assert.match(pageSource, /label: 'Remaining', value: job\.remaining_count/);
-    assert.match(pageSource, /label: 'Total issues', value: job\.total_issues/);
+    assert.match(breakdownSource, /label: 'Changes applied', value: job\.fixed_count/);
+    assert.match(breakdownSource, /label: 'Remaining', value: job\.remaining_count/);
+    assert.match(breakdownSource, /label: 'Total issues', value: job\.total_issues/);
+    assert.doesNotMatch(breakdownSource, /score_verified.*fixed_count/);
   });
 
-  it('labels findings and changes without claiming that application verifies a fix', () => {
+  it('labels the combined findings and changes count without implying an issue total', () => {
     assert.match(pageSource, /Recorded Findings and Changes \(\{issueRows\.length\}\)/);
-    assert.match(pageSource, /Application alone does not verify a fix/);
-    assert.match(pageSource, /Download Output for Review/);
+    assert.doesNotMatch(pageSource, /Recorded Issues \(\{issueRows\.length\}\)/);
   });
 });

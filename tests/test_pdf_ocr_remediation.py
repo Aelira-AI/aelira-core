@@ -2065,10 +2065,14 @@ def test_output_claim_and_verification_use_exact_bytes_after_output_path_mutates
         assert self.require_complete_scan is True
         processor_reads.append(verification_path.read_bytes())
         if verification_path == input_pdf:
-            return SimpleNamespace(issues=_language_issue(), compliance_score=90.0)
+            return SimpleNamespace(
+                issues=_language_issue(), compliance_score=90.0, review_requirements=[]
+            )
         assert stat.S_IMODE(verification_path.parent.stat().st_mode) == 0o700
         assert verification_path.parent != Path(expected_output).parent
-        return SimpleNamespace(issues=[], compliance_score=100.0)
+        return SimpleNamespace(
+            issues=[], compliance_score=100.0, review_requirements=[]
+        )
 
     def validate_exact_bytes(self, path):
         matterhorn_reads.append(Path(path).read_bytes())
@@ -2153,8 +2157,12 @@ def test_output_claim_snapshots_validated_bytes_before_final_rename_returns(
         assert self.require_complete_scan is True
         processor_reads.append(Path(path).read_bytes())
         if Path(path) == input_pdf:
-            return SimpleNamespace(issues=_language_issue(), compliance_score=90.0)
-        return SimpleNamespace(issues=[], compliance_score=100.0)
+            return SimpleNamespace(
+                issues=_language_issue(), compliance_score=90.0, review_requirements=[]
+            )
+        return SimpleNamespace(
+            issues=[], compliance_score=100.0, review_requirements=[]
+        )
 
     def validate_exact_bytes(self, path):
         matterhorn_reads.append(Path(path).read_bytes())
@@ -2325,3 +2333,158 @@ def test_post_commit_no_success_closes_output_claim(tmp_path, monkeypatch):
     assert len(candidate_read_fds) == 1
     with pytest.raises(OSError):
         os.fstat(candidate_read_fds[0])
+
+
+def _form_ocr_derivative(input_file, output_file, **_kwargs):
+    import pikepdf
+    from pikepdf import Array, Dictionary, Name
+
+    with fitz.open(input_file) as source:
+        selected = {page.number for page in source if not page.get_text().strip()}
+    with pikepdf.open(input_file) as pdf:
+        for index, page in enumerate(pdf.pages):
+            if index not in selected:
+                continue
+            form = pdf.make_stream(
+                b"BT /F1 12 Tf 3 Tr 20 170 Td "
+                b"(Recovered OCR words must be reviewed against the image. "
+                b"This synthetic text is long enough for the source quality gate.) Tj ET"
+            )
+            form.Type = Name.XObject
+            form.Subtype = Name.Form
+            form.FormType = 1
+            form.BBox = Array(page.MediaBox)
+            form.Resources = Dictionary(
+                Font=Dictionary(
+                    F1=Dictionary(
+                        Type=Name.Font,
+                        Subtype=Name.Type1,
+                        BaseFont=Name.Helvetica,
+                        Encoding=Name.WinAnsiEncoding,
+                    )
+                )
+            )
+            page.Resources.XObject.OCRText = form
+            content = page.Contents
+            streams = list(content) if isinstance(content, Array) else [content]
+            page.Contents = Array([*streams, pdf.make_stream(b"q /OCRText Do Q")])
+        pdf.save(output_file)
+
+
+def test_staged_ocr_form_is_flattened_before_font_preflight(tmp_path, monkeypatch):
+    import src.education.remediation.pdf_remediator as module
+    from src.education.remediation.pdf_text_mapping import inspect_pdf_text_quality
+
+    source = tmp_path / "image_only.pdf"
+    _make_image_only_pdf(source)
+    original = source.read_bytes()
+    monkeypatch.setattr(module, "HAS_OCRMYPDF", True)
+    monkeypatch.setattr(module.ocrmypdf, "ocr", _form_ocr_derivative)
+    remediator = PdfRemediator(
+        str(source), [], RemediationConfig(use_ai=False, create_backup=False)
+    )
+    try:
+        remediator._stage_working_copy()
+        quality = inspect_pdf_text_quality(remediator._working_file_path)
+        assert quality.reason is None
+        assert quality.pages[0].status == "decoded"
+        assert quality.pages[0].glyph_count > 100
+        assert source.read_bytes() == original
+        assert any(
+            "Review OCR accuracy" in warning for warning in remediator.result.warnings
+        )
+        assert remediator.result.output_file is None
+        assert not remediator.result.has_output_claim()
+    finally:
+        remediator._cleanup_working_copy()
+
+
+def test_saved_flattening_candidate_must_preserve_rendering(tmp_path, monkeypatch):
+    import src.education.remediation.pdf_remediator as module
+
+    source = tmp_path / "source.pdf"
+    _make_image_only_pdf(source)
+    ocr = tmp_path / "ocr.pdf"
+    _form_ocr_derivative(str(source), str(ocr))
+    remediator = PdfRemediator(str(source), [], RemediationConfig(use_ai=False))
+    remediator._work_dir = str(tmp_path)
+    apply = module.PdfRemediator._normalize_ocr_text_forms
+    from src.education.remediation import pdf_ocr_form
+
+    original_apply = pdf_ocr_form.apply_ocr_form_flattening
+
+    def changed_image(pdf, plan):
+        result = original_apply(pdf, plan)
+        pdf.pages[0].Contents = pdf.make_stream(b"0 g 0 0 500 200 re f")
+        return result
+
+    monkeypatch.setattr(pdf_ocr_form, "apply_ocr_form_flattening", changed_image)
+    from src.education.remediation.score_measurement import MeasurementError
+
+    with pytest.raises(MeasurementError):
+        apply(remediator, str(ocr))
+    assert not (tmp_path / "ocr_page_text.pdf").exists()
+    assert remediator.result.output_file is None
+
+
+def test_mixed_native_and_ocr_form_pages_preserve_native_text(tmp_path, monkeypatch):
+    import src.education.remediation.pdf_remediator as module
+
+    source = tmp_path / "mixed.pdf"
+    _make_image_only_pdf(source)
+    with fitz.open(source) as document:
+        native = document.new_page(width=500, height=200)
+        native.insert_text((20, 30), "Native course text stays native and unchanged.")
+        mixed = tmp_path / "mixed_source.pdf"
+        document.save(mixed)
+    original = mixed.read_bytes()
+    monkeypatch.setattr(module, "HAS_OCRMYPDF", True)
+    monkeypatch.setattr(module.ocrmypdf, "ocr", _form_ocr_derivative)
+    remediator = PdfRemediator(str(mixed), [], RemediationConfig(use_ai=False))
+    try:
+        remediator._stage_working_copy()
+        assert remediator._ocr_pages == [0]
+        with (
+            fitz.open(mixed) as before,
+            fitz.open(remediator._working_file_path) as after,
+        ):
+            assert len(after) == 2
+            assert before[1].get_text() == after[1].get_text()
+            assert remediator._ocr_text_geometry(
+                before[1]
+            ) == remediator._ocr_text_geometry(after[1])
+        assert mixed.read_bytes() == original
+    finally:
+        remediator._cleanup_working_copy()
+
+
+def test_saved_flattening_rejects_shifted_invisible_glyphs(tmp_path, monkeypatch):
+    from src.education.remediation import pdf_ocr_form
+    from src.education.remediation.score_measurement import MeasurementError
+
+    source = tmp_path / "source.pdf"
+    _make_image_only_pdf(source)
+    ocr = tmp_path / "ocr.pdf"
+    _form_ocr_derivative(str(source), str(ocr))
+    remediator = PdfRemediator(str(source), [], RemediationConfig(use_ai=False))
+    remediator._work_dir = str(tmp_path)
+    original_apply = pdf_ocr_form.apply_ocr_form_flattening
+
+    def shifted_text(pdf, plan):
+        result = original_apply(pdf, plan)
+        import pikepdf
+
+        content = pikepdf.unparse_content_stream(
+            pikepdf.parse_content_stream(pdf.pages[0])
+        )
+        assert b"20 170 Td" in content
+        pdf.pages[0].Contents = pdf.make_stream(
+            content.replace(b"20 170 Td", b"20 160 Td")
+        )
+        return result
+
+    monkeypatch.setattr(pdf_ocr_form, "apply_ocr_form_flattening", shifted_text)
+    with pytest.raises(MeasurementError):
+        remediator._normalize_ocr_text_forms(str(ocr))
+    assert not (tmp_path / "ocr_page_text.pdf").exists()
+    assert not remediator.result.has_output_claim()

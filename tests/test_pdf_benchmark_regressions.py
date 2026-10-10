@@ -27,7 +27,14 @@ def test_forms_fixture_remediation_preserves_short_direct_text(tmp_path):
     scan = PDFProcessor(
         generate_alt_text=False, enhance_descriptions=False
     ).process_pdf(str(source))
-    assert len(scan.issues) == 6
+    assert len(scan.issues) == 7
+    assert (
+        sum(
+            issue.get("issue_type") == "missing_pdfua_identifier"
+            for issue in scan.issues
+        )
+        == 1
+    )
     result = PdfRemediator(
         str(source),
         scan.issues,
@@ -42,15 +49,19 @@ def test_forms_fixture_remediation_preserves_short_direct_text(tmp_path):
         assert result.success, result.error_message
         assert result.output_file
         assert result.verification_passed
-        assert result.remediated_compliance_score == 100
         assert result.fixed_count == 6
+        assert result.manual_count == 1
+        assert "Matterhorn 06-003" in result.verification_result.persistent_failures
         with fitz.open(source) as before, fitz.open(result.output_file) as after:
             assert before[0].get_text().strip() == after[0].get_text().strip()
         rescanned = PDFProcessor(
             generate_alt_text=False, enhance_descriptions=False
         ).process_pdf(result.output_file)
         assert rescanned.compliance_score == result.remediated_compliance_score
-        assert rescanned.issues == []
+        assert [issue.get("issue_type") for issue in rescanned.issues] == [
+            "missing_pdfua_identifier"
+        ]
+        assert rescanned.compliance_score < 100
         assert source.read_bytes() == original
     finally:
         result.close_output_claim()
@@ -120,7 +131,15 @@ def test_real_pdf_background_scan_has_truthful_terminal_outcome(
     else:
         assert scan.status == ScanStatus.COMPLETED
         assert scan.file_hash == hashlib.sha256(content).hexdigest()
-        assert len(db.add.call_args.args[0].issues) == 6
+        saved_issues = db.add.call_args.args[0].issues
+        assert len(saved_issues) == 7
+        assert (
+            sum(
+                issue.get("issue_type") == "missing_pdfua_identifier"
+                for issue in saved_issues
+            )
+            == 1
+        )
     db.close.assert_called()
 
 

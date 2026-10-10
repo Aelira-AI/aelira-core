@@ -1,19 +1,10 @@
-"""
-Reading Order Auto-Fix for PDF Remediation.
+"""Source-bound PDF reading-order correction.
 
-Implements heuristic-based reading order correction for PDF documents.
-Reorders the structure tree so that content reads in the correct visual
-order (top-to-bottom, left-to-right for LTR documents, column-aware).
-
-Supports:
-- Single-column layout (top-to-bottom ordering)
-- Two-column layout (left column top-to-bottom, then right column)
-- Header/footer/page-number detection across pages
-- Structure tree reordering via pikepdf
-
-WCAG 1.3.2 (Meaningful Sequence): When the sequence in which content is
-presented affects its meaning, a correct reading sequence can be
-programmatically determined.
+Automatic repair supports unambiguous single-column sibling permutations and
+corroborated running page ordinals. It preserves existing structure groups and
+uses decoded MCID ownership and glyph bounds, followed by saved verification.
+Ambiguous layouts remain for review. Legacy layout-analysis helpers remain for
+assessment, but extracted block indexes cannot authorize structure mutations.
 """
 
 import logging
@@ -31,7 +22,6 @@ except ImportError:
 
 try:
     import pikepdf
-    from pikepdf import Array, Name
 
     HAS_PIKEPDF = True
 except ImportError:
@@ -131,104 +121,76 @@ class HeuristicStrategy:
 
     def __init__(self) -> None:
         self._confidence_calc = ConfidenceCalculator()
+        self._repair_attempts = 0
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def fix(self, pdf_path: str) -> ReadingOrderFixResult:
-        """Analyse a PDF and reorder its structure tree.
-
-        Args:
-            pdf_path: Path to the PDF file (will be modified in place via pikepdf).
-
-        Returns:
-            ReadingOrderFixResult with details of what was changed.
-        """
-        if not HAS_PYMUPDF:
+        """Repair supported page orders and save the exact modified PDF handle."""
+        if not HAS_PYMUPDF or not HAS_PIKEPDF:
             return ReadingOrderFixResult(
-                success=False, error="PyMuPDF (fitz) is required"
+                success=False, error="PyMuPDF and pikepdf are required"
             )
-        if not HAS_PIKEPDF:
-            return ReadingOrderFixResult(
-                success=False, error="pikepdf is required for structure tree reordering"
-            )
+        from ..pdf_checks.reading_order import ReadingOrderVerifier
 
         try:
-            # 1. Extract content blocks using PyMuPDF
-            doc = fitz.open(pdf_path)
-            try:
-                blocks = self._extract_blocks(doc)
-            finally:
-                doc.close()
-
-            if not blocks:
+            with pikepdf.open(pdf_path) as preflight:
+                if len(preflight.pages) > 100:
+                    return ReadingOrderFixResult(
+                        success=False, error="reading_order_page_limit"
+                    )
+            issues = ReadingOrderVerifier().check(pdf_path, max_pages=100).issues
+            targets = sorted(
+                {issue.page_number for issue in issues if not issue.review_only}
+            )
+            if not targets:
                 return ReadingOrderFixResult(
-                    success=True,
-                    layout_type=LayoutType.SINGLE_COLUMN,
-                    confidence=1.0,
-                    needs_review=False,
+                    success=True, confidence=1.0, needs_review=False
                 )
-
-            # 2. Detect headers, footers, page numbers
-            self._detect_headers_footers(blocks)
-
-            # 3. Detect layout type
-            layout = self._detect_layout(blocks)
-
-            # 4. Compute correct reading order
-            new_order = self._compute_reading_order(blocks, layout)
-
-            # 5. Check if reordering is needed
-            original_order = list(range(len(blocks)))
-            if new_order == original_order:
-                # Already in correct order
-                signal, context = self._layout_signals(layout)
-                confidence = self._confidence_calc.calculate(
-                    FixMethod.HEURISTIC,
-                    signal_strength=signal,
-                    context_quality=context,
-                )
+            with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+                count = 0
+                errors = []
+                for page_number in targets:
+                    result = self.fix_document(pdf, page_number)
+                    count += result.reordered_count
+                    if not result.success:
+                        errors.append(f"Page {page_number}: {result.error}")
+                if count:
+                    pdf.save(pdf_path)
                 return ReadingOrderFixResult(
-                    success=True,
-                    reordered_count=0,
-                    layout_type=layout,
-                    confidence=confidence,
-                    needs_review=self._confidence_calc.needs_review(confidence),
-                    original_order=original_order,
-                    new_order=new_order,
+                    success=not errors,
+                    reordered_count=count,
+                    confidence=0.9 if count else 0.0,
+                    needs_review=bool(errors),
+                    error="; ".join(errors) or None,
                 )
-
-            # 6. Reorder the structure tree via pikepdf
-            reorder_map = {
-                old_idx: new_pos for new_pos, old_idx in enumerate(new_order)
-            }
-            reordered, artifacts = self._reorder_structure_tree(
-                pdf_path, reorder_map, blocks
-            )
-
-            # 7. Compute confidence
-            signal, context = self._layout_signals(layout)
-            confidence = self._confidence_calc.calculate(
-                FixMethod.HEURISTIC,
-                signal_strength=signal,
-                context_quality=context,
-            )
-
-            return ReadingOrderFixResult(
-                success=True,
-                reordered_count=reordered,
-                artifacts_marked=artifacts,
-                layout_type=layout,
-                confidence=confidence,
-                needs_review=self._confidence_calc.needs_review(confidence),
-                original_order=original_order,
-                new_order=new_order,
-            )
-
         except Exception as exc:
-            logger.error("Reading order fix failed: %s", exc, exc_info=True)
+            logger.warning("Reading order repair refused: %s", exc)
             return ReadingOrderFixResult(success=False, error=str(exc))
+
+    def fix_document(self, pdf: Any, page_number: int) -> ReadingOrderFixResult:
+        """Modify the caller's retained handle; no independent working-file save."""
+        from .source_order import OrderRefusal, repair_page
+
+        self._repair_attempts += 1
+        if self._repair_attempts > 20:
+            return ReadingOrderFixResult(
+                success=False, error="reading_order_document_repair_limit"
+            )
+        try:
+            count, _method = repair_page(pdf, page_number)
+            return ReadingOrderFixResult(
+                success=True, reordered_count=count, confidence=0.9, needs_review=False
+            )
+        except OrderRefusal as exc:
+            return ReadingOrderFixResult(success=False, error=str(exc))
+        except Exception as exc:
+            logger.warning("Source-bound order repair failed: %s", exc)
+            return ReadingOrderFixResult(
+                success=False, error="reading_order_source_preflight_failed"
+            )
 
     # ------------------------------------------------------------------
     # Block extraction
@@ -614,90 +576,12 @@ class HeuristicStrategy:
         reorder_map: Dict[int, int],
         blocks: List[ContentBlock],
     ) -> Tuple[int, int]:
-        """Reorder the /K array in StructTreeRoot according to *reorder_map*.
+        """Ordinal block indexes cannot safely identify structure elements.
 
-        Also marks detected headers/footers as Artifact structure elements.
-
-        Args:
-            pdf_path: Path to the PDF file.
-            reorder_map: Mapping from original index to new position.
-            blocks: Content blocks (used to identify artifacts).
-
-        Returns:
-            (reordered_count, artifacts_marked)
+        Legacy vision callers must supply source-bound structure evidence before
+        they can mutate tags. The ordinary repair path uses fix_document().
         """
-        reordered = 0
-        artifacts = 0
-
-        with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
-            if Name.StructTreeRoot not in pdf.Root:
-                logger.warning("No StructTreeRoot found, cannot reorder")
-                return 0, 0
-
-            struct_root = pdf.Root[Name.StructTreeRoot]
-            if Name.K not in struct_root:
-                logger.warning("StructTreeRoot has no /K array")
-                return 0, 0
-
-            kids = struct_root[Name.K]
-            if not isinstance(kids, Array):
-                # Single element, wrap in array
-                kids = Array([kids])
-                struct_root[Name.K] = kids
-
-            num_kids = len(kids)
-            if num_kids == 0:
-                return 0, 0
-
-            # Build the new order for the kids array.
-            # The reorder_map maps block index -> new position.
-            # We can only reorder up to min(num_kids, len(reorder_map)) elements.
-            max_reorder = min(num_kids, len(reorder_map))
-
-            # Create sorted list of (new_position, original_index) pairs
-            sortable = []
-            for orig_idx, new_pos in reorder_map.items():
-                if orig_idx < max_reorder:
-                    sortable.append((new_pos, orig_idx))
-            sortable.sort()
-
-            # Build new kids array in correct order
-            new_kids = Array([])
-            reordered_indices = set()
-            for new_pos, orig_idx in sortable:
-                if orig_idx < num_kids:
-                    new_kids.append(kids[orig_idx])
-                    reordered_indices.add(orig_idx)
-                    reordered += 1
-
-            # Append any kids not in the reorder map (preserve them at the end)
-            for i in range(num_kids):
-                if i not in reordered_indices:
-                    new_kids.append(kids[i])
-
-            struct_root[Name.K] = new_kids
-
-            # Mark header/footer blocks as Artifact using original kids
-            # (block indices refer to original positions, not reordered)
-            artifact_indices = set()
-            for b in blocks:
-                if (
-                    b.is_header or b.is_footer or b.is_page_number
-                ) and b.index < num_kids:
-                    artifact_indices.add(b.index)
-
-            for idx in artifact_indices:
-                try:
-                    elem = kids[idx]
-                    if hasattr(elem, "keys"):
-                        elem[Name.S] = Name("/Artifact")
-                        artifacts += 1
-                except Exception:
-                    pass
-
-            pdf.save(pdf_path)
-
-        return reordered, artifacts
+        raise ValueError("reading_order_unbound_block_indices")
 
     # ------------------------------------------------------------------
     # Confidence helpers
