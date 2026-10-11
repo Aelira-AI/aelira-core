@@ -1,0 +1,12 @@
+{
+  "name": "aelira-pa11y-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned Pa11y runtime for the API images",
+  "dependencies": {
+    "pa11y": "9.0.1"
+  },
+  "overrides": {
+    "@puppeteer/browsers": "3.2.4"
+  }
+}

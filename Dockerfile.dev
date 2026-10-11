@@ -2,10 +2,11 @@
 FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS pa11y-node
 
 ENV PUPPETEER_SKIP_DOWNLOAD=true
-RUN npm install -g pa11y@9.0.1 && \
+WORKDIR /opt/pa11y-runtime
+COPY pa11y-runtime/package.json pa11y-runtime/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && \
     npm cache clean --force && \
-    rm -rf /root/.npm \
-        /usr/local/lib/node_modules/pa11y/node_modules/extract-zip
+    rm -rf /root/.npm
 
 FROM python:3.14-slim AS runtime
 
@@ -56,10 +57,10 @@ RUN apt-get update && apt-get install -y \
     pandoc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the same minimal Node 24 and Pa11y runtime as the production image.
+# Copy the same locked Node 24 and Pa11y runtime as the production image.
 COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node
-COPY --from=pa11y-node /usr/local/lib/node_modules/pa11y /usr/local/lib/node_modules/pa11y
-RUN ln -s ../lib/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
+COPY --from=pa11y-node /opt/pa11y-runtime/node_modules /opt/pa11y-runtime/node_modules
+RUN ln -s /opt/pa11y-runtime/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
 
 # Set working directory
 WORKDIR /app

@@ -9,11 +9,13 @@ import pytest
 from scripts.verify_final_python_packages import (
     required_msgpack_version,
     required_piper_version,
+    required_urllib3_version,
     validate,
 )
 
 PIPER_VERSION = required_piper_version()
 MSGPACK_VERSION = required_msgpack_version()
+URLLIB3_VERSION = required_urllib3_version()
 
 
 class MissingPackage(Exception):
@@ -50,6 +52,7 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
                     "msgpack": MSGPACK_VERSION,
                     "setuptools": "84.0.0",
                     "piper-tts": PIPER_VERSION,
+                    "urllib3": URLLIB3_VERSION,
                 }
             ),
             package_not_found=MissingPackage,
@@ -65,7 +68,16 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
         ("global", {"msgpack": "1.1.2"}, "global: msgpack is 1.1.2"),
         (
             "global",
-            {"msgpack": MSGPACK_VERSION, "setuptools": "70.3.0"},
+            {"msgpack": MSGPACK_VERSION, "pip": "26.2.1"},
+            "global: pip is 26.2.1; expected absent",
+        ),
+        (
+            "global",
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "70.3.0",
+                "urllib3": URLLIB3_VERSION,
+            },
             "global: setuptools is 70.3.0",
         ),
         (
@@ -77,6 +89,27 @@ def test_final_package_verifier_accepts_reviewed_global_and_venv_state(
             "venv",
             {"msgpack": MSGPACK_VERSION, "setuptools": "70.3.0"},
             "venv: setuptools is 70.3.0",
+        ),
+        (
+            "venv",
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "urllib3": "2.7.0",
+                "piper-tts": PIPER_VERSION,
+            },
+            "venv: urllib3 is 2.7.0; expected 2.8.0",
+        ),
+        (
+            "venv",
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "urllib3": URLLIB3_VERSION,
+                "piper-tts": PIPER_VERSION,
+                "pip": "26.2.1",
+            },
+            "venv: pip is 26.2.1; expected absent",
         ),
     ],
 )
@@ -98,7 +131,11 @@ def test_final_package_verifier_rejects_vulnerable_installed_versions(
 
 @pytest.mark.parametrize(
     "metadata_name",
-    ["msgpack-1.1.2.dist-info", "setuptools-70.3.0.egg-info"],
+    [
+        "msgpack-1.1.2.dist-info",
+        "setuptools-70.3.0.egg-info",
+        "urllib3-2.7.0.dist-info",
+    ],
 )
 def test_final_package_verifier_rejects_stale_metadata_names(
     tmp_path: Path, metadata_name: str
@@ -112,6 +149,7 @@ def test_final_package_verifier_rejects_stale_metadata_names(
                 "msgpack": MSGPACK_VERSION,
                 "setuptools": "84.0.0",
                 "piper-tts": PIPER_VERSION,
+                "urllib3": URLLIB3_VERSION,
             }
         ),
         package_not_found=MissingPackage,
@@ -121,11 +159,60 @@ def test_final_package_verifier_rejects_stale_metadata_names(
     assert any("forbidden stale metadata present" in error for error in errors)
 
 
+def test_final_package_verifier_rejects_pip_vendor_tree(tmp_path: Path) -> None:
+    (tmp_path / "pip" / "_vendor" / "urllib3").mkdir(parents=True)
+    errors = validate(
+        "global",
+        version=_versions({"msgpack": MSGPACK_VERSION}),
+        package_not_found=MissingPackage,
+        purelib=tmp_path,
+    )
+    assert any("pip-vendored urllib3 remains" in error for error in errors)
+
+
+def test_final_package_verifier_follows_canonical_urllib3_pin(tmp_path: Path) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text(
+        f"msgpack=={MSGPACK_VERSION}\npiper-tts=={PIPER_VERSION}\nurllib3==2.8.1\n"
+    )
+    installed = {
+        "msgpack": MSGPACK_VERSION,
+        "setuptools": "84.0.0",
+        "piper-tts": PIPER_VERSION,
+        "urllib3": "2.8.1",
+    }
+    assert (
+        validate(
+            "venv",
+            version=_versions(installed),
+            package_not_found=MissingPackage,
+            purelib=tmp_path,
+            requirements=requirements,
+        )
+        == []
+    )
+    installed["urllib3"] = URLLIB3_VERSION
+    assert any(
+        "urllib3 is 2.8.0; expected 2.8.1" in error
+        for error in validate(
+            "venv",
+            version=_versions(installed),
+            package_not_found=MissingPackage,
+            purelib=tmp_path,
+            requirements=requirements,
+        )
+    )
+
+
 @pytest.mark.parametrize("piper_version", [None, "1.6.0"])
 def test_final_package_verifier_rejects_missing_or_overridden_piper(
     tmp_path: Path, piper_version: str | None
 ) -> None:
-    installed = {"msgpack": MSGPACK_VERSION, "setuptools": "84.0.0"}
+    installed = {
+        "msgpack": MSGPACK_VERSION,
+        "setuptools": "84.0.0",
+        "urllib3": URLLIB3_VERSION,
+    }
     if piper_version is not None:
         installed["piper-tts"] = piper_version
     assert validate(
@@ -139,7 +226,7 @@ def test_final_package_verifier_rejects_missing_or_overridden_piper(
 def test_final_package_verifier_follows_canonical_piper_pin(tmp_path: Path) -> None:
     requirements = tmp_path / "requirements.txt"
     requirements.write_text(
-        f"msgpack=={MSGPACK_VERSION}\npiper-tts==2.0.0 # updated canonical pin\n"
+        f"msgpack=={MSGPACK_VERSION}\nurllib3=={URLLIB3_VERSION}\npiper-tts==2.0.0 # updated canonical pin\n"
     )
     assert (
         validate(
@@ -149,6 +236,7 @@ def test_final_package_verifier_follows_canonical_piper_pin(tmp_path: Path) -> N
                     "msgpack": MSGPACK_VERSION,
                     "setuptools": "84.0.0",
                     "piper-tts": "2.0.0",
+                    "urllib3": URLLIB3_VERSION,
                 }
             ),
             package_not_found=MissingPackage,
@@ -167,10 +255,18 @@ def test_final_package_verifier_rejects_ambiguous_piper_requirement(
     tmp_path: Path, contents: str
 ) -> None:
     requirements = tmp_path / "requirements.txt"
-    requirements.write_text(f"msgpack=={MSGPACK_VERSION}\n{contents}")
+    requirements.write_text(
+        f"msgpack=={MSGPACK_VERSION}\nurllib3=={URLLIB3_VERSION}\n{contents}"
+    )
     errors = validate(
         "venv",
-        version=_versions({"msgpack": MSGPACK_VERSION, "setuptools": "84.0.0"}),
+        version=_versions(
+            {
+                "msgpack": MSGPACK_VERSION,
+                "setuptools": "84.0.0",
+                "urllib3": URLLIB3_VERSION,
+            }
+        ),
         package_not_found=MissingPackage,
         purelib=tmp_path,
         requirements=requirements,

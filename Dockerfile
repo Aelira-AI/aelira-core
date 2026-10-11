@@ -25,18 +25,20 @@ COPY requirements.txt .
 RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" PYTHONHASHSEED=0; \
     pip install --no-cache-dir --upgrade pip && \
     python -m pip uninstall --yes setuptools && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    python -m pip uninstall --yes pip
 
 # Pa11y needs Node at runtime, but Debian's npm package pulls its full build
-# toolchain into the final image. Build the pinned Pa11y runtime separately and
-# copy only Node plus Pa11y's production dependency tree into the API image.
+# toolchain into the final image. Resolve the reviewed, locked production tree
+# separately and copy only Node and those dependencies into the API image.
 FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS pa11y-node
 
 ENV PUPPETEER_SKIP_DOWNLOAD=true
-RUN npm install -g pa11y@9.0.1 && \
+WORKDIR /opt/pa11y-runtime
+COPY pa11y-runtime/package.json pa11y-runtime/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && \
     npm cache clean --force && \
-    rm -rf /root/.npm \
-        /usr/local/lib/node_modules/pa11y/node_modules/extract-zip
+    rm -rf /root/.npm
 
 # Stage 2: Runtime
 FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
@@ -103,16 +105,17 @@ RUN export SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" FORCE_SOURCE_DATE=1 \
     && find /var/lib/texmf -type f -name '*.log' -delete \
     && find /var/lib/texmf/web2c -type f -name '*.fmt' -delete \
     && /usr/local/bin/python -m pip uninstall --yes msgpack \
-    && /usr/local/bin/python -m pip install --no-cache-dir "msgpack==$(/usr/local/bin/python /app/scripts/verify_final_python_packages.py msgpack-pin)"
+    && /usr/local/bin/python -m pip install --no-cache-dir "msgpack==$(/usr/local/bin/python /app/scripts/verify_final_python_packages.py msgpack-pin)" \
+    && /usr/local/bin/python -m pip uninstall --yes pip
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy the minimal Pa11y runtime without Debian's npm toolchain.
+# Copy the locked Pa11y runtime without Debian's npm toolchain.
 COPY --from=pa11y-node /usr/local/bin/node /usr/local/bin/node
-COPY --from=pa11y-node /usr/local/lib/node_modules/pa11y /usr/local/lib/node_modules/pa11y
-RUN ln -s ../lib/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
+COPY --from=pa11y-node /opt/pa11y-runtime/node_modules /opt/pa11y-runtime/node_modules
+RUN ln -s /opt/pa11y-runtime/node_modules/pa11y/bin/pa11y.js /usr/local/bin/pa11y
 
 RUN /usr/local/bin/python /app/scripts/verify_final_python_packages.py global && \
     /opt/venv/bin/python /app/scripts/verify_final_python_packages.py venv

@@ -26,7 +26,7 @@ FROM nginx:alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fea
 
 # Install security fixes published after the pinned base image. apk.log embeds
 # wall-clock time, so remove it to keep independent image builds reproducible.
-RUN apk upgrade --no-cache libcrypto3 libssl3 libuuid libexpat \
+RUN apk upgrade --no-cache libcrypto3 libssl3 libuuid libexpat pcre2 tiff \
     && rm -f /var/log/apk.log
 
 WORKDIR /usr/share/nginx/html
