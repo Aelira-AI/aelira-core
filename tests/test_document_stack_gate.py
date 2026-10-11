@@ -1,5 +1,6 @@
 """The real worker acceptance gate must block the same CI used by publication."""
 
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -41,3 +42,11 @@ def test_document_gate_checks_success_refusal_and_real_download_rescan():
         assert contract in source
     for fixture in ("course.docx", "course.pptx", "course.xlsx", "metadata.pdf"):
         assert (ROOT / "tests/fixtures/document_stack" / fixture).is_file()
+
+
+def test_auto_approved_document_review_contract():
+    subprocess.run(
+        ["bun", "test", "scripts/document_review_contract.test.ts"],
+        cwd=ROOT,
+        check=True,
+    )
