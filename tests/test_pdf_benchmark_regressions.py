@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pymupdf as fitz
+import pikepdf
 import pytest
 
 from src.education.pdf_processor import PDFProcessor
@@ -49,17 +50,63 @@ def test_forms_fixture_remediation_preserves_short_direct_text(tmp_path):
         assert result.success, result.error_message
         assert result.output_file
         assert result.verification_passed
-        assert result.fixed_count == 6
-        assert result.manual_count == 1
+        assert result.fixed_count == 5
+        assert result.manual_count == 2
+        manual_by_type = {
+            issue.metadata["issue_type"]: issue for issue in result.manual_issues
+        }
+        assert set(manual_by_type) == {
+            "first_heading_not_h1",
+            "missing_pdfua_identifier",
+        }
+        assert (
+            manual_by_type["first_heading_not_h1"].reason
+            == "Encrypted, signed or form PDF requires source review."
+        )
         assert "Matterhorn 06-003" in result.verification_result.persistent_failures
         with fitz.open(source) as before, fitz.open(result.output_file) as after:
             assert before[0].get_text().strip() == after[0].get_text().strip()
+        with pikepdf.open(source) as before, pikepdf.open(result.output_file) as after:
+            before_field = before.Root.AcroForm.Fields[0]
+            after_field = after.Root.AcroForm.Fields[0]
+            before_widget = next(
+                annotation
+                for annotation in before.pages[0].obj.Annots
+                if annotation.get("/Subtype") == pikepdf.Name.Widget
+            )
+            after_widget = next(
+                annotation
+                for annotation in after.pages[0].obj.Annots
+                if annotation.get("/Subtype") == pikepdf.Name.Widget
+            )
+            assert before_field.objgen == before_widget.objgen
+            assert after_field.objgen == after_widget.objgen
+            for key in ("/Type", "/Subtype", "/FT", "/T"):
+                assert after_field[key] == before_field[key]
+            assert str(after_field["/T"]) == "name_field"
+            assert list(after_widget["/Rect"]) == list(before_widget["/Rect"])
+
+            before_link = next(
+                annotation
+                for annotation in before.pages[0].obj.Annots
+                if annotation.get("/Subtype") == pikepdf.Name.Link
+            )
+            after_link = next(
+                annotation
+                for annotation in after.pages[0].obj.Annots
+                if annotation.get("/Subtype") == pikepdf.Name.Link
+            )
+            for key in ("/Type", "/S", "/URI"):
+                assert after_link["/A"][key] == before_link["/A"][key]
+            assert str(after_link["/A"]["/URI"]) == "https://example.com/report"
+            assert list(after_link["/Rect"]) == list(before_link["/Rect"])
         rescanned = PDFProcessor(
             generate_alt_text=False, enhance_descriptions=False
         ).process_pdf(result.output_file)
         assert rescanned.compliance_score == result.remediated_compliance_score
         assert [issue.get("issue_type") for issue in rescanned.issues] == [
-            "missing_pdfua_identifier"
+            "first_heading_not_h1",
+            "missing_pdfua_identifier",
         ]
         assert rescanned.compliance_score < 100
         assert source.read_bytes() == original
