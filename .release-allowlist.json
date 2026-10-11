@@ -47,6 +47,11 @@
       "reason": "Correct and intended. Community and security policy documents must carry a real maintainer address: a code of conduct with no reporting address and a security policy with no disclosure address are useless. This is the project's own contact, not a vendor address baked into mail a self-hoster sends to their users. Verified 2026-08-15."
     },
     {
+      "path": "runtime-security/expat/build-native.sh",
+      "check": "vendor-contact",
+      "reason": "Debian source-package changelog maintainer metadata uses the project's public security reporting address from SECURITY.md. This identifies the source backport author; it is not an operator or user notification recipient. The exception applies only to this recipe and contact check."
+    },
+    {
       "path": "BRANDING.md",
       "check": "vendor-contact",
       "reason": "Correct and intended. A trademark policy without a permission-request address is unusable, and this is the project's own contact rather than something a self-hoster inherits. Verified 2026-08-15."
