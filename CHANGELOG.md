@@ -11,7 +11,7 @@ Changes after v0.9.12 will be listed here. Published earlier release artifacts r
 
 ## [0.9.12] - 2026-10-11
 
-The changes below are included in the v0.9.12 release candidate. See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits and publication evidence.
+See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits and publication requirements.
 
 ### Security
 
@@ -37,6 +37,7 @@ The changes below are included in the v0.9.12 release candidate. See the [releas
 - Heading checks require complete nonempty source ownership; an empty tag, a later H1 or ambiguous replacement semantics cannot clear the first-heading rule. Scanning and repair share bounded regional reading-order rules and actual page width, with reopened occurrence and graph checks. Mixed content arrays remain immutable and ambiguous layouts remain explicit review requirements ([#564](https://github.com/Aelira-AI/aelira-core/pull/564)).
 - Completed remediation results group applied changes, pending human review and remaining manual work without a misleading active progress bar. Recorded refusal reasons, attempts and next steps remain visible; absent historical evidence is labelled unavailable.
 - Verified improved PDFs remain downloadable while manual work remains. Reviewed rebuilding applies accepted changes and excludes rejected changes; publication and queued writeback recheck current file identity, approval and scope ([reviewed working files](docs/document-remediation/reviewed-pdf.md)).
+- Saved manual PDF edits inherit prior repair receipts only when reopened bytes establish preservation. Conflicting heading edits, unproved order/table scopes and historical copied receipts block approval while candidates remain downloadable. Earlier job scores remain tied to the earlier output ([#572](https://github.com/Aelira-AI/aelira-core/issues/572)).
 - Short direct-text PDFs no longer inherit the OCR output minimum. Incomplete required PDF checks expose bounded manual-review reasons and withhold unverified scores ([#384](https://github.com/Aelira-AI/aelira-core/pull/384)).
 - Missing remediation confidence stays unknown across persistence, review, aggregation and exports; genuine zero scores remain zero. Unknown values cannot pass numeric batch approval. Historical generic AI defaults are conservatively corrected with audit records and invalidated approval bindings ([confidence and migration guidance](docs/document-remediation/confidence.md)).
 - Analytics exports preserve measured zero and label absent scores `Not assessed`; alt-text quality aggregates use recorded finite values and leave unavailable averages and the legacy conformance-rate field null. CSV lengths count UTF-8 bytes, and route filters/pagination reject invalid bounds ([#439](https://github.com/Aelira-AI/aelira-core/pull/439)).
