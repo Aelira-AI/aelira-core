@@ -137,9 +137,14 @@ def test_current_alembic_head_and_release_migration_chain():
         values = {}
         for node in ast.parse(path.read_text()).body:
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
                 for target in targets:
-                    if isinstance(target, ast.Name) and target.id in {"revision", "down_revision"}:
+                    if isinstance(target, ast.Name) and target.id in {
+                        "revision",
+                        "down_revision",
+                    }:
                         values[target.id] = ast.literal_eval(node.value)
         revision = values.get("revision")
         if revision:
