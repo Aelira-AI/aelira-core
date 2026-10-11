@@ -81,6 +81,7 @@ from ..services.remediation_artifact_service import (
 )
 from ..services.scan_fix_service import (
     apply_authenticated_batch_review,
+    artifact_output_membership_blockers,
     bind_fix_review_decision,
     build_manual_edit_preservation_record,
     inherit_output_membership,
@@ -1869,11 +1870,14 @@ def save_pdf_edit_candidate(
         matched_fixes = [
             by_key[key] for key in member_keys if isinstance(key, str) and key in by_key
         ]
+        predecessor_membership_valid = not artifact_output_membership_blockers(
+            predecessor, fixes, source_sha256=cast(Optional[str], scan.file_hash)
+        )
         proof = (
             prove_pdf_edit_preserves_members(
                 content, candidate.content, operation, matched_fixes
             )
-            if len(matched_fixes) == len(member_keys)
+            if predecessor_membership_valid and len(matched_fixes) == len(member_keys)
             else None
         )
         membership = inherit_output_membership(

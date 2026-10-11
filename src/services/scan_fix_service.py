@@ -1052,6 +1052,13 @@ def inherit_output_membership(
         members
     ) or members != sorted(members, key=lambda member: member["occurrence_key"]):
         return None
+    # A previously saved manual candidate must have its own durable proof.
+    # Otherwise a harmless later edit could launder a historical copied v1
+    # receipt into a fresh record after the original repair was removed.
+    if getattr(predecessor, "edit_provenance", None) is not None and not (
+        _manual_edit_preservation_record_valid(predecessor, receipt)
+    ):
+        return None
     if (
         getattr(preservation_proof, "source_sha256", None) != predecessor.sha256
         or getattr(preservation_proof, "output_sha256", None) != output_sha256

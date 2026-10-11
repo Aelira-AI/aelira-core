@@ -382,6 +382,12 @@ def test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval
     publication, monkeypatch, conflict
 ):
     sessions, service, department_id, scan_id, source, tmp_path = publication
+    source = make_pdf(pages=2)
+    with sessions() as db:
+        scan = db.get(Scan, scan_id)
+        Path(scan.storage_path).write_bytes(source)
+        scan.file_hash, scan.file_size_bytes = _sha(source), len(source)
+        db.commit()
     with sessions() as db:
         original_state = _state(db, service, department_id, scan_id)
     first_operation, first_candidate = _candidate(source, level=1)
@@ -524,6 +530,89 @@ def test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval
                 db, artifact_id=artifact_id, approved_by_ref="reviewer"
             )
             assert approved.review_status == "approved"
+            db.commit()
+
+    if not conflict:
+        with sessions() as db:
+            previous = db.get(RemediationArtifact, artifact_id)
+            previous.provider_result = {
+                "reviewed_output_membership": previous.provider_result[
+                    "reviewed_output_membership"
+                ]
+            }
+            db.commit()
+        with sessions() as db:
+            saved_state = _state(
+                db, service, department_id, scan_id, source_kind="saved"
+            )
+            with service.open_verified(
+                db,
+                db.get(RemediationArtifact, artifact_id),
+                department_id=department_id,
+                scan_id=scan_id,
+                cloud_file_id=None,
+            ) as stream:
+                predecessor_bytes = stream.read()
+            target = next(
+                item
+                for item in inspect_pdf_edit_targets(
+                    predecessor_bytes, _sha(predecessor_bytes)
+                )
+                if item["role"] == "P"
+            )
+            operation = {
+                "kind": "heading",
+                "target_id": target["target_id"],
+                "level": 2,
+            }
+            monkeypatch.setattr(
+                review_routes,
+                "_pdf_edit_context",
+                lambda *_args: (
+                    db.get(Scan, scan_id),
+                    None,
+                    "local",
+                    saved_state,
+                    predecessor_bytes,
+                    service,
+                ),
+            )
+            request = review_routes.PDFEditSaveRequest(
+                source_kind="saved",
+                expected_artifact_id=saved_state["expected_artifact_id"],
+                expected_source_sha256=saved_state["source_sha256"],
+                expected_state_digest=saved_state["state_digest"],
+                operation=operation,
+            )
+            response = review_routes.save_pdf_edit_candidate(
+                scan_id,
+                request,
+                db,
+                SimpleNamespace(department_id=department_id, user_id=None),
+            )
+            assert response.status_code == 201
+            chained_id = json.loads(response.body)["artifact_id"]
+        with sessions() as db:
+            chained = db.get(RemediationArtifact, chained_id)
+            fixes = db.query(ScanFix).filter_by(scan_id=scan_id).all()
+            assert chained.review_status == "pending"
+            assert chained.approval_checksum is None
+            assert chained.provider_result == {
+                "output_membership_blocker": "manual_edit_preservation_unverified"
+            }
+            assert artifact_output_membership_blockers(
+                chained, fixes, source_sha256=_sha(source)
+            ) == ["output_membership_unrecorded"]
+            with service.open_verified(
+                db,
+                chained,
+                department_id=department_id,
+                scan_id=scan_id,
+                cloud_file_id=None,
+            ) as stream:
+                assert _sha(stream.read()) == chained.sha256
+            with pytest.raises(ArtifactAuthorizationError):
+                service.approve(db, artifact_id=chained_id, approved_by_ref="reviewer")
 
 
 def test_cloud_replacement_resets_writeback_without_inheriting_approval(publication):
