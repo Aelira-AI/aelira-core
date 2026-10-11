@@ -33,7 +33,7 @@ def test_every_external_action_is_pinned_to_a_commented_full_sha() -> None:
     assert external_uses, "expected at least one external action"
 
 
-def test_dependency_gates_audit_only_the_three_shipped_surfaces_and_block() -> None:
+def test_dependency_gates_audit_only_the_four_shipped_surfaces_and_block() -> None:
     workflow = (WORKFLOWS / "ci.yml").read_text()
     dependency_job = workflow.split("  dependency-security:\n", 1)[1].split(
         "\n  lint:\n", 1
@@ -51,7 +51,8 @@ def test_dependency_gates_audit_only_the_three_shipped_surfaces_and_block() -> N
     )
     assert "npm --prefix cli audit --audit-level=high" in workflow
     assert "npm --prefix dashboard audit --audit-level=high" in workflow
-    assert workflow.count(" audit --audit-level=high") == 2
+    assert "npm --prefix pa11y-runtime audit --audit-level=high" in workflow
+    assert workflow.count(" audit --audit-level=high") == 3
     assert "dependency-review-action@" in workflow
     assert "fail-on-severity: high" in workflow
     assert "allow-licenses:" not in workflow
