@@ -20,6 +20,8 @@ lib_paths = sorted(
 )
 assert len(lib_paths) == 1, lib_paths
 lib_path = pathlib.Path(lib_paths[0])
+loaded_hash = hashlib.sha256(lib_path.read_bytes()).hexdigest()
+assert loaded_hash == os.environ["AELIRA_EXPAT_EXPECTED_LIB_SHA256"], (str(lib_path), loaded_hash, os.environ["AELIRA_EXPAT_EXPECTED_LIB_SHA256"])
 lib = ctypes.CDLL(str(lib_path))
 lib.XML_ParserCreate.argtypes = [ctypes.c_char_p]
 lib.XML_ParserCreate.restype = ctypes.c_void_p
@@ -52,11 +54,11 @@ try:
     buffer = lib.XML_GetBuffer(direct, 10)
     assert buffer
     assert lib.XML_ParseBuffer(direct, 10000, 0) == 0
-    assert lib.XML_ErrorString(lib.XML_GetErrorCode(direct)) == b"invalid argument"
+    assert lib.XML_ErrorString(lib.XML_GetErrorCode(direct)) == b"invalid argument", ("initial_capacity", lib.XML_GetErrorCode(direct), lib.XML_ErrorString(lib.XML_GetErrorCode(direct)))
     ctypes.memmove(buffer, b"<r/>", 4)
     assert lib.XML_ParseBuffer(direct, 4, 0) == 1
     assert lib.XML_ParseBuffer(direct, 10000, 1) == 0
-    assert lib.XML_ErrorString(lib.XML_GetErrorCode(direct)) == b"invalid argument"
+    assert lib.XML_ErrorString(lib.XML_GetErrorCode(direct)) == b"invalid argument", ("continued_capacity", lib.XML_GetErrorCode(direct), lib.XML_ErrorString(lib.XML_GetErrorCode(direct)))
 finally:
     lib.XML_ParserFree(direct)
 
@@ -77,7 +79,7 @@ for final in (0, 1):
                 assert lib.XML_ParseBuffer(direct, used, 0) == 1
             remaining = 4096 - used
             assert lib.XML_ParseBuffer(direct, remaining + 1, final) == 0
-            assert lib.XML_ErrorString(lib.XML_GetErrorCode(direct)) == b"invalid argument"
+            assert lib.XML_ErrorString(lib.XML_GetErrorCode(direct)) == b"invalid argument", ("boundary_capacity", final, used, lib.XML_GetErrorCode(direct), lib.XML_ErrorString(lib.XML_GetErrorCode(direct)))
             assert lib.XML_ParseBuffer(direct, remaining, 1) == 1
             capacity_cases += 1
         finally:
