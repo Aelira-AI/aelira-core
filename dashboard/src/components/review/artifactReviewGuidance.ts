@@ -13,7 +13,7 @@ const BLOCKERS: Record<string, string> = {
   saved_file_verification_unavailable: 'The working file has no valid saved-file verification. Run remediation again and review its result.',
   applied_fix_membership_unavailable: 'The changes could not be bound to this working file. Run remediation again before approval.',
   manual_edit_preservation_unverified: 'This saved edit does not prove that all earlier repairs remain in the current PDF. The earlier fix decisions and score describe the prior file. Download this candidate for review, or create a new verified remediation output before approval.',
-  reviewed_changes_not_in_output: 'The working file contains a rejected change or different reviewed content. Create a new working file from the accepted changes before approval.',
+  reviewed_changes_not_in_output: 'The working file is not yet bound to the accepted review decisions. Complete pending reviews first. If decisions changed, rebuild from accepted changes before approval.',
 };
 
 export function approvalBlockerMessage(code: string, manualEdits: boolean): string {
