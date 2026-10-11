@@ -66,7 +66,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Check setup script and executable orchestration tests
@@ -86,7 +86,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Install Python audit build prerequisites
@@ -159,7 +159,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -246,7 +246,7 @@ jobs:
           --output test-results/pdf-font-recovery.json --require-pinned
       - name: Retain Office source and candidate evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: office-preservation-${{ github.sha }}-${{ github.run_attempt }}
           path: test-results/office-preservation/
@@ -310,7 +310,7 @@ jobs:
           --output test-results/queue-races-summary.json
       - name: Retain revision-bound test evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-evidence-${{ github.sha }}-${{ github.run_attempt }}
           path: test-results/*.json
@@ -367,7 +367,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       - name: Install document runtime
@@ -406,7 +406,7 @@ jobs:
           node --experimental-strip-types scripts/verify_latex_corpus_compilation.ts
       - name: Retain document journey evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: document-journey-evidence
           path: test-results/document-stack/
@@ -421,7 +421,7 @@ jobs:
         working-directory: dashboard
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # 22+: the unit tests import .ts files directly and rely on
           # Node's native type stripping (unavailable on Node 20)
@@ -448,7 +448,7 @@ jobs:
         working-directory: dashboard
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
@@ -474,7 +474,7 @@ jobs:
         working-directory: cli
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Deliberately the CLI's supported floor (engines >=22).
           node-version: "22"
@@ -570,7 +570,7 @@ jobs:
           python3 -c 'import json; r=json.load(open("test-results/latex-runtime/report.json")); assert r["uid"] == 1000 and r["status"] == "ready"'
       - name: Retain functional LaTeX runtime evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: latex-runtime-${{ matrix.runner }}
           path: test-results/latex-runtime/
@@ -587,7 +587,7 @@ jobs:
             /app/scripts/smoke_latex_structure_metadata.py > test-results/latex-metadata/structure-report.json
       - name: Retain authored LaTeX metadata evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: latex-metadata-${{ matrix.runner }}
           path: test-results/latex-metadata/
@@ -601,7 +601,7 @@ jobs:
             /app/scripts/smoke_latex_semantics.py > test-results/latex-semantics/report.json
       - name: Retain authored LaTeX relationship evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: latex-semantics-${{ matrix.runner }}
           path: test-results/latex-semantics/
@@ -615,7 +615,7 @@ jobs:
             /app/scripts/smoke_latex_projects.py > test-results/latex-projects/report.json
       - name: Retain authored LaTeX source project evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: latex-projects-${{ matrix.runner }}
           path: test-results/latex-projects/
@@ -634,7 +634,7 @@ jobs:
             /app/scripts/smoke_latex_compatibility.py > test-results/latex-compatibility/report.json
       - name: Retain LaTeX compatibility and provenance evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: latex-compatibility-${{ matrix.runner }}
           path: test-results/latex-compatibility/

@@ -1,5 +1,6 @@
 """Run the repository-authored PDF font corpus with exact text and paint checks."""
 
+import ast
 import hashlib
 import io
 import json
@@ -28,6 +29,27 @@ from src.education.remediation.pdf_text_inventory import inspect_pdf_text_invent
 
 pytestmark = pytest.mark.unit
 MANIFEST = Path(__file__).parent / "fixtures/pdf_font_recovery/manifest.json"
+
+
+def test_corpus_runtime_pins_match_requirements():
+    root = Path(__file__).resolve().parents[1]
+    corpus = ast.parse((root / "scripts/pdf_font_recovery_corpus.py").read_text())
+    pins = next(
+        ast.literal_eval(node.value)
+        for node in corpus.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "PINNED"
+            for target in node.targets
+        )
+    )
+    assert set(pins) == {"pdfminer.six", "pikepdf", "PyMuPDF", "fonttools"}
+    requirements = {}
+    for line in (root / "requirements.txt").read_text().splitlines():
+        package, separator, version = line.partition("==")
+        if separator and not package.lstrip().startswith("#"):
+            requirements[package.strip().lower()] = version.split("#", 1)[0].strip()
+    assert pins == {package: requirements[package.lower()] for package in pins}
 
 
 def _fixture(case_id: str) -> bytes:
