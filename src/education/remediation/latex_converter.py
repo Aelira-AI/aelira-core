@@ -19,6 +19,7 @@ from ..latex_metadata import extract_metadata, save_html_metadata, save_pdf_meta
 from ..latex_semantics import extract_semantics, save_html_semantics
 from ..latex_compatibility import decide_html, tool_versions
 from ..latex_equation_provenance import observe_representation, source_provenance
+from ..latex_siunitx_options import inspect_siunitx
 
 from ..latex_diagnostics import (
     ConversionDiagnostics,
@@ -953,6 +954,18 @@ class LaTeXConverter:
         # Choose supported authored relationship/language routes before conversion;
         # known loss in another converter must never trigger a silent retry.
         text = tex_file.read_bytes().decode("utf-8")
+        option_issue = inspect_siunitx(text)
+        if option_issue is not None:
+            code, line = option_issue
+            record(
+                ConversionStage(
+                    tool="inspection",
+                    phase="inspect",
+                    input_sha256=sha(tex_file.read_bytes()),
+                    diagnostics=[diagnostic(code, line=line)],
+                )
+            )
+            return None
         authored = extract_semantics(text)
         available = set()
         if self.latexml_available and self.latexmlpost_available:
