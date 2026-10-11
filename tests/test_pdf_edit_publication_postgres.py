@@ -37,8 +37,10 @@ from src.education.pdf_review_candidate import (
 from src.services.remediation_artifact_service import (
     ArtifactEditConflict,
     ArtifactPublicationRetryable,
+    ArtifactValidationError,
     RemediationArtifactService,
 )
+from test_pdf_bound_heading_inventory import title_pdf
 from test_pdf_review_candidate import table_pdf
 from test_reading_order_snapshot import make_pdf
 
@@ -282,6 +284,86 @@ def test_real_saved_table_candidate_is_pending_and_verified(publication):
         first = pdf.Root.StructTreeRoot.K[0].K[1].K[0]
         assert all(cell.S == pikepdf.Name.TH for cell in first.K)
         assert all(cell.A.Scope == pikepdf.Name.Column for cell in first.K)
+
+
+def test_grouped_heading_candidate_persists_pending_and_refuses_stale_replay(
+    publication,
+):
+    sessions, service, department_id, scan_id, _, tmp_path = publication
+    source = title_pdf(tmp_path).read_bytes()
+    with sessions() as db:
+        scan = db.get(Scan, scan_id)
+        Path(scan.storage_path).write_bytes(source)
+        scan.file_hash, scan.file_size_bytes = _sha(source), len(source)
+        db.commit()
+        precondition = _state(db, service, department_id, scan_id)
+    target = next(
+        item
+        for item in inspect_pdf_edit_targets(source, _sha(source))
+        if item["can_set_heading_group"]
+    )
+    operation = {
+        "kind": "heading_group",
+        "target_id": target["target_id"],
+        "level": 1,
+    }
+    candidate = create_pdf_edit_candidate(source, _sha(source), operation)
+    with pytest.raises(ArtifactValidationError):
+        _publish(
+            sessions,
+            service,
+            department_id,
+            scan_id,
+            precondition,
+            {**operation, "kind": "unrecognized"},
+            candidate,
+            tmp_path,
+        )
+    result = _publish(
+        sessions,
+        service,
+        department_id,
+        scan_id,
+        precondition,
+        operation,
+        candidate,
+        tmp_path,
+    )
+    with sessions() as db:
+        artifact = db.get(RemediationArtifact, result.artifact_id)
+        scan = db.get(Scan, scan_id)
+        assert scan.current_remediation_artifact_id == artifact.id
+        assert artifact.lifecycle_status == "available"
+        assert artifact.review_status == "pending"
+        assert artifact.approval_checksum is None
+        assert artifact.approved_at is None
+        assert artifact.edit_precondition == precondition
+        assert artifact.edit_provenance["operation"] == operation
+        with service.open_verified(
+            db,
+            artifact,
+            department_id=department_id,
+            scan_id=scan_id,
+            cloud_file_id=None,
+        ) as stream:
+            saved = stream.read()
+    assert _sha(saved) == candidate.sha256
+    with pikepdf.open(io.BytesIO(saved)) as pdf:
+        assert pdf.Root.StructTreeRoot.K[0].K[0].S == pikepdf.Name.H1
+    with pytest.raises(ArtifactEditConflict):
+        _publish(
+            sessions,
+            service,
+            department_id,
+            scan_id,
+            precondition,
+            operation,
+            candidate,
+            tmp_path,
+        )
+    with sessions() as db:
+        rows = db.query(RemediationArtifact).filter_by(scan_id=scan_id).all()
+        assert [row.id for row in rows] == [result.artifact_id]
 
 
 def test_cloud_replacement_resets_writeback_without_inheriting_approval(publication):
