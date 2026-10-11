@@ -41,6 +41,15 @@ files, plus full C/C++ upstream suite passes in both builds. It compares
 original and candidate narrow/wide SONAMEs and exported symbols, installs the
 candidate DEB into a disposable image, and probes the actual installed Python
 Expat consumers and native libraries from an unprivileged read-only container.
+Before committing that image, the installer checks the DEB's package identity,
+architecture, and archive hashes against both installed ELF files. It records
+bounded before/after hash and metadata evidence in `package-install.log` and
+sets each installed library's mtime to its archive mtime plus one second (or
+the next distinct second if that matches the original image). This changes
+installation metadata only, preserving DEB bytes, installed ELF bytes, mode,
+and ownership while making both replacements visible to metadata-based image
+diffs. The separate child-image probe must still load and hash the installed
+libraries before acceptance succeeds.
 The probe asserts architecture, version, loaded path and hashes, feature
 parity, valid parsing before malformed rejection, six buffer-capacity
 boundaries, and wide-library UTF-16 controls. Nothing is published.

@@ -68,6 +68,15 @@ jobs:
         run: |
           mkdir -p "$AELIRA_EXPAT_OUTPUT"
           bash runtime-security/expat/native-acceptance.sh
+      - name: Record native Docker storage identity
+        if: always()
+        env:
+          AELIRA_EXPAT_OUTPUT: ${{ runner.temp }}/expat-native-acceptance
+        run: |
+          mkdir -p "$AELIRA_EXPAT_OUTPUT"
+          docker version --format '{{json .Server.Version}}' > "$AELIRA_EXPAT_OUTPUT/docker-version.json"
+          docker info --format '{{json .Driver}}' > "$AELIRA_EXPAT_OUTPUT/docker-storage-driver.json"
+          docker info --format '{{json .DriverStatus}}' > "$AELIRA_EXPAT_OUTPUT/docker-storage-status.json"
       - name: Record source identity for native evidence
         if: always()
         env:

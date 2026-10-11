@@ -118,8 +118,8 @@ install_name="expat-install-$run_id"
 timeout 5m docker run --name "$install_name" --platform "linux/$arch" \
   --network none --cap-drop ALL --security-opt no-new-privileges \
   --cpus 2 --memory 2g --pids-limit 128 \
-  -v "$deb:/candidate.deb:ro" "$builder" \
-  /bin/bash -euo pipefail -c 'dpkg -i /candidate.deb; dpkg-query -W -f="\${Package} \${Version} \${Architecture}\n" libexpat1' \
+  -v "$deb:/candidate.deb:ro" -v "$recipe_dir:/recipe:ro" "$builder" \
+  python3 /recipe/install-identity.py /candidate.deb "$arch" "$lib_hash" "$wide_hash" \
   > "$output/package-install.log" 2>&1
 installed_image="$(docker commit "$install_name")"
 printf '%s\n' "$installed_image" > "$output/installed-image-id.txt"
