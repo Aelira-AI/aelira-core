@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { approvalBlockerMessage, manualCandidateGuidance } from '../../src/components/review/artifactReviewGuidance.js';
+import { approvalBlockerMessage, lacksRemediationEvidence, manualCandidateGuidance } from '../../src/components/review/artifactReviewGuidance.ts';
 
 const documentSource = readFileSync(
   new URL('../../src/pages/DocumentReviewPage.tsx', import.meta.url),
@@ -53,15 +53,20 @@ test('manual PDF candidates show preservation and approval guidance without offe
   assert.doesNotMatch(approvalBlockerMessage('output_membership_unrecorded', true), /Rebuild a reviewed PDF/);
   assert.match(approvalBlockerMessage('output_membership_unrecorded', false), /Rebuild a reviewed PDF/);
   assert.match(approvalBlockerMessage('no_fixes', true), /saved structure edit is a separate candidate/);
-  const originalOnly = manualCandidateGuidance({ originalOnly: true, hasBlockers: true, editorAvailable: true });
-  assert.match(originalOnly, /download/);
-  assert.match(originalOnly, /Current saved PDF in the editor below/);
-  assert.match(originalOnly, /Manual structure edits alone do not create accepted remediation fixes/);
-  assert.match(originalOnly, /Rescanning does not approve this candidate/);
-  const validSaved = manualCandidateGuidance({ originalOnly: false, hasBlockers: false, editorAvailable: true });
+  assert.equal(lacksRemediationEvidence(['no_fixes', 'output_membership_unrecorded']), true);
+  assert.equal(lacksRemediationEvidence(['fixes_pending_review', 'output_membership_unrecorded']), true);
+  assert.equal(lacksRemediationEvidence(['fixes_pending_review']), false);
+  assert.equal(lacksRemediationEvidence([]), false);
+  const missingEvidence = manualCandidateGuidance({ missingRemediationEvidence: true, hasBlockers: true, editorAvailable: true });
+  assert.match(missingEvidence, /download/);
+  assert.match(missingEvidence, /Current saved PDF in the editor below/);
+  assert.match(missingEvidence, /More manual structure edits cannot create that record/);
+  assert.match(missingEvidence, /Rescanning does not approve this candidate/);
+  const validSaved = manualCandidateGuidance({ missingRemediationEvidence: false, hasBlockers: false, editorAvailable: true });
   assert.match(validSaved, /use the approval control below/);
   assert.doesNotMatch(validSaved, /start a separate scan/);
-  assert.doesNotMatch(manualCandidateGuidance({ originalOnly: true, hasBlockers: true, editorAvailable: false }), /editor below/);
+  assert.match(manualCandidateGuidance({ missingRemediationEvidence: false, hasBlockers: true, editorAvailable: true }), /Complete the review requirements below/);
+  assert.doesNotMatch(manualCandidateGuidance({ missingRemediationEvidence: true, hasBlockers: true, editorAvailable: false }), /editor below/);
   assert.match(panel, /Reviewed rebuilds apply accepted remediation fixes and would discard/);
   assert.match(panel, /disabled=\{busy \|\| editing \|\| !confirmed \|\| !artifact\.can_approve\}/);
 });

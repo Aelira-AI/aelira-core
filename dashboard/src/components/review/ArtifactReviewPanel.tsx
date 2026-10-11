@@ -4,7 +4,7 @@ import { Button } from '../ui/Button';
 import { approveManagedArtifact, downloadManagedArtifact, getManagedArtifact, getCurrentWorkingArtifact, rebuildReviewedPDF, writeBackManagedArtifact } from '../../api/managedArtifacts';
 import type { ManagedArtifactMetadata } from '../../api/managedArtifacts';
 import { useAbortableRequestOwner } from '../../hooks/useAbortableRequestOwner';
-import { approvalBlockerMessage, manualCandidateGuidance } from './artifactReviewGuidance';
+import { approvalBlockerMessage, lacksRemediationEvidence, manualCandidateGuidance } from './artifactReviewGuidance';
 
 /** Viewing or downloading a candidate never grants permission to publish it. */
 export function ArtifactReviewPanel({ scanId, scanType, cloudFileId, resultPath: suppliedResultPath, refreshToken, editing, canRebuild, rebuildSupported = true }: {
@@ -24,7 +24,7 @@ export function ArtifactReviewPanel({ scanId, scanType, cloudFileId, resultPath:
   const confirmed = artifact !== null && confirmedKey === `${requestKey}:${artifact.sha256}`;
   const manualEdits = artifact?.has_manual_edits === true || artifact?.reviewed_rebuild_blocker === 'manual_pdf_edits_require_review';
   const rebuildBlocked = manualEdits || artifact?.reviewed_rebuild_available === false;
-  const originalOnlyManualCandidate = manualEdits && artifact?.approval_blockers.includes('no_fixes') === true;
+  const missingRemediationEvidence = manualEdits && artifact !== null && lacksRemediationEvidence(artifact.approval_blockers);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -100,7 +100,7 @@ export function ArtifactReviewPanel({ scanId, scanType, cloudFileId, resultPath:
       </div>
       {artifact.writeback_available === true && <p className="mt-2 text-sm text-secondary">This action uploads the approved file using a remediated-copy filename. Same-name handling depends on the connected provider.</p>}
       {artifact.review_status === 'pending' && <>
-        {manualEdits && <p className="mt-3 text-sm text-secondary" role="status">{manualCandidateGuidance({ originalOnly: originalOnlyManualCandidate, hasBlockers: artifact.approval_blockers.length > 0, editorAvailable: rebuildSupported })}</p>}
+        {manualEdits && <p className="mt-3 text-sm text-secondary" role="status">{manualCandidateGuidance({ missingRemediationEvidence, hasBlockers: artifact.approval_blockers.length > 0, editorAvailable: rebuildSupported })}</p>}
         {artifact.approval_blockers.length > 0 && <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-secondary">{artifact.approval_blockers.map(code => <li key={code}>{approvalBlockerMessage(code, manualEdits)}</li>)}</ul>}
         <label className="mt-4 flex items-start gap-2 text-sm text-primary"><input type="checkbox" checked={confirmed} disabled={busy || editing || !artifact.can_approve} onChange={event => setConfirmedKey(event.target.checked ? `${requestKey}:${artifact.sha256}` : null)} className="mt-1" />I have reviewed this working file, its changes and the remaining findings.</label>
         <Button variant="primary" size="sm" className="mt-3" disabled={busy || editing || !confirmed || !artifact.can_approve} onClick={() => void approve()}>{busy ? 'Please wait' : 'Approve this file for publication'}</Button>

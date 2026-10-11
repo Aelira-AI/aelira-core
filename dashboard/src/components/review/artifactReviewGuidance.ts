@@ -1,4 +1,4 @@
-const BLOCKERS = {
+const BLOCKERS: Record<string, string> = {
   fixes_pending_review: 'Approve, edit or reject the pending changes first.',
   verification_not_passed: 'The saved-file verification requirements have not passed.',
   no_fixes: 'No remediation changes are recorded for this scan.',
@@ -15,8 +15,7 @@ const BLOCKERS = {
   reviewed_changes_not_in_output: 'The working file contains a rejected change or different reviewed content. Create a new working file from the accepted changes before approval.',
 };
 
-/** @param {string} code @param {boolean} manualEdits */
-export function approvalBlockerMessage(code, manualEdits) {
+export function approvalBlockerMessage(code: string, manualEdits: boolean): string {
   if (manualEdits && code === 'output_membership_unrecorded') {
     return 'This candidate has no record of which accepted remediation fixes its bytes contain. Manual structure edits cannot create that record.';
   }
@@ -26,15 +25,22 @@ export function approvalBlockerMessage(code, manualEdits) {
   return BLOCKERS[code] ?? 'A saved-file or specialist review requirement remains. Complete the review before publication.';
 }
 
-/** @param {{originalOnly: boolean, hasBlockers: boolean, editorAvailable: boolean}} state */
-export function manualCandidateGuidance({ originalOnly, hasBlockers, editorAvailable }) {
+export function lacksRemediationEvidence(blockers: readonly string[]): boolean {
+  return blockers.includes('no_fixes') || blockers.includes('output_membership_unrecorded');
+}
+
+export function manualCandidateGuidance({ missingRemediationEvidence, hasBlockers, editorAvailable }: {
+  missingRemediationEvidence: boolean;
+  hasBlockers: boolean;
+  editorAvailable: boolean;
+}): string {
   const savedEdit = editorAvailable
     ? ' To preserve its edits when making another structure change, choose Current saved PDF in the editor below.'
     : '';
-  const nextStep = originalOnly
-    ? ' Manual structure edits alone do not create accepted remediation fixes or make this candidate approvable in the app. To pursue publication approval, start a separate scan and remediation lifecycle that records accepted fixes and passes saved-file checks. Rescanning does not approve this candidate.'
+  const nextStep = missingRemediationEvidence
+    ? ' This candidate lacks a verified record of accepted remediation fixes in its bytes. More manual structure edits cannot create that record or make this candidate approvable in the app. To pursue publication approval, start a separate scan and remediation lifecycle that records accepted fixes and passes saved-file checks. Rescanning does not approve this candidate.'
     : hasBlockers
-      ? ' Complete the review requirements below before publication; further structure edits alone do not resolve missing remediation evidence.'
+      ? ' Complete the review requirements below before publication.'
       : ' Review this candidate and use the approval control below when ready.';
   return `This manually edited PDF is a saved candidate you can download.${savedEdit}${nextStep}`;
 }
