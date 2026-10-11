@@ -183,7 +183,8 @@ const cases: { name: string; kind: string; publish: boolean; partial?: boolean; 
   // Adding tags does not certify PDF/UA; its undeclared identifier remains manual.
   { name: 'metadata.pdf', kind: 'pdf', publish: true, partial: true, expectedRemaining: ['missing_pdfua_identifier'] },
   { name: 'simple_syllabus.pdf', kind: 'pdf', publish: true, partial: true },
-  { name: 'test_forms_links.pdf', kind: 'pdf', publish: true, partial: true, expectedRemaining: ['missing_pdfua_identifier'] },
+  // Form PDFs retain the H1 source-review refusal as well as the PDF/UA finding.
+  { name: 'test_forms_links.pdf', kind: 'pdf', publish: true, partial: true, expectedRemaining: ['first_heading_not_h1', 'missing_pdfua_identifier'] },
   { name: 'academic_paper.pdf', kind: 'pdf', publish: false, incomplete: true },
   { name: 'image_heavy.pptx', kind: 'powerpoint', file: 'tests/fixtures/powerpoint/image_heavy.pptx', publish: false, useAI: true },
 ];
