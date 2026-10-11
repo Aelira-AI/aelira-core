@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { approvalBlockerMessage, manualCandidateGuidance } from '../../src/components/review/artifactReviewGuidance.js';
 
 const documentSource = readFileSync(
   new URL('../../src/pages/DocumentReviewPage.tsx', import.meta.url),
@@ -42,6 +43,27 @@ test('managed file review discovers the current scoped candidate for every file 
   const panel = readFileSync(new URL('../../src/components/review/ArtifactReviewPanel.tsx', import.meta.url), 'utf8');
   assert.match(panel, /getCurrentWorkingArtifact\(scanId, cloudFileId, controller\.signal\)/);
   assert.doesNotMatch(panel, /getLatestRemediationJob/);
+});
+
+test('manual PDF candidates show preservation and approval guidance without offering a destructive rebuild', () => {
+  const panel = readFileSync(new URL('../../src/components/review/ArtifactReviewPanel.tsx', import.meta.url), 'utf8');
+  assert.match(panel, /const rebuildBlocked = manualEdits \|\|/);
+  assert.match(panel, /disabled=\{!canRebuild \|\| rebuildBlocked \|\|/);
+  assert.match(approvalBlockerMessage('output_membership_unrecorded', true), /Manual structure edits cannot create that record/);
+  assert.doesNotMatch(approvalBlockerMessage('output_membership_unrecorded', true), /Rebuild a reviewed PDF/);
+  assert.match(approvalBlockerMessage('output_membership_unrecorded', false), /Rebuild a reviewed PDF/);
+  assert.match(approvalBlockerMessage('no_fixes', true), /saved structure edit is a separate candidate/);
+  const originalOnly = manualCandidateGuidance({ originalOnly: true, hasBlockers: true, editorAvailable: true });
+  assert.match(originalOnly, /download/);
+  assert.match(originalOnly, /Current saved PDF in the editor below/);
+  assert.match(originalOnly, /Manual structure edits alone do not create accepted remediation fixes/);
+  assert.match(originalOnly, /Rescanning does not approve this candidate/);
+  const validSaved = manualCandidateGuidance({ originalOnly: false, hasBlockers: false, editorAvailable: true });
+  assert.match(validSaved, /use the approval control below/);
+  assert.doesNotMatch(validSaved, /start a separate scan/);
+  assert.doesNotMatch(manualCandidateGuidance({ originalOnly: true, hasBlockers: true, editorAvailable: false }), /editor below/);
+  assert.match(panel, /Reviewed rebuilds apply accepted remediation fixes and would discard/);
+  assert.match(panel, /disabled=\{busy \|\| editing \|\| !confirmed \|\| !artifact\.can_approve\}/);
 });
 
 test('Brightspace file review uses the existing human review with scoped context and preserves the existing theme', () => {
