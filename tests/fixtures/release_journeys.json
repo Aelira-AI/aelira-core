@@ -8,10 +8,10 @@
         {
           "id": "document-real-stack",
           "level": "api_integration",
-          "sources": ["scripts/verify_document_stack.ts", "scripts/verify_latex_corpus_stack.ts", "scripts/verify_latex_corpus_compilation.ts", "tests/document-stack.compose.yml"],
+          "sources": ["scripts/verify_document_stack.ts", "scripts/verify_latex_corpus_stack.ts", "scripts/verify_latex_html_corpus_stack.ts", "scripts/verify_latex_corpus_compilation.ts", "tests/fixtures/latex_research/corpus.json", "tests/document-stack.compose.yml"],
           "mocked": [],
           "ci": {"job": "document-stack", "step": "Verify real API, durable worker and downloaded files", "run_contains": "node --experimental-strip-types scripts/verify_document_stack.ts"},
-          "limitations": "Real API, PostgreSQL, Redis, worker and saved files. Exercises upload, findings, remediation, approval, fresh reads and exact downloads, including unavailable AI and withheld output. Eleven LaTeX cases cover ten preserved TEX downloads and one refusal; original and downloaded compilation is checked separately. No dashboard interaction or semantic conformance proof."
+          "limitations": "Real API, PostgreSQL, Redis, worker and saved files. Exercises upload, findings, remediation, approval, fresh reads and exact downloads, including unavailable AI and withheld output. The LaTeX corpus has 26 cases and 28 source files, each run as an original and explicitly authored-language variant: 20 exact TEX downloads, 28 single-file refusals, two no-ops and two intact-project scan/refusal journeys. A separate HTML-only queue lane covers all 26 case IDs; a compiler gate checks 26 original contexts, 26 authored-language contexts and all 20 downloaded TEX files. These are bounded saved-artifact checks, with no dashboard interaction, domain-human or assistive-technology review, rendered or spoken math fidelity proof, or accessibility conformance proof."
         },
         {
           "id": "document-artifact-contracts",
@@ -40,7 +40,8 @@
       ],
       "missing": [
         "Revision-bound dashboard upload, queue, review/edit, approval, reload and exact-download journey against the real local services.",
-        "Browser-visible failed verification, pending review, unavailable AI and expired/superseded artifact paths."
+        "Browser-visible failed verification, pending review, unavailable AI and expired/superseded artifact paths.",
+        "Domain-human review, assistive-technology reading and semantic conformance assessment of saved outputs."
       ]
     },
     {

@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+from types import SimpleNamespace
 
 import pikepdf
 import pymupdf
@@ -10,6 +11,15 @@ from pikepdf import Array, Dictionary, Name, String
 from PIL import Image
 
 from src.education import pdf_review_candidate as edit
+from src.education.remediation.base import FixedIssue
+from src.services.scan_fix_service import (
+    artifact_output_membership_blockers,
+    bind_fix_review_decision,
+    build_manual_edit_preservation_record,
+    build_output_membership,
+    build_scan_fix,
+    inherit_output_membership,
+)
 from test_reading_order_tables import build_table_pdf
 from test_reading_order_snapshot import make_pdf
 
@@ -99,6 +109,317 @@ def test_heading_candidate_changes_saved_tag_and_preserves_pages_and_metadata():
         # The same ParentTree owner now carries the reviewed role.
         assert saved.Root.StructTreeRoot.ParentTree.Nums[1][1].S == Name.H2
     assert not hasattr(result, "approved")
+
+
+def test_saved_heading_membership_requires_preserved_bound_heading_bytes():
+    def scalar_repairs(pdf):
+        pdf.Root.MarkInfo = Dictionary(Marked=True)
+        pdf.Root.Lang = String("en-US")
+        pdf.docinfo.Title = String("Synthetic course")
+
+    source = rewrite(
+        make_pdf(),
+        scalar_repairs,
+    )
+    first = heading(source)
+    no_h1 = edit.create_pdf_edit_candidate(source, sha(source), first)
+    first["level"] = 1
+    predecessor = edit.create_pdf_edit_candidate(source, sha(source), first).content
+    member = SimpleNamespace(
+        category="heading",
+        description="Document should start with H1 heading",
+        occurrence_key="a" * 64,
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            source, no_h1.content, {**first, "level": 2}, [member]
+        )
+        is None
+    )
+    targets_by_role = {item["role"]: item for item in targets(predecessor)}
+    add_h2 = {
+        "kind": "heading",
+        "target_id": targets_by_role["P"]["target_id"],
+        "level": 2,
+    }
+    independent = edit.create_pdf_edit_candidate(predecessor, sha(predecessor), add_h2)
+    proof = edit.prove_pdf_edit_preserves_members(
+        predecessor, independent.content, add_h2, [member]
+    )
+    assert proof == edit.PDFEditPreservationProof(
+        sha(predecessor), independent.sha256, (member.occurrence_key,)
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [
+                SimpleNamespace(
+                    category="heading",
+                    description="Unbound heading repair",
+                    occurrence_key=member.occurrence_key,
+                )
+            ],
+        )
+        is None
+    )
+    marked = SimpleNamespace(
+        category="structure",
+        description="PDF has structure tree but is not marked as tagged",
+        location="MarkInfo",
+        occurrence_key="b" * 64,
+    )
+    language = SimpleNamespace(category="language", occurrence_key="c" * 64)
+    title = SimpleNamespace(category="title", occurrence_key="d" * 64)
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, independent.content, add_h2, [member, marked, language, title]
+        )
+        is not None
+    )
+    change_h1 = {
+        "kind": "heading",
+        "target_id": targets_by_role["H1"]["target_id"],
+        "level": 2,
+    }
+    conflicting = edit.create_pdf_edit_candidate(
+        predecessor, sha(predecessor), change_h1
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, conflicting.content, change_h1, [member]
+        )
+        is None
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [SimpleNamespace(category="reading_order", occurrence_key="a" * 64)],
+        )
+        is None
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [SimpleNamespace(category="structure", occurrence_key="a" * 64)],
+        )
+        is None
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [SimpleNamespace(category="heading", occurrence_key="bad")],
+        )
+        is None
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [member, SimpleNamespace(category="table", occurrence_key="b" * 64)],
+        )
+        is None
+    )
+
+
+def test_saved_heading_proof_refuses_order_and_table_edits(tmp_path):
+    predecessor = make_pdf()
+    member = SimpleNamespace(
+        category="heading",
+        description="Document should start with H1 heading",
+        occurrence_key="a" * 64,
+    )
+    parent = targets(predecessor)[0]
+    reorder = {
+        "kind": "order",
+        "target_id": parent["target_id"],
+        "children": parent["children"][::-1],
+    }
+    reordered = edit.create_pdf_edit_candidate(predecessor, sha(predecessor), reorder)
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, reordered.content, reorder, [member]
+        )
+        is None
+    )
+    predecessor = table_pdf(tmp_path)
+    headers = table_operation(predecessor)
+    changed = edit.create_pdf_edit_candidate(predecessor, sha(predecessor), headers)
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, changed.content, headers, [member]
+        )
+        is None
+    )
+
+
+def test_saved_heading_proof_retains_catalogued_document_root_repair():
+    def wrap(pdf):
+        root = pdf.Root.StructTreeRoot
+        children = root.K
+        wrapper = pdf.make_indirect(
+            Dictionary(Type=Name.StructElem, S=Name.Document, P=root, K=children)
+        )
+        for child in children:
+            child.P = wrapper
+        root.K = wrapper
+
+    source = rewrite(make_pdf(), wrap)
+    first = heading(source)
+    first["level"] = 1
+    predecessor = edit.create_pdf_edit_candidate(source, sha(source), first).content
+    next_target = next(
+        item
+        for item in targets(predecessor)
+        if item["can_set_heading"] and item["role"] == "P"
+    )
+    operation = {"kind": "heading", "target_id": next_target["target_id"], "level": 2}
+    candidate = edit.create_pdf_edit_candidate(predecessor, sha(predecessor), operation)
+    root_fix = SimpleNamespace(
+        category="structure",
+        description="Structure tree missing /Document or /Part root element",
+        location="StructTreeRoot",
+        occurrence_key="e" * 64,
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, candidate.content, operation, [root_fix]
+        )
+        is not None
+    )
+
+
+def test_historical_copied_receipt_cannot_be_laundered_by_later_harmless_edit():
+    source = make_pdf(pages=2)
+    fix = build_scan_fix(
+        "scan",
+        FixedIssue(
+            issue_id="first-heading",
+            category="heading",
+            severity="medium",
+            description="Document should start with H1 heading",
+            fixed_content="H1",
+            fix_method="rule",
+            confidence=1.0,
+            needs_review=True,
+        ),
+    )
+    fix.review_status = "approved"
+    bind_fix_review_decision(fix, "approve")
+
+    def change(content, path, level):
+        target = next(
+            item for item in targets(content) if item["target_id"].endswith(f":{path}")
+        )
+        operation = {
+            "kind": "heading",
+            "target_id": target["target_id"],
+            "level": level,
+        }
+        return operation, edit.create_pdf_edit_candidate(
+            content, sha(content), operation
+        )
+
+    _, repaired = change(source, "1", 1)
+    source_receipt = build_output_membership(repaired.sha256, sha(source), [fix])
+    original = SimpleNamespace(
+        sha256=repaired.sha256,
+        provider_result={"reviewed_output_membership": source_receipt},
+        edit_provenance=None,
+    )
+
+    # The historical implementation copied the receipt across these edits.
+    _, earlier_h1 = change(repaired.content, "0", 1)
+    demote_operation, demoted = change(earlier_h1.content, "1", 2)
+    legacy_receipt = {**source_receipt, "output_sha256": demoted.sha256}
+    legacy = SimpleNamespace(
+        sha256=demoted.sha256,
+        provider_result={"reviewed_output_membership": legacy_receipt},
+        edit_precondition={
+            "source_kind": "saved",
+            "expected_artifact_id": "legacy-one",
+            "source_sha256": earlier_h1.sha256,
+            "state_digest": "e" * 64,
+        },
+        edit_provenance={
+            "source_kind": "saved",
+            "source_sha256": earlier_h1.sha256,
+            "operation": demote_operation,
+        },
+    )
+    assert artifact_output_membership_blockers(
+        legacy, [fix], source_sha256=sha(source)
+    ) == ["manual_edit_preservation_unverified"]
+    harmless_operation, harmless = change(demoted.content, "2", 2)
+    # The immediate before/after byte proof is valid, so the inheritance
+    # boundary must also reject the unproven predecessor in this chain.
+    harmless_proof = edit.prove_pdf_edit_preserves_members(
+        demoted.content, harmless.content, harmless_operation, [fix]
+    )
+    assert harmless_proof is not None
+    assert (
+        inherit_output_membership(
+            legacy,
+            source_sha256=sha(source),
+            output_sha256=harmless.sha256,
+            preservation_proof=harmless_proof,
+        )
+        is None
+    )
+
+    # A genuinely proven first saved edit remains a valid predecessor for a
+    # second independent edit; each candidate still has its own pending review.
+    first_operation, first = change(repaired.content, "2", 2)
+    first_proof = edit.prove_pdf_edit_preserves_members(
+        repaired.content, first.content, first_operation, [fix]
+    )
+    first_receipt = inherit_output_membership(
+        original,
+        source_sha256=sha(source),
+        output_sha256=first.sha256,
+        preservation_proof=first_proof,
+    )
+    assert first_receipt is not None
+    first_precondition = {
+        "source_kind": "saved",
+        "expected_artifact_id": "repaired",
+        "source_sha256": repaired.sha256,
+        "state_digest": "f" * 64,
+    }
+    first_saved = SimpleNamespace(
+        sha256=first.sha256,
+        edit_precondition=first_precondition,
+        edit_provenance={
+            "source_kind": "saved",
+            "source_sha256": repaired.sha256,
+            "operation": first_operation,
+        },
+        provider_result={
+            "reviewed_output_membership": first_receipt,
+            "reviewed_output_preservation": build_manual_edit_preservation_record(
+                first_proof, first_precondition, first_operation
+            ),
+        },
+    )
+    second_operation, second = change(first.content, "3", 2)
+    second_proof = edit.prove_pdf_edit_preserves_members(
+        first.content, second.content, second_operation, [fix]
+    )
+    second_receipt = inherit_output_membership(
+        first_saved,
+        source_sha256=sha(source),
+        output_sha256=second.sha256,
+        preservation_proof=second_proof,
+    )
+    assert second_receipt == {**first_receipt, "output_sha256": second.sha256}
 
 
 def test_saved_sibling_order_preserves_content_and_parent_tree():

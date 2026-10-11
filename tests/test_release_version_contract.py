@@ -1,17 +1,20 @@
-"""Release-candidate metadata and operator notices must agree for v0.9.11."""
+"""Release metadata and operator notices must agree for v0.9.12."""
 
+import ast
+import hashlib
 import json
 import re
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.9.11"
-RELEASE_HEADING = "## [0.9.11] - 2026-09-12"
-RELEASE_BODY = ROOT / "docs/releases/v0.9.11.md"
+VERSION = "0.9.12"
+RELEASE_HEADING = "## [0.9.12] - 2026-10-11"
+RELEASE_BODY = ROOT / "docs/releases/v0.9.12.md"
+PREVIOUS_HEADING = "## [0.9.11] - 2026-09-12"
 
 
-def test_authoritative_release_versions_are_0_9_11():
+def test_authoritative_release_versions_are_0_9_12():
     readme = (ROOT / "README.md").read_text()
     settings = (ROOT / "src/config/settings.py").read_text()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -38,8 +41,8 @@ def test_long_form_cli_docs_match_the_release_version():
         "cli/docs/TROUBLESHOOTING.md",
     ):
         text = (ROOT / relative).read_text()
-        assert "**Version:** v0.9.11" in text
-        assert "**CLI Version:** v0.9.11" in text
+        assert f"**Version:** v{VERSION}" in text
+        assert f"**CLI Version:** v{VERSION}" in text
         assert "v0.4.0" not in text
         assert "March 17, 2026" not in text
         assert "All features complete - Production ready" not in text
@@ -48,8 +51,8 @@ def test_long_form_cli_docs_match_the_release_version():
 def test_security_policy_supports_only_current_patch():
     security = (ROOT / "SECURITY.md").read_text()
 
-    assert re.search(r"\|\s*0\.9\.11\s*\|\s*:white_check_mark:\s*\|", security)
-    assert re.search(r"\|\s*<=\s*0\.9\.10\s*\|\s*:x:\s*\|", security)
+    assert re.search(r"\|\s*0\.9\.12\s*\|\s*:white_check_mark:\s*\|", security)
+    assert re.search(r"\|\s*<=\s*0\.9\.11\s*\|\s*:x:\s*\|", security)
     assert "current 0.9.x line" not in security
 
 
@@ -60,44 +63,98 @@ def _release_notes(document: str, next_heading: str | None = None) -> str:
     return document[start : document.index(next_heading, start)]
 
 
-def _assert_v0911_notice(notes: str) -> None:
-    for heading in (
-        "Fixed",
-        "Changed",
-        "Operator action required",
-    ):
-        assert heading in notes
-    for phrase in (
-        "No database migration",
-        "same 0.9.11 release",
-        "original",
-        "estimates",
-        "v0.9.8 operator action",
-    ):
-        assert phrase in notes
-
-
-def test_changelog_promotes_v0_9_11_and_preserves_history():
+def test_changelog_promotes_v0_9_12_and_preserves_history():
     changelog = (ROOT / "CHANGELOG.md").read_text()
     headings = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
     assert headings[:2] == ["[Unreleased]", RELEASE_HEADING.removeprefix("## ")]
     unreleased = changelog.index("## [Unreleased]")
     release = changelog.index(RELEASE_HEADING)
+    previous = changelog.index(PREVIOUS_HEADING)
     historical = changelog.index("## [0.9.8] - 2026-09-08")
-    assert unreleased < release < historical
-    _assert_v0911_notice(_release_notes(changelog, "## [0.9.10] - 2026-09-12"))
+    assert unreleased < release < previous < historical
+    current_notes = _release_notes(changelog, PREVIOUS_HEADING)
+    for phrase in (
+        "20260917_unknown_confidence",
+        "20260928_pdf_edit_pub",
+        "coordinated backup",
+        "alembic upgrade head",
+        "pending human review",
+        "Publication approval remains separate",
+    ):
+        assert phrase in current_notes
+
+
+def test_historical_v0_9_11_release_body_is_unchanged():
+    body = (ROOT / "docs/releases/v0.9.11.md").read_bytes()
+    assert hashlib.sha256(body).hexdigest() == (
+        "ab33bfa703407085214be04c1c9bf86f574e936660ffe1cfedfb67c4a8e3d54d"
+    )
 
 
 def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     body = RELEASE_BODY.read_text()
 
-    assert body.startswith("# Aelira v0.9.11\n")
-    _assert_v0911_notice(body)
-    assert "linux/amd64" in body
-    assert "linux/arm64" in body
-    assert "signed annotated tag" in body
-    assert "seven-file SBOM" in body
-    assert "consumed verbatim" in body
+    assert body.startswith(f"# Aelira v{VERSION}\n")
+    for phrase in (
+        "successful protected publication",
+        "20260917_unknown_confidence",
+        "20260928_pdf_edit_pub",
+        "database migration",
+        "pause new intake",
+        "Drain",
+        "coordinated",
+        "PostgreSQL",
+        "uploads",
+        "artifacts",
+        "configuration and encryption keys",
+        "alembic upgrade head",
+        "same release",
+        "pre-upgrade database",
+        "external writebacks",
+        "working file",
+        "human approval",
+        "unsafe or unsupported output is withheld",
+        "linux/amd64",
+        "linux/arm64",
+        "signed annotated tag",
+        "GitHub-verified",
+        "ci.yml",
+        "protected `release` environment",
+        "signed image provenance",
+        "npm trusted publishing",
+        "seven-file SBOM",
+        "consumed verbatim",
+    ):
+        assert phrase in body
+    assert "No database migration" not in body
+    assert "Check the workflow result and published artifacts before upgrading" in body
+
+
+def test_current_alembic_head_and_release_migration_chain():
+    revisions = {}
+    descendants = set()
+    for path in (ROOT / "alembic/versions").glob("*.py"):
+        values = {}
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id in {
+                        "revision",
+                        "down_revision",
+                    }:
+                        values[target.id] = ast.literal_eval(node.value)
+        revision = values.get("revision")
+        if revision:
+            revisions[revision] = values.get("down_revision")
+            parents = values.get("down_revision")
+            descendants.update(parents if isinstance(parents, tuple) else [parents])
+
+    assert set(revisions) - descendants == {"20260928_pdf_edit_pub"}
+    assert revisions["20260928_pdf_edit_pub"] == "20260917_unknown_confidence"
+    assert revisions["20260917_unknown_confidence"] == "20260905_visual_analysis"
 
 
 def test_release_workflow_preflights_and_consumes_exact_checked_in_body():

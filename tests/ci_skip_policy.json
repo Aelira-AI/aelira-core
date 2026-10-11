@@ -1900,7 +1900,9 @@
             "tests/test_pdf_edit_publication_postgres.py::test_finalize_rechecks_persisted_state_after_staging[json_null]",
             "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[approval]",
             "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[cleanup]",
-            "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[expiry]"
+            "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[expiry]",
+            "tests/test_pdf_edit_publication_postgres.py::test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval[False]",
+            "tests/test_pdf_edit_publication_postgres.py::test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval[True]"
           ],
           "evidence": [
             "tests/test_pdf_edit_publication_postgres.py",
@@ -2509,6 +2511,8 @@
         "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[approval]",
         "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[cleanup]",
         "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[expiry]",
+        "tests/test_pdf_edit_publication_postgres.py::test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval[False]",
+        "tests/test_pdf_edit_publication_postgres.py::test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval[True]",
         "tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair",
         "tests/test_task17b_postgres.py::test_concurrent_enqueue_unique_race_returns_the_single_winner"
       ],

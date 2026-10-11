@@ -137,6 +137,9 @@ def test_cloud_edit_selects_cloud_pointer_and_requires_exact_context(preview):
         preview.service.claim_and_publish_stream.call_args.kwargs["cloud_file_id"]
         == cloud.id
     )
+    assert preview.service.claim_and_publish_stream.call_args.kwargs[
+        "provider_result"
+    ] == {"output_membership_blocker": "manual_edit_preservation_unverified"}
 
 
 def test_review_edit_inspection_and_save_use_verified_original(preview):
@@ -203,6 +206,9 @@ def test_saved_table_edit_uses_exact_saved_artifact_bytes(preview, tmp_path):
     assert saved.status_code == 201, saved.text
     kwargs = preview.service.claim_and_publish_stream.call_args.kwargs
     assert kwargs["edit_provenance"]["operation"]["kind"] == "table_column_headers"
+    assert kwargs["provider_result"] == {
+        "output_membership_blocker": "manual_edit_preservation_unverified"
+    }
 
 
 def test_grouped_heading_route_requires_typed_level_and_verified_div(preview):
@@ -254,6 +260,9 @@ def test_grouped_heading_route_requires_typed_level_and_verified_div(preview):
     kwargs = preview.service.claim_and_publish_stream.call_args.kwargs
     assert kwargs["edit_precondition"] == expected
     assert kwargs["edit_provenance"]["operation"] == payload["operation"]
+    assert kwargs["provider_result"] == {
+        "output_membership_blocker": "manual_edit_preservation_unverified"
+    }
 
 
 def test_grouped_heading_route_changes_existing_heading_level_and_rejects_noop(preview):
@@ -298,6 +307,9 @@ def test_grouped_heading_route_changes_existing_heading_level_and_rejects_noop(p
     kwargs = preview.service.claim_and_publish_stream.call_args.kwargs
     assert kwargs["edit_precondition"] == expected
     assert kwargs["edit_provenance"]["operation"] == payload["operation"]
+    assert kwargs["provider_result"] == {
+        "output_membership_blocker": "manual_edit_preservation_unverified"
+    }
 
 
 def test_grouped_heading_route_rejects_nested_heading_semantics(preview):

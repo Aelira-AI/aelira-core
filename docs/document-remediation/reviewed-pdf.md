@@ -41,6 +41,16 @@ Rebuilding from the original would discard manual edits to the current PDF, so
 that operation is unavailable for a working file containing manual PDF edits.
 The existing structure editor can continue supported edits to that file.
 
+Editing a saved PDF does not carry its previous repair receipt forward by
+default. Supported heading edits retain that receipt only when the reopened
+bytes preserve every recorded repair and its bound headings. Changing a repaired
+H1, an unproved order or table edit, or an unknown repair scope leaves the new
+candidate downloadable but blocks publication approval. Previous job scores
+and fix decisions describe the earlier file; they do not verify the edited one.
+Historical manually edited candidates with a copied receipt and no preservation
+proof are also blocked. Create a new verified remediation output before approval
+when the current candidate cannot establish preservation.
+
 ## Repair boundaries
 
 Automatic reading-order changes are limited to source-bound structures that

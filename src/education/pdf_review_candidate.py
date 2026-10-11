@@ -48,6 +48,20 @@ class PDFEditCandidate:
     needs_review: bool = True
 
 
+@dataclass(frozen=True)
+class PDFEditPreservationProof:
+    """Evidence for the exact bytes and receipt members checked below."""
+
+    source_sha256: str
+    output_sha256: str
+    occurrence_keys: tuple[str, ...]
+
+
+_PRESERVABLE_HEADING_EDIT_CATEGORIES = frozenset(
+    {"heading", "language", "title", "alt_text", "link"}
+)
+
+
 def _sha(content):
     return hashlib.sha256(content).hexdigest()
 
@@ -576,3 +590,191 @@ def create_pdf_edit_candidate(
         raise
     except Exception:
         raise PDFEditRefused("unsupported_or_invalid_pdf") from None
+
+
+def prove_pdf_edit_preserves_members(
+    predecessor: bytes,
+    candidate: bytes,
+    operation: dict,
+    member_fixes: list,
+) -> PDFEditPreservationProof | None:
+    """Prove a narrow heading edit retained every recorded repair's evidence.
+
+    The existing receipt says which fixes were in the predecessor. This check
+    proves the new bytes retain its bound headings and all other PDF objects.
+    Only two catalogued root-structure repairs have sufficient independent
+    invariants here. Other structure, table, order, and unknown scopes cannot
+    inherit membership.
+    """
+    if (
+        not member_fixes
+        or len(member_fixes) > 10_000
+        or not isinstance(operation, dict)
+        or operation.get("kind") not in {"heading", "heading_group"}
+        or any(
+            getattr(fix, "category", None)
+            not in _PRESERVABLE_HEADING_EDIT_CATEGORIES | {"structure"}
+            for fix in member_fixes
+        )
+        or any(
+            getattr(fix, "category", None) == "heading"
+            and getattr(fix, "description", None)
+            != "Document should start with H1 heading"
+            for fix in member_fixes
+        )
+    ):
+        return None
+    keys = [getattr(fix, "occurrence_key", None) for fix in member_fixes]
+    if any(not isinstance(key, str) or len(key) != 64 for key in keys):
+        return None
+    if len(set(keys)) != len(keys):
+        return None
+    before_hash, after_hash = _sha(predecessor), _sha(candidate)
+    target_id = operation.get("target_id")
+    if not isinstance(target_id, str) or not target_id.startswith(before_hash + ":"):
+        return None
+    try:
+        path_string = target_id[len(before_hash) + 1 :]
+        target_path = (
+            ()
+            if path_string == "root"
+            else tuple(int(piece) for piece in path_string.split("/"))
+        )
+        with pikepdf.open(io.BytesIO(predecessor), attempt_recovery=False) as before:
+            with pikepdf.open(io.BytesIO(candidate), attempt_recovery=False) as after:
+                before_nodes = _validate_document(before, predecessor)
+                after_nodes = _validate_document(after, candidate)
+                if (
+                    set(before_nodes) != set(after_nodes)
+                    or target_path not in before_nodes
+                ):
+                    return None
+                changed_paths = []
+                for path, node in before_nodes.items():
+                    old_role = str(node.get("/S", Name.StructTreeRoot))
+                    new_role = str(after_nodes[path].get("/S", Name.StructTreeRoot))
+                    if old_role == new_role:
+                        continue
+                    if path == target_path:
+                        if new_role != f"/H{operation.get('level')}":
+                            return None
+                    elif not (
+                        operation["kind"] == "heading_group"
+                        and path[: len(target_path)] == target_path
+                        and old_role == "/P"
+                        and new_role == "/Span"
+                    ):
+                        return None
+                    changed_paths.append(path)
+                if target_path not in changed_paths:
+                    return None
+                # Restore only the explicitly changed roles in memory. Full
+                # reachable graph equality then proves scalar metadata, links,
+                # alt text, content streams, tables, and ordering are retained.
+                for path in changed_paths:
+                    after_nodes[path].S = Name(str(before_nodes[path].S))
+                if _graph_digest(before) != _graph_digest(after):
+                    return None
+                if any(
+                    not _known_structure_repair_preserved(before, after, fix)
+                    for fix in member_fixes
+                    if getattr(fix, "category", None) == "structure"
+                ):
+                    return None
+                for path in changed_paths:
+                    after_nodes[path].S = Name(
+                        f"/H{operation['level']}" if path == target_path else "/Span"
+                    )
+                original = _heading_targets_inventory(before, predecessor)
+                saved = _heading_targets_inventory(after, candidate)
+                if not original.complete or not saved.complete:
+                    return None
+                if (
+                    any(
+                        getattr(fix, "category", None) == "heading"
+                        for fix in member_fixes
+                    )
+                    and not original.first_is_h1
+                ):
+                    return None
+                if original.first_is_h1 and not saved.first_is_h1:
+                    return None
+                old_headings = [_heading_signature(item) for item in original.headings]
+                new_headings = [_heading_signature(item) for item in saved.headings]
+                if any(signature is None for signature in old_headings + new_headings):
+                    return None
+                old_by_path = {item[0]: item for item in old_headings}
+                new_by_path = {item[0]: item for item in new_headings}
+                if len(old_by_path) != len(old_headings) or any(
+                    new_by_path.get(path) != signature
+                    for path, signature in old_by_path.items()
+                ):
+                    return None
+                # An inserted heading must not create a new hierarchy jump.
+                prior_gaps = {
+                    (left[0], right[0])
+                    for left, right in zip(old_headings, old_headings[1:])
+                    if int(right[1][2:]) > int(left[1][2:]) + 1
+                }
+                new_gaps = {
+                    (left[0], right[0])
+                    for left, right in zip(new_headings, new_headings[1:])
+                    if int(right[1][2:]) > int(left[1][2:]) + 1
+                }
+                if not new_gaps <= prior_gaps:
+                    return None
+    except Exception:
+        return None
+    return PDFEditPreservationProof(before_hash, after_hash, tuple(sorted(keys)))
+
+
+def _heading_targets_inventory(pdf, content):
+    from .pdf_checks.bound_headings import inventory
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as source:
+        source.write(content)
+        source.flush()
+        return inventory(pdf, source.name)
+
+
+def _known_structure_repair_preserved(before, after, fix):
+    description = getattr(fix, "description", None)
+    location = getattr(fix, "location", None)
+    if (
+        description == "PDF has structure tree but is not marked as tagged"
+        and location == "MarkInfo"
+    ):
+        return all(
+            isinstance(pdf.Root.get("/MarkInfo"), Dictionary)
+            and pdf.Root.MarkInfo.get("/Marked") is True
+            for pdf in (before, after)
+        )
+    if (
+        description == "Structure tree missing /Document or /Part root element"
+        and location == "StructTreeRoot"
+    ):
+        for pdf in (before, after):
+            root = pdf.Root.get("/StructTreeRoot")
+            if not isinstance(root, Dictionary):
+                return False
+            kids = root.get("/K")
+            children = list(kids) if isinstance(kids, Array) else [kids]
+            if not children or any(
+                not isinstance(child, Dictionary)
+                or child.get("/Type") != Name.StructElem
+                or child.get("/S") not in {Name.Document, Name.Part}
+                for child in children
+            ):
+                return False
+        return True
+    return False
+
+
+def _heading_signature(item):
+    if (
+        item.role not in {f"/H{level}" for level in range(1, 7)}
+        or not item.refs
+        or not item.text
+    ):
+        return None
+    return (item.path, item.role, item.refs, item.text, item.pages)

@@ -100,7 +100,7 @@ def test_all_publish_boundaries_recompute_the_validated_plan():
 
 def test_default_deployment_refs_remain_stable():
     compose = (ROOT / "docker-compose.prod.yml").read_text()
-    assert compose.count("${AELIRA_VERSION:-0.9.11}") == 3
+    assert compose.count("${AELIRA_VERSION:-0.9.12}") == 3
     assert "alpha" not in compose
 
 

@@ -129,6 +129,8 @@ def test_queue_races_use_a_separate_disposable_required_database():
         "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[approval]",
         "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[cleanup]",
         "tests/test_pdf_edit_publication_postgres.py::test_saved_predecessor_change_after_claim_preserves_current[expiry]",
+        "tests/test_pdf_edit_publication_postgres.py::test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval[False]",
+        "tests/test_pdf_edit_publication_postgres.py::test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval[True]",
     }
     assert not allowed
     assert "tests/test_task17b_postgres.py" in shlex.split(suite["run"])

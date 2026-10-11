@@ -103,6 +103,7 @@ def preview(tmp_path, monkeypatch):
         cleanup_claimed_at=None,
         expires_at=datetime.now(timezone.utc) + timedelta(days=1),
         review_status="pending",
+        provider_result=None,
     )
     service = RemediationArtifactService(
         root=tmp_path / "artifacts",
