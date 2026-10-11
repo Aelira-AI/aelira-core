@@ -155,30 +155,30 @@ def _structure(pdf):
             raise PDFEditRefused("invalid_structure_parent")
         seen.add(node.objgen)
         nodes[path] = node
-        kids = node.get("/K")
+        kids = node.get("/K", Array())
         children = list(kids) if isinstance(kids, Array) else [kids]
         structural = [
             child
             for child in children
             if isinstance(child, Dictionary) and child.get("/Type") == Name.StructElem
         ]
-        if structural and len(structural) != len(children):
-            raise PDFEditRefused("mixed_structure_children")
         if structural and any(key in node for key in ("/ActualText", "/Alt")):
             raise PDFEditRefused("parent_text_alternative")
-        if not structural:
-            if parent is None or not children:
+        if not structural and parent is None:
+            raise PDFEditRefused("unbound_structure")
+        # Legal mixed /K arrays can remain unchanged around an unrelated edit.
+        # Only all-structural sibling arrays are advertised as reorderable.
+        for index, child in enumerate(children):
+            if isinstance(child, Dictionary) and child.get("/Type") == Name.StructElem:
+                walk(child, node, (*path, index), depth + 1)
+                continue
+            mcid = (
+                child.get("/MCID")
+                if isinstance(child, Dictionary) and child.get("/Type") == Name.MCR
+                else child
+            )
+            if type(mcid) is not int or mcid < 0:
                 raise PDFEditRefused("unbound_structure")
-            for child in children:
-                mcid = (
-                    child.get("/MCID")
-                    if isinstance(child, Dictionary) and child.get("/Type") == Name.MCR
-                    else child
-                )
-                if type(mcid) is not int or mcid < 0:
-                    raise PDFEditRefused("unbound_structure")
-        for index, child in enumerate(structural):
-            walk(child, node, (*path, index), depth + 1)
 
     walk(root, None, (), 0)
     return nodes
@@ -399,8 +399,23 @@ def _table_header_cells(pdf, nodes, path):
     return [nodes[(*path, 0, index)] for index in range(width)]
 
 
-def _descriptors(pdf, nodes, sha256):
+def _heading_targets(pdf, content):
+    from .pdf_checks.bound_headings import inventory
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as source:
+        source.write(content)
+        source.flush()
+        found = inventory(pdf, source.name)
+    return (
+        {target.node.obj.objgen: target for target in found.targets if target.eligible}
+        if found.complete
+        else {}
+    )
+
+
+def _descriptors(pdf, nodes, sha256, headings=None):
     result = []
+    headings = headings or {}
     for path, node in nodes.items():
         role = str(node.get("/S", Name.StructTreeRoot))
         children = [
@@ -411,8 +426,16 @@ def _descriptors(pdf, nodes, sha256):
                 "target_id": _target_id(sha256, path),
                 "role": role.lstrip("/"),
                 "children": [_target_id(sha256, child) for child in children],
-                "can_set_heading": role in HEADING_ROLES and not children,
-                "can_reorder": role in ORDER_ROLES and len(children) > 1,
+                "can_set_heading": role in HEADING_ROLES
+                and not children
+                and node.objgen in headings,
+                "can_set_heading_group": role in HEADING_ROLES | {"/Div"}
+                and bool(children)
+                and node.objgen in headings,
+                "can_reorder": role in ORDER_ROLES
+                and len(children) > 1
+                and isinstance(node.get("/K"), Array)
+                and len(children) == len(node.K),
                 "can_set_column_headers": (
                     _table_header_cells(pdf, nodes, path) is not None
                     if role == "/Table"
@@ -431,7 +454,11 @@ def inspect_pdf_edit_targets(content: bytes, expected_sha256: str) -> list[dict]
             collector = _TargetContextCollector()
             nodes = _validate_document(pdf, content, owner_context=collector)
             _graph_digest(pdf)
-            return _attach_context(_descriptors(pdf, nodes, sha256), nodes, collector)
+            return _attach_context(
+                _descriptors(pdf, nodes, sha256, _heading_targets(pdf, content)),
+                nodes,
+                collector,
+            )
     except PDFEditRefused:
         raise
     except Exception:
@@ -459,7 +486,8 @@ def create_pdf_edit_candidate(
     try:
         with pikepdf.open(io.BytesIO(content), attempt_recovery=False) as pdf:
             nodes = _validate_document(pdf, content)
-            descriptors = _descriptors(pdf, nodes, sha256)
+            headings = _heading_targets(pdf, content)
+            descriptors = _descriptors(pdf, nodes, sha256, headings)
             by_id = {item["target_id"]: item for item in descriptors}
             objects = {_target_id(sha256, path): node for path, node in nodes.items()}
             if not isinstance(operation, dict):
@@ -469,11 +497,17 @@ def create_pdf_edit_candidate(
                 raise PDFEditRefused("stale_or_unknown_target")
             descriptor, node = by_id[target], objects[target]
             kind = operation.get("kind")
-            if kind == "heading":
+            if kind in {"heading", "heading_group"}:
                 level = operation.get("level")
                 if (
                     set(operation) != {"kind", "target_id", "level"}
-                    or not descriptor["can_set_heading"]
+                    or not descriptor[
+                        (
+                            "can_set_heading_group"
+                            if kind == "heading_group"
+                            else "can_set_heading"
+                        )
+                    ]
                     or type(level) is not int
                     or not 1 <= level <= 6
                 ):
@@ -481,7 +515,9 @@ def create_pdf_edit_candidate(
                 role = Name(f"/H{level}")
                 if node.S == role:
                     raise PDFEditRefused("no_change")
-                node.S = role
+                from .pdf_checks.bound_headings import promote
+
+                promote(headings[node.objgen], level)
             elif kind == "order":
                 order = operation.get("children")
                 if (

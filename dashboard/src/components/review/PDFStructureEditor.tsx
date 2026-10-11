@@ -53,7 +53,7 @@ export function PDFStructureEditor({ scanId, cloudFileId, onSaved, onSavingChang
   const [selectedId, setSelectedId] = useState('');
   const [heading, setHeading] = useState(1);
   const [order, setOrder] = useState<string[]>([]);
-  const [operationKind, setOperationKind] = useState<'heading' | 'order' | 'table_column_headers'>('heading');
+  const [operationKind, setOperationKind] = useState<PDFEditOperation['kind']>('heading');
   const [tableConfirmed, setTableConfirmed] = useState(false);
   const [moveAnnouncement, setMoveAnnouncement] = useState('');
   const panelId = useId();
@@ -100,11 +100,12 @@ export function PDFStructureEditor({ scanId, cloudFileId, onSaved, onSavingChang
   const data = loaded?.key === key ? loaded.data : null;
   const editable = useMemo(() => data?.targets.filter(target =>
     target.context.status === 'available' &&
-    (target.can_set_heading || target.can_reorder || target.can_set_column_headers)) ?? [], [data]);
+    (target.can_set_heading || target.can_set_heading_group || target.can_reorder || target.can_set_column_headers)) ?? [], [data]);
   const target = data?.targets.find(item => item.target_id === selectedId);
   const byId = useMemo(() => new Map(data?.targets.map(item => [item.target_id, item]) ?? []), [data]);
   const operation: PDFEditOperation | null = !target ? null : operationKind === 'heading' ?
-    { kind: 'heading', target_id: target.target_id, level: heading } : operationKind === 'order' ?
+    { kind: 'heading', target_id: target.target_id, level: heading } : operationKind === 'heading_group' ?
+      { kind: 'heading_group', target_id: target.target_id, level: heading } : operationKind === 'order' ?
       { kind: 'order', target_id: target.target_id, children: order } :
       { kind: 'table_column_headers', target_id: target.target_id };
   const canSave = !!data && !!operation && !stale && !saving && !loading &&
@@ -118,7 +119,8 @@ export function PDFStructureEditor({ scanId, cloudFileId, onSaved, onSavingChang
     const next = data?.targets.find(item => item.target_id === id);
     setHeading(/^H[1-6]$/.test(next?.role ?? '') ? Number(next!.role.slice(1)) : 1);
     setOrder(next?.children ?? []);
-    setOperationKind(next?.can_set_heading ? 'heading' : next?.can_reorder ? 'order' : 'table_column_headers');
+    setOperationKind(next?.can_set_heading ? 'heading' : next?.can_set_heading_group ? 'heading_group' :
+      next?.can_reorder ? 'order' : 'table_column_headers');
   }
 
   function moveChild(index: number, direction: -1 | 1, button: HTMLButtonElement): void {
@@ -218,14 +220,17 @@ export function PDFStructureEditor({ scanId, cloudFileId, onSaved, onSavingChang
           {target.context.truncated && <p className="text-xs text-secondary">Excerpt shortened. Inspect the PDF before deciding.</p>}
           <div className="flex flex-wrap gap-2" role="group" aria-label="PDF edit operation">
             {target.can_set_heading && <button type="button" className={`${operationKind === 'heading' ? 'btn-primary text-sm' : 'btn-secondary text-sm'} ${disabledButton}`} aria-pressed={operationKind === 'heading'} disabled={saving} onClick={() => setOperationKind('heading')}>Heading level</button>}
+            {target.can_set_heading_group && <button type="button" className={`${operationKind === 'heading_group' ? 'btn-primary text-sm' : 'btn-secondary text-sm'} ${disabledButton}`} aria-pressed={operationKind === 'heading_group'} disabled={saving} onClick={() => setOperationKind('heading_group')}>Grouped heading</button>}
             {target.can_reorder && <button type="button" className={`${operationKind === 'order' ? 'btn-primary text-sm' : 'btn-secondary text-sm'} ${disabledButton}`} aria-pressed={operationKind === 'order'} disabled={saving} onClick={() => setOperationKind('order')}>Sibling order</button>}
             {target.can_set_column_headers && <button type="button" className={`${operationKind === 'table_column_headers' ? 'btn-primary text-sm' : 'btn-secondary text-sm'} ${disabledButton}`} aria-pressed={operationKind === 'table_column_headers'} disabled={saving} onClick={() => setOperationKind('table_column_headers')}>Column headers</button>}
           </div>
-          {operationKind === 'heading' && target.can_set_heading && <label className="block text-sm text-primary">New heading level
+          {((operationKind === 'heading' && target.can_set_heading) || (operationKind === 'heading_group' && target.can_set_heading_group)) && <label className="block text-sm text-primary">New heading level
             <select className="ml-2 rounded border border-[var(--border-primary)] bg-[var(--surface-primary)] p-2 text-primary" value={heading} disabled={saving} onChange={event => setHeading(Number(event.target.value))}>
               {Array.from({ length: 6 }, (_, index) => <option key={index + 1} value={index + 1}>H{index + 1}</option>)}
             </select>
           </label>}
+          {operationKind === 'heading_group' && target.can_set_heading_group &&
+            <p className="text-sm text-secondary">The complete selected text becomes one heading. Visible text is retained, and the saved candidate needs human review.</p>}
           {operationKind === 'order' && target.can_reorder && <>
             <p className="text-sm text-secondary">Move every sibling into the intended reading order. Use the Up and Down buttons with a keyboard or pointer.</p>
             <p role="status" aria-live="polite" className="sr-only">{moveAnnouncement}</p>

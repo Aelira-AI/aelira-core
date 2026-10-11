@@ -89,6 +89,7 @@ _IMPACT_CONFIDENCE_MAP: dict[str, float] = {
 # Built-in document scanner issue types. This is public within the
 # remediation package so strict classifiers and API adapters cannot drift.
 BUILTIN_ISSUE_TYPE_CATEGORY_MAP: dict[str, str] = {
+    "first_heading_not_h1": "heading",
     "missing_title": "title",
     "missing_author": "title",
     "title_not_displayed": "title",

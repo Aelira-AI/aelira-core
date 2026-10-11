@@ -162,6 +162,7 @@ def test_generated_heading_refuses_text_missing_from_source(tmp_path):
             category=IssueCategory.HEADING,
             description="Missing heading",
             severity="medium",
+            metadata={"suggested_level": 1},
         )
         assert not remediator._apply_heading_fix(issue, document, "(anonymous)")
         assert len(remediator._struct_tree.kids) == 0

@@ -8,7 +8,7 @@ Numbered highlights are provided only for uniquely matched complete painted line
 
 Choose a page and switch between **Original PDF** and **Saved PDF**. Use **Refresh comparison** to re-read the current artifact. Missing originals and missing, expired, superseded or invalid saved artifacts are reported independently. Untagged or unresolved structures do not receive a fabricated fallback order. After a confirmed edit save, the comparison reloads current evidence without replacing the editor.
 
-The editor's source selection is explicit. Editing **Original PDF** starts from original bytes and omits changes already present in the current saved artifact. Editing **Current saved PDF** starts from the current artifact. Select a target by its role, page and verified tagged-text excerpt. Targets without usable context are excluded. For a supported leaf P or H1–H6, choose a new H1–H6 level; conversion back to P is not supported. For a supported container, use the Up and Down buttons to arrange every immediate child. For a supported simple Table, explicitly designate its first row as column headers. Cancel discards the draft. Each successful save stores a separate immutable candidate artifact in pending review; it does not approve that candidate or write it back to the cloud source. A stale-state conflict requires **Reload targets** before another save. A failed save retains the previous candidate.
+The editor's source selection is explicit. Editing **Original PDF** starts from original bytes and omits changes already present in the current saved artifact. Editing **Current saved PDF** starts from the current artifact. Select a target by its role, page and verified tagged-text excerpt. Targets without usable context are excluded. For a supported leaf P or H1–H6, choose a new H1–H6 level. A supported multiline Div can be selected as one complete heading group; promotion changes its role and changes its P descendants to Span without replacing text or changing ownership. Existing H1–H6 groups can change level. Conversion back to P is not supported. For a supported container, use the Up and Down buttons to arrange every immediate child. For a supported simple Table, explicitly designate its first row as column headers. Cancel discards the draft. Each successful save stores a separate immutable candidate artifact in pending review; it does not approve that candidate or write it back to the cloud source. A stale-state conflict requires **Reload targets** before another save. A failed save retains the previous candidate.
 
 The Review page's reading-order comparison currently follows the scan's local current-artifact pointer. When an explicit `cloud_file_id` selects a cloud file's separate current artifact, the page suppresses that comparison rather than presenting the local artifact as cloud evidence. Cloud-backed Review links need that explicit file context for editing.
 
@@ -16,7 +16,7 @@ The Review page's reading-order comparison currently follows the scan's local cu
 
 The initial implementation supports page-stream marked content, explicit or ParentTree-resolved page ownership, text alternatives, and rotated/cropped page geometry. Annotation references and form/other content-stream scopes that cannot be resolved safely remain unavailable. Non-PDF files are not visualized.
 
-Inspection is bounded to 50 MiB per file, 500 pages, 2,000 returned text segments, 200,000 Unicode code points, bounded stream expansion, and a page image of at most 1,200 pixels on its longest edge. Streams without filters, single-Flate streams and checked JPEG images are supported; other filter chains remain unavailable. Before rendering, page content is limited to 1 MiB per page, 4 MiB of cumulative stream invocations, 20,000 operations and 20 million cumulative image pixels across invocations. Repeated references count repeatedly. Form XObjects, Type 3 fonts, patterns, shadings, soft masks and inline images are unsupported in this initial preview subset.
+Inspection is bounded to 50 MiB per file, 500 pages, 2,000 returned text segments, 200,000 Unicode code points, bounded stream expansion, and a page image of at most 1,200 pixels on its longest edge. Streams without filters, single-Flate streams and checked JPEG images are supported; other filter chains remain unavailable. Before rendering, page content is limited to 1 MiB per page, 4 MiB of cumulative stream invocations, 20,000 operations and 20 million cumulative image pixels across invocations. Repeated references count repeatedly. Image soft masks are supported only for matching positive image dimensions, 8-bit DeviceGray mask pixels, bounded unfiltered/single-Flate data and supported parent images. Masks count toward unique resource and repeated invocation budgets, including decoded image bytes. Nested masks, graphics-state soft masks, Form XObjects, Type 3 fonts, patterns, shadings and inline images remain unsupported.
 
 Parsing uses the application's PDF libraries, without separate process-level isolation or a hard execution deadline. These bounds are defensive checks, not CPU or memory guarantees or claims of complete PDF support.
 
@@ -42,8 +42,10 @@ review still required. A target identifier is not an authorization credential.
 
 The primitive accepts existing, unambiguous MCID/ParentTree-bound structure only.
 It refuses encrypted/signed/form PDFs, custom role maps/namespaces, missing or
-shared structure nodes, mixed content/structure children, and parent alternatives
-that could mask a reordered sequence. The existing inspection resource bounds
+shared structure nodes and parent alternatives that could mask a reordered sequence.
+Legal mixed content/structure arrays and empty tags can remain untouched around
+an unrelated edit; mixed arrays cannot be reordered and empty tags cannot become
+heading targets. The existing inspection resource bounds
 apply, with additional limits of 2,000 structure nodes, depth 40 and 100,000 graph
 visits. Unsupported input raises a safe reason without parser details.
 
@@ -111,6 +113,7 @@ the local scan pointer.
 Supported operations use the inspection's checksum-bound target IDs:
 
 - Heading: `{"kind":"heading","target_id":"<target>","level":2}`; level is an integer from 1 through 6.
+- Heading group: `{"kind":"heading_group","target_id":"<group>","level":1}`; the server derives the exact permitted descendant role changes. Groups require complete page-local content, P/Span descendants, consistent typography over two to four lines, and no incompatible attributes or replacement semantics.
 - Sibling order: `{"kind":"order","target_id":"<parent>","children":["<child-b>","<child-a>"]}`; supply every immediate child exactly once.
 - Column headers: `{"kind":"table_column_headers","target_id":"<table>"}`; explicitly designate the first row of a supported simple table as column headers.
 
@@ -140,3 +143,36 @@ fields; existing ordinary artifacts keep both fields empty. Route coverage lives
 in `tests/test_review_pdf_edit_routes.py`. Real publication, migration, failure
 and concurrency checks live in `tests/test_pdf_edit_publication_postgres.py` and
 are required in CI's disposable PostgreSQL race job.
+
+
+## Automatic heading and regional-order candidates
+
+A heading tag counts only when its content references and ParentTree ownership
+resolve to nonempty source content. H2–H6, generic H, empty tags, page references
+alone and replacement strings alone do not establish H1. The product's
+first-heading rule is checked separately from the existence of a later H1.
+Inferred titles remain review candidates; arbitrary level edits require an
+explicit intended level. Saved verification checks the complete selected
+heading references and unchanged drawing operations.
+
+`regional-order-v1` models one to eight whitespace-separated columns per region,
+spanning content and separate trailing regions. It uses a minimum corridor of
+0.75 line heights or 1% of page width, and a horizontal gap of 1.25 line heights
+when column occupancy changes. An independently corroborated printed page ordinal
+is retained as final content. Repeated text binds through occurrence geometry,
+not text matching alone. Aligned single-line matrices, overlapping regions,
+unsupported directions, and semantic groups that cannot be safely permuted
+remain explicit review requirements. The editor accepts a reviewer's complete
+same-parent permutation without claiming to establish the author's intent.
+
+Automatic changes preserve parent relationships, MCIDs and all content. Candidate
+serialization must preserve the reachable graph, content-reference multiplicity
+and decoded text. Fresh generated plain-text owners use the same regional planner;
+replacement text is eligible there only when it exactly mirrors the newly bound
+source. Refused layouts retain their scan/review outcomes. Scores remain measured
+by the existing deterministic scanner and do not certify semantic correctness or
+PDF/UA/WCAG conformance.
+
+Generated regression fixtures are in `test_pdf_bound_heading_inventory.py`,
+`test_pdf_mixed_region_order.py` and `test_pdf_review_image_masks.py`. The broader
+editor work remains tracked separately in #372.

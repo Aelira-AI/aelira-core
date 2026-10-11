@@ -1572,7 +1572,11 @@ class PdfRemediator(BaseRemediator):
                 fixed_content=fix_content,
                 fix_method=fix_method.value,
                 confidence=confidence,
-                needs_review=self._confidence.needs_review(confidence),
+                needs_review=(
+                    self._confidence.needs_review(confidence)
+                    or bool(issue.metadata.get("heading_needs_review"))
+                    or issue.category == IssueCategory.READING_ORDER
+                ),
                 model_used=model_used,
                 wcag_criteria=wcag,
                 page_number=page_num,
@@ -4315,19 +4319,34 @@ class PdfRemediator(BaseRemediator):
     def _apply_heading_fix(
         self, issue: RemediationIssue, document: Any, fix_content: str
     ) -> bool:
-        """
-        Apply heading structure fix by creating H1-H6 structure elements.
+        """Bind a selected heading level to complete existing source content.
 
-        With pikepdf, we create proper heading structure tags. This enables:
-        - Screen reader heading navigation (h key in NVDA/VoiceOver)
-        - Document outline generation
-        - WCAG 1.3.1 and 2.4.1 compliance
-
-        Falls back to bookmarks if pikepdf is not available.
+        Existing owners are promoted before the separate whole-run tagging path.
+        Bookmarks cannot resolve a structure heading finding.
         """
         try:
+            if self._struct_tree:
+                pdf = self._struct_tree.pdf
+                if (
+                    pdf.is_encrypted
+                    or any(key in pdf.Root for key in ("/AcroForm", "/Perms"))
+                    or any(
+                        isinstance(obj, pikepdf.Dictionary)
+                        and (
+                            obj.get("/Type") == pikepdf.Name.Sig or "/ByteRange" in obj
+                        )
+                        for obj in pdf.objects
+                    )
+                ):
+                    return self._refuse_source_binding(
+                        issue, "Encrypted, signed or form PDF requires source review."
+                    )
             page_num = issue.metadata.get("page_number", 1)
-            heading_level = issue.metadata.get("suggested_level", 1)
+            heading_level = issue.metadata.get("suggested_level")
+            if type(heading_level) is not int or not 1 <= heading_level <= 6:
+                return self._refuse_source_binding(
+                    issue, "Explicit intended heading level is required."
+                )
             heading_text = issue.metadata.get("text", "")
             heading_bbox = issue.metadata.get("bbox")
 
@@ -4348,6 +4367,43 @@ class PdfRemediator(BaseRemediator):
 
             if not 1 <= page_num <= len(document):
                 return False
+            if self._struct_tree and issue.metadata.get("heading_refs"):
+                from ..pdf_checks.bound_headings import inventory, promote
+                import tempfile
+                from hashlib import sha256
+
+                if (
+                    issue.metadata.get("heading_source_sha256")
+                    != sha256(Path(self.file_path).read_bytes()).hexdigest()
+                ):
+                    return self._refuse_source_binding(
+                        issue, "Heading source checksum changed."
+                    )
+                with tempfile.NamedTemporaryFile(suffix=".pdf") as source:
+                    self._struct_tree.pdf.save(source.name)
+                    from ..pdf_review_candidate import _validate_document
+
+                    _validate_document(
+                        self._struct_tree.pdf, Path(source.name).read_bytes()
+                    )
+                    found = inventory(self._struct_tree.pdf, source.name)
+                wanted = tuple(tuple(ref) for ref in issue.metadata["heading_refs"])
+                matches = [
+                    target
+                    for target in found.targets
+                    if target.refs == wanted and target.eligible
+                ]
+                if not found.complete or len(matches) != 1:
+                    return self._refuse_source_binding(
+                        issue, "Complete heading owner could not be verified."
+                    )
+                promote(matches[0], heading_level)
+                issue.metadata["heading_needs_review"] = bool(
+                    issue.metadata.get("heading_inferred", True)
+                )
+                self._structure_modified = True
+                return True
+
             source_lines = [
                 " ".join(line.split())
                 for line in document[page_num - 1].get_text("text").splitlines()
@@ -4392,16 +4448,9 @@ class PdfRemediator(BaseRemediator):
                         "Failed to add heading structure, falling back to bookmarks"
                     )
 
-            # Fall back: Add as bookmark (still helps navigation)
-            try:
-                toc = document.get_toc()
-                toc.append([heading_level, heading_text[:100], page_num])
-                document.set_toc(toc)
-                logger.info(f"Added heading as bookmark: {heading_text[:50]}")
-                return True
-            except Exception as e:
-                logger.warning(f"Could not add heading bookmark: {e}")
-                return False
+            return self._refuse_source_binding(
+                issue, "Heading could not be bound to source content."
+            )
 
         except Exception as e:
             logger.error(f"Error applying heading fix: {e}")
@@ -5287,8 +5336,18 @@ Generate only the alt text, nothing else:"""
                         )
                         in saved_images.accessible
                     )
+                    from ..pdf_checks.bound_headings import verify_saved_heading
+
+                    heading_verified = (
+                        original is None
+                        or original.category != IssueCategory.HEADING
+                        or verify_saved_heading(
+                            self.file_path, verification_path, original.metadata
+                        )
+                    )
                     if (
                         key
+                        and heading_verified
                         and image_semantics_verified
                         and before_keys[key] == 1
                         and not after_keys[key]
