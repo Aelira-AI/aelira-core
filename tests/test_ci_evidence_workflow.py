@@ -117,6 +117,7 @@ def test_queue_races_use_a_separate_disposable_required_database():
         "tests/test_session_refresh_rotation.py::test_concurrent_refreshes_serialize_and_return_identical_pair",
         "tests/test_pdf_edit_publication_postgres.py::test_migration_upgrade_downgrade_upgrade_restores_paired_fields",
         "tests/test_pdf_edit_publication_postgres.py::test_real_saved_table_candidate_is_pending_and_verified",
+        "tests/test_pdf_edit_publication_postgres.py::test_grouped_heading_candidate_persists_pending_and_refuses_stale_replay",
         "tests/test_pdf_edit_publication_postgres.py::test_cloud_replacement_resets_writeback_without_inheriting_approval",
         "tests/test_pdf_edit_publication_postgres.py::test_course_change_between_claim_and_finalize_preserves_pointer",
         "tests/test_pdf_edit_publication_postgres.py::test_two_real_publishers_cannot_replace_the_same_predecessor[absent]",
