@@ -1,4 +1,4 @@
-"""Release-candidate metadata and operator notices must agree for v0.9.12."""
+"""Release metadata and operator notices must agree for v0.9.12."""
 
 import ast
 import hashlib
@@ -96,7 +96,7 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
 
     assert body.startswith(f"# Aelira v{VERSION}\n")
     for phrase in (
-        "Release candidate",
+        "successful protected publication",
         "20260917_unknown_confidence",
         "20260928_pdf_edit_pub",
         "database migration",
@@ -127,7 +127,7 @@ def test_checked_in_github_release_body_has_operator_notice_and_evidence():
     ):
         assert phrase in body
     assert "No database migration" not in body
-    assert "has already shipped" in body
+    assert "Check the workflow result and published artifacts before upgrading" in body
 
 
 def test_current_alembic_head_and_release_migration_chain():
