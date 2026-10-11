@@ -66,5 +66,5 @@ export function verifyAutoApprovedOnly(before: ReviewSnapshot, after: ReviewSnap
     ['fix_approve', 'fix_batch_approve', 'batch_approve'].includes(entry.action)),
   'Audit must not claim a human approval that did not occur');
   return { reviewed: 0, auto_approved: before.total_fixes,
-    audit_actions: audit.audit_trail.map((entry: any) => entry.action) };
+    audit_actions: audit.audit_trail.map((entry) => entry.action) };
 }
