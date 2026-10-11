@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-These entries describe changes for the next release after v0.9.11. Published v0.9.11 artifacts and stable Compose image references remain unchanged.
+Changes after v0.9.12 will be listed here. Published earlier release artifacts remain unchanged.
+
+## [0.9.12] - 2026-10-11
+
+The changes below are included in the v0.9.12 release candidate. See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits and publication evidence.
 
 ### Security
 
@@ -21,6 +25,7 @@ These entries describe changes for the next release after v0.9.11. Published v0.
 ### Added
 
 - The dashboard can prepare bounded PDF heading-level, sibling-order and simple first-row column-header edits from verified structure targets. Saves create immutable, pending-review candidates with source checksums and durable concurrency guards; they do not approve output or write it back to an LMS. Unsupported structures remain refused ([reading-order and editing guide](docs/reading-order-review.md)).
+- Supported multiline PDF title groups can become a complete source-bound H1–H6 candidate. The editor retains actual sparse structure paths and creates a new pending-review artifact for each accepted operation ([#564](https://github.com/Aelira-AI/aelira-core/pull/564)).
 - The PPTX direct-library remediator can save an explicitly accepted, source-bound shape order for supported slides, verifying unchanged package parts and the reopened output. This does not add an API/queue reviewer-input workflow or establish PowerPoint/assistive-technology acceptance ([#501](https://github.com/Aelira-AI/aelira-core/pull/501)).
 - A bounded LaTeX project ZIP workflow preserves original member bytes, inventories literal dependencies and exposes checksum-bound original retrieval and accepted HTML candidates. Unsupported or incomplete projects retain explicit diagnostics; multi-file source remediation and project PDF output remain outside this workflow ([project workflow](docs/testing/latex-source-projects.md)).
 - Workspace administrators can inspect and edit saved Ollama text, code and vision model identifiers, or disable workspace AI while retaining configuration. Model selection does not download models, and the connection test exercises only the saved text model ([local AI settings](docs/deployment/local-ai-models.md#workspace-settings)).
@@ -29,6 +34,7 @@ These entries describe changes for the next release after v0.9.11. Published v0.
 
 - PDF scans keep rule-derived scores separate from optional AI review of existing descriptions. Fresh source/output comparisons bind the measurements to exact checksums; changed scoring baselines are labelled explicitly.
 - PDF repair records source-bound image occurrences, bounded reading-order and link repairs, and saved-file evidence. Unreadable font mappings stop unsafe processing; reviewed recovery checks preserved text, paint and geometry.
+- Heading checks require complete nonempty source ownership; an empty tag, a later H1 or ambiguous replacement semantics cannot clear the first-heading rule. Scanning and repair share bounded regional reading-order rules and actual page width, with reopened occurrence and graph checks. Mixed content arrays remain immutable and ambiguous layouts remain explicit review requirements ([#564](https://github.com/Aelira-AI/aelira-core/pull/564)).
 - Completed remediation results group applied changes, pending human review and remaining manual work without a misleading active progress bar. Recorded refusal reasons, attempts and next steps remain visible; absent historical evidence is labelled unavailable.
 - Verified improved PDFs remain downloadable while manual work remains. Reviewed rebuilding applies accepted changes and excludes rejected changes; publication and queued writeback recheck current file identity, approval and scope ([reviewed working files](docs/document-remediation/reviewed-pdf.md)).
 - Short direct-text PDFs no longer inherit the OCR output minimum. Incomplete required PDF checks expose bounded manual-review reasons and withhold unverified scores ([#384](https://github.com/Aelira-AI/aelira-core/pull/384)).
@@ -46,6 +52,7 @@ These entries describe changes for the next release after v0.9.11. Published v0.
 
 ### Changed
 
+- Compatible runtime, CLI, dashboard and development dependencies are reconciled into complete lockfiles. Four Actions retain verified full commit pins, and the font-recovery corpus's strict runtime expectation matches the reviewed requirements. Incompatible PyAV and Hugging Face Hub major upgrades remain tracked separately ([#563](https://github.com/Aelira-AI/aelira-core/pull/563), [#560](https://github.com/Aelira-AI/aelira-core/issues/560), [#562](https://github.com/Aelira-AI/aelira-core/issues/562)).
 - Result pages link directly to individual change review and the improved working file. Publication approval remains separate from download and writeback. Unsupported Brightspace binary writeback is reported as skipped with a manual-download path.
 - Default dashboard logos use bundled current tagline-free assets. Institution logo and brand-name overrides remain supported.
 - Dashboard presentation uses shared theme tokens, clearer typography, restrained card depth, responsive summary/table layouts, keyboard account disclosure, working guide/help actions and an unclipped score ring. Theme transitions preserve navigation contrast ([#541](https://github.com/Aelira-AI/aelira-core/pull/541)).
