@@ -1,7 +1,6 @@
 """Reading order verification for PDFs."""
 
 import logging
-from bisect import bisect_right
 from collections import Counter, defaultdict
 from .completeness import record_incomplete_check
 from typing import Dict, List, Optional
@@ -126,6 +125,7 @@ class ReadingOrderVerifier:
                                 visual_blocks,
                                 structure_blocks,
                                 multi_column=is_multi_col,
+                                page_width=page.rect.width,
                             )
                         if issue:
                             issues.append(issue)
@@ -343,6 +343,14 @@ class ReadingOrderVerifier:
                             {
                                 "text": text,
                                 "bbox": bbox,
+                                "line_count": len(block.get("lines", [])),
+                                "line_height": min(
+                                    (
+                                        line["bbox"][3] - line["bbox"][1]
+                                        for line in block.get("lines", [])
+                                    ),
+                                    default=bbox[3] - bbox[1],
+                                ),
                                 "y": bbox[1],  # Top y-coordinate
                                 "x": bbox[0],  # Left x-coordinate
                             }
@@ -355,6 +363,31 @@ class ReadingOrderVerifier:
                 return (y_bucket, b["x"])
 
             blocks.sort(key=sort_key)
+            # A source-corroborated ordinal is retained as final content. It
+            # cannot make a short left footer look like a persistent right column.
+            from ..remediation.source_order import _page_number_box
+
+            margin = None
+            corroborated = 0
+            if (
+                isinstance(getattr(page, "number", None), int)
+                and page.parent is not None
+                and len(page.parent) <= 100
+            ):
+                margin = _page_number_box(page, page.number + 1)
+                if margin:
+                    for i in range(len(page.parent)):
+                        corroborated += (
+                            _page_number_box(page.parent[i], i + 1) is not None
+                        )
+                        if corroborated >= 3:
+                            break
+            if margin and corroborated >= 3:
+                for block in blocks:
+                    if block["text"] == margin[0] and tuple(block["bbox"]) == tuple(
+                        margin[1]
+                    ):
+                        block["verified_page_ordinal"] = True
 
         except Exception as e:
             record_incomplete_check("reading_order.sort_key")
@@ -586,7 +619,9 @@ class ReadingOrderVerifier:
             )
 
         if getattr(structure, "incomplete", False):
-            return self._compare_reading_orders(page_num, visual, structure)
+            return self._compare_reading_orders(
+                page_num, visual, structure, page_width=page.rect.width
+            )
         if any(b.get("source") in {"ActualText", "Alt"} for b in structure):
             return incomplete("replacement")
         text_layout = page.get_text("dict")
@@ -803,6 +838,7 @@ class ReadingOrderVerifier:
         visual: List[Dict],
         structure: List[Dict],
         multi_column: bool = False,
+        page_width: Optional[float] = None,
     ) -> Optional[ReadingOrderIssue]:
         """Compare complete text sequences, not positions of extraction blocks.
 
@@ -811,6 +847,7 @@ class ReadingOrderVerifier:
             visual: Visual order text blocks
             structure: Structure tree order text blocks
             multi_column: Whether this page has multi-column layout
+            page_width: Actual page width for the shared geometric rule
 
         Returns:
             ReadingOrderIssue if comparable sequences differ, None otherwise.
@@ -872,20 +909,28 @@ class ReadingOrderVerifier:
 
         visual_words = words(visual)
         structure_words = words(structure)
-        if visual_words == structure_words:
-            return nonvisual_review
-
         if Counter(visual_words) != Counter(structure_words):
             return issue(
                 "Structure text does not correspond to all visible text. Review "
                 "missing, repeated, or substituted content before verifying reading order.",
                 "critical",
             )
+        # Choose a complete geometric plan before comparing with the tag order.
+        # Never choose between competing plans merely because one happens to pass.
+        if visual and all("bbox" in block for block in visual):
+            from ..layout_order import block_plan, LayoutAmbiguous
 
-        if multi_column:
-            column_order = self._column_reading_order(visual)
-            if column_order is not None and words(column_order) == structure_words:
+            try:
+                ordered = block_plan(visual, page_width)
+            except LayoutAmbiguous as exc:
+                return issue(
+                    "Review the page's regional reading order: " + str(exc),
+                    review_only=True,
+                )
+            if words(ordered) == structure_words:
                 return nonvisual_review
+        elif visual_words == structure_words:
+            return nonvisual_review
 
         return issue(
             "Structure tree reading order differs from visual layout. "
@@ -893,59 +938,11 @@ class ReadingOrderVerifier:
         )
 
     def _column_reading_order(self, blocks: List[Dict]) -> Optional[List[Dict]]:
-        """Offer a two-column alternative only where bounding boxes support it.
+        from ..layout_order import block_plan, LayoutAmbiguous
 
-        Full-width headings separate vertical bands. Within a band, preserve
-        top-to-bottom order in each column and read the left column first.
-        Ambiguous layouts retain the original comparison, never a wider index
-        tolerance that could also accept missing or arbitrarily reordered text.
-        """
         if not blocks or any("bbox" not in block for block in blocks):
             return None
-        starts = sorted({block["bbox"][0] for block in blocks})
-        gaps = [(right - left, right) for left, right in zip(starts, starts[1:])]
-        if not gaps:
+        try:
+            return block_plan(blocks)
+        except LayoutAmbiguous:
             return None
-        gap, right_start = max(gaps)
-        if gap <= 100:
-            return None
-
-        left, right, spanning = [], [], []
-        for block in blocks:
-            x0, _, x1, _ = block["bbox"]
-            if x0 >= right_start:
-                right.append(block)
-            elif x1 < right_start:
-                left.append(block)
-            else:
-                spanning.append(block)
-        if len(left) < 2 or len(right) < 2:
-            return None
-        if max(min(b["bbox"][1] for b in column) for column in (left, right)) >= min(
-            max(b["bbox"][3] for b in column) for column in (left, right)
-        ):
-            return None
-
-        spanning.sort(key=lambda b: b["bbox"][1])
-        if any(a["bbox"][3] > b["bbox"][1] for a, b in zip(spanning, spanning[1:])):
-            return None
-        bands = [[[], []] for _ in range(len(spanning) + 1)]
-        span_bottoms = [span["bbox"][3] for span in spanning]
-        for column_index, column in enumerate((left, right)):
-            for block in column:
-                band_index = bisect_right(span_bottoms, block["bbox"][1])
-                if (
-                    band_index < len(spanning)
-                    and block["bbox"][3] > spanning[band_index]["bbox"][1]
-                ):
-                    return None
-                bands[band_index][column_index].append(block)
-        ordered = []
-        for index, band in enumerate(bands):
-            for column in band:
-                ordered.extend(
-                    sorted(column, key=lambda b: (b["bbox"][1], b["bbox"][0]))
-                )
-            if index < len(spanning):
-                ordered.append(spanning[index])
-        return ordered

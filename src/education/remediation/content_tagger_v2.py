@@ -528,6 +528,7 @@ class ContentTaggerV2:
             matches = []
             visited = set()
             referenced_mcids = set()
+            missing_parents = []
 
             def check_reference(reference, reference_owner, page_ref):
                 if page_ref is not None and page_ref.objgen != page.obj.objgen:
@@ -554,6 +555,11 @@ class ContentTaggerV2:
                     return
                 if not isinstance(node, Dictionary):
                     return
+                if parent is not None and Name.S in node:
+                    if Name.P in node and node.P != parent:
+                        raise ValueError("Contradictory structure parent")
+                    if Name.P not in node:
+                        missing_parents.append((node, parent))
                 identity = node.objgen
                 if identity != (0, 0):
                     if identity in visited:
@@ -626,6 +632,10 @@ class ContentTaggerV2:
         except Exception:
             return False
 
+        # Unique traversal established every containment edge before mutation.
+        # Complete missing backlinks so the new heading has a valid root path.
+        for node, parent_node in missing_parents:
+            node.P = parent_node
         heading = self.pdf.make_indirect(
             Dictionary(
                 Type=Name.StructElem, S=heading_name, P=parent, Pg=page.obj, K=new_mcid
@@ -750,6 +760,23 @@ class ContentTaggerV2:
         if self._order_generated_structure:
             self._order_new_structure(struct_root)
         self._ensure_document_root(struct_root)
+        if self._order_generated_structure and self._content_positions:
+            from .source_order import repair_page, OrderRefusal, MAX_PAGES
+
+            self.order_refusals = {}
+            if len(self.pdf.pages) <= MAX_PAGES:
+                for page_index in range(len(self.pdf.pages)):
+                    try:
+                        repair_page(
+                            self.pdf,
+                            page_index + 1,
+                            generated_owner_ids=frozenset(self._content_positions),
+                        )
+                    except OrderRefusal as exc:
+                        if str(exc) != "reading_order_no_supported_permutation":
+                            self.order_refusals[page_index + 1] = str(exc)
+            else:
+                self.order_refusals[0] = "reading_order_page_limit"
         # Tagging alone does not establish PDF/UA conformance. Preserve any
         # existing declaration; do not invent one without independent validation.
 

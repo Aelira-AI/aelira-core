@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+from pikepdf import Array, Dictionary, Name
 
 from src.api import review_routes
 from src.auth.dependencies import AuthenticatedPrincipal
@@ -14,10 +15,11 @@ from src.services.remediation_artifact_service import (
     ArtifactPublicationRetry,
     ArtifactPublicationRetryable,
 )
-from test_pdf_review_candidate import table_pdf
+from test_pdf_review_candidate import rewrite, table_pdf
+from test_reading_order_snapshot import make_pdf
+from test_review_reading_order import preview as preview
 
 pytestmark = pytest.mark.unit
-pytest_plugins = ["test_review_reading_order"]
 
 
 def _configure(preview, *, source_kind="original", cloud_files=()):
@@ -46,6 +48,34 @@ def _configure(preview, *, source_kind="original", cloud_files=()):
         return_value=SimpleNamespace(artifact_id="new-artifact")
     )
     return precondition
+
+
+def _grouped_pdf(*, promoted=False, nested_heading=False):
+    def group(pdf):
+        root = pdf.Root.StructTreeRoot
+        children = Array(list(root.K)[::-1])
+        if promoted:
+            for child in children:
+                child.S = Name.Span
+        if nested_heading:
+            children[1].S = Name.H3
+        page = pdf.pages[0]
+        page.obj.Contents = pdf.make_stream(
+            page.obj.Contents.read_bytes().replace(b"30 270 Td", b"30 315 Td")
+        )
+        div = pdf.make_indirect(
+            Dictionary(
+                Type=Name.StructElem,
+                S=Name.H2 if promoted or nested_heading else Name.Div,
+                P=root,
+                K=children,
+            )
+        )
+        for child in children:
+            child.P = div
+        root.K = div
+
+    return rewrite(make_pdf(), group)
 
 
 def test_cloud_edit_selects_cloud_pointer_and_requires_exact_context(preview):
@@ -173,6 +203,133 @@ def test_saved_table_edit_uses_exact_saved_artifact_bytes(preview, tmp_path):
     assert saved.status_code == 201, saved.text
     kwargs = preview.service.claim_and_publish_stream.call_args.kwargs
     assert kwargs["edit_provenance"]["operation"]["kind"] == "table_column_headers"
+
+
+def test_grouped_heading_route_requires_typed_level_and_verified_div(preview):
+    grouped = _grouped_pdf()
+    preview.artifact_path.write_bytes(grouped)
+    preview.artifact.size_bytes = len(grouped)
+    preview.artifact.sha256 = hashlib.sha256(grouped).hexdigest()
+    preview.saved_bytes = grouped
+    expected = _configure(preview, source_kind="saved")
+    inspect_url = preview.url.replace("reading-order", "pdf-edit-targets")
+    inspected = preview.client.get(inspect_url, params={"source_kind": "saved"})
+    assert inspected.status_code == 200, inspected.text
+    targets = inspected.json()["targets"]
+    group = next(item for item in targets if item["can_set_heading_group"])
+    leaf = next(item for item in targets if item["can_set_heading"])
+    assert group["role"] == "Div" and group["children"]
+    assert not group["can_set_heading"]
+    assert not leaf["can_set_heading_group"]
+    save_url = inspect_url.replace("pdf-edit-targets", "pdf-edit-candidates")
+    payload = {
+        "source_kind": "saved",
+        "cloud_file_id": None,
+        "expected_artifact_id": expected["expected_artifact_id"],
+        "expected_source_sha256": expected["source_sha256"],
+        "expected_state_digest": expected["state_digest"],
+        "operation": {
+            "kind": "heading_group",
+            "target_id": group["target_id"],
+            "level": 2,
+        },
+    }
+    for level in (0, 7, True, 2.0, "2"):
+        payload["operation"]["level"] = level
+        assert preview.client.post(save_url, json=payload).status_code == 422
+    payload["operation"]["level"] = 2
+    payload["operation"]["target_id"] = leaf["target_id"]
+    assert preview.client.post(save_url, json=payload).status_code == 422
+    payload["operation"]["target_id"] = "forged-target"
+    assert preview.client.post(save_url, json=payload).status_code == 409
+    payload["operation"]["target_id"] = group["target_id"]
+    payload["operation"]["context"] = {"text": "forged"}
+    assert preview.client.post(save_url, json=payload).status_code == 422
+    del payload["operation"]["context"]
+    preview.service.claim_and_publish_stream.assert_not_called()
+    saved = preview.client.post(save_url, json=payload)
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["review_status"] == "pending"
+    assert saved.json()["needs_review"] is True
+    kwargs = preview.service.claim_and_publish_stream.call_args.kwargs
+    assert kwargs["edit_precondition"] == expected
+    assert kwargs["edit_provenance"]["operation"] == payload["operation"]
+
+
+def test_grouped_heading_route_changes_existing_heading_level_and_rejects_noop(preview):
+    grouped = _grouped_pdf(promoted=True)
+    preview.artifact_path.write_bytes(grouped)
+    preview.artifact.size_bytes = len(grouped)
+    preview.artifact.sha256 = hashlib.sha256(grouped).hexdigest()
+    preview.saved_bytes = grouped
+    expected = _configure(preview, source_kind="saved")
+    inspect_url = preview.url.replace("reading-order", "pdf-edit-targets")
+    inspected = preview.client.get(inspect_url, params={"source_kind": "saved"})
+    assert inspected.status_code == 200, inspected.text
+    targets = inspected.json()["targets"]
+    group = next(item for item in targets if item["role"] == "H2")
+    assert group["can_set_heading_group"] and not group["can_set_heading"]
+    assert group["children"]
+    assert all(
+        next(child for child in targets if child["target_id"] == child_id)["role"]
+        == "Span"
+        for child_id in group["children"]
+    )
+    save_url = inspect_url.replace("pdf-edit-targets", "pdf-edit-candidates")
+    payload = {
+        "source_kind": "saved",
+        "cloud_file_id": None,
+        "expected_artifact_id": expected["expected_artifact_id"],
+        "expected_source_sha256": expected["source_sha256"],
+        "expected_state_digest": expected["state_digest"],
+        "operation": {
+            "kind": "heading_group",
+            "target_id": group["target_id"],
+            "level": 2,
+        },
+    }
+    assert preview.client.post(save_url, json=payload).status_code == 409
+    preview.service.claim_and_publish_stream.assert_not_called()
+    payload["operation"]["level"] = 3
+    saved = preview.client.post(save_url, json=payload)
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["review_status"] == "pending"
+    assert saved.json()["needs_review"] is True
+    kwargs = preview.service.claim_and_publish_stream.call_args.kwargs
+    assert kwargs["edit_precondition"] == expected
+    assert kwargs["edit_provenance"]["operation"] == payload["operation"]
+
+
+def test_grouped_heading_route_rejects_nested_heading_semantics(preview):
+    grouped = _grouped_pdf(nested_heading=True)
+    preview.artifact_path.write_bytes(grouped)
+    preview.artifact.size_bytes = len(grouped)
+    preview.artifact.sha256 = hashlib.sha256(grouped).hexdigest()
+    preview.saved_bytes = grouped
+    expected = _configure(preview, source_kind="saved")
+    inspect_url = preview.url.replace("reading-order", "pdf-edit-targets")
+    inspected = preview.client.get(inspect_url, params={"source_kind": "saved"})
+    assert inspected.status_code == 200, inspected.text
+    group = next(item for item in inspected.json()["targets"] if item["role"] == "H2")
+    assert not group["can_set_heading_group"]
+    save_url = inspect_url.replace("pdf-edit-targets", "pdf-edit-candidates")
+    response = preview.client.post(
+        save_url,
+        json={
+            "source_kind": "saved",
+            "cloud_file_id": None,
+            "expected_artifact_id": expected["expected_artifact_id"],
+            "expected_source_sha256": expected["source_sha256"],
+            "expected_state_digest": expected["state_digest"],
+            "operation": {
+                "kind": "heading_group",
+                "target_id": group["target_id"],
+                "level": 3,
+            },
+        },
+    )
+    assert response.status_code == 422
+    preview.service.claim_and_publish_stream.assert_not_called()
 
 
 @pytest.mark.parametrize("failure", ["unauthenticated", "department", "course"])

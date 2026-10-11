@@ -68,125 +68,22 @@ class StructureTreeChecker:
         issues.extend(self._check_font_and_role_mapping(file_path))
         return issues
 
-    def has_h1(self, file_path: str) -> bool:
-        """Check if the PDF structure tree has an H1 heading element.
+    def heading_inventory(self, file_path: str):
+        from .bound_headings import HeadingInventory, inventory
 
-        Used to determine if the document has proper heading structure
-        even when text-based heuristics don't detect H1 (e.g., after remediation).
-
-        Handles both Playwright's shallow structure (/Document only) and LuaLaTeX + tagpdf's
-        deeper structure (/Document -> /Part or /Sect -> /H1, etc.).
-
-        Args:
-            file_path: Path to PDF file
-
-        Returns:
-            True if the structure tree contains at least one valid H1 element
-        """
         if not HAS_PIKEPDF:
             record_incomplete_check("structure_checker.dependency")
-            return False
-
+            return HeadingInventory(complete=False)
         try:
             with pikepdf.open(file_path) as pdf:
-                if Name.StructTreeRoot not in pdf.Root:
-                    return False
-
-                struct_root = pdf.Root[Name.StructTreeRoot]
-                if Name.K not in struct_root:
-                    return False
-
-                def find_heading(elem, depth=0) -> bool:
-                    """Recursively search for H1-H6 elements at any depth.
-
-                    LuaLaTeX + tagpdf creates deeper nesting:
-                    /Document -> /Part (or /Sect) -> /H1 (with /K MCR and /Pg reference)
-
-                    Args:
-                        elem: Structure element to check
-                        depth: Current recursion depth (prevents infinite loops)
-
-                    Returns:
-                        True if a valid heading element is found
-                    """
-                    if depth > 15:  # Prevent infinite recursion
-                        record_incomplete_check(
-                            "structure_checker.structure_depth_limit"
-                        )
-                        return False
-
-                    try:
-                        # Check if this element is a heading
-                        if hasattr(elem, "S"):
-                            elem_type = str(elem.S)
-                            # Match H1-H6 or generic /H heading
-                            if elem_type in [
-                                "/H1",
-                                "/H2",
-                                "/H3",
-                                "/H4",
-                                "/H5",
-                                "/H6",
-                                "/H",
-                            ]:
-                                # For PDF/UA validity, verify it has content reference
-                                # /K (marked content) or /Pg (page) indicates valid structure
-                                if hasattr(elem, "K") or hasattr(elem, "Pg"):
-                                    return True
-                                # Even without explicit refs, if we found the tag, count it
-                                # (older PDFs may not have proper refs but still work)
-                                return True
-
-                        # Recursively check children
-                        if hasattr(elem, "K"):
-                            kids = elem.K
-                            # Kids can be: integer (MCR), Dictionary (struct elem), or Array
-                            if isinstance(kids, (list, pikepdf.Array)):
-                                for kid in kids:
-                                    try:
-                                        if isinstance(kid, pikepdf.Dictionary):
-                                            if find_heading(kid, depth + 1):
-                                                return True
-                                        elif hasattr(kid, "S") or hasattr(kid, "K"):
-                                            if find_heading(kid, depth + 1):
-                                                return True
-                                    except Exception:
-                                        record_incomplete_check(
-                                            "structure_checker.find_heading"
-                                        )
-                                        continue
-                            elif isinstance(kids, pikepdf.Dictionary):
-                                if find_heading(kids, depth + 1):
-                                    return True
-                            elif hasattr(kids, "S") or hasattr(kids, "K"):
-                                if find_heading(kids, depth + 1):
-                                    return True
-                    except Exception:
-                        record_incomplete_check("structure_checker.find_heading")
-                        pass
-
-                    return False
-
-                root_kids = struct_root[Name.K]
-                # root_kids could be a single element (Document) or an array
-                if isinstance(root_kids, pikepdf.Dictionary):
-                    # Single structure element (e.g., Document)
-                    if find_heading(root_kids):
-                        return True
-                elif isinstance(root_kids, (list, pikepdf.Array)):
-                    # Array of structure elements
-                    for kid in root_kids:
-                        if find_heading(kid):
-                            return True
-
-                return False
-
-        except Exception as e:
+                return inventory(pdf, file_path)
+        except Exception:
             record_incomplete_check("structure_checker.find_heading")
-            logger.warning(
-                f"[StructureTreeChecker] Error checking structure tree for H1: {e}"
-            )
-            return False
+            return HeadingInventory(complete=False)
+
+    def has_h1(self, file_path: str) -> bool:
+        """Only a resolved, nonempty literal/effective H1 satisfies this rule."""
+        return self.heading_inventory(file_path).has_h1
 
     # ------------------------------------------------------------------
     # Internal helpers

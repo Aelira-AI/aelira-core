@@ -175,6 +175,14 @@ class PDFHeadingOperation(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PDFHeadingGroupOperation(BaseModel):
+    kind: Literal["heading_group"]
+    target_id: _EditTarget
+    level: int = Field(strict=True, ge=1, le=6)
+
+    model_config = {"extra": "forbid"}
+
+
 class PDFOrderOperation(BaseModel):
     kind: Literal["order"]
     target_id: _EditTarget
@@ -197,7 +205,10 @@ class PDFEditSaveRequest(BaseModel):
     expected_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_state_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     operation: Annotated[
-        PDFHeadingOperation | PDFOrderOperation | PDFTableColumnHeaderOperation,
+        PDFHeadingOperation
+        | PDFHeadingGroupOperation
+        | PDFOrderOperation
+        | PDFTableColumnHeaderOperation,
         Field(discriminator="kind"),
     ]
 
