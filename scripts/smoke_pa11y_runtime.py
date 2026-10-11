@@ -19,9 +19,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.scanners.pa11y_scanner import Pa11yScanner
 
 EXPECTED_PA11Y_VERSION = "9.0.1"
+EXPECTED_BROWSERS_VERSION = "3.2.4"
 SUPPORTED_NODE_MAJORS = {24}
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_RELATIVE_PATH = "scripts/fixtures/pa11y-smoke.html"
+PA11Y_MODULES = Path("/opt/pa11y-runtime/node_modules")
+FORBIDDEN_RUNTIME_PACKAGES = ("basic-ftp", "extract-zip")
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):
@@ -55,6 +58,20 @@ def main() -> None:
         raise RuntimeError(
             f"Expected Pa11y {EXPECTED_PA11Y_VERSION}, found {pa11y_version}"
         )
+
+    browsers_path = PA11Y_MODULES / "@puppeteer" / "browsers" / "package.json"
+    browsers_version = json.loads(browsers_path.read_text())["version"]
+    if browsers_version != EXPECTED_BROWSERS_VERSION:
+        raise RuntimeError(
+            f"Expected @puppeteer/browsers {EXPECTED_BROWSERS_VERSION}, "
+            f"found {browsers_version}"
+        )
+    for package in FORBIDDEN_RUNTIME_PACKAGES:
+        installed = sorted(PA11Y_MODULES.rglob(f"{package}/package.json"))
+        if installed:
+            raise RuntimeError(
+                f"Unexpected Pa11y runtime package {package}: {installed}"
+            )
 
     config_path = Path(os.environ["PA11Y_CONFIG_PATH"])
     chromium_path = Path(os.environ["PA11Y_CHROMIUM_PATH"])

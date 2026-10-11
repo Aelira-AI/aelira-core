@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 import subprocess
 from pathlib import Path
 
@@ -32,7 +33,7 @@ def test_every_external_action_is_pinned_to_a_commented_full_sha() -> None:
     assert external_uses, "expected at least one external action"
 
 
-def test_dependency_gates_audit_only_the_three_shipped_surfaces_and_block() -> None:
+def test_dependency_gates_audit_only_the_four_shipped_surfaces_and_block() -> None:
     workflow = (WORKFLOWS / "ci.yml").read_text()
     dependency_job = workflow.split("  dependency-security:\n", 1)[1].split(
         "\n  lint:\n", 1
@@ -50,7 +51,8 @@ def test_dependency_gates_audit_only_the_three_shipped_surfaces_and_block() -> N
     )
     assert "npm --prefix cli audit --audit-level=high" in workflow
     assert "npm --prefix dashboard audit --audit-level=high" in workflow
-    assert workflow.count(" audit --audit-level=high") == 2
+    assert "npm --prefix pa11y-runtime audit --audit-level=high" in workflow
+    assert workflow.count(" audit --audit-level=high") == 3
     assert "dependency-review-action@" in workflow
     assert "fail-on-severity: high" in workflow
     assert "allow-licenses:" not in workflow
@@ -66,7 +68,7 @@ def test_production_dockerfiles_pin_bases_and_downloaded_voice_bytes() -> None:
     )
     assert api.count(f"FROM {python_base}") == 2
     assert "pip install --no-cache-dir piper-tts" not in api
-    assert "npm install -g pa11y@9.0.1" in api
+    assert "npm ci --omit=dev --no-audit --no-fund" in api
     assert {name: digest for name, _, digest in VOICE_ASSETS} == {
         "en_US-lessac-medium.onnx": (
             "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f"
@@ -107,7 +109,13 @@ def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
     )
 
     for dockerfile in (production, development):
-        assert dockerfile.count("npm install -g pa11y@9.0.1") == 1
+        assert dockerfile.count("npm ci --omit=dev --no-audit --no-fund") == 1
+        assert (
+            dockerfile.count(
+                "COPY pa11y-runtime/package.json pa11y-runtime/package-lock.json ./"
+            )
+            == 1
+        )
         assert "ENV PUPPETEER_SKIP_DOWNLOAD=true" in dockerfile
         assert "ENV PA11Y_CONFIG_PATH=/app/config/pa11y.json" in dockerfile
         assert (
@@ -144,6 +152,8 @@ def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
     assert "os.geteuid() == 0" in smoke
     assert "SUPPORTED_NODE_MAJORS = {24}" in smoke
     assert 'EXPECTED_PA11Y_VERSION = "9.0.1"' in smoke
+    assert 'EXPECTED_BROWSERS_VERSION = "3.2.4"' in smoke
+    assert 'FORBIDDEN_RUNTIME_PACKAGES = ("basic-ftp", "extract-zip")' in smoke
     assert 'TemporaryDirectory(prefix="aelira-pa11y-smoke-")' in smoke
     assert 'smoke_env["HOME"] = smoke_home' in smoke
     assert 'smoke_env["XDG_CACHE_HOME"]' in smoke
@@ -151,6 +161,25 @@ def test_api_images_prove_the_pinned_pa11y_runtime_as_the_final_user() -> None:
     assert "env=smoke_env" in smoke
     assert "ThreadingHTTPServer" in smoke
     assert "scripts/fixtures/pa11y-smoke.html" in smoke
+
+
+def test_pa11y_lock_omits_the_vulnerable_ftp_and_extractor_chain() -> None:
+    manifest = json.loads((ROOT / "pa11y-runtime" / "package.json").read_text())
+    lock = json.loads((ROOT / "pa11y-runtime" / "package-lock.json").read_text())
+
+    assert manifest["dependencies"] == {"pa11y": "9.0.1"}
+    assert manifest["overrides"] == {"@puppeteer/browsers": "3.2.4"}
+    assert lock["packages"]["node_modules/pa11y"]["version"] == "9.0.1"
+    browsers = lock["packages"]["node_modules/@puppeteer/browsers"]
+    assert browsers["version"] == "3.2.4"
+    for optional_peer in ("proxy-agent", "yauzl"):
+        assert browsers["peerDependenciesMeta"][optional_peer]["optional"] is True
+    assert not any(
+        path.endswith(
+            ("/basic-ftp", "/extract-zip", "/get-uri", "/proxy-agent", "/yauzl")
+        )
+        for path in lock["packages"]
+    )
 
 
 def test_pa11y_evidence_claims_are_runtime_derived() -> None:

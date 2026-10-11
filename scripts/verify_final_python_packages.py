@@ -12,12 +12,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 EXPECTED = {
-    "global": {"setuptools": None},
-    "venv": {"setuptools": "84.0.0"},
+    "global": {"setuptools": None, "pip": None, "urllib3": None},
+    "venv": {"setuptools": "84.0.0", "pip": None},
 }
 FORBIDDEN_METADATA = {
     "msgpack": "1.1.2",
     "setuptools": "70.3.0",
+    "urllib3": "2.7.0",
 }
 REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements.txt"
 
@@ -49,6 +50,10 @@ def required_msgpack_version(requirements: Path = REQUIREMENTS) -> str:
     return required_pinned_version("msgpack", requirements)
 
 
+def required_urllib3_version(requirements: Path = REQUIREMENTS) -> str:
+    return required_pinned_version("urllib3", requirements)
+
+
 def validate(
     scope: str,
     *,
@@ -65,6 +70,12 @@ def validate(
     except (OSError, ValueError) as exc:
         errors.append(f"{scope}: unable to determine required msgpack version: {exc}")
     if scope == "venv":
+        try:
+            expected["urllib3"] = required_urllib3_version(requirements)
+        except (OSError, ValueError) as exc:
+            errors.append(
+                f"{scope}: unable to determine required urllib3 version: {exc}"
+            )
         try:
             expected["piper-tts"] = required_piper_version(requirements)
         except (OSError, ValueError) as exc:
@@ -100,6 +111,10 @@ def validate(
             errors.append(
                 f"{scope}: forbidden stale metadata present: {', '.join(matches)}"
             )
+
+    vendored_urllib3 = metadata_root / "pip" / "_vendor" / "urllib3"
+    if vendored_urllib3.exists():
+        errors.append(f"{scope}: pip-vendored urllib3 remains at {vendored_urllib3}")
 
     return errors
 

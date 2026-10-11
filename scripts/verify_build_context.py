@@ -128,6 +128,8 @@ REQUIRED = {
         "config/pa11y.json",
         "scripts/configure_pa11y_chromium.py",
         "scripts/smoke_pa11y_runtime.py",
+        "pa11y-runtime/package.json",
+        "pa11y-runtime/package-lock.json",
         "dashboard/dist/index.html",
         "dashboard/dist/assets/app.js",
         "LICENSE",

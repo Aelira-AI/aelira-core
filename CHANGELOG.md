@@ -21,6 +21,8 @@ See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits a
 - Dashboard API keys are held in memory instead of persistent browser storage. Cookie-session recovery remains available; API-key users re-enter their key after a full reload ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
 - Cache deletion accepts canonical provider filters, and HTTPX request-detail logs that could expose caller URL paths or queries are suppressed ([#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
 - Dependency updates include security fixes for JWT handling, PDF parsing, dashboard HTML sanitisation, CLI brace expansion and KaTeX development tooling. Existing dependency audit and image gates remain required ([#518](https://github.com/Aelira-AI/aelira-core/pull/518), [#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
+- Production API images omit pip and its vendored libraries after dependency installation. Pa11y's locked runtime excludes the vulnerable FTP and ZIP downloader chain while retaining Pa11y 9.0.1, HTML_CodeSniffer 2.5.1 and the native Chromium checks ([#575](https://github.com/Aelira-AI/aelira-core/issues/575)).
+- Dashboard images install the available pcre2 and tiff security updates on the pinned nginx base ([#574](https://github.com/Aelira-AI/aelira-core/issues/574)).
 
 ### Added
 
@@ -69,6 +71,7 @@ See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits a
 - Review the `20260917_unknown_confidence` historical correction before migrating: affected non-rejected fixes and approved artifacts not yet written back can return to pending review. Already published external output is not undone. Older images may not support nullable confidence; restoring only an old application image is not a safe rollback ([correction and recovery](docs/document-remediation/confidence.md#historical-correction)).
 - Align backend `BRAND_NAME` and dashboard `VITE_BRAND_NAME`. Optional `EMAIL_LOGO_URL`, `EMAIL_LEGAL_NAME`, `EMAIL_PRIVACY_URL` and `VITE_PRIVACY_POLICY_URL` support institution-owned identity and policies. Use a public HTTPS PNG/JPEG for email logos, rebuild the dashboard after changing Vite settings, and verify delivery in the mail clients your institution uses ([BRANDING.md](BRANDING.md)).
 - Expect API-key re-entry after a dashboard reload. Dynamic pages requiring unsupported browser network features can remain incomplete and unscored; image remediation needs retrievable source pixels. Validate representative files/pages and review saved outputs before publication.
+- Production API images no longer include pip. Add or change Python dependencies by rebuilding from reviewed requirements; the development image retains its installer. See the [Pa11y runtime contract](pa11y-runtime/README.md) before changing its dependency override.
 - Preserve earlier release backup, deployment, provider, LMS and review requirements. LaTeX PDF machine validation additionally requires the configured veraPDF service; conversion success, synthetic controls and accepted candidates do not replace human review or assistive-technology testing.
 
 ## [0.9.11] - 2026-09-12
