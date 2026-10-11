@@ -70,11 +70,13 @@ def test_forms_fixture_remediation_preserves_short_direct_text(tmp_path):
             before_field = before.Root.AcroForm.Fields[0]
             after_field = after.Root.AcroForm.Fields[0]
             before_widget = next(
-                annotation for annotation in before.pages[0].obj.Annots
+                annotation
+                for annotation in before.pages[0].obj.Annots
                 if annotation.get("/Subtype") == pikepdf.Name.Widget
             )
             after_widget = next(
-                annotation for annotation in after.pages[0].obj.Annots
+                annotation
+                for annotation in after.pages[0].obj.Annots
                 if annotation.get("/Subtype") == pikepdf.Name.Widget
             )
             assert before_field.objgen == before_widget.objgen
@@ -85,11 +87,13 @@ def test_forms_fixture_remediation_preserves_short_direct_text(tmp_path):
             assert list(after_widget["/Rect"]) == list(before_widget["/Rect"])
 
             before_link = next(
-                annotation for annotation in before.pages[0].obj.Annots
+                annotation
+                for annotation in before.pages[0].obj.Annots
                 if annotation.get("/Subtype") == pikepdf.Name.Link
             )
             after_link = next(
-                annotation for annotation in after.pages[0].obj.Annots
+                annotation
+                for annotation in after.pages[0].obj.Annots
                 if annotation.get("/Subtype") == pikepdf.Name.Link
             )
             for key in ("/Type", "/S", "/URI"):
@@ -102,7 +106,7 @@ def test_forms_fixture_remediation_preserves_short_direct_text(tmp_path):
         assert rescanned.compliance_score == result.remediated_compliance_score
         assert [issue.get("issue_type") for issue in rescanned.issues] == [
             "first_heading_not_h1",
-            "missing_pdfua_identifier"
+            "missing_pdfua_identifier",
         ]
         assert rescanned.compliance_score < 100
         assert source.read_bytes() == original
