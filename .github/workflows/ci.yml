@@ -22,6 +22,7 @@ jobs:
     if: always()
     needs:
       - expat-native-acceptance
+      - tiff-native-package
       - configuration-smoke
       - dev-setup-tests
       - dependency-security
@@ -41,7 +42,7 @@ jobs:
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
           printf '%s\n' "$JOB_RESULTS" | jq -e '
-            length == 12 and all(.[]; .result == "success")
+            length == 13 and all(.[]; .result == "success")
           '
 
   expat-native-acceptance:
@@ -105,6 +106,65 @@ jobs:
             ${{ runner.temp }}/expat-native-acceptance/*.json
             ${{ runner.temp }}/expat-native-acceptance/*.log
             ${{ runner.temp }}/expat-native-acceptance/source-files.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  tiff-native-package:
+    name: TIFF native package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, runner: ubuntu-24.04}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and test native TIFF packages
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tiff-native-output"
+          python3 runtime-security/media/tiff/test-ci-evidence.py
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain -- runtime-security/media/tiff)"
+          set +e
+          AELIRA_TIFF_EXPECT_ARCH="${{ matrix.arch }}" AELIRA_TIFF_SAVE_BUILDER=0 \
+            bash runtime-security/media/tiff/build.sh "$RUNNER_TEMP/tiff-native-output" \
+            > "$RUNNER_TEMP/tiff-native-build-console.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/tiff-native-build-console.log"
+          printf '%s\n' "$result" > "$RUNNER_TEMP/tiff-native-build-exit.txt"
+          exit "$result"
+      - name: Export bounded TIFF evidence
+        if: always() && steps.checkout.outcome == 'success'
+        shell: bash
+        run: |
+          result=125
+          if test -f "$RUNNER_TEMP/tiff-native-build-exit.txt"; then
+            read -r result < "$RUNNER_TEMP/tiff-native-build-exit.txt"
+          fi
+          python3 runtime-security/media/tiff/ci-evidence.py \
+            --source "$RUNNER_TEMP/tiff-native-output" \
+            --dest "$RUNNER_TEMP/tiff-native-evidence" \
+            --repo "$GITHUB_WORKSPACE" \
+            --arch "${{ matrix.arch }}" \
+            --revision "$GITHUB_SHA" \
+            --tree "$(git rev-parse 'HEAD^{tree}')" \
+            --build-exit "$result"
+      - name: Upload bounded TIFF evidence
+        if: always() && steps.checkout.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tiff-native-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tiff-native-evidence/
           if-no-files-found: error
           retention-days: 14
 
