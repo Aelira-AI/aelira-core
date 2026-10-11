@@ -475,8 +475,15 @@ def test_unbound_tags_and_masked_child_order_are_refused(kind):
             root.ActualText = String("Replacement would hide child reading order")
 
     source = rewrite(make_pdf(), change)
-    with pytest.raises(edit.PDFEditRefused):
-        targets(source)
+    if kind == "empty_tag":
+        empty = targets(source)[-1]
+        assert not empty["can_set_heading"]
+        assert not empty["can_set_heading_group"]
+        assert not empty["can_reorder"]
+        assert empty["context"]["status"] in {"empty", "unavailable"}
+    else:
+        with pytest.raises(edit.PDFEditRefused):
+            targets(source)
 
 
 def test_encrypted_and_oversized_inputs_are_refused(monkeypatch):

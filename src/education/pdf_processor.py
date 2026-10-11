@@ -464,24 +464,55 @@ class PDFProcessor:
                 f"[PDFProcessor] Color contrast check failed (non-fatal): {e}"
             )
 
-        # 7.6. Filter out "missing H1" issue if structure tree has H1
-        # The text-based heuristics may not detect H1 after remediation adds structure tags
-        if structure_checker.has_h1(file_path):
-            original_count = len(issues)
-            issues = [
-                i
-                for i in issues
-                if not (
-                    i.get("message", "").startswith("Document should start with H1")
-                    and i.get("rule") == "WCAG 1.3.1"
-                )
-            ]
-            if len(issues) < original_count:
-                logger.info(
-                    "[PDFProcessor] Filtered out 'missing H1' issue - H1 found in structure tree"
-                )
-                # Recalculate score after filtering
-                score = self._calculate_compliance_score(issues)
+        # Bound heading roles outrank visual heuristics, but a later H1 cannot
+        # clear the product's separate first-heading rule.
+        heading_inventory = structure_checker.heading_inventory(file_path)
+
+        def first_rule(item):
+            return (
+                item.get("message", "").startswith("Document should start with H1")
+                and item.get("rule") == "WCAG 1.3.1"
+            )
+
+        if heading_inventory.first_is_h1:
+            issues = [item for item in issues if not first_rule(item)]
+        elif heading_inventory.headings and not any(
+            first_rule(item) for item in issues
+        ):
+            issues.append(
+                {
+                    "severity": "medium",
+                    "rule": "WCAG 1.3.1",
+                    "message": "Document should start with H1 heading",
+                    "impact": "Improper heading hierarchy affects navigation",
+                    "page_number": 1,
+                    "location": "Beginning of document",
+                }
+            )
+        from .pdf_checks.bound_headings import nominate_title
+
+        heading_target = (
+            heading_inventory.headings[0]
+            if heading_inventory.headings
+            else nominate_title(heading_inventory)
+        )
+        for item in issues:
+            if first_rule(item):
+                item.update(issue_type="first_heading_not_h1", suggested_level=1)
+                if (
+                    heading_inventory.complete
+                    and heading_target
+                    and heading_target.eligible
+                ):
+                    item.update(
+                        text=heading_target.text,
+                        page_number=heading_target.pages[0] + 1,
+                        heading_refs=[list(ref) for ref in heading_target.refs],
+                        heading_source_sha256=heading_inventory.source_sha256,
+                        heading_target_path=list(heading_target.path),
+                        heading_inferred=not bool(heading_inventory.headings),
+                    )
+        score = self._calculate_compliance_score(issues)
 
         # 7.7. Check math/equation accessibility if latex_aware mode is enabled
         if self.latex_aware:

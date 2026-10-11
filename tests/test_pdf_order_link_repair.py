@@ -188,6 +188,31 @@ def test_running_page_numbers_preserve_page_and_group_identity(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("reference", ["integer", "mcr"])
+def test_running_ordinal_never_mutates_mixed_content_array(tmp_path, reference):
+    from src.education.pdf_review_candidate import _graph_digest
+    from src.education.remediation.source_order import OrderRefusal, repair_page
+
+    pdf, path = running_numbers(tmp_path)
+    document = pdf.Root.StructTreeRoot.K[0]
+    _, ordinal, body = list(document.K)[:3]
+    group = pdf.make_indirect(
+        Dictionary(Type=Name.StructElem, S=Name.Div, P=document, Pg=pdf.pages[0].obj)
+    )
+    content = 0 if reference == "integer" else Dictionary(Type=Name.MCR, MCID=0)
+    group.K = Array([ordinal, content, body])
+    ordinal.P = body.P = group
+    document.K = Array([group, *list(document.K)[3:]])
+    pdf.Root.StructTreeRoot.ParentTree.Nums[1][0] = group
+    pdf.save(path)
+    graph = _graph_digest(pdf)
+    original = path.read_bytes()
+    with pytest.raises(OrderRefusal, match="mixed_or_discontiguous_group"):
+        repair_page(pdf, 1)
+    assert _graph_digest(pdf) == graph
+    assert path.read_bytes() == original
+
+
 def test_ordinary_remediator_saves_the_retained_order_handle(tmp_path):
     from src.education.remediation.base import RemediationConfig
     from src.education.remediation.pdf_remediator import PdfRemediator
@@ -230,7 +255,6 @@ def test_ordinary_remediator_saves_the_retained_order_handle(tmp_path):
 @pytest.mark.parametrize(
     "case",
     [
-        "repeated",
         "figure",
         "table",
         "form",

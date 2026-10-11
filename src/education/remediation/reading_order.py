@@ -182,7 +182,7 @@ class HeuristicStrategy:
         try:
             count, _method = repair_page(pdf, page_number)
             return ReadingOrderFixResult(
-                success=True, reordered_count=count, confidence=0.9, needs_review=False
+                success=True, reordered_count=count, confidence=0.9, needs_review=True
             )
         except OrderRefusal as exc:
             return ReadingOrderFixResult(success=False, error=str(exc))

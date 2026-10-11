@@ -92,6 +92,21 @@ def test_changed_content_or_sequence_is_not_accepted(visual, structure, multi_co
     assert issue.page_number == 3
 
 
+def test_regional_comparison_uses_actual_page_width():
+    visual = [
+        {"text": text, "bbox": box, "line_count": 2, "line_height": 4}
+        for text, box in zip(
+            "abcd",
+            [(10, 10, 50, 20), (10, 30, 50, 40), (55, 10, 95, 20), (55, 30, 95, 40)],
+        )
+    ]
+    issue = ReadingOrderVerifier()._compare_reading_orders(
+        1, visual, visual, page_width=1000
+    )
+    assert issue is not None and issue.review_only
+    assert "overlapping_content" in issue.recommendation
+
+
 def _columns(with_heading=False):
     blocks = [
         {"text": text, "x": x, "y": y, "bbox": (x, y, x + 100, y + 10)}
@@ -110,17 +125,16 @@ def _columns(with_heading=False):
 
 
 @pytest.mark.parametrize("with_heading", [False, True])
-def test_geometry_supported_column_order_is_accepted(with_heading):
+def test_aligned_single_line_matrix_requires_semantic_review(with_heading):
     visual = _columns(with_heading)
     texts = ["Left first", "Left second", "Right first", "Right second"]
     if with_heading:
         texts.insert(0, "Page heading")
-    assert (
-        ReadingOrderVerifier()._compare_reading_orders(
-            1, visual, _blocks(texts), multi_column=True
-        )
-        is None
+    issue = ReadingOrderVerifier()._compare_reading_orders(
+        1, visual, _blocks(texts), multi_column=True
     )
+    assert issue is not None and issue.review_only
+    assert "ambiguous_matrix" in issue.recommendation
 
 
 @pytest.mark.parametrize(

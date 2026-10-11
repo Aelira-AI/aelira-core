@@ -77,6 +77,79 @@ class _SnapshotResolver(MarkedContentResolver):
         return super().text(key)
 
 
+def _image_soft_mask(image):
+    """Admit only bounded raster alpha; graphics-state masks remain executable."""
+    mask = image.get("/SMask")
+    if mask is None or mask == Name("/None"):
+        return None
+    allowed = {
+        "/Type",
+        "/Subtype",
+        "/Width",
+        "/Height",
+        "/BitsPerComponent",
+        "/ColorSpace",
+        "/Filter",
+        "/Length",
+        "/Decode",
+        "/Interpolate",
+        "/SMask",
+    }
+    if (
+        not isinstance(image, pikepdf.Stream)
+        or image.get("/Subtype") != Name.Image
+        or not isinstance(mask, pikepdf.Stream)
+        or not mask.is_indirect
+        or mask.get("/Subtype") != Name.Image
+        or any(str(key) not in allowed for key in image.keys())
+        or any(str(key) not in allowed - {"/SMask"} for key in mask.keys())
+        or "/SMask" in mask
+        or "/Mask" in image
+        or image.get("/BitsPerComponent") != 8
+        or mask.get("/BitsPerComponent") != 8
+        or image.get("/ColorSpace")
+        not in (Name.DeviceGray, Name.DeviceRGB, Name.DeviceCMYK)
+        or mask.get("/ColorSpace") != Name.DeviceGray
+    ):
+        raise _Unavailable("unsupported_pdf")
+    for key in ("/Width", "/Height"):
+        value = image.get(key)
+        if (
+            type(value) is not int
+            or value <= 0
+            or type(mask.get(key)) is not int
+            or mask.get(key) != value
+        ):
+            raise _Unavailable("unsupported_pdf")
+    _limit(int(image.Width) * int(image.Height) * 4 > MAX_TOTAL_DECODED_BYTES)
+    for obj, filters in (
+        (mask, {None, Name.FlateDecode}),
+        (image, {None, Name.FlateDecode, Name.DCTDecode}),
+    ):
+        value = obj.get("/Filter")
+        if isinstance(value, pikepdf.Array) and len(value) == 1:
+            value = value[0]
+        if (
+            not (value is None or isinstance(value, pikepdf.Name))
+            or value not in filters
+        ):
+            raise _Unavailable("unsupported_pdf")
+        if "/Interpolate" in obj and type(obj.Interpolate) is not bool:
+            raise _Unavailable("unsupported_pdf")
+    if "/Decode" in mask and list(mask.Decode) not in ([0, 1], [1, 0]):
+        raise _Unavailable("unsupported_pdf")
+    if "/Decode" in image:
+        raise _Unavailable("unsupported_pdf")
+    return mask
+
+
+def _image_decoded_size(image):
+    components = {"/DeviceGray": 1, "/DeviceRGB": 3, "/DeviceCMYK": 4}.get(
+        str(image.get("/ColorSpace")), 4
+    )
+    return int(image.Width) * int(image.Height) * components
+
+
 def _execution_preflight(pdf, stream_sizes):
     """Bound invocation work, not just unique stored objects, before rendering.
 
@@ -104,14 +177,15 @@ def _execution_preflight(pdf, stream_sizes):
                 obj.get("/Subtype") in (Name.Form, Name.Type3)
                 or "/PatternType" in obj
                 or "/ShadingType" in obj
-                or ("/SMask" in obj and obj.SMask != Name("/None"))
             ):
                 raise _Unavailable("unsupported_pdf")
+            if "/SMask" in obj and obj.SMask != Name("/None"):
+                _image_soft_mask(obj)
             children = [value for _, value in obj.items()]
         _limit(len(children) + len(stack) > MAX_OBJECTS)
         stack.extend((child, depth + 1) for child in children)
 
-    executed_bytes = operations = image_pixels = 0
+    executed_bytes = operations = image_pixels = executed_image_bytes = 0
     for page in pdf.pages:
         contents = page.obj.get("/Contents", pikepdf.Array())
         streams = list(contents) if isinstance(contents, pikepdf.Array) else [contents]
@@ -145,8 +219,14 @@ def _execution_preflight(pdf, stream_sizes):
                     or image.get("/Subtype") != Name.Image
                 ):
                     raise _Unavailable("unsupported_pdf")
-                image_pixels += int(image.Width) * int(image.Height)
-                _limit(image_pixels > MAX_IMAGE_PIXELS)
+                mask = _image_soft_mask(image)
+                for resource in (image, mask) if mask is not None else (image,):
+                    image_pixels += int(resource.Width) * int(resource.Height)
+                    executed_image_bytes += _image_decoded_size(resource)
+                _limit(
+                    image_pixels > MAX_IMAGE_PIXELS
+                    or executed_image_bytes > MAX_TOTAL_DECODED_BYTES
+                )
 
 
 def _preflight(pdf):
@@ -163,6 +243,16 @@ def _preflight(pdf):
     for obj in pdf.objects:
         if not isinstance(obj, pikepdf.Stream):
             continue
+        if obj.get("/Subtype") == Name.Image:
+            width, height = obj.get("/Width"), obj.get("/Height")
+            if (
+                type(width) is not int
+                or type(height) is not int
+                or min(width, height) <= 0
+            ):
+                raise _Unavailable("invalid_pdf")
+            _limit(width * height > MAX_IMAGE_PIXELS)
+            _image_soft_mask(obj)
         raw = obj.read_raw_bytes()
         _limit(len(raw) > MAX_SOURCE_BYTES)
         filters = obj.get("/Filter")
@@ -194,7 +284,11 @@ def _preflight(pdf):
             raise _Unavailable("unsupported_pdf")
         _limit(size > MAX_DECODED_STREAM_BYTES)
         stream_sizes[obj.objgen] = size
-        total_decoded += size
+        total_decoded += (
+            max(size, _image_decoded_size(obj))
+            if obj.get("/Subtype") == Name.Image
+            else size
+        )
         _limit(total_decoded > MAX_TOTAL_DECODED_BYTES)
         if obj.get("/Subtype") == Name.Image:
             width, height = obj.get("/Width"), obj.get("/Height")
@@ -206,6 +300,13 @@ def _preflight(pdf):
                 raise _Unavailable("invalid_pdf")
             image_pixels += width * height
             _limit(image_pixels > MAX_IMAGE_PIXELS)
+    for obj in pdf.objects:
+        if isinstance(obj, pikepdf.Stream) and "/SMask" in obj:
+            mask = _image_soft_mask(obj)
+            if mask is not None and stream_sizes.get(mask.objgen) != int(
+                mask.Width
+            ) * int(mask.Height):
+                raise _Unavailable("unsupported_pdf")
     _execution_preflight(pdf, stream_sizes)
 
 

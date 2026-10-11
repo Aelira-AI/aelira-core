@@ -192,7 +192,7 @@ def _page_number_box(page, number):
     return text, box
 
 
-def repair_page(pdf, page_number):
+def repair_page(pdf, page_number, *, generated_owner_ids=frozenset()):
     """Return (changed sibling count, repair class); refuse without side effects."""
     if (
         not isinstance(page_number, int)
@@ -210,6 +210,12 @@ def repair_page(pdf, page_number):
         pdf.save(source)
         if Path(source).stat().st_size > MAX_SNAPSHOT_BYTES:
             raise OrderRefusal("reading_order_snapshot_limit")
+        from ..pdf_review_candidate import _validate_document
+
+        try:
+            _validate_document(pdf, Path(source).read_bytes())
+        except Exception:
+            raise OrderRefusal("reading_order_unsupported_or_unsafe_source") from None
         resolver = MarkedContentResolver(pdf, source)
         tree = _tree(pdf, resolver)
         nodes = list(_nodes(tree))
@@ -232,8 +238,41 @@ def repair_page(pdf, page_number):
         def node_text(node):
             return " ".join(text.get(ref, "") for ref in node.refs).strip()
 
+        # Newly generated owner alternatives may be retained only when they
+        # exactly mirror their complete decoded source occurrence. Existing
+        # documents never enter this opt-in path.
+        for node in nodes:
+            if (
+                node.role
+                and node.obj.objgen in generated_owner_ids
+                and "/ActualText" in node.obj
+                and "/Alt" not in node.obj
+                and str(node.obj.S) not in pdf.Root.StructTreeRoot.get("/RoleMap", {})
+                and _tokens(str(node.obj.ActualText)) == _tokens(node_text(node))
+            ):
+                node.replacement = False
+
+        def context(node, safe=True):
+            node.safe_context = (
+                safe
+                and (not node.role or node.role in SAFE_TEXT_ROLES)
+                and not node.replacement
+            )
+            for child in node.children:
+                context(child, node.safe_context)
+
+        context(tree)
+
         def stage(parent, ordered):
             original = parent.obj.K
+            if (
+                not isinstance(original, pikepdf.Array)
+                or any(not child.role for child in parent.children)
+                or len(original) != len(parent.children)
+                or Counter(child.obj.objgen for child in ordered)
+                != Counter(child.obj.objgen for child in parent.children)
+            ):
+                raise OrderRefusal("reading_order_mixed_or_discontiguous_group")
             changes.append((parent.obj, original))
             parent.obj.K = pikepdf.Array([node.obj for node in ordered])
 
@@ -332,13 +371,13 @@ def repair_page(pdf, page_number):
                     ):
                         raise OrderRefusal("reading_order_unsupported_text_direction")
                     blocks = ReadingOrderVerifier()._get_visual_text_order(page)
-                    blocks.sort(key=lambda block: block["bbox"][1])
-                    if any(
-                        a["bbox"][3] > b["bbox"][1] for a, b in zip(blocks, blocks[1:])
-                    ):
-                        raise OrderRefusal(
-                            "reading_order_columns_or_overlapping_content"
-                        )
+                    from ..layout_order import block_plan, LayoutAmbiguous
+
+                    try:
+                        blocks = block_plan(blocks, page.rect.width)
+                    except LayoutAmbiguous as exc:
+                        raise OrderRefusal(str(exc)) from None
+                    method = "regional_siblings"
                     visual = tuple(
                         token for block in blocks for token in _tokens(block["text"])
                     )
@@ -366,6 +405,25 @@ def repair_page(pdf, page_number):
                             index
                             for index in possible
                             if visual[index : index + len(tokens)] == tokens
+                        ]
+
+                        def candidate_region(start):
+                            offset = 0
+                            region = fitz.Rect()
+                            for block in blocks:
+                                count = len(_tokens(block["text"]))
+                                if (
+                                    offset < start + len(tokens)
+                                    and offset + count > start
+                                ):
+                                    region |= fitz.Rect(block["bbox"])
+                                offset += count
+                            return region
+
+                        starts = [
+                            start
+                            for start in starts
+                            if bound_to_box(ref, candidate_region(start))
                         ]
                         if len(starts) != 1:
                             raise OrderRefusal(
@@ -424,7 +482,28 @@ def repair_page(pdf, page_number):
                             stage(parent, ordered)
                 if not changes:
                     raise OrderRefusal("reading_order_no_supported_permutation")
+            from ..pdf_review_candidate import _graph_digest
+
+            expected_graph = _graph_digest(pdf)
             pdf.save(candidate)
+            with pikepdf.open(candidate) as saved_pdf:
+                if _graph_digest(saved_pdf) != expected_graph:
+                    raise OrderRefusal("reading_order_saved_graph_changed")
+                saved_resolver = MarkedContentResolver(saved_pdf, candidate)
+                saved_tree = _tree(saved_pdf, saved_resolver)
+                saved_refs = [
+                    ref
+                    for node in _nodes(saved_tree)
+                    if not node.children
+                    for ref in node.refs
+                    if ref[0] == target
+                ]
+                if (
+                    Counter(saved_refs) != Counter(refs)
+                    or any(saved_resolver.text(ref) != decoded[ref] for ref in refs)
+                    or saved_resolver.failed
+                ):
+                    raise OrderRefusal("reading_order_saved_ownership_changed")
             verifier = ReadingOrderVerifier()
             with fitz.open(candidate) as saved:
                 page = saved[target]
@@ -443,8 +522,12 @@ def repair_page(pdf, page_number):
                         visual,
                         structure,
                         multi_column=verifier._detect_multi_column(visual),
+                        page_width=page.rect.width,
                     )
-                if issue is not None and not issue.review_only:
+                if issue is not None and (
+                    not issue.review_only
+                    or "regional reading order" in issue.recommendation
+                ):
                     raise OrderRefusal("reading_order_candidate_still_unverified")
             return len(changes), method
         except Exception:

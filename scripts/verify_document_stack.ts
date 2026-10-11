@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { verifyLatexCorpus } from './verify_latex_corpus_stack.ts';
 import { verifyLatexHtmlCorpus } from './verify_latex_html_corpus_stack.ts';
 import { authenticatedTarget } from './document_stack_transport.ts';
+import { verifyAutoApprovedOnly } from './document_review_contract.ts';
 
 const api = new URL(process.env.STACK_API_URL || 'http://localhost:18300');
 const mail = new URL(process.env.STACK_MAIL_URL || 'http://localhost:18325');
@@ -34,6 +35,7 @@ const harnessFiles = [
   'src/education/latex_diagnostics.py', 'src/jobs/contracts.py', 'src/jobs/remediation_job.py',
   'src/services/remediation_artifact_service.py',
   'scripts/document_stack_transport.ts',
+  'scripts/document_review_contract.ts',
 ];
 async function captureHarness() {
   return Object.fromEntries(await Promise.all(harnessFiles.map(async (file) => [file, digest(await readFile(file))])));
@@ -123,9 +125,14 @@ const aiHealth = await request('/api/ai/health');
 assert.equal(aiHealth.primary_provider, null, 'Acceptance stack must have no primary AI provider');
 assert.equal(aiHealth.fallback_provider, null, 'Acceptance stack must have no fallback AI provider');
 
-async function approveRecordedFixes(scanId: string) {
+async function approveRecordedFixes(scanId: string, autoApprovedOnly = false) {
   const before = await request(`/api/reviews/${scanId}`);
   const pending = before.fixes.filter((fix: any) => fix.review_status === 'pending');
+  if (autoApprovedOnly) {
+    const after = await request(`/api/reviews/${scanId}`);
+    const audit = await request(`/api/reviews/${scanId}/audit/export?format=json`);
+    return verifyAutoApprovedOnly(before, after, audit);
+  }
   assert(pending.length > 0, 'Successful fixtures must exercise an actual pending review');
   for (const fix of pending) assert.match(fix.review_digest, /^[a-f0-9]{64}$/, 'Each reviewed change has a content digest');
   const [first, ...rest] = pending;
@@ -175,7 +182,7 @@ async function scanBytes(bytes: Uint8Array, filename: string, kind: string) {
     (v: any) => Boolean(v.scan?.result) || v.scan?.status?.toLowerCase() === 'failed');
   return result.scan;
 }
-const cases: { name: string; kind: string; publish: boolean; partial?: boolean; expectedRemaining?: string[]; incomplete?: boolean; useAI?: boolean; file?: string }[] = [
+const cases: { name: string; kind: string; publish: boolean; partial?: boolean; expectedRemaining?: string[]; autoApprovedOnly?: boolean; incomplete?: boolean; useAI?: boolean; file?: string }[] = [
   { name: 'course.pptx', kind: 'powerpoint', publish: true },
   { name: 'course.xlsx', kind: 'excel', publish: true },
   // Verified improvements remain downloadable while unresolved findings need review.
@@ -183,7 +190,8 @@ const cases: { name: string; kind: string; publish: boolean; partial?: boolean; 
   // Adding tags does not certify PDF/UA; its undeclared identifier remains manual.
   { name: 'metadata.pdf', kind: 'pdf', publish: true, partial: true, expectedRemaining: ['missing_pdfua_identifier'] },
   { name: 'simple_syllabus.pdf', kind: 'pdf', publish: true, partial: true },
-  { name: 'test_forms_links.pdf', kind: 'pdf', publish: true, partial: true, expectedRemaining: ['missing_pdfua_identifier'] },
+  // Form PDFs retain the H1 source-review refusal as well as the PDF/UA finding.
+  { name: 'test_forms_links.pdf', kind: 'pdf', publish: true, partial: true, expectedRemaining: ['first_heading_not_h1', 'missing_pdfua_identifier'], autoApprovedOnly: true },
   { name: 'academic_paper.pdf', kind: 'pdf', publish: false, incomplete: true },
   { name: 'image_heavy.pptx', kind: 'powerpoint', file: 'tests/fixtures/powerpoint/image_heavy.pptx', publish: false, useAI: true },
 ];
@@ -272,7 +280,7 @@ for (const test of cases) {
       const savedPath = resolve(output, `saved-${test.name}`);
       await writeFile(savedPath, saved);
       assert.deepEqual(officeContent(savedPath, test.kind), officeContent(file, test.kind), 'Fixture text, values and order survive remediation');
-      reviewEvidence = await approveRecordedFixes(scanId);
+      reviewEvidence = await approveRecordedFixes(scanId, test.autoApprovedOnly);
       const reviewedJob = await request(`/education/scans/${scanId}/remediation/latest`);
       assert.equal(reviewedJob.job_id, job.job_id);
       assert.equal(reviewedJob.artifact_id, job.artifact_id, 'Review retains the exact managed artifact');

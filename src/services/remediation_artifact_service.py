@@ -318,7 +318,7 @@ def _sanitize_edit_metadata(
         or provenance["source_sha256"] != precondition["source_sha256"]
         or not isinstance(provenance["operation"], dict)
         or provenance["operation"].get("kind")
-        not in ("heading", "order", "table_column_headers")
+        not in ("heading", "heading_group", "order", "table_column_headers")
         or precondition["scope_kind"] == "course"
         and (
             not isinstance(precondition["course_id"], str)

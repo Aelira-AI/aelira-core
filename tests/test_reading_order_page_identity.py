@@ -181,9 +181,10 @@ def test_other_page_table_does_not_skip_comparison(two_pages, monkeypatch):
     compared = []
     original_compare = verifier._compare_reading_orders
 
-    def compare(page_num, visual, structure, multi_column=False):
+    def compare(page_num, visual, structure, multi_column=False, page_width=None):
+        assert page_width == float(pdf.pages[page_num - 1].MediaBox[2])
         compared.append((page_num, [block["text"] for block in structure]))
-        return original_compare(page_num, visual, structure, multi_column)
+        return original_compare(page_num, visual, structure, multi_column, page_width)
 
     monkeypatch.setattr(verifier, "_compare_reading_orders", compare)
     with (

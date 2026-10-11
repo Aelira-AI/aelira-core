@@ -18,6 +18,7 @@ export interface PDFEditTarget {
   role: string;
   children: string[];
   can_set_heading: boolean;
+  can_set_heading_group: boolean;
   can_reorder: boolean;
   can_set_column_headers: boolean;
   context: PDFEditContext;
@@ -34,20 +35,30 @@ export interface PDFEditTargets {
 }
 export type PDFEditOperation =
   | { kind: 'heading'; target_id: string; level: number }
+  | { kind: 'heading_group'; target_id: string; level: number }
   | { kind: 'order'; target_id: string; children: string[] }
   | { kind: 'table_column_headers'; target_id: string };
 
 const HASH = /^[0-9a-f]{64}$/;
 const ROLE = /^[A-Za-z][A-Za-z0-9]{0,39}$/;
 const ORDER_ROLES = new Set(['StructTreeRoot', 'Document', 'Part', 'Sect', 'Div']);
+const MAX_PATH_DEPTH = 40;
 const fail = (): never => { throw new Error('Invalid PDF edit targets'); };
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();
   return value as Record<string, unknown>;
 }
+function targetPath(id: unknown, hash: string): number[] | null {
+  if (typeof id !== 'string' || id.length > 256 || !id.startsWith(`${hash}:`)) return null;
+  const suffix = id.slice(hash.length + 1);
+  if (suffix === 'root') return [];
+  const parts = suffix.split('/');
+  if (parts.length > MAX_PATH_DEPTH || parts.some(part => !/^(0|[1-9][0-9]*)$/.test(part) ||
+    !Number.isSafeInteger(Number(part)))) return null;
+  return parts.map(Number);
+}
 function targetId(id: unknown, hash: string): id is string {
-  return typeof id === 'string' && id.length <= 256 &&
-    (id === `${hash}:root` || new RegExp(`^${hash}:[0-9]+(?:/[0-9]+)*$`).test(id));
+  return targetPath(id, hash) !== null;
 }
 function context(value: unknown): PDFEditContext {
   const raw = object(value);
@@ -84,31 +95,53 @@ export function parsePDFEditTargets(value: unknown, sourceKind: PDFSourceKind, r
     const raw = object(item);
     if (!targetId(raw.target_id, hash) || seen.has(raw.target_id) || typeof raw.role !== 'string' || !ROLE.test(raw.role) ||
       !Array.isArray(raw.children) || raw.children.length > 2000 ||
-      typeof raw.can_set_heading !== 'boolean' || typeof raw.can_reorder !== 'boolean' ||
+      typeof raw.can_set_heading !== 'boolean' || typeof raw.can_set_heading_group !== 'boolean' ||
+      typeof raw.can_reorder !== 'boolean' ||
       typeof raw.can_set_column_headers !== 'boolean') return fail();
     seen.add(raw.target_id);
     const children = raw.children;
     if (new Set(children).size !== children.length || !children.every(child => targetId(child, hash))) return fail();
     const role = raw.role as string;
     if ((raw.target_id === `${hash}:root`) !== (role === 'StructTreeRoot')) return fail();
-    if (raw.can_set_heading !== (['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(role) && children.length === 0)) return fail();
-    if (raw.can_reorder !== (ORDER_ROLES.has(role) && children.length > 1)) return fail();
+    if (raw.can_set_heading && (!['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(role) || children.length !== 0)) return fail();
+    if (raw.can_set_heading_group && (!['Div', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(role) || children.length === 0)) return fail();
+    if (raw.can_reorder && (!ORDER_ROLES.has(role) || children.length <= 1)) return fail();
     if (raw.can_set_column_headers && role !== 'Table') return fail();
     targets.push({ target_id: raw.target_id, role, children, can_set_heading: raw.can_set_heading,
+      can_set_heading_group: raw.can_set_heading_group,
       can_reorder: raw.can_reorder, can_set_column_headers: raw.can_set_column_headers, context: context(raw.context) });
   }
   if (!seen.has(`${hash}:root`)) return fail();
   const referenced = new Set<string>();
+  const paths = new Map(targets.map(target => [target.target_id, targetPath(target.target_id, hash)!]));
   for (const target of targets) {
-    target.children.forEach((child, index) => {
+    const parentPath = paths.get(target.target_id)!;
+    let previousIndex = -1;
+    target.children.forEach(child => {
       // Structure paths, rather than excerpts, establish each child's identity.
-      const parentPath = target.target_id.slice(65);
-      const expected = `${hash}:${parentPath === 'root' ? '' : `${parentPath}/`}${index}`;
-      if (child !== expected || !seen.has(child) || referenced.has(child)) fail();
+      const childPath = paths.get(child);
+      if (!childPath) return fail();
+      if (childPath.length !== parentPath.length + 1 ||
+        parentPath.some((part, index) => childPath[index] !== part) ||
+        childPath[parentPath.length] <= previousIndex || referenced.has(child)) fail();
+      previousIndex = childPath[parentPath.length];
       referenced.add(child);
     });
   }
   if (referenced.size !== targets.length - 1 || referenced.has(`${hash}:root`)) return fail();
+  const byId = new Map(targets.map(target => [target.target_id, target]));
+  for (const target of targets) {
+    if (!target.can_set_heading_group) continue;
+    let hasParagraph = false;
+    const descendants = [...target.children];
+    while (descendants.length) {
+      const child = byId.get(descendants.pop()!);
+      if (!child || !['P', 'Span'].includes(child.role)) return fail();
+      if (child.role === 'P') hasParagraph = true;
+      descendants.push(...child.children);
+    }
+    if (target.role === 'Div' && !hasParagraph) return fail();
+  }
   return { precondition: pre as unknown as PDFEditTargets['precondition'], targets };
 }
 
@@ -124,6 +157,8 @@ export function validPDFEditOperation(data: PDFEditTargets, operation: PDFEditOp
   const target = data.targets.find(item => item.target_id === operation.target_id);
   if (!target || target.context.status !== 'available') return false;
   if (operation.kind === 'heading') return target.can_set_heading && Number.isInteger(operation.level) &&
+    operation.level >= 1 && operation.level <= 6 && target.role !== `H${operation.level}`;
+  if (operation.kind === 'heading_group') return target.can_set_heading_group && Number.isInteger(operation.level) &&
     operation.level >= 1 && operation.level <= 6 && target.role !== `H${operation.level}`;
   if (operation.kind === 'table_column_headers') return target.can_set_column_headers;
   return target.can_reorder && operation.children.length === target.children.length &&
