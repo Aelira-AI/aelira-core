@@ -21,6 +21,7 @@ jobs:
     name: CI complete
     if: always()
     needs:
+      - expat-native-acceptance
       - configuration-smoke
       - dev-setup-tests
       - dependency-security
@@ -40,8 +41,63 @@ jobs:
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
           printf '%s\n' "$JOB_RESULTS" | jq -e '
-            length == 11 and all(.[]; .result == "success")
+            length == 12 and all(.[]; .result == "success")
           '
+
+  expat-native-acceptance:
+    name: Native Expat acceptance (${{ matrix.arch }})
+    permissions:
+      contents: read
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Authenticate source, repeat offline native builds, and probe installed package
+        env:
+          AELIRA_EXPAT_EXPECT_ARCH: ${{ matrix.arch }}
+          AELIRA_EXPAT_OUTPUT: ${{ runner.temp }}/expat-native-acceptance
+        run: |
+          mkdir -p "$AELIRA_EXPAT_OUTPUT"
+          bash runtime-security/expat/native-acceptance.sh
+      - name: Record source identity for native evidence
+        if: always()
+        env:
+          AELIRA_EXPAT_OUTPUT: ${{ runner.temp }}/expat-native-acceptance
+        run: |
+          mkdir -p "$AELIRA_EXPAT_OUTPUT"
+          git rev-parse HEAD > "$AELIRA_EXPAT_OUTPUT/source-revision.txt"
+          git ls-files -z runtime-security/expat .github/workflows/ci.yml |
+            xargs -0 sha256sum > "$AELIRA_EXPAT_OUTPUT/source-files.sha256"
+      - name: Retain native source, build, and installed-consumer evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: expat-native-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/expat-native-acceptance/provenance/
+            ${{ runner.temp }}/expat-native-acceptance/source-input/*.dsc
+            ${{ runner.temp }}/expat-native-acceptance/source-input/*.orig.tar.gz
+            ${{ runner.temp }}/expat-native-acceptance/source-input/*.debian.tar.xz
+            ${{ runner.temp }}/expat-native-acceptance/build-*/*.log
+            ${{ runner.temp }}/expat-native-acceptance/build-*/output-sha256.txt
+            ${{ runner.temp }}/expat-native-acceptance/build-*/*.dsc
+            ${{ runner.temp }}/expat-native-acceptance/build-*/*.debian.tar.xz
+            ${{ runner.temp }}/expat-native-acceptance/build-*/libexpat1_*.deb
+            ${{ runner.temp }}/expat-native-acceptance/*.txt
+            ${{ runner.temp }}/expat-native-acceptance/*.json
+            ${{ runner.temp }}/expat-native-acceptance/*.log
+            ${{ runner.temp }}/expat-native-acceptance/source-files.sha256
+          if-no-files-found: error
+          retention-days: 14
 
   configuration-smoke:
     name: Shipped configuration smoke
