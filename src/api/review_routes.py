@@ -57,6 +57,7 @@ from ..education.pdf_review_candidate import (
     PDFEditRefused,
     create_pdf_edit_candidate,
     inspect_pdf_edit_targets,
+    prove_pdf_edit_preserves_members,
 )
 from ..education.visual_semantic_contract import VisualSemanticContract
 from ..education.reports.compliance_report import (
@@ -81,6 +82,7 @@ from ..services.remediation_artifact_service import (
 from ..services.scan_fix_service import (
     apply_authenticated_batch_review,
     bind_fix_review_decision,
+    build_manual_edit_preservation_record,
     inherit_output_membership,
     invalidate_current_artifact_approvals,
     lock_scan_review_graph,
@@ -1850,13 +1852,50 @@ def save_pdf_edit_candidate(
             != (cloud_file.id if cloud_file is not None else None)
         ):
             raise HTTPException(status_code=409, detail="PDF review state changed")
+        receipt = (
+            predecessor.provider_result.get("reviewed_output_membership")
+            if isinstance(predecessor.provider_result, dict)
+            else None
+        )
+        members = receipt.get("fixes") if isinstance(receipt, dict) else None
+        member_keys = (
+            [item.get("occurrence_key") for item in members]
+            if isinstance(members, list)
+            and all(isinstance(item, dict) for item in members)
+            else []
+        )
+        fixes = db.query(ScanFix).filter(ScanFix.scan_id == scan.id).all()
+        by_key = {fix.occurrence_key: fix for fix in fixes}
+        matched_fixes = [
+            by_key[key] for key in member_keys if isinstance(key, str) and key in by_key
+        ]
+        proof = (
+            prove_pdf_edit_preserves_members(
+                content, candidate.content, operation, matched_fixes
+            )
+            if len(matched_fixes) == len(member_keys)
+            else None
+        )
         membership = inherit_output_membership(
             predecessor,
             source_sha256=cast(Optional[str], scan.file_hash),
             output_sha256=candidate.sha256,
+            preservation_proof=proof,
         )
-        if membership is not None:
-            provider_result = {"reviewed_output_membership": membership}
+        preservation = (
+            build_manual_edit_preservation_record(proof, precondition, operation)
+            if membership is not None
+            else None
+        )
+        if membership is not None and preservation is not None:
+            provider_result = {
+                "reviewed_output_membership": membership,
+                "reviewed_output_preservation": preservation,
+            }
+        else:
+            provider_result = {
+                "output_membership_blocker": "manual_edit_preservation_unverified"
+            }
     with tempfile.NamedTemporaryFile(suffix=".pdf") as temporary:
         temporary.write(candidate.content)
         temporary.flush()

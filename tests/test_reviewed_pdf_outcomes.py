@@ -12,9 +12,11 @@ from starlette.requests import Request
 from src.education.remediation.base import FixedIssue, RemediationConfig
 from src.education.remediation.pdf_remediator import PdfRemediator
 from src.education.remediation.reviewed_pdf import recover_reviewed_pdf_issues
+from src.education.pdf_review_candidate import PDFEditPreservationProof
 from src.services.scan_fix_service import (
     artifact_output_membership_blockers,
     bind_fix_review_decision,
+    build_manual_edit_preservation_record,
     build_output_membership,
     build_scan_fix,
     inherit_output_membership,
@@ -116,8 +118,22 @@ def test_manual_edit_preserves_applied_members_and_cannot_erase_rejected_bytes()
     predecessor = SimpleNamespace(
         sha256="b" * 64, provider_result={"reviewed_output_membership": original}
     )
+    assert (
+        inherit_output_membership(
+            predecessor, source_sha256="a" * 64, output_sha256="c" * 64
+        )
+        is None
+    )
+    proof = PDFEditPreservationProof(
+        "b" * 64,
+        "c" * 64,
+        tuple(member["occurrence_key"] for member in original["fixes"]),
+    )
     inherited = inherit_output_membership(
-        predecessor, source_sha256="a" * 64, output_sha256="c" * 64
+        predecessor,
+        source_sha256="a" * 64,
+        output_sha256="c" * 64,
+        preservation_proof=proof,
     )
     manual = SimpleNamespace(
         sha256="c" * 64, provider_result={"reviewed_output_membership": inherited}
@@ -135,14 +151,20 @@ def test_manual_edit_preserves_applied_members_and_cannot_erase_rejected_bytes()
     ) == ["reviewed_changes_not_in_output"]
     assert (
         inherit_output_membership(
-            predecessor, source_sha256="d" * 64, output_sha256="c" * 64
+            predecessor,
+            source_sha256="d" * 64,
+            output_sha256="c" * 64,
+            preservation_proof=proof,
         )
         is None
     )
     predecessor.sha256 = "d" * 64
     assert (
         inherit_output_membership(
-            predecessor, source_sha256="a" * 64, output_sha256="c" * 64
+            predecessor,
+            source_sha256="a" * 64,
+            output_sha256="c" * 64,
+            preservation_proof=proof,
         )
         is None
     )
@@ -155,10 +177,79 @@ def test_manual_edit_preserves_applied_members_and_cannot_erase_rejected_bytes()
         predecessor.provider_result = {"reviewed_output_membership": malformed}
         assert (
             inherit_output_membership(
-                predecessor, source_sha256="a" * 64, output_sha256="c" * 64
+                predecessor,
+                source_sha256="a" * 64,
+                output_sha256="c" * 64,
+                preservation_proof=proof,
             )
             is None
         )
+    predecessor.provider_result = {"reviewed_output_membership": original}
+    for wrong in (
+        PDFEditPreservationProof("d" * 64, "c" * 64, proof.occurrence_keys),
+        PDFEditPreservationProof("b" * 64, "d" * 64, proof.occurrence_keys),
+        PDFEditPreservationProof("b" * 64, "c" * 64, proof.occurrence_keys[:1]),
+    ):
+        assert (
+            inherit_output_membership(
+                predecessor,
+                source_sha256="a" * 64,
+                output_sha256="c" * 64,
+                preservation_proof=wrong,
+            )
+            is None
+        )
+
+
+def test_historical_manual_receipt_needs_exact_durable_preservation_record():
+    fix = _fix("first")
+    receipt = build_output_membership("c" * 64, "a" * 64, [fix])
+    precondition = {
+        "source_kind": "saved",
+        "expected_artifact_id": "predecessor",
+        "source_sha256": "b" * 64,
+        "state_digest": "e" * 64,
+    }
+    operation = {"kind": "heading", "target_id": "bound", "level": 2}
+    artifact = SimpleNamespace(
+        sha256="c" * 64,
+        edit_precondition=precondition,
+        edit_provenance={
+            "source_kind": "saved",
+            "source_sha256": "b" * 64,
+            "operation": operation,
+        },
+        provider_result={"reviewed_output_membership": receipt},
+    )
+    assert artifact_output_membership_blockers(
+        artifact, [fix], source_sha256="a" * 64
+    ) == ["manual_edit_preservation_unverified"]
+    proof = PDFEditPreservationProof("b" * 64, "c" * 64, (fix.occurrence_key,))
+    record = build_manual_edit_preservation_record(proof, precondition, operation)
+    artifact.provider_result["reviewed_output_preservation"] = record
+    assert (
+        artifact_output_membership_blockers(artifact, [fix], source_sha256="a" * 64)
+        == []
+    )
+    for change in (
+        {"version": True},
+        {"predecessor_artifact_id": "other"},
+        {"predecessor_sha256": "d" * 64},
+        {"state_digest": "d" * 64},
+        {"output_sha256": "d" * 64},
+        {"occurrence_keys": []},
+        {"operation_sha256": "d" * 64},
+        {"extra": "forged"},
+    ):
+        artifact.provider_result["reviewed_output_preservation"] = {**record, **change}
+        assert artifact_output_membership_blockers(
+            artifact, [fix], source_sha256="a" * 64
+        ) == ["manual_edit_preservation_unverified"]
+    artifact.provider_result["reviewed_output_preservation"] = record
+    fix.review_status = "rejected"
+    assert artifact_output_membership_blockers(
+        artifact, [fix], source_sha256="a" * 64
+    ) == ["reviewed_changes_not_in_output"]
 
 
 @pytest.mark.parametrize(

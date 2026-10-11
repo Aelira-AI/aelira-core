@@ -4,8 +4,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import hashlib
 import io
+import json
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 from uuid import uuid4
 
 from alembic.config import Config
@@ -34,11 +36,20 @@ from src.education.pdf_review_candidate import (
     create_pdf_edit_candidate,
     inspect_pdf_edit_targets,
 )
+from src.education.remediation.base import FixedIssue
+from src.api import review_routes
 from src.services.remediation_artifact_service import (
+    ArtifactAuthorizationError,
     ArtifactEditConflict,
     ArtifactPublicationRetryable,
     ArtifactValidationError,
     RemediationArtifactService,
+)
+from src.services.scan_fix_service import (
+    artifact_output_membership_blockers,
+    bind_fix_review_decision,
+    build_output_membership,
+    build_scan_fix,
 )
 from test_pdf_bound_heading_inventory import title_pdf
 from test_pdf_review_candidate import table_pdf
@@ -364,6 +375,155 @@ def test_grouped_heading_candidate_persists_pending_and_refuses_stale_replay(
     with sessions() as db:
         rows = db.query(RemediationArtifact).filter_by(scan_id=scan_id).all()
         assert [row.id for row in rows] == [result.artifact_id]
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_saved_heading_route_preserves_only_proven_members_and_rechecks_approval(
+    publication, monkeypatch, conflict
+):
+    sessions, service, department_id, scan_id, source, tmp_path = publication
+    with sessions() as db:
+        original_state = _state(db, service, department_id, scan_id)
+    first_operation, first_candidate = _candidate(source, level=1)
+    first_result = _publish(
+        sessions,
+        service,
+        department_id,
+        scan_id,
+        original_state,
+        first_operation,
+        first_candidate,
+        tmp_path,
+    )
+    with sessions() as db:
+        fix = build_scan_fix(
+            scan_id,
+            FixedIssue(
+                issue_id="first-heading",
+                category="heading",
+                severity="medium",
+                description="Document should start with H1 heading",
+                fixed_content="H1",
+                fix_method="rule",
+                confidence=1.0,
+                needs_review=True,
+            ),
+        )
+        fix.review_status = "approved"
+        bind_fix_review_decision(fix, "approve")
+        db.add(fix)
+        artifact = db.get(RemediationArtifact, first_result.artifact_id)
+        # Stand in for a completed remediation output whose repaired bytes
+        # carry a receipt before the first manual saved edit.
+        artifact.edit_precondition = None
+        artifact.edit_provenance = None
+        artifact.provider_result = {
+            "reviewed_output_membership": build_output_membership(
+                first_candidate.sha256, _sha(source), [fix]
+            )
+        }
+        db.commit()
+        service.approve(
+            db,
+            artifact_id=first_result.artifact_id,
+            approved_by_ref="reviewer",
+        )
+        db.commit()
+    with sessions() as db:
+        saved_state = _state(db, service, department_id, scan_id, source_kind="saved")
+        target = next(
+            item
+            for item in inspect_pdf_edit_targets(
+                first_candidate.content, first_candidate.sha256
+            )
+            if item["role"] == ("H1" if conflict else "P")
+        )
+        operation = {"kind": "heading", "target_id": target["target_id"], "level": 2}
+        monkeypatch.setattr(
+            review_routes,
+            "_pdf_edit_context",
+            lambda *_args: (
+                db.get(Scan, scan_id),
+                None,
+                "local",
+                saved_state,
+                first_candidate.content,
+                service,
+            ),
+        )
+        request = review_routes.PDFEditSaveRequest(
+            source_kind="saved",
+            expected_artifact_id=saved_state["expected_artifact_id"],
+            expected_source_sha256=saved_state["source_sha256"],
+            expected_state_digest=saved_state["state_digest"],
+            operation=operation,
+        )
+        response = review_routes.save_pdf_edit_candidate(
+            scan_id,
+            request,
+            db,
+            SimpleNamespace(department_id=department_id, user_id=None),
+        )
+        assert response.status_code == 201
+        artifact_id = json.loads(response.body)["artifact_id"]
+    with sessions() as db:
+        current = db.get(RemediationArtifact, artifact_id)
+        prior = db.get(RemediationArtifact, first_result.artifact_id)
+        scan = db.get(Scan, scan_id)
+        fixes = db.query(ScanFix).filter_by(scan_id=scan_id).all()
+        assert scan.current_remediation_artifact_id == artifact_id
+        assert prior.review_status == "approved"
+        assert current.review_status == "pending"
+        assert current.approval_checksum is None
+        assert current.approval_review_digest is None
+        with service.open_verified(
+            db,
+            current,
+            department_id=department_id,
+            scan_id=scan_id,
+            cloud_file_id=None,
+        ) as stream:
+            assert _sha(stream.read()) == current.sha256
+        blockers = artifact_output_membership_blockers(
+            current, fixes, source_sha256=_sha(source)
+        )
+        if conflict:
+            assert blockers == ["output_membership_unrecorded"]
+            assert current.provider_result["output_membership_blocker"] == (
+                "manual_edit_preservation_unverified"
+            )
+            with pytest.raises(ArtifactAuthorizationError):
+                service.approve(db, artifact_id=artifact_id, approved_by_ref="reviewer")
+        else:
+            assert blockers == []
+            assert current.provider_result["reviewed_output_membership"]["fixes"] == (
+                prior.provider_result["reviewed_output_membership"]["fixes"]
+            )
+            record = dict(current.provider_result)
+            assert record["reviewed_output_preservation"]["output_sha256"] == (
+                current.sha256
+            )
+            # A historical manual artifact with only the copied v1 receipt
+            # must fail after database reload despite matching fix decisions.
+            current.provider_result = {
+                "reviewed_output_membership": record["reviewed_output_membership"]
+            }
+            db.commit()
+            db.expire_all()
+            current = db.get(RemediationArtifact, artifact_id)
+            assert artifact_output_membership_blockers(
+                current, fixes, source_sha256=_sha(source)
+            ) == ["manual_edit_preservation_unverified"]
+            with pytest.raises(ArtifactAuthorizationError):
+                service.approve(db, artifact_id=artifact_id, approved_by_ref="reviewer")
+            db.rollback()
+            current = db.get(RemediationArtifact, artifact_id)
+            current.provider_result = record
+            db.commit()
+            approved = service.approve(
+                db, artifact_id=artifact_id, approved_by_ref="reviewer"
+            )
+            assert approved.review_status == "approved"
 
 
 def test_cloud_replacement_resets_writeback_without_inheriting_approval(publication):

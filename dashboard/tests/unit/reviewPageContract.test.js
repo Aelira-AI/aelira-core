@@ -53,6 +53,7 @@ test('manual PDF candidates show preservation and approval guidance without offe
   assert.doesNotMatch(approvalBlockerMessage('output_membership_unrecorded', true), /Rebuild a reviewed PDF/);
   assert.match(approvalBlockerMessage('output_membership_unrecorded', false), /Rebuild a reviewed PDF/);
   assert.match(approvalBlockerMessage('no_fixes', true), /saved structure edit is a separate candidate/);
+  assert.match(approvalBlockerMessage('manual_edit_preservation_unverified', true), /earlier fix decisions and score describe the prior file/);
   assert.equal(lacksRemediationEvidence(['no_fixes', 'output_membership_unrecorded']), true);
   assert.equal(lacksRemediationEvidence(['fixes_pending_review', 'output_membership_unrecorded']), true);
   assert.equal(lacksRemediationEvidence(['fixes_pending_review']), false);

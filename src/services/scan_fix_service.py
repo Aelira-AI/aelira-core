@@ -929,13 +929,93 @@ def artifact_output_membership_blockers(
         or type(receipt.get("version")) is not int
     ):
         return ["reviewed_changes_not_in_output"]
+    # Older saved manual candidates could carry a copied v1 receipt without
+    # proof that their edits retained the repairs. Never grandfather them in.
+    if getattr(artifact, "edit_provenance", None) is not None and not (
+        _manual_edit_preservation_record_valid(artifact, receipt)
+    ):
+        return ["manual_edit_preservation_unverified"]
     return []
 
 
-def inherit_output_membership(
-    predecessor: Any, *, source_sha256: str | None, output_sha256: str
+def build_manual_edit_preservation_record(
+    proof: Any, precondition: dict[str, Any], operation: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """Carry applied members through a verified manual edit of these exact bytes.
+    """Bind a byte-level proof to the exact persisted saved-edit provenance."""
+    if (
+        precondition.get("source_kind") != "saved"
+        or not isinstance(precondition.get("expected_artifact_id"), str)
+        or not valid_sha256(precondition.get("source_sha256"))
+        or not valid_sha256(precondition.get("state_digest"))
+        or precondition["source_sha256"] != getattr(proof, "source_sha256", None)
+        or not valid_sha256(getattr(proof, "output_sha256", None))
+        or not isinstance(getattr(proof, "occurrence_keys", None), tuple)
+        or not isinstance(operation, dict)
+    ):
+        return None
+    return {
+        "version": 1,
+        "predecessor_artifact_id": precondition["expected_artifact_id"],
+        "predecessor_sha256": proof.source_sha256,
+        "state_digest": precondition["state_digest"],
+        "output_sha256": proof.output_sha256,
+        "occurrence_keys": list(proof.occurrence_keys),
+        "operation_sha256": canonical_sha256(operation),
+    }
+
+
+def _manual_edit_preservation_record_valid(artifact: Any, receipt: dict) -> bool:
+    provider_result = getattr(artifact, "provider_result", None)
+    record = (
+        provider_result.get("reviewed_output_preservation")
+        if isinstance(provider_result, dict)
+        else None
+    )
+    precondition = getattr(artifact, "edit_precondition", None)
+    provenance = getattr(artifact, "edit_provenance", None)
+    if (
+        not isinstance(record, dict)
+        or set(record)
+        != {
+            "version",
+            "predecessor_artifact_id",
+            "predecessor_sha256",
+            "state_digest",
+            "output_sha256",
+            "occurrence_keys",
+            "operation_sha256",
+        }
+        or type(record.get("version")) is not int
+        or record["version"] != 1
+        or not isinstance(precondition, dict)
+        or not isinstance(provenance, dict)
+        or precondition.get("source_kind") != "saved"
+        or provenance.get("source_kind") != "saved"
+        or record["predecessor_artifact_id"] != precondition.get("expected_artifact_id")
+        or record["predecessor_sha256"] != precondition.get("source_sha256")
+        or record["predecessor_sha256"] != provenance.get("source_sha256")
+        or record["state_digest"] != precondition.get("state_digest")
+        or not valid_sha256(record["state_digest"])
+        or not valid_sha256(record["predecessor_sha256"])
+        or record["output_sha256"] != getattr(artifact, "sha256", None)
+        or not valid_sha256(record["output_sha256"])
+        or record["occurrence_keys"]
+        != [member["occurrence_key"] for member in receipt["fixes"]]
+        or not isinstance(provenance.get("operation"), dict)
+        or record["operation_sha256"] != canonical_sha256(provenance["operation"])
+    ):
+        return False
+    return True
+
+
+def inherit_output_membership(
+    predecessor: Any,
+    *,
+    source_sha256: str | None,
+    output_sha256: str,
+    preservation_proof: Any = None,
+) -> dict[str, Any] | None:
+    """Carry members only with proof bound to these bytes and exact members.
 
     Never reconstruct membership from current review decisions: a predecessor
     may still contain a now-rejected change, which must continue to block it.
@@ -971,6 +1051,13 @@ def inherit_output_membership(
     if len({member["occurrence_key"] for member in members}) != len(
         members
     ) or members != sorted(members, key=lambda member: member["occurrence_key"]):
+        return None
+    if (
+        getattr(preservation_proof, "source_sha256", None) != predecessor.sha256
+        or getattr(preservation_proof, "output_sha256", None) != output_sha256
+        or getattr(preservation_proof, "occurrence_keys", None)
+        != tuple(member["occurrence_key"] for member in members)
+    ):
         return None
     return {
         **receipt,

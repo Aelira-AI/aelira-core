@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+from types import SimpleNamespace
 
 import pikepdf
 import pymupdf
@@ -99,6 +100,192 @@ def test_heading_candidate_changes_saved_tag_and_preserves_pages_and_metadata():
         # The same ParentTree owner now carries the reviewed role.
         assert saved.Root.StructTreeRoot.ParentTree.Nums[1][1].S == Name.H2
     assert not hasattr(result, "approved")
+
+
+def test_saved_heading_membership_requires_preserved_bound_heading_bytes():
+    def scalar_repairs(pdf):
+        pdf.Root.MarkInfo = Dictionary(Marked=True)
+        pdf.Root.Lang = String("en-US")
+        pdf.docinfo.Title = String("Synthetic course")
+
+    source = rewrite(
+        make_pdf(),
+        scalar_repairs,
+    )
+    first = heading(source)
+    no_h1 = edit.create_pdf_edit_candidate(source, sha(source), first)
+    first["level"] = 1
+    predecessor = edit.create_pdf_edit_candidate(source, sha(source), first).content
+    member = SimpleNamespace(
+        category="heading",
+        description="Document should start with H1 heading",
+        occurrence_key="a" * 64,
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            source, no_h1.content, {**first, "level": 2}, [member]
+        )
+        is None
+    )
+    targets_by_role = {item["role"]: item for item in targets(predecessor)}
+    add_h2 = {
+        "kind": "heading",
+        "target_id": targets_by_role["P"]["target_id"],
+        "level": 2,
+    }
+    independent = edit.create_pdf_edit_candidate(predecessor, sha(predecessor), add_h2)
+    proof = edit.prove_pdf_edit_preserves_members(
+        predecessor, independent.content, add_h2, [member]
+    )
+    assert proof == edit.PDFEditPreservationProof(
+        sha(predecessor), independent.sha256, (member.occurrence_key,)
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [
+                SimpleNamespace(
+                    category="heading",
+                    description="Unbound heading repair",
+                    occurrence_key=member.occurrence_key,
+                )
+            ],
+        )
+        is None
+    )
+    marked = SimpleNamespace(
+        category="structure",
+        description="PDF has structure tree but is not marked as tagged",
+        location="MarkInfo",
+        occurrence_key="b" * 64,
+    )
+    language = SimpleNamespace(category="language", occurrence_key="c" * 64)
+    title = SimpleNamespace(category="title", occurrence_key="d" * 64)
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, independent.content, add_h2, [member, marked, language, title]
+        )
+        is not None
+    )
+    change_h1 = {
+        "kind": "heading",
+        "target_id": targets_by_role["H1"]["target_id"],
+        "level": 2,
+    }
+    conflicting = edit.create_pdf_edit_candidate(
+        predecessor, sha(predecessor), change_h1
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, conflicting.content, change_h1, [member]
+        )
+        is None
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [SimpleNamespace(category="reading_order", occurrence_key="a" * 64)],
+        )
+        is None
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [SimpleNamespace(category="structure", occurrence_key="a" * 64)],
+        )
+        is None
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [SimpleNamespace(category="heading", occurrence_key="bad")],
+        )
+        is None
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor,
+            independent.content,
+            add_h2,
+            [member, SimpleNamespace(category="table", occurrence_key="b" * 64)],
+        )
+        is None
+    )
+
+
+def test_saved_heading_proof_refuses_order_and_table_edits(tmp_path):
+    predecessor = make_pdf()
+    member = SimpleNamespace(
+        category="heading",
+        description="Document should start with H1 heading",
+        occurrence_key="a" * 64,
+    )
+    parent = targets(predecessor)[0]
+    reorder = {
+        "kind": "order",
+        "target_id": parent["target_id"],
+        "children": parent["children"][::-1],
+    }
+    reordered = edit.create_pdf_edit_candidate(predecessor, sha(predecessor), reorder)
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, reordered.content, reorder, [member]
+        )
+        is None
+    )
+    predecessor = table_pdf(tmp_path)
+    headers = table_operation(predecessor)
+    changed = edit.create_pdf_edit_candidate(predecessor, sha(predecessor), headers)
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, changed.content, headers, [member]
+        )
+        is None
+    )
+
+
+def test_saved_heading_proof_retains_catalogued_document_root_repair():
+    def wrap(pdf):
+        root = pdf.Root.StructTreeRoot
+        children = root.K
+        wrapper = pdf.make_indirect(
+            Dictionary(Type=Name.StructElem, S=Name.Document, P=root, K=children)
+        )
+        for child in children:
+            child.P = wrapper
+        root.K = wrapper
+
+    source = rewrite(make_pdf(), wrap)
+    first = heading(source)
+    first["level"] = 1
+    predecessor = edit.create_pdf_edit_candidate(source, sha(source), first).content
+    next_target = next(
+        item
+        for item in targets(predecessor)
+        if item["can_set_heading"] and item["role"] == "P"
+    )
+    operation = {"kind": "heading", "target_id": next_target["target_id"], "level": 2}
+    candidate = edit.create_pdf_edit_candidate(predecessor, sha(predecessor), operation)
+    root_fix = SimpleNamespace(
+        category="structure",
+        description="Structure tree missing /Document or /Part root element",
+        location="StructTreeRoot",
+        occurrence_key="e" * 64,
+    )
+    assert (
+        edit.prove_pdf_edit_preserves_members(
+            predecessor, candidate.content, operation, [root_fix]
+        )
+        is not None
+    )
 
 
 def test_saved_sibling_order_preserves_content_and_parent_tree():

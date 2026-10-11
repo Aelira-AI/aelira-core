@@ -207,6 +207,7 @@ def _artifact_review_blockers(
             "source_changed_since_scan",
             "saved_file_verification_unavailable",
             "applied_fix_membership_unavailable",
+            "manual_edit_preservation_unverified",
         }
     ):
         blockers.append(reason)

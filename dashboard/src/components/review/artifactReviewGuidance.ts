@@ -12,6 +12,7 @@ const BLOCKERS: Record<string, string> = {
   source_changed_since_scan: 'The source changed since its scan. Rescan the current source and remediate it before approval.',
   saved_file_verification_unavailable: 'The working file has no valid saved-file verification. Run remediation again and review its result.',
   applied_fix_membership_unavailable: 'The changes could not be bound to this working file. Run remediation again before approval.',
+  manual_edit_preservation_unverified: 'This saved edit does not prove that all earlier repairs remain in the current PDF. The earlier fix decisions and score describe the prior file. Download this candidate for review, or create a new verified remediation output before approval.',
   reviewed_changes_not_in_output: 'The working file contains a rejected change or different reviewed content. Create a new working file from the accepted changes before approval.',
 };
 
