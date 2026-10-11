@@ -23,6 +23,7 @@ See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits a
 - Dependency updates include security fixes for JWT handling, PDF parsing, dashboard HTML sanitisation, CLI brace expansion and KaTeX development tooling. Existing dependency audit and image gates remain required ([#518](https://github.com/Aelira-AI/aelira-core/pull/518), [#540](https://github.com/Aelira-AI/aelira-core/pull/540)).
 - Production API images omit pip and its vendored libraries after dependency installation. Pa11y's locked runtime excludes the vulnerable FTP and ZIP downloader chain while retaining Pa11y 9.0.1, HTML_CodeSniffer 2.5.1 and the native Chromium checks ([#575](https://github.com/Aelira-AI/aelira-core/issues/575)).
 - Dashboard images install the available pcre2 and tiff security updates on the pinned nginx base ([#574](https://github.com/Aelira-AI/aelira-core/issues/574)).
+- Publication rejects every reported HIGH or CRITICAL image vulnerability regardless of fix availability, retaining the unsuppressed native-image inventory before rejection. Known affected embedded libraries remain separate release blockers ([#580](https://github.com/Aelira-AI/aelira-core/issues/580)).
 
 ### Added
 
