@@ -1,0 +1,8 @@
+tiff (4.7.2-0aelira1) resolute; urgency=medium
+
+  * Rebase Ubuntu 4.7.0-3ubuntu5 packaging on signed upstream 4.7.2 source.
+  * Retain inherited quilt patches and changelog for provenance; their exact
+    upstream commits are included in the 4.7.2 tag.
+
+ -- Aelira package candidate <17489362+rdcrampton@users.noreply.github.com>  Mon, 12 Oct 2026 00:00:00 +0000
+
