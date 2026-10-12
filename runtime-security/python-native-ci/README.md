@@ -50,6 +50,15 @@ message, path or arbitrary string is copied. A successful consumer with missing
 diagnostics cannot export complete component evidence. An early skipped
 consumer keeps `not_run`, and a reported failure remains failed.
 
+For a valid `installed_verifier` receipt, `check_code` decodes only the reserved
+Pillow verifier exits 40–72 documented in the Pillow recipe README. It is a
+fixed check-code label, not an exception message or root-cause diagnosis.
+All other stages, success, unknown exits and unavailable diagnostics have a
+null check code. Explicit process exits are preserved; an explicit exit that
+coincides with a reserved code cannot be distinguished from the named-check
+exit by this numeric interface. Interpretation must remain bound to the
+executed verifier source and the reported stage. No raw logs are parsed.
+
 This result is scoped to the two Python components. It does not clear
 full-runtime, all-copy, advisory, or release security acceptance. It supports the bounded
 component work tracked under #594, #595, and #596; the parent gates remain

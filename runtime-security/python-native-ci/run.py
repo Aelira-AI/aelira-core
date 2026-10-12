@@ -44,6 +44,41 @@ PILLOW_CONSUMER_STAGES = {
     "final_proof",
     "complete",
 }
+PILLOW_CHECK_CODES = {
+    40: "import_setup",
+    41: "record",
+    42: "wheel_payloads",
+    43: "feature_jpg",
+    44: "feature_zlib",
+    45: "feature_libtiff",
+    46: "feature_webp",
+    47: "feature_jpg_2000",
+    48: "feature_freetype2",
+    49: "feature_littlecms2",
+    50: "feature_raqm",
+    51: "feature_avif",
+    52: "feature_xcb",
+    53: "disabled_libimagequant",
+    54: "disabled_tkinter",
+    55: "truncated_images",
+    56: "roundtrip_png",
+    57: "roundtrip_jpeg",
+    58: "roundtrip_webp",
+    59: "roundtrip_jpeg2000",
+    60: "roundtrip_avif",
+    61: "roundtrip_tiff",
+    62: "tiff_pages",
+    63: "tiff_library",
+    64: "font",
+    65: "colour",
+    66: "malformed_png",
+    67: "malformed_jpeg",
+    68: "malformed_tiff",
+    69: "malformed_random",
+    70: "aelira_pdf",
+    71: "aelira_suitability",
+    72: "private_directory",
+}
 
 
 def digest(path: Path) -> str:
@@ -265,7 +300,13 @@ def passed(status: dict[str, object]) -> bool:
 def pillow_consumer_diagnostic(
     root: Path, status: dict[str, object]
 ) -> dict[str, object]:
-    unavailable = {"schema": 1, "state": "unavailable", "stage": None, "exit": None}
+    unavailable = {
+        "schema": 1,
+        "state": "unavailable",
+        "stage": None,
+        "exit": None,
+        "check_code": None,
+    }
     observed_exit = status.get("exit")
     if (
         type(observed_exit) is not int
@@ -295,6 +336,11 @@ def pillow_consumer_diagnostic(
             "state": "reported",
             "stage": value["stage"],
             "exit": observed_exit,
+            "check_code": (
+                PILLOW_CHECK_CODES.get(observed_exit)
+                if value["stage"] == "installed_verifier"
+                else None
+            ),
         }
     except (OSError, ValueError, TypeError, UnicodeError):
         return unavailable
@@ -513,6 +559,7 @@ def execute(
             "state": "not_run",
             "stage": None,
             "exit": None,
+            "check_code": None,
         },
     }
     write_json(dest / "summary.json", result)

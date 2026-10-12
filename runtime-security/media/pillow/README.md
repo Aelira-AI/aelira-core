@@ -72,6 +72,29 @@ text/colour feature flags, PNG/JPEG/WebP/JPEG 2000/AVIF/TIFF round trips,
 two-page Deflate TIFF pixels, malformed input refusal, and Aelira's PDF and
 handwritten-image validation consumers.
 
+For a failed `installed_verifier` stage only, `verify-installed.py` uses these
+fixed process exit codes to identify the executing check. They describe where
+execution stopped, not why the check failed. Tracebacks remain in the private
+installed-consumer log and are never copied into the bounded CI summary.
+Unknown codes, signals, and missing or invalid stage receipts have no mapped
+check. Explicit process exits keep their original code; a reserved-code collision
+cannot be distinguished by this numeric interface. Interpret the code only
+with the executing source and valid stage. A mapped code remains a failure
+and cannot complete the component.
+
+| Exit | Executing check |
+| --- | --- |
+| 40 | Pillow import/setup |
+| 41, 42 | installed RECORD; wheel payload equality |
+| 43–52 | required features: jpg, zlib, libtiff, webp, jpg_2000, freetype2, littlecms2, raqm, avif, xcb, respectively |
+| 53, 54, 55 | disabled libimagequant; disabled tkinter; truncated-image flag |
+| 56–61 | PNG, JPEG, WEBP, JPEG2000, AVIF, TIFF round trips, respectively |
+| 62, 63 | TIFF pages/pixels; loaded TIFF version/hash/maps |
+| 64, 65 | font; colour transform |
+| 66–69 | malformed PNG, JPEG, TIFF, random-byte refusal, respectively |
+| 70, 71 | actual Aelira PDF; handwritten-math consumers |
+| 72 | absent wheel-private `pillow.libs` directory |
+
 After the component and installed check, run the public exporter from a clean
 checkout matching the executed recipe:
 

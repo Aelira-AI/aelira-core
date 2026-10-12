@@ -5,13 +5,18 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import shutil
+import sys
 import tempfile
+import types
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 import proof
@@ -572,6 +577,344 @@ esac""",
         self.assertEqual(rc, 37)
         self.assertEqual(observed, output)
         self.assertEqual(existing.read_bytes(), b"sentinel\n")
+
+
+class InstalledCheckExitControls(unittest.TestCase):
+    """Run each fixed exit branch with synthetic Pillow and application results."""
+
+    MARKER = "PRIVATE_CHECK_MARKER"
+
+    def setUp(self) -> None:
+        fake = types.ModuleType("PIL")
+        fake.Image = types.SimpleNamespace()
+        fake.ImageCms = types.SimpleNamespace()
+        fake.ImageFile = types.SimpleNamespace(LOAD_TRUNCATED_IMAGES=False)
+        fake.ImageFont = types.SimpleNamespace(Layout=types.SimpleNamespace(RAQM=1))
+        fake.features = types.SimpleNamespace()
+        spec = importlib.util.spec_from_file_location(
+            "pillow_installed_verifier_test", HERE / "verify-installed.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"PIL": fake}):
+            spec.loader.exec_module(module)
+        self.verifier = module
+
+    def assert_exit(self, expected: int, action) -> None:
+        private_log = io.StringIO()
+        with redirect_stderr(private_log), redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                action()
+        self.assertEqual(raised.exception.code, expected)
+        self.assertTrue(private_log.getvalue())
+
+    def test_fixed_mapping_and_exception_propagation(self) -> None:
+        codes = self.verifier.CHECK_EXIT_CODES
+        self.assertEqual(set(codes.values()), set(range(40, 73)))
+        for name, code in codes.items():
+            if name == "import_setup":
+                continue
+            with self.subTest(name=name):
+
+                def fail() -> None:
+                    with self.verifier.diagnosed(name):
+                        raise AssertionError(self.MARKER)
+
+                self.assert_exit(code, fail)
+        for exceptional in (SystemExit(97), KeyboardInterrupt()):
+            with self.subTest(exception=type(exceptional).__name__):
+                with self.assertRaises(type(exceptional)) as raised:
+                    with self.verifier.diagnosed("record"):
+                        raise exceptional
+                if isinstance(exceptional, SystemExit):
+                    self.assertEqual(raised.exception.code, 97)
+        with self.assertRaises(AssertionError):
+            raise AssertionError(self.MARKER)  # Unmapped work keeps its failure.
+
+    def test_import_failure_and_signal_are_not_misclassified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary) / "PIL"
+            package.mkdir()
+            (package / "__init__.py").write_text(
+                f'raise RuntimeError("{self.MARKER}")\n'
+            )
+            env = os.environ.copy()
+            env["PYTHONPATH"] = temporary
+            result = subprocess.run(
+                [sys.executable, str(HERE / "verify-installed.py")],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 40)
+            self.assertIn(self.MARKER, result.stderr)
+            self.assertNotIn(self.MARKER, result.stdout)
+            script = f"""import importlib.util, os, signal, sys, types
+p = types.ModuleType('PIL')
+for name in ('Image', 'ImageCms', 'ImageFile', 'ImageFont', 'features'):
+    setattr(p, name, types.SimpleNamespace())
+sys.modules['PIL'] = p
+s = importlib.util.spec_from_file_location('v', {str(HERE / 'verify-installed.py')!r})
+v = importlib.util.module_from_spec(s)
+s.loader.exec_module(v)
+with v.diagnosed('record'):
+    os.kill(os.getpid(), signal.SIGTERM)
+"""
+            terminated = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(terminated.returncode, -signal.SIGTERM)
+
+    def test_main_record_wheel_roundtrips_private_and_success(self) -> None:
+        verifier = self.verifier
+        names = {
+            "PNG": "roundtrip_png",
+            "JPEG": "roundtrip_jpeg",
+            "WEBP": "roundtrip_webp",
+            "JPEG2000": "roundtrip_jpeg2000",
+            "AVIF": "roundtrip_avif",
+            "TIFF": "roundtrip_tiff",
+        }
+
+        def execute(failing: str | None) -> str:
+            def selected(name: str, result):
+                if failing == name:
+                    raise AssertionError(self.MARKER)
+                return result
+
+            def roundtrip(fmt: str) -> bytes:
+                return selected(names[fmt], b"synthetic")
+
+            def private_exists(path: Path) -> bool:
+                return failing == "private_directory" and path.name == "pillow.libs"
+
+            with (
+                patch.object(
+                    verifier,
+                    "check_record",
+                    side_effect=lambda: selected("record", 122),
+                ),
+                patch.object(
+                    verifier,
+                    "check_wheel_payloads",
+                    side_effect=lambda: selected(
+                        "wheel_payloads", (119, "synthetic-hash")
+                    ),
+                ),
+                patch.object(verifier, "check_features", return_value=({}, {})),
+                patch.object(verifier, "round_trip", side_effect=roundtrip),
+                patch.object(verifier, "check_tiff", return_value="synthetic-tiff"),
+                patch.object(verifier, "check_font_and_colour", return_value=True),
+                patch.object(verifier, "check_rejection", return_value={}),
+                patch.object(Path, "exists", private_exists),
+            ):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    verifier.main()
+                return output.getvalue()
+
+        for name in ("record", "wheel_payloads", *names.values(), "private_directory"):
+            with self.subTest(name=name):
+                self.assert_exit(verifier.CHECK_EXIT_CODES[name], lambda: execute(name))
+        success = execute(None)
+        marker = "pillow_installed_receipt="
+        self.assertEqual(success.count(marker), 1)
+        receipt = json.loads(success.split(marker, 1)[1])
+        self.assertEqual(receipt["schema"], "pillow-installed-semantics-v1")
+        self.assertEqual(receipt["record_entries"], 122)
+        self.assertEqual(receipt["wheel_payload_entries"], 119)
+
+    def test_each_feature_exit_uses_the_original_assertion(self) -> None:
+        verifier = self.verifier
+        required = (
+            "jpg",
+            "zlib",
+            "libtiff",
+            "webp",
+            "jpg_2000",
+            "freetype2",
+            "littlecms2",
+            "raqm",
+            "avif",
+            "xcb",
+        )
+        for feature in (*required, "libimagequant", "tkinter", "truncated_images"):
+            with self.subTest(feature=feature):
+
+                def check(name: str) -> bool:
+                    if name == feature:
+                        return name not in required
+                    return name in required
+
+                with (
+                    patch.object(
+                        verifier.features, "check", side_effect=check, create=True
+                    ),
+                    patch.object(
+                        verifier.features,
+                        "version",
+                        return_value="synthetic",
+                        create=True,
+                    ),
+                    patch.object(
+                        verifier.ImageFile,
+                        "LOAD_TRUNCATED_IMAGES",
+                        feature == "truncated_images",
+                    ),
+                ):
+                    name = (
+                        feature
+                        if feature == "truncated_images"
+                        else ("feature_" if feature in required else "disabled_")
+                        + feature
+                    )
+                    self.assert_exit(
+                        verifier.CHECK_EXIT_CODES[name], verifier.check_features
+                    )
+
+    def test_tiff_font_colour_and_malformed_branches(self) -> None:
+        verifier = self.verifier
+        self.assert_exit(
+            verifier.CHECK_EXIT_CODES["tiff_pages"],
+            lambda: self._tiff_with_new(lambda *args: self._fail()),
+        )
+
+        class Image:
+            n_frames = 2
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def save(self, output, **_kwargs):
+                output.write(b"synthetic")
+
+            def seek(self, frame):
+                self.frame = frame
+
+            def load(self):
+                pass
+
+            def getpixel(self, _point):
+                return ((255, 0, 0), (0, 255, 0))[self.frame]
+
+        with (
+            patch.object(verifier.Image, "new", return_value=Image(), create=True),
+            patch.object(verifier.Image, "open", return_value=Image(), create=True),
+            patch.object(verifier.ctypes, "CDLL", side_effect=OSError(self.MARKER)),
+        ):
+            self.assert_exit(
+                verifier.CHECK_EXIT_CODES["tiff_library"], verifier.check_tiff
+            )
+        with patch.object(
+            verifier.ImageFont,
+            "truetype",
+            side_effect=OSError(self.MARKER),
+            create=True,
+        ):
+            self.assert_exit(
+                verifier.CHECK_EXIT_CODES["font"], verifier.check_font_and_colour
+            )
+        font = types.SimpleNamespace(getlength=lambda _text: 1)
+        with (
+            patch.object(
+                verifier.ImageFont, "truetype", return_value=font, create=True
+            ),
+            patch.object(
+                verifier.ImageCms,
+                "createProfile",
+                side_effect=OSError(self.MARKER),
+                create=True,
+            ),
+        ):
+            self.assert_exit(
+                verifier.CHECK_EXIT_CODES["colour"], verifier.check_font_and_colour
+            )
+
+        class AcceptedMalformed:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def load(self):
+                pass
+
+        formats = ("PNG", "JPEG", "TIFF", "random")
+        for target in formats:
+            with self.subTest(format=target):
+                seen = iter(formats)
+
+                def open_image(_payload):
+                    name = next(seen)
+                    if name == target:
+                        return AcceptedMalformed()
+                    raise OSError("synthetic refusal")
+
+                with patch.object(
+                    verifier.Image, "open", side_effect=open_image, create=True
+                ):
+                    self.assert_exit(
+                        verifier.CHECK_EXIT_CODES[f"malformed_{target.lower()}"],
+                        lambda: verifier.check_rejection(b"png", b"jpeg", b"tiff"),
+                    )
+
+    def test_actual_application_consumer_exit_branches(self) -> None:
+        verifier = self.verifier
+        png, jpeg, tiff = b"p" * 50, b"j" * 50, b"t" * 50
+        modules = {
+            name: types.ModuleType(name)
+            for name in (
+                "src",
+                "src.education",
+                "src.education.remediation",
+                "src.education.remediation.pdf_remediator",
+                "src.education.handwritten_math_suitability",
+            )
+        }
+        pdf = modules["src.education.remediation.pdf_remediator"]
+        suitability = modules["src.education.handwritten_math_suitability"]
+        suitability.SuitabilityInputRejected = type(
+            "SuitabilityInputRejected", (ValueError,), {}
+        )
+        suitability._decode_image = lambda _payload: (
+            types.SimpleNamespace(size=(0, 0)),
+            "PNG",
+        )
+        with (
+            patch.dict(sys.modules, modules),
+            patch.object(
+                verifier.Image, "open", side_effect=OSError("refused"), create=True
+            ),
+        ):
+            pdf._is_verified_image = lambda *_args: False
+            self.assert_exit(
+                verifier.CHECK_EXIT_CODES["aelira_pdf"],
+                lambda: verifier.check_rejection(png, jpeg, tiff),
+            )
+            pdf._is_verified_image = (
+                lambda payload, fmt: payload == png and fmt == "png"
+            )
+            self.assert_exit(
+                verifier.CHECK_EXIT_CODES["aelira_suitability"],
+                lambda: verifier.check_rejection(png, jpeg, tiff),
+            )
+
+    def _fail(self):
+        raise AssertionError(self.MARKER)
+
+    def _tiff_with_new(self, replacement):
+        with patch.object(
+            self.verifier.Image, "new", side_effect=replacement, create=True
+        ):
+            self.verifier.check_tiff()
 
 
 if __name__ == "__main__":

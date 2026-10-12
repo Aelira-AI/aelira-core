@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -52,9 +53,64 @@ class BoundaryTests(unittest.TestCase):
                                     "state": "reported",
                                     "stage": stage,
                                     "exit": observed_exit,
+                                    "check_code": None,
                                 },
                             )
                         self.assertEqual(status["exit"], observed_exit)
+
+    def test_check_codes_match_producer_and_require_valid_verifier_stage(self) -> None:
+        tree = ast.parse(
+            (MODULE.parent.parent / "media/pillow/verify-installed.py").read_text()
+        )
+        assignments = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "CHECK_EXIT_CODES"
+                for target in node.targets
+            )
+        ]
+        self.assertEqual(len(assignments), 1)
+        producer = ast.literal_eval(assignments[0].value)
+        self.assertEqual(
+            runner.PILLOW_CHECK_CODES, {code: name for name, code in producer.items()}
+        )
+        self.assertEqual(set(runner.PILLOW_CHECK_CODES), set(range(40, 73)))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            receipt = root / "consumer-stage.json"
+            counter = root / "consumer-exit.txt"
+            marker = "PRIVATE-MARKER-DO-NOT-EXPORT"
+            (root / "installed-consumer.log").write_text(marker)
+            for stage in runner.PILLOW_CONSUMER_STAGES:
+                for code in range(1, 256):
+                    with self.subTest(stage=stage, code=code):
+                        receipt.write_text(
+                            json.dumps({"schema": 1, "stage": stage, "exit": code})
+                        )
+                        counter.write_text(f"{code}\n")
+                        status = {"exit": code, "state": "failed"}
+                        original = dict(status)
+                        observed = runner.pillow_consumer_diagnostic(root, status)
+                        expected = (
+                            runner.PILLOW_CHECK_CODES.get(code)
+                            if stage == "installed_verifier"
+                            else None
+                        )
+                        self.assertEqual(observed["check_code"], expected)
+                        self.assertEqual(observed["exit"], code)
+                        self.assertEqual(status, original)
+                        self.assertNotIn(marker, json.dumps(observed))
+            receipt.write_text(
+                json.dumps({"schema": 1, "stage": "installed_verifier", "exit": 42})
+            )
+            counter.write_text("41\n")
+            observed = runner.pillow_consumer_diagnostic(
+                root, {"exit": 42, "state": "failed"}
+            )
+            self.assertEqual(observed["state"], "unavailable")
+            self.assertIsNone(observed["check_code"])
 
     def test_pillow_diagnostic_refuses_private_text_tamper_and_unsafe_files(
         self,
@@ -487,7 +543,13 @@ class OrchestrationTests(unittest.TestCase):
         self.assertFalse(summary["release_security_cleared"])
         self.assertEqual(
             summary["pillow_consumer_diagnostic"],
-            {"schema": 1, "state": "reported", "stage": "complete", "exit": 0},
+            {
+                "schema": 1,
+                "state": "reported",
+                "stage": "complete",
+                "exit": 0,
+                "check_code": None,
+            },
         )
         self.assertEqual(
             entries, {"summary.json", "fixture.json", "pillow", "psycopg2"}
@@ -506,6 +568,7 @@ class OrchestrationTests(unittest.TestCase):
                 "state": "reported",
                 "stage": "installed_verifier",
                 "exit": 9,
+                "check_code": None,
             },
         )
         self.assertEqual(summary["stages"]["psyc_build"]["exit"], 37)
@@ -522,6 +585,27 @@ class OrchestrationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(entries, {"summary.json", "fixture.json"})
+
+    def test_decoded_check_code_keeps_failure_and_other_component_running(self) -> None:
+        for code in runner.PILLOW_CHECK_CODES:
+            with self.subTest(code=code):
+                rc, summary, _, _, entries = self.run_case({"pillow_consumer": code})
+                self.assertEqual(rc, 1)
+                self.assertEqual(summary["stages"]["pillow_consumer"]["exit"], code)
+                self.assertEqual(
+                    summary["stages"]["pillow_consumer"]["state"], "failed"
+                )
+                self.assertEqual(
+                    summary["pillow_consumer_diagnostic"]["check_code"],
+                    runner.PILLOW_CHECK_CODES[code],
+                )
+                self.assertEqual(summary["stages"]["pillow_export"]["state"], "not_run")
+                self.assertEqual(
+                    summary["stages"]["pillow_publish"]["state"], "not_run"
+                )
+                self.assertEqual(summary["stages"]["psyc_publish"]["state"], "passed")
+                self.assertEqual(summary["disposition"], "incomplete")
+                self.assertEqual(entries, {"summary.json", "fixture.json", "psycopg2"})
 
     def test_failed_exporter_partial_output_stays_private(self) -> None:
         rc, summary, _, _, entries = self.run_case({"pillow_export": 33})
