@@ -213,6 +213,63 @@ def scalar(root: Path, name: str, pattern: re.Pattern[str]) -> str:
     return value
 
 
+def check_export_closure(
+    root: Path, inventory: list[dict], status_bytes: bytes | None = None
+) -> None:
+    """Require exactly the copied regular files and their parent directories."""
+    safe_root(root)
+    if not stat.S_ISDIR(root.lstat().st_mode):
+        raise ValueError("non-directory public evidence root")
+    expected = {item["path"]: item for item in inventory}
+    if len(expected) != len(inventory) or "ci-status.json" in expected:
+        raise ValueError("duplicate public evidence path")
+    directories = set()
+    for relative in expected:
+        parts = relative.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise ValueError("unsafe public evidence path")
+        directories.update("/".join(parts[:i]) for i in range(1, len(parts)))
+    if status_bytes is not None:
+        expected["ci-status.json"] = {
+            "bytes": len(status_bytes),
+            "sha256": hashlib.sha256(status_bytes).hexdigest(),
+        }
+    seen_files = set()
+    seen_dirs = set()
+
+    def visit(folder: Path, prefix: str = "") -> None:
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                relative = f"{prefix}/{entry.name}" if prefix else entry.name
+                mode = entry.stat(follow_symlinks=False).st_mode
+                if stat.S_ISDIR(mode):
+                    if relative not in directories:
+                        raise ValueError("unexpected public evidence directory")
+                    seen_dirs.add(relative)
+                    visit(Path(entry.path), relative)
+                elif stat.S_ISREG(mode):
+                    if relative not in expected:
+                        raise ValueError("unexpected public evidence file")
+                    seen_files.add(relative)
+                    item = expected[relative]
+                    if (
+                        entry.stat(follow_symlinks=False).st_size != item["bytes"]
+                        or sha(Path(entry.path)) != item["sha256"]
+                    ):
+                        raise ValueError("public evidence file changed")
+                    if (
+                        relative == "ci-status.json"
+                        and Path(entry.path).read_bytes() != status_bytes
+                    ):
+                        raise ValueError("public evidence status changed")
+                else:
+                    raise ValueError("nonregular public evidence entry")
+
+    visit(root)
+    if seen_files != set(expected) or seen_dirs != directories:
+        raise ValueError("public evidence closure incomplete")
+
+
 def export(
     source: Path,
     dest: Path,
@@ -355,6 +412,13 @@ def export(
         raise ValueError("copied installed proof differs")
     if proof.check_installed(source, arch) != producer:
         raise ValueError("source changed during evidence copy")
+    if identity(source, repo, revision, tree) != consumers:
+        raise ValueError("source binding changed during evidence copy")
+    for item in inventory:
+        path = safe(source, item["path"])
+        if path.stat().st_size != item["bytes"] or sha(path) != item["sha256"]:
+            raise ValueError("source changed during evidence copy")
+    check_export_closure(dest, inventory)
     receipt = {
         "status": "complete",
         "component": "pillow-source-wheel",
@@ -379,9 +443,18 @@ def export(
         "files": inventory,
         "total_bytes": total,
     }
-    (dest / "ci-status.json").write_text(
-        json.dumps(receipt, sort_keys=True, indent=2) + "\n"
-    )
+    status_bytes = (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode()
+    status_path = dest / "ci-status.json"
+    created_status = False
+    try:
+        with status_path.open("xb") as stream:
+            created_status = True
+            stream.write(status_bytes)
+        check_export_closure(dest, inventory, status_bytes)
+    except BaseException:
+        if created_status:
+            status_path.unlink(missing_ok=True)
+        raise
     return receipt
 
 

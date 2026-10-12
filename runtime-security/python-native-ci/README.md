@@ -59,6 +59,24 @@ coincides with a reserved code cannot be distinguished from the named-check
 exit by this numeric interface. Interpretation must remain bound to the
 executed verifier source and the reported stage. No raw logs are parsed.
 
+`pillow_import_diagnostic` is a separate optional summary field. It is
+`not_run` unless the original reported consumer stage is `installed_verifier`
+with observed exit 40. For that case, the reader reports a secondary
+observation only when its own exit file says 0 and a canonical, single-link
+JSON receipt of at most 8192 bytes matches the recorded installed image ID.
+It accepts exact v2 keys, types, fixed labels and order, finite loader categories,
+an approved SONAME set, first-failure sequence, TIFF file/package identities,
+and derived counters. The receipt includes the probe's process ID and native
+architecture, which must equal the runner's expected architecture; the
+candidate image ID is rechecked before probe execution.
+Missing, failed, or invalid secondary
+evidence is `unavailable`; it cannot alter the original stage, exit, check
+code, component disposition, or export decision. The receipt reports a fresh
+process's import and independent library load observations plus fixed TIFF
+target and package states, not the original exception or its cause. The
+original full traceback stays in private logs. The reserved `SystemExit`
+numeric collision remains.
+
 This result is scoped to the two Python components. It does not clear
 full-runtime, all-copy, advisory, or release security acceptance. It supports the bounded
 component work tracked under #594, #595, and #596; the parent gates remain
