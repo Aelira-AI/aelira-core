@@ -23,6 +23,7 @@ jobs:
     needs:
       - expat-native-acceptance
       - tiff-native-package
+      - python-native-components
       - configuration-smoke
       - dev-setup-tests
       - dependency-security
@@ -42,7 +43,7 @@ jobs:
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
           printf '%s\n' "$JOB_RESULTS" | jq -e '
-            length == 13 and all(.[]; .result == "success")
+            length == 14 and all(.[]; .result == "success")
           '
 
   expat-native-acceptance:
@@ -165,6 +166,115 @@ jobs:
         with:
           name: tiff-native-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tiff-native-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  python-native-components:
+    name: Native Python component consumers (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            tiff_artifact_id: 11711217496
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            tiff_artifact_id: 11711427167
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install native proof verification utilities
+        id: utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends binutils gpgv
+      - name: Fetch the accepted native TIFF artifact
+        id: tiff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIFF_ARTIFACT_ID: ${{ matrix.tiff_artifact_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/Aelira-AI/aelira-core/actions/artifacts/$TIFF_ARTIFACT_ID/zip" \
+            > "$RUNNER_TEMP/python-native-tiff.zip"
+      - name: Check native evidence control tests
+        id: controls
+        run: |
+          python3 -B runtime-security/media/pillow/test-ci-evidence.py
+          python3 -B runtime-security/psycopg2/test-ci-evidence.py
+          python3 -B runtime-security/python-native-ci/test-run.py
+      - name: Build and verify both native Python components
+        id: components
+        shell: bash
+        env:
+          AELIRA_NATIVE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          test "$(/usr/bin/git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(/usr/bin/git status --porcelain)"
+          set +e
+          python3 runtime-security/python-native-ci/run.py \
+            --repo "$GITHUB_WORKSPACE" --arch "$AELIRA_NATIVE_ARCH" \
+            --expected-ref "$GITHUB_SHA" \
+            --scratch "$RUNNER_TEMP/python-native-private" \
+            --tiff-zip "$RUNNER_TEMP/python-native-tiff.zip" \
+            --dest "$RUNNER_TEMP/python-native-evidence" \
+            > "$RUNNER_TEMP/python-native-runner.log" 2>&1
+          result=$?
+          set -e
+          printf '%s\n' "$result" > "$RUNNER_TEMP/python-native-runner-exit.txt"
+          printf 'exit_code=%s\n' "$result" >> "$GITHUB_OUTPUT"
+          exit "$result"
+      - name: Retain bounded workflow outcomes
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          AELIRA_NATIVE_ARCH: ${{ matrix.arch }}
+          UTILITIES_OUTCOME: ${{ steps.utilities.outcome }}
+          CONTROLS_OUTCOME: ${{ steps.controls.outcome }}
+          TIFF_OUTCOME: ${{ steps.tiff.outcome }}
+          COMPONENT_OUTCOME: ${{ steps.components.outcome }}
+          COMPONENT_EXIT: ${{ steps.components.outputs.exit_code }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          arch = os.environ['AELIRA_NATIVE_ARCH']
+          assert arch in {'amd64', 'arm64'}
+          revision = os.environ['GITHUB_SHA']
+          assert re.fullmatch('[0-9a-f]{40}', revision)
+          outcomes = {name: os.environ[name] or 'not_reported'
+                      for name in ('UTILITIES_OUTCOME', 'TIFF_OUTCOME', 'CONTROLS_OUTCOME', 'COMPONENT_OUTCOME')}
+          assert all(value in {'success', 'failure', 'cancelled', 'skipped', 'not_reported'}
+                     for value in outcomes.values())
+          raw_exit = os.environ['COMPONENT_EXIT']
+          observed_exit = int(raw_exit) if raw_exit and re.fullmatch('[0-9]{1,3}', raw_exit) else None
+          assert observed_exit is None or 0 <= observed_exit <= 255
+          destination = Path(os.environ['RUNNER_TEMP']) / 'python-native-evidence'
+          destination.mkdir(exist_ok=True)
+          (destination / 'workflow-outcomes.json').write_text(json.dumps({
+              'architecture': arch, 'revision': revision,
+              'workflow_outcomes': outcomes, 'runner_observed_exit': observed_exit,
+              'complete': all(value == 'success' for value in outcomes.values()) and observed_exit == 0,
+          }, sort_keys=True, indent=2) + '\n')
+          if outcomes['COMPONENT_OUTCOME'] == 'success' and observed_exit != 0:
+              raise SystemExit(1)
+          PY
+      - name: Upload only bounded native Python evidence
+        if: always() && steps.checkout.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-native-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/python-native-evidence/
           if-no-files-found: error
           retention-days: 14
 

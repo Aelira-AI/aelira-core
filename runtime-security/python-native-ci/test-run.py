@@ -1,0 +1,864 @@
+"""Benign orchestration and trust-boundary controls; no native build is claimed."""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import stat
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+import zipfile
+
+MODULE = Path(__file__).with_name("run.py")
+SPEC = importlib.util.spec_from_file_location("python_native_ci_runner", MODULE)
+assert SPEC and SPEC.loader
+runner = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(runner)
+H40 = "a" * 40
+H64 = "b" * 64
+
+
+class BoundaryTests(unittest.TestCase):
+    def test_secondary_import_receipt_is_exact_and_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            image = "sha256:" + H64
+            (root / "installed-image-id.txt").write_text(image + "\n")
+            (root / "pillow-import-diagnostic-exit.txt").write_text("0\n")
+            marker = "PRIVATE-MARKER-DO-NOT-EXPORT"
+            (root / "pillow-import-diagnostic-private.log").write_text(marker)
+            receipt = {
+                "schema": "pillow-import-diagnostic-v2",
+                "image_id": image,
+                "architecture": "arm64",
+                "probe_pid": 123,
+                "imports": [
+                    {"name": name, "state": "pass", "exception": "none"}
+                    for name in runner.PILLOW_IMPORTS
+                ],
+                "native_modules": [
+                    {"name": name, "state": "pass", "exception": "none"}
+                    for name in runner.PILLOW_NATIVE_MODULES
+                ],
+                "libraries": [
+                    {
+                        "name": name,
+                        "state": "loaded",
+                        "loader": "none",
+                        "related_soname": None,
+                    }
+                    for name in runner.PILLOW_LIBRARIES
+                ],
+                "tiff_dependencies": [
+                    {
+                        "name": name,
+                        "state": "loaded",
+                        "loader": "none",
+                        "related_soname": None,
+                    }
+                    for name in runner.TIFF_DEPENDENCIES + runner.TIFF_LOADER["arm64"]
+                ],
+                "tiff_dependencies_loaded": 11,
+                "tiff_file": {
+                    "directory_canonical": True,
+                    "soname_entry": "expected",
+                    "target_entry": "regular",
+                    "size": 592088,
+                    "mode": 0o644,
+                    "owner_root": True,
+                    "sha256": runner.TIFF_TARGETS["arm64"][1],
+                    "matches_accepted": True,
+                },
+                "tiff_package": {"package": "expected", "files": "clean"},
+                "first_failed": None,
+                "import_passed": 5,
+                "native_passed": 3,
+                "libraries_loaded": 12,
+            }
+            path = root / "pillow-import-diagnostic.json"
+            consumer = {
+                "state": "reported",
+                "stage": "installed_verifier",
+                "exit": 40,
+                "check_code": "import_setup",
+            }
+
+            def read(value: object) -> dict[str, object]:
+                path.write_text(json.dumps(value))
+                return runner.pillow_import_diagnostic(root, consumer, "arm64")
+
+            self.assertEqual(read(receipt)["state"], "reported")
+            self.assertNotIn(marker, json.dumps(read(receipt)))
+            for changed in (
+                {**receipt, "image_id": "sha256:" + "c" * 64},
+                {**receipt, "import_passed": True},
+                {**receipt, "native_passed": None},
+                {**receipt, "libraries_loaded": 13},
+                {**receipt, "tiff_dependencies_loaded": True},
+                {**receipt, "probe_pid": marker},
+                {**receipt, "architecture": "other"},
+                {**receipt, "unknown": marker},
+                {**receipt, "first_failed": marker},
+                {
+                    **receipt,
+                    "imports": [
+                        {**receipt["imports"][0], "exception": marker},
+                        *receipt["imports"][1:],
+                    ],
+                },
+                {
+                    **receipt,
+                    "libraries": [
+                        {**receipt["libraries"][0], "name": marker},
+                        *receipt["libraries"][1:],
+                    ],
+                },
+                {
+                    **receipt,
+                    "libraries": [
+                        {**receipt["libraries"][0], "loader": marker},
+                        *receipt["libraries"][1:],
+                    ],
+                },
+                {
+                    **receipt,
+                    "tiff_dependencies": [
+                        {**receipt["tiff_dependencies"][0], "related_soname": marker},
+                        *receipt["tiff_dependencies"][1:],
+                    ],
+                },
+                {**receipt, "tiff_file": {**receipt["tiff_file"], "size": 592089}},
+                {**receipt, "tiff_file": {**receipt["tiff_file"], "owner_root": 1}},
+                {**receipt, "tiff_package": {"package": marker, "files": "clean"}},
+            ):
+                with self.subTest(changed=changed):
+                    self.assertEqual(read(changed)["state"], "unavailable")
+            failed = json.loads(json.dumps(receipt))
+            failed["imports"][1] = {
+                "name": "ImageCms",
+                "state": "failed",
+                "exception": "import_error",
+            }
+            for entry in failed["imports"][2:]:
+                entry["state"] = "not_run"
+            failed["first_failed"] = "ImageCms"
+            failed["import_passed"] = 1
+            self.assertEqual(read(failed)["state"], "reported")
+            failed["imports"][2]["state"] = "pass"
+            self.assertEqual(read(failed)["state"], "unavailable")
+            missing_dependency = json.loads(json.dumps(receipt))
+            missing_dependency["tiff_dependencies"][4].update(
+                state="load_failed",
+                loader="missing_file",
+                related_soname="libjbig.so.0",
+            )
+            missing_dependency["tiff_dependencies_loaded"] = 10
+            self.assertEqual(read(missing_dependency)["state"], "reported")
+            permission = json.loads(json.dumps(receipt))
+            permission["tiff_file"].update(mode=0, sha256=None, matches_accepted=False)
+            self.assertEqual(read(permission)["state"], "reported")
+            corruption = json.loads(json.dumps(receipt))
+            corruption["tiff_file"].update(sha256="c" * 64, matches_accepted=False)
+            self.assertEqual(read(corruption)["state"], "reported")
+            oversized = json.loads(json.dumps(receipt))
+            oversized["tiff_file"].update(
+                size=2_000_001, sha256=None, matches_accepted=False
+            )
+            self.assertEqual(read(oversized)["state"], "reported")
+            oversized["tiff_file"]["sha256"] = "c" * 64
+            self.assertEqual(read(oversized)["state"], "unavailable")
+            alias = json.loads(json.dumps(receipt))
+            alias["tiff_file"].update(
+                directory_canonical=False,
+                soname_entry="unavailable",
+                target_entry="unavailable",
+                size=None,
+                mode=None,
+                owner_root=None,
+                sha256=None,
+                matches_accepted=False,
+            )
+            self.assertEqual(read(alias)["state"], "reported")
+            alias["tiff_file"]["sha256"] = receipt["tiff_file"]["sha256"]
+            self.assertEqual(read(alias)["state"], "unavailable")
+            amd64 = json.loads(json.dumps(receipt))
+            amd64["architecture"] = "amd64"
+            amd64["tiff_dependencies"].pop()
+            amd64["tiff_dependencies_loaded"] = 10
+            amd64["tiff_file"].update(
+                size=612592,
+                sha256=runner.TIFF_TARGETS["amd64"][1],
+            )
+            self.assertEqual(read(amd64)["state"], "unavailable")
+            path.write_text(json.dumps(amd64))
+            self.assertEqual(
+                runner.pillow_import_diagnostic(root, consumer, "amd64")["state"],
+                "reported",
+            )
+            for payload in (
+                b'{"schema":"pillow-import-diagnostic-v2","schema":"pillow-import-diagnostic-v2"}',
+                b'{"schema":NaN}',
+                b"\xff",
+                b"x" * 8193,
+            ):
+                path.write_bytes(payload)
+                self.assertEqual(
+                    runner.pillow_import_diagnostic(root, consumer, "arm64")["state"],
+                    "unavailable",
+                )
+            read(receipt)
+            for exit_text in ("1\n", "00\n", "true", ""):
+                (root / "pillow-import-diagnostic-exit.txt").write_text(exit_text)
+                self.assertEqual(
+                    runner.pillow_import_diagnostic(root, consumer, "arm64")["state"],
+                    "unavailable",
+                )
+            (root / "pillow-import-diagnostic-exit.txt").write_text("0\n")
+            for changed_consumer in (
+                {**consumer, "exit": 41},
+                {**consumer, "stage": "complete"},
+                {**consumer, "state": "unavailable"},
+            ):
+                self.assertEqual(
+                    runner.pillow_import_diagnostic(root, changed_consumer, "arm64")[
+                        "state"
+                    ],
+                    "not_run",
+                )
+            alias = root / "alias"
+            alias.hardlink_to(path)
+            self.assertEqual(
+                runner.pillow_import_diagnostic(root, consumer, "arm64")["state"],
+                "unavailable",
+            )
+            alias.unlink()
+            path.unlink()
+            path.symlink_to(root / "pillow-import-diagnostic-private.log")
+            self.assertEqual(
+                runner.pillow_import_diagnostic(root, consumer, "arm64")["state"],
+                "unavailable",
+            )
+
+    def test_pillow_diagnostic_matches_actual_exit_and_only_fixed_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            receipt = root / "consumer-stage.json"
+            counter = root / "consumer-exit.txt"
+            for stage in runner.PILLOW_CONSUMER_STAGES:
+                for observed_exit in (0, 37, 255):
+                    with self.subTest(stage=stage, observed_exit=observed_exit):
+                        receipt.write_text(
+                            json.dumps(
+                                {"schema": 1, "stage": stage, "exit": observed_exit}
+                            )
+                        )
+                        counter.write_text(f"{observed_exit}\n")
+                        status = {
+                            "exit": observed_exit,
+                            "state": "passed" if observed_exit == 0 else "failed",
+                        }
+                        result = runner.pillow_consumer_diagnostic(root, status)
+                        if observed_exit == 0 and stage != "complete":
+                            self.assertEqual(result["state"], "unavailable")
+                        else:
+                            self.assertEqual(
+                                result,
+                                {
+                                    "schema": 1,
+                                    "state": "reported",
+                                    "stage": stage,
+                                    "exit": observed_exit,
+                                    "check_code": None,
+                                },
+                            )
+                        self.assertEqual(status["exit"], observed_exit)
+
+    def test_check_codes_match_producer_and_require_valid_verifier_stage(self) -> None:
+        tree = ast.parse(
+            (MODULE.parent.parent / "media/pillow/verify-installed.py").read_text()
+        )
+        assignments = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "CHECK_EXIT_CODES"
+                for target in node.targets
+            )
+        ]
+        self.assertEqual(len(assignments), 1)
+        producer = ast.literal_eval(assignments[0].value)
+        self.assertEqual(
+            runner.PILLOW_CHECK_CODES, {code: name for name, code in producer.items()}
+        )
+        self.assertEqual(set(runner.PILLOW_CHECK_CODES), set(range(40, 73)))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            receipt = root / "consumer-stage.json"
+            counter = root / "consumer-exit.txt"
+            marker = "PRIVATE-MARKER-DO-NOT-EXPORT"
+            (root / "installed-consumer.log").write_text(marker)
+            for stage in runner.PILLOW_CONSUMER_STAGES:
+                for code in range(1, 256):
+                    with self.subTest(stage=stage, code=code):
+                        receipt.write_text(
+                            json.dumps({"schema": 1, "stage": stage, "exit": code})
+                        )
+                        counter.write_text(f"{code}\n")
+                        status = {"exit": code, "state": "failed"}
+                        original = dict(status)
+                        observed = runner.pillow_consumer_diagnostic(root, status)
+                        expected = (
+                            runner.PILLOW_CHECK_CODES.get(code)
+                            if stage == "installed_verifier"
+                            else None
+                        )
+                        self.assertEqual(observed["check_code"], expected)
+                        self.assertEqual(observed["exit"], code)
+                        self.assertEqual(status, original)
+                        self.assertNotIn(marker, json.dumps(observed))
+            receipt.write_text(
+                json.dumps({"schema": 1, "stage": "installed_verifier", "exit": 42})
+            )
+            counter.write_text("41\n")
+            observed = runner.pillow_consumer_diagnostic(
+                root, {"exit": 42, "state": "failed"}
+            )
+            self.assertEqual(observed["state"], "unavailable")
+            self.assertIsNone(observed["check_code"])
+
+    def test_pillow_diagnostic_refuses_private_text_tamper_and_unsafe_files(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            receipt = root / "consumer-stage.json"
+            counter = root / "consumer-exit.txt"
+            private_marker = "PRIVATE-MARKER-DO-NOT-EXPORT"
+            (root / "installed-consumer.log").write_text(private_marker)
+            counter.write_text("37\n")
+            status = {"exit": 37, "state": "failed"}
+            valid = {"schema": 1, "stage": "installed_verifier", "exit": 37}
+            invalid = [
+                {**valid, "stage": private_marker},
+                {**valid, "detail": private_marker},
+                {**valid, "schema": True},
+                {**valid, "schema": 1.0},
+                {**valid, "exit": True},
+                {**valid, "exit": 37.0},
+                {**valid, "exit": 0},
+                {**valid, "exit": 256},
+                {**valid, "stage": None},
+                [valid],
+            ]
+            payloads = [json.dumps(value).encode() for value in invalid]
+            payloads.extend(
+                [
+                    b'{"schema":1,"stage":"preflight","exit":37,"exit":37}',
+                    b'{"schema":1,"stage":"preflight","exit":NaN}',
+                    b"{" + b" " * 256 + b"}",
+                    b"\xff",
+                    b"",
+                ]
+            )
+            for payload in payloads:
+                with self.subTest(payload=payload):
+                    receipt.write_bytes(payload)
+                    result = runner.pillow_consumer_diagnostic(root, status)
+                    self.assertEqual(result["state"], "unavailable")
+                    self.assertNotIn(private_marker, json.dumps(result))
+            receipt.write_text(json.dumps(valid))
+            for payload in (b"0\n", b"37", b"37\nEXTRA", b"", b"037\n"):
+                counter.write_bytes(payload)
+                self.assertEqual(
+                    runner.pillow_consumer_diagnostic(root, status)["state"],
+                    "unavailable",
+                )
+            counter.write_text("37\n")
+            for actual in (
+                {"exit": None, "state": "unavailable"},
+                {"exit": 37, "state": "passed"},
+                {"exit": True, "state": "failed"},
+                {"exit": 125, "state": "not_run"},
+            ):
+                self.assertEqual(
+                    runner.pillow_consumer_diagnostic(root, actual)["state"],
+                    "unavailable",
+                )
+            receipt.unlink()
+            self.assertEqual(
+                runner.pillow_consumer_diagnostic(root, status)["state"], "unavailable"
+            )
+            other = root / "other.json"
+            other.write_text(json.dumps(valid))
+            receipt.symlink_to(other)
+            self.assertEqual(
+                runner.pillow_consumer_diagnostic(root, status)["state"], "unavailable"
+            )
+            receipt.unlink()
+            receipt.mkdir()
+            self.assertEqual(
+                runner.pillow_consumer_diagnostic(root, status)["state"], "unavailable"
+            )
+            receipt.rmdir()
+            receipt.write_text(json.dumps(valid))
+            alias = root / "alias"
+            alias.symlink_to(root, target_is_directory=True)
+            self.assertEqual(
+                runner.pillow_consumer_diagnostic(alias, status)["state"], "unavailable"
+            )
+
+    def test_native_git_source_identity_positive_then_dirty_and_changed_refusals(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp).resolve()
+            mode = {"dirty": False, "changed": False}
+
+            def fake_git(_repo: Path, *args: str) -> str:
+                if args == ("rev-parse", "--show-toplevel"):
+                    return str(repo)
+                if args == ("remote", "get-url", "origin"):
+                    return runner.ORIGIN.removesuffix(".git")
+                if args == ("rev-parse", "HEAD"):
+                    return H40
+                if args == ("rev-parse", "HEAD^{tree}"):
+                    return "c" * 40
+                if args == ("status", "--porcelain", "--untracked-files=all"):
+                    return " M requirements.txt" if mode["dirty"] else ""
+                if args[:2] == ("ls-files", "--error-unmatch"):
+                    return args[-1]
+                if args[:2] == ("hash-object", "--"):
+                    return "d" * 40 if mode["changed"] else "e" * 40
+                if args[0] == "rev-parse" and args[1].startswith("HEAD:"):
+                    return "e" * 40
+                raise AssertionError(args)
+
+            with (
+                patch.object(runner.os, "getuid", return_value=1000),
+                patch.object(runner.platform, "system", return_value="Linux"),
+                patch.object(runner.platform, "machine", return_value="aarch64"),
+                patch.object(runner, "git", side_effect=fake_git),
+                patch.object(runner, "probe", return_value="arm64"),
+                patch.object(runner, "canonical_file"),
+            ):
+                accepted = runner.identity(repo, "arm64", H40)
+                self.assertEqual(accepted["origin"], runner.ORIGIN.removesuffix(".git"))
+                self.assertEqual(accepted["tree"], "c" * 40)
+                mode["dirty"] = True
+                with self.assertRaisesRegex(ValueError, "clean"):
+                    runner.identity(repo, "arm64", H40)
+                mode["dirty"] = False
+                mode["changed"] = True
+                with self.assertRaisesRegex(ValueError, "bytes"):
+                    runner.identity(repo, "arm64", H40)
+
+    def test_exact_origin_and_clean_committed_source_required(self) -> None:
+        repo = Path("/public/repo")
+        calls = []
+
+        def fake_git(_repo: Path, *args: str) -> str:
+            calls.append(args)
+            if args == ("rev-parse", "--show-toplevel"):
+                return str(repo)
+            if args == ("remote", "get-url", "origin"):
+                return "https://github.com/foreign/project.git"
+            raise AssertionError("untrusted origin should stop inspection")
+
+        with (
+            patch.object(runner.os, "getuid", return_value=1000),
+            patch.object(runner.platform, "system", return_value="Linux"),
+            patch.object(Path, "resolve", return_value=repo),
+            patch.object(runner, "git", side_effect=fake_git),
+        ):
+            with self.assertRaisesRegex(ValueError, "origin"):
+                runner.identity(repo, "amd64", H40)
+        self.assertEqual(calls[-1], ("remote", "get-url", "origin"))
+
+    def test_zip_exact_members_and_alias_refusals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            archive = root / "accepted.zip"
+            names = [
+                f"build-a/{p}_4.7.2-0aelira1_arm64.deb"
+                for p in ("libtiff6", "libtiffxx6", "libtiff-dev")
+            ]
+
+            def member(name: str, mode: int = stat.S_IFREG | 0o644) -> zipfile.ZipInfo:
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3
+                info.external_attr = mode << 16
+                return info
+
+            def make(extra: tuple[str, int] | None = None) -> None:
+                with zipfile.ZipFile(archive, "w") as output:
+                    for name in names:
+                        output.writestr(member(name), b"benign")
+                    if extra:
+                        output.writestr(member(*extra), b"benign")
+
+            make()
+            with patch.dict(
+                runner.ZIP_SHA256,
+                {"arm64": hashlib.sha256(archive.read_bytes()).hexdigest()},
+            ):
+                runner.extract_tiff(archive, root / "selected", "arm64")
+            self.assertEqual(
+                {p.name for p in (root / "selected").iterdir()},
+                {Path(n).name for n in names},
+            )
+            make(("./" + names[0], stat.S_IFREG | 0o644))
+            with patch.dict(
+                runner.ZIP_SHA256,
+                {"arm64": hashlib.sha256(archive.read_bytes()).hexdigest()},
+            ):
+                with self.assertRaisesRegex(ValueError, "unsafe or duplicated"):
+                    runner.extract_tiff(archive, root / "duplicate", "arm64")
+            make((names[0], stat.S_IFLNK | 0o777))
+            with patch.dict(
+                runner.ZIP_SHA256,
+                {"arm64": hashlib.sha256(archive.read_bytes()).hexdigest()},
+            ):
+                with self.assertRaisesRegex(ValueError, "unsafe or duplicated"):
+                    runner.extract_tiff(archive, root / "symlink", "arm64")
+
+    def test_source_and_baseline_schema_refusals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            source = {
+                "files": 130,
+                "src_files": 120,
+                "selected_pins": 5,
+                "context_manifest_sha256": H64,
+                "requirements_blob": H40,
+                "src_tree": H40,
+                "archive_sha256": H64,
+                "commit": H40,
+                "origin": runner.ORIGIN,
+                "native_bootstrap_sha256": H64,
+                "external_integrity_sha256": H64,
+            }
+            path = root / "source.json"
+            path.write_text(json.dumps(source))
+            fixture = root / "runtime-security" / "python-consumer-fixture"
+            fixture.mkdir(parents=True)
+            (fixture / "native.py").write_bytes(b"native")
+            (fixture / "integrity.py").write_bytes(b"integrity")
+            with (
+                patch.object(runner, "git", side_effect=[H40, H40]),
+                patch.object(runner, "digest", side_effect=[H64, H64]),
+            ):
+                accepted = runner.prepare_receipt(
+                    path, {"revision": H40, "origin": runner.ORIGIN}, fixture
+                )
+            self.assertEqual(accepted["archive_sha256"], H64)
+            baseline = {
+                "status": "official_wheel_baseline_pass",
+                "architecture": "arm64",
+                "base_manifest": runner.BASE,
+                "base_image_id": "sha256:" + H64,
+                "image_id": "sha256:" + H64,
+                "source": {
+                    key: accepted[key]
+                    for key in (
+                        "files",
+                        "src_files",
+                        "selected_pins",
+                        "context_manifest_sha256",
+                        "requirements_blob",
+                        "src_tree",
+                    )
+                },
+                "commit": H40,
+                "origin": runner.ORIGIN,
+                "archive_sha256": H64,
+                "frozen_input": {"input_manifest_sha256": H64},
+                "official_component_wheels": {
+                    "pillow": {"sha256": H64},
+                    "psycopg2-binary": {"sha256": H64},
+                },
+                "baseline": {
+                    "passed": True,
+                    "state": "official-wheel-before-replacement",
+                    "private_library_dirs_present": [
+                        "pillow.libs",
+                        "psycopg2_binary.libs",
+                    ],
+                },
+            }
+            baseline_path = root / "baseline.json"
+            baseline_path.write_text(json.dumps(baseline))
+            self.assertEqual(
+                runner.baseline_receipt(
+                    baseline_path,
+                    accepted,
+                    {"revision": H40, "origin": runner.ORIGIN, "architecture": "arm64"},
+                )["image_id"],
+                "sha256:" + H64,
+            )
+            baseline["source"]["src_tree"] = "0" * 40
+            baseline_path.write_text(json.dumps(baseline))
+            with self.assertRaisesRegex(ValueError, "baseline/source"):
+                runner.baseline_receipt(
+                    baseline_path,
+                    accepted,
+                    {"revision": H40, "origin": runner.ORIGIN, "architecture": "arm64"},
+                )
+            path.write_text(path.read_text().rstrip()[:-1] + ',"commit":"' + H40 + '"}')
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                runner.strict_json(path)
+            baseline_path.write_text("{}")
+            with self.assertRaisesRegex(ValueError, "receipt"):
+                runner.baseline_receipt(
+                    baseline_path, source, {"revision": H40, "origin": runner.ORIGIN}
+                )
+
+    def test_subprocess_original_nonzero_unavailable_and_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            scratch = Path(temp)
+            (scratch / "logs").mkdir()
+            failed = runner.run_stage(
+                "failed", [sys.executable, "-c", "raise SystemExit(37)"], scratch
+            )
+            self.assertEqual(
+                failed, {"exit": 37, "state": "failed", "reason": "process_nonzero"}
+            )
+            missing = runner.run_stage("missing", [str(scratch / "absent")], scratch)
+            self.assertEqual(
+                missing,
+                {"exit": None, "state": "unavailable", "reason": "command_missing"},
+            )
+            timeout = runner.run_stage(
+                "timeout",
+                [sys.executable, "-c", "import time; time.sleep(2)"],
+                scratch,
+                timeout=0.01,
+            )
+            self.assertEqual(
+                timeout, {"exit": None, "state": "unavailable", "reason": "timeout"}
+            )
+            self.assertNotIn(
+                "raise SystemExit", (scratch / "logs" / "failed.log").read_text()
+            )
+
+
+class OrchestrationTests(unittest.TestCase):
+    def run_case(
+        self, exits: dict[str, int], *, invalid_diagnostic: bool = False
+    ) -> tuple[int, dict, list[list[str]], dict, set[str]]:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            repo = root / "repo"
+            repo.mkdir()
+            scratch = root / "scratch"
+            dest = root / "public"
+            tiff = root / "tiff.zip"
+            tiff.write_bytes(b"placeholder")
+            observed: list[list[str]] = []
+            source = {
+                "files": 130,
+                "src_files": 120,
+                "selected_pins": 5,
+                "context_manifest_sha256": H64,
+                "requirements_blob": H40,
+                "src_tree": H40,
+                "archive_sha256": H64,
+            }
+            baseline = {
+                "status": "official_wheel_baseline_pass",
+                "image_id": "sha256:" + H64,
+                "archive_sha256": H64,
+                "input_manifest_sha256": H64,
+                "official_wheel_sha256": {"pillow": H64, "psycopg2-binary": H64},
+            }
+
+            def fake_stage(
+                name: str, command: list[str], _scratch: Path, **_kwargs: object
+            ) -> dict[str, object]:
+                observed.append(command)
+                if name == "source_export":
+                    (scratch / "fixture-export.tar").write_bytes(b"benign")
+                rc = exits.get(name, 0)
+                if name == "pillow_consumer":
+                    output = scratch / "pillow-build"
+                    (output / "consumer-exit.txt").write_text(f"{rc}\n")
+                    (output / "consumer-stage.json").write_text(
+                        json.dumps(
+                            {
+                                "schema": 1,
+                                "stage": (
+                                    "PRIVATE-MARKER-DO-NOT-EXPORT"
+                                    if invalid_diagnostic
+                                    else (
+                                        "complete" if rc == 0 else "installed_verifier"
+                                    )
+                                ),
+                                "exit": rc,
+                            }
+                        )
+                    )
+                if name == "pillow_export":
+                    candidate = scratch / "pillow-public-candidate"
+                    candidate.mkdir()
+                    (
+                        candidate / ("ci-status.json" if rc == 0 else "private-raw.log")
+                    ).write_text("{}")
+                if name == "psyc_export":
+                    candidate = scratch / "psyc-public-candidate"
+                    candidate.mkdir()
+                    (
+                        candidate / ("summary.json" if rc == 0 else "private-raw.log")
+                    ).write_text("{}")
+                return {
+                    "exit": rc,
+                    "state": "passed" if rc == 0 else "failed",
+                    "reason": "none" if rc == 0 else "process_nonzero",
+                }
+
+            ident = {
+                "revision": H40,
+                "tree": H40,
+                "architecture": "arm64",
+                "origin": runner.ORIGIN,
+            }
+            with (
+                patch.object(runner, "identity", return_value=ident),
+                patch.object(runner, "canonical_file"),
+                patch.object(
+                    runner,
+                    "digest",
+                    side_effect=lambda path: (
+                        runner.ZIP_SHA256["arm64"] if path == tiff else H64
+                    ),
+                ),
+                patch.object(runner, "run_stage", side_effect=fake_stage),
+                patch.object(runner, "prepare_receipt", return_value=source),
+                patch.object(runner, "baseline_receipt", return_value=baseline),
+                patch.object(runner, "extract_tiff"),
+                patch.object(
+                    runner, "probe", side_effect=[baseline["image_id"], "arm64"]
+                ),
+            ):
+                rc = runner.execute(repo, "arm64", H40, scratch, tiff, dest)
+            return (
+                rc,
+                json.loads((dest / "summary.json").read_text()),
+                observed,
+                json.loads((dest / "fixture.json").read_text()),
+                {p.name for p in dest.iterdir()},
+            )
+
+    def test_success_uses_one_baseline_for_both_components(self) -> None:
+        rc, summary, commands, fixture, entries = self.run_case({})
+        self.assertEqual(rc, 0)
+        self.assertEqual(summary["disposition"], "component_evidence_complete")
+        baseline = fixture["image_id"]
+        self.assertEqual(sum(baseline in command for command in commands), 2)
+        self.assertFalse(summary["full_runtime_cleared"])
+        self.assertFalse(summary["release_security_cleared"])
+        self.assertEqual(
+            summary["pillow_consumer_diagnostic"],
+            {
+                "schema": 1,
+                "state": "reported",
+                "stage": "complete",
+                "exit": 0,
+                "check_code": None,
+            },
+        )
+        self.assertEqual(
+            entries, {"summary.json", "fixture.json", "pillow", "psycopg2"}
+        )
+
+    def test_consumer_and_build_failures_preserve_original_exits(self) -> None:
+        rc, summary, commands, _, entries = self.run_case(
+            {"pillow_consumer": 9, "psyc_build": 37, "psyc_export": 1}
+        )
+        self.assertEqual(rc, 1)
+        self.assertEqual(summary["stages"]["pillow_consumer"]["exit"], 9)
+        self.assertEqual(
+            summary["pillow_consumer_diagnostic"],
+            {
+                "schema": 1,
+                "state": "reported",
+                "stage": "installed_verifier",
+                "exit": 9,
+                "check_code": None,
+            },
+        )
+        self.assertEqual(summary["stages"]["psyc_build"]["exit"], 37)
+        self.assertEqual(summary["stages"]["psyc_consumer"]["exit"], 125)
+        exporter = next(command for command in commands if "--build-exit" in command)
+        self.assertEqual(exporter[exporter.index("--build-exit") + 1], "37")
+        self.assertEqual(exporter[exporter.index("--consumer-exit") + 1], "125")
+        self.assertNotIn(
+            "pillow_export",
+            [
+                key
+                for key, value in summary["stages"].items()
+                if value["state"] != "not_run"
+            ],
+        )
+        self.assertEqual(entries, {"summary.json", "fixture.json"})
+
+    def test_decoded_check_code_keeps_failure_and_other_component_running(self) -> None:
+        for code in runner.PILLOW_CHECK_CODES:
+            with self.subTest(code=code):
+                rc, summary, _, _, entries = self.run_case({"pillow_consumer": code})
+                self.assertEqual(rc, 1)
+                self.assertEqual(summary["stages"]["pillow_consumer"]["exit"], code)
+                self.assertEqual(
+                    summary["stages"]["pillow_consumer"]["state"], "failed"
+                )
+                self.assertEqual(
+                    summary["pillow_consumer_diagnostic"]["check_code"],
+                    runner.PILLOW_CHECK_CODES[code],
+                )
+                self.assertEqual(
+                    summary["pillow_import_diagnostic"]["state"],
+                    "unavailable" if code == 40 else "not_run",
+                )
+                self.assertEqual(summary["stages"]["pillow_export"]["state"], "not_run")
+                self.assertEqual(
+                    summary["stages"]["pillow_publish"]["state"], "not_run"
+                )
+                self.assertEqual(summary["stages"]["psyc_publish"]["state"], "passed")
+                self.assertEqual(summary["disposition"], "incomplete")
+                self.assertEqual(entries, {"summary.json", "fixture.json", "psycopg2"})
+
+    def test_failed_exporter_partial_output_stays_private(self) -> None:
+        rc, summary, _, _, entries = self.run_case({"pillow_export": 33})
+        self.assertEqual(rc, 1)
+        self.assertEqual(summary["stages"]["pillow_export"]["exit"], 33)
+        self.assertEqual(summary["stages"]["pillow_publish"]["exit"], 125)
+        self.assertEqual(entries, {"summary.json", "fixture.json", "psycopg2"})
+
+    def test_early_failure_keeps_bounded_receipts(self) -> None:
+        rc, summary, _, fixture, entries = self.run_case({"fixture_test_prepare": 18})
+        self.assertEqual(rc, 1)
+        self.assertEqual(summary["stages"]["fixture_test_prepare"]["exit"], 18)
+        self.assertEqual(summary["stages"]["fixture_native"]["exit"], 125)
+        self.assertEqual(summary["pillow_consumer_diagnostic"]["state"], "not_run")
+        self.assertEqual(fixture, {"status": "incomplete"})
+        self.assertEqual(entries, {"summary.json", "fixture.json"})
+
+    def test_invalid_diagnostic_never_exports_even_after_zero_consumer_exit(
+        self,
+    ) -> None:
+        rc, summary, _, _, entries = self.run_case({}, invalid_diagnostic=True)
+        self.assertEqual(rc, 1)
+        self.assertEqual(summary["stages"]["pillow_consumer"]["exit"], 0)
+        self.assertEqual(summary["pillow_consumer_diagnostic"]["state"], "unavailable")
+        self.assertEqual(summary["stages"]["pillow_export"]["exit"], 125)
+        self.assertEqual(summary["disposition"], "incomplete")
+        self.assertNotIn("PRIVATE-MARKER-DO-NOT-EXPORT", json.dumps(summary))
+        self.assertEqual(entries, {"summary.json", "fixture.json", "psycopg2"})
+
+
+if __name__ == "__main__":
+    unittest.main()
