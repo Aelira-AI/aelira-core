@@ -72,6 +72,14 @@ text/colour feature flags, PNG/JPEG/WebP/JPEG 2000/AVIF/TIFF round trips,
 two-page Deflate TIFF pixels, malformed input refusal, and Aelira's PDF and
 handwritten-image validation consumers.
 
+The candidate installer checks the exact accepted `libtiff6` DEB, its archive
+link and ELF, and the installed package before changing only the
+`libtiff.so.6` symlink's timestamp. It chooses a whole second distinct from the
+baseline link so a metadata-based image differ includes the updated link in
+the committed candidate. The link target, permissions, owner, package and ELF
+bytes must still match the accepted DEB after this adjustment. The installed
+consumer remains the acceptance check for the committed image.
+
 For a failed `installed_verifier` stage only, `verify-installed.py` uses these
 fixed process exit codes to identify the executing check. They describe where
 execution stopped, not why the check failed. Tracebacks remain in the private
