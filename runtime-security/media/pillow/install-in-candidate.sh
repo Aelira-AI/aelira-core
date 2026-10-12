@@ -8,7 +8,7 @@ mkdir -p /var/lib/apt/lists /var/cache/apt/archives
 cp /input/apt-lists/* /var/lib/apt/lists/
 cp /input/apt-debs/*.deb /var/cache/apt/archives/
 apt-get install -y --no-download --no-install-recommends \
-  libavif16 libraqm0 python3-venv
+  libavif16 libraqm0 libwebpdemux2 libwebpmux3 python3-venv
 dpkg -i /input/tiff/libtiff6_4.7.2-0aelira1_${arch}.deb
 test "$(dpkg-query -W -f='${Version}' libtiff6)" = '4.7.2-0aelira1'
 /opt/venv/bin/python -m ensurepip --upgrade
