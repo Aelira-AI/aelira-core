@@ -152,15 +152,19 @@ def native(root: Path, arch: str) -> tuple[str, str]:
 
 
 def run_chain(root: Path, arch: str) -> tuple[str, str]:
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     text = subprocess.check_output(
         [
             sys.executable,
+            "-B",
             str(root / "recipe/verify-frozen-inputs.py"),
             str(root / "input"),
             str(root / "provenance"),
             arch,
         ],
         text=True,
+        env=env,
     )
     lines = text.splitlines()
     packages = len(list((root / "input/apt-debs").glob("*.deb")))
@@ -176,9 +180,12 @@ def run_chain(root: Path, arch: str) -> tuple[str, str]:
 
 
 def run_wheel(root: Path, wheel: Path, arch: str) -> str:
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     text = subprocess.check_output(
-        [sys.executable, str(root / "recipe/verify-wheel.py"), str(wheel), arch],
+        [sys.executable, "-B", str(root / "recipe/verify-wheel.py"), str(wheel), arch],
         text=True,
+        env=env,
     )
     expected = (
         f"wheel_record=pass entries=119 arch={arch} elf_modules=5 "

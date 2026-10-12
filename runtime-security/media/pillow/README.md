@@ -161,7 +161,12 @@ and emits `ci-status.json` with relative paths and copied-byte hashes. It
 requires recorded zero build and consumer exits, matching recipe and Aelira
 consumer bytes, complete structured build/installed proofs, wheel equality and
 the exact Git revision and tree. It replays signed input authentication and
-wheel RECORD/ELF checks over the copied bytes. It retains signed APT indexes/keyring, DEB closure, PyPI metadata
+wheel RECORD/ELF checks over the copied bytes. Replay Python processes and their
+children suppress bytecode writes. After replay, the exporter checks every file
+and directory against the selected inventory, rechecks the selected source
+bytes, and checks closure again after writing `ci-status.json` as the sole
+additional file. An extra, missing, changed, unreadable, symlinked, or special
+entry refuses completion; a failed replay leaves no complete status. It retains signed APT indexes/keyring, DEB closure, PyPI metadata
 and payloads, TIFF packages, both wheels, package inventories and structured
 semantic results. The full private build output, including the frozen builder
 archive and raw logs, remains local. The public subset supports independent

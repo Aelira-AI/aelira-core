@@ -277,6 +277,115 @@ class ExportControls(unittest.TestCase):
         self.assertFalse((dest / "provenance/frozen-builder.tar").exists())
         self.assertFalse((dest / "installed-consumer.log").exists())
         self.assertFalse((dest / "provenance/frozen-builder.inspect.json").exists())
+        ci.check_export_closure(
+            dest, result["files"], (dest / "ci-status.json").read_bytes()
+        )
+
+    def test_replay_generated_entries_refuse_without_complete_status(self) -> None:
+        original = proof.public_replay
+        for kind in ("extra", "directory", "symlink", "special", "missing", "mutated"):
+            with self.subTest(kind=kind):
+                self.serial += 1
+                dest = Path(self.temp.name) / f"replay-{self.serial}"
+
+                def replay(root: Path, arch: str) -> None:
+                    original(root, arch)
+                    if kind == "extra":
+                        (root / "recipe/__pycache__").mkdir()
+                        (root / "recipe/__pycache__/strict_json.pyc").write_bytes(
+                            b"bytecode"
+                        )
+                    elif kind == "directory":
+                        (root / "extra-empty-directory").mkdir()
+                    elif kind == "symlink":
+                        (root / "recipe/alias").symlink_to(
+                            root / "recipe", target_is_directory=True
+                        )
+                    elif kind == "special":
+                        os.mkfifo(root / "recipe/pipe")
+                    elif kind == "missing":
+                        (root / "recipe/README.md").unlink()
+                    else:
+                        (root / "recipe/README.md").write_bytes(b"changed")
+
+                with patch.object(proof, "public_replay", side_effect=replay):
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        ci.export(
+                            self.source,
+                            dest,
+                            self.repo,
+                            self.revision,
+                            self.tree,
+                            "arm64",
+                        )
+                self.assertFalse((dest / "ci-status.json").exists())
+
+    def test_unreadable_enumeration_and_post_status_refuse(self) -> None:
+        original = ci.check_export_closure
+        self.serial += 1
+        dest = Path(self.temp.name) / f"unreadable-{self.serial}"
+
+        def unreadable(
+            root: Path, inventory: list[dict], status_bytes: bytes | None = None
+        ) -> None:
+            with patch.object(ci.os, "scandir", side_effect=PermissionError("denied")):
+                original(root, inventory, status_bytes)
+
+        with patch.object(ci, "check_export_closure", side_effect=unreadable):
+            with self.assertRaises(PermissionError):
+                ci.export(
+                    self.source, dest, self.repo, self.revision, self.tree, "arm64"
+                )
+        self.assertFalse((dest / "ci-status.json").exists())
+
+        self.serial += 1
+        dest = Path(self.temp.name) / f"post-status-{self.serial}"
+
+        def closure(
+            root: Path, inventory: list[dict], status_bytes: bytes | None = None
+        ) -> None:
+            original(root, inventory, status_bytes)
+            if status_bytes is None:
+                (root / "unexpected-after-replay").write_bytes(
+                    b"retained failure evidence"
+                )
+
+        with patch.object(ci, "check_export_closure", side_effect=closure):
+            with self.assertRaisesRegex(ValueError, "unexpected public evidence file"):
+                ci.export(
+                    self.source, dest, self.repo, self.revision, self.tree, "arm64"
+                )
+        self.assertFalse((dest / "ci-status.json").exists())
+        self.assertTrue((dest / "unexpected-after-replay").exists())
+
+    def test_failed_replay_keeps_failure_without_complete_status(self) -> None:
+        self.serial += 1
+        dest = Path(self.temp.name) / f"failed-replay-{self.serial}"
+        with patch.object(
+            proof, "public_replay", side_effect=ValueError("replay failed")
+        ):
+            with self.assertRaisesRegex(ValueError, "replay failed"):
+                ci.export(
+                    self.source, dest, self.repo, self.revision, self.tree, "arm64"
+                )
+        self.assertTrue(dest.is_dir())
+        self.assertFalse((dest / "ci-status.json").exists())
+
+    def test_source_changed_after_replay_refuses_without_complete_status(self) -> None:
+        self.serial += 1
+        dest = Path(self.temp.name) / f"source-drift-{self.serial}"
+        original = proof.public_replay
+
+        def replay(root: Path, arch: str) -> None:
+            original(root, arch)
+            (self.source / "recipe/README.md").write_bytes(b"changed after copy")
+
+        with patch.object(proof, "public_replay", side_effect=replay):
+            with self.assertRaises(ValueError):
+                ci.export(
+                    self.source, dest, self.repo, self.revision, self.tree, "arm64"
+                )
+        self.assertFalse((dest / "ci-status.json").exists())
 
     def test_revision_recipe_and_source_refusals(self) -> None:
         self.reject("revision/tree", revision="0" * 40)
@@ -436,6 +545,55 @@ class ExportControls(unittest.TestCase):
         self.assertFalse((dest / "input/python/extra-private.json").exists())
         self.put("input/apt-debs/private-key.pem", b"private")
         self.reject("proof list mismatch")
+
+
+class BytecodeProcessControls(unittest.TestCase):
+    """Exercise real interpreter imports and child inheritance, not media validation."""
+
+    def test_replay_subprocesses_do_not_write_bytecode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            recipe = root / "recipe"
+            recipe.mkdir()
+            (recipe / "strict_json.py").write_text("VALUE = 1\n")
+            (recipe / "child.py").write_text("import strict_json\n")
+            prelude = (
+                "import strict_json, subprocess, sys\n"
+                "from pathlib import Path\n"
+                "subprocess.check_call([sys.executable, str(Path(__file__).with_name('child.py'))])\n"
+            )
+            chain = recipe / "verify-frozen-inputs.py"
+            chain.write_text(
+                prelude
+                + "print('accepted_tiff_input=pass architecture=arm64 packages=3')\n"
+                + "print('frozen_input_chain=pass architecture=arm64 signed_packages=1 signed_releases=4 pypi_inputs=4 tiff_packages=3')\n"
+            )
+            wheel_check = recipe / "verify-wheel.py"
+            wheel_check.write_text(
+                prelude
+                + "print('wheel_record=pass entries=119 arch=arm64 elf_modules=5 libtiff_needed=libtiff.so.6')\n"
+            )
+            debs = root / "input/apt-debs"
+            lists = root / "input/apt-lists"
+            debs.mkdir(parents=True)
+            lists.mkdir()
+            (debs / "package.deb").write_bytes(b"fixture")
+            for index in range(4):
+                (lists / f"release-{index}_InRelease").write_bytes(b"fixture")
+            wheel = root / "wheel.whl"
+            wheel.write_bytes(b"fixture")
+            environment = os.environ.copy()
+            environment.pop("PYTHONDONTWRITEBYTECODE", None)
+            environment.pop("PYTHONPYCACHEPREFIX", None)
+            subprocess.check_output([sys.executable, str(chain)], env=environment)
+            self.assertTrue((recipe / "__pycache__").exists())
+            shutil.rmtree(recipe / "__pycache__")
+            with patch.dict(os.environ, {"PYTHONDONTWRITEBYTECODE": "0"}):
+                self.assertEqual(len(proof.run_chain(root, "arm64")), 2)
+                self.assertIn(
+                    "wheel_record=pass", proof.run_wheel(root, wheel, "arm64")
+                )
+            self.assertFalse((recipe / "__pycache__").exists())
 
 
 class ConsumerStageControls(unittest.TestCase):
