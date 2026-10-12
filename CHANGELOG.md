@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Changes after v0.9.12 will be listed here. Published earlier release artifacts remain unchanged.
+The next planned release is v0.9.12. Its notes below remain pending protected publication. Published earlier release artifacts remain unchanged.
 
-## [0.9.12] - 2026-10-11
+## [0.9.12] - Pending publication
 
 See the [release notes](docs/releases/v0.9.12.md) for operator actions, limits and publication requirements.
 
