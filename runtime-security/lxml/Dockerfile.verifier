@@ -1,0 +1,7 @@
+FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+
+# This bootstrap is fetched through the base image's authenticated Ubuntu APT
+# chain. It never installs or executes a DEB from the candidate frozen cache.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 gpgv && \
+    rm -rf /var/lib/apt/lists/*
