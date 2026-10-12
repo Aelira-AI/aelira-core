@@ -35,6 +35,15 @@ MAX_DEB = 128 * 1024 * 1024
 MAX_PUBLIC_FILES = 300
 MAX_PUBLIC_FILE = 128 * 1024 * 1024
 MAX_PUBLIC_TOTAL = 768 * 1024 * 1024
+PILLOW_CONSUMER_STAGES = {
+    "preflight",
+    "candidate_install",
+    "candidate_commit",
+    "source_identity",
+    "installed_verifier",
+    "final_proof",
+    "complete",
+}
 
 
 def digest(path: Path) -> str:
@@ -253,6 +262,44 @@ def passed(status: dict[str, object]) -> bool:
     return status["state"] == "passed" and status["exit"] == 0
 
 
+def pillow_consumer_diagnostic(
+    root: Path, status: dict[str, object]
+) -> dict[str, object]:
+    unavailable = {"schema": 1, "state": "unavailable", "stage": None, "exit": None}
+    observed_exit = status.get("exit")
+    if (
+        type(observed_exit) is not int
+        or not 0 <= observed_exit <= 255
+        or status.get("state") != ("passed" if observed_exit == 0 else "failed")
+    ):
+        return unavailable
+    try:
+        path = root / "consumer-stage.json"
+        counter = root / "consumer-exit.txt"
+        canonical_file(path, 256)
+        canonical_file(counter, 4)
+        value = exact_dict(strict_json(path, 256), {"schema", "stage", "exit"})
+        if (
+            type(value["schema"]) is not int
+            or value["schema"] != 1
+            or type(value["stage"]) is not str
+            or value["stage"] not in PILLOW_CONSUMER_STAGES
+            or type(value["exit"]) is not int
+            or value["exit"] != observed_exit
+            or counter.read_bytes() != f"{observed_exit}\n".encode("ascii")
+            or (observed_exit == 0 and value["stage"] != "complete")
+        ):
+            return unavailable
+        return {
+            "schema": 1,
+            "state": "reported",
+            "stage": value["stage"],
+            "exit": observed_exit,
+        }
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return unavailable
+
+
 def prepare_receipt(
     path: Path, identity_data: dict[str, str], fixture_dir: Path
 ) -> dict[str, object]:
@@ -461,6 +508,12 @@ def execute(
         "advisory_cleared": False,
         "disposition": "incomplete",
         "stages": statuses,
+        "pillow_consumer_diagnostic": {
+            "schema": 1,
+            "state": "not_run",
+            "stage": None,
+            "exit": None,
+        },
     }
     write_json(dest / "summary.json", result)
     write_json(dest / "fixture.json", fixture_public)
@@ -634,7 +687,7 @@ def execute(
             "pillow_build",
             ["bash", str(repo / PILLOW / "build.sh"), str(pillow_out), str(tiff_dir)],
         ):
-            if step(
+            consumer_passed = step(
                 "pillow_consumer",
                 [
                     "bash",
@@ -642,7 +695,13 @@ def execute(
                     str(pillow_out),
                     str(baseline["image_id"]),
                 ],
-            ):
+            )
+            diagnostic = pillow_consumer_diagnostic(
+                pillow_out, statuses["pillow_consumer"]
+            )
+            result["pillow_consumer_diagnostic"] = diagnostic
+            write_json(dest / "summary.json", result)
+            if consumer_passed and diagnostic["state"] == "reported":
                 pillow_candidate = scratch / "pillow-public-candidate"
                 if step(
                     "pillow_export",

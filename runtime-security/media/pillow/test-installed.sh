@@ -5,9 +5,22 @@ live_recipe=$(cd "$(dirname "$0")" && pwd)
 output=${1:?usage: test-installed.sh ACCEPTED_BUILD_OUTPUT EXACT_BASELINE_IMAGE_ID}
 baseline=${2:?usage: test-installed.sh ACCEPTED_BUILD_OUTPUT EXACT_BASELINE_IMAGE_ID}
 output=$(cd "$output" && pwd)
+stage=preflight
+record_exit() {
+  local rc=$1 temporary
+  trap - EXIT
+  set +e
+  printf '%s\n' "$rc" > "$output/consumer-exit.txt" 2>/dev/null
+  temporary=$(mktemp "$output/.consumer-stage.XXXXXXXX") || exit "$rc"
+  if printf '{"schema":1,"stage":"%s","exit":%s}\n' "$stage" "$rc" > "$temporary"; then
+    ln "$temporary" "$output/consumer-stage.json" >/dev/null 2>&1
+  fi
+  rm -f -- "$temporary"
+  exit "$rc"
+}
+trap 'record_exit "$?"' EXIT
 python3 "$live_recipe/recipe-lock.py" compare "$output/recipe" "$live_recipe"
 recipe="$output/recipe"
-trap 'rc=$?; trap - EXIT; printf "%s\n" "$rc" > "$output/consumer-exit.txt"; exit "$rc"' EXIT
 [[ "$baseline" = sha256:* ]] || { echo 'Exact baseline image ID required' >&2; exit 1; }
 case "$(uname -m)" in aarch64) arch=arm64 ;; x86_64) arch=amd64 ;; *) exit 1 ;; esac
 case "$(docker info --format '{{.Architecture}}'):$arch" in
@@ -26,6 +39,7 @@ wheel_b=("$output"/build-b/wheels/pillow-12.3.0-*.whl)
 cmp "${wheel_a[0]}" "${wheel_b[0]}"
 grep -F "$(sha256sum "${wheel_a[0]}" | cut -d ' ' -f1)" "$output/reproducible-sha256.txt" > /dev/null
 name="aelira-pillow-consumer-$arch-$$"
+stage=candidate_install
 docker run --name "$name" --platform "linux/$arch" --network none \
   --security-opt no-new-privileges \
   --cpus 4 --memory 8g --pids-limit 512 \
@@ -34,11 +48,13 @@ docker run --name "$name" --platform "linux/$arch" --network none \
   -v "$output/build-a/wheels:/wheel:ro" \
   --entrypoint /bin/bash "$baseline" /recipe/install-in-candidate.sh \
   > "$output/installed-image-build.log" 2>&1
+stage=candidate_commit
 candidate=$(docker commit "$name")
 docker rm "$name" > /dev/null
 printf '%s\n' "$candidate" > "$output/installed-image-id.txt"
 printf '%s\n' "$baseline" > "$output/baseline-image-id.txt"
 python3 "$recipe/recipe-lock.py" verify "$recipe"
+stage=source_identity
 consumer_hashes="$output/consumer-source-sha256.tsv"
 : > "$consumer_hashes"
 for pair in \
@@ -52,6 +68,7 @@ for pair in \
   [[ "$actual" = "$expected" ]] || { echo 'Aelira consumer source differs' >&2; exit 1; }
   printf '%s\t%s\n' "$path" "$actual" >> "$consumer_hashes"
 done
+stage=installed_verifier
 docker run --rm --platform "linux/$arch" --network none --read-only \
   --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /tmp:rw,nosuid,nodev,size=128m \
@@ -60,7 +77,9 @@ docker run --rm --platform "linux/$arch" --network none --read-only \
   --entrypoint /opt/venv/bin/python "$candidate" /tmp/verify-installed.py \
   > "$output/installed-consumer.log" 2>&1
 grep -Fx 'Pillow wheel-private library directory absent' "$output/installed-consumer.log"
+stage=final_proof
 python3 "$recipe/recipe-lock.py" verify "$recipe"
 printf '0\n' > "$output/consumer-exit.txt"
 python3 "$recipe/proof.py" installed "$output" "$arch"
 printf 'native_pillow_installed=pass architecture=%s image=%s\n' "$arch" "$candidate"
+stage=complete

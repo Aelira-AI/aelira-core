@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import shutil
@@ -430,6 +431,147 @@ class ExportControls(unittest.TestCase):
         self.assertFalse((dest / "input/python/extra-private.json").exists())
         self.put("input/apt-debs/private-key.pem", b"private")
         self.reject("proof list mismatch")
+
+
+class ConsumerStageControls(unittest.TestCase):
+    """Exercise the real shell wrapper with synthetic native command results."""
+
+    BASELINE = "sha256:" + "a" * 64
+    CANDIDATE = "sha256:" + "b" * 64
+    PRIVATE_MARKER = "PRIVATE_LOG_MARKER_NEVER_IN_STAGE_RECEIPT"
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(
+            dir=Path(tempfile.gettempdir()).resolve()
+        )
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.recipe = self.root / "recipe"
+        self.recipe.mkdir()
+        shutil.copyfile(HERE / "test-installed.sh", self.recipe / "test-installed.sh")
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.stub(
+            "python3",
+            'if [ "$FAIL_AT" = preflight ] && [ "$2" = compare ]; then exit 37; fi\n'
+            'if [ "$FAIL_AT" = final_proof ] && [ "$2" = installed ]; then exit 37; fi',
+        )
+        self.stub("uname", "echo aarch64")
+        self.stub("sha256sum", 'echo "synthetic-wheel-hash  $1"')
+        self.stub(
+            "mktemp",
+            'if [ "${WRITER_FAIL:-0}" = 1 ]; then exit 29; fi\n'
+            'exec /usr/bin/mktemp "$@"',
+        )
+        self.stub(
+            "docker",
+            f"""case "$1" in
+  info) echo aarch64 ;;
+  image)
+    if [ "$4" = '{{{{.Id}}}}' ]; then echo {self.BASELINE}; else echo arm64; fi ;;
+  commit)
+    if [ "$FAIL_AT" = candidate_commit ]; then echo {self.PRIVATE_MARKER} >&2; exit 37; fi
+    echo {self.CANDIDATE} ;;
+  rm) exit 0 ;;
+  run)
+    case " $* " in
+      *" --name "*)
+        if [ "$FAIL_AT" = candidate_install ]; then echo {self.PRIVATE_MARKER} >&2; exit 37; fi ;;
+      *" /usr/bin/sha256sum "*)
+        if [ "$FAIL_AT" = source_identity ]; then echo {self.PRIVATE_MARKER} >&2; exit 37; fi
+        for last do :; done
+        case "$last" in
+          *pdf_remediator.py) echo '84666dcaf3c84341ebbc5a0f9a37338e2877c458da76c20460dd44b0c8d2b8e8  file' ;;
+          *handwritten_math_suitability.py) echo '310e239e7837e12e22a3ee14a831f38cf163360959675f7ae0ad149c4a5ddf50  file' ;;
+          *) exit 37 ;;
+        esac ;;
+      *" /opt/venv/bin/python "*)
+        if [ "$FAIL_AT" = installed_verifier ]; then echo {self.PRIVATE_MARKER} >&2; exit 37; fi
+        echo 'Pillow wheel-private library directory absent'
+        echo '{self.PRIVATE_MARKER}' ;;
+      *) exit 37 ;;
+    esac ;;
+  *) exit 37 ;;
+esac""",
+        )
+
+    def stub(self, name: str, body: str) -> None:
+        path = self.bin / name
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o755)
+
+    def execute(self, name: str, *, writer_fail: bool = False) -> tuple[int, Path]:
+        output = self.root / name
+        for directory in (
+            output / "recipe",
+            output / "build-a/wheels",
+            output / "build-b/wheels",
+        ):
+            directory.mkdir(parents=True)
+        wheel = "pillow-12.3.0-cp314-cp314-linux_aarch64.whl"
+        for run in "ab":
+            (output / f"build-{run}/wheels/{wheel}").write_bytes(b"same wheel")
+        (output / "build-a/wheel-verification.log").write_text("verified\n")
+        (output / "reproducible-sha256.txt").write_text("synthetic-wheel-hash\n")
+        (output / "build-exit.txt").write_text("0\n")
+        env = os.environ.copy()
+        env.update(
+            PATH=str(self.bin) + os.pathsep + env["PATH"],
+            FAIL_AT=name.split("-")[0],
+            WRITER_FAIL="1" if writer_fail else "0",
+        )
+        result = subprocess.run(
+            [
+                "bash",
+                str(self.recipe / "test-installed.sh"),
+                str(output),
+                self.BASELINE,
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode, output
+
+    def test_fixed_stage_and_original_exit_for_each_command_group(self) -> None:
+        for stage in (
+            "preflight",
+            "candidate_install",
+            "candidate_commit",
+            "source_identity",
+            "installed_verifier",
+            "final_proof",
+            "complete",
+        ):
+            with self.subTest(stage=stage):
+                rc, output = self.execute(stage)
+                expected = 0 if stage == "complete" else 37
+                self.assertEqual(rc, expected)
+                self.assertEqual((output / "consumer-exit.txt").read_text(), f"{rc}\n")
+                receipt = (output / "consumer-stage.json").read_bytes()
+                self.assertLessEqual(len(receipt), 128)
+                self.assertEqual(
+                    json.loads(receipt),
+                    {"schema": 1, "stage": stage, "exit": rc},
+                )
+                self.assertNotIn(self.PRIVATE_MARKER.encode(), receipt)
+
+    def test_writer_failure_preserves_original_exit_and_no_receipt(self) -> None:
+        rc, output = self.execute("source_identity-writer", writer_fail=True)
+        self.assertEqual(rc, 37)
+        self.assertEqual((output / "consumer-exit.txt").read_text(), "37\n")
+        self.assertFalse((output / "consumer-stage.json").exists())
+
+    def test_existing_receipt_is_never_overwritten(self) -> None:
+        output = self.root / "installed_verifier-existing"
+        output.mkdir()
+        existing = output / "consumer-stage.json"
+        existing.write_bytes(b"sentinel\n")
+        rc, observed = self.execute("installed_verifier-existing")
+        self.assertEqual(rc, 37)
+        self.assertEqual(observed, output)
+        self.assertEqual(existing.read_bytes(), b"sentinel\n")
 
 
 if __name__ == "__main__":

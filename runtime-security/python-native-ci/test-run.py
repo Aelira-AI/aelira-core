@@ -23,6 +23,120 @@ H64 = "b" * 64
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_pillow_diagnostic_matches_actual_exit_and_only_fixed_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            receipt = root / "consumer-stage.json"
+            counter = root / "consumer-exit.txt"
+            for stage in runner.PILLOW_CONSUMER_STAGES:
+                for observed_exit in (0, 37, 255):
+                    with self.subTest(stage=stage, observed_exit=observed_exit):
+                        receipt.write_text(
+                            json.dumps(
+                                {"schema": 1, "stage": stage, "exit": observed_exit}
+                            )
+                        )
+                        counter.write_text(f"{observed_exit}\n")
+                        status = {
+                            "exit": observed_exit,
+                            "state": "passed" if observed_exit == 0 else "failed",
+                        }
+                        result = runner.pillow_consumer_diagnostic(root, status)
+                        if observed_exit == 0 and stage != "complete":
+                            self.assertEqual(result["state"], "unavailable")
+                        else:
+                            self.assertEqual(
+                                result,
+                                {
+                                    "schema": 1,
+                                    "state": "reported",
+                                    "stage": stage,
+                                    "exit": observed_exit,
+                                },
+                            )
+                        self.assertEqual(status["exit"], observed_exit)
+
+    def test_pillow_diagnostic_refuses_private_text_tamper_and_unsafe_files(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            receipt = root / "consumer-stage.json"
+            counter = root / "consumer-exit.txt"
+            private_marker = "PRIVATE-MARKER-DO-NOT-EXPORT"
+            (root / "installed-consumer.log").write_text(private_marker)
+            counter.write_text("37\n")
+            status = {"exit": 37, "state": "failed"}
+            valid = {"schema": 1, "stage": "installed_verifier", "exit": 37}
+            invalid = [
+                {**valid, "stage": private_marker},
+                {**valid, "detail": private_marker},
+                {**valid, "schema": True},
+                {**valid, "schema": 1.0},
+                {**valid, "exit": True},
+                {**valid, "exit": 37.0},
+                {**valid, "exit": 0},
+                {**valid, "exit": 256},
+                {**valid, "stage": None},
+                [valid],
+            ]
+            payloads = [json.dumps(value).encode() for value in invalid]
+            payloads.extend(
+                [
+                    b'{"schema":1,"stage":"preflight","exit":37,"exit":37}',
+                    b'{"schema":1,"stage":"preflight","exit":NaN}',
+                    b"{" + b" " * 256 + b"}",
+                    b"\xff",
+                    b"",
+                ]
+            )
+            for payload in payloads:
+                with self.subTest(payload=payload):
+                    receipt.write_bytes(payload)
+                    result = runner.pillow_consumer_diagnostic(root, status)
+                    self.assertEqual(result["state"], "unavailable")
+                    self.assertNotIn(private_marker, json.dumps(result))
+            receipt.write_text(json.dumps(valid))
+            for payload in (b"0\n", b"37", b"37\nEXTRA", b"", b"037\n"):
+                counter.write_bytes(payload)
+                self.assertEqual(
+                    runner.pillow_consumer_diagnostic(root, status)["state"],
+                    "unavailable",
+                )
+            counter.write_text("37\n")
+            for actual in (
+                {"exit": None, "state": "unavailable"},
+                {"exit": 37, "state": "passed"},
+                {"exit": True, "state": "failed"},
+                {"exit": 125, "state": "not_run"},
+            ):
+                self.assertEqual(
+                    runner.pillow_consumer_diagnostic(root, actual)["state"],
+                    "unavailable",
+                )
+            receipt.unlink()
+            self.assertEqual(
+                runner.pillow_consumer_diagnostic(root, status)["state"], "unavailable"
+            )
+            other = root / "other.json"
+            other.write_text(json.dumps(valid))
+            receipt.symlink_to(other)
+            self.assertEqual(
+                runner.pillow_consumer_diagnostic(root, status)["state"], "unavailable"
+            )
+            receipt.unlink()
+            receipt.mkdir()
+            self.assertEqual(
+                runner.pillow_consumer_diagnostic(root, status)["state"], "unavailable"
+            )
+            receipt.rmdir()
+            receipt.write_text(json.dumps(valid))
+            alias = root / "alias"
+            alias.symlink_to(root, target_is_directory=True)
+            self.assertEqual(
+                runner.pillow_consumer_diagnostic(alias, status)["state"], "unavailable"
+            )
+
     def test_native_git_source_identity_positive_then_dirty_and_changed_refusals(
         self,
     ) -> None:
@@ -259,7 +373,7 @@ class BoundaryTests(unittest.TestCase):
 
 class OrchestrationTests(unittest.TestCase):
     def run_case(
-        self, exits: dict[str, int]
+        self, exits: dict[str, int], *, invalid_diagnostic: bool = False
     ) -> tuple[int, dict, list[list[str]], dict, set[str]]:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
@@ -294,6 +408,24 @@ class OrchestrationTests(unittest.TestCase):
                 if name == "source_export":
                     (scratch / "fixture-export.tar").write_bytes(b"benign")
                 rc = exits.get(name, 0)
+                if name == "pillow_consumer":
+                    output = scratch / "pillow-build"
+                    (output / "consumer-exit.txt").write_text(f"{rc}\n")
+                    (output / "consumer-stage.json").write_text(
+                        json.dumps(
+                            {
+                                "schema": 1,
+                                "stage": (
+                                    "PRIVATE-MARKER-DO-NOT-EXPORT"
+                                    if invalid_diagnostic
+                                    else (
+                                        "complete" if rc == 0 else "installed_verifier"
+                                    )
+                                ),
+                                "exit": rc,
+                            }
+                        )
+                    )
                 if name == "pillow_export":
                     candidate = scratch / "pillow-public-candidate"
                     candidate.mkdir()
@@ -354,6 +486,10 @@ class OrchestrationTests(unittest.TestCase):
         self.assertFalse(summary["full_runtime_cleared"])
         self.assertFalse(summary["release_security_cleared"])
         self.assertEqual(
+            summary["pillow_consumer_diagnostic"],
+            {"schema": 1, "state": "reported", "stage": "complete", "exit": 0},
+        )
+        self.assertEqual(
             entries, {"summary.json", "fixture.json", "pillow", "psycopg2"}
         )
 
@@ -363,6 +499,15 @@ class OrchestrationTests(unittest.TestCase):
         )
         self.assertEqual(rc, 1)
         self.assertEqual(summary["stages"]["pillow_consumer"]["exit"], 9)
+        self.assertEqual(
+            summary["pillow_consumer_diagnostic"],
+            {
+                "schema": 1,
+                "state": "reported",
+                "stage": "installed_verifier",
+                "exit": 9,
+            },
+        )
         self.assertEqual(summary["stages"]["psyc_build"]["exit"], 37)
         self.assertEqual(summary["stages"]["psyc_consumer"]["exit"], 125)
         exporter = next(command for command in commands if "--build-exit" in command)
@@ -390,8 +535,21 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(summary["stages"]["fixture_test_prepare"]["exit"], 18)
         self.assertEqual(summary["stages"]["fixture_native"]["exit"], 125)
+        self.assertEqual(summary["pillow_consumer_diagnostic"]["state"], "not_run")
         self.assertEqual(fixture, {"status": "incomplete"})
         self.assertEqual(entries, {"summary.json", "fixture.json"})
+
+    def test_invalid_diagnostic_never_exports_even_after_zero_consumer_exit(
+        self,
+    ) -> None:
+        rc, summary, _, _, entries = self.run_case({}, invalid_diagnostic=True)
+        self.assertEqual(rc, 1)
+        self.assertEqual(summary["stages"]["pillow_consumer"]["exit"], 0)
+        self.assertEqual(summary["pillow_consumer_diagnostic"]["state"], "unavailable")
+        self.assertEqual(summary["stages"]["pillow_export"]["exit"], 125)
+        self.assertEqual(summary["disposition"], "incomplete")
+        self.assertNotIn("PRIVATE-MARKER-DO-NOT-EXPORT", json.dumps(summary))
+        self.assertEqual(entries, {"summary.json", "fixture.json", "psycopg2"})
 
 
 if __name__ == "__main__":

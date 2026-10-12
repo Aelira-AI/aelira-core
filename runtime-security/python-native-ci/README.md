@@ -42,6 +42,14 @@ the other component's run. `fixture.json` contains only validated source IDs,
 hashes, counts, and the baseline image ID. All receipts are emitted after
 successful identity/destination preflight, including on later failure.
 
+`pillow_consumer_diagnostic` reports only a fixed consumer-stage identifier and
+the original observed process exit. It requires a small regular JSON receipt,
+exact field types and an exit matching both the process result and its exit
+file. Missing or invalid diagnostics are `unavailable`; no raw log, exception
+message, path or arbitrary string is copied. A successful consumer with missing
+diagnostics cannot export complete component evidence. An early skipped
+consumer keeps `not_run`, and a reported failure remains failed.
+
 This result is scoped to the two Python components. It does not clear
 full-runtime, all-copy, advisory, or release security acceptance. It supports the bounded
 component work tracked under #594, #595, and #596; the parent gates remain
