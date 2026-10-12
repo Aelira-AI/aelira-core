@@ -8,6 +8,8 @@
 
 [Quickstart](#try-it-in-one-command) · [Documentation](docs/) · [Discussions](https://github.com/Aelira-AI/aelira-core/discussions) · [Contribute](CONTRIBUTING.md) · [Get help](SUPPORT.md)
 
+> **Release publication: pending.** This source tree targets v0.9.12; protected publication has not completed.
+>
 > **Status: 0.9.12 beta.** Scanning and remediation remain under active validation. Automated scores describe scanner findings, not accessibility conformance. A verified improved PDF can remain downloadable as a working file while manual work remains; unsupported or unsafe cases can still have no downloadable candidate. Publication requires separate review and approval. LMS integration maturity varies by platform (see the [integration status table](#lms-integration-status) below). Cloud and uploaded scans, remediation, upload, synchronization, and reconciliation jobs use a bounded, multi-worker durable queue. See the [0.9.12 release notes](docs/releases/v0.9.12.md) for upgrade actions and verification limits.
 
 Aelira can apply eligible fixes and return a saved candidate with a report of recorded outcomes. Supported changes differ by format and source structure. Unsupported or ambiguous cases remain unresolved. A verified improved PDF may be available as a working file even when manual corrections remain; unsafe or unsupported output may still be withheld. Review the actual saved file and remaining findings before approving publication.
