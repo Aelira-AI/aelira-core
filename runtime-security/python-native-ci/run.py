@@ -95,6 +95,42 @@ PILLOW_LIBRARIES = (
     "libfreetype.so.6",
     "libraqm.so.0",
 )
+TIFF_DEPENDENCIES = (
+    "libwebp.so.7",
+    "libzstd.so.1",
+    "liblzma.so.5",
+    "libLerc.so.4",
+    "libjbig.so.0",
+    "libjpeg.so.8",
+    "libdeflate.so.0",
+    "libz.so.1",
+    "libm.so.6",
+    "libc.so.6",
+)
+TIFF_LOADER = {"arm64": ("ld-linux-aarch64.so.1",), "amd64": ()}
+TIFF_TARGETS = {
+    "arm64": (
+        592088,
+        "63e0add472fc1c99cbcfadcf58df8dc11d8da6516f224ecb57ff12e06029f384",
+    ),
+    "amd64": (
+        612592,
+        "f45a58ee6e6d76dd51da58b0d721b3cf4d49d3a434f224340a7f30646b21d340",
+    ),
+}
+APPROVED_SONAMES = frozenset(
+    PILLOW_LIBRARIES + TIFF_DEPENDENCIES + TIFF_LOADER["arm64"]
+)
+LOADER_CATEGORIES = {
+    "none",
+    "missing_file",
+    "permission",
+    "invalid_elf",
+    "undefined_symbol",
+    "version_mismatch",
+    "mapping_failure",
+    "other",
+}
 IMPORT_EXCEPTIONS = {
     "none",
     "module_missing",
@@ -371,7 +407,7 @@ def pillow_consumer_diagnostic(
 
 
 def pillow_import_diagnostic(
-    root: Path, consumer: dict[str, object]
+    root: Path, consumer: dict[str, object], expected_arch: str
 ) -> dict[str, object]:
     """Read only a complete, image-bound secondary receipt for original exit 40."""
     unavailable = {"schema": 1, "state": "unavailable", "observation": None}
@@ -386,7 +422,7 @@ def pillow_import_diagnostic(
         path = root / "pillow-import-diagnostic.json"
         secondary_exit = root / "pillow-import-diagnostic-exit.txt"
         image_path = root / "installed-image-id.txt"
-        for item, maximum in ((path, 4096), (secondary_exit, 2), (image_path, 72)):
+        for item, maximum in ((path, 8192), (secondary_exit, 2), (image_path, 72)):
             canonical_file(item, maximum)
             if item.stat().st_nlink != 1:
                 raise ValueError("secondary receipt alias")
@@ -396,13 +432,19 @@ def pillow_import_diagnostic(
         if not image.endswith("\n") or not IMAGE.fullmatch(image[:-1]):
             return unavailable
         value = exact_dict(
-            strict_json(path, 4096),
+            strict_json(path, 8192),
             {
                 "schema",
                 "image_id",
+                "architecture",
+                "probe_pid",
                 "imports",
                 "native_modules",
                 "libraries",
+                "tiff_dependencies",
+                "tiff_dependencies_loaded",
+                "tiff_file",
+                "tiff_package",
                 "first_failed",
                 "import_passed",
                 "native_passed",
@@ -410,8 +452,13 @@ def pillow_import_diagnostic(
             },
         )
         if (
-            value["schema"] != "pillow-import-diagnostic-v1"
+            value["schema"] != "pillow-import-diagnostic-v2"
             or value["image_id"] != image[:-1]
+            or expected_arch not in TIFF_TARGETS
+            or value["architecture"] != expected_arch
+            or type(value["architecture"]) is not str
+            or type(value["probe_pid"]) is not int
+            or not 1 <= value["probe_pid"] <= 4_194_304
         ):
             return unavailable
 
@@ -457,19 +504,123 @@ def pillow_import_diagnostic(
         libraries = value["libraries"]
         import_passed = check_modules(imports, PILLOW_IMPORTS, True)
         native_passed = check_modules(native, PILLOW_NATIVE_MODULES, False)
-        if type(libraries) is not list or len(libraries) != len(PILLOW_LIBRARIES):
+
+        def check_links(entries: object, names: tuple[str, ...]) -> int:
+            if type(entries) is not list or len(entries) != len(names):
+                raise ValueError("library count")
+            loaded_count = 0
+            for entry, name in zip(entries, names, strict=True):
+                item = exact_dict(entry, {"name", "state", "loader", "related_soname"})
+                state, loader, related = (
+                    item["state"],
+                    item["loader"],
+                    item["related_soname"],
+                )
+                if (
+                    type(item["name"]) is not str
+                    or item["name"] != name
+                    or type(state) is not str
+                    or state not in {"loaded", "load_failed", "unavailable"}
+                    or type(loader) is not str
+                    or loader not in LOADER_CATEGORIES
+                    or type(related) not in (str, type(None))
+                    or (related is not None and related not in APPROVED_SONAMES)
+                    or (state == "loaded" and (loader != "none" or related is not None))
+                    or (state == "load_failed" and loader == "none")
+                    or (
+                        state == "unavailable"
+                        and (loader != "other" or related is not None)
+                    )
+                ):
+                    raise ValueError("library result")
+                loaded_count += state == "loaded"
+            return loaded_count
+
+        loaded = check_links(libraries, PILLOW_LIBRARIES)
+        architecture = value["architecture"]
+        dependencies = value["tiff_dependencies"]
+        dependency_loaded = check_links(
+            dependencies, TIFF_DEPENDENCIES + TIFF_LOADER[architecture]
+        )
+        file = exact_dict(
+            value["tiff_file"],
+            {
+                "directory_canonical",
+                "soname_entry",
+                "target_entry",
+                "size",
+                "mode",
+                "owner_root",
+                "sha256",
+                "matches_accepted",
+            },
+        )
+        if (
+            type(file["directory_canonical"]) is not bool
+            or type(file["soname_entry"]) is not str
+            or file["soname_entry"]
+            not in {
+                "expected",
+                "missing",
+                "unexpected_type",
+                "unexpected_target",
+                "unavailable",
+            }
+            or type(file["target_entry"]) is not str
+            or file["target_entry"]
+            not in {"regular", "missing", "unexpected_type", "unavailable"}
+            or type(file["matches_accepted"]) is not bool
+        ):
             return unavailable
-        loaded = 0
-        for entry, name in zip(libraries, PILLOW_LIBRARIES, strict=True):
-            item = exact_dict(entry, {"name", "state"})
+        if not file["directory_canonical"] and (
+            file["soname_entry"] != "unavailable"
+            or file["target_entry"] != "unavailable"
+            or any(
+                file[key] is not None
+                for key in ("size", "mode", "owner_root", "sha256")
+            )
+        ):
+            return unavailable
+        if file["target_entry"] == "regular":
             if (
-                type(item["name"]) is not str
-                or item["name"] != name
-                or type(item["state"]) is not str
-                or item["state"] not in {"loaded", "load_failed", "unavailable"}
+                type(file["size"]) is not int
+                or not 0 <= file["size"] <= 2_000_001
+                or type(file["mode"]) is not int
+                or not 0 <= file["mode"] <= 0o7777
+                or type(file["owner_root"]) is not bool
+                or (file["size"] > 2_000_000 and file["sha256"] is not None)
+                or (
+                    file["sha256"] is not None
+                    and (
+                        type(file["sha256"]) is not str
+                        or not HEX64.fullmatch(file["sha256"])
+                    )
+                )
             ):
                 return unavailable
-            loaded += item["state"] == "loaded"
+        elif any(
+            file[key] is not None for key in ("size", "mode", "owner_root", "sha256")
+        ):
+            return unavailable
+        expected_size, expected_sha = TIFF_TARGETS[architecture]
+        if file["matches_accepted"] is not (
+            file["directory_canonical"]
+            and file["soname_entry"] == "expected"
+            and file["target_entry"] == "regular"
+            and file["size"] == expected_size
+            and file["mode"] == 0o644
+            and file["owner_root"] is True
+            and file["sha256"] == expected_sha
+        ):
+            return unavailable
+        package = exact_dict(value["tiff_package"], {"package", "files"})
+        if (
+            type(package["package"]) is not str
+            or package["package"] not in {"expected", "missing", "other", "unavailable"}
+            or type(package["files"]) is not str
+            or package["files"] not in {"clean", "mismatch", "unavailable"}
+        ):
+            return unavailable
         failed = [item["name"] for item in imports if item["state"] == "failed"]
         if (
             len(failed) > 1
@@ -477,7 +628,12 @@ def pillow_import_diagnostic(
             or value["first_failed"] != (failed[0] if failed else None)
             or any(
                 type(value[key]) is not int
-                for key in ("import_passed", "native_passed", "libraries_loaded")
+                for key in (
+                    "import_passed",
+                    "native_passed",
+                    "libraries_loaded",
+                    "tiff_dependencies_loaded",
+                )
             )
             or (
                 value["import_passed"],
@@ -485,6 +641,7 @@ def pillow_import_diagnostic(
                 value["libraries_loaded"],
             )
             != (import_passed, native_passed, loaded)
+            or value["tiff_dependencies_loaded"] != dependency_loaded
         ):
             return unavailable
         return {"schema": 1, "state": "reported", "observation": value}
@@ -899,7 +1056,7 @@ def execute(
             )
             result["pillow_consumer_diagnostic"] = diagnostic
             result["pillow_import_diagnostic"] = pillow_import_diagnostic(
-                pillow_out, diagnostic
+                pillow_out, diagnostic, arch
             )
             write_json(dest / "summary.json", result)
             if consumer_passed and diagnostic["state"] == "reported":

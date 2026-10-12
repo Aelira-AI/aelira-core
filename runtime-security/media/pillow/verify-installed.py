@@ -13,11 +13,208 @@ import hashlib
 import importlib.metadata
 import io
 import json
+import os
 import platform
 from pathlib import Path
+import re
+import stat
+import subprocess
 import sys
 import traceback
 import zipfile
+
+# Direct NEEDED entries independently checked against both accepted libtiff6
+# DEBs. The ARM64 package also names its architecture's runtime loader.
+TIFF_DEPENDENCIES = (
+    "libwebp.so.7",
+    "libzstd.so.1",
+    "liblzma.so.5",
+    "libLerc.so.4",
+    "libjbig.so.0",
+    "libjpeg.so.8",
+    "libdeflate.so.0",
+    "libz.so.1",
+    "libm.so.6",
+    "libc.so.6",
+)
+TIFF_TARGETS = {
+    "arm64": (
+        "aarch64-linux-gnu",
+        592088,
+        "63e0add472fc1c99cbcfadcf58df8dc11d8da6516f224ecb57ff12e06029f384",
+    ),
+    "amd64": (
+        "x86_64-linux-gnu",
+        612592,
+        "f45a58ee6e6d76dd51da58b0d721b3cf4d49d3a434f224340a7f30646b21d340",
+    ),
+}
+TIFF_LOADER = {"arm64": ("ld-linux-aarch64.so.1",), "amd64": ()}
+APPROVED_SONAMES = frozenset(
+    ("libtiff.so.6",)
+    + TIFF_DEPENDENCIES
+    + TIFF_LOADER["arm64"]
+    + (
+        "libopenjp2.so.7",
+        "libxcb.so.1",
+        "libavif.so.16",
+        "libwebpmux.so.3",
+        "libwebpdemux.so.2",
+        "liblcms2.so.2",
+        "libfreetype.so.6",
+        "libraqm.so.0",
+    )
+)
+
+
+def loader_category(error: Exception) -> tuple[str, str | None]:
+    """Classify a loader error without returning its text, path or symbol."""
+    message = str(error)
+    if isinstance(error, PermissionError) or "Permission denied" in message:
+        category = "permission"
+    elif isinstance(error, FileNotFoundError) or "No such file or directory" in message:
+        category = "missing_file"
+    elif any(
+        phrase in message
+        for phrase in ("invalid ELF header", "wrong ELF class", "file too short")
+    ):
+        category = "invalid_elf"
+    elif "undefined symbol:" in message:
+        category = "undefined_symbol"
+    elif "version `" in message and "not found" in message:
+        category = "version_mismatch"
+    elif any(
+        phrase in message
+        for phrase in ("failed to map segment", "cannot allocate memory")
+    ):
+        category = "mapping_failure"
+    else:
+        category = "other"
+    found = [
+        name
+        for name in APPROVED_SONAMES
+        if re.search(
+            r"(?<![A-Za-z0-9_.-])" + re.escape(name) + r"(?![A-Za-z0-9_.-])",
+            message,
+        )
+    ]
+    return category, found[0] if len(found) == 1 else None
+
+
+def tiff_file_identity(directory: Path, arch: str) -> dict[str, object]:
+    """Inspect fixed package paths only; never follow an unexpected symlink."""
+    _, accepted_size, accepted_sha = TIFF_TARGETS[arch]
+    try:
+        directory_canonical = directory.resolve(strict=True) == directory
+    except (OSError, RuntimeError):
+        directory_canonical = False
+    if not directory_canonical:
+        return {
+            "directory_canonical": False,
+            "soname_entry": "unavailable",
+            "target_entry": "unavailable",
+            "size": None,
+            "mode": None,
+            "owner_root": None,
+            "sha256": None,
+            "matches_accepted": False,
+        }
+    link = directory / "libtiff.so.6"
+    target = directory / "libtiff.so.6.3.0"
+    link_state = "unavailable"
+    try:
+        link_info = link.lstat()
+        if stat.S_ISLNK(link_info.st_mode):
+            link_state = (
+                "expected" if os.readlink(link) == target.name else "unexpected_target"
+            )
+        else:
+            link_state = "unexpected_type"
+    except FileNotFoundError:
+        link_state = "missing"
+    except OSError:
+        pass
+    target_state = "unavailable"
+    size = mode = owner_root = sha = None
+    try:
+        info = target.lstat()
+        if stat.S_ISREG(info.st_mode):
+            target_state = "regular"
+            size = min(info.st_size, 2_000_001)
+            mode = stat.S_IMODE(info.st_mode)
+            owner_root = info.st_uid == 0
+            if 0 <= size <= 2_000_000:
+                try:
+                    with target.open("rb") as stream:
+                        content = stream.read(2_000_001)
+                    if len(content) == size:
+                        sha = hashlib.sha256(content).hexdigest()
+                except OSError:
+                    pass
+        else:
+            target_state = "unexpected_type"
+    except FileNotFoundError:
+        target_state = "missing"
+    except OSError:
+        pass
+    return {
+        "directory_canonical": directory_canonical,
+        "soname_entry": link_state,
+        "target_entry": target_state,
+        "size": size,
+        "mode": mode,
+        "owner_root": owner_root,
+        "sha256": sha,
+        "matches_accepted": (
+            directory_canonical
+            and link_state == "expected"
+            and target_state == "regular"
+            and size == accepted_size
+            and mode == 0o644
+            and owner_root is True
+            and sha == accepted_sha
+        ),
+    }
+
+
+def tiff_package_identity(arch: str) -> dict[str, str]:
+    """Return fixed states only; command output never enters the receipt."""
+    package = "unavailable"
+    files = "unavailable"
+    try:
+        query = subprocess.run(
+            [
+                "dpkg-query",
+                "-W",
+                "-f=${Status}\t${Version}\t${Architecture}",
+                "libtiff6",
+            ],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        if query.returncode == 1 and not query.stderr:
+            package = "missing"
+        elif query.returncode == 0 and not query.stderr:
+            expected = f"install ok installed\t4.7.2-0aelira1\t{arch}".encode()
+            package = "expected" if query.stdout == expected else "other"
+        verification = subprocess.run(
+            ["dpkg", "-V", "libtiff6"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        if (
+            verification.returncode == 0
+            and not verification.stdout
+            and not verification.stderr
+        ):
+            files = "clean"
+        elif verification.returncode == 1 and not verification.stderr:
+            files = "mismatch"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return {"package": package, "files": files}
 
 
 def import_diagnostic(image_id: str) -> None:
@@ -40,6 +237,9 @@ def import_diagnostic(image_id: str) -> None:
         "libfreetype.so.6",
         "libraqm.so.0",
     )
+    arch = {"aarch64": "arm64", "x86_64": "amd64"}.get(platform.machine())
+    if arch is None:
+        raise SystemExit(2)
 
     def category(error: Exception) -> str:
         if isinstance(error, ModuleNotFoundError):
@@ -83,20 +283,53 @@ def import_diagnostic(image_id: str) -> None:
     for name in libraries:
         try:
             ctypes.CDLL(name)
-        except OSError:
+        except OSError as error:
             state = "load_failed"
+            loader, related = loader_category(error)
         except Exception:
             state = "unavailable"
+            loader, related = "other", None
         else:
             state = "loaded"
-        links.append({"name": name, "state": state})
+            loader, related = "none", None
+        links.append(
+            {"name": name, "state": state, "loader": loader, "related_soname": related}
+        )
+
+    dependencies = []
+    for name in TIFF_DEPENDENCIES + TIFF_LOADER[arch]:
+        try:
+            ctypes.CDLL(name)
+        except OSError as error:
+            state = "load_failed"
+            loader, related = loader_category(error)
+        except Exception:
+            state = "unavailable"
+            loader, related = "other", None
+        else:
+            state = "loaded"
+            loader, related = "none", None
+        dependencies.append(
+            {"name": name, "state": state, "loader": loader, "related_soname": related}
+        )
+    triplet = TIFF_TARGETS[arch][0]
+    file_identity = tiff_file_identity(Path("/usr/lib") / triplet, arch)
+    package_identity = tiff_package_identity(arch)
 
     receipt = {
-        "schema": "pillow-import-diagnostic-v1",
+        "schema": "pillow-import-diagnostic-v2",
         "image_id": image_id,
+        "architecture": arch,
+        "probe_pid": os.getpid(),
         "imports": imports,
         "native_modules": modules,
         "libraries": links,
+        "tiff_dependencies": dependencies,
+        "tiff_dependencies_loaded": sum(
+            item["state"] == "loaded" for item in dependencies
+        ),
+        "tiff_file": file_identity,
+        "tiff_package": package_identity,
         "first_failed": first_failed,
         "import_passed": sum(item["state"] == "pass" for item in imports),
         "native_passed": sum(item["state"] == "pass" for item in modules),

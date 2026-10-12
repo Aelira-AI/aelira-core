@@ -90,18 +90,41 @@ candidate ID with Docker inspect before passing that ID to the explicit
 and returns the original 40 even if the probe or receipt writer fails. No
 probe runs after success or another exit code.
 
-The secondary JSON records only ordered `Image`, `ImageCms`, `ImageFile`,
+The secondary v2 JSON records ordered `Image`, `ImageCms`, `ImageFile`,
 `ImageFont`, `features` import outcomes, independent `_imaging`, `_imagingcms`,
 `_imagingft` import outcomes, and independent `ctypes.CDLL` load outcomes for
-the twelve system libraries pinned by `verify-wheel.py`. Fixed exception
-categories contain no messages, names from exceptions, paths, or raw logs.
+the twelve system libraries pinned by `verify-wheel.py`. It also probes the
+fixed direct `libtiff.so.6` ELF dependencies checked against both accepted
+native TIFF DEBs: WebP, zstd, lzma, Lerc, JBIG, JPEG, deflate, zlib, libm,
+libc, and the ARM64 loader named in that package. Each load has a fixed
+state, a finite loader category, and at most one SONAME selected from the
+approved static set. No exception message, arbitrary symbol or path enters
+the receipt.
+
+The same secondary process checks the fixed architecture-specific
+`libtiff.so.6` symlink and `libtiff.so.6.3.0` regular file. It reports only
+fixed entry states, bounded size/mode, root ownership, SHA-256 and a derived
+match against the accepted DEB's target: ARM64 592088 bytes / SHA-256
+`63e0add472fc1c99cbcfadcf58df8dc11d8da6516f224ecb57ff12e06029f384`,
+AMD64 612592 bytes / SHA-256
+`f45a58ee6e6d76dd51da58b0d721b3cf4d49d3a434f224340a7f30646b21d340`.
+`dpkg-query` and `dpkg -V` become finite package/version and file-verification
+states. An unexpected or unavailable architecture directory ends file inspection
+before any child path is opened; its file fields remain unavailable. Command
+warnings also leave package/file verification unavailable. These checks reuse
+the same actual immutable candidate, UID, mounts,
+network and confinement as the original verifier. The existing build proof
+authenticates the accepted TIFF DEBs before candidate installation. No DEB
+or additional external data is mounted into the secondary process.
 The first import failure stops the ordered sequence; native modules and library
 loads remain separate observations. A secondary probe repeats imports in a
 new process, so it cannot recover the exact exception or prove the cause of
 the original exit 40. A loaded library does not prove which library the
-original process linked. The existing reserved `SystemExit` collision limit
-still applies. The diagnostic never changes a failed consumer or authorizes
-Pillow evidence export.
+original process linked. Missing or unreadable TIFF bytes, unexpected symlinks,
+malformed receipts and unavailable package checks remain bounded observations,
+not a repair. The existing reserved `SystemExit` collision limit still applies.
+The diagnostic never changes a failed consumer or authorizes Pillow evidence
+export.
 
 | Exit | Executing check |
 | --- | --- |

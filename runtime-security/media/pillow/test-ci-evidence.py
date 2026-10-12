@@ -470,7 +470,8 @@ class ConsumerStageControls(unittest.TestCase):
         )
         self.stub(
             "docker",
-            f"""case "$1" in
+            f"""printf '%s\\n' "$*" >> "$DOCKER_TRACE"
+case "$1" in
   info) echo aarch64 ;;
   image)
     if [ "$4" = '{{{{.Id}}}}' ]; then
@@ -544,6 +545,7 @@ esac""",
             PATH=str(self.bin) + os.pathsep + env["PATH"],
             FAIL_AT=name.split("-")[0],
             WRITER_FAIL="1" if writer_fail else "0",
+            DOCKER_TRACE=str(output / "docker-trace-private.log"),
         )
         result = subprocess.run(
             [
@@ -602,9 +604,36 @@ esac""",
                     (output / "pillow-import-diagnostic-exit.txt").read_text(),
                     secondary,
                 )
+                invocations = (
+                    (output / "docker-trace-private.log").read_text().splitlines()
+                )
+                consumer_calls = [
+                    line for line in invocations if " /tmp/verify-installed.py" in line
+                ]
+                self.assertEqual(len(consumer_calls), 2)
+                primary, probe = consumer_calls
+                self.assertEqual(
+                    probe.removesuffix(f" --import-diagnostic {self.CANDIDATE}"),
+                    primary,
+                )
+                for required in (
+                    "--platform linux/arm64",
+                    "--network none",
+                    "--read-only",
+                    "--user 1000:1000",
+                    "--cap-drop ALL",
+                    "--security-opt no-new-privileges",
+                    "--tmpfs /tmp:rw,nosuid,nodev,size=128m",
+                    self.CANDIDATE,
+                ):
+                    self.assertIn(required, primary)
         rc, output = self.execute("complete")
         self.assertEqual(rc, 0)
         self.assertFalse((output / "pillow-import-diagnostic.json").exists())
+        self.assertNotIn(
+            " --import-diagnostic ",
+            (output / "docker-trace-private.log").read_text(),
+        )
         rc, output = self.execute("import40-writer", diagnostic_writer_fail=True)
         self.assertEqual(rc, 40)
         self.assertEqual((output / "consumer-exit.txt").read_text(), "40\n")
@@ -674,6 +703,234 @@ class InstalledCheckExitControls(unittest.TestCase):
                     self.assertEqual(raised.exception.code, 97)
         with self.assertRaises(AssertionError):
             raise AssertionError(self.MARKER)  # Unmapped work keeps its failure.
+
+    def test_tiff_loader_diagnostic_producer_and_reader_boundary(self) -> None:
+        verifier = self.verifier
+        cases = (
+            (
+                "libjbig.so.0: cannot open shared object file: No such file or directory",
+                "missing_file",
+                "libjbig.so.0",
+            ),
+            ("libtiff.so.6: Permission denied", "permission", "libtiff.so.6"),
+            ("libtiff.so.6: invalid ELF header", "invalid_elf", "libtiff.so.6"),
+            (
+                "libtiff.so.6: undefined symbol: PRIVATE_SYMBOL",
+                "undefined_symbol",
+                "libtiff.so.6",
+            ),
+            (
+                "libtiff.so.6: version `PRIVATE_VERSION' not found",
+                "version_mismatch",
+                "libtiff.so.6",
+            ),
+            ("libtiff.so.6: failed to map segment", "mapping_failure", "libtiff.so.6"),
+            ("PRIVATE_LOG_MARKER", "other", None),
+            (
+                "libtiff.so.6 libjbig.so.0: No such file or directory",
+                "missing_file",
+                None,
+            ),
+        )
+        for message, category, related in cases:
+            with self.subTest(category=category, related=related):
+                self.assertEqual(
+                    verifier.loader_category(OSError(message)), (category, related)
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp).resolve()
+            target = directory / "libtiff.so.6.3.0"
+            target.write_bytes(b"synthetic")
+            target.chmod(0o644)
+            (directory / "libtiff.so.6").symlink_to(target.name)
+            observed = verifier.tiff_file_identity(directory, "arm64")
+            self.assertTrue(observed["directory_canonical"])
+            self.assertEqual(observed["soname_entry"], "expected")
+            self.assertEqual(observed["target_entry"], "regular")
+            self.assertEqual(observed["sha256"], h(b"synthetic"))
+            self.assertFalse(observed["matches_accepted"])
+            alias = directory.parent / (directory.name + "-alias")
+            alias.symlink_to(directory, target_is_directory=True)
+            try:
+                with (
+                    patch.object(
+                        Path, "lstat", side_effect=AssertionError("child lstat")
+                    ),
+                    patch.object(
+                        Path, "open", side_effect=AssertionError("child open")
+                    ),
+                ):
+                    aliased = verifier.tiff_file_identity(alias, "arm64")
+                self.assertEqual(
+                    aliased,
+                    {
+                        "directory_canonical": False,
+                        "soname_entry": "unavailable",
+                        "target_entry": "unavailable",
+                        "size": None,
+                        "mode": None,
+                        "owner_root": None,
+                        "sha256": None,
+                        "matches_accepted": False,
+                    },
+                )
+            finally:
+                alias.unlink()
+            target.write_bytes(b"x" * 2_000_001)
+            with patch.object(
+                Path, "open", side_effect=AssertionError("oversized open")
+            ):
+                oversized = verifier.tiff_file_identity(directory, "arm64")
+            self.assertEqual(oversized["size"], 2_000_001)
+            self.assertIsNone(oversized["sha256"])
+            self.assertFalse(oversized["matches_accepted"])
+            target.write_bytes(b"synthetic")
+            target.chmod(0)
+            self.assertEqual(verifier.tiff_file_identity(directory, "arm64")["mode"], 0)
+            target.chmod(0o644)
+            target.write_bytes(b"corrupted")
+            self.assertEqual(
+                verifier.tiff_file_identity(directory, "arm64")["sha256"],
+                h(b"corrupted"),
+            )
+            (directory / "libtiff.so.6").unlink()
+            (directory / "libtiff.so.6").symlink_to("private-target")
+            self.assertEqual(
+                verifier.tiff_file_identity(directory, "arm64")["soname_entry"],
+                "unexpected_target",
+            )
+
+            runner_path = HERE.parents[1] / "python-native-ci/run.py"
+            runner_spec = importlib.util.spec_from_file_location(
+                "native_reader", runner_path
+            )
+            assert runner_spec and runner_spec.loader
+            runner = importlib.util.module_from_spec(runner_spec)
+            runner_spec.loader.exec_module(runner)
+            self.assertEqual(verifier.TIFF_DEPENDENCIES, runner.TIFF_DEPENDENCIES)
+            self.assertEqual(verifier.TIFF_LOADER, runner.TIFF_LOADER)
+            for arch in ("arm64", "amd64"):
+                self.assertEqual(
+                    verifier.TIFF_TARGETS[arch][1:], runner.TIFF_TARGETS[arch]
+                )
+                self.assertEqual(verifier.TIFF_TARGETS[arch][2], proof.TIFF_HASH[arch])
+            image = "sha256:" + "b" * 64
+            file_receipt = {
+                "directory_canonical": True,
+                "soname_entry": "expected",
+                "target_entry": "regular",
+                "size": 592088,
+                "mode": 0o644,
+                "owner_root": True,
+                "sha256": verifier.TIFF_TARGETS["arm64"][2],
+                "matches_accepted": True,
+            }
+
+            def import_module(name: str) -> object:
+                if name in {"PIL.Image", "PIL._imaging"}:
+                    raise ImportError("PRIVATE_LOG_MARKER")
+                return object()
+
+            def load(name: str) -> object:
+                if name in {"libtiff.so.6", "libjbig.so.0"}:
+                    raise OSError(
+                        "libjbig.so.0: cannot open shared object file: No such file or directory"
+                    )
+                return object()
+
+            with (
+                patch("importlib.import_module", side_effect=import_module),
+                patch.object(verifier.ctypes, "CDLL", side_effect=load),
+                patch.object(verifier.platform, "machine", return_value="aarch64"),
+                patch.object(verifier.os, "getpid", return_value=123),
+                patch.object(verifier, "tiff_file_identity", return_value=file_receipt),
+                patch.object(
+                    verifier,
+                    "tiff_package_identity",
+                    return_value={"package": "expected", "files": "clean"},
+                ),
+                redirect_stdout(io.StringIO()) as output,
+            ):
+                verifier.import_diagnostic(image)
+            text = output.getvalue()
+            self.assertLessEqual(len(text.encode()), 8192)
+            self.assertNotIn("PRIVATE_LOG_MARKER", text)
+            receipt = json.loads(text)
+            self.assertEqual(receipt["libraries"][0]["loader"], "missing_file")
+            self.assertEqual(receipt["tiff_dependencies_loaded"], 10)
+            (directory / "installed-image-id.txt").write_text(image + "\n")
+            (directory / "pillow-import-diagnostic-exit.txt").write_text("0\n")
+            (directory / "pillow-import-diagnostic.json").write_text(text)
+            consumer = {
+                "state": "reported",
+                "stage": "installed_verifier",
+                "exit": 40,
+                "check_code": "import_setup",
+            }
+            parsed = runner.pillow_import_diagnostic(directory, consumer, "arm64")
+            self.assertEqual(parsed["state"], "reported")
+            self.assertEqual(parsed["observation"], receipt)
+            with (
+                patch("importlib.import_module", side_effect=import_module),
+                patch.object(verifier.ctypes, "CDLL", side_effect=load),
+                patch.object(verifier.platform, "machine", return_value="aarch64"),
+                patch.object(verifier.os, "getpid", return_value=123),
+                patch.object(verifier, "tiff_file_identity", return_value=oversized),
+                patch.object(
+                    verifier,
+                    "tiff_package_identity",
+                    return_value={"package": "expected", "files": "clean"},
+                ),
+                redirect_stdout(io.StringIO()) as oversized_output,
+            ):
+                verifier.import_diagnostic(image)
+            oversized_receipt = json.loads(oversized_output.getvalue())
+            (directory / "pillow-import-diagnostic.json").write_text(
+                oversized_output.getvalue()
+            )
+            self.assertEqual(
+                runner.pillow_import_diagnostic(directory, consumer, "arm64")[
+                    "observation"
+                ],
+                oversized_receipt,
+            )
+            oversized_receipt["tiff_file"]["sha256"] = h(b"synthetic")
+            (directory / "pillow-import-diagnostic.json").write_text(
+                json.dumps(oversized_receipt)
+            )
+            self.assertEqual(
+                runner.pillow_import_diagnostic(directory, consumer, "arm64")["state"],
+                "unavailable",
+            )
+            receipt["tiff_file"] = aliased
+            (directory / "pillow-import-diagnostic.json").write_text(
+                json.dumps(receipt)
+            )
+            self.assertEqual(
+                runner.pillow_import_diagnostic(directory, consumer, "arm64")["state"],
+                "reported",
+            )
+
+    def test_tiff_package_warnings_are_unavailable(self) -> None:
+        verifier = self.verifier
+        expected = b"install ok installed\t4.7.2-0aelira1\tarm64"
+        for query_stderr, verify_stderr, wanted in (
+            (b"PRIVATE_WARNING", b"", {"package": "unavailable", "files": "clean"}),
+            (b"", b"PRIVATE_WARNING", {"package": "expected", "files": "unavailable"}),
+        ):
+            with (
+                self.subTest(wanted=wanted),
+                patch.object(
+                    verifier.subprocess,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, expected, query_stderr),
+                        subprocess.CompletedProcess([], 0, b"", verify_stderr),
+                    ],
+                ),
+            ):
+                self.assertEqual(verifier.tiff_package_identity("arm64"), wanted)
 
     def test_import_failure_and_signal_are_not_misclassified(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

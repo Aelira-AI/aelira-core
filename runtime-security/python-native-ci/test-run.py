@@ -33,8 +33,10 @@ class BoundaryTests(unittest.TestCase):
             marker = "PRIVATE-MARKER-DO-NOT-EXPORT"
             (root / "pillow-import-diagnostic-private.log").write_text(marker)
             receipt = {
-                "schema": "pillow-import-diagnostic-v1",
+                "schema": "pillow-import-diagnostic-v2",
                 "image_id": image,
+                "architecture": "arm64",
+                "probe_pid": 123,
                 "imports": [
                     {"name": name, "state": "pass", "exception": "none"}
                     for name in runner.PILLOW_IMPORTS
@@ -44,9 +46,35 @@ class BoundaryTests(unittest.TestCase):
                     for name in runner.PILLOW_NATIVE_MODULES
                 ],
                 "libraries": [
-                    {"name": name, "state": "loaded"}
+                    {
+                        "name": name,
+                        "state": "loaded",
+                        "loader": "none",
+                        "related_soname": None,
+                    }
                     for name in runner.PILLOW_LIBRARIES
                 ],
+                "tiff_dependencies": [
+                    {
+                        "name": name,
+                        "state": "loaded",
+                        "loader": "none",
+                        "related_soname": None,
+                    }
+                    for name in runner.TIFF_DEPENDENCIES + runner.TIFF_LOADER["arm64"]
+                ],
+                "tiff_dependencies_loaded": 11,
+                "tiff_file": {
+                    "directory_canonical": True,
+                    "soname_entry": "expected",
+                    "target_entry": "regular",
+                    "size": 592088,
+                    "mode": 0o644,
+                    "owner_root": True,
+                    "sha256": runner.TIFF_TARGETS["arm64"][1],
+                    "matches_accepted": True,
+                },
+                "tiff_package": {"package": "expected", "files": "clean"},
                 "first_failed": None,
                 "import_passed": 5,
                 "native_passed": 3,
@@ -62,7 +90,7 @@ class BoundaryTests(unittest.TestCase):
 
             def read(value: object) -> dict[str, object]:
                 path.write_text(json.dumps(value))
-                return runner.pillow_import_diagnostic(root, consumer)
+                return runner.pillow_import_diagnostic(root, consumer, "arm64")
 
             self.assertEqual(read(receipt)["state"], "reported")
             self.assertNotIn(marker, json.dumps(read(receipt)))
@@ -71,6 +99,9 @@ class BoundaryTests(unittest.TestCase):
                 {**receipt, "import_passed": True},
                 {**receipt, "native_passed": None},
                 {**receipt, "libraries_loaded": 13},
+                {**receipt, "tiff_dependencies_loaded": True},
+                {**receipt, "probe_pid": marker},
+                {**receipt, "architecture": "other"},
                 {**receipt, "unknown": marker},
                 {**receipt, "first_failed": marker},
                 {
@@ -83,10 +114,27 @@ class BoundaryTests(unittest.TestCase):
                 {
                     **receipt,
                     "libraries": [
-                        {"name": marker, "state": "loaded"},
+                        {**receipt["libraries"][0], "name": marker},
                         *receipt["libraries"][1:],
                     ],
                 },
+                {
+                    **receipt,
+                    "libraries": [
+                        {**receipt["libraries"][0], "loader": marker},
+                        *receipt["libraries"][1:],
+                    ],
+                },
+                {
+                    **receipt,
+                    "tiff_dependencies": [
+                        {**receipt["tiff_dependencies"][0], "related_soname": marker},
+                        *receipt["tiff_dependencies"][1:],
+                    ],
+                },
+                {**receipt, "tiff_file": {**receipt["tiff_file"], "size": 592089}},
+                {**receipt, "tiff_file": {**receipt["tiff_file"], "owner_root": 1}},
+                {**receipt, "tiff_package": {"package": marker, "files": "clean"}},
             ):
                 with self.subTest(changed=changed):
                     self.assertEqual(read(changed)["state"], "unavailable")
@@ -103,22 +151,71 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(read(failed)["state"], "reported")
             failed["imports"][2]["state"] = "pass"
             self.assertEqual(read(failed)["state"], "unavailable")
+            missing_dependency = json.loads(json.dumps(receipt))
+            missing_dependency["tiff_dependencies"][4].update(
+                state="load_failed",
+                loader="missing_file",
+                related_soname="libjbig.so.0",
+            )
+            missing_dependency["tiff_dependencies_loaded"] = 10
+            self.assertEqual(read(missing_dependency)["state"], "reported")
+            permission = json.loads(json.dumps(receipt))
+            permission["tiff_file"].update(mode=0, sha256=None, matches_accepted=False)
+            self.assertEqual(read(permission)["state"], "reported")
+            corruption = json.loads(json.dumps(receipt))
+            corruption["tiff_file"].update(sha256="c" * 64, matches_accepted=False)
+            self.assertEqual(read(corruption)["state"], "reported")
+            oversized = json.loads(json.dumps(receipt))
+            oversized["tiff_file"].update(
+                size=2_000_001, sha256=None, matches_accepted=False
+            )
+            self.assertEqual(read(oversized)["state"], "reported")
+            oversized["tiff_file"]["sha256"] = "c" * 64
+            self.assertEqual(read(oversized)["state"], "unavailable")
+            alias = json.loads(json.dumps(receipt))
+            alias["tiff_file"].update(
+                directory_canonical=False,
+                soname_entry="unavailable",
+                target_entry="unavailable",
+                size=None,
+                mode=None,
+                owner_root=None,
+                sha256=None,
+                matches_accepted=False,
+            )
+            self.assertEqual(read(alias)["state"], "reported")
+            alias["tiff_file"]["sha256"] = receipt["tiff_file"]["sha256"]
+            self.assertEqual(read(alias)["state"], "unavailable")
+            amd64 = json.loads(json.dumps(receipt))
+            amd64["architecture"] = "amd64"
+            amd64["tiff_dependencies"].pop()
+            amd64["tiff_dependencies_loaded"] = 10
+            amd64["tiff_file"].update(
+                size=612592,
+                sha256=runner.TIFF_TARGETS["amd64"][1],
+            )
+            self.assertEqual(read(amd64)["state"], "unavailable")
+            path.write_text(json.dumps(amd64))
+            self.assertEqual(
+                runner.pillow_import_diagnostic(root, consumer, "amd64")["state"],
+                "reported",
+            )
             for payload in (
-                b'{"schema":"pillow-import-diagnostic-v1","schema":"pillow-import-diagnostic-v1"}',
+                b'{"schema":"pillow-import-diagnostic-v2","schema":"pillow-import-diagnostic-v2"}',
                 b'{"schema":NaN}',
                 b"\xff",
-                b"x" * 4097,
+                b"x" * 8193,
             ):
                 path.write_bytes(payload)
                 self.assertEqual(
-                    runner.pillow_import_diagnostic(root, consumer)["state"],
+                    runner.pillow_import_diagnostic(root, consumer, "arm64")["state"],
                     "unavailable",
                 )
             read(receipt)
             for exit_text in ("1\n", "00\n", "true", ""):
                 (root / "pillow-import-diagnostic-exit.txt").write_text(exit_text)
                 self.assertEqual(
-                    runner.pillow_import_diagnostic(root, consumer)["state"],
+                    runner.pillow_import_diagnostic(root, consumer, "arm64")["state"],
                     "unavailable",
                 )
             (root / "pillow-import-diagnostic-exit.txt").write_text("0\n")
@@ -128,19 +225,23 @@ class BoundaryTests(unittest.TestCase):
                 {**consumer, "state": "unavailable"},
             ):
                 self.assertEqual(
-                    runner.pillow_import_diagnostic(root, changed_consumer)["state"],
+                    runner.pillow_import_diagnostic(root, changed_consumer, "arm64")[
+                        "state"
+                    ],
                     "not_run",
                 )
             alias = root / "alias"
             alias.hardlink_to(path)
             self.assertEqual(
-                runner.pillow_import_diagnostic(root, consumer)["state"], "unavailable"
+                runner.pillow_import_diagnostic(root, consumer, "arm64")["state"],
+                "unavailable",
             )
             alias.unlink()
             path.unlink()
             path.symlink_to(root / "pillow-import-diagnostic-private.log")
             self.assertEqual(
-                runner.pillow_import_diagnostic(root, consumer)["state"], "unavailable"
+                runner.pillow_import_diagnostic(root, consumer, "arm64")["state"],
+                "unavailable",
             )
 
     def test_pillow_diagnostic_matches_actual_exit_and_only_fixed_stages(self) -> None:
