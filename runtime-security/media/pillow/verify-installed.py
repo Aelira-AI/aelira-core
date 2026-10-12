@@ -15,8 +15,99 @@ import io
 import json
 import platform
 from pathlib import Path
+import sys
 import traceback
 import zipfile
+
+
+def import_diagnostic(image_id: str) -> None:
+    """Emit only fixed observations; never copy an import exception or path."""
+    import importlib
+
+    names = ("Image", "ImageCms", "ImageFile", "ImageFont", "features")
+    native = ("_imaging", "_imagingcms", "_imagingft")
+    libraries = (
+        "libtiff.so.6",
+        "libjpeg.so.8",
+        "libopenjp2.so.7",
+        "libz.so.1",
+        "libxcb.so.1",
+        "libavif.so.16",
+        "libwebp.so.7",
+        "libwebpmux.so.3",
+        "libwebpdemux.so.2",
+        "liblcms2.so.2",
+        "libfreetype.so.6",
+        "libraqm.so.0",
+    )
+
+    def category(error: Exception) -> str:
+        if isinstance(error, ModuleNotFoundError):
+            return "module_missing"
+        if isinstance(error, ImportError):
+            return "import_error"
+        if isinstance(error, PermissionError):
+            return "permission_error"
+        if isinstance(error, OSError):
+            return "os_error"
+        return "other_exception"
+
+    imports = []
+    first_failed = None
+    for name in names:
+        if first_failed is not None:
+            imports.append({"name": name, "state": "not_run", "exception": "none"})
+            continue
+        try:
+            importlib.import_module(f"PIL.{name}")
+        except Exception as error:
+            imports.append(
+                {"name": name, "state": "failed", "exception": category(error)}
+            )
+            first_failed = name
+        else:
+            imports.append({"name": name, "state": "pass", "exception": "none"})
+
+    modules = []
+    for name in native:
+        try:
+            importlib.import_module(f"PIL.{name}")
+        except Exception as error:
+            modules.append(
+                {"name": name, "state": "failed", "exception": category(error)}
+            )
+        else:
+            modules.append({"name": name, "state": "pass", "exception": "none"})
+
+    links = []
+    for name in libraries:
+        try:
+            ctypes.CDLL(name)
+        except OSError:
+            state = "load_failed"
+        except Exception:
+            state = "unavailable"
+        else:
+            state = "loaded"
+        links.append({"name": name, "state": state})
+
+    receipt = {
+        "schema": "pillow-import-diagnostic-v1",
+        "image_id": image_id,
+        "imports": imports,
+        "native_modules": modules,
+        "libraries": links,
+        "first_failed": first_failed,
+        "import_passed": sum(item["state"] == "pass" for item in imports),
+        "native_passed": sum(item["state"] == "pass" for item in modules),
+        "libraries_loaded": sum(item["state"] == "loaded" for item in links),
+    }
+    print(json.dumps(receipt, allow_nan=False, separators=(",", ":")))
+
+
+if len(sys.argv) == 3 and sys.argv[1] == "--import-diagnostic":
+    import_diagnostic(sys.argv[2])
+    raise SystemExit(0)
 
 # These are check locations, not exception or root-cause classifications. The
 # enclosing CI reports them only for an installed_verifier failure.

@@ -69,6 +69,7 @@ for pair in \
   printf '%s\t%s\n' "$path" "$actual" >> "$consumer_hashes"
 done
 stage=installed_verifier
+set +e
 docker run --rm --platform "linux/$arch" --network none --read-only \
   --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /tmp:rw,nosuid,nodev,size=128m \
@@ -76,6 +77,33 @@ docker run --rm --platform "linux/$arch" --network none --read-only \
   -e PYTHONPATH=/app -v "$recipe/verify-installed.py:/tmp/verify-installed.py:ro" \
   --entrypoint /opt/venv/bin/python "$candidate" /tmp/verify-installed.py \
   > "$output/installed-consumer.log" 2>&1
+verifier_exit=$?
+set -e
+if [[ "$verifier_exit" -eq 40 ]]; then
+  # This is a separate observation. Its exit cannot replace the verifier's 40.
+  set +e
+  observed_image=$(docker image inspect --format '{{.Id}}' "$candidate" 2>/dev/null)
+  inspect_exit=$?
+  if [[ "$inspect_exit" -eq 0 && "$observed_image" = "$candidate" ]]; then
+    docker run --rm --platform "linux/$arch" --network none --read-only \
+      --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
+      --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+      -v "$output/build-a/wheels:/wheel:ro" \
+      -e PYTHONPATH=/app -v "$recipe/verify-installed.py:/tmp/verify-installed.py:ro" \
+      --entrypoint /opt/venv/bin/python "$candidate" /tmp/verify-installed.py \
+      --import-diagnostic "$observed_image" \
+      > "$output/pillow-import-diagnostic.json" \
+      2> "$output/pillow-import-diagnostic-private.log"
+    diagnostic_exit=$?
+  else
+    diagnostic_exit=125
+  fi
+  printf '%s\n' "$diagnostic_exit" > "$output/pillow-import-diagnostic-exit.txt"
+  exit "$verifier_exit"
+fi
+if [[ "$verifier_exit" -ne 0 ]]; then
+  exit "$verifier_exit"
+fi
 grep -Fx 'Pillow wheel-private library directory absent' "$output/installed-consumer.log"
 stage=final_proof
 python3 "$recipe/recipe-lock.py" verify "$recipe"

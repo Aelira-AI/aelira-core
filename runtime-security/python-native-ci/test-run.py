@@ -24,6 +24,125 @@ H64 = "b" * 64
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_secondary_import_receipt_is_exact_and_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            image = "sha256:" + H64
+            (root / "installed-image-id.txt").write_text(image + "\n")
+            (root / "pillow-import-diagnostic-exit.txt").write_text("0\n")
+            marker = "PRIVATE-MARKER-DO-NOT-EXPORT"
+            (root / "pillow-import-diagnostic-private.log").write_text(marker)
+            receipt = {
+                "schema": "pillow-import-diagnostic-v1",
+                "image_id": image,
+                "imports": [
+                    {"name": name, "state": "pass", "exception": "none"}
+                    for name in runner.PILLOW_IMPORTS
+                ],
+                "native_modules": [
+                    {"name": name, "state": "pass", "exception": "none"}
+                    for name in runner.PILLOW_NATIVE_MODULES
+                ],
+                "libraries": [
+                    {"name": name, "state": "loaded"}
+                    for name in runner.PILLOW_LIBRARIES
+                ],
+                "first_failed": None,
+                "import_passed": 5,
+                "native_passed": 3,
+                "libraries_loaded": 12,
+            }
+            path = root / "pillow-import-diagnostic.json"
+            consumer = {
+                "state": "reported",
+                "stage": "installed_verifier",
+                "exit": 40,
+                "check_code": "import_setup",
+            }
+
+            def read(value: object) -> dict[str, object]:
+                path.write_text(json.dumps(value))
+                return runner.pillow_import_diagnostic(root, consumer)
+
+            self.assertEqual(read(receipt)["state"], "reported")
+            self.assertNotIn(marker, json.dumps(read(receipt)))
+            for changed in (
+                {**receipt, "image_id": "sha256:" + "c" * 64},
+                {**receipt, "import_passed": True},
+                {**receipt, "native_passed": None},
+                {**receipt, "libraries_loaded": 13},
+                {**receipt, "unknown": marker},
+                {**receipt, "first_failed": marker},
+                {
+                    **receipt,
+                    "imports": [
+                        {**receipt["imports"][0], "exception": marker},
+                        *receipt["imports"][1:],
+                    ],
+                },
+                {
+                    **receipt,
+                    "libraries": [
+                        {"name": marker, "state": "loaded"},
+                        *receipt["libraries"][1:],
+                    ],
+                },
+            ):
+                with self.subTest(changed=changed):
+                    self.assertEqual(read(changed)["state"], "unavailable")
+            failed = json.loads(json.dumps(receipt))
+            failed["imports"][1] = {
+                "name": "ImageCms",
+                "state": "failed",
+                "exception": "import_error",
+            }
+            for entry in failed["imports"][2:]:
+                entry["state"] = "not_run"
+            failed["first_failed"] = "ImageCms"
+            failed["import_passed"] = 1
+            self.assertEqual(read(failed)["state"], "reported")
+            failed["imports"][2]["state"] = "pass"
+            self.assertEqual(read(failed)["state"], "unavailable")
+            for payload in (
+                b'{"schema":"pillow-import-diagnostic-v1","schema":"pillow-import-diagnostic-v1"}',
+                b'{"schema":NaN}',
+                b"\xff",
+                b"x" * 4097,
+            ):
+                path.write_bytes(payload)
+                self.assertEqual(
+                    runner.pillow_import_diagnostic(root, consumer)["state"],
+                    "unavailable",
+                )
+            read(receipt)
+            for exit_text in ("1\n", "00\n", "true", ""):
+                (root / "pillow-import-diagnostic-exit.txt").write_text(exit_text)
+                self.assertEqual(
+                    runner.pillow_import_diagnostic(root, consumer)["state"],
+                    "unavailable",
+                )
+            (root / "pillow-import-diagnostic-exit.txt").write_text("0\n")
+            for changed_consumer in (
+                {**consumer, "exit": 41},
+                {**consumer, "stage": "complete"},
+                {**consumer, "state": "unavailable"},
+            ):
+                self.assertEqual(
+                    runner.pillow_import_diagnostic(root, changed_consumer)["state"],
+                    "not_run",
+                )
+            alias = root / "alias"
+            alias.hardlink_to(path)
+            self.assertEqual(
+                runner.pillow_import_diagnostic(root, consumer)["state"], "unavailable"
+            )
+            alias.unlink()
+            path.unlink()
+            path.symlink_to(root / "pillow-import-diagnostic-private.log")
+            self.assertEqual(
+                runner.pillow_import_diagnostic(root, consumer)["state"], "unavailable"
+            )
+
     def test_pillow_diagnostic_matches_actual_exit_and_only_fixed_stages(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
@@ -598,6 +717,10 @@ class OrchestrationTests(unittest.TestCase):
                 self.assertEqual(
                     summary["pillow_consumer_diagnostic"]["check_code"],
                     runner.PILLOW_CHECK_CODES[code],
+                )
+                self.assertEqual(
+                    summary["pillow_import_diagnostic"]["state"],
+                    "unavailable" if code == 40 else "not_run",
                 )
                 self.assertEqual(summary["stages"]["pillow_export"]["state"], "not_run")
                 self.assertEqual(

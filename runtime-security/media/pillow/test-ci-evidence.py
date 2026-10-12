@@ -473,7 +473,9 @@ class ConsumerStageControls(unittest.TestCase):
             f"""case "$1" in
   info) echo aarch64 ;;
   image)
-    if [ "$4" = '{{{{.Id}}}}' ]; then echo {self.BASELINE}; else echo arm64; fi ;;
+    if [ "$4" = '{{{{.Id}}}}' ]; then
+      if [ "$5" = '{self.CANDIDATE}' ]; then echo {self.CANDIDATE}; else echo {self.BASELINE}; fi
+    else echo arm64; fi ;;
   commit)
     if [ "$FAIL_AT" = candidate_commit ]; then echo {self.PRIVATE_MARKER} >&2; exit 37; fi
     echo {self.CANDIDATE} ;;
@@ -491,6 +493,16 @@ class ConsumerStageControls(unittest.TestCase):
           *) exit 37 ;;
         esac ;;
       *" /opt/venv/bin/python "*)
+        case " $* " in
+          *" --import-diagnostic "*)
+            if [ "$FAIL_AT" = import40_probe_fail ]; then exit 19; fi
+            echo '{{"schema":"synthetic-only"}}'
+            exit 0 ;;
+        esac
+        if [ "$FAIL_AT" = import40 ] || [ "$FAIL_AT" = import40_probe_fail ]; then
+          echo {self.PRIVATE_MARKER} >&2
+          exit 40
+        fi
         if [ "$FAIL_AT" = installed_verifier ]; then echo {self.PRIVATE_MARKER} >&2; exit 37; fi
         echo 'Pillow wheel-private library directory absent'
         echo '{self.PRIVATE_MARKER}' ;;
@@ -505,7 +517,13 @@ esac""",
         path.write_text("#!/bin/sh\n" + body + "\n")
         path.chmod(0o755)
 
-    def execute(self, name: str, *, writer_fail: bool = False) -> tuple[int, Path]:
+    def execute(
+        self,
+        name: str,
+        *,
+        writer_fail: bool = False,
+        diagnostic_writer_fail: bool = False,
+    ) -> tuple[int, Path]:
         output = self.root / name
         for directory in (
             output / "recipe",
@@ -513,6 +531,8 @@ esac""",
             output / "build-b/wheels",
         ):
             directory.mkdir(parents=True)
+        if diagnostic_writer_fail:
+            (output / "pillow-import-diagnostic.json").mkdir()
         wheel = "pillow-12.3.0-cp314-cp314-linux_aarch64.whl"
         for run in "ab":
             (output / f"build-{run}/wheels/{wheel}").write_bytes(b"same wheel")
@@ -567,6 +587,30 @@ esac""",
         self.assertEqual(rc, 37)
         self.assertEqual((output / "consumer-exit.txt").read_text(), "37\n")
         self.assertFalse((output / "consumer-stage.json").exists())
+
+    def test_secondary_probe_preserves_original_import_exit(self) -> None:
+        for name, secondary in (("import40", "0\n"), ("import40_probe_fail", "19\n")):
+            with self.subTest(name=name):
+                rc, output = self.execute(name)
+                self.assertEqual(rc, 40)
+                self.assertEqual((output / "consumer-exit.txt").read_text(), "40\n")
+                self.assertEqual(
+                    json.loads((output / "consumer-stage.json").read_text()),
+                    {"schema": 1, "stage": "installed_verifier", "exit": 40},
+                )
+                self.assertEqual(
+                    (output / "pillow-import-diagnostic-exit.txt").read_text(),
+                    secondary,
+                )
+        rc, output = self.execute("complete")
+        self.assertEqual(rc, 0)
+        self.assertFalse((output / "pillow-import-diagnostic.json").exists())
+        rc, output = self.execute("import40-writer", diagnostic_writer_fail=True)
+        self.assertEqual(rc, 40)
+        self.assertEqual((output / "consumer-exit.txt").read_text(), "40\n")
+        self.assertNotEqual(
+            (output / "pillow-import-diagnostic-exit.txt").read_text(), "0\n"
+        )
 
     def test_existing_receipt_is_never_overwritten(self) -> None:
         output = self.root / "installed_verifier-existing"

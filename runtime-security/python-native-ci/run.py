@@ -79,6 +79,30 @@ PILLOW_CHECK_CODES = {
     71: "aelira_suitability",
     72: "private_directory",
 }
+PILLOW_IMPORTS = ("Image", "ImageCms", "ImageFile", "ImageFont", "features")
+PILLOW_NATIVE_MODULES = ("_imaging", "_imagingcms", "_imagingft")
+PILLOW_LIBRARIES = (
+    "libtiff.so.6",
+    "libjpeg.so.8",
+    "libopenjp2.so.7",
+    "libz.so.1",
+    "libxcb.so.1",
+    "libavif.so.16",
+    "libwebp.so.7",
+    "libwebpmux.so.3",
+    "libwebpdemux.so.2",
+    "liblcms2.so.2",
+    "libfreetype.so.6",
+    "libraqm.so.0",
+)
+IMPORT_EXCEPTIONS = {
+    "none",
+    "module_missing",
+    "import_error",
+    "permission_error",
+    "os_error",
+    "other_exception",
+}
 
 
 def digest(path: Path) -> str:
@@ -346,6 +370,128 @@ def pillow_consumer_diagnostic(
         return unavailable
 
 
+def pillow_import_diagnostic(
+    root: Path, consumer: dict[str, object]
+) -> dict[str, object]:
+    """Read only a complete, image-bound secondary receipt for original exit 40."""
+    unavailable = {"schema": 1, "state": "unavailable", "observation": None}
+    if (
+        consumer.get("state") != "reported"
+        or consumer.get("stage") != "installed_verifier"
+        or consumer.get("exit") != 40
+        or consumer.get("check_code") != "import_setup"
+    ):
+        return {"schema": 1, "state": "not_run", "observation": None}
+    try:
+        path = root / "pillow-import-diagnostic.json"
+        secondary_exit = root / "pillow-import-diagnostic-exit.txt"
+        image_path = root / "installed-image-id.txt"
+        for item, maximum in ((path, 4096), (secondary_exit, 2), (image_path, 72)):
+            canonical_file(item, maximum)
+            if item.stat().st_nlink != 1:
+                raise ValueError("secondary receipt alias")
+        if secondary_exit.read_bytes() != b"0\n":
+            return unavailable
+        image = image_path.read_text()
+        if not image.endswith("\n") or not IMAGE.fullmatch(image[:-1]):
+            return unavailable
+        value = exact_dict(
+            strict_json(path, 4096),
+            {
+                "schema",
+                "image_id",
+                "imports",
+                "native_modules",
+                "libraries",
+                "first_failed",
+                "import_passed",
+                "native_passed",
+                "libraries_loaded",
+            },
+        )
+        if (
+            value["schema"] != "pillow-import-diagnostic-v1"
+            or value["image_id"] != image[:-1]
+        ):
+            return unavailable
+
+        def check_modules(
+            entries: object, names: tuple[str, ...], ordered: bool
+        ) -> int:
+            if type(entries) is not list or len(entries) != len(names):
+                raise ValueError("module count")
+            passed_count = 0
+            stopped = False
+            for entry, name in zip(entries, names, strict=True):
+                item = exact_dict(entry, {"name", "state", "exception"})
+                if item["name"] != name or type(item["name"]) is not str:
+                    raise ValueError("module name")
+                state = item["state"]
+                exception = item["exception"]
+                if (
+                    type(state) is not str
+                    or state
+                    not in (
+                        {"pass", "failed", "not_run"} if ordered else {"pass", "failed"}
+                    )
+                    or type(exception) is not str
+                    or exception not in IMPORT_EXCEPTIONS
+                    or (state == "failed") != (exception != "none")
+                ):
+                    raise ValueError("module result")
+                if ordered:
+                    if stopped and state != "not_run":
+                        raise ValueError("import order")
+                    if state == "not_run" and not stopped:
+                        raise ValueError("premature skip")
+                    if state == "failed":
+                        stopped = True
+                    if state == "not_run" and exception != "none":
+                        raise ValueError("skipped exception")
+                if state == "pass":
+                    passed_count += 1
+            return passed_count
+
+        imports = value["imports"]
+        native = value["native_modules"]
+        libraries = value["libraries"]
+        import_passed = check_modules(imports, PILLOW_IMPORTS, True)
+        native_passed = check_modules(native, PILLOW_NATIVE_MODULES, False)
+        if type(libraries) is not list or len(libraries) != len(PILLOW_LIBRARIES):
+            return unavailable
+        loaded = 0
+        for entry, name in zip(libraries, PILLOW_LIBRARIES, strict=True):
+            item = exact_dict(entry, {"name", "state"})
+            if (
+                type(item["name"]) is not str
+                or item["name"] != name
+                or type(item["state"]) is not str
+                or item["state"] not in {"loaded", "load_failed", "unavailable"}
+            ):
+                return unavailable
+            loaded += item["state"] == "loaded"
+        failed = [item["name"] for item in imports if item["state"] == "failed"]
+        if (
+            len(failed) > 1
+            or type(value["first_failed"]) not in (str, type(None))
+            or value["first_failed"] != (failed[0] if failed else None)
+            or any(
+                type(value[key]) is not int
+                for key in ("import_passed", "native_passed", "libraries_loaded")
+            )
+            or (
+                value["import_passed"],
+                value["native_passed"],
+                value["libraries_loaded"],
+            )
+            != (import_passed, native_passed, loaded)
+        ):
+            return unavailable
+        return {"schema": 1, "state": "reported", "observation": value}
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return unavailable
+
+
 def prepare_receipt(
     path: Path, identity_data: dict[str, str], fixture_dir: Path
 ) -> dict[str, object]:
@@ -561,6 +707,11 @@ def execute(
             "exit": None,
             "check_code": None,
         },
+        "pillow_import_diagnostic": {
+            "schema": 1,
+            "state": "not_run",
+            "observation": None,
+        },
     }
     write_json(dest / "summary.json", result)
     write_json(dest / "fixture.json", fixture_public)
@@ -747,6 +898,9 @@ def execute(
                 pillow_out, statuses["pillow_consumer"]
             )
             result["pillow_consumer_diagnostic"] = diagnostic
+            result["pillow_import_diagnostic"] = pillow_import_diagnostic(
+                pillow_out, diagnostic
+            )
             write_json(dest / "summary.json", result)
             if consumer_passed and diagnostic["state"] == "reported":
                 pillow_candidate = scratch / "pillow-public-candidate"

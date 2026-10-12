@@ -82,6 +82,27 @@ cannot be distinguished by this numeric interface. Interpret the code only
 with the executing source and valid stage. A mapped code remains a failure
 and cannot complete the component.
 
+If the original verifier exits 40, `test-installed.sh` runs a second process in
+the same installed candidate image with the original network, user, security,
+temporary filesystem, wheel, source, and Python path settings. It confirms the
+candidate ID with Docker inspect before passing that ID to the explicit
+`--import-diagnostic` mode. The wrapper records the secondary exit separately
+and returns the original 40 even if the probe or receipt writer fails. No
+probe runs after success or another exit code.
+
+The secondary JSON records only ordered `Image`, `ImageCms`, `ImageFile`,
+`ImageFont`, `features` import outcomes, independent `_imaging`, `_imagingcms`,
+`_imagingft` import outcomes, and independent `ctypes.CDLL` load outcomes for
+the twelve system libraries pinned by `verify-wheel.py`. Fixed exception
+categories contain no messages, names from exceptions, paths, or raw logs.
+The first import failure stops the ordered sequence; native modules and library
+loads remain separate observations. A secondary probe repeats imports in a
+new process, so it cannot recover the exact exception or prove the cause of
+the original exit 40. A loaded library does not prove which library the
+original process linked. The existing reserved `SystemExit` collision limit
+still applies. The diagnostic never changes a failed consumer or authorizes
+Pillow evidence export.
+
 | Exit | Executing check |
 | --- | --- |
 | 40 | Pillow import/setup |
