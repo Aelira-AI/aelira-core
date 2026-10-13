@@ -30,7 +30,15 @@ For a frozen replay, supply `AELIRA_XRENDER_BUILDER_IMAGE`,
 successful preparation. The immutable image identity and pinned base must match.
 `AELIRA_XRENDER_SAVE_BUILDER=1` retains the builder archive (the default).
 
+`ci-evidence.py` authenticates the closed source/index/toolchain file set,
+checks the actual pinned-base/builder package delta, reproduces the package and
+loaded-library bindings, and verifies saved image contents against a fresh
+export of the immutable builder. Only authenticated files and typed receipts
+are public; raw build logs remain private. `test-ci-evidence.py` runs 25 controls
+against a real completed build, including changed inputs, signatures, packages,
+loader hashes, unsafe paths, and saved-image content. Tar header metadata may
+vary without changing any image file bytes.
+
 This component requires independent review and execution on both architectures.
 Final API/dashboard image copies, actual consumers and unsuppressed advisory
-inventories remain separate release acceptance gates. Raw build logs and this
-development recipe are not a complete public evidence exporter.
+inventories remain separate release acceptance gates.
