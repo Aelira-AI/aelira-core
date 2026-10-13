@@ -1,0 +1,14 @@
+cjson (1.7.19-2+aelira3) resolute; urgency=medium
+
+  * Repair JSON Pointer escape decoding and validate patch paths before mutation.
+  * Bound composed JSON Patch depth and traverse copies, deletion and
+    comparisons iteratively.
+  * Guard string-print size additions before allocation.
+  * Preserve post-removal JSON Patch move indexes, reject escaped slashes in
+    array tokens, and avoid mutating JSON Patch comparison inputs.
+  * Materialize root moves before releasing borrowed reference owners.
+  * Stage JSON Patch mutation on an owned value when borrowed ancestors exist;
+    retain root links and member names, and preserve the input on refusal.
+
+ -- Aelira Core maintainers <security@aelira.ai>  Tue, 13 Oct 2026 00:00:00 +0000
+
