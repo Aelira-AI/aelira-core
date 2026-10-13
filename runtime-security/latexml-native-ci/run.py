@@ -40,8 +40,8 @@ CA_CERTIFICATE_COUNT = 121
 CALLER = "runtime-security/latexml-native-acceptance/"
 WRAPPER = "runtime-security/latexml-native-ci/"
 CALLER_HASHES = {
-    "bootstrap.py": "342508b0de4eaba8e749d0ae57305f597094def3ab87b923d05e4fd2bfe2faa7",
-    "native_acceptance.py": "95d53dce120f42eeca5437b5f0fee408946c8541ae6cc66941ed69d8ed037346",
+    "bootstrap.py": "d2c54ea23cb417c8c56828e70ec9f23145c527614bbbae1495e455966f41db62",
+    "native_acceptance.py": "b4227668142a6044b589242d7e5778381b6939859e5dbb91bea1a7963b888717",
     "README.md": "c31543887d6f05cd6fba8834ccdc90cea8f934eaa3168099f63a0bcd6072f01d",
 }
 WRAPPERS = ("run.py", "evidence.py", "test-run.py", "README.md")

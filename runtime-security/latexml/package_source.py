@@ -96,6 +96,9 @@ def main() -> None:
     parser.add_argument("--perl-sha256", required=True)
     parser.add_argument("--recdescent-sha256", required=True)
     a = parser.parse_args()
+    generator_uid, generator_gid = os.getuid(), os.getgid()
+    if generator_uid == 0:
+        fail("native generator requires a nonroot host owner")
     for path in (a.git, a.repo, a.patch, a.out.parent, a.docker):
         no_alias(path)
     if not a.docker.is_file() or not os.access(a.docker, os.X_OK):
@@ -287,7 +290,7 @@ def main() -> None:
                 "run",
                 "--rm",
                 "--user",
-                "1000:1000",
+                f"{generator_uid}:{generator_gid}",
                 "--read-only",
                 "--network",
                 "none",

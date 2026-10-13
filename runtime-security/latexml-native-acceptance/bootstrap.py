@@ -14,9 +14,9 @@ import tarfile
 
 RECIPE = {
     "Dockerfile.probe": "f54aaefc5eb165fc6d4e12b8f3ee1148ffefc6cc675e13ff19f5f16eda41ac1a",
-    "README.md": "a4b0bc04532434dab0f1c8406ed09ceb3f56bf2c62edb3eab23615f1589ca8ce",
+    "README.md": "b3e1c40e5117e5e26ff2325b7b248667aad7bd06ff6a8ff710b2e63846146f39",
     "accept_image.py": "4bedf36f828859ad0a8b27ba357869c2bc313b3e6edf38c1f4f0e6532dccc3f4",
-    "package_source.py": "52a70e0bb2d0334ffdeb30d489c342c7a499db7d491f47919e2ddcc72ae617cc",
+    "package_source.py": "750306578bf7bf0f902b7aebe9c4560a366b7897642816c978213eb9553dbab4",
     "prepare-source.sh": "b4073547e741a222bb519c1661ade015136c46ed7577c17b9158c13555363987",
     "probe_cases.py": "4c7a56b4a30137677d0bcab24a01bd6efcac2d1bbe0019038dbd04c3d7f8b416",
     "probe_integrated.py": "d415a50f08ee7ed7fd480d298f3e274ca81891d62841ec11696da0419b142f30",
