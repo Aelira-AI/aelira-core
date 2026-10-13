@@ -163,6 +163,42 @@ def main():
     assert result == 1 and receipt['status'] == 'fail'
     assert 'provenance/builder.tar' not in receipt['files']
     rows.append('changed-builder-archive-refused')
+    # Real Docker saves may differ only in their tar header timestamps.
+    # Validate that distinction without accepting any altered image file.
+    for case in ('builder-header-metadata', 'builder-member-content'):
+        source = snapshot(case)
+        path = source / 'provenance/builder.tar'
+        assert path.exists(), 'Archive comparison controls require a real saved builder'
+        changed = path.with_name('changed-builder.tmp')
+        shutil.copyfile(path, changed)
+        path.unlink()
+        changed.rename(path)
+        if case == 'builder-header-metadata':
+            with path.open('r+b') as stream:
+                header = bytearray(stream.read(512))
+                header[136:148] = b'00000000001\0'
+                header[148:156] = b'        '
+                header[148:156] = (format(sum(header), '06o') + '\0 ').encode()
+                stream.seek(0)
+                stream.write(header)
+        else:
+            import tarfile
+            with tarfile.open(path, mode='r:') as archive:
+                member = next(item for item in archive if item.isfile() and item.size)
+                offset = member.offset_data
+            with path.open('r+b') as stream:
+                stream.seek(offset)
+                byte = stream.read(1)
+                stream.seek(offset)
+                stream.write(bytes([byte[0] ^ 1]))
+        result, receipt = invoke(case, source, require_builder=True)
+        if case == 'builder-header-metadata':
+            assert result == 0 and receipt['status'] == 'pass'
+            rows.append('builder-header-metadata-accepted')
+        else:
+            assert result == 1 and receipt['status'] == 'fail'
+            assert 'provenance/builder.tar' not in receipt['files']
+            rows.append('changed-builder-member-refused')
     print(json.dumps({"schema": "aelira-cjson-evidence-controls-v1", "status": "pass",
                       "count": len(rows), "controls": rows}, sort_keys=True))
 

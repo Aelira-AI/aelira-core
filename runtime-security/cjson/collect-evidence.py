@@ -27,6 +27,51 @@ SOURCE_CONTROLS = ["exact-inputs-real-source-package", "preflight-refusal:cjson_
                    "preflight-refusal:input-symlink", "preflight-refusal:missing-source", "existing-output-preserved"]
 
 
+def saved_image_contents(path):
+    """Compare all image bytes, allowing tar header timestamps/order to vary."""
+    contents = {}
+    total = 0
+    with tarfile.open(path, mode='r:') as archive:
+        for member in archive:
+            parts = Path(member.name).parts
+            if member.name.startswith('/') or not parts or any(part in ('.', '..') for part in parts):
+                raise ValueError('Unsafe saved image member')
+            if member.name in contents or len(contents) >= 4096:
+                raise ValueError('Duplicate or excess saved image member')
+            if member.isdir():
+                if member.size != 0:
+                    raise ValueError('Invalid saved image directory')
+                contents[member.name] = ('directory', 0, None)
+            elif member.isfile():
+                total += member.size
+                if member.size < 0 or total > MAX_FILE:
+                    raise ValueError('Saved image payload exceeds bound')
+                digest = hashlib.sha256()
+                read_size = 0
+                stream = archive.extractfile(member)
+                while chunk := stream.read(1024 * 1024):
+                    read_size += len(chunk)
+                    digest.update(chunk)
+                if read_size != member.size:
+                    raise ValueError('Truncated saved image member')
+                contents[member.name] = ('file', member.size, digest.hexdigest())
+            else:
+                raise ValueError('Unsupported saved image member')
+        end = archive.offset
+    # tar readers normally ignore bytes after their end marker. Refuse nonzero
+    # trailers so a changed full-size input is not silently accepted there.
+    with path.open('rb') as stream:
+        stream.seek(end)
+        trailer_size = 0
+        while chunk := stream.read(1024 * 1024):
+            trailer_size += len(chunk)
+            if any(chunk) or trailer_size > 1024 * 1024:
+                raise ValueError('Invalid saved image trailer')
+    if not contents or trailer_size < 1024 or trailer_size % 512:
+        raise ValueError('Incomplete saved image archive')
+    return contents
+
+
 def regular(root, relative):
     current = root
     for part in Path(relative).parts:
@@ -295,19 +340,15 @@ def export(args):
             original_archive = regular(args.source, 'provenance/builder.tar')
             if original_archive.stat().st_size < 1024:
                 raise ValueError('Invalid saved builder archive')
-            def file_hash(path):
-                sha = hashlib.sha256()
-                with path.open('rb') as stream:
-                    while chunk := stream.read(1024 * 1024):
-                        sha.update(chunk)
-                return sha.hexdigest()
-            # Re-serialize the actual immutable builder and compare before
-            # exporting. A changed input archive is never copied publicly.
+            # Docker versions can vary tar timestamps/order between saves.
+            # Compare the complete member map and every file byte to a fresh
+            # export of the actual immutable image. Export only that fresh
+            # archive; no input archive member is extracted or copied publicly.
             with tempfile.TemporaryDirectory(prefix='aelira-cjson-builder-') as work:
                 fresh = Path(work) / 'builder.tar'
                 subprocess.run(['docker', 'save', builder, '-o', str(fresh)],
                                check=True, capture_output=True, timeout=180)
-                if fresh.stat().st_size != original_archive.stat().st_size or file_hash(fresh) != file_hash(original_archive):
+                if saved_image_contents(fresh) != saved_image_contents(original_archive):
                     raise ValueError('Saved builder differs from immutable image')
                 if fresh.stat().st_size > MAX_FILE:
                     raise ValueError('Saved builder exceeds bound')
