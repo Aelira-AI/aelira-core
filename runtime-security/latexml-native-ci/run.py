@@ -23,7 +23,7 @@ import tarfile
 ORIGIN = "https://github.com/Aelira-AI/aelira-core.git"
 BASE = "ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7"
 KEYRING = "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31"
-ARM_LOCK = "d0c33df7305769e378ca86309f20d36d7e71a8f8f784c79d1bfa62e5c8190c98"
+ARM_LOCK = "e59ed0151c570dc38e0f95bc75aac5fe3a8dbec66d8f31d086337d1379721e08"
 SNAPSHOT_ID = "20261013T060000Z"
 SNAPSHOT_SUITES = (
     "resolute",
@@ -41,7 +41,7 @@ CALLER = "runtime-security/latexml-native-acceptance/"
 WRAPPER = "runtime-security/latexml-native-ci/"
 CALLER_HASHES = {
     "bootstrap.py": "342508b0de4eaba8e749d0ae57305f597094def3ab87b923d05e4fd2bfe2faa7",
-    "native_acceptance.py": "b0845f78a64f92ce68e402fdb6b1842ef64451aed013f0196683bb636ed4515c",
+    "native_acceptance.py": "ad01f28138a706f87198c51e4153b628d40d29b0f1868e76943da44e7ba0ede0",
     "README.md": "c31543887d6f05cd6fba8834ccdc90cea8f934eaa3168099f63a0bcd6072f01d",
 }
 WRAPPERS = ("run.py", "evidence.py", "test-run.py", "README.md")
