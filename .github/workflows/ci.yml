@@ -25,6 +25,7 @@ jobs:
       - tiff-native-package
       - python-native-components
       - lxml-native-component
+      - latexml-native-component
       - configuration-smoke
       - dev-setup-tests
       - dependency-security
@@ -44,7 +45,7 @@ jobs:
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
           printf '%s\n' "$JOB_RESULTS" | jq -e '
-            length == 15 and all(.[]; .result == "success")
+            length == 16 and all(.[]; .result == "success")
           '
 
   expat-native-acceptance:
@@ -371,6 +372,335 @@ jobs:
         with:
           name: lxml-native-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/lxml-native-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+
+  latexml-native-component:
+    name: Native LaTeXML source component (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      AELIRA_SOURCE_KIND: public
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install native proof utilities
+        id: utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends binutils gpgv
+      - name: Bind the actual checkout and check portable controls
+        id: controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "Aelira-AI/aelira-core"
+          test "$(/usr/bin/git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(/usr/bin/git status --porcelain)"
+          origin=$(/usr/bin/git remote get-url origin)
+          case "$origin" in
+            https://github.com/Aelira-AI/aelira-core|https://github.com/Aelira-AI/aelira-core.git) ;;
+            *) exit 1 ;;
+          esac
+          /usr/bin/git remote set-url origin https://github.com/Aelira-AI/aelira-core.git
+          expected_tree=$(/usr/bin/git rev-parse HEAD^{tree})
+          python3 -B runtime-security/latexml-native-ci/test-run.py \
+            --operator-repo "$GITHUB_WORKSPACE" --operator-ref "$GITHUB_SHA" \
+            --operator-tree "$expected_tree" \
+            --scratch "$RUNNER_TEMP/latexml-native-portable-controls"
+      - name: Build and verify the native LaTeXML component
+        id: component
+        shell: bash
+        env:
+          AELIRA_NATIVE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          upstream="$RUNNER_TEMP/latexml-official-source"
+          /usr/bin/git clone --no-checkout https://github.com/brucemiller/LaTeXML.git "$upstream" \
+            > "$RUNNER_TEMP/latexml-upstream-private.log" 2>&1
+          /usr/bin/git -C "$upstream" checkout --detach 0db6f47ea859391f9099e6e25e7405afad8467bf \
+            >> "$RUNNER_TEMP/latexml-upstream-private.log" 2>&1
+          test "$(/usr/bin/git -C "$upstream" rev-parse HEAD)" = 0db6f47ea859391f9099e6e25e7405afad8467bf
+          test "$(/usr/bin/git -C "$upstream" rev-parse HEAD^{tree})" = 2693c0c65c86f6b36370af18496d8283cf4f73ea
+          expected_tree=$(/usr/bin/git rev-parse HEAD^{tree})
+          set +e
+          python3 -B runtime-security/latexml-native-ci/run.py \
+            --operator-repo "$GITHUB_WORKSPACE" --operator-ref "$GITHUB_SHA" \
+            --operator-tree "$expected_tree" --source-kind public --remote-ref "$GITHUB_REF" \
+            --architecture "$AELIRA_NATIVE_ARCH" --upstream-repo "$upstream" \
+            --scratch "$RUNNER_TEMP/latexml-native-private" \
+            --out "$RUNNER_TEMP/latexml-native-validated" --capture-input \
+            > "$RUNNER_TEMP/latexml-native-runner.log" 2>&1
+          result=$?
+          set -e
+          printf '%s\n' "$result" >> "$RUNNER_TEMP/latexml-native-runner-exit.txt"
+          printf 'exit_code=%s\n' "$result" >> "$GITHUB_OUTPUT"
+          exit "$result"
+      - name: Retain safe workflow and final native outcomes
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          AELIRA_NATIVE_ARCH: ${{ matrix.arch }}
+          UTILITIES_OUTCOME: ${{ steps.utilities.outcome }}
+          CONTROLS_OUTCOME: ${{ steps.controls.outcome }}
+          COMPONENT_OUTCOME: ${{ steps.component.outcome }}
+          COMPONENT_EXIT: ${{ steps.component.outputs.exit_code }}
+        run: |
+          python3 -B - <<'PY'
+          import sys
+
+
+          def main():
+              import argparse
+              import hashlib
+              import json
+              import os
+              from pathlib import Path
+              import re
+              import subprocess
+              import stat
+              import sys
+
+              sys.dont_write_bytecode = True
+              os.umask(0o022)
+              arch = os.environ["AELIRA_NATIVE_ARCH"]
+              revision = os.environ["GITHUB_SHA"]
+              tree = subprocess.check_output(
+                  ["/usr/bin/git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+              kind = os.environ["AELIRA_SOURCE_KIND"]
+              remote = os.environ["GITHUB_REF"] if kind == "public" else None
+              assert arch in {"amd64", "arm64"} and kind in {"public", "synthetic"}
+              assert re.fullmatch("[0-9a-f]{40}", revision)
+              assert re.fullmatch("[0-9a-f]{40}", tree)
+              repo = Path(os.environ["GITHUB_WORKSPACE"])
+              a = argparse.Namespace(operator_repo=repo, operator_ref=revision,
+                                     operator_tree=tree, source_kind=kind, remote_ref=remote,
+                                     architecture=arch)
+              # Authenticate every fixed selected Git source before importing candidate code.
+              assert repo.is_absolute() and repo.resolve(strict=True) == repo
+              def git(*args):
+                  return subprocess.check_output(["/usr/bin/git", "-C", str(repo), *args])
+              assert git("rev-parse", "HEAD").decode().strip() == revision
+              assert git("rev-parse", "--show-toplevel").decode().strip() == str(repo)
+              assert git("remote", "get-url", "origin").decode().strip() == (
+                  "https://github.com/Aelira-AI/aelira-core.git")
+              assert not git("status", "--porcelain")
+              names = (
+                  "runtime-security/latexml-native-acceptance/README.md",
+                  "runtime-security/latexml-native-acceptance/bootstrap.py",
+                  "runtime-security/latexml-native-acceptance/native_acceptance.py",
+                  "runtime-security/latexml-native-ci/README.md",
+                  "runtime-security/latexml-native-ci/run.py",
+                  "runtime-security/latexml-native-ci/evidence.py",
+                  "runtime-security/latexml-native-ci/test-run.py",
+                  "runtime-security/latexml/Dockerfile.probe",
+                  "runtime-security/latexml/README.md",
+                  "runtime-security/latexml/accept_image.py",
+                  "runtime-security/latexml/package_source.py",
+                  "runtime-security/latexml/prepare-source.sh",
+                  "runtime-security/latexml/probe_cases.py",
+                  "runtime-security/latexml/probe_integrated.py",
+                  "runtime-security/latexml/siunitx-v3-adapter.patch",
+                  "runtime-security/latexml/siunitx.sty.ltxml",
+                  "runtime-security/latexml/verify_install.py",
+              )
+              selected_git = {}
+              for name in names:
+                  entries = git("ls-tree", "-z", revision, "--", name).split(b"\0")
+                  assert len(entries) == 2 and entries[1] == b""
+                  header, separator, relative = entries[0].partition(b"\t")
+                  tokens = header.split()
+                  assert separator and relative.decode() == name
+                  assert len(tokens) == 3 and tokens[:2] == [b"100644", b"blob"]
+                  path = repo / name
+                  assert path.resolve(strict=True) == path
+                  with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+                      item = os.fstat(stream.fileno())
+                      assert (stat.S_ISREG(item.st_mode) and item.st_nlink == 1 and
+                              stat.S_IMODE(item.st_mode) == 0o644 and item.st_uid == os.getuid())
+                      data = stream.read()
+                  selected_git[name] = git("cat-file", "blob", tokens[2].decode())
+                  assert data == selected_git[name]
+              sys.path.insert(0, str(repo / "runtime-security/latexml-native-ci"))
+              import run as common
+              selected = common.selected(a)
+              assert selected == selected_git
+              caller = common.load_module(
+                  repo / "runtime-security/latexml-native-acceptance/native_acceptance.py",
+                  "footer_selected_caller")
+              outcomes = {k: os.environ[k] or "not_reported" for k in (
+                  "UTILITIES_OUTCOME", "CONTROLS_OUTCOME", "COMPONENT_OUTCOME")}
+              assert all(v in {"success", "failure", "cancelled", "skipped", "not_reported"}
+                         for v in outcomes.values())
+              raw_exit = os.environ["COMPONENT_EXIT"]
+              observed = int(raw_exit) if re.fullmatch("(?:0|[1-9][0-9]{0,2})", raw_exit) else None
+              assert not raw_exit or observed is not None
+              assert observed is None or 0 <= observed <= 255
+              temp = Path(os.environ["RUNNER_TEMP"])
+              destination = temp / "latexml-native-public-evidence"
+              common.path_check(destination, new=True)
+              destination.mkdir()
+              receipt_status = "not_run" if outcomes["COMPONENT_OUTCOME"] in {
+                  "skipped", "not_reported"} else "unavailable"
+              outer = None
+              bundle_copied = False
+              validation = "not_run"
+              pipeline_succeeded = all(v == "success" for v in outcomes.values())
+              pipeline_passed = pipeline_succeeded and observed == 0
+              try:
+                  private_receipt = temp / "latexml-native-private/outer.json"
+                  if private_receipt.exists():
+                      row = common.read_json(private_receipt)
+                      expected = common.identity(a)
+                      assert type(row) is dict and set(row) == {
+                          "schema", *expected, "stages", "captured_lock_sha256",
+                          "selected_sources", "producer_status_sha256", "failure_diagnostic", "pending"}
+                      assert row["schema"] == "aelira-latexml-ci-outer-v3"
+                      assert all(row[k] == v for k, v in expected.items())
+                      assert row["pending"] == [
+                          "public_ci", "native_amd64", "full_application", "final_image",
+                          "all_copy", "advisory", "R10", "#600", "#579", "#578"]
+                      common.validate_stages(row["stages"])
+                      for field in ("captured_lock_sha256", "producer_status_sha256"):
+                          assert row[field] is None or (type(row[field]) is str and
+                                                        re.fullmatch("[0-9a-f]{64}", row[field]))
+                      if row["selected_sources"] is not None:
+                          assert row["selected_sources"] == {
+                              n: {"sha256": hashlib.sha256(data).hexdigest(),
+                                  "size": len(data), "mode": 420}
+                              for n, data in selected.items()}
+                      # A record cannot supply its own source/input/bootstrap expectations.
+                      private = temp / "latexml-native-private"
+                      observed_lock = common.observe_capture_lock(private)
+                      if row["captured_lock_sha256"] is not None:
+                          assert row["captured_lock_sha256"] == observed_lock
+                      diagnostic_expected = None
+                      projection = row["failure_diagnostic"]
+                      assert type(projection) is dict
+                      if projection.get("state") == "valid":
+                          assert outcomes["COMPONENT_OUTCOME"] == "failure" and observed == 2
+                          assert row["selected_sources"] is not None
+                          assert all(row["stages"][n] == {"state": "executed", "exit": 0}
+                                     for n in common.STAGES[:6])
+                          diagnostic_expected = common.diagnostic_expectations(
+                              a, selected_git, observed_lock)
+                          caller.validate_diagnostic_context(diagnostic_expected)
+                          transport = private / "transport"
+                          prepare = common.read_json(transport / "transport-receipt.json")
+                          assert type(prepare) is dict and set(prepare) == {
+                              "schema", "transport_sha256", "transport_size", "binding_sha256",
+                              "runner_sha256", "source_kind", "operator_ref", "operator_tree"}
+                          assert prepare["schema"] == "aelira-latexml-native-transport-v2"
+                          assert prepare["source_kind"] == kind and prepare["operator_ref"] == revision
+                          assert prepare["operator_tree"] == tree
+                          assert (prepare["runner_sha256"] == diagnostic_expected["caller_sha256"] and
+                                  prepare["binding_sha256"] == diagnostic_expected["binding_sha256"])
+                          tar = common.regular(transport / "transport.tar")
+                          assert type(prepare["transport_size"]) is int
+                          assert prepare["transport_size"] == tar["size"]
+                          assert prepare["transport_sha256"] == tar["sha256"]
+                          assert common.regular(transport / "binding.json")["sha256"] == (
+                              diagnostic_expected["binding_sha256"])
+                          assert common.regular(private / "producer/source/binding.json")["sha256"] == (
+                              diagnostic_expected["binding_sha256"])
+                      caller.validate_failure_projection(
+                          projection, diagnostic_expected, row["stages"]["native-run"])
+                      if row["producer_status_sha256"] is not None:
+                          assert common.regular(private / "producer/status.json")["sha256"] == (
+                              row["producer_status_sha256"])
+                      outer = row
+                      receipt_status = "valid"
+                      (destination / "final-outer.json").write_bytes(common.canonical(row))
+                  if pipeline_passed:
+                      assert outer is not None and receipt_status == "valid"
+                      assert all(r == {"state": "executed", "exit": 0}
+                                 for r in outer["stages"].values())
+                      assert outer["selected_sources"] is not None
+                      assert outer["captured_lock_sha256"] is not None
+                      assert outer["producer_status_sha256"] is not None
+                      bundle = temp / "latexml-native-validated"
+                      manifest = common.read_json(bundle / "manifest.json", 500_000)
+                      assert type(manifest) is dict and type(manifest.get("files")) is dict
+                      digest = common.regular(bundle / "manifest.json")["sha256"]
+                      check = subprocess.run(
+                          [sys.executable, "-B", str(repo /
+                           "runtime-security/latexml-native-ci/evidence.py"), "check",
+                           "--evidence", str(bundle), "--verification-scratch",
+                           str(temp / "latexml-native-footer-check"),
+                           "--manifest-sha256", digest,
+                           "--operator-repo", str(repo), "--operator-ref", revision,
+                           "--operator-tree", tree, "--source-kind", kind,
+                           "--architecture", arch] + (
+                               ["--remote-ref", remote] if remote is not None else []),
+                          capture_output=True, timeout=1800,
+                          env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                      (temp / "latexml-native-footer-private.log").write_bytes(
+                          check.stdout + b"\n[stderr]\n" + check.stderr)
+                      assert check.returncode == 0
+                      files = set(manifest["files"]) | {"manifest.json"}
+                      original = common.inventory(bundle, files)
+                      assert {n: original[n] for n in manifest["files"]} == manifest["files"]
+                      captured_digest = original["apt/input-lock.json"]["sha256"]
+                      assert captured_digest == outer["captured_lock_sha256"]
+                      bundled = common.read_json(bundle / "outer.json")
+                      expected_bundled = json.loads(json.dumps(outer))
+                      for stage in ("evidence-export", "evidence-check"):
+                          expected_bundled["stages"][stage] = {"state": "not_run", "exit": None}
+                      assert bundled == expected_bundled
+                      component = temp / "latexml-native-footer-component-stage"
+                      common.path_check(component, new=True)
+                      component.mkdir()
+                      for name in sorted(files):
+                          target = component / name
+                          target.parent.mkdir(parents=True, exist_ok=True)
+                          target.write_bytes((bundle / name).read_bytes())
+                          target.chmod(original[name]["mode"])
+                      assert common.inventory(component, files) == original
+                      assert common.inventory(bundle, files) == original
+                      public_component = destination / "component"
+                      common.path_check(public_component, new=True)
+                      component.rename(public_component)
+                      bundle_copied = True
+                      validation = "success"
+              except (AssertionError, ValueError, OSError, KeyError, TypeError,
+                      json.JSONDecodeError, subprocess.TimeoutExpired):
+                  validation = "failure"
+              complete = pipeline_passed and receipt_status == "valid" and bundle_copied
+              status = {"architecture": arch, "revision": revision, "tree": tree,
+                        "source_kind": kind, "workflow_outcomes": outcomes,
+                        "runner_observed_exit": observed,
+                        "final_receipt_status": receipt_status,
+                        "footer_validation": validation, "complete": complete}
+              (destination / "workflow-outcomes.json").write_bytes(common.canonical(status))
+              if pipeline_succeeded and not complete:
+                  raise SystemExit(1)
+
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  print("bounded workflow outcomes refused", file=sys.stderr)
+                  raise SystemExit(1)
+          PY
+      - name: Upload only validated bounded LaTeXML evidence
+        if: always() && steps.checkout.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: latexml-native-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latexml-native-public-evidence/
           if-no-files-found: error
           retention-days: 14
 

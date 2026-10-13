@@ -1,0 +1,29 @@
+# Disposable native probe only. The caller must inspect BASE_IMAGE by exact image ID.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG MANIFEST_SHA256
+ARG RUNTIME_MANIFEST_SHA256
+ARG BASE_IMAGE
+USER root
+COPY source/lib /opt/latexml-source/lib
+COPY source/bin /opt/latexml-source/bin
+COPY source/LICENSE /opt/latexml-source/LICENSE
+COPY source/source-manifest.json /opt/latexml-source/source-manifest.json
+COPY source/runtime-manifest.json /opt/latexml-source/runtime-manifest.json
+COPY package_source.py verify_install.py /usr/local/libexec/latexml/
+ENV PERL5LIB=/opt/latexml-source/lib
+RUN set -eu; \
+    for tool in latexml latexmlc latexmlfind latexmlmath latexmlpost; do \
+      test ! -e "/usr/local/bin/$tool" && test ! -L "/usr/local/bin/$tool"; \
+      ln -s "/opt/latexml-source/bin/$tool" "/usr/local/bin/$tool"; \
+    done; \
+    python3 /usr/local/libexec/latexml/verify_install.py \
+      --root /opt/latexml-source \
+      --manifest /opt/latexml-source/source-manifest.json \
+      --manifest-sha256 "$MANIFEST_SHA256" \
+      --runtime-manifest /opt/latexml-source/runtime-manifest.json \
+      --runtime-manifest-sha256 "$RUNTIME_MANIFEST_SHA256"
+LABEL org.aelira.latexml.source-manifest-sha256="${MANIFEST_SHA256}" \
+      org.aelira.latexml.runtime-manifest-sha256="${RUNTIME_MANIFEST_SHA256}" \
+      org.aelira.latexml.base-image-id="${BASE_IMAGE}"
+USER 1000:1000
