@@ -45,6 +45,17 @@ def small(root, relative):
     return path.read_bytes()
 
 
+def decode_json(data):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Duplicate receipt key')
+            result[key] = value
+        return result
+    return json.loads(data, object_pairs_hook=unique)
+
+
 def export(args):
     args.dest.mkdir(mode=0o700)
     rows = {}
@@ -93,7 +104,7 @@ def export(args):
                                          'runtime-security/cjson', '.github/workflows/ci.yml'], text=True)
         if dirty:
             raise ValueError("Recipe checkout is dirty")
-        status = json.loads(small(args.source, "build-status.json"))
+        status = decode_json(small(args.source, "build-status.json"))
         receipt["stage"] = status["phase"]
         if status != {"schema": "aelira-cjson-build-status-v1", "phase": "complete", "exit": 0} or args.build_exit != 0:
             raise ValueError("Native build did not complete")
@@ -136,7 +147,7 @@ def export(args):
             raise ValueError("Unsafe index directory")
         current_source_chain = authenticator.verify(indexes, args.source / 'source-input', args.source / 'provenance/ubuntu-archive-keyring.gpg')
         for attempt in 'ab':
-            if json.loads(small(args.source, 'build-' + attempt + '/ubuntu-source.json')) != current_source_chain:
+            if decode_json(small(args.source, 'build-' + attempt + '/ubuntu-source.json')) != current_source_chain:
                 raise ValueError('Source authentication differs from current signed inputs')
         for path in sorted(indexes.iterdir()):
             if not INDEX.fullmatch(path.name):
@@ -146,11 +157,11 @@ def export(args):
             raise ValueError("Signed index missing")
         for attempt in "ab":
             prefix = "build-" + attempt + "/"
-            controls = json.loads(small(args.source, prefix + "source-controls.json"))
+            controls = decode_json(small(args.source, prefix + "source-controls.json"))
             if controls != {"schema": "aelira-cjson-source-controls-v1", "status": "pass", "count": 9, "controls": SOURCE_CONTROLS}:
                 raise ValueError("Source controls incomplete")
             copy(prefix + "source-controls.json")
-            authenticated = json.loads(small(args.source, prefix + "ubuntu-source.json"))
+            authenticated = decode_json(small(args.source, prefix + "ubuntu-source.json"))
             if authenticated != current_source_chain:
                 raise ValueError('Source authentication differs from current signed inputs')
             if set(authenticated) != {'schema', 'status', 'records', 'keyring_sha256'} or authenticated["schema"] != "aelira-cjson-ubuntu-source-v1" or authenticated["status"] != "pass" or not authenticated["records"]:
@@ -175,7 +186,7 @@ def export(args):
             for name in names:
                 if name != 'source-receipt.json':
                     copy(prefix + "artifacts/" + name, reproducible[name])
-            source_receipt = json.loads(small(args.source, prefix + 'artifacts/source-receipt.json'))
+            source_receipt = decode_json(small(args.source, prefix + 'artifacts/source-receipt.json'))
             artifact_identity = {name: rows[prefix + 'artifacts/' + name] for name in names[:2]}
             artifact_identity['cjson_1.7.19.orig.tar.gz'] = source_identity['cjson_1.7.19.orig.tar.gz']
             if source_receipt != {'schema': 'aelira-cjson-source-v1', 'status': 'pass', 'version': '1.7.19-2+aelira3',
@@ -196,7 +207,7 @@ def export(args):
         match = re.findall(r"^installed_cjson_receipt=(.+)$", installed_log, re.MULTILINE)
         if len(match) != 1 or f"installed_cjson_acceptance=pass architecture={args.arch} version=1.7.19-2+aelira3\n" not in installed_log:
             raise ValueError("Installed controls incomplete")
-        installed = json.loads(match[0])
+        installed = decode_json(match[0])
         if set(installed) != {'schema', 'status', 'architecture', 'version', 'libraries'} or installed["schema"] != "aelira-cjson-installed-v1" or installed["status"] != "pass" or installed["architecture"] != args.arch or installed["version"] != "1.7.19-2+aelira3":
             raise ValueError("Installed receipt mismatch")
         if set(installed['libraries']) != {'libcjson.so.1', 'libcjson_utils.so.1'}:
@@ -232,7 +243,7 @@ def export(args):
         if tar.exists():
             copy("provenance/builder.tar")
         receipt["status"] = "pass"
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as error:
         errors.append(type(error).__name__)
     receipt["errors"] = errors
     receipt["files"] = rows

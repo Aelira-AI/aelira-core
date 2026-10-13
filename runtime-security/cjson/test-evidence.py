@@ -83,7 +83,7 @@ def main():
     assert result == 1 and receipt["status"] == "fail" and not receipt["files"]
     rows.append("source-directory-alias-refused")
     for case in ('changed-source-archive', 'changed-source-receipt', 'extra-installed-field',
-                 'changed-signed-release', 'absolute-checksum-path', 'changed-binary-package'):
+                 'changed-signed-release', 'absolute-checksum-path', 'changed-binary-package', 'duplicate-receipt-key'):
         source = snapshot(case)
         if case == 'changed-source-archive':
             path = source / 'source-input/cjson_1.7.19.orig.tar.gz'
@@ -110,6 +110,9 @@ def main():
         elif case == 'absolute-checksum-path':
             path = source / 'reproducible-sha256.txt'
             data = path.read_bytes().replace(b'  libcjson1_', b'  /private/synthetic-path/libcjson1_')
+        elif case == 'duplicate-receipt-key':
+            path = source / 'build-status.json'
+            data = path.read_bytes().replace(b'{', b'{"phase":"SYNTHETIC-PRIVATE-FIELD",', 1)
         else:
             path = source / ('build-a/artifacts/libcjson1_1.7.19-2+aelira3_' + args.arch + '.deb')
             data = bytearray(path.read_bytes())

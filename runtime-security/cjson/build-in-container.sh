@@ -36,8 +36,10 @@ gcc -fPIC -shared -fvisibility=hidden -DCJSON_API_VISIBILITY \
   -I "$source" "$source/cJSON_Utils.c" /work/baseline-core.so -lm \
   -Wl,-soname,libcjson_utils.so.1 -o /work/baseline-utils.so
 mkdir /work/artifacts
-cp /work/source-controls/positive/*.deb /work/source-controls/positive/*.dsc \
-  /work/source-controls/positive/*.debian.tar.xz \
+cp "/work/source-controls/positive/libcjson1_1.7.19-2+aelira3_${AELIRA_CJSON_HOST_ARCH}.deb" \
+  "/work/source-controls/positive/libcjson-dev_1.7.19-2+aelira3_${AELIRA_CJSON_HOST_ARCH}.deb" \
+  /work/source-controls/positive/cjson_1.7.19-2+aelira3.dsc \
+  /work/source-controls/positive/cjson_1.7.19-2+aelira3.debian.tar.xz \
   /work/source-controls/positive/source-receipt.json /work/artifacts/
 (cd /work/artifacts && sha256sum *.deb *.dsc *.debian.tar.xz) > /work/artifact-sha256.txt
 printf 'native_cjson_build=pass architecture=%s version=1.7.19-2+aelira3\n' "$AELIRA_CJSON_HOST_ARCH"
