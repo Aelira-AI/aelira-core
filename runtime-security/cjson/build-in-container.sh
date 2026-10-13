@@ -29,9 +29,11 @@ helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 helper.verify_tree(Path('/work/source-controls/positive/cjson-1.7.19-aelira'), helper.ORIGINAL)
 PY
-gcc -fPIC -shared -I "$source" "$source/cJSON.c" -lm \
+gcc -fPIC -shared -fvisibility=hidden -DCJSON_API_VISIBILITY \
+  -I "$source" "$source/cJSON.c" -lm \
   -Wl,-soname,libcjson.so.1 -o /work/baseline-core.so
-gcc -fPIC -shared -I "$source" "$source/cJSON_Utils.c" /work/baseline-core.so -lm \
+gcc -fPIC -shared -fvisibility=hidden -DCJSON_API_VISIBILITY \
+  -I "$source" "$source/cJSON_Utils.c" /work/baseline-core.so -lm \
   -Wl,-soname,libcjson_utils.so.1 -o /work/baseline-utils.so
 mkdir /work/artifacts
 cp /work/source-controls/positive/*.deb /work/source-controls/positive/*.dsc \
