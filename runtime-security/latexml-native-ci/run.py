@@ -41,7 +41,7 @@ CALLER = "runtime-security/latexml-native-acceptance/"
 WRAPPER = "runtime-security/latexml-native-ci/"
 CALLER_HASHES = {
     "bootstrap.py": "342508b0de4eaba8e749d0ae57305f597094def3ab87b923d05e4fd2bfe2faa7",
-    "native_acceptance.py": "ad01f28138a706f87198c51e4153b628d40d29b0f1868e76943da44e7ba0ede0",
+    "native_acceptance.py": "95d53dce120f42eeca5437b5f0fee408946c8541ae6cc66941ed69d8ed037346",
     "README.md": "c31543887d6f05cd6fba8834ccdc90cea8f934eaa3168099f63a0bcd6072f01d",
 }
 WRAPPERS = ("run.py", "evidence.py", "test-run.py", "README.md")
@@ -613,6 +613,7 @@ def snapshot_ca_bundle(data):
 
 def capture(a, root, caller):
     """Capture the fixed signed snapshot using the default _apt sandbox and TLS."""
+    require(caller.SNAPSHOT_ID == SNAPSHOT_ID, "capture and offline snapshot differ")
     root.mkdir()
     (root / "debs").mkdir()
     (root / "lists").mkdir()

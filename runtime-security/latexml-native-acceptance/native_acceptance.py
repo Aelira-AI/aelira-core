@@ -31,6 +31,7 @@ UBUNTU_MANIFEST = (
 )
 KEYRING_SHA = "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31"
 PINNED_ARM_LOCK = "e59ed0151c570dc38e0f95bc75aac5fe3a8dbec66d8f31d086337d1379721e08"
+SNAPSHOT_ID = "20261013T060000Z"
 PINNED_ARM_PERL_SHA = "51d562fb5f145f8c12610790b6f67b2868d1aa7c977906b533250f00903681cd"
 PINNED_ARM_RECDESCENT_SHA = (
     "093ddd1287581fa4369c1dbc71f3696af3348c7e60da88de60af5b1db15d9680"
@@ -67,6 +68,20 @@ PACKAGES = (
     "libimage-magick-perl",
     "texlive-latex-base",
 )
+
+
+def snapshot_sources(architecture: str) -> str:
+    """Match the authenticated snapshot index names during offline installation."""
+    if architecture not in ("arm64", "amd64"):
+        raise ValueError("native snapshot architecture required")
+    return (
+        "Types: deb\n"
+        "URIs: https://snapshot.ubuntu.com/ubuntu/" + SNAPSHOT_ID + "/\n"
+        "Suites: resolute resolute-updates resolute-security resolute-backports\n"
+        "Components: main restricted universe multiverse\n"
+        "Architectures: " + architecture + "\n"
+        "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+    )
 
 
 DIAGNOSTIC_PHASES = (
@@ -1228,16 +1243,34 @@ def run(
             and sha(copied.read_bytes()) == member["sha256"],
             "dependency context input mismatch",
         )
+    source_configuration = snapshot_sources(arch)
+    (context / "snapshot.sources").write_text(source_configuration)
+    (context / "snapshot.sources").chmod(0o644)
+    (context / "sourceparts-empty").mkdir(mode=0o755)
     dockerfile = (
         "ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n"
         "COPY lists/ /var/lib/apt/lists/\n"
         "COPY debs/ /var/cache/apt/archives/\n"
-        "RUN apt-get -y --no-install-recommends --no-download install "
-        + " ".join(PACKAGES)
-        + "\n"
+        "COPY snapshot.sources /opt/aelira-snapshot/snapshot.sources\n"
+        "COPY sourceparts-empty/ /opt/aelira-snapshot/sourceparts-empty/\n"
+        "RUN apt-get "
+        "-o Dir::Etc::sourcelist=/opt/aelira-snapshot/snapshot.sources "
+        "-o Dir::Etc::sourceparts=/opt/aelira-snapshot/sourceparts-empty "
+        "-y --no-install-recommends --no-download install " + " ".join(PACKAGES) + "\n"
         "USER 1000:1000\n"
     )
     (context / "Dockerfile").write_text(dockerfile)
+    exact_closure(
+        context,
+        {x["name"] for x in lock["files"]} | {"Dockerfile", "snapshot.sources"},
+        {"lists", "debs", "sourceparts-empty"},
+        "final offline dependency context",
+    )
+    require(
+        (context / "snapshot.sources").read_text() == source_configuration
+        and (context / "Dockerfile").read_text() == dockerfile,
+        "generated dependency configuration differs",
+    )
     iid = scratch / "dependency-image-id.txt"
     diagnostic_operation("build")
     build = command(
