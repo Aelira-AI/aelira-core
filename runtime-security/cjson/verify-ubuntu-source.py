@@ -8,9 +8,16 @@ import re
 import subprocess
 
 
-def verify(lists, inputs):
+KEYRING_SHA256 = "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31"
+
+
+def verify(lists, inputs, keyring=None):
     # This keyring comes from the pinned Ubuntu builder, not the source bundle.
-    keyring = Path("/usr/share/keyrings/ubuntu-archive-keyring.gpg")
+    keyring = keyring or Path("/usr/share/keyrings/ubuntu-archive-keyring.gpg")
+    if keyring.is_symlink() or not keyring.is_file() or keyring.stat().st_size > 1024 * 1024:
+        raise ValueError("Invalid archive keyring")
+    if hashlib.sha256(keyring.read_bytes()).hexdigest() != KEYRING_SHA256:
+        raise ValueError("Archive keyring differs from the pinned Ubuntu trust input")
     expected_files = {"cjson_1.7.19-2.dsc", "cjson_1.7.19.orig.tar.gz",
                       "cjson_1.7.19-2.debian.tar.xz"}
     rows = []

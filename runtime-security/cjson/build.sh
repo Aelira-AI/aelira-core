@@ -77,7 +77,8 @@ phase=reproducibility
 for artifact in "$output/build-a/artifacts/"*.deb "$output/build-a/artifacts/"*.dsc \
                 "$output/build-a/artifacts/"*.debian.tar.xz; do
   cmp "$artifact" "$output/build-b/artifacts/${artifact##*/}"
-  sha256sum "$artifact" >> "$output/reproducible-sha256.txt"
+  (cd "$output/build-a/artifacts" && sha256sum "${artifact##*/}") \
+    >> "$output/reproducible-sha256.txt"
 done
 phase=installed-control
 docker run --rm --platform "linux/$arch" --network none --cap-drop ALL \
