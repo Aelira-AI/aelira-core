@@ -297,8 +297,13 @@ def export(args):
         client = small(args.source, 'installed/xrender-client.log').decode()
         if not re.fullmatch('Loaded XRender library: /(?:usr/)?lib/' + triplet + r'/libXrender\.so\.1\nInstalled Xrender 0\.11 rendered red pixels; subpixel=[0-5]\n', client):
             raise ValueError('Loaded consumer/pixel acceptance mismatch')
-        installed_hash = small(args.source, 'installed/installed-library.sha256').decode().split()[0]
-        if small(args.source, 'installed/loaded-library.sha256').decode().split()[0] != installed_hash:
+        installed_checksum = small(args.source, 'installed/installed-library.sha256').decode()
+        match = re.fullmatch(r'([a-f0-9]{64})  (/usr/lib/' + triplet + r'/libXrender\.so\.1\.[0-9]+\.[0-9]+)\n', installed_checksum)
+        if not match:
+            raise ValueError('Noncanonical installed library checksum')
+        installed_hash, installed_path = match.groups()
+        loaded_path = client.splitlines()[0].removeprefix('Loaded XRender library: ')
+        if small(args.source, 'installed/loaded-library.sha256').decode() != installed_hash + '  ' + loaded_path + '\n':
             raise ValueError('Loaded library differs from installed package')
         originals = [name for name, row in signed['toolchain_files'].items()
                      if (row['package'], row['version'], row['architecture']) ==
@@ -327,7 +332,7 @@ def export(args):
                 machine = {'arm64': 'AArch64', 'amd64': 'Advanced Micro Devices X86-64'}[args.arch]
                 if re.findall(r'Machine:\s+([^\n]+)', header) != [machine] or re.findall(r'Class:\s+([^\n]+)', header) != ['ELF64']:
                     raise ValueError('Packaged library architecture mismatch')
-                if label == 'candidate' and hashlib.sha256(data).hexdigest() != installed_hash:
+                if label == 'candidate' and (hashlib.sha256(data).hexdigest() != installed_hash or installed_path != '/usr/lib/' + triplet + '/' + link.linkname):
                     raise ValueError('Installed library differs from package')
                 dynamic = subprocess.check_output(['readelf', '-d', str(path)], text=True, timeout=30)
                 if re.findall(r'\(SONAME\).*\[([^]]+)\]', dynamic) != ['libXrender.so.1']:
@@ -339,6 +344,9 @@ def export(args):
         receipt['installed'] = {'version': '1:0.9.12-1build1+aelira1', 'library_sha256': installed_hash,
                                 'loader_path': '/usr/lib/' + triplet + '/libXrender.so.1',
                                 'soname': 'libXrender.so.1', 'public_symbols': symbols[0], 'pixel_readback': 'pass'}
+        for name in ('installed-private.log', 'installed/xrender-client.log',
+                     'installed/installed-library.sha256', 'installed/loaded-library.sha256'):
+            copy(name)
         stage = 'builder-archive'
         saved = regular(args.source, 'provenance/builder.tar')
         with tempfile.TemporaryDirectory(prefix='aelira-xrender-builder-') as work:

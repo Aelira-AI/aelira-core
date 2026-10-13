@@ -49,7 +49,11 @@ def main():
         return receipt
 
     source = snapshot('completed-native')
-    invoke('completed-native', source, True)
+    receipt = invoke('completed-native', source, True)
+    for name in ('installed-private.log', 'installed/xrender-client.log',
+                 'installed/installed-library.sha256', 'installed/loaded-library.sha256'):
+        assert name in receipt['files']
+        assert (args.scratch / 'completed-native-export' / name).read_bytes() == (source / name).read_bytes()
     invoke('failed-process', source, False, build_exit=7)
     for name, changed in [('invalid-arch', {'arch': 'SYNTHETIC-PRIVATE-FIELD'}),
                           ('invalid-revision', {'selected_revision': 'SYNTHETIC-PRIVATE-FIELD'}),
@@ -69,6 +73,8 @@ def main():
                            ('changed-package', 'build-a/libxrender1_0.9.12-1build1+aelira1_' + args.arch + '.deb'),
                            ('changed-loader', 'installed/xrender-client.log'),
                            ('changed-loaded-digest', 'installed/loaded-library.sha256'),
+                           ('private-installed-checksum-path', 'installed/installed-library.sha256'),
+                           ('private-loaded-checksum-path', 'installed/loaded-library.sha256'),
                            ('missing-builder', 'provenance/builder.tar'),
                            ('private-phase', 'build-status.json'),
                            ('boolean-exit', 'build-status.json'),
@@ -98,6 +104,8 @@ def main():
             path.write_bytes(data.replace(b'{', b'{"phase":"SYNTHETIC-PRIVATE-FIELD",', 1))
         elif case == 'absolute-checksum-path':
             path.write_bytes(data.replace(b'  libxrender1_', b'  /private/synthetic/libxrender1_'))
+        elif case in ('private-installed-checksum-path', 'private-loaded-checksum-path'):
+            path.write_bytes(data.split(b'  ', 1)[0] + b'  SYNTHETIC-PRIVATE-FIELD\n')
         elif case in ('changed-builder', 'changed-base', 'changed-inventory', 'changed-base-inventory', 'changed-manifest', 'changed-loader', 'changed-loaded-digest'):
             path.write_text('SYNTHETIC-PRIVATE-FIELD\n')
         else:

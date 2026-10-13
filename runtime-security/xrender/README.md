@@ -34,7 +34,8 @@ successful preparation. The immutable image identity and pinned base must match.
 checks the actual pinned-base/builder package delta, reproduces the package and
 loaded-library bindings, and verifies saved image contents against a fresh
 export of the immutable builder. Only authenticated files and typed receipts
-are public; raw build logs remain private. `test-ci-evidence.py` runs 30 controls
+are public, including the validated installed-consumer and loaded-file receipts;
+raw build logs remain private. `test-ci-evidence.py` runs 32 controls
 against a real completed build, including changed inputs, signatures, packages,
 loader hashes, unsafe paths, and saved-image content. Tar header metadata may
 vary without changing any image file bytes.
