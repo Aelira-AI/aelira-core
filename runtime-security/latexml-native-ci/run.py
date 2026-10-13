@@ -5,26 +5,43 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import http.client
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import platform
 import re
 import shutil
+import ssl
 import stat
 import subprocess
 import sys
+import tarfile
 
 ORIGIN = "https://github.com/Aelira-AI/aelira-core.git"
 BASE = "ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7"
 KEYRING = "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31"
-ARM_LOCK = "f63058d835f3d32a9c36819048388a48c48ee2a01a082fbf047288a806cbd85c"
+ARM_LOCK = "d0c33df7305769e378ca86309f20d36d7e71a8f8f784c79d1bfa62e5c8190c98"
+SNAPSHOT_ID = "20261013T060000Z"
+SNAPSHOT_SUITES = (
+    "resolute",
+    "resolute-updates",
+    "resolute-security",
+    "resolute-backports",
+)
+CA_PACKAGE_PATH = "pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb"
+CA_PACKAGE_SHA256 = "6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90"
+CA_PACKAGE_SIZE = 138514
+CA_BUNDLE_SHA256 = "9481fcd95f41b221f02f14d896535fe500bec539bc563c4cdca1acee483a8bdd"
+CA_BUNDLE_SIZE = 182140
+CA_CERTIFICATE_COUNT = 121
 CALLER = "runtime-security/latexml-native-acceptance/"
 WRAPPER = "runtime-security/latexml-native-ci/"
 CALLER_HASHES = {
     "bootstrap.py": "342508b0de4eaba8e749d0ae57305f597094def3ab87b923d05e4fd2bfe2faa7",
-    "native_acceptance.py": "f623c1fd3bf294fd6fd9896687433fdc5143dc0dc2cfa5ff8548cf4632e7d7ec",
+    "native_acceptance.py": "b0845f78a64f92ce68e402fdb6b1842ef64451aed013f0196683bb636ed4515c",
     "README.md": "c31543887d6f05cd6fba8834ccdc90cea8f934eaa3168099f63a0bcd6072f01d",
 }
 WRAPPERS = ("run.py", "evidence.py", "test-run.py", "README.md")
@@ -338,6 +355,125 @@ def identity(a):
     }
 
 
+def diagnostic_expectations(a, members, input_lock_sha256):
+    """Pure expected binding from independently selected Git bytes; lock is external."""
+    require(
+        type(input_lock_sha256) is str
+        and re.fullmatch("[0-9a-f]{64}", input_lock_sha256),
+        "trusted launch lock required",
+    )
+    require(
+        a.architecture != "arm64" or input_lock_sha256 == ARM_LOCK,
+        "reviewed ARM launch lock required",
+    )
+    data = members[CALLER + "native_acceptance.py"]
+    require(
+        sha(data) == CALLER_HASHES["native_acceptance.py"],
+        "trusted caller source required",
+    )
+    wanted = {"UPSTREAM_ORIGIN", "UPSTREAM_HEAD", "UPSTREAM_TREE", "RECIPE"}
+    literals = {}
+    for node in ast.parse(data).body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in wanted:
+                    require(target.id not in literals, "duplicate source constant")
+                    literals[target.id] = ast.literal_eval(node.value)
+    require(
+        set(literals) == wanted
+        and type(literals["RECIPE"]) is dict
+        and len(literals["RECIPE"]) == 10,
+        "selected binding constants",
+    )
+    binding = {
+        "schema": "aelira-latexml-native-source-binding-v1",
+        "source_kind": a.source_kind,
+        "operator_origin": ORIGIN,
+        "operator_ref": a.operator_ref,
+        "operator_tree": a.operator_tree,
+        "remote_ref": a.remote_ref,
+        "upstream_origin": literals["UPSTREAM_ORIGIN"],
+        "upstream_ref": literals["UPSTREAM_HEAD"],
+        "upstream_tree": literals["UPSTREAM_TREE"],
+        "recipe_sha256": literals["RECIPE"],
+        "runner_sha256": sha(data),
+    }
+    return {
+        **identity(a),
+        "caller_sha256": sha(data),
+        "binding_sha256": sha(canonical(binding)),
+        "input_lock_sha256": input_lock_sha256,
+    }
+
+
+def observe_capture_lock(scratch):
+    """Bounded fixed-file observation only; not signed-input acceptance or export."""
+    try:
+        path_check(scratch)
+        path = scratch / "captured-input/input-lock.json"
+        path_check(path)
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+            item = os.fstat(stream.fileno())
+            require(
+                stat.S_ISREG(item.st_mode)
+                and item.st_nlink == 1
+                and item.st_uid == os.getuid()
+                and stat.S_IMODE(item.st_mode) == 0o644
+                and 0 < item.st_size <= 300_000,
+                "captured lock file",
+            )
+            data = stream.read(300_001)
+            require(
+                len(data) == item.st_size and len(data) <= 300_000,
+                "captured lock bound",
+            )
+        return sha(data)
+    except Exception:
+        return None
+
+
+def read_failure_projection(path, expected, caller_state, validator):
+    """Failure-only private read. Missing/malformed data never masks an original exit."""
+    if caller_state == {"state": "not_run", "exit": None} or caller_state == {
+        "state": "executed",
+        "exit": 0,
+    }:
+        return {"state": "not_run", "record": None}
+    unavailable = {"state": "unavailable", "record": None}
+    if expected is None or validator is None:
+        return unavailable
+    try:
+        path_check(path)
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+            item = os.fstat(stream.fileno())
+            require(
+                stat.S_ISREG(item.st_mode)
+                and item.st_nlink == 1
+                and item.st_uid == os.getuid()
+                and stat.S_IMODE(item.st_mode) == 0o600
+                and 0 < item.st_size <= 16_000,
+                "private diagnostic file",
+            )
+            data = stream.read(16_001)
+            require(
+                len(data) == item.st_size and len(data) <= 16_000,
+                "private diagnostic size",
+            )
+        candidate = {
+            "state": "valid",
+            "record": json.loads(
+                data,
+                object_pairs_hook=pairs,
+                parse_constant=nonfinite,
+                parse_float=nonfinite,
+            ),
+        }
+        validator(candidate, expected, caller_state)
+        return candidate
+    except Exception:
+        return unavailable
+
+
 def selector(a):
     args = [
         "--operator-repo",
@@ -410,8 +546,73 @@ def native(a):
     )
 
 
+def snapshot_file(relative, limit):
+    """Read one fixed vendor snapshot resource with normal TLS and no redirects."""
+    require(
+        relative == CA_PACKAGE_PATH
+        or relative in {"dists/" + suite + "/InRelease" for suite in SNAPSHOT_SUITES},
+        "undeclared snapshot resource",
+    )
+    connection = http.client.HTTPSConnection(
+        "snapshot.ubuntu.com", timeout=60, context=ssl.create_default_context()
+    )
+    try:
+        connection.request("GET", "/ubuntu/" + SNAPSHOT_ID + "/" + relative)
+        response = connection.getresponse()
+        require(response.status == 200, "snapshot request refused")
+        data = response.read(limit + 1)
+        require(0 < len(data) <= limit, "snapshot resource bound")
+        return data
+    except (OSError, http.client.HTTPException) as error:
+        raise ValueError("snapshot transport unavailable") from error
+    finally:
+        connection.close()
+
+
+def snapshot_ca_bundle(data):
+    """Read inert certificate members; never extract or execute package payloads."""
+    require(0 < len(data) <= 2_000_000, "CA package archive bound")
+    certificates = {}
+    prefix = "./usr/share/ca-certificates/mozilla/"
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+        members = archive.getmembers()
+        require(len(members) <= 1000, "CA package member bound")
+        names = set()
+        for member in members:
+            require(member.name not in names, "duplicate CA package member")
+            names.add(member.name)
+            if not member.name.startswith(prefix) or not member.name.endswith(".crt"):
+                continue
+            relative = member.name[len(prefix) :]
+            require(
+                member.isfile()
+                and "/" not in relative
+                and relative not in (".", "..")
+                and 0 < member.size <= 20_000,
+                "regular bounded root certificate required",
+            )
+            certificate = archive.extractfile(member).read()
+            require(len(certificate) == member.size, "root certificate size differs")
+            ssl.PEM_cert_to_DER_cert(certificate.decode("ascii"))
+            certificates[member.name] = certificate.rstrip() + b"\n"
+    bundle = b"".join(certificates[name] for name in sorted(certificates))
+    require(
+        len(certificates) == CA_CERTIFICATE_COUNT
+        and len(bundle) == CA_BUNDLE_SIZE
+        and sha(bundle) == CA_BUNDLE_SHA256,
+        "fixed CA inventory differs",
+    )
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.load_verify_locations(cadata=bundle.decode("ascii"))
+    require(
+        context.cert_store_stats()["x509_ca"] == CA_CERTIFICATE_COUNT,
+        "CA store count differs",
+    )
+    return bundle
+
+
 def capture(a, root, caller):
-    """Default _apt capture in a new cache, with an explicit five-capability boundary."""
+    """Capture the fixed signed snapshot using the default _apt sandbox and TLS."""
     root.mkdir()
     (root / "debs").mkdir()
     (root / "lists").mkdir()
@@ -440,20 +641,84 @@ def capture(a, root, caller):
     cache.mkdir()
     uid, gid = os.getuid(), os.getgid()
     require(uid != 0, "host root capture refused")
+    # This package is pinned to the previously authenticated Ubuntu signed-index
+    # closure. Only its public root certificates are read; no package is installed.
+    ca_package = snapshot_file(CA_PACKAGE_PATH, CA_PACKAGE_SIZE)
+    require(
+        len(ca_package) == CA_PACKAGE_SIZE and sha(ca_package) == CA_PACKAGE_SHA256,
+        "pinned CA package differs",
+    )
+    ca_path = cache / "ca-certificates.deb"
+    ca_path.write_bytes(ca_package)
+    ca_path.chmod(0o644)
+    bundle = snapshot_ca_bundle(
+        command(["/usr/bin/dpkg-deb", "--fsys-tarfile", str(ca_path)], timeout=30)
+    )
+    require(regular(ca_path)["sha256"] == CA_PACKAGE_SHA256, "CA package changed")
+    (cache / "snapshot-roots.pem").write_bytes(bundle)
+    (cache / "snapshot-roots.pem").chmod(0o644)
+    endpoint_metadata = {}
+    for suite in SNAPSHOT_SUITES:
+        data = snapshot_file("dists/" + suite + "/InRelease", 10_000_000)
+        endpoint = cache / (suite + ".InRelease")
+        endpoint.write_bytes(data)
+        endpoint.chmod(0o644)
+        command(
+            [
+                "/usr/bin/gpgv",
+                "--keyring",
+                str(root / "ubuntu-archive-keyring.gpg"),
+                str(endpoint),
+            ],
+            timeout=30,
+        )
+        text = data.decode("utf-8")
+        for field, value in (
+            ("Origin", "Ubuntu"),
+            ("Label", "Ubuntu"),
+            ("Codename", "resolute"),
+            ("Suite", suite),
+        ):
+            require(
+                re.findall(r"^" + field + r": (.*)$", text, re.M) == [value],
+                "signed snapshot identity differs",
+            )
+        endpoint_metadata[suite] = data
+    sources = (
+        "Types: deb\nURIs: https://snapshot.ubuntu.com/ubuntu/" + SNAPSHOT_ID + "/\n"
+        "Suites: " + " ".join(SNAPSHOT_SUITES) + "\n"
+        "Components: main restricted universe multiverse\n"
+        "Architectures: " + a.architecture + "\n"
+        "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+    )
+    (cache / "snapshot.sources").write_text(sources)
+    (cache / "snapshot.sources").chmod(0o644)
+    (cache / "sourceparts-empty").mkdir()
+    options = (
+        "-o Dir::Etc::sourcelist=/capture/snapshot.sources "
+        "-o Dir::Etc::sourceparts=/capture/sourceparts-empty "
+        "-o Dir::State::lists=/capture/lists "
+        "-o Acquire::https::AllowRedirect=false "
+        "-o Acquire::https::CAInfo=/capture/snapshot-roots.pem "
+        "-o Acquire::https::Verify-Peer=true -o Acquire::https::Verify-Host=true "
+        "-o APT::Update::Error-Mode=any"
+    )
     # Root APT needs these five ordinary filesystem/UID capabilities; no others
     # are granted. Only this new cache is mounted. Default _apt is not overridden.
     script = "\n".join(
         (
             "set -u; umask 022",
-            "mkdir -m 0755 /capture/status",
+            "mkdir -m 0755 /capture/status || exit $?",
             'stage() { name=$1; shift; ( set -eu; "$@" ); rc=$?; printf \'%s\\n\' "$rc" > /capture/status/"$name".exit; return "$rc"; }',
-            'setup() { chown 0:0 /capture && mkdir -m 0755 /capture/debs /capture/lists && test "$(id -u _apt)" = 42 && test "$(apt-config shell sandbox APT::Sandbox::User)" = "sandbox=\'_apt\'" && install -d -m 0700 -o _apt -g root /capture/debs/partial; }',
+            'setup() { chown 0:0 /capture || return $?; mkdir -m 0755 /capture/debs /capture/lists || return $?; apt_uid=$(id -u _apt) || return $?; test "$apt_uid" = 42 || return $?; sandbox=$(apt-config shell user APT::Sandbox::User) || return $?; test "$sandbox" = "user=\'_apt\'" || return $?; install -d -m 0700 -o _apt -g root /capture/debs/partial /capture/lists/partial || return $?; }',
             "stage setup setup || exit $?",
-            "stage update apt-get update || exit $?",
-            "stage download apt-get -y --no-install-recommends --download-only -o Dir::Cache::archives=/capture/debs install "
+            "stage update apt-get " + options + " update || exit $?",
+            "stage download apt-get "
+            + options
+            + " -y --no-install-recommends --download-only -o Dir::Cache::archives=/capture/debs install "
             + " ".join(caller.PACKAGES)
             + " || exit $?",
-            "select_inputs() { cp /var/lib/apt/lists/*_InRelease /var/lib/apt/lists/*_Packages.lz4 /capture/lists/; }",
+            'select_inputs() { set -- /capture/lists/*_InRelease; test "$#" = 4 || return $?; test -f "$1" || return $?; set -- /capture/lists/*_Packages.lz4; test -f "$1" || return $?; set -- /capture/debs/*.deb; test -f "$1" || return $?; }',
             "stage select select_inputs || exit $?",
             "stage restore chown -R --no-dereference "
             + str(uid)
@@ -492,9 +757,12 @@ def capture(a, root, caller):
     ]
     original = None
     process = {
-        "schema": "aelira-latexml-capture-process-v1",
+        "schema": "aelira-latexml-capture-process-v2",
         **identity(a),
         "keyring_sha256": sha(key),
+        "snapshot_id": SNAPSHOT_ID,
+        "ca_package_sha256": CA_PACKAGE_SHA256,
+        "ca_bundle_sha256": sha(bundle),
         "apt_sandbox_user": "_apt",
         "apt_uid": 42,
         "capabilities": list(CAPTURE_CAPABILITIES),
@@ -555,6 +823,24 @@ def capture(a, root, caller):
                 and regular(target)["size"] == before["size"],
                 "capture copied bytes differ",
             )
+    releases = sorted((root / "lists").glob("*_InRelease"))
+    prefix = "snapshot.ubuntu.com_ubuntu_" + SNAPSHOT_ID + "_dists_"
+    require(len(releases) == len(SNAPSHOT_SUITES), "snapshot release count differs")
+    for suite in SNAPSHOT_SUITES:
+        matches = [p for p in releases if p.name == prefix + suite + "_InRelease"]
+        require(
+            len(matches) == 1 and matches[0].read_bytes() == endpoint_metadata[suite],
+            "snapshot endpoint-to-input mismatch",
+        )
+    require(
+        regular(cache / "snapshot-roots.pem")["sha256"] == CA_BUNDLE_SHA256,
+        "capture CA roots changed",
+    )
+    require(
+        (cache / "snapshot.sources").read_text() == sources
+        and not list((cache / "sourceparts-empty").iterdir()),
+        "capture source configuration changed",
+    )
     lock = caller.verify_apt(root, a.architecture)
     files = {"ubuntu-archive-keyring.gpg", "input-lock.json"} | {
         x["name"] for x in lock["files"]
@@ -563,9 +849,15 @@ def capture(a, root, caller):
     (root.parent / "capture-manifest.json").write_bytes(
         canonical(
             {
-                "schema": "aelira-latexml-captured-input-v1",
+                "schema": "aelira-latexml-captured-input-v2",
                 **identity(a),
                 "input_lock_sha256": captured["input-lock.json"]["sha256"],
+                "snapshot_id": SNAPSHOT_ID,
+                "ca_package_sha256": CA_PACKAGE_SHA256,
+                "ca_bundle_sha256": CA_BUNDLE_SHA256,
+                "endpoint_metadata_sha256": {
+                    suite: sha(data) for suite, data in endpoint_metadata.items()
+                },
                 "files": captured,
                 "directories": directory_modes(root, files),
                 "file_count": len(files),
@@ -630,12 +922,13 @@ def main():
     logs.mkdir()
     stages = {n: {"state": "not_run", "exit": None} for n in STAGES}
     receipt = {
-        "schema": "aelira-latexml-ci-outer-v2",
+        "schema": "aelira-latexml-ci-outer-v3",
         **identity(a),
         "stages": stages,
         "captured_lock_sha256": None,
         "selected_sources": None,
         "producer_status_sha256": None,
+        "failure_diagnostic": {"state": "not_run", "record": None},
         "pending": [
             "public_ci",
             "native_amd64",
@@ -672,6 +965,8 @@ def main():
             write()
             raise
 
+    diagnostic_expected = None
+    caller = None
     current = "source-check"
     try:
         members = selected(a)
@@ -746,6 +1041,20 @@ def main():
             ],
         )
         current = "native-run"
+        try:
+            context = diagnostic_expectations(a, members, a.apt_lock_sha256)
+            require(
+                r["runner_sha256"] == context["caller_sha256"]
+                and r["binding_sha256"] == context["binding_sha256"]
+                and regular(producer / "source/binding.json")["sha256"]
+                == context["binding_sha256"],
+                "actual bootstrap diagnostic expectation differs",
+            )
+            caller.validate_diagnostic_context(context)
+            diagnostic_expected = context
+        except Exception:
+            # Insufficient trusted bootstrap/launch identity cannot produce a record.
+            diagnostic_expected = None
         step(
             current,
             [
@@ -862,6 +1171,12 @@ def main():
             receipt["producer_status_sha256"] = regular(
                 a.scratch / "producer/status.json"
             )["sha256"]
+        receipt["failure_diagnostic"] = read_failure_projection(
+            a.scratch / "producer/private/failure-diagnostic.json",
+            diagnostic_expected,
+            stages["native-run"],
+            caller.validate_failure_projection if caller is not None else None,
+        )
         write()
         raise
 

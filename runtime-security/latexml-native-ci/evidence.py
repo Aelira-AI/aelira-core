@@ -36,17 +36,22 @@ def outer(path, a, members):
             "captured_lock_sha256",
             "selected_sources",
             "producer_status_sha256",
+            "failure_diagnostic",
             "pending",
         },
         "outer schema",
     )
     common.require(
-        row["schema"] == "aelira-latexml-ci-outer-v2"
+        row["schema"] == "aelira-latexml-ci-outer-v3"
         and all(row[k] == v for k, v in common.identity(a).items())
         and row["pending"] == PENDING,
         "outer identities",
     )
     common.validate_stages(row["stages"], successful=True)
+    common.require(
+        row["failure_diagnostic"] == {"state": "not_run", "record": None},
+        "successful evidence cannot carry failure diagnostics",
+    )
     expected = {
         n: {"sha256": common.sha(d), "size": len(d), "mode": 420}
         for n, d in members.items()
@@ -323,7 +328,7 @@ def export(a, members):
     )
     replay(staging, a, members, a.scratch / "export-replay")
     manifest = {
-        "schema": "aelira-latexml-complete-evidence-v2",
+        "schema": "aelira-latexml-complete-evidence-v3",
         **common.identity(a),
         "files": before,
         "file_count": len(before),
@@ -367,7 +372,7 @@ def check(a, members):
             "total_size",
             "directories",
         }
-        and m["schema"] == "aelira-latexml-complete-evidence-v2"
+        and m["schema"] == "aelira-latexml-complete-evidence-v3"
         and all(m[k] == v for k, v in common.identity(a).items()),
         "evidence manifest schema",
     )

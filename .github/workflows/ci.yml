@@ -470,14 +470,11 @@ jobs:
               from pathlib import Path
               import re
               import subprocess
+              import stat
               import sys
 
               sys.dont_write_bytecode = True
               os.umask(0o022)
-              sys.path.insert(0, str(Path(os.environ["GITHUB_WORKSPACE"]) /
-                                     "runtime-security/latexml-native-ci"))
-              import run as common
-
               arch = os.environ["AELIRA_NATIVE_ARCH"]
               revision = os.environ["GITHUB_SHA"]
               tree = subprocess.check_output(
@@ -491,6 +488,58 @@ jobs:
               a = argparse.Namespace(operator_repo=repo, operator_ref=revision,
                                      operator_tree=tree, source_kind=kind, remote_ref=remote,
                                      architecture=arch)
+              # Authenticate every fixed selected Git source before importing candidate code.
+              assert repo.is_absolute() and repo.resolve(strict=True) == repo
+              def git(*args):
+                  return subprocess.check_output(["/usr/bin/git", "-C", str(repo), *args])
+              assert git("rev-parse", "HEAD").decode().strip() == revision
+              assert git("rev-parse", "--show-toplevel").decode().strip() == str(repo)
+              assert git("remote", "get-url", "origin").decode().strip() == (
+                  "https://github.com/Aelira-AI/aelira-core.git")
+              assert not git("status", "--porcelain")
+              names = (
+                  "runtime-security/latexml-native-acceptance/README.md",
+                  "runtime-security/latexml-native-acceptance/bootstrap.py",
+                  "runtime-security/latexml-native-acceptance/native_acceptance.py",
+                  "runtime-security/latexml-native-ci/README.md",
+                  "runtime-security/latexml-native-ci/run.py",
+                  "runtime-security/latexml-native-ci/evidence.py",
+                  "runtime-security/latexml-native-ci/test-run.py",
+                  "runtime-security/latexml/Dockerfile.probe",
+                  "runtime-security/latexml/README.md",
+                  "runtime-security/latexml/accept_image.py",
+                  "runtime-security/latexml/package_source.py",
+                  "runtime-security/latexml/prepare-source.sh",
+                  "runtime-security/latexml/probe_cases.py",
+                  "runtime-security/latexml/probe_integrated.py",
+                  "runtime-security/latexml/siunitx-v3-adapter.patch",
+                  "runtime-security/latexml/siunitx.sty.ltxml",
+                  "runtime-security/latexml/verify_install.py",
+              )
+              selected_git = {}
+              for name in names:
+                  entries = git("ls-tree", "-z", revision, "--", name).split(b"\0")
+                  assert len(entries) == 2 and entries[1] == b""
+                  header, separator, relative = entries[0].partition(b"\t")
+                  tokens = header.split()
+                  assert separator and relative.decode() == name
+                  assert len(tokens) == 3 and tokens[:2] == [b"100644", b"blob"]
+                  path = repo / name
+                  assert path.resolve(strict=True) == path
+                  with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+                      item = os.fstat(stream.fileno())
+                      assert (stat.S_ISREG(item.st_mode) and item.st_nlink == 1 and
+                              stat.S_IMODE(item.st_mode) == 0o644 and item.st_uid == os.getuid())
+                      data = stream.read()
+                  selected_git[name] = git("cat-file", "blob", tokens[2].decode())
+                  assert data == selected_git[name]
+              sys.path.insert(0, str(repo / "runtime-security/latexml-native-ci"))
+              import run as common
+              selected = common.selected(a)
+              assert selected == selected_git
+              caller = common.load_module(
+                  repo / "runtime-security/latexml-native-acceptance/native_acceptance.py",
+                  "footer_selected_caller")
               outcomes = {k: os.environ[k] or "not_reported" for k in (
                   "UTILITIES_OUTCOME", "CONTROLS_OUTCOME", "COMPONENT_OUTCOME")}
               assert all(v in {"success", "failure", "cancelled", "skipped", "not_reported"}
@@ -517,8 +566,8 @@ jobs:
                       expected = common.identity(a)
                       assert type(row) is dict and set(row) == {
                           "schema", *expected, "stages", "captured_lock_sha256",
-                          "selected_sources", "producer_status_sha256", "pending"}
-                      assert row["schema"] == "aelira-latexml-ci-outer-v2"
+                          "selected_sources", "producer_status_sha256", "failure_diagnostic", "pending"}
+                      assert row["schema"] == "aelira-latexml-ci-outer-v3"
                       assert all(row[k] == v for k, v in expected.items())
                       assert row["pending"] == [
                           "public_ci", "native_amd64", "full_application", "final_image",
@@ -528,11 +577,49 @@ jobs:
                           assert row[field] is None or (type(row[field]) is str and
                                                         re.fullmatch("[0-9a-f]{64}", row[field]))
                       if row["selected_sources"] is not None:
-                          selected = common.selected(a)
                           assert row["selected_sources"] == {
                               n: {"sha256": hashlib.sha256(data).hexdigest(),
                                   "size": len(data), "mode": 420}
                               for n, data in selected.items()}
+                      # A record cannot supply its own source/input/bootstrap expectations.
+                      private = temp / "latexml-native-private"
+                      observed_lock = common.observe_capture_lock(private)
+                      if row["captured_lock_sha256"] is not None:
+                          assert row["captured_lock_sha256"] == observed_lock
+                      diagnostic_expected = None
+                      projection = row["failure_diagnostic"]
+                      assert type(projection) is dict
+                      if projection.get("state") == "valid":
+                          assert outcomes["COMPONENT_OUTCOME"] == "failure" and observed == 2
+                          assert row["selected_sources"] is not None
+                          assert all(row["stages"][n] == {"state": "executed", "exit": 0}
+                                     for n in common.STAGES[:6])
+                          diagnostic_expected = common.diagnostic_expectations(
+                              a, selected_git, observed_lock)
+                          caller.validate_diagnostic_context(diagnostic_expected)
+                          transport = private / "transport"
+                          prepare = common.read_json(transport / "transport-receipt.json")
+                          assert type(prepare) is dict and set(prepare) == {
+                              "schema", "transport_sha256", "transport_size", "binding_sha256",
+                              "runner_sha256", "source_kind", "operator_ref", "operator_tree"}
+                          assert prepare["schema"] == "aelira-latexml-native-transport-v2"
+                          assert prepare["source_kind"] == kind and prepare["operator_ref"] == revision
+                          assert prepare["operator_tree"] == tree
+                          assert (prepare["runner_sha256"] == diagnostic_expected["caller_sha256"] and
+                                  prepare["binding_sha256"] == diagnostic_expected["binding_sha256"])
+                          tar = common.regular(transport / "transport.tar")
+                          assert type(prepare["transport_size"]) is int
+                          assert prepare["transport_size"] == tar["size"]
+                          assert prepare["transport_sha256"] == tar["sha256"]
+                          assert common.regular(transport / "binding.json")["sha256"] == (
+                              diagnostic_expected["binding_sha256"])
+                          assert common.regular(private / "producer/source/binding.json")["sha256"] == (
+                              diagnostic_expected["binding_sha256"])
+                      caller.validate_failure_projection(
+                          projection, diagnostic_expected, row["stages"]["native-run"])
+                      if row["producer_status_sha256"] is not None:
+                          assert common.regular(private / "producer/status.json")["sha256"] == (
+                              row["producer_status_sha256"])
                       outer = row
                       receipt_status = "valid"
                       (destination / "final-outer.json").write_bytes(common.canonical(row))

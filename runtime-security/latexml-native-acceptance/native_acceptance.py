@@ -30,7 +30,7 @@ UBUNTU_MANIFEST = (
     "sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7"
 )
 KEYRING_SHA = "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31"
-PINNED_ARM_LOCK = "f63058d835f3d32a9c36819048388a48c48ee2a01a082fbf047288a806cbd85c"
+PINNED_ARM_LOCK = "d0c33df7305769e378ca86309f20d36d7e71a8f8f784c79d1bfa62e5c8190c98"
 PINNED_ARM_PERL_SHA = "51d562fb5f145f8c12610790b6f67b2868d1aa7c977906b533250f00903681cd"
 PINNED_ARM_RECDESCENT_SHA = (
     "093ddd1287581fa4369c1dbc71f3696af3348c7e60da88de60af5b1db15d9680"
@@ -69,6 +69,463 @@ PACKAGES = (
 )
 
 
+DIAGNOSTIC_PHASES = (
+    "transport",
+    "native",
+    "upstream",
+    "input",
+    "dependency-image",
+    "package-a",
+    "package-b",
+    "image-acceptance",
+    "installed",
+    "controls",
+    "bounded-write",
+)
+DIAGNOSTIC_OPERATIONS = {
+    "transport": ("checks", "preflight", "verify", "private-directory"),
+    "native": ("checks", "host", "daemon", "base"),
+    "upstream": ("checks", "origin", "head", "tree", "makefile"),
+    "input": ("checks", "copy", "authenticate", "closure"),
+    "dependency-image": (
+        "checks",
+        "context",
+        "build",
+        "inspect",
+        "tools",
+        "architecture",
+    ),
+    "package-a": ("checks", "generate"),
+    "package-b": ("checks", "generate", "compare"),
+    "image-acceptance": ("checks", "accept", "receipt"),
+    "installed": (
+        "checks",
+        "architecture",
+        "helpers",
+        "generated",
+        "loaded",
+        "document",
+        "math",
+        "version",
+        "prepare-controls",
+    ),
+    "controls": (
+        "checks",
+        "pristine_installed_verifier",
+        "false_generator_tool_provenance",
+        "float_generated_mode_package",
+        "duplicate_runtime_key",
+        "nonfinite_generated_mode",
+        "extra_runtime_schema",
+        "changed_package_receipt",
+        "float_runtime_archive_size",
+        "float_runtime_file_count",
+        "changed_adapter_source",
+        "wrong_native_architecture",
+        "changed_apt_deb",
+        "float_generated_mode_installed",
+        "false_generator_tool_provenance_installed",
+        "missing_generated",
+        "changed_generated",
+        "extra_generated",
+        "aliased_generated",
+        "shadowed_generated",
+    ),
+    "bounded-write": ("checks", "write", "summary"),
+}
+DIAGNOSTIC_CONTEXT_KEYS = {
+    "operator_origin",
+    "operator_ref",
+    "operator_tree",
+    "source_kind",
+    "remote_ref",
+    "architecture",
+    "caller_sha256",
+    "binding_sha256",
+    "input_lock_sha256",
+}
+DIAGNOSTIC_LIMIT = 16_000
+
+
+def diagnostic_require(test: bool) -> None:
+    if not test:
+        raise ValueError("bounded failure diagnostic refused")
+
+
+def diagnostic_child_expected(phase: str, operation: str) -> int:
+    # changed_apt_deb is an in-process refusal whose gpgv/dpkg children expect 0.
+    return (
+        CONTROL_CONTRACT[operation][0]
+        if phase == "controls" and operation not in ("checks", "changed_apt_deb")
+        else 0
+    )
+
+
+def validate_diagnostic_context(expected: dict) -> None:
+    """Pure validation: all expectations must be supplied independently of the record."""
+    diagnostic_require(
+        type(expected) is dict and set(expected) == DIAGNOSTIC_CONTEXT_KEYS
+    )
+    diagnostic_require(expected["operator_origin"] == OPERATOR_ORIGIN)
+    diagnostic_require(
+        all(
+            type(expected[k]) is str and re.fullmatch(r"[0-9a-f]{40}", expected[k])
+            for k in ("operator_ref", "operator_tree")
+        )
+    )
+    diagnostic_require(
+        all(
+            type(expected[k]) is str and re.fullmatch(r"[0-9a-f]{64}", expected[k])
+            for k in ("caller_sha256", "binding_sha256", "input_lock_sha256")
+        )
+    )
+    diagnostic_require(
+        expected["architecture"] in ("arm64", "amd64")
+        and expected["source_kind"] in ("public", "synthetic")
+    )
+    diagnostic_require(
+        expected["architecture"] != "arm64"
+        or expected["input_lock_sha256"] == PINNED_ARM_LOCK
+    )
+    diagnostic_require(
+        expected["remote_ref"] is None
+        if expected["source_kind"] == "synthetic"
+        else type(expected["remote_ref"]) is str
+        and re.fullmatch(
+            r"refs/(?:heads|tags|pull)/[A-Za-z0-9_./-]+", expected["remote_ref"]
+        )
+    )
+
+
+def validate_failure_record(record: dict, expected: dict) -> dict:
+    """Strict shared pure caller/wrapper/footer contract; never trusts record identity."""
+    validate_diagnostic_context(expected)
+    diagnostic_require(
+        type(record) is dict
+        and set(record)
+        == DIAGNOSTIC_CONTEXT_KEYS | {"schema", "phases", "terminal", "caller_exit"}
+    )
+    diagnostic_require(
+        record["schema"] == "aelira-latexml-native-failure-v1"
+        and all(record[k] == v for k, v in expected.items())
+    )
+    diagnostic_require(
+        type(record["caller_exit"]) is int and record["caller_exit"] == 2
+    )
+    diagnostic_require(
+        type(record["phases"]) is dict
+        and set(record["phases"]) == set(DIAGNOSTIC_PHASES)
+    )
+    terminal = record["terminal"]
+    diagnostic_require(
+        type(terminal) is dict
+        and set(terminal)
+        == {
+            "phase",
+            "operation",
+            "guard",
+            "kind",
+            "child",
+            "expected_exit",
+            "control_expected_exit",
+        }
+    )
+    phase, operation = terminal["phase"], terminal["operation"]
+    diagnostic_require(
+        type(phase) is str
+        and phase in DIAGNOSTIC_PHASES
+        and type(operation) is str
+        and operation in DIAGNOSTIC_OPERATIONS[phase]
+    )
+    index = DIAGNOSTIC_PHASES.index(phase)
+    for i, name in enumerate(DIAGNOSTIC_PHASES):
+        state = record["phases"][name]
+        diagnostic_require(
+            type(state) is str
+            and (
+                state == "completed"
+                if i < index
+                else (
+                    state in ("failed", "unavailable")
+                    if i == index
+                    else state == "not_run"
+                )
+            )
+        )
+    diagnostic_require(
+        terminal["guard"] is None
+        or terminal["guard"] == "control-outcome"
+        and phase == "controls"
+        and operation != "checks"
+    )
+    diagnostic_require(
+        terminal["kind"]
+        in (
+            "guard_refused",
+            "process_exit",
+            "timeout",
+            "io_unavailable",
+            "decode_refused",
+            "unclassified",
+        )
+    )
+    child = terminal["child"]
+    diagnostic_require(
+        type(child) is dict
+        and set(child) == {"state", "exit"}
+        and child["state"] in ("not_run", "executed", "unavailable")
+    )
+    diagnostic_require(
+        type(child["exit"]) is int and -127 <= child["exit"] <= 255
+        if child["state"] == "executed"
+        else child["exit"] is None
+    )
+    expected_exit = diagnostic_child_expected(phase, operation)
+    diagnostic_require(
+        type(terminal["control_expected_exit"]) is int
+        and terminal["control_expected_exit"] == CONTROL_CONTRACT[operation][0]
+        if phase == "controls" and operation != "checks"
+        else terminal["control_expected_exit"] is None
+    )
+    diagnostic_require(
+        terminal["expected_exit"] is None
+        if child["state"] == "not_run"
+        else type(terminal["expected_exit"]) is int
+        and terminal["expected_exit"] == expected_exit
+    )
+    if terminal["kind"] == "process_exit":
+        diagnostic_require(
+            child["state"] == "executed" and child["exit"] != expected_exit
+        )
+    if terminal["kind"] == "timeout":
+        diagnostic_require(child == {"state": "unavailable", "exit": None})
+    diagnostic_require(
+        record["phases"][phase]
+        == (
+            "unavailable"
+            if terminal["kind"] in ("timeout", "io_unavailable")
+            else "failed"
+        )
+    )
+    diagnostic_require(len(canonical(record)) <= DIAGNOSTIC_LIMIT)
+    return record
+
+
+def validate_failure_projection(
+    projection: dict, expected: dict | None, caller_state: dict
+) -> dict:
+    """Pure interface shared by wrapper, evidence gate and root-owned footer."""
+    diagnostic_require(
+        type(caller_state) is dict
+        and set(caller_state) == {"state", "exit"}
+        and caller_state["state"] in ("not_run", "executed", "unavailable")
+    )
+    diagnostic_require(
+        type(caller_state["exit"]) is int and -127 <= caller_state["exit"] <= 255
+        if caller_state["state"] == "executed"
+        else caller_state["exit"] is None
+    )
+    diagnostic_require(
+        type(projection) is dict and set(projection) == {"state", "record"}
+    )
+    if caller_state == {"state": "not_run", "exit": None} or caller_state == {
+        "state": "executed",
+        "exit": 0,
+    }:
+        diagnostic_require(projection == {"state": "not_run", "record": None})
+    elif projection["state"] == "valid":
+        diagnostic_require(
+            caller_state == {"state": "executed", "exit": 2} and expected is not None
+        )
+        validate_failure_record(projection["record"], expected)
+    else:
+        diagnostic_require(projection == {"state": "unavailable", "record": None})
+    return projection
+
+
+class DiagnosticGuardError(ValueError):
+    def __init__(self, message: str, guard: str | None = None):
+        super().__init__(message)
+        self.guard = guard
+
+
+class FailureTracker:
+    """Passive finite tracker. Completion occurs only at the next trusted phase boundary."""
+
+    def __init__(self, architecture: str, input_lock_sha256: str):
+        self.architecture = architecture
+        self.input_lock_sha256 = input_lock_sha256
+        self.expected = None
+        self.disabled = False
+        self.phases = {n: "not_run" for n in DIAGNOSTIC_PHASES}
+        self.phase = None
+        self.operation = None
+        self.child = {"state": "not_run", "exit": None}
+
+    def enter_phase(self, phase: str) -> None:
+        index = 0 if self.phase is None else DIAGNOSTIC_PHASES.index(self.phase) + 1
+        diagnostic_require(
+            index < len(DIAGNOSTIC_PHASES) and phase == DIAGNOSTIC_PHASES[index]
+        )
+        if self.phase is not None:
+            self.phases[self.phase] = "completed"
+        self.phase = phase
+        self.phases[phase] = "active"
+        self.enter_operation("checks")
+
+    def enter_operation(self, operation: str) -> None:
+        diagnostic_require(
+            self.phase is not None and operation in DIAGNOSTIC_OPERATIONS[self.phase]
+        )
+        self.operation = operation
+        self.child = {"state": "not_run", "exit": None}
+
+    def child_start(self) -> None:
+        diagnostic_require(self.operation is not None)
+        self.child = {"state": "not_run", "exit": None}
+
+    def child_done(self, code: int) -> None:
+        diagnostic_require(type(code) is int and -127 <= code <= 255)
+        self.child = {"state": "executed", "exit": code}
+
+    def child_unavailable(self) -> None:
+        self.child = {"state": "unavailable", "exit": None}
+
+    def trust_source(self, binding_data: dict) -> None:
+        expected = {
+            k: binding_data[k]
+            for k in (
+                "operator_origin",
+                "operator_ref",
+                "operator_tree",
+                "source_kind",
+                "remote_ref",
+            )
+        }
+        expected.update(
+            architecture=self.architecture,
+            input_lock_sha256=self.input_lock_sha256,
+            caller_sha256=binding_data["runner_sha256"],
+            binding_sha256=sha(canonical(binding_data)),
+        )
+        validate_diagnostic_context(expected)
+        self.expected = expected
+
+    def failure_record(self, error: Exception) -> dict:
+        diagnostic_require(
+            not self.disabled and self.expected is not None and self.phase is not None
+        )
+        kind, guard = "unclassified", None
+        if isinstance(error, subprocess.TimeoutExpired):
+            kind = "timeout"
+        elif isinstance(error, OSError):
+            kind = "io_unavailable"
+        elif isinstance(error, (json.JSONDecodeError, UnicodeDecodeError)):
+            kind = "decode_refused"
+        elif isinstance(error, DiagnosticGuardError):
+            guard = error.guard
+            expected_exit = diagnostic_child_expected(self.phase, self.operation)
+            kind = (
+                "process_exit"
+                if self.child["state"] == "executed"
+                and self.child["exit"] != expected_exit
+                else "guard_refused"
+            )
+        phases = dict(self.phases)
+        phases[self.phase] = (
+            "unavailable" if kind in ("timeout", "io_unavailable") else "failed"
+        )
+        terminal = {
+            "phase": self.phase,
+            "operation": self.operation,
+            "guard": guard,
+            "kind": kind,
+            "child": dict(self.child),
+            "expected_exit": (
+                None
+                if self.child["state"] == "not_run"
+                else diagnostic_child_expected(self.phase, self.operation)
+            ),
+            "control_expected_exit": (
+                CONTROL_CONTRACT[self.operation][0]
+                if self.phase == "controls" and self.operation != "checks"
+                else None
+            ),
+        }
+        record = {
+            "schema": "aelira-latexml-native-failure-v1",
+            **self.expected,
+            "phases": phases,
+            "terminal": terminal,
+            "caller_exit": 2,
+        }
+        return validate_failure_record(record, self.expected)
+
+    def write_failure(self, scratch: Path, error: Exception) -> bool:
+        """Best effort, private and no-follow/new-file only; never replace original failure."""
+        try:
+            record = self.failure_record(error)
+            diagnostic_require(
+                scratch.resolve() == scratch
+                and scratch.is_dir()
+                and not scratch.is_symlink()
+                and scratch.stat().st_uid == os.getuid()
+            )
+            private = scratch / "private"
+            private.mkdir(mode=0o755, exist_ok=True)
+            diagnostic_require(
+                private.resolve() == private
+                and stat.S_ISDIR(private.lstat().st_mode)
+                and stat.S_IMODE(private.lstat().st_mode) == 0o755
+                and private.stat().st_uid == os.getuid()
+            )
+            descriptor = os.open(
+                private / "failure-diagnostic.json",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(canonical(record))
+            return True
+        except Exception:
+            return False
+
+
+_FAILURE_TRACKER = None
+
+
+def diagnostic_phase(phase: str) -> None:
+    if _FAILURE_TRACKER is not None:
+        try:
+            _FAILURE_TRACKER.enter_phase(phase)
+        except Exception:
+            _FAILURE_TRACKER.disabled = True
+
+
+def diagnostic_operation(operation: str) -> None:
+    if _FAILURE_TRACKER is not None:
+        try:
+            _FAILURE_TRACKER.enter_operation(operation)
+        except Exception:
+            _FAILURE_TRACKER.disabled = True
+
+
+def diagnostic_child(action: str, code: int | None = None) -> None:
+    if _FAILURE_TRACKER is not None:
+        try:
+            if action == "start":
+                _FAILURE_TRACKER.child_start()
+            elif action == "done":
+                _FAILURE_TRACKER.child_done(code)
+            elif action == "unavailable":
+                _FAILURE_TRACKER.child_unavailable()
+            else:
+                _FAILURE_TRACKER.disabled = True
+        except Exception:
+            _FAILURE_TRACKER.disabled = True
+
+
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -77,9 +534,17 @@ def canonical(value: object) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def require(test: bool, message: str) -> None:
+def require(test: bool, message: str, guard: str | None = None) -> None:
     if not test:
-        raise ValueError(message)
+        raise DiagnosticGuardError(message, guard)
+
+
+def require_control_outcome(
+    result: subprocess.CompletedProcess, expected_exit: int, matched: bool, message: str
+) -> None:
+    require(
+        result.returncode == expected_exit and matched, message, guard="control-outcome"
+    )
 
 
 def command(
@@ -90,15 +555,21 @@ def command(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    p = subprocess.run(
-        args,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
-    )
+    diagnostic_child("start")
+    try:
+        p = subprocess.run(
+            args,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        diagnostic_child("unavailable")
+        raise
+    diagnostic_child("done", p.returncode)
     if log is not None:
         log.write_bytes(p.stdout + b"\n[stderr]\n" + p.stderr)
     return p
@@ -355,6 +826,11 @@ def verify_transport(
         "transport source unavailable or aliased",
     )
     expected = binding(repo, ref, tree, kind, remote_ref)
+    if _FAILURE_TRACKER is not None:
+        try:
+            _FAILURE_TRACKER.trust_source(expected)
+        except Exception:
+            _FAILURE_TRACKER.disabled = True
     allowed = {"recipe/" + name for name in RECIPE} | {
         "native_acceptance.py",
         "README.md",
@@ -573,6 +1049,8 @@ def run(
     remote_ref: str | None,
     architecture: str,
 ) -> None:
+    diagnostic_phase("transport")
+    diagnostic_operation("preflight")
     require(
         scratch.is_dir() and not scratch.is_symlink() and scratch.resolve() == scratch,
         "scratch unavailable or aliased",
@@ -584,20 +1062,26 @@ def run(
         "upstream checkout unavailable or aliased",
     )
     source = scratch / "source"
+    diagnostic_operation("verify")
     source_binding = verify_transport(
         source, operator_repo, operator_ref, operator_tree, source_kind, remote_ref
     )
+    diagnostic_operation("private-directory")
     private = scratch / "private"
     private.mkdir(exist_ok=False)
+    diagnostic_phase("native")
+    diagnostic_operation("host")
     arch_machine = platform.machine()
     require(arch_machine in ("aarch64", "x86_64"), "unsupported host architecture")
     arch = "arm64" if arch_machine == "aarch64" else "amd64"
     require(architecture == arch, "requested architecture differs from native host")
+    diagnostic_operation("daemon")
     daemon = value(["/usr/bin/docker", "info", "--format", "{{.Architecture}}"])
     require(
         daemon == arch_machine or daemon == arch,
         "Docker daemon architecture differs from host",
     )
+    diagnostic_operation("base")
     base_ref = "ubuntu:26.04@" + UBUNTU_MANIFEST
     base_data = json.loads(value(["/usr/bin/docker", "image", "inspect", base_ref]))[0]
     require(
@@ -608,24 +1092,31 @@ def run(
     require(
         re.fullmatch(r"sha256:[0-9a-f]{64}", base_id) is not None, "base ID malformed"
     )
+    diagnostic_phase("upstream")
+    diagnostic_operation("origin")
     upstream = ["/usr/bin/git", "-C", str(upstream_repo)]
     require(
         value(upstream + ["remote", "get-url", "origin"]) == UPSTREAM_ORIGIN,
         "upstream origin mismatch",
     )
+    diagnostic_operation("head")
     require(
         value(upstream + ["rev-parse", "HEAD"]) == UPSTREAM_HEAD,
         "upstream HEAD mismatch",
     )
+    diagnostic_operation("tree")
     require(
         value(upstream + ["rev-parse", "HEAD^{tree}"]) == UPSTREAM_TREE,
         "upstream tree mismatch",
     )
+    diagnostic_operation("makefile")
     makefile = command(upstream + ["show", "HEAD:Makefile.PL"], timeout=30)
     require(
         makefile.returncode == 0 and sha(makefile.stdout) == MAKEFILE_SHA,
         "official generated-module rule mismatch",
     )
+    diagnostic_phase("input")
+    diagnostic_operation("copy")
     require(
         apt_input.is_absolute() and apt_input.is_dir() and not apt_input.is_symlink(),
         "frozen APT input missing or aliased",
@@ -704,7 +1195,9 @@ def run(
             "frozen APT member bytes mismatch",
         )
         shutil.copyfile(item, apt / name)
+    diagnostic_operation("authenticate")
     lock = verify_apt(apt, arch)
+    diagnostic_operation("closure")
     input_sha = sha((apt / "input-lock.json").read_bytes())
     require(input_sha == apt_lock_sha256, "verified APT lock mismatch")
     exact_closure(
@@ -714,6 +1207,8 @@ def run(
         {"lists", "debs"},
         "APT closure",
     )
+    diagnostic_phase("dependency-image")
+    diagnostic_operation("context")
     context = scratch / "dependency-context"
     context.mkdir()
     (context / "lists").mkdir()
@@ -744,6 +1239,7 @@ def run(
     )
     (context / "Dockerfile").write_text(dockerfile)
     iid = scratch / "dependency-image-id.txt"
+    diagnostic_operation("build")
     build = command(
         [
             "/usr/bin/docker",
@@ -763,6 +1259,7 @@ def run(
         env={**os.environ, "DOCKER_BUILDKIT": "0"},
     )
     require(build.returncode == 0 and iid.is_file(), "offline dependency build failed")
+    diagnostic_operation("inspect")
     dependency_id = iid.read_text().strip()
     dependency_data = json.loads(
         value(["/usr/bin/docker", "image", "inspect", dependency_id])
@@ -777,6 +1274,7 @@ def run(
         == base_data["RootFS"]["Layers"],
         "dependency image base ancestry mismatch",
     )
+    diagnostic_operation("tools")
     native_tools = docker_run(
         dependency_id,
         ["/usr/bin/sha256sum", "/usr/bin/perl", "/usr/share/perl5/Parse/RecDescent.pm"],
@@ -798,6 +1296,7 @@ def run(
             tool_hashes == [PINNED_ARM_PERL_SHA, PINNED_ARM_RECDESCENT_SHA],
             "native ARM generator tools differ from reviewed closure",
         )
+    diagnostic_operation("architecture")
     dependency_arch = docker_run(
         dependency_id,
         ["/usr/bin/uname", "-m"],
@@ -809,7 +1308,9 @@ def run(
         "dependency container is not native",
     )
     source_outputs = []
-    for label in ("a", "b"):
+    for label, phase in (("a", "package-a"), ("b", "package-b")):
+        diagnostic_phase(phase)
+        diagnostic_operation("generate")
         out = scratch / ("package-" + label)
         p = command(
             [
@@ -839,6 +1340,7 @@ def run(
         )
         require(p.returncode == 0, "source-bound generated runtime export failed")
         source_outputs.append(out)
+    diagnostic_operation("compare")
     package_files = (
         "latexml-source.tar",
         "source-manifest.json",
@@ -867,6 +1369,8 @@ def run(
         == "4d31f365789d6e66ec02542d34de947b10c14961ad1ba4d7a0ec836d92a47760",
         "original tracked-source provenance mismatch",
     )
+    diagnostic_phase("image-acceptance")
+    diagnostic_operation("accept")
     accept_out = scratch / "image-acceptance"
     accepted = command(
         [
@@ -889,6 +1393,7 @@ def run(
         timeout=900,
     )
     require(accepted.returncode == 0, "source image acceptance failed")
+    diagnostic_operation("receipt")
     accepted_data = json.loads((accept_out / "acceptance.json").read_text())
     require(
         accepted_data["generator_tool_sha256"]
@@ -896,6 +1401,8 @@ def run(
         "accepted generator tool measurement mismatch",
     )
     image_id = accepted_data["image_id"]
+    diagnostic_phase("installed")
+    diagnostic_operation("architecture")
     container_arch = docker_run(
         image_id, ["/usr/bin/uname", "-m"], private / "container-arch.log"
     )
@@ -904,6 +1411,7 @@ def run(
         and container_arch.stdout.decode().strip() == arch_machine,
         "container execution is not native",
     )
+    diagnostic_operation("helpers")
     helper_check = docker_run(
         image_id,
         [
@@ -921,6 +1429,7 @@ def run(
         helper_hashes == [RECIPE["package_source.py"], RECIPE["verify_install.py"]],
         "installed helper bytes differ",
     )
+    diagnostic_operation("generated")
     generated_check = docker_run(
         image_id,
         [
@@ -944,6 +1453,7 @@ def run(
         ],
         "generated module identity mismatch",
     )
+    diagnostic_operation("loaded")
     loaded_check = docker_run(
         image_id,
         [
@@ -964,6 +1474,7 @@ def run(
         ],
         "loaded modules differ from accepted runtime root",
     )
+    diagnostic_operation("document")
     parse = docker_run(
         image_id,
         [
@@ -980,6 +1491,7 @@ def run(
         and b"<" in parse.stdout,
         "source-installed document parse failed",
     )
+    diagnostic_operation("math")
     math = docker_run(
         image_id,
         ["/usr/local/bin/latexmlmath", "--presentationmathml=-", "x+1"],
@@ -990,12 +1502,14 @@ def run(
         math.returncode == 0 and b"<math" in math.stdout,
         "source-installed math parse failed",
     )
+    diagnostic_operation("version")
     tex = docker_run(
         image_id,
         ["/usr/local/bin/latexml", "--VERSION"],
         private / "positive-version.log",
     )
     require(tex.returncode == 0, "source-installed command unusable")
+    diagnostic_operation("prepare-controls")
     controls = []
     pristine = scratch / "installed-pristine"
     pristine.mkdir()
@@ -1040,6 +1554,7 @@ def run(
         expected_exit: int = 2,
         marker: bytes | None = None,
     ) -> None:
+        diagnostic_operation(case)
         command_line = [
             "/usr/bin/docker",
             "run",
@@ -1091,15 +1606,18 @@ def run(
                 "specific_guard_matched": marker is None or marker in result.stderr,
             }
         )
-        require(
-            result.returncode == expected_exit
-            and (marker is None or marker in result.stderr),
+        require_control_outcome(
+            result,
+            expected_exit,
+            marker is None or marker in result.stderr,
             case + " returned unexpected verification result",
         )
 
+    diagnostic_phase("controls")
     installed_control("pristine_installed_verifier", expected_exit=0)
 
     def package_control(case: str, mutation: str, marker: bytes) -> None:
+        diagnostic_operation(case)
         altered = []
         for label, original in (("a", source_outputs[0]), ("b", source_outputs[1])):
             target = scratch / (case + "-" + label)
@@ -1185,6 +1703,7 @@ def run(
         "extra_runtime_schema", "extra_schema", b"runtime manifest schema mismatch"
     )
     # Each refusal invokes the unchanged installed/source verifier or package gate.
+    diagnostic_operation("changed_package_receipt")
     bad = scratch / "changed-receipt"
     shutil.copytree(source_outputs[0], bad)
     receipt = json.loads((bad / "build-receipt.json").read_text())
@@ -1218,7 +1737,11 @@ def run(
         }
     )
     require(refusal.returncode == 2, "changed receipt was accepted")
-    for field in ("runtime_archive_size", "runtime_file_count"):
+    for field, operation in (
+        ("runtime_archive_size", "float_runtime_archive_size"),
+        ("runtime_file_count", "float_runtime_file_count"),
+    ):
+        diagnostic_operation(operation)
         altered = scratch / ("float-" + field)
         shutil.copytree(source_outputs[0], altered)
         altered_receipt = json.loads((altered / "build-receipt.json").read_text())
@@ -1254,6 +1777,7 @@ def run(
         require(
             typed_refusal.returncode == 2, "float runtime receipt field was accepted"
         )
+    diagnostic_operation("changed_adapter_source")
     bad_patch = scratch / "changed-adapter.patch"
     bad_patch.write_bytes(
         (source / "recipe" / "siunitx-v3-adapter.patch").read_bytes() + b"\n"
@@ -1292,6 +1816,7 @@ def run(
         }
     )
     require(source_refusal.returncode == 2, "changed adapter was accepted")
+    diagnostic_operation("wrong_native_architecture")
     wrong_arch = "amd64" if arch == "arm64" else "arm64"
     architecture_refusal = command(
         [
@@ -1323,6 +1848,7 @@ def run(
     require(
         architecture_refusal.returncode == 2, "wrong native architecture was accepted"
     )
+    diagnostic_operation("changed_apt_deb")
     corrupted = scratch / "changed-apt"
     (corrupted / "lists").mkdir(parents=True)
     (corrupted / "debs").mkdir()
@@ -1357,6 +1883,7 @@ def run(
             b"installed generator tool bytes mismatch",
         ),
     ):
+        diagnostic_operation(case)
         root = scratch / case
         shutil.copytree(pristine, root)
         runtime_path = root / "runtime-manifest.json"
@@ -1375,6 +1902,7 @@ def run(
         "extra_generated",
         "aliased_generated",
     ):
+        diagnostic_operation(case)
         root = scratch / case
         shutil.copytree(pristine, root)
         module = root / "lib/LaTeXML/Version.pm"
@@ -1389,6 +1917,8 @@ def run(
             module.symlink_to("MathGrammar.pm")
         installed_control(case, root)
     installed_control("shadowed_generated", shadow=True)
+    diagnostic_phase("bounded-write")
+    diagnostic_operation("write")
     bounded = {
         "schema": "aelira-latexml-native-acceptance-v1",
         "source_kind": source_kind,
@@ -1443,6 +1973,7 @@ def run(
         "all_copy_security_advisory": "not_run",
     }
     (scratch / "bounded.json").write_bytes(canonical(bounded))
+    diagnostic_operation("summary")
     print(
         json.dumps(
             {
@@ -2180,6 +2711,7 @@ def export(
 
 
 def main() -> None:
+    global _FAILURE_TRACKER
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("prepare", "run", "export"))
     parser.add_argument("directory", type=Path)
@@ -2232,6 +2764,7 @@ def main() -> None:
             "run requires explicit native input and selected Git source",
         )
         error = None
+        _FAILURE_TRACKER = FailureTracker(args.architecture, args.apt_lock_sha256)
         try:
             run(
                 args.directory,
@@ -2255,6 +2788,9 @@ def main() -> None:
         ) as exc:
             error = exc
         finally:
+            if error is not None:
+                _FAILURE_TRACKER.write_failure(args.directory, error)
+            _FAILURE_TRACKER = None
             write_status(args.directory, args, 0 if error is None else 2)
         if error is not None:
             raise error
