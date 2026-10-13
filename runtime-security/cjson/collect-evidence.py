@@ -282,6 +282,8 @@ def export(args):
             raise ValueError("Frozen builder export missing")
         if tar.exists():
             original_archive = regular(args.source, 'provenance/builder.tar')
+            if original_archive.stat().st_size < 1024:
+                raise ValueError('Invalid saved builder archive')
             def file_hash(path):
                 sha = hashlib.sha256()
                 with path.open('rb') as stream:
