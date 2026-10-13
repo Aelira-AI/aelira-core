@@ -1,0 +1,46 @@
+--- a/lib/LaTeXML/Package/siunitx.sty.ltxml
++++ b/lib/LaTeXML/Package/siunitx.sty.ltxml
+@@ -25,7 +25,8 @@
+ #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+ #======================================================================
+ # recent siunitx have an expectation for latex3 capability.
+-RequirePackage('expl3');
++# This binding formats supported siunitx input directly; loading the current
++# raw expl3-code.tex here loops in LaTeXML before any quantity is parsed.
+ # Would be nice if we could load the package (without errors!),
+ # in order to pick up all the unit definitions!
+ RequirePackage('xcolor');
+@@ -83,6 +84,9 @@
+   my ($kv) = @_;
+   my $hash = $kv->getKeyVals;
+   foreach my $key (keys %$hash) {
++    Fatal('unsupported', $key, undef,
++      "siunitx option $key is not implemented by this LaTeXML binding")
++      if $key eq 'round-mode';
+     my $value = $kv->getValue($key);
+     AssignValue('SIX_' . $key => $value); }
+   return; }
+@@ -1814,4 +1818,23 @@
+   return; }
+ 
+ #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
++DefMacro('\\lx@six@vthree@guard OptionalKeyVals:SIX', sub {
++    my ($gullet, $options) = @_;
++    return unless $options;
++    foreach my $key (keys %{ $options->getKeyVals }) {
++      next if $key eq 'per-mode' || $key eq 'list-units' || $key eq 'range-units';
++      Fatal('unsupported', $key, $gullet,
++        "siunitx v3 option $key is not implemented by this LaTeXML binding"); }
++    return; });
++
++DefMacro('\\qty OptionalKeyVals:SIX {}{}',
++  '\\lx@six@vthree@guard[#1]\\SI[#1]{#2}{#3}') unless IsDefined(T_CS('\\qty'));
++DefMacro('\\qtylist OptionalKeyVals:SIX {}{}',
++  '\\lx@six@vthree@guard[#1]\\SIlist[#1]{#2}{#3}');
++DefMacro('\\qtyrange OptionalKeyVals:SIX {}{}{}',
++  '\\lx@six@vthree@guard[#1]\\SIrange[#1]{#2}{#3}{#4}');
++DefMacro('\\unit OptionalKeyVals:SIX {}',
++  '\\lx@six@vthree@guard[#1]\\si[#1]{#2}');
++DefMacro('\\per', '\\lx@six@per');
++
+ 1;
