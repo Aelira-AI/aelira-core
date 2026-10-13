@@ -83,7 +83,8 @@ def main():
     assert result == 1 and receipt["status"] == "fail" and not receipt["files"]
     rows.append("source-directory-alias-refused")
     for case in ('changed-source-archive', 'changed-source-receipt', 'extra-installed-field',
-                 'changed-signed-release', 'absolute-checksum-path', 'changed-binary-package', 'duplicate-receipt-key'):
+                 'changed-signed-release', 'absolute-checksum-path', 'changed-binary-package', 'duplicate-receipt-key',
+                 'private-phase', 'changed-recipe-manifest', 'changed-base-record', 'changed-builder-record', 'changed-toolchain-inventory'):
         source = snapshot(case)
         if case == 'changed-source-archive':
             path = source / 'source-input/cjson_1.7.19.orig.tar.gz'
@@ -113,6 +114,16 @@ def main():
         elif case == 'duplicate-receipt-key':
             path = source / 'build-status.json'
             data = path.read_bytes().replace(b'{', b'{"phase":"SYNTHETIC-PRIVATE-FIELD",', 1)
+        elif case == 'private-phase':
+            path = source / 'build-status.json'
+            value = json.loads(path.read_text())
+            value['phase'] = 'SYNTHETIC-PRIVATE-FIELD'
+            data = json.dumps(value).encode()
+        elif case in ('changed-recipe-manifest', 'changed-base-record', 'changed-builder-record', 'changed-toolchain-inventory'):
+            name = {'changed-recipe-manifest': 'recipe-sha256.txt', 'changed-base-record': 'base-image.txt',
+                    'changed-builder-record': 'builder-id.txt', 'changed-toolchain-inventory': 'toolchain-packages.tsv'}[case]
+            path = source / 'provenance' / name
+            data = b'SYNTHETIC-PRIVATE-FIELD\n'
         else:
             path = source / ('build-a/artifacts/libcjson1_1.7.19-2+aelira3_' + args.arch + '.deb')
             data = bytearray(path.read_bytes())
@@ -122,7 +133,16 @@ def main():
         result, receipt = invoke(case, source)
         assert result == 1 and receipt['status'] == 'fail'
         assert 'SYNTHETIC-PRIVATE-FIELD' not in json.dumps(receipt)
+        assert str(path.relative_to(source)) not in receipt['files']
         rows.append(case + '-refused')
+    source = snapshot('unreferenced-release')
+    relative = 'provenance/apt-lists/security.ubuntu.com_ubuntu_dists_resolute-backports_InRelease'
+    path = source / relative
+    assert not path.exists()
+    path.write_text('SYNTHETIC-PRIVATE-FIELD\n')
+    result, receipt = invoke('unreferenced-release', source)
+    assert result == 0 and receipt['status'] == 'pass' and relative not in receipt['files']
+    rows.append('unreferenced-release-not-exported')
     print(json.dumps({"schema": "aelira-cjson-evidence-controls-v1", "status": "pass",
                       "count": len(rows), "controls": rows}, sort_keys=True))
 

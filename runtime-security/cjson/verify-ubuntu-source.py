@@ -22,6 +22,7 @@ def verify(lists, inputs, keyring=None):
                       "cjson_1.7.19-2.debian.tar.xz"}
     rows = []
     releases = {}
+    authenticated_files = {}
     for index in sorted(lists.glob("*_Sources*")):
         match = re.fullmatch(r"(.+_dists_[^_]+)_([^_]+)_source_Sources(?:\..+)?", index.name)
         if match is None or index.is_symlink() or not index.is_file():
@@ -44,12 +45,16 @@ def verify(lists, inputs, keyring=None):
                     raise ValueError("Invalid signed checksum record")
                 entries[filename] = (digest, int(size))
             releases[release] = entries
+            authenticated_files[release.name] = {'sha256': hashlib.sha256(release.read_bytes()).hexdigest(),
+                                                   'size': release.stat().st_size}
         digest, size = releases[release][match.group(2) + "/source/Sources"]
         if size > 256 * 1024 * 1024:
             raise ValueError("Sources index exceeds its bound")
         contents = subprocess.check_output(["/usr/lib/apt/apt-helper", "cat-file", str(index)], timeout=60)
         if len(contents) != size or hashlib.sha256(contents).hexdigest() != digest:
             raise ValueError("Sources index differs from signed Release")
+        authenticated_files[index.name] = {'sha256': hashlib.sha256(index.read_bytes()).hexdigest(),
+                                            'size': index.stat().st_size}
         for stanza in contents.decode("utf-8").split("\n\n"):
             if not stanza.startswith("Package: cjson\n") or "\nVersion: 1.7.19-2\n" not in stanza:
                 continue
@@ -77,7 +82,8 @@ def verify(lists, inputs, keyring=None):
     if not rows:
         raise ValueError("cjson 1.7.19-2 absent from authenticated Sources")
     return {"schema": "aelira-cjson-ubuntu-source-v1", "status": "pass", "records": rows,
-            "keyring_sha256": hashlib.sha256(keyring.read_bytes()).hexdigest()}
+            "keyring_sha256": hashlib.sha256(keyring.read_bytes()).hexdigest(),
+            'authenticated_files': authenticated_files}
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import stat
@@ -18,6 +19,7 @@ INDEX = re.compile(r"(?:archive\.ubuntu\.com_ubuntu|ports\.ubuntu\.com_ubuntu-po
 RECIPE = ("README.md", "build.sh", "build-in-container.sh", "prepare-native.sh", "test-installed.sh",
           "build-source.py", "test-source.py", "verify-ubuntu-source.py", "test-native.c",
           "changelog-entry.txt", "ubuntu-1.7.19-security-backport.patch")
+BASE = 'ubuntu@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7'
 SOURCE_CONTROLS = ["exact-inputs-real-source-package", "preflight-refusal:cjson_1.7.19-2.dsc",
                    "preflight-refusal:cjson_1.7.19.orig.tar.gz", "preflight-refusal:cjson_1.7.19-2.debian.tar.xz",
                    "preflight-refusal:ubuntu-1.7.19-security-backport.patch", "preflight-refusal:changelog-entry.txt",
@@ -70,7 +72,9 @@ def export(args):
         path = regular(args.source, relative)
         checked_data = None
         if expected is not None:
-            checked_data = small(args.source, relative)
+            if path.stat().st_size > 128 * 1024 * 1024:
+                raise ValueError('Verified input exceeds bound')
+            checked_data = path.read_bytes()
             if hashlib.sha256(checked_data).hexdigest() != expected:
                 raise ValueError("Declared input or artifact hash mismatch")
         total += path.stat().st_size
@@ -105,7 +109,7 @@ def export(args):
         if dirty:
             raise ValueError("Recipe checkout is dirty")
         status = decode_json(small(args.source, "build-status.json"))
-        receipt["stage"] = status["phase"]
+        receipt["stage"] = 'complete' if status == {"schema": "aelira-cjson-build-status-v1", "phase": "complete", "exit": 0} else 'incomplete'
         if status != {"schema": "aelira-cjson-build-status-v1", "phase": "complete", "exit": 0} or args.build_exit != 0:
             raise ValueError("Native build did not complete")
         copy("build-status.json")
@@ -132,15 +136,50 @@ def export(args):
         repair_identity = {name: {'sha256': digest, 'size': size} for name, (size, digest) in helper.REPAIR_INPUTS.items()}
         for name in ("cjson_1.7.19-2.dsc", "cjson_1.7.19.orig.tar.gz", "cjson_1.7.19-2.debian.tar.xz"):
             copy("source-input/" + name, source_identity[name]['sha256'])
-        for name in ("base-image.txt", "builder-id.txt", "toolchain-packages.tsv", "recipe-sha256.txt"):
-            copy("provenance/" + name)
+        recipe_manifest = {}
+        for line in small(args.source, 'provenance/recipe-sha256.txt').decode().splitlines():
+            match = re.fullmatch(r'([a-f0-9]{64})  ([A-Za-z0-9_.-]+)', line)
+            if match is None or match[2] in recipe_manifest:
+                raise ValueError('Invalid executed recipe manifest')
+            recipe_manifest[match[2]] = match[1]
+        if recipe_manifest != {name: rows['frozen-recipe/' + name]['sha256'] for name in RECIPE}:
+            raise ValueError('Executed recipe manifest mismatch')
+        copy('provenance/recipe-sha256.txt')
+        if small(args.source, 'provenance/base-image.txt') != (BASE + '\n').encode():
+            raise ValueError('Pinned base record mismatch')
+        copy('provenance/base-image.txt')
+        builder_bytes = small(args.source, "provenance/builder-id.txt")
+        if not re.fullmatch(rb'sha256:[a-f0-9]{64}\n', builder_bytes):
+            raise ValueError('Invalid frozen builder ID')
+        builder = builder_bytes.decode().strip()
+        copy('provenance/builder-id.txt')
+        builder_arch = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Architecture}}', builder], text=True, timeout=30).strip()
+        if builder_arch != args.arch:
+            raise ValueError('Frozen builder architecture mismatch')
+        base_layers = decode_json(subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{json .RootFS.Layers}}', BASE], timeout=30))
+        builder_layers = decode_json(subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{json .RootFS.Layers}}', builder], timeout=30))
+        if not base_layers or builder_layers[:len(base_layers)] != base_layers:
+            raise ValueError('Builder does not descend from pinned base')
+        inventory = small(args.source, 'provenance/toolchain-packages.tsv')
+        seen_packages = set()
+        for line in inventory.decode().splitlines():
+            match = re.fullmatch(r'([a-z0-9][a-z0-9+.-]*)\t([A-Za-z0-9.+:~\-]+)\t(all|amd64|arm64)', line)
+            if match is None or match[1] in seen_packages or match[3] not in ('all', args.arch):
+                raise ValueError('Invalid toolchain package inventory')
+            seen_packages.add(match[1])
+        if not seen_packages or len(seen_packages) > 2000:
+            raise ValueError('Invalid toolchain package count')
+        actual_inventory = subprocess.check_output(['docker', 'run', '--rm', '--entrypoint', '/usr/bin/dpkg-query',
+            '--user', f'{os.getuid()}:{os.getgid()}', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+            '--security-opt', 'no-new-privileges', '--memory', '256m', '--pids-limit', '64', builder,
+            '-W', '-f=${Package}\t${Version}\t${Architecture}\n'], timeout=30)
+        if inventory != actual_inventory:
+            raise ValueError('Toolchain inventory differs from frozen builder')
+        copy('provenance/toolchain-packages.tsv')
         spec = importlib.util.spec_from_file_location('cjson_auth', args.repo / 'runtime-security/cjson/verify-ubuntu-source.py')
         authenticator = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(authenticator)
         copy('provenance/ubuntu-archive-keyring.gpg', authenticator.KEYRING_SHA256)
-        builder = small(args.source, "provenance/builder-id.txt").decode().strip()
-        if not re.fullmatch(r"sha256:[a-f0-9]{64}", builder):
-            raise ValueError("Invalid frozen builder ID")
         receipt["builder_id"] = builder
         indexes = args.source / "provenance/apt-lists"
         if indexes.is_symlink() or not indexes.is_dir():
@@ -149,10 +188,10 @@ def export(args):
         for attempt in 'ab':
             if decode_json(small(args.source, 'build-' + attempt + '/ubuntu-source.json')) != current_source_chain:
                 raise ValueError('Source authentication differs from current signed inputs')
-        for path in sorted(indexes.iterdir()):
-            if not INDEX.fullmatch(path.name):
+        for name, identity in sorted(current_source_chain['authenticated_files'].items()):
+            if not INDEX.fullmatch(name):
                 raise ValueError("Unexpected index")
-            copy("provenance/apt-lists/" + path.name)
+            copy("provenance/apt-lists/" + name, identity['sha256'])
         if not any(name.endswith('_InRelease') for name in rows):
             raise ValueError("Signed index missing")
         for attempt in "ab":
@@ -164,7 +203,7 @@ def export(args):
             authenticated = decode_json(small(args.source, prefix + "ubuntu-source.json"))
             if authenticated != current_source_chain:
                 raise ValueError('Source authentication differs from current signed inputs')
-            if set(authenticated) != {'schema', 'status', 'records', 'keyring_sha256'} or authenticated["schema"] != "aelira-cjson-ubuntu-source-v1" or authenticated["status"] != "pass" or not authenticated["records"]:
+            if set(authenticated) != {'schema', 'status', 'records', 'keyring_sha256', 'authenticated_files'} or authenticated["schema"] != "aelira-cjson-ubuntu-source-v1" or authenticated["status"] != "pass" or not authenticated["records"]:
                 raise ValueError("Source authentication incomplete")
             if authenticated['keyring_sha256'] != rows['provenance/ubuntu-archive-keyring.gpg']['sha256']:
                 raise ValueError('Authenticated keyring mismatch')
