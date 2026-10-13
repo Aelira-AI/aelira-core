@@ -180,7 +180,31 @@ def export(args):
             '-W', '-f=${Package}\t${Version}\t${Architecture}\n'], timeout=30)
         if inventory != actual:
             raise ValueError('Toolchain inventory mismatch')
+        base_inventory = small(args.source, 'provenance/base-packages.tsv')
+        actual_base = subprocess.check_output(['docker', 'run', '--rm', '--entrypoint', '/usr/bin/dpkg-query',
+            '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+            '--user', f'{os.getuid()}:{os.getgid()}', '--memory', '256m', '--pids-limit', '64', BASE,
+            '-W', '-f=${Package}\t${Version}\t${Architecture}\n'], timeout=30)
+        if base_inventory != actual_base:
+            raise ValueError('Base package inventory mismatch')
+
+        def packages(data):
+            result = {}
+            for line in data.decode().splitlines():
+                match = re.fullmatch(r'([a-z0-9][a-z0-9+.-]*)\t([A-Za-z0-9.+:~\-]+)\t(all|amd64|arm64)', line)
+                if not match or match[1] in result or match[3] not in ('all', args.arch):
+                    raise ValueError('Invalid package inventory')
+                result[match[1]] = (match[2], match[3])
+            if not result or len(result) > 2000:
+                raise ValueError('Invalid package inventory count')
+            return result
+
+        base_packages = packages(base_inventory)
+        builder_packages = packages(inventory)
+        delta = {(name, version, arch) for name, (version, arch) in builder_packages.items()
+                 if base_packages.get(name) != (version, arch)}
         copy('provenance/toolchain-packages.tsv')
+        copy('provenance/base-packages.tsv')
         copy('provenance/ubuntu-archive-keyring.gpg', KEYRING)
         stage = 'signed-inputs'
         verified = subprocess.check_output(['docker', 'run', '--rm', '--network', 'none', '--read-only',
@@ -215,6 +239,10 @@ def export(args):
                 raise ValueError('Signed index size mismatch')
         if not 1 <= len(signed['toolchain_files']) <= 2000:
             raise ValueError('Toolchain archive count mismatch')
+        signed_delta = {(row['package'], row['version'], row['architecture'])
+                        for row in signed['toolchain_files'].values()}
+        if signed_delta != delta or len(signed_delta) != len(signed['toolchain_files']):
+            raise ValueError('Signed toolchain differs from actual base/builder delta')
         for name, row in signed['toolchain_files'].items():
             if not re.fullmatch(r'[a-z0-9][a-z0-9+.-]*_[A-Za-z0-9.+:%~\-]+_(?:arm64|amd64|all)\.deb', name) or set(row) != {'package', 'version', 'architecture', 'sha256', 'size'} or row['architecture'] not in ('all', args.arch):
                 raise ValueError('Unexpected toolchain archive')
@@ -270,9 +298,12 @@ def export(args):
         installed_hash = small(args.source, 'installed/installed-library.sha256').decode().split()[0]
         if small(args.source, 'installed/loaded-library.sha256').decode().split()[0] != installed_hash:
             raise ValueError('Loaded library differs from installed package')
-        original_deb = 'libxrender1_0.9.12-1build1_' + args.arch + '.deb'
-        if original_deb not in signed['toolchain_files']:
+        originals = [name for name, row in signed['toolchain_files'].items()
+                     if (row['package'], row['version'], row['architecture']) ==
+                     ('libxrender1', '1:0.9.12-1build1', args.arch)]
+        if len(originals) != 1:
             raise ValueError('Original library package missing')
+        original_deb = originals[0]
         runtime_deb = 'libxrender1_0.9.12-1build1+aelira1_' + args.arch + '.deb'
         symbols = []
         with tempfile.TemporaryDirectory(prefix='aelira-xrender-abi-') as work:
@@ -280,7 +311,11 @@ def export(args):
                                    ('candidate', args.source / 'build-a' / runtime_deb)]:
                 payload = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', str(package)], timeout=30)
                 with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
-                    member = archive.getmember('./usr/lib/' + triplet + '/libXrender.so.1.0.0')
+                    library_dir = './usr/lib/' + triplet + '/'
+                    link = archive.getmember(library_dir + 'libXrender.so.1')
+                    if not link.issym() or not re.fullmatch(r'libXrender\.so\.1\.[0-9]+\.[0-9]+', link.linkname):
+                        raise ValueError('Invalid packaged SONAME link')
+                    member = archive.getmember(library_dir + link.linkname)
                     if not member.isfile() or member.size > 2 * 1024**2:
                         raise ValueError('Invalid packaged library')
                     data = archive.extractfile(member).read()
