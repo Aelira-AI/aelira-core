@@ -141,6 +141,12 @@ jobs:
             bash runtime-security/cjson/build.sh "$RUNNER_TEMP/cjson-native-output" \
             > "$RUNNER_TEMP/cjson-native-private.log" 2>&1
           result=$?
+          if test "$result" = 0; then
+            python3 -B runtime-security/cjson/test-evidence.py \
+              --source "$RUNNER_TEMP/cjson-native-output" --repo "$GITHUB_WORKSPACE" \
+              --scratch "$RUNNER_TEMP/cjson-evidence-controls" --arch "${{ matrix.arch }}"
+            result=$?
+          fi
           set -e
           printf '%s\n' "$result" > "$RUNNER_TEMP/cjson-native-exit.txt"
           if test -f "$RUNNER_TEMP/cjson-native-output/build-status.json"; then
