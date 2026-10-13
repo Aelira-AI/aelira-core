@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tarfile
 import io
+import tempfile
 
 MAX_FILE = 2 * 1024 * 1024 * 1024
 MAX_TOTAL = 3 * 1024 * 1024 * 1024
@@ -67,9 +68,9 @@ def export(args):
                "architecture": args.arch, "revision": args.revision, "tree": args.tree,
                "build_exit": args.build_exit, "scope": "Native cJSON component; final release images require separate acceptance"}
 
-    def copy(relative, expected=None):
+    def copy(relative, expected=None, verified_file=None):
         nonlocal total
-        path = regular(args.source, relative)
+        path = verified_file or regular(args.source, relative)
         checked_data = None
         if expected is not None:
             if path.stat().st_size > 128 * 1024 * 1024:
@@ -280,7 +281,24 @@ def export(args):
         if args.require_builder and not tar.exists():
             raise ValueError("Frozen builder export missing")
         if tar.exists():
-            copy("provenance/builder.tar")
+            original_archive = regular(args.source, 'provenance/builder.tar')
+            def file_hash(path):
+                sha = hashlib.sha256()
+                with path.open('rb') as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        sha.update(chunk)
+                return sha.hexdigest()
+            # Re-serialize the actual immutable builder and compare before
+            # exporting. A changed input archive is never copied publicly.
+            with tempfile.TemporaryDirectory(prefix='aelira-cjson-builder-') as work:
+                fresh = Path(work) / 'builder.tar'
+                subprocess.run(['docker', 'save', builder, '-o', str(fresh)],
+                               check=True, capture_output=True, timeout=180)
+                if fresh.stat().st_size != original_archive.stat().st_size or file_hash(fresh) != file_hash(original_archive):
+                    raise ValueError('Saved builder differs from immutable image')
+                if fresh.stat().st_size > MAX_FILE:
+                    raise ValueError('Saved builder exceeds bound')
+                copy('provenance/builder.tar', verified_file=fresh)
         receipt["status"] = "pass"
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as error:
         errors.append(type(error).__name__)

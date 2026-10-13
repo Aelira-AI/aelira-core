@@ -143,6 +143,15 @@ def main():
     result, receipt = invoke('unreferenced-release', source)
     assert result == 0 and receipt['status'] == 'pass' and relative not in receipt['files']
     rows.append('unreferenced-release-not-exported')
+    source = snapshot('changed-builder-archive')
+    path = source / 'provenance/builder.tar'
+    if path.exists():
+        path.unlink()
+    path.write_text('SYNTHETIC-PRIVATE-FIELD\n')
+    result, receipt = invoke('changed-builder-archive', source)
+    assert result == 1 and receipt['status'] == 'fail'
+    assert 'provenance/builder.tar' not in receipt['files']
+    rows.append('changed-builder-archive-refused')
     print(json.dumps({"schema": "aelira-cjson-evidence-controls-v1", "status": "pass",
                       "count": len(rows), "controls": rows}, sort_keys=True))
 
