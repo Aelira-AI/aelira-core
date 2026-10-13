@@ -293,7 +293,7 @@ def export(args):
             raise ValueError('Installed acceptance incomplete')
         triplet = {'arm64': 'aarch64-linux-gnu', 'amd64': 'x86_64-linux-gnu'}[args.arch]
         client = small(args.source, 'installed/xrender-client.log').decode()
-        if not re.fullmatch('Loaded XRender library: /usr/lib/' + triplet + r'/libXrender\.so\.1\nInstalled Xrender 0\.11 rendered red pixels; subpixel=[0-5]\n', client):
+        if not re.fullmatch('Loaded XRender library: /(?:usr/)?lib/' + triplet + r'/libXrender\.so\.1\nInstalled Xrender 0\.11 rendered red pixels; subpixel=[0-5]\n', client):
             raise ValueError('Loaded consumer/pixel acceptance mismatch')
         installed_hash = small(args.source, 'installed/installed-library.sha256').decode().split()[0]
         if small(args.source, 'installed/loaded-library.sha256').decode().split()[0] != installed_hash:
@@ -321,6 +321,10 @@ def export(args):
                     data = archive.extractfile(member).read()
                 path = Path(work) / (label + '.so')
                 path.write_bytes(data)
+                header = subprocess.check_output(['readelf', '-h', str(path)], text=True, timeout=30)
+                machine = {'arm64': 'AArch64', 'amd64': 'Advanced Micro Devices X86-64'}[args.arch]
+                if re.findall(r'Machine:\s+([^\n]+)', header) != [machine] or re.findall(r'Class:\s+([^\n]+)', header) != ['ELF64']:
+                    raise ValueError('Packaged library architecture mismatch')
                 if label == 'candidate' and hashlib.sha256(data).hexdigest() != installed_hash:
                     raise ValueError('Installed library differs from package')
                 dynamic = subprocess.check_output(['readelf', '-d', str(path)], text=True, timeout=30)
