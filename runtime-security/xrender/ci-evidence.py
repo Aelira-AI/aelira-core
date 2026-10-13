@@ -102,7 +102,9 @@ def export(args):
     total = 0
     stage = 'checkout'
     receipt = {'schema': 'aelira-xrender-native-evidence-v1', 'status': 'fail',
-               'architecture': args.arch, 'revision': args.revision, 'tree': args.tree,
+               'architecture': args.arch if args.arch in ('arm64', 'amd64') else None,
+               'revision': args.revision if re.fullmatch('[a-f0-9]{40}', args.revision) else None,
+               'tree': args.tree if re.fullmatch('[a-f0-9]{40}', args.tree) else None,
                'build_exit': args.build_exit,
                'scope': 'Native Xrender source/package component; final release images require separate acceptance'}
 
@@ -145,7 +147,7 @@ def export(args):
             raise ValueError('Dirty recipe checkout')
         stage = 'build-status'
         status = decode_json(small(args.source, 'build-status.json'))
-        if args.build_exit != 0 or status != {'schema': 'aelira-xrender-build-status-v1', 'phase': 'complete', 'exit': 0}:
+        if not isinstance(status, dict) or type(status.get('exit')) is not int or args.build_exit != 0 or status != {'schema': 'aelira-xrender-build-status-v1', 'phase': 'complete', 'exit': 0}:
             raise ValueError('Native build incomplete')
         copy('build-status.json')
         stage = 'recipe'

@@ -33,11 +33,11 @@ def main():
         (dest / 'unlisted-private.txt').write_text('SYNTHETIC-PRIVATE-FIELD\n')
         return dest
 
-    def invoke(name, source, expected, build_exit=0):
+    def invoke(name, source, expected, build_exit=0, arch=None, selected_revision=None, selected_tree=None):
         dest = args.scratch / (name + '-export')
         p = subprocess.run([sys.executable, '-B', str(exporter), '--source', str(source),
-            '--dest', str(dest), '--repo', str(args.repo), '--arch', args.arch,
-            '--revision', revision, '--tree', tree, '--build-exit', str(build_exit)],
+            '--dest', str(dest), '--repo', str(args.repo), '--arch', arch or args.arch,
+            '--revision', selected_revision or revision, '--tree', selected_tree or tree, '--build-exit', str(build_exit)],
             capture_output=True, timeout=240)
         receipt = json.loads((dest / 'component.json').read_text())
         assert p.returncode == (0 if expected else 1), {
@@ -51,6 +51,10 @@ def main():
     source = snapshot('completed-native')
     invoke('completed-native', source, True)
     invoke('failed-process', source, False, build_exit=7)
+    for name, changed in [('invalid-arch', {'arch': 'SYNTHETIC-PRIVATE-FIELD'}),
+                          ('invalid-revision', {'selected_revision': 'SYNTHETIC-PRIVATE-FIELD'}),
+                          ('invalid-tree', {'selected_tree': 'SYNTHETIC-PRIVATE-FIELD'})]:
+        invoke(name, source, False, **changed)
     for case, relative in [('changed-recipe', 'frozen-recipe/verify-provenance.py'),
                            ('missing-native', 'build-a/patched-O2.log'),
                            ('source-symlink', 'source-input/libxrender_0.9.12-1build1.dsc'),
@@ -67,6 +71,8 @@ def main():
                            ('changed-loaded-digest', 'installed/loaded-library.sha256'),
                            ('missing-builder', 'provenance/builder.tar'),
                            ('private-phase', 'build-status.json'),
+                           ('boolean-exit', 'build-status.json'),
+                           ('float-exit', 'build-status.json'),
                            ('duplicate-json-key', 'build-status.json'),
                            ('absolute-checksum-path', 'reproducible-sha256.txt')]:
         source = snapshot(case)
@@ -83,6 +89,10 @@ def main():
         elif case == 'private-phase':
             value = json.loads(data)
             value['phase'] = 'SYNTHETIC-PRIVATE-FIELD'
+            path.write_text(json.dumps(value))
+        elif case in ('boolean-exit', 'float-exit'):
+            value = json.loads(data)
+            value['exit'] = False if case == 'boolean-exit' else 0.0
             path.write_text(json.dumps(value))
         elif case == 'duplicate-json-key':
             path.write_bytes(data.replace(b'{', b'{"phase":"SYNTHETIC-PRIVATE-FIELD",', 1))
