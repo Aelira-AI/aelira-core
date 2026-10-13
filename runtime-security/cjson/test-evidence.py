@@ -146,8 +146,17 @@ def main():
     source = snapshot('changed-builder-archive')
     path = source / 'provenance/builder.tar'
     if path.exists():
+        changed = path.with_name('changed-builder.tmp')
+        shutil.copyfile(path, changed)
         path.unlink()
-    path.write_text('SYNTHETIC-PRIVATE-FIELD\n')
+        changed.rename(path)
+        with path.open('r+b') as stream:
+            stream.seek(-1, os.SEEK_END)
+            byte = stream.read(1)
+            stream.seek(-1, os.SEEK_END)
+            stream.write(bytes([byte[0] ^ 1]))
+    else:
+        path.write_text('SYNTHETIC-PRIVATE-FIELD\n')
     result, receipt = invoke('changed-builder-archive', source)
     assert result == 1 and receipt['status'] == 'fail'
     assert 'provenance/builder.tar' not in receipt['files']
