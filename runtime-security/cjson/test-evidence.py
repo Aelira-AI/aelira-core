@@ -49,7 +49,9 @@ def main():
 
     source = snapshot("positive")
     result, receipt = invoke("positive", source)
-    assert result == 0 and receipt["status"] == "pass"
+    assert result == 0 and receipt["status"] == "pass", {
+        "case": "completed-native-export", "validation_stage": receipt.get("validation_stage"),
+        "errors": receipt["errors"], "verified_files": len(receipt["files"])}
     rows.append("completed-native-export")
     result, receipt = invoke("failed-process", source, exit_code=7)
     assert result == 1 and receipt["status"] == "fail" and not receipt["files"]

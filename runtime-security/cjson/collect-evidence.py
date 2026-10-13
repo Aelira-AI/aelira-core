@@ -94,6 +94,7 @@ def export(args):
                     outgoing.write(chunk)
         rows[relative] = {"sha256": sha.hexdigest(), "size": destination.stat().st_size}
 
+    validation_stage = "checkout"
     try:
         if args.arch not in ("amd64", "arm64"):
             raise ValueError("Invalid architecture")
@@ -109,11 +110,13 @@ def export(args):
                                          'runtime-security/cjson', '.github/workflows/ci.yml'], text=True)
         if dirty:
             raise ValueError("Recipe checkout is dirty")
+        validation_stage = "build-status"
         status = decode_json(small(args.source, "build-status.json"))
         receipt["stage"] = 'complete' if status == {"schema": "aelira-cjson-build-status-v1", "phase": "complete", "exit": 0} else 'incomplete'
         if status != {"schema": "aelira-cjson-build-status-v1", "phase": "complete", "exit": 0} or args.build_exit != 0:
             raise ValueError("Native build did not complete")
         copy("build-status.json")
+        validation_stage = "reproducibility"
         reproducible = {}
         for line in small(args.source, "reproducible-sha256.txt").decode().splitlines():
             match = re.fullmatch(r"([a-f0-9]{64})  (cjson_1\.7\.19-2\+aelira3\.(?:dsc|debian\.tar\.xz)|libcjson(?:1|-dev)_1\.7\.19-2\+aelira3_(?:amd64|arm64)\.deb)", line)
@@ -126,6 +129,7 @@ def export(args):
         if set(reproducible) != expected_artifacts:
             raise ValueError("Incomplete reproducibility manifest")
         copy("reproducible-sha256.txt")
+        validation_stage = "recipe"
         for name in RECIPE:
             relative = "frozen-recipe/" + name
             expected = hashlib.sha256((args.repo / "runtime-security/cjson" / name).read_bytes()).hexdigest()
@@ -133,6 +137,7 @@ def export(args):
         spec = importlib.util.spec_from_file_location('cjson_source', args.repo / 'runtime-security/cjson/build-source.py')
         helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(helper)
+        validation_stage = "source-inputs"
         source_identity = {name: {'sha256': digest, 'size': size} for name, (size, digest) in helper.INPUTS.items()}
         repair_identity = {name: {'sha256': digest, 'size': size} for name, (size, digest) in helper.REPAIR_INPUTS.items()}
         for name in ("cjson_1.7.19-2.dsc", "cjson_1.7.19.orig.tar.gz", "cjson_1.7.19-2.debian.tar.xz"):
@@ -149,6 +154,7 @@ def export(args):
         if small(args.source, 'provenance/base-image.txt') != (BASE + '\n').encode():
             raise ValueError('Pinned base record mismatch')
         copy('provenance/base-image.txt')
+        validation_stage = "builder-identity"
         builder_bytes = small(args.source, "provenance/builder-id.txt")
         if not re.fullmatch(rb'sha256:[a-f0-9]{64}\n', builder_bytes):
             raise ValueError('Invalid frozen builder ID')
@@ -161,6 +167,7 @@ def export(args):
         builder_layers = decode_json(subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{json .RootFS.Layers}}', builder], timeout=30))
         if not base_layers or builder_layers[:len(base_layers)] != base_layers:
             raise ValueError('Builder does not descend from pinned base')
+        validation_stage = "toolchain"
         inventory = small(args.source, 'provenance/toolchain-packages.tsv')
         seen_packages = set()
         for line in inventory.decode().splitlines():
@@ -185,6 +192,7 @@ def export(args):
         indexes = args.source / "provenance/apt-lists"
         if indexes.is_symlink() or not indexes.is_dir():
             raise ValueError("Unsafe index directory")
+        validation_stage = "source-authentication"
         current_source_chain = authenticator.verify(indexes, args.source / 'source-input', args.source / 'provenance/ubuntu-archive-keyring.gpg')
         for attempt in 'ab':
             if decode_json(small(args.source, 'build-' + attempt + '/ubuntu-source.json')) != current_source_chain:
@@ -195,6 +203,7 @@ def export(args):
             copy("provenance/apt-lists/" + name, identity['sha256'])
         if not any(name.endswith('_InRelease') for name in rows):
             raise ValueError("Signed index missing")
+        validation_stage = "native-controls-and-packages"
         for attempt in "ab":
             prefix = "build-" + attempt + "/"
             controls = decode_json(small(args.source, prefix + "source-controls.json"))
@@ -243,6 +252,7 @@ def export(args):
                 for name in names[:2]:
                     if rows[prefix + "artifacts/" + name]["sha256"] != rows["build-a/artifacts/" + name]["sha256"]:
                         raise ValueError("Source reproducibility mismatch")
+        validation_stage = "installed-consumers"
         installed_log = small(args.source, "installed-private.log").decode()
         match = re.findall(r"^installed_cjson_receipt=(.+)$", installed_log, re.MULTILINE)
         if len(match) != 1 or f"installed_cjson_acceptance=pass architecture={args.arch} version=1.7.19-2+aelira3\n" not in installed_log:
@@ -276,6 +286,7 @@ def export(args):
         receipt["installed"] = installed
         receipt["upstream_tests_per_build"] = 22
         receipt["allocation_outcomes_per_native_run"] = 768
+        validation_stage = "builder-archive"
         tar = args.source / "provenance/builder.tar"
         receipt["builder_exported"] = tar.exists()
         if args.require_builder and not tar.exists():
@@ -301,9 +312,11 @@ def export(args):
                 if fresh.stat().st_size > MAX_FILE:
                     raise ValueError('Saved builder exceeds bound')
                 copy('provenance/builder.tar', verified_file=fresh)
+        validation_stage = "complete"
         receipt["status"] = "pass"
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as error:
         errors.append(type(error).__name__)
+    receipt["validation_stage"] = validation_stage
     receipt["errors"] = errors
     receipt["files"] = rows
     (args.dest / "component.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
