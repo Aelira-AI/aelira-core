@@ -69,8 +69,37 @@ The unchanged CLI encoder maps body LF to CRLF; URI `%0A` separately retains LF.
 Syntax refusal is the existing public CLI exit1, distinct from the isolated
 argument-helper fixture's synthetic exit64.
 
-These are source/native component controls. Both native public CI architectures,
-full immutable builder and artifact reconciliation, independent acceptance,
-exact main-push CI, other supported clients, final runtime copies and complete
-unsuppressed advisory inventories remain required under #581 and #578. This
-recipe does not close either release issue or approve publication.
+On a native Linux Docker host, run the complete producer as a nonroot user:
+
+```sh
+bash runtime-security/xdg/build.sh /absolute/new-output
+bun runtime-security/xdg/test-ci-evidence.ts \
+  --source /absolute/new-output --repo "$PWD" --arch arm64 \
+  --scratch /absolute/new-controls --dest /absolute/new-evidence
+bun runtime-security/xdg/verify-export.ts \
+  --source /absolute/new-evidence --repo "$PWD" --arch arm64 \
+  --revision "$(git rev-parse HEAD)" --tree "$(git rev-parse 'HEAD^{tree}')"
+```
+
+Use `amd64` on an x86-64 host. Bun is pinned to1.3.14 in CI. The producer
+prepares immutable Ubuntu and Debian builders from pinned base digests,
+captures every installed dependency delta and signed archive index, repeats
+offline source/binary builds, installs the candidate package and runs all
+fifteen real-client controls. It saves the source builder, client builder and
+installed-client images for independent inspection. Preparation needs network
+access; the package builds, signature replay and client tests run offline.
+
+The exporter reconciles actual Docker inventories and base layers with every
+captured archive, reconstructs source/binary payload identities, checks the
+physical compose fields independently, and compares complete saved-image
+contents against fresh saves of the actual immutable images. The control suite
+requires a real successful export before exercising its refusal paths. A
+failed preflight exports only a bounded failure receipt. The separate intake
+checks all exported bytes and saved config/layer hashes without loading or
+executing those images. The native AMD64 and ARM64 jobs are required by the
+aggregate `CI complete` gate.
+
+These are source/native component controls. Other supported clients, final
+runtime copies and complete unsuppressed advisory inventories remain separate
+requirements under #581 and #578. This recipe does not close either release
+issue or approve publication.
