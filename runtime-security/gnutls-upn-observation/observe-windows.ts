@@ -48,8 +48,8 @@ const versionAPI = dlopen(join(system, 'System32', 'version.dll'), {
   GetFileVersionInfoW: { args: ['ptr', 'u32', 'u32', 'ptr'], returns: 'i32' },
   VerQueryValueW: { args: ['ptr', 'ptr', 'ptr', 'ptr'], returns: 'i32' },
 }).symbols;
-function checked(ok: unknown, suppliesLastError = true) {
-  if (!ok) { const error: any = new Error('Native API failure'); error.name = 'NativeAPIError'; error.native_code = suppliesLastError ? kernel.GetLastError() : null; throw error; }
+function checked(ok: unknown, call: string, suppliesLastError = true) {
+  if (!ok) { const error: any = new Error('Native API failure'); error.name = 'NativeAPIError'; error.native_code = suppliesLastError ? kernel.GetLastError() : null; partial.native_call = call; throw error; }
 }
 const aligned = (size: number) => new BigUint64Array(Math.ceil(size / 8));
 const data = (array: BigUint64Array) => new DataView(array.buffer);
@@ -77,7 +77,7 @@ try {
     const bytes = await readFile(join(root, identity.file));
     if (bytes.length > 65_536 || bytes.length !== identity.size || sha(bytes) !== identity.sha256) throw new Error('Changed certificate');
     const context = crypt.CertCreateCertificateContext(1, bytes, bytes.length);
-    checked(context);
+    checked(context, 'CertCreateCertificateContext');
     contexts.set(name, context);
   }
   for (const row of manifest.cases) {
@@ -86,15 +86,15 @@ try {
     const engineOutput = aligned(8); let chain = 0;
     try {
       anchor = crypt.CertOpenStore(provider, 0, 0n, 0x2000, null);
-      checked(anchor);
+      checked(anchor, 'CertOpenStore-anchor');
       issuers = crypt.CertOpenStore(provider, 0, 0n, 0x2000, null);
-      checked(issuers);
-      checked(crypt.CertAddCertificateContextToStore(anchor, contexts.get('root'), 1, null));
-      checked(crypt.CertAddCertificateContextToStore(issuers, contexts.get(row.issuer), 1, null));
+      checked(issuers, 'CertOpenStore-issuers');
+      checked(crypt.CertAddCertificateContextToStore(anchor, contexts.get('root'), 1, null), 'CertAddCertificateContextToStore-anchor');
+      checked(crypt.CertAddCertificateContextToStore(issuers, contexts.get(row.issuer), 1, null), 'CertAddCertificateContextToStore-issuer');
       const config = aligned(88), configView = data(config);
       configView.setUint32(0, 88, true); configView.setBigUint64(16, anchor, true); configView.setBigUint64(24, issuers, true);
       configView.setUint32(48, 4 | 0x2000, true); configView.setBigUint64(64, anchor, true);
-      checked(crypt.CertCreateCertificateChainEngine(config, engineOutput));
+      checked(crypt.CertCreateCertificateChainEngine(config, engineOutput), 'CertCreateCertificateChainEngine');
       const parameters = aligned(96); data(parameters).setUint32(0, 96, true);
       data(parameters).setUint32(16, 1, true); data(parameters).setBigUint64(24, BigInt(ptr(usagePointers)), true);
       const chainOutput = aligned(8);
@@ -144,9 +144,9 @@ const widePath = Uint16Array.from((cryptoPath + '\0').split('').map(c => c.charC
 const versionSize = versionAPI.GetFileVersionInfoSizeW(widePath, null);
 if (versionSize < 52 || versionSize > 1_048_576) throw new Error('DLL version resource bound');
 const versionBytes = new Uint32Array(Math.ceil(versionSize / 4));
-checked(versionAPI.GetFileVersionInfoW(widePath, 0, versionSize, versionBytes));
+checked(versionAPI.GetFileVersionInfoW(widePath, 0, versionSize, versionBytes), 'GetFileVersionInfoW');
 const versionPointer = aligned(8), versionLength = new Uint32Array(1);
-checked(versionAPI.VerQueryValueW(versionBytes, new Uint16Array([92, 0]), versionPointer, versionLength), false);
+checked(versionAPI.VerQueryValueW(versionBytes, new Uint16Array([92, 0]), versionPointer, versionLength), 'VerQueryValueW', false);
 if (versionLength[0] < 52) throw new Error('Short DLL fixed version');
 const fixedVersion = memory(Number(versionPointer[0]), 52);
 if (fixedVersion.readUInt32LE(0) !== 0xfeef04bd) throw new Error('DLL version signature');
